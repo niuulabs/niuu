@@ -73,4 +73,5 @@ async def test_controller_sigkill_does_not_leave_tunnel_process():
             try:
                 os.kill(child_pid, signal.SIGKILL)
             except ProcessLookupError:
+                # The test process exited before teardown could signal it.
                 pass

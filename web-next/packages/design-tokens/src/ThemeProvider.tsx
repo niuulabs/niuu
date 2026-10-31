@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 
-export type ThemeName = 'ice' | 'amber' | 'spring' | 'xteo';
+export type ThemeName = 'ice' | 'amber' | 'spring' | 'xteo' | 'light';
 
 interface ThemeContextValue {
   theme: ThemeName;
@@ -26,7 +26,13 @@ export function ThemeProvider({ theme: initial = 'ice', children }: ThemeProvide
   const [theme, updateTheme] = useState<ThemeName>(() => {
     try {
       const saved = localStorage.getItem('niuu.theme');
-      if (saved === 'ice' || saved === 'amber' || saved === 'spring' || saved === 'xteo')
+      if (
+        saved === 'ice' ||
+        saved === 'amber' ||
+        saved === 'spring' ||
+        saved === 'xteo' ||
+        saved === 'light'
+      )
         return saved;
     } catch {
       /* Storage can be disabled; the configured theme still works. */

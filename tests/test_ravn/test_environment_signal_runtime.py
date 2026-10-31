@@ -246,37 +246,68 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
 
 
 @pytest.mark.asyncio
-async def test_durable_home_holds_routine_signals_but_keeps_urgent_wakes() -> None:
-    settings = _settings()
-    settings.environment.signal_sources[0].kwargs["raw_items"][0]["severity"] = "info"
+async def test_durable_home_queues_nothing_and_wakes_home_only_for_critical() -> None:
     bus = InProcessBus()
     enqueued: list[AgentTask] = []
+    wakes: list[str] = []
 
     async def persisted(_event: SleipnirEvent) -> dict:
-        return {"residentAutonomySignalRef": "resident/inbox/signals/info.md"}
+        return {
+            "residentAutonomySignalPersisted": True,
+            "residentAutonomySignalRef": "resident/inbox/pending/shape.md",
+        }
 
+    routine_settings = _settings()
+    routine_settings.environment.signal_sources[0].kwargs["raw_items"][0]["severity"] = "warning"
     routine = EnvironmentSignalRuntime(
-        settings=settings,
+        settings=routine_settings,
         publisher=bus,
         enqueue=lambda task: _enqueue(enqueued, task),
         resident_signal_processor=persisted,
         durable_home_enabled=True,
+        home_wake=lambda: wakes.append("routine"),
     )
     await routine.collect_once()
     assert enqueued == []
     assert routine._untriaged == []
+    assert wakes == []
 
-    urgent_settings = _settings()
-    urgent = EnvironmentSignalRuntime(
-        settings=urgent_settings,
+    critical = EnvironmentSignalRuntime(
+        settings=_settings(),
         publisher=bus,
         enqueue=lambda task: _enqueue(enqueued, task),
         resident_signal_processor=persisted,
         durable_home_enabled=True,
+        home_wake=lambda: wakes.append("critical"),
     )
-    await urgent.collect_once()
-    assert len(enqueued) == 1
-    assert enqueued[0].resident_inbox_refs == ["resident/inbox/signals/info.md"]
+    await critical.collect_once()
+    # A critical observation no longer gets a task of its own (which would
+    # claim, and on acknowledging swallow, the whole shared slot); it wakes
+    # the home turn that judges the slot instead.
+    assert enqueued == []
+    assert wakes == ["critical"]
+
+
+@pytest.mark.asyncio
+async def test_durable_home_refuses_an_observation_the_inbox_did_not_keep() -> None:
+    bus = InProcessBus()
+
+    async def unpersisted(_event: SleipnirEvent) -> dict:
+        return {"residentAutonomySignalRef": "resident/inbox/pending/shape.md"}
+
+    runtime = EnvironmentSignalRuntime(
+        settings=_settings(),
+        publisher=bus,
+        enqueue=lambda task: _enqueue([], task),
+        resident_signal_processor=unpersisted,
+        durable_home_enabled=True,
+        home_wake=lambda: None,
+    )
+
+    with pytest.raises(RuntimeError, match="resident inbox"):
+        await runtime.collect_once()
+    # Not remembered, so the next poll collects it again.
+    assert not runtime._seen
 
 
 @pytest.mark.asyncio
@@ -564,7 +595,6 @@ async def test_idle_triage_loop_enqueues_and_resets_batch() -> None:
     settings = _settings()
     settings.environment.signal_task_severities = ["never"]
     settings.environment.idle_triage_interval_seconds = 0.01
-    settings.environment.idle_triage_max_signals = 5
     runtime = EnvironmentSignalRuntime(
         settings=settings,
         publisher=bus,
@@ -584,9 +614,9 @@ async def test_idle_triage_loop_enqueues_and_resets_batch() -> None:
     assert runtime._untriaged == []
 
 
-def test_untriaged_buffer_is_capped() -> None:
+def test_untriaged_buffer_keeps_every_observation() -> None:
+    """Nothing is forgotten to make room; the prompt is bounded by its sample."""
     settings = _settings()
-    settings.environment.idle_triage_max_signals = 3
     runtime = EnvironmentSignalRuntime(settings=settings, publisher=InProcessBus())
     for index in range(6):
         runtime._untriaged.append(
@@ -617,7 +647,68 @@ def test_untriaged_buffer_is_capped() -> None:
 
     runtime._remember_untriaged(_Sig(), event)  # type: ignore[arg-type]
 
+    assert len(runtime._untriaged) == 7
+    assert runtime._untriaged[0]["signal_ref"] == "sig-0"
+
+
+def test_environment_config_refuses_the_removed_triage_cap() -> None:
+    from ravn.config import EnvironmentConfig
+
+    with pytest.raises(ValueError, match="idle_triage_max_signals no longer exists"):
+        EnvironmentConfig(idle_triage_max_signals=200)
+
+
+def _untriaged_entry(index: int) -> dict[str, str]:
+    return {
+        "signal_ref": f"sig-{index}",
+        "signal_type": "generic",
+        "severity": "info",
+        "source_id": "host-events",
+        "observed_at": "2026-10-26T00:00:00+00:00",
+        "payload": f"signal {index}",
+    }
+
+
+@pytest.mark.asyncio
+async def test_refused_triage_window_keeps_its_observations_for_the_next_one() -> None:
+    """While a window is still queued the drive loop refuses another; nothing is lost."""
+    offered: list[AgentTask] = []
+    accept = {"value": False}
+
+    async def enqueue(task: AgentTask) -> bool:
+        offered.append(task)
+        return accept["value"]
+
+    runtime = EnvironmentSignalRuntime(
+        settings=_settings(), publisher=InProcessBus(), enqueue=enqueue
+    )
+    runtime._untriaged.extend(_untriaged_entry(index) for index in range(3))
+
+    assert await runtime.offer_idle_triage_window() is False
     assert len(runtime._untriaged) == 3
+
+    runtime._untriaged.append(_untriaged_entry(3))
+    accept["value"] = True
+    assert await runtime.offer_idle_triage_window() is True
+
+    assert offered[-1].title == "Signal window: 4 observation(s)"
+    assert offered[-1].triggered_by == "signal:idle_triage"
+    assert runtime._untriaged == []
+
+
+@pytest.mark.asyncio
+async def test_triage_window_enqueue_errors_propagate() -> None:
+    async def enqueue(task: AgentTask) -> bool:
+        raise RuntimeError("queue journal unwritable")
+
+    runtime = EnvironmentSignalRuntime(
+        settings=_settings(), publisher=InProcessBus(), enqueue=enqueue
+    )
+    runtime._untriaged.append(_untriaged_entry(0))
+
+    with pytest.raises(RuntimeError, match="queue journal unwritable"):
+        await runtime.offer_idle_triage_window()
+    assert len(runtime._untriaged) == 1
 
 
 async def _record(events: list[SleipnirEvent], event: SleipnirEvent) -> None:

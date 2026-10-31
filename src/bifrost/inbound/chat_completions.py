@@ -6,11 +6,22 @@ then translates the response (and SSE stream) back to OpenAI format.
 
 This enables any OpenAI-SDK-based tool (Continue, Cursor, openai-python,
 etc.) to point at Bifröst without code changes.
+
+Reasoning that a provider keeps opaque (Anthropic's thinking ``signature``, the
+ChatGPT Responses backend's ``encrypted_content``) crosses this surface in
+OpenRouter's shape: the readable summary as ``reasoning_content`` and the
+opaque payload as ``reasoning_details: [{"type": "reasoning.encrypted",
+"data": ..., "format": ..., "index": ...}]`` on the assistant message and in
+stream deltas. A client that sends an assistant message back with its
+``reasoning_details`` lets the provider continue that reasoning on the next
+step. The ``format`` Bifröst labels them with is fixed at
+``openai-responses-v1``; it is informational and is not checked on the way in.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import AsyncIterator
 from typing import Any, Literal
@@ -34,6 +45,21 @@ from bifrost.translation.models import (
 )
 from bifrost.translation.to_anthropic import _openai_tool_calls_to_blocks
 from bifrost.translation.to_openai import _extract_tool_calls
+
+logger = logging.getLogger(__name__)
+
+REASONING_ENCRYPTED_TYPE = "reasoning.encrypted"
+REASONING_DETAILS_FORMAT = "openai-responses-v1"
+
+
+class InvalidReasoningDetailsError(ValueError):
+    """A request's ``reasoning_details`` holds something Bifröst cannot carry.
+
+    Raised rather than dropping the entry: reasoning that is silently lost makes
+    the next step re-derive it from the visible history, which is exactly what
+    sending it back is meant to avoid.
+    """
+
 
 # ---------------------------------------------------------------------------
 # OpenAI request Pydantic models
@@ -62,6 +88,9 @@ class _OpenAIMessage(BaseModel):
     content: str | list[dict[str, Any]] | None = None
     reasoning: str | None = None
     reasoning_content: str | None = None
+    # Opaque reasoning to hand back to the provider (see the module docstring);
+    # entries are validated in ``_reasoning_signatures`` so a bad one is a 400.
+    reasoning_details: list[Any] | None = None
     tool_calls: list[_OpenAIToolCall] | None = None
     tool_call_id: str | None = None
 
@@ -121,21 +150,67 @@ def _extract_text_content(content: str | list[dict[str, Any]] | None) -> str:
     return "".join(parts)
 
 
+def _reasoning_signatures(details: list[Any] | None) -> list[str]:
+    """The opaque payloads of an assistant message's ``reasoning_details``, in order.
+
+    Raises:
+        InvalidReasoningDetailsError: An entry is not an object, is not of type
+            ``reasoning.encrypted``, or carries no ``data`` string.
+    """
+    signatures: list[str] = []
+    for position, detail in enumerate(details or []):
+        if not isinstance(detail, dict):
+            raise InvalidReasoningDetailsError(
+                f"reasoning_details[{position}] must be an object, got {type(detail).__name__}"
+            )
+        if detail.get("type") != REASONING_ENCRYPTED_TYPE:
+            raise InvalidReasoningDetailsError(
+                f"reasoning_details[{position}] has unsupported type {detail.get('type')!r}; "
+                f"only {REASONING_ENCRYPTED_TYPE!r} entries, as returned by this endpoint, "
+                "can be sent back"
+            )
+        data = detail.get("data")
+        if not isinstance(data, str) or not data:
+            raise InvalidReasoningDetailsError(
+                f"reasoning_details[{position}] needs a non-empty string 'data'"
+            )
+        signatures.append(data)
+    return signatures
+
+
+def _thinking_blocks(reasoning: str, signatures: list[str]) -> list[ContentBlock]:
+    """Thinking blocks for a message's reasoning, signed where it has opaque payloads.
+
+    One block per payload, in order. The readable ``reasoning`` is one string
+    for the whole message, so it rides on the first block; the payloads are what
+    a provider resumes from, the text is for display.
+    """
+    if not signatures:
+        return [ThinkingBlock(thinking=reasoning)] if reasoning else []
+    return [
+        ThinkingBlock(thinking=reasoning if position == 0 else "", signature=signature)
+        for position, signature in enumerate(signatures)
+    ]
+
+
 def _build_assistant_content(msg: _OpenAIMessage) -> str | list[ContentBlock]:
-    """Build Anthropic content for an assistant-role message."""
+    """Build Anthropic content for an assistant-role message.
+
+    Raises:
+        InvalidReasoningDetailsError: ``reasoning_details`` is malformed.
+    """
     text = _extract_text_content(msg.content)
     reasoning = msg.reasoning or msg.reasoning_content or ""
+    signatures = _reasoning_signatures(msg.reasoning_details)
     tool_calls = msg.tool_calls or []
 
-    if not reasoning and not text and not tool_calls:
+    if not reasoning and not signatures and not text and not tool_calls:
         return ""
 
-    if not reasoning and not tool_calls:
+    if not reasoning and not signatures and not tool_calls:
         return text
 
-    blocks: list[ContentBlock] = []
-    if reasoning:
-        blocks.append(ThinkingBlock(thinking=reasoning))
+    blocks: list[ContentBlock] = _thinking_blocks(reasoning, signatures)
     if text:
         blocks.append(TextBlock(text=text))
 
@@ -234,7 +309,7 @@ def openai_request_to_anthropic(req: OpenAIChatRequest) -> AnthropicRequest:
 
     return AnthropicRequest(
         model=req.model,
-        max_tokens=req.max_tokens or 1024,
+        max_tokens=req.max_tokens,
         messages=anthropic_messages,
         system=system,
         tools=tools,
@@ -252,6 +327,16 @@ def openai_request_to_anthropic(req: OpenAIChatRequest) -> AnthropicRequest:
 # ---------------------------------------------------------------------------
 # Response translation: Anthropic canonical → OpenAI
 # ---------------------------------------------------------------------------
+
+
+def _reasoning_detail(signature: str, index: int) -> dict[str, Any]:
+    """One ``reasoning_details`` entry for an opaque payload."""
+    return {
+        "type": REASONING_ENCRYPTED_TYPE,
+        "data": signature,
+        "format": REASONING_DETAILS_FORMAT,
+        "index": index,
+    }
 
 
 def anthropic_response_to_openai(response: AnthropicResponse) -> dict[str, Any]:
@@ -273,6 +358,15 @@ def anthropic_response_to_openai(response: AnthropicResponse) -> dict[str, Any]:
     message: dict[str, Any] = {"role": "assistant", "content": text or None}
     if reasoning:
         message["reasoning_content"] = reasoning
+    signatures = [
+        block.signature
+        for block in response.content
+        if isinstance(block, ThinkingBlock) and block.signature
+    ]
+    if signatures:
+        message["reasoning_details"] = [
+            _reasoning_detail(signature, index) for index, signature in enumerate(signatures)
+        ]
     if tool_calls:
         message["tool_calls"] = tool_calls
 
@@ -330,6 +424,24 @@ def _openai_chunk(
     return f"data: {json.dumps(payload)}\n\n"
 
 
+async def openai_stream_errors_reported(source: AsyncIterator[str]) -> AsyncIterator[str]:
+    """Report a failure after the 200 as an OpenAI ``error`` event.
+
+    Streaming responses commit their status before the provider answers, so a
+    provider that rejects the request (an orphaned tool call, an exhausted
+    quota) can only fail mid-stream. Raising out of the generator just closed
+    the connection: the client saw a stream with no text, no tool call and no
+    end, and Ravn read that as an empty answer.
+    """
+    try:
+        async for chunk in source:
+            yield chunk
+    except Exception as exc:
+        logger.error("Streaming chat completion failed after the response started: %s", exc)
+        error = {"error": {"message": str(exc), "type": "server_error"}}
+        yield f"data: {json.dumps(error)}\n\n"
+
+
 async def anthropic_stream_to_openai(
     source: AsyncIterator[str],
     *,
@@ -362,6 +474,7 @@ async def anthropic_stream_to_openai(
     # Anthropic block-index → OpenAI tool_call index mapping.
     tool_block_index_map: dict[int, int] = {}
     tool_call_counter = 0
+    reasoning_detail_counter = 0
 
     async for raw in source:
         for raw_line in raw.split("\n"):
@@ -463,6 +576,19 @@ async def anthropic_stream_to_openai(
                         created,
                         {"reasoning_content": reasoning},
                     )
+
+                elif delta_type == "signature_delta" and delta.get("signature"):
+                    yield _openai_chunk(
+                        message_id,
+                        model,
+                        created,
+                        {
+                            "reasoning_details": [
+                                _reasoning_detail(delta["signature"], reasoning_detail_counter)
+                            ]
+                        },
+                    )
+                    reasoning_detail_counter += 1
 
                 elif delta_type == "input_json_delta":
                     partial_json = delta.get("partial_json", "")

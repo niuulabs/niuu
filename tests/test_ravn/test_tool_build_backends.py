@@ -33,6 +33,7 @@ from ravn.ports.tool_build_backend import (
     ToolBuildInputRequiredError,
     ToolBuildPendingError,
     ToolBuildRequest,
+    ToolBuildTaskEndedError,
 )
 
 
@@ -769,6 +770,55 @@ async def test_a2a_backend_suspends_for_push_and_resumes_with_one_get() -> None:
     ]
 
 
+async def test_a2a_backend_refuses_push_callback_against_card_without_push() -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+            ],
+        }
+    )
+    backend = _a2a_backend(
+        client,
+        workflow_id="wf-1",
+        push_callback_url="https://ivaldi.example/a2a/push",
+    )
+
+    with pytest.raises(ToolBuildError, match="does not advertise push notifications"):
+        await backend.build(_request())
+
+    assert [body["method"] for body in client.post_bodies] == ["SendMessage"]
+
+
+async def test_a2a_backend_raises_when_push_registration_fails() -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [
+                HttpResponse(200, _a2a_card(push_notifications=True))
+            ],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                HttpResponse(403, {"detail": "forbidden"}),
+            ],
+        }
+    )
+    backend = _a2a_backend(
+        client,
+        workflow_id="wf-1",
+        push_callback_url="https://ivaldi.example/a2a/push",
+    )
+
+    with pytest.raises(ToolBuildError, match="HTTP 403"):
+        await backend.build(_request())
+
+    # No in-turn polling after a failed registration.
+    assert [body["method"] for body in client.post_bodies] == [
+        "SendMessage",
+        "CreateTaskPushNotificationConfig",
+    ]
+
+
 async def test_a2a_backend_closes_local_tracking_when_polling_is_exhausted() -> None:
     activities: list[dict[str, object]] = []
 
@@ -891,6 +941,23 @@ async def test_a2a_backend_propagates_active_trace_in_message_metadata(
 
     metadata = client.post_bodies[0]["params"]["message"]["metadata"]
     assert metadata["traceContext"] == telemetry.inject.return_value
+    telemetry.count.assert_any_call(
+        "ravn.tool_build.operations",
+        attributes={
+            "ravn.tool_build.backend": "a2a",
+            "ravn.tool_build.outcome": "completed",
+        },
+    )
+    public_count_calls = [
+        call for call in telemetry.count.call_args_list if call.args[0] == "ravn_tool_build_total"
+    ]
+    assert public_count_calls == []
+    public_duration_calls = [
+        call
+        for call in telemetry.duration.call_args_list
+        if call.args[0] == "ravn_tool_build_duration_seconds"
+    ]
+    assert public_duration_calls == []
     state_events = [
         call
         for call in telemetry.event.call_args_list
@@ -1107,6 +1174,50 @@ async def test_a2a_backend_raises_on_failed_task() -> None:
 
     with pytest.raises(ToolBuildError, match="TASK_STATE_FAILED"):
         await backend.build(_request())
+
+
+@pytest.mark.parametrize(
+    ("status_extra", "metadata", "reason"),
+    [
+        (
+            {
+                "message": {
+                    "messageId": "task-1:failure",
+                    "role": "ROLE_AGENT",
+                    "parts": [{"text": "Session idle for over 2 hours without finishing."}],
+                }
+            },
+            {"error": "ignored when the status says why"},
+            "Session idle for over 2 hours without finishing.",
+        ),
+        ({}, {"error": "Session failed"}, "Session failed"),
+        ({}, {}, ""),
+    ],
+)
+async def test_a2a_backend_reports_why_the_task_ended(
+    status_extra: dict, metadata: dict, reason: str
+) -> None:
+    ended = _a2a_task("TASK_STATE_FAILED")
+    ended["status"].update(status_extra)
+    if metadata:
+        ended["metadata"] = metadata
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(ended),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1")
+
+    with pytest.raises(ToolBuildTaskEndedError) as raised:
+        await backend.build(_request())
+
+    assert raised.value.state == "TASK_STATE_FAILED"
+    assert raised.value.reason == reason
+    assert (reason or "the peer gave no reason") in str(raised.value)
 
 
 async def test_a2a_backend_raises_on_rpc_error() -> None:
@@ -1484,3 +1595,74 @@ async def test_a2a_backend_resumes_same_task_after_external_question_answer() ->
             "delivery": "delivered",
         }
     ]
+
+
+async def test_a2a_cancel_ends_a_running_build_task() -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result(_a2a_task("TASK_STATE_INPUT_REQUIRED")),
+                _rpc_result(_a2a_task("TASK_STATE_CANCELED")),
+            ],
+        }
+    )
+
+    state = await _a2a_backend(client, workflow_id="wf-1").cancel("task-1")
+
+    assert state == "TASK_STATE_CANCELED"
+    assert [body["method"] for body in client.post_bodies] == ["GetTask", "CancelTask"]
+    assert client.post_bodies[1]["params"] == {"id": "task-1"}
+
+
+async def test_a2a_cancel_leaves_an_ended_task_as_it_is() -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [_rpc_result(_a2a_task("TASK_STATE_FAILED"))],
+        }
+    )
+
+    state = await _a2a_backend(client, workflow_id="wf-1").cancel("task-1")
+
+    assert state == "TASK_STATE_FAILED"
+    assert [body["method"] for body in client.post_bodies] == ["GetTask"]
+
+
+@pytest.mark.parametrize(
+    ("state", "status"),
+    [
+        ("TASK_STATE_COMPLETED", "completed"),
+        ("TASK_STATE_FAILED", "ended"),
+        ("TASK_STATE_CANCELED", "ended"),
+        ("TASK_STATE_INPUT_REQUIRED", "active"),
+        ("TASK_STATE_WORKING", "active"),
+    ],
+)
+async def test_a2a_reports_where_a_suspended_build_stands(state: str, status: str) -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [_rpc_result(_a2a_task(state))],
+        }
+    )
+
+    reported = await _a2a_backend(client, workflow_id="wf-1").task_status("task-1")
+
+    assert reported == status
+    assert [body["method"] for body in client.post_bodies] == ["GetTask"]
+
+
+async def test_a_backend_that_never_suspends_has_nothing_to_cancel() -> None:
+    from ravn.ports.tool_build_backend import ToolBuildBackend, ToolBuildError
+
+    class _Inline(ToolBuildBackend):
+        name = "inline"
+
+        async def build(self, request: ToolBuildRequest):  # pragma: no cover - not called
+            raise AssertionError
+
+    with pytest.raises(ToolBuildError, match="suspends no builds"):
+        await _Inline().cancel("task-1")
+    with pytest.raises(ToolBuildError, match="suspends no builds"):
+        await _Inline().task_status("task-1")

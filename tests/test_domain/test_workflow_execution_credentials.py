@@ -208,6 +208,7 @@ async def test_rotation_loop_survives_failed_cycle() -> None:
     credential_service = service(repository, issuer, projection)
     original = credential_service._reconcile_active_cycle
     calls = 0
+    survived_failure = asyncio.Event()
 
     async def flaky() -> None:
         nonlocal calls
@@ -215,11 +216,17 @@ async def test_rotation_loop_survives_failed_cycle() -> None:
         if calls == 2:
             raise WorkflowExecutionCredentialError("transient")
         await original()
+        if calls >= 3:
+            survived_failure.set()
 
     credential_service._reconcile_active_cycle = flaky  # type: ignore[method-assign]
     await credential_service.start()
-    await asyncio.sleep(0.035)
-    await credential_service.stop()
+    try:
+        # Wait for the cycle after the failure, not a fixed 35 ms: a loaded CI
+        # worker can miss the third 10 ms tick inside any fixed window.
+        await asyncio.wait_for(survived_failure.wait(), timeout=5)
+    finally:
+        await credential_service.stop()
 
     assert calls >= 3
     assert len(projection.projected) >= 2

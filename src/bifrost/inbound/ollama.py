@@ -102,7 +102,7 @@ def ollama_generate_to_anthropic(req: OllamaGenerateRequest) -> AnthropicRequest
 
     return AnthropicRequest(
         model=req.model,
-        max_tokens=req.options.num_predict or 1024,
+        max_tokens=_answer_cap(req.options.num_predict),
         messages=messages,
         system=req.system,
         temperature=req.options.temperature,
@@ -111,6 +111,13 @@ def ollama_generate_to_anthropic(req: OllamaGenerateRequest) -> AnthropicRequest
         stop_sequences=req.options.stop or None,
         stream=req.stream,
     )
+
+
+def _answer_cap(num_predict: int | None) -> int | None:
+    """``num_predict`` as a cap: unset, -1 (no limit) and -2 (fill the context) are none."""
+    if num_predict is None or num_predict <= 0:
+        return None
+    return num_predict
 
 
 def ollama_chat_to_anthropic(req: OllamaChatRequest) -> AnthropicRequest:
@@ -140,7 +147,7 @@ def ollama_chat_to_anthropic(req: OllamaChatRequest) -> AnthropicRequest:
 
     return AnthropicRequest(
         model=req.model,
-        max_tokens=req.options.num_predict or 1024,
+        max_tokens=_answer_cap(req.options.num_predict),
         messages=anthropic_messages,
         system=system,
         temperature=req.options.temperature,

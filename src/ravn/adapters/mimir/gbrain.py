@@ -237,7 +237,7 @@ class GBrainMimirAdapter(MimirPort):
         records = _records(result)
         if not records:
             raise FileNotFoundError(path)
-        return _page_from_record(records[0], default_path=path)
+        return _page_from_record(records[0], default_path=path, preserve_default_path=True)
 
     async def list_pages(
         self,
@@ -535,13 +535,21 @@ def _citation_records(payload: dict[str, Any], result: dict[str, Any]) -> list[d
     return _records(result)
 
 
-def _page_from_record(record: dict[str, Any], *, default_path: str = "") -> MimirPage:
+def _page_from_record(
+    record: dict[str, Any],
+    *,
+    default_path: str = "",
+    preserve_default_path: bool = False,
+) -> MimirPage:
     # `think` citations key the page as `page_slug`; the retrieval tools use
     # `slug`. Reading only one of them silently produced empty-path sources.
-    path = str(record.get("slug") or record.get("page_slug") or record.get("path") or default_path)
+    record_path = str(record.get("slug") or record.get("page_slug") or record.get("path") or "")
+    path = default_path if preserve_default_path and default_path else record_path
+    if not path:
+        path = default_path
     # The port exposes markdown paths, not the backend's extensionless slugs.
     # Keep list/search/get consistent so callers can classify and re-read pages.
-    if path and not path.endswith(".md"):
+    if path and not preserve_default_path and not path.endswith(".md"):
         path += ".md"
     content = str(record.get("content") or record.get("body") or "")
     updated_raw = record.get("updated_at") or record.get("updatedAt")

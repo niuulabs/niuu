@@ -424,6 +424,15 @@ describe('connection credential state', () => {
     expect(
       credentialProblemLabel({ ...connection, credentialErrorCode: 'provider_login_rejected' }),
     ).toBe('The provider rejected the last sign-in.');
+    expect(
+      credentialProblemLabel({ ...connection, credentialErrorCode: 'oauth_reconnect_required' }),
+    ).toBe('The provider no longer accepts the stored sign-in. Sign in again.');
+    expect(
+      credentialProblemLabel({ ...connection, credentialErrorCode: 'enrollment_failed' }),
+    ).toBe('The last sign-in did not finish. Start it again.');
+    expect(
+      credentialProblemLabel({ ...connection, credentialErrorCode: 'enrollment_expired' }),
+    ).toBe('The last sign-in timed out. Start it again.');
     expect(credentialProblemLabel({ ...connection, credentialErrorCode: 'grok_exit_1' })).toBe(
       'Last sign-in problem: grok exit 1.',
     );

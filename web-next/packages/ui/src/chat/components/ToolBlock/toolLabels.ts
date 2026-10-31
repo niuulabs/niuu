@@ -1,3 +1,5 @@
+import { isForgeNotifyCall } from '@niuulabs/domain';
+
 export type ToolCategory =
   'terminal' | 'file' | 'search' | 'web' | 'agent' | 'task' | 'mcp' | 'default';
 
@@ -31,15 +33,20 @@ const TOOL_CATEGORY_MAP: Record<string, ToolCategory> = {
   TodoRead: 'task',
 };
 
+/** Codex MCP calls are transcribed as `server.tool` (e.g. `mimir.mimir_search`). */
+const SERVER_DOT_TOOL = /^[\w-]+\.[\w-]+$/;
+
 export function getToolLabel(toolName: string): string {
   if (TOOL_LABEL_MAP[toolName]) return TOOL_LABEL_MAP[toolName];
-  // MCP tools use __ separator → display as namespace:tool
+  if (isForgeNotifyCall(toolName)) return 'Notify';
+  // Claude MCP tools use __ separators → display as namespace:tool
   if (toolName.includes('__')) return toolName.replace('__', ':');
+  if (SERVER_DOT_TOOL.test(toolName)) return toolName.replace('.', ':');
   return toolName;
 }
 
 export function getToolCategory(toolName: string): ToolCategory {
   if (TOOL_CATEGORY_MAP[toolName]) return TOOL_CATEGORY_MAP[toolName];
-  if (toolName.includes('__')) return 'mcp';
+  if (toolName.includes('__') || SERVER_DOT_TOOL.test(toolName)) return 'mcp';
   return 'default';
 }

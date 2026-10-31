@@ -59,6 +59,11 @@ config:
   # and loaded via RAVN_CONFIG. Canonical YAML settings are preferred;
   # documented legacy environment aliases remain supported. Example:
   #   settings:
+  #     observability:
+  #       enabled: true
+  #       trace_endpoint: "http://otel-collector:4317"
+  #       metric_endpoint: "http://otel-collector:4318/v1/metrics"
+  #       log_endpoint: "http://otel-collector:4318/v1/logs"
   #     gateway:
   #       platform:
   #         base_url: "http://niuu-volundr.volundr.svc.cluster.local:80"
@@ -83,6 +88,25 @@ config:
   #     # auto-detected from this process.
   #     trigger_execution:
   #       enabled: false
+  #     # System One decision model (ravn.config.DecisionConfig). Any
+  #     # /v1/systemone backend: hosted Jev as below, or a local Clef/Ollama
+  #     # (base_url: "http://ollama:11434", model: "clef-flash", no secret).
+  #     # The key comes from the environment — inject it with extraEnv.
+  #     decision:
+  #       enabled: true
+  #       kwargs:
+  #         base_url: "https://api.typesafe.ai"
+  #         model: "jev-latest"
+  #       secret_kwargs_env:
+  #         api_key: TYPESAFE_API_KEY
+  #       # Observe-only: a first opinion on every resident turn, recorded
+  #       # beside the turn's own tier/decision; the turn always runs.
+  #       resident_first_opinion:
+  #         enabled: true
+  #       # Judge whether two learned tools are one capability. Needs
+  #       # reflection.matching.mode: semantic for the embedding shortlist.
+  #       capability_matching:
+  #         enabled: true
   settings: {}
 
 # database.enabled / persistence.enabled are general-purpose: they existed

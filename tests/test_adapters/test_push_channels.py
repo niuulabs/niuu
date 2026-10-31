@@ -1,8 +1,13 @@
 """Tests for the push NotificationChannel adapters."""
 
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import urlparse
 
+import httpx
+import pytest
+
+from niuu.ports.notifications import NotificationDeliveryError
 from volundr.adapters.outbound.push_channels import (
     ApnsNotificationChannel,
     LoggingNotificationChannel,
@@ -66,22 +71,33 @@ class TestWebhookChannel:
         headers = client.post.call_args[1]["headers"]
         assert headers["X-Niuu-Signature"].startswith("sha256=")
 
-    async def test_no_url_is_noop(self):
+    async def test_no_url_raises(self):
         client = MagicMock()
         client.post = AsyncMock()
         channel = WebhookNotificationChannel(url="", client=client)
 
-        await channel.send(_message(), [])
+        with pytest.raises(NotificationDeliveryError, match="no url configured"):
+            await channel.send(_message(), [])
 
         client.post.assert_not_called()
 
-    async def test_delivery_error_is_swallowed(self):
+    async def test_delivery_error_raises_without_the_url(self):
         client = MagicMock()
-        client.post = AsyncMock(side_effect=RuntimeError("down"))
+        client.post = AsyncMock(side_effect=httpx.ConnectError("down: /push/secret"))
+        channel = WebhookNotificationChannel(url="https://relay.example/push/secret", client=client)
+
+        with pytest.raises(NotificationDeliveryError, match="ConnectError") as raised:
+            await channel.send(_message(), [])
+        assert "secret" not in str(raised.value)
+
+    async def test_rejected_push_raises(self):
+        client = MagicMock()
+        client.post = AsyncMock(return_value=httpx.Response(502))
         channel = WebhookNotificationChannel(url="https://relay.example/push", client=client)
 
-        # Must not raise.
-        await channel.send(_message(), [])
+        with pytest.raises(NotificationDeliveryError, match="HTTP 502") as raised:
+            await channel.send(_message(), [])
+        assert raised.value.retryable is True
 
 
 class TestApnsChannel:
@@ -160,3 +176,120 @@ class TestApnsChannel:
         await channel.send(_message(), [device])
 
         assert client.post.call_args[1]["headers"]["apns-topic"] == "com.niuu.forge.widget"
+
+
+class TestApnsCategory:
+    """A push can name an APNs category and carry custom keys; others are untouched."""
+
+    def _channel(self, client) -> ApnsNotificationChannel:
+        return ApnsNotificationChannel(
+            team_id="TEAM123",
+            key_id="KEY123",
+            private_key=_TEST_P8,
+            bundle_id="com.niuu.forge",
+            client=client,
+        )
+
+    async def test_a_question_push_carries_category_and_custom_keys(self):
+        client = MagicMock()
+        client.post = AsyncMock(return_value=MagicMock(status_code=200))
+        message = PushMessage(
+            owner_id="user-1",
+            title="regin asks",
+            body="Proceed?",
+            session_id="",
+            kind="attention",
+            urgency=0.8,
+            notification_id="n-1",
+            category="NIUU_RESIDENT_QUESTION",
+            data={
+                "odin_review_id": "review:court_escalation:operator:abc",
+                "odin_review_decide_path": "/api/v1/ravn/odin/reviews/x/decide",
+            },
+        )
+
+        await self._channel(client).deliver(message, [_ios_device("d1")])
+
+        body = client.post.call_args[1]["json"]
+        assert body == {
+            "aps": {
+                "alert": {"title": "regin asks", "body": "Proceed?"},
+                "sound": "default",
+                "interruption-level": "time-sensitive",
+                "category": "NIUU_RESIDENT_QUESTION",
+            },
+            "session_id": "",
+            "kind": "attention",
+            "request_id": "",
+            "notification_id": "n-1",
+            "odin_review_id": "review:court_escalation:operator:abc",
+            "odin_review_decide_path": "/api/v1/ravn/odin/reviews/x/decide",
+        }
+
+    async def test_other_pushes_have_no_category_and_no_extra_keys(self):
+        client = MagicMock()
+        client.post = AsyncMock(return_value=MagicMock(status_code=200))
+
+        await self._channel(client).deliver(_message(), [_ios_device("d1")])
+
+        body = client.post.call_args[1]["json"]
+        assert "category" not in body["aps"]
+        assert set(body) == {"aps", "session_id", "kind", "request_id"}
+
+
+class TestApnsCollapseId:
+    """An outbox notification collapses on its id; a push without one has no collapse id."""
+
+    def _channel(self, client) -> ApnsNotificationChannel:
+        return ApnsNotificationChannel(
+            team_id="TEAM123",
+            key_id="KEY123",
+            private_key=_TEST_P8,
+            bundle_id="com.niuu.forge",
+            client=client,
+        )
+
+    async def test_a_notification_push_collapses_on_the_notification_id(self):
+        client = MagicMock()
+        client.post = AsyncMock(return_value=MagicMock(status_code=200))
+        message = replace(_message(), notification_id="5b0c8f0e-2f7a-5d1e-9c3b-1a2b3c4d5e6f")
+
+        await self._channel(client).deliver(message, [_ios_device("d1"), _ios_device("d2")])
+
+        for call in client.post.call_args_list:
+            assert call[1]["headers"]["apns-collapse-id"] == message.notification_id
+
+    async def test_a_push_without_a_notification_id_has_no_collapse_id(self):
+        client = MagicMock()
+        client.post = AsyncMock(return_value=MagicMock(status_code=200))
+
+        await self._channel(client).deliver(_message(), [_ios_device("d1")])
+
+        assert "apns-collapse-id" not in client.post.call_args[1]["headers"]
+
+
+class TestApnsDeviceEnvironment:
+    async def test_each_device_goes_to_its_own_apns_environment(self):
+        client = MagicMock()
+        client.post = AsyncMock(return_value=MagicMock(status_code=200))
+        channel = ApnsNotificationChannel(
+            team_id="TEAM123",
+            key_id="KEY123",
+            private_key=_TEST_P8,
+            bundle_id="com.niuu.lexi.chat",
+            client=client,
+        )
+        devices = [
+            DeviceToken(
+                owner_id="u", platform=DevicePlatform.IOS, token="dev", environment="sandbox"
+            ),
+            DeviceToken(
+                owner_id="u", platform=DevicePlatform.IOS, token="tf", environment="production"
+            ),
+            DeviceToken(owner_id="u", platform=DevicePlatform.IOS, token="old"),
+        ]
+
+        await channel.deliver(_message(), devices)
+
+        hosts = [urlparse(call[0][0]).hostname for call in client.post.call_args_list]
+        assert hosts == ["api.sandbox.push.apple.com", "api.push.apple.com", "api.push.apple.com"]

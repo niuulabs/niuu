@@ -3,7 +3,7 @@ id: a4c7067a-ac22-5b64-bde1-ec8ad1507e73
 name: Saga Planning
 description: Focused planning workflow that clarifies a brief, drafts a saga breakdown, and pauses for
   review before publishing the plan.
-version: 1.0.0
+version: 1.0.2
 persona_dependencies:
   saga-brief-framer:
     id: saga-brief-framer
@@ -45,7 +45,7 @@ graph:
     bindingMode: registry
     registryEntryId: mimir-yggdrasil
     url: https://mimir.yggdrasil.niuu.world/api/v1
-    authRef: integration:volundr
+    authRef: workload:mimir
     role: shared
     categories:
     - planning
@@ -61,7 +61,7 @@ graph:
     stageMembers:
     - personaId: saga-brief-framer
       budget: 12
-      model: gpt-5.5
+      model: gpt-5.6-terra
       consumesEventTypes:
       - plan.requested
       - plan.brief.changes_requested
@@ -90,7 +90,7 @@ graph:
     stageMembers:
     - personaId: saga-planner
       budget: 18
-      model: gpt-5.5
+      model: gpt-5.6-terra
       consumesEventTypes:
       - plan.brief.approved
       - plan.breakdown.changes_requested
@@ -105,7 +105,7 @@ graph:
     stageMembers:
     - personaId: saga-plan-reviewer
       budget: 12
-      model: gpt-5.5
+      model: gpt-5.6-terra
       consumesEventTypes:
       - plan.breakdown.drafted
     position:
@@ -133,7 +133,7 @@ graph:
     stageMembers:
     - personaId: saga-plan-publisher
       budget: 8
-      model: gpt-5.5
+      model: gpt-5.6-terra
       consumesEventTypes:
       - plan.approved
     position:

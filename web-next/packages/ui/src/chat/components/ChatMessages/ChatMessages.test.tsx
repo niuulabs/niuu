@@ -255,3 +255,116 @@ it('hides usage by default and rounds counts with a spaced arrow when enabled', 
   view.rerender(<AssistantMessage message={message} showTokenUsage />);
   expect(screen.getByText('150k → 234 tokens')).toBeInTheDocument();
 });
+
+describe('Forge notification turns', () => {
+  const notificationTurn: ChatMessage = {
+    id: 'nt_1',
+    role: 'assistant',
+    content: 'Tests are green',
+    createdAt: now,
+    status: 'done',
+    parts: [
+      {
+        type: 'tool_use',
+        id: 'nt_1',
+        name: 'forge_notification',
+        input: {
+          notification_id: 'n-1',
+          kind: 'milestone',
+          severity: 'success',
+          title: 'Tests are green',
+          body: 'All suites pass.',
+          links: [],
+        },
+      },
+    ],
+  };
+
+  it('renders a notification turn as a card without repeating its title as prose', () => {
+    render(<AssistantMessage message={notificationTurn} />);
+    const card = screen.getByTestId('notification-card');
+    expect(card).toHaveTextContent('Tests are green');
+    expect(card).toHaveTextContent('All suites pass.');
+    expect(screen.getAllByText('Tests are green')).toHaveLength(1);
+    expect(screen.queryByTestId('tool-block')).toBeNull();
+  });
+
+  it('falls back to a generic tool block when the notification input is unreadable', () => {
+    render(
+      <AssistantMessage
+        message={{
+          ...notificationTurn,
+          parts: [{ type: 'tool_use', id: 'nt_2', name: 'forge_notification', input: {} }],
+        }}
+      />,
+    );
+    expect(screen.queryByTestId('notification-card')).toBeNull();
+    expect(screen.getByTestId('tool-block')).toBeInTheDocument();
+  });
+
+  it('collapses the raw Claude notify call into a quiet, expandable line', () => {
+    render(
+      <AssistantMessage
+        message={{
+          id: 'a-notify',
+          role: 'assistant',
+          content: '',
+          createdAt: now,
+          status: 'done',
+          parts: [
+            {
+              type: 'tool_use',
+              id: 'call-1',
+              name: 'mcp__forge__notify',
+              input: { kind: 'milestone', title: 'Tests are green', body: 'All suites pass.' },
+            },
+            {
+              type: 'tool_result',
+              tool_use_id: 'call-1',
+              content: '{"notification_id":"n-1","state":"committed"}',
+            },
+          ],
+        }}
+      />,
+    );
+    const block = screen.getByTestId('tool-block');
+    expect(block).toHaveAttribute('data-tool-kind', 'forge-notify');
+    const header = screen.getByRole('button', { expanded: false });
+    expect(header).toHaveTextContent('Notified');
+    expect(header).toHaveTextContent('Tests are green');
+    expect(screen.queryByText('All suites pass.')).toBeNull();
+    fireEvent.click(header);
+    expect(screen.getByText('All suites pass.')).toBeInTheDocument();
+    expect(screen.getByText(/"state":"committed"/)).toBeInTheDocument();
+  });
+
+  it('flags a failed Codex notify call so its missing card is explained', () => {
+    render(
+      <AssistantMessage
+        message={{
+          id: 'a-notify-codex',
+          role: 'assistant',
+          content: '',
+          createdAt: now,
+          status: 'done',
+          parts: [
+            {
+              type: 'tool_use',
+              id: 'call-2',
+              name: 'notify',
+              input: { kind: 'attention', title: 'Need a decision' },
+            },
+            {
+              type: 'tool_result',
+              tool_use_id: 'call-2',
+              content: 'broker unavailable',
+              is_error: true,
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByTestId('tool-block')).toHaveTextContent('Notification failed');
+    expect(screen.getByTestId('tool-block')).toHaveTextContent('Need a decision');
+  });
+});

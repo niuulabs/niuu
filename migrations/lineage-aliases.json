@@ -67,6 +67,34 @@
     {
       "filename": "000067_session_coordination_revision.up.sql",
       "sha256": "2e82f5a71bf5f14422d775f2a65b907bb58c863ea677c60bb7a5b2b0d6531e36"
+    },
+    {
+      "filename": "000068_session_coordination_revision.up.sql",
+      "sha256": "2e82f5a71bf5f14422d775f2a65b907bb58c863ea677c60bb7a5b2b0d6531e36"
+    }
+  ],
+  "000075_session_read_state.up.sql": [
+    {
+      "filename": "000067_session_read_state.up.sql",
+      "sha256": "f299590b681fa7ebd09fbbd5f9b95104b7896f52ab1ffc08a667e3f9c08b6b77"
+    }
+  ],
+  "000084_forge_notifications.up.sql": [
+    {
+      "filename": "000069_forge_notifications.up.sql",
+      "sha256": "fb4b5f0b554c64b4912b115da1abd3785bd93da1f9721b21f27a78dc184df591"
+    }
+  ],
+  "000085_forge_notification_delivery_rate_index.up.sql": [
+    {
+      "filename": "000070_forge_notification_delivery_rate_index.up.sql",
+      "sha256": "4ccc122704749af75930af3204d9d9a2c0936fd27a9279ab24ca3af54be9e2ff"
+    }
+  ],
+  "000086_forge_notification_reads.up.sql": [
+    {
+      "filename": "000071_forge_notification_reads.up.sql",
+      "sha256": "b52942b02f15d19d300c7d2330a74c43477adedc0c3779a53bd9a0b3904389bf"
     }
   ]
 }

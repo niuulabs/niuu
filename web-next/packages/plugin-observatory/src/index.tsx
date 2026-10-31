@@ -1,3 +1,4 @@
+import { MonitoringIcon } from '@niuulabs/ui';
 import { createRoute } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ObservatoryPage } from './ui/ObservatoryPage';
@@ -8,11 +9,12 @@ import { ObservatoryTopbar } from './ui/ObservatoryTopbar';
 export const observatoryPlugin = definePlugin({
   id: 'observatory',
   rune: 'O',
-  title: 'Observatory',
-  subtitle: 'live topology · registry',
+  icon: <MonitoringIcon />,
+  title: 'Monitoring',
+  subtitle: 'a live map of what is running',
   tabs: [
-    { id: 'topology', label: 'Topology', rune: '◎', path: '/observatory' },
-    { id: 'registry', label: 'Registry', rune: 'ᛗ', path: '/observatory/registry' },
+    { id: 'topology', label: 'Live map', path: '/observatory' },
+    { id: 'registry', label: 'Component types', path: '/observatory/registry' },
   ],
   routes: (rootRoute) => [
     createRoute({

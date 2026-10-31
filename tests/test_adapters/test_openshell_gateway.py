@@ -6,18 +6,21 @@ import base64
 import importlib
 import io
 import json
+import re
 import socket
 import sys
 import tarfile
+import threading
 import time
 import types
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import jwt
 import pytest
+import yaml
 
 from niuu.ports.workload_identity import IssuedWorkloadToken
 from volundr.adapters.outbound.hermes_gateway import (
@@ -32,6 +35,7 @@ from volundr.domain.models import (
     ResidentBackend,
     ResidentCapability,
     ResidentDeploymentProfile,
+    ResidentDesiredState,
     ResidentEngine,
     ResidentObservedState,
     ResidentRuntime,
@@ -62,7 +66,7 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
     grpc_mod.secure_channel = lambda _endpoint, _credentials: types.SimpleNamespace(
         close=lambda: None
     )
-    grpc_mod.ssl_channel_credentials = lambda: object()
+    grpc_mod.ssl_channel_credentials = object
 
     google_mod = types.ModuleType("google")
     protobuf_mod = types.ModuleType("google.protobuf")
@@ -78,6 +82,17 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
 
     struct_pb2_mod.Struct = Struct
     protobuf_mod.struct_pb2 = struct_pb2_mod
+    duration_pb2_mod = types.ModuleType("google.protobuf.duration_pb2")
+
+    class Duration:
+        def __init__(self):
+            self.nanos_total = 0
+
+        def FromNanoseconds(self, value):  # noqa: N802 - protobuf compatibility shim.
+            self.nanos_total = int(value)
+
+    duration_pb2_mod.Duration = Duration
+    protobuf_mod.duration_pb2 = duration_pb2_mod
     google_mod.protobuf = protobuf_mod
 
     openshell_mod = types.ModuleType("openshell")
@@ -94,6 +109,10 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
     openshell_pb2_mod.SANDBOX_PHASE_DELETING = 4
     openshell_pb2_mod.SANDBOX_PHASE_STOPPED = 5
     openshell_pb2_mod.SANDBOX_PHASE_STOPPING = 6
+    openshell_pb2_mod.DELETION_OUTCOME_UNSPECIFIED = 0
+    openshell_pb2_mod.DELETION_OUTCOME_COMPLETED = 1
+    openshell_pb2_mod.DELETION_OUTCOME_ACCEPTED = 2
+    openshell_pb2_mod.DELETION_OUTCOME_ALREADY_ABSENT = 3
     openshell_pb2_mod.PROVIDER_PROFILE_CATEGORY_AGENT = 3
     openshell_pb2_mod.PROVIDER_PROFILE_CATEGORY_SOURCE_CONTROL = 4
 
@@ -120,8 +139,6 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
         "StopSandboxRequest",
         "StartSandboxRequest",
         "ExposeServiceRequest",
-        "CreateSshSessionRequest",
-        "RevokeSshSessionRequest",
         "TcpForwardFrame",
         "TcpForwardInit",
         "TcpRelayTarget",
@@ -136,6 +153,31 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
         setattr(openshell_pb2_mod, name, _Proto)
 
     openshell_pb2_grpc_mod.OpenShellStub = lambda _channel: object()
+
+    for index, name in enumerate(
+        (
+            "NETWORK_TLS_MODE_UNSPECIFIED",
+            "NETWORK_TLS_MODE_SKIP",
+        )
+    ):
+        setattr(sandbox_pb2_mod, name, index)
+    for index, name in enumerate(
+        (
+            "NETWORK_ENFORCEMENT_MODE_UNSPECIFIED",
+            "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+            "NETWORK_ENFORCEMENT_MODE_AUDIT",
+        )
+    ):
+        setattr(sandbox_pb2_mod, name, index)
+    for index, name in enumerate(
+        (
+            "NETWORK_ACCESS_PRESET_UNSPECIFIED",
+            "NETWORK_ACCESS_PRESET_READ_ONLY",
+            "NETWORK_ACCESS_PRESET_READ_WRITE",
+            "NETWORK_ACCESS_PRESET_FULL",
+        )
+    ):
+        setattr(sandbox_pb2_mod, name, index)
 
     for name in (
         "SandboxPolicy",
@@ -159,6 +201,7 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
         "google": google_mod,
         "google.protobuf": protobuf_mod,
         "google.protobuf.struct_pb2": struct_pb2_mod,
+        "google.protobuf.duration_pb2": duration_pb2_mod,
         "openshell": openshell_mod,
         "openshell._proto": proto_mod,
         "openshell._proto.datamodel_pb2": datamodel_pb2_mod,
@@ -201,6 +244,7 @@ class _FakeOpenShellGatewayClient:
         self.forwarded: list[dict] = []
         self.closed_forwarders: list[dict] = []
         self.deleted: list[str] = []
+        self.delete_timeouts: list[float] = []
         self.deleted_services: list[dict] = []
         self.provider_grants: list[dict] = []
         self.deleted_grants: list[object] = []
@@ -215,11 +259,19 @@ class _FakeOpenShellGatewayClient:
         self.closed = False
         self.sandbox_exists = True
         self.sandbox_labels: dict[str, str] = {"volundr.niuu.io/storage": "forge"}
+        # The sandbox template's image and the sandbox's annotations, as the gateway keeps them.
+        self.sandbox_image = ""
+        self.sandbox_annotations: dict[str, str] = {}
+        # Deleted sandboxes created again under the same name.
+        self.recreated: set[str] = set()
 
     def create_sandbox(self, **kwargs):
         self.created = kwargs
         self.sandbox_exists = True
         self.sandbox_labels = dict(kwargs.get("labels") or {})
+        self.sandbox_image = kwargs.get("image") or ""
+        self.sandbox_annotations = dict(kwargs.get("annotations") or {})
+        self.recreated.add(kwargs["name"])
         return self._adapter.OpenShellSandbox(
             id="sandbox-id",
             name=kwargs["name"],
@@ -227,7 +279,7 @@ class _FakeOpenShellGatewayClient:
         )
 
     def get_sandbox(self, name: str):
-        if name in self.deleted:
+        if name in self.deleted and name not in self.recreated:
             if self.delete_polls_remaining:
                 self.delete_polls_remaining -= 1
                 self.cleanup_events.append("sandbox-present")
@@ -243,6 +295,8 @@ class _FakeOpenShellGatewayClient:
             ready=True,
             labels=self.sandbox_labels,
             providers=tuple(self.created.get("providers", ())) if self.created else (),
+            image=self.sandbox_image,
+            annotations=self.sandbox_annotations,
         )
 
     def exec_detached(self, **kwargs) -> int:
@@ -270,8 +324,10 @@ class _FakeOpenShellGatewayClient:
 
         return _Forwarder()
 
-    def delete_sandbox(self, name: str) -> bool:
+    def delete_sandbox(self, name: str, *, timeout: float) -> bool:
+        self.delete_timeouts.append(timeout)
         self.deleted.append(name)
+        self.recreated.discard(name)
         return True
 
     def delete_service(self, **kwargs) -> bool:
@@ -297,10 +353,7 @@ class _FakeOpenShellGatewayClient:
     def get_provider_profile(self, _profile_id: str):
         return self.grant_profile
 
-    def get_provider_environment(self, _sandbox_id: str):
-        return dict(self.provider_environment)
-
-    def get_sandbox_logs(self, _sandbox_id: str, **_kwargs):
+    def get_sandbox_logs(self, _sandbox: str, **_kwargs):
         return self._adapter.ResidentLogPage(
             entries=[
                 self._adapter.ResidentLogEntry(
@@ -370,39 +423,36 @@ def test_native_tcp_forward_uses_authenticated_sandbox_relay(
     adapter = _import_adapter(monkeypatch)
     requests: list[object] = []
 
-    def create_ssh_session(request, **_kwargs):
-        requests.append(request)
-        return types.SimpleNamespace(token="short-lived-forward-token")
-
     def forward_tcp(frames, **_kwargs):
         requests.extend(list(frames))
         return [adapter.openshell_pb2.TcpForwardFrame(data=b"HTTP/1.1 204 OK\r\n\r\n")]
 
-    def revoke_ssh_session(request, **_kwargs):
-        requests.append(request)
+    def no_ssh_session(*_args, **_kwargs):
+        raise AssertionError("a TCP forward is authorized by the gateway principal alone")
 
     client = object.__new__(adapter.OpenShellGatewayClient)
     client._stub = types.SimpleNamespace(
-        CreateSshSession=create_ssh_session,
+        CreateSshSession=no_ssh_session,
         ForwardTcp=forward_tcp,
-        RevokeSshSession=revoke_ssh_session,
+        RevokeSshSession=no_ssh_session,
     )
     client._timeout = 30.0
+    client._workspace_scope = types.SimpleNamespace(workspace="default")
     client._metadata = lambda: (("authorization", "Bearer oidc"),)
     bridge, caller = socket.socketpair()
     caller.sendall(b"GET /health HTTP/1.1\r\nHost: hermes\r\n\r\n")
     caller.shutdown(socket.SHUT_WR)
 
-    client._forward_tcp_connection(bridge, sandbox_id="sandbox-id", target_port=18789)
+    client._forward_tcp_connection(bridge, sandbox="r-sandbox", target_port=18789)
 
     assert caller.recv(1024) == b"HTTP/1.1 204 OK\r\n\r\n"
-    init = requests[1].init
-    assert init.sandbox_id == "sandbox-id"
+    init = requests[0].init
+    assert init.sandbox == "r-sandbox"
+    assert init.workspace == "default"
     assert init.tcp.host == "127.0.0.1"
     assert init.tcp.port == 18789
-    assert init.authorization_token == "short-lived-forward-token"
-    assert requests[2].data.startswith(b"GET /health")
-    assert requests[3].token == "short-lived-forward-token"
+    assert not hasattr(init, "authorization_token")
+    assert requests[1].data.startswith(b"GET /health")
     caller.close()
     bridge.close()
 
@@ -835,7 +885,7 @@ def test_native_lifecycle_calls_authenticated_gateway(monkeypatch, method, rpc):
 
     adapter = _import_adapter(monkeypatch)
     raw = types.SimpleNamespace(
-        metadata=types.SimpleNamespace(id="id", name="forge", labels={}),
+        metadata=types.SimpleNamespace(id="id", name="forge", labels={}, annotations={}),
         status=types.SimpleNamespace(
             phase=adapter.openshell_pb2.SANDBOX_PHASE_STOPPED, conditions=[]
         ),
@@ -1018,9 +1068,12 @@ async def test_start_uses_gateway_client_without_host_cli(
     assert client.created is not None
     assert client.created["name"] == expected_sandbox_name
     assert client.created["image"] == adapter.DEFAULT_SANDBOX_IMAGE
-    assert client.created["labels"]["volundr.niuu.io/workload"] == "forge"
-    assert client.created["annotations"]["volundr.niuu.io/source"] == "test"
-    assert "vault.hashicorp.com/agent-inject" not in client.created["annotations"]
+    # Völundr's own labels are sandbox metadata; the pod spec's go onto the Pod.
+    assert client.created["labels"]["volundr.niuu.io/session"] == str(session.id)
+    assert "volundr.niuu.io/session" not in client.created["pod_labels"]
+    assert client.created["pod_labels"] == {"volundr.niuu.io/workload": "forge"}
+    assert client.created["pod_annotations"]["volundr.niuu.io/source"] == "test"
+    assert "vault.hashicorp.com/agent-inject" not in client.created["pod_annotations"]
     assert client.created["env"]["SKULD__SESSION__ID"] == str(session.id)
     assert client.created["env"]["SKULD__SESSION__WORKSPACE_DIR"] == "/sandbox/workspace"
     assert client.created["env"]["SKULD__CLI_TYPE"] == "codex"
@@ -1033,7 +1086,7 @@ async def test_start_uses_gateway_client_without_host_cli(
     assert client.created["driver_config"]["pod"]["runtime_class_name"] == "nvidia"
     assert len(client.bootstrap_execs) == 1
     bootstrap = client.bootstrap_execs[0]
-    assert bootstrap["sandbox_id"] == "sandbox-id"
+    assert bootstrap["sandbox"] == expected_sandbox_name
     assert "WORKSPACE=/sandbox/workspace" in bootstrap["script"]
     assert "CLONE_URL=https://github.com/niuulabs/volundr" in bootstrap["script"]
     assert "BRANCH=dev" in bootstrap["script"]
@@ -1042,7 +1095,7 @@ async def test_start_uses_gateway_client_without_host_cli(
     assert bootstrap["env"] == client.created["env"]
     assert client.execs == [
         {
-            "sandbox_id": "sandbox-id",
+            "sandbox": expected_sandbox_name,
             "command": (
                 [
                     "env",
@@ -1187,7 +1240,7 @@ async def test_hermes_deploy_uses_persisted_process_only_credential_and_generic_
         connect_host="127.0.0.1",
         connect_port=43210,
     )
-    assert client.forwarded == [{"sandbox_id": "sandbox-id", "target_port": 18789}]
+    assert client.forwarded == [{"sandbox": observation.backend_ref["name"], "target_port": 18789}]
 
 
 @pytest.mark.asyncio
@@ -1399,7 +1452,9 @@ def test_dynamic_provider_accepts_configured_tcp_route(
     assert profile.endpoints[0].host == "nats-noatun.nats.svc.cluster.local"
     assert profile.endpoints[0].port == 4222
     assert profile.endpoints[0].protocol == ""
-    assert profile.endpoints[0].tls == "skip"
+    assert profile.endpoints[0].tls == adapter.sandbox_pb2.NETWORK_TLS_MODE_SKIP
+    assert profile.endpoints[0].enforcement == adapter.sandbox_pb2.NETWORK_ENFORCEMENT_MODE_ENFORCE
+    assert profile.endpoints[0].access == adapter.sandbox_pb2.NETWORK_ACCESS_PRESET_FULL
     assert list(profile.endpoints[0].allowed_ips) == ["10.191.72.34"]
     assert [binary.path for binary in profile.binaries] == ["/opt/niuu/bin/python"]
 
@@ -1459,6 +1514,8 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
     assert "token_env: NIUU_VOLUNDR_ACCESS_TOKEN" in ravn_config
     assert "Saga Planning" in ravn_config
     assert "skip_permissions: true" in skuld_config
+    assert "event_log_enabled: false" in skuld_config
+    assert "activity_reporting_enabled: false" in skuld_config
     assert [process["pid_path"] for process in client.execs] == [
         "/sandbox/.volundr/skuld.pid",
         "/sandbox/.volundr/ravn.pid",
@@ -1510,6 +1567,163 @@ async def test_resident_deploy_resumes_owned_sandbox_and_launches_missing_proces
     assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/ravn.pid"]
 
 
+def _store_locked_error(adapter):
+    class StoreLocked(adapter.grpc.RpcError):
+        def details(self) -> str:
+            return (
+                "workspace lookup failed: database error: error returned from "
+                "database: (code: 5) database is locked"
+            )
+
+    return StoreLocked()
+
+
+def _raw_sandbox(adapter, name: str):
+    return types.SimpleNamespace(
+        metadata=types.SimpleNamespace(id=f"id-{name}", name=name, labels={}, annotations={}),
+        status=types.SimpleNamespace(
+            phase=adapter.openshell_pb2.SANDBOX_PHASE_READY, conditions=[]
+        ),
+        spec=types.SimpleNamespace(providers=[]),
+    )
+
+
+def test_concurrent_gateway_calls_retry_while_the_gateway_store_is_locked(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    adapter = _import_adapter(monkeypatch)
+    callers = 4
+    start = threading.Barrier(callers)
+    rejected: list[str] = []
+
+    class SingleWriterGateway:
+        """Rejects a call while another holds the store, as SQLite reports SQLITE_BUSY."""
+
+        def __init__(self) -> None:
+            self.store = threading.Lock()
+
+        def GetSandbox(self, request, **_kwargs):  # noqa: N802 - gRPC stub method.
+            if not self.store.acquire(blocking=False):
+                rejected.append(request.name)
+                raise _store_locked_error(adapter)
+            try:
+                time.sleep(0.02)
+                return types.SimpleNamespace(sandbox=_raw_sandbox(adapter, request.name))
+            finally:
+                self.store.release()
+
+    client = adapter.OpenShellGatewayClient(token_provider=Mock(token=Mock(return_value="t")))
+    client._stub = adapter._BusyRetryingStub(SingleWriterGateway(), delays=(0.02,) * 20)
+
+    def deploy_poll(index: int):
+        start.wait()
+        return client.get_sandbox(f"r-{index}")
+
+    with ThreadPoolExecutor(max_workers=callers) as pool:
+        sandboxes = list(pool.map(deploy_poll, range(callers)))
+
+    assert [sandbox.name for sandbox in sandboxes] == [f"r-{i}" for i in range(callers)]
+    assert rejected
+
+
+def test_gateway_retry_stops_at_errors_other_than_a_locked_store(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    calls: list[str] = []
+
+    def get_sandbox(request, **_kwargs):
+        calls.append(request.name)
+        raise adapter.grpc.RpcError()
+
+    stub = adapter._BusyRetryingStub(
+        types.SimpleNamespace(GetSandbox=get_sandbox), delays=(0.0, 0.0)
+    )
+
+    with pytest.raises(adapter.grpc.RpcError):
+        stub.GetSandbox(types.SimpleNamespace(name="r-1"))
+
+    assert calls == ["r-1"]
+
+
+def test_gateway_retries_an_exec_stream_whose_first_event_hit_a_locked_store(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    attempts: list[int] = []
+
+    def exec_sandbox(_request, **_kwargs):
+        attempts.append(len(attempts))
+        if len(attempts) == 1:
+            raise _store_locked_error(adapter)
+        yield types.SimpleNamespace(HasField=lambda field: field == "exit")
+
+    stub = adapter._BusyRetryingStub(
+        types.SimpleNamespace(ExecSandbox=lambda *a, **k: exec_sandbox(*a, **k)),
+        delays=(0.0, 0.0),
+    )
+
+    events = list(stub.ExecSandbox(types.SimpleNamespace()))
+
+    assert len(attempts) == 2
+    assert len(events) == 1
+
+
+@pytest.mark.asyncio
+async def test_resident_deploy_replaces_a_leftover_sandbox_still_being_deleted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _resident_runtime()
+    client = _FakeOpenShellGatewayClient(adapter)
+    leftover = iter(
+        (
+            adapter.OpenShellSandbox(
+                id="rolled-back",
+                name="leftover",
+                phase=adapter.openshell_pb2.SANDBOX_PHASE_DELETING,
+                labels={"volundr.niuu.io/resident": str(runtime.id)},
+            ),
+            None,
+        )
+    )
+    live_sandbox = client.get_sandbox
+
+    def get_sandbox(name: str):
+        # The rolled-back sandbox is seen deleting, then gone, before a new one exists.
+        return live_sandbox(name) if client.created is not None else next(leftover)
+
+    client.get_sandbox = get_sandbox
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    manager.set_credential_store(
+        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
+    )
+    manager.set_workload_token_issuer(_FakeWorkloadTokenIssuer())
+
+    observation = await manager.deploy(runtime, _resident_profile())
+
+    assert observation.observed_state is ResidentObservedState.ACTIVE
+    assert client.created is not None
+    assert client.created["name"] == f"r-{runtime.id.hex[:17]}"
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_adopts_sandbox_left_by_a_failed_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _resident_runtime().model_copy(
+        update={"observed_state": ResidentObservedState.FAILED, "backend_ref": {}}
+    )
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_labels = {"volundr.niuu.io/resident": str(runtime.id)}
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+
+    observation = await manager.reconcile(runtime, _resident_profile())
+
+    assert observation.observed_state is ResidentObservedState.PENDING
+    assert observation.backend_ref == {}
+    assert observation.conditions[0].reason == "Unadopted"
+    assert client.created is None
+    assert client.execs == []
+
+
 @pytest.mark.asyncio
 async def test_resident_deploy_rejects_unowned_existing_sandbox_without_deleting_it(
     monkeypatch: pytest.MonkeyPatch,
@@ -1554,6 +1768,141 @@ async def test_resident_reconcile_recovers_missing_service_endpoint(
     }
     assert observation.backend_ref["service_url"] == client.service_url
     assert observation.endpoints[0].url == f"/s/{runtime.id}/session"
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_requests_redeploy_of_missing_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _resident_runtime().model_copy(
+        update={
+            "observed_state": ResidentObservedState.FAILED,
+            "backend_ref": {"kind": "OpenShellSandbox", "name": "resident-orphaned"},
+        }
+    )
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_exists = False
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+
+    observation = await manager.reconcile(runtime, _resident_profile())
+
+    assert observation.observed_state is ResidentObservedState.PENDING
+    assert observation.backend_ref == {}
+    assert observation.conditions[0].reason == "NotFound"
+    assert client.created is None
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_reports_missing_sandbox_of_stopped_resident(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    backend_ref = {"kind": "OpenShellSandbox", "name": "resident-orphaned"}
+    runtime = _resident_runtime().model_copy(
+        update={"desired_state": ResidentDesiredState.SUSPENDED, "backend_ref": backend_ref}
+    )
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_exists = False
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+
+    observation = await manager.reconcile(runtime, _resident_profile())
+
+    assert observation.observed_state is ResidentObservedState.FAILED
+    assert observation.backend_ref == backend_ref
+    assert observation.conditions[0].reason == "NotFound"
+
+
+def _deployed_resident_manager(adapter, client, runtime):
+    client.sandbox_labels = {"volundr.niuu.io/resident": str(runtime.id)}
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client,
+        volundr_api_url="https://volundr.example.test",
+        workload_audiences=["volundr-api", "mimir", "guild"],
+    )
+    manager.set_credential_store(
+        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
+    )
+    manager.set_workload_token_issuer(_FakeWorkloadTokenIssuer())
+    return manager
+
+
+def _deployed_resident(runtime):
+    return runtime.model_copy(
+        update={
+            "observed_state": ResidentObservedState.DEPLOYING,
+            "backend_ref": {
+                "kind": "OpenShellSandbox",
+                "id": "sandbox-id",
+                "name": f"r-{runtime.id.hex[:17]}",
+                "service_url": "http://openshell.example/proxy/session-1",
+            },
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_starts_processes_that_stopped_after_deployment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh Volundr starts the skuld an interrupted deployment left stopped."""
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    # All processes healthy? no. skuld running? no. ravn running? yes.
+    health_results = iter((1, 1, 0))
+
+    def exec_script(**kwargs):
+        client.bootstrap_execs.append(kwargs)
+        return next(health_results), ""
+
+    client.exec_script = exec_script
+    manager = _deployed_resident_manager(adapter, client, runtime)
+
+    observation = await manager.reconcile(runtime, _resident_profile())
+
+    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/skuld.pid"]
+    assert "/sandbox/.volundr/skuld.yaml" in client.written_files[0]["files"]
+    assert client.created is None
+    assert client.deleted == []
+    assert observation.observed_state is ResidentObservedState.DEPLOYING
+    assert observation.backend_ref["name"] == runtime.backend_ref["name"]
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_leaves_processes_to_a_deploy_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.exec_script = lambda **_kwargs: (1, "")
+    manager = _deployed_resident_manager(adapter, client, runtime)
+
+    async with manager._resident_process_lock(runtime):
+        observation = await manager.reconcile(runtime, _resident_profile())
+
+    assert client.execs == []
+    assert client.written_files == []
+    assert observation.observed_state is ResidentObservedState.DEPLOYING
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_reports_processes_when_they_cannot_be_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.exec_script = lambda **_kwargs: (1, "")
+    client.write_files = Mock(side_effect=RuntimeError("file projection failed"))
+    manager = _deployed_resident_manager(adapter, client, runtime)
+
+    observation = await manager.reconcile(runtime, _resident_profile())
+
+    assert client.execs == []
+    assert observation.observed_state is ResidentObservedState.DEPLOYING
+    assert observation.conditions[1].reason == "Unavailable"
 
 
 @pytest.mark.asyncio
@@ -1615,10 +1964,17 @@ async def test_resident_materializes_raw_protocol_credential_from_openbao(
     assert client.created is not None
     assert "RAVN_NATS_PASSWORD" not in client.created["env"]
     assert client.execs[1]["env"]["RAVN_NATS_PASSWORD"] == "nats-from-openbao"
-    assert any(
-        grant["profile"].credentials[0].env_vars == ["RAVN_NATS_PASSWORD"]
+    # The value is materialized by Völundr, so the provider carries only the
+    # raw-protocol endpoint policy: OpenShell rejects a token grant on a
+    # tls: skip endpoint.
+    nats_grants = [
+        grant
         for grant in client.provider_grants
-    )
+        if any(endpoint.port == 4222 for endpoint in grant["profile"].endpoints)
+    ]
+    assert len(nats_grants) == 1
+    assert list(nats_grants[0]["profile"].credentials) == []
+    assert [endpoint.host for endpoint in nats_grants[0]["profile"].endpoints] == ["10.191.72.34"]
 
     await manager.restart(runtime, profile)
 
@@ -1638,6 +1994,28 @@ def test_resident_api_urls_include_absolute_codex_broker(monkeypatch, token_path
         {"broker": {"codexAuth": {"kwargs": {"token_path": token_path}}}}
     )
     assert urls == ((token_path,) if token_path.startswith("https://") else ())
+
+
+def test_session_platform_grant_covers_the_flock_platform_origins(monkeypatch):
+    """A Ting launch points flock personas at the launching platform, possibly
+    on another cluster; the mediated token must be injected there too."""
+    adapter = _import_adapter(monkeypatch)
+
+    urls = adapter._resident_api_urls(
+        {
+            "openshell": {
+                "platformApiUrls": [
+                    "https://volundr.valhalla.example.test",
+                    "https://ting.valhalla.example.test",
+                ]
+            }
+        }
+    )
+
+    assert urls == (
+        "https://volundr.valhalla.example.test",
+        "https://ting.valhalla.example.test",
+    )
 
 
 @pytest.mark.asyncio
@@ -1761,17 +2139,78 @@ async def test_resident_delete_retains_provider_grants_until_sandbox_is_gone(
     runtime = _resident_runtime()
     client = _FakeOpenShellGatewayClient(adapter)
     client.created = {"providers": ("volundr-provider",)}
-    client.delete_polls_remaining = 1
+    client.delete_polls_remaining = 10**9
+    monkeypatch.setattr(adapter.asyncio, "sleep", AsyncMock())
     manager = adapter.OpenShellGatewayPodManager(
         client=client,
         resource_delete_timeout=0,
+        resident_sandbox_delete_timeout_seconds=0.01,
     )
 
-    with pytest.raises(RuntimeError, match="was not deleted within 0s"):
+    # A resident's sandbox is waited for as long as a resident's takes, not a session's.
+    with pytest.raises(RuntimeError, match="was not deleted within 0.01s"):
         await manager.delete(runtime)
 
     assert client.deleted_grants == []
-    assert client.cleanup_events == ["sandbox-present"]
+    assert set(client.cleanup_events) == {"sandbox-present"}
+
+
+@pytest.mark.asyncio
+async def test_sessions_keep_the_short_delete_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.delete_polls_remaining = 10**9
+    monkeypatch.setattr(adapter.asyncio, "sleep", AsyncMock())
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client,
+        resource_delete_timeout=0.01,
+        resident_sandbox_delete_timeout_seconds=180,
+    )
+
+    with pytest.raises(RuntimeError, match="was not deleted within 0.01s"):
+        await manager._cleanup_resources("s-session", ())
+
+
+@pytest.mark.asyncio
+async def test_resident_delete_gives_delete_sandbox_the_resident_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    monkeypatch.setattr(adapter.asyncio, "sleep", AsyncMock())
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client, resident_sandbox_delete_timeout_seconds=180
+    )
+
+    await manager.delete(_resident_runtime())
+
+    assert client.delete_timeouts == [180]
+
+
+@pytest.mark.asyncio
+async def test_a_slow_delete_call_spends_the_same_budget_as_the_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.delete_polls_remaining = 10**9
+    sleep = AsyncMock()
+    monkeypatch.setattr(adapter.asyncio, "sleep", sleep)
+    record_delete = client.delete_sandbox
+
+    def slow_delete(name: str, *, timeout: float) -> bool:
+        time.sleep(0.06)
+        return record_delete(name, timeout=timeout)
+
+    client.delete_sandbox = slow_delete
+    manager = adapter.OpenShellGatewayPodManager(client=client, resource_delete_timeout=0.05)
+
+    # The DeleteSandbox call used the whole budget, so the sandbox that is still
+    # there fails the delete at once instead of getting a second budget.
+    with pytest.raises(RuntimeError, match="was not deleted within 0.05s"):
+        await manager._cleanup_resources("s-session", ())
+
+    sleep.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1849,7 +2288,9 @@ def test_legacy_names_use_authenticated_native_tunnel(monkeypatch, kind):
         target = manager.resident_proxy_target(workload)
     assert target.service_url == "http://skuld.internal"
     assert target.connect_host == "127.0.0.1"
-    assert client.forwarded[0]["sandbox_id"] == "sandbox-id"
+    # The gateway resolves a TCP forward by sandbox name.
+    expected = workload.pod_name if kind == "session" else workload.backend_ref["name"]
+    assert client.forwarded[0]["sandbox"] == expected
     assert client.exposed is None
 
 
@@ -1864,6 +2305,19 @@ def test_l4_credentials_require_explicit_opt_in(monkeypatch):
     config["endpoints"][0]["allow_uninspected_credentials"] = True
     target = adapter._provider_target("RAVN_NATS_PASSWORD", config)
     assert target["endpoints"][0].allow_uninspected_credentials is True
+
+
+def test_provider_endpoint_path_scopes_shared_host_credentials(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    config = {
+        "endpoints": [{"host": "mcp.linear.app", "port": 443, "path": "/mcp/readonly/**"}],
+        "binaries": ["/usr/local/bin/codex"],
+    }
+    target = adapter._provider_target("NIUU_MCP_READONLY", config)
+    assert target["endpoints"][0].path == "/mcp/readonly/**"
+    del config["endpoints"][0]["path"]
+    target = adapter._provider_target("NIUU_MCP_READONLY", config)
+    assert target["endpoints"][0].path == ""
 
 
 def test_session_proxy_target_preserves_service_route_and_uses_gateway(
@@ -2191,7 +2645,7 @@ async def test_start_projects_non_agent_file_mapping_into_sandbox(
 
     assert client.written_files == [
         {
-            "sandbox_id": "sandbox-id",
+            "sandbox": f"forge-{session.id.hex[:13]}",
             "files": {"/run/secrets/tool/credentials.json": b'{"token":"opaque"}'},
         }
     ]
@@ -2298,6 +2752,137 @@ async def test_stop_and_status_map_sandbox_lifecycle(monkeypatch: pytest.MonkeyP
     assert client.deleted == [f"forge-{session.id.hex[:13]}"]
 
 
+@pytest.mark.asyncio
+async def test_destroy_deletes_a_sandbox_whose_storage_stop_retains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    # Gateway-owned storage: stop would only suspend the sandbox and keep its volume.
+    client.sandbox_labels = {}
+    client.created = {"providers": ("volundr-provider", "other-provider")}
+    client.delete_polls_remaining = 2
+    client.stop_sandbox = Mock()
+    monkeypatch.setattr(adapter.asyncio, "sleep", AsyncMock())
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+
+    assert await manager.destroy(session) is True
+
+    name = f"forge-{session.id.hex[:13]}"
+    client.stop_sandbox.assert_not_called()
+    assert client.deleted == [name]
+    assert client.deleted_services == [{"sandbox_name": name, "service": "skuld"}]
+    assert [grant.provider_name for grant in client.deleted_grants] == ["volundr-provider"]
+    # ACCEPTED is not gone: the grants go only once the sandbox has disappeared.
+    assert client.cleanup_events == [
+        "sandbox-present",
+        "sandbox-present",
+        "sandbox-gone",
+        "grant-deleted",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_destroy_gives_delete_sandbox_the_deletion_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Niuu gateway answers DeleteSandbox only once a flock's peer Pod has
+    terminated (about 60s on Noatun). Under the 30s command deadline the first
+    delete of every flock session came back as a 503."""
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.created = {"providers": ()}
+    client.delete_polls_remaining = 0
+    monkeypatch.setattr(adapter.asyncio, "sleep", AsyncMock())
+
+    await adapter.OpenShellGatewayPodManager(client=client).destroy(_session())
+    await adapter.OpenShellGatewayPodManager(client=client, resource_delete_timeout=45).destroy(
+        _session()
+    )
+
+    assert client.delete_timeouts == [adapter.DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS, 45]
+    assert adapter.DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS > 60
+
+
+@pytest.mark.asyncio
+async def test_destroy_deletes_a_failed_sandbox_without_waiting_for_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    name = f"forge-{session.id.hex[:13]}"
+    client = _FakeOpenShellGatewayClient(adapter)
+    failed = adapter.OpenShellSandbox(
+        id="sandbox-id", name=name, phase=adapter.openshell_pb2.SANDBOX_PHASE_ERROR
+    )
+    # The failed sandbox never reaches STOPPED; it is gone once DeleteSandbox ran.
+    client.get_sandbox = Mock(side_effect=[failed, None])
+    client.stop_sandbox = Mock()
+    sleep = AsyncMock()
+    monkeypatch.setattr(adapter.asyncio, "sleep", sleep)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=600)
+
+    assert await manager.destroy(session) is True
+
+    client.stop_sandbox.assert_not_called()
+    assert client.deleted == [name]
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_destroy_of_an_absent_sandbox_reports_it_was_already_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_exists = False
+    client.delete_sandbox = lambda name, timeout: client.deleted.append(name) or False
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+
+    assert await manager.destroy(session) is False
+    assert client.deleted == [f"forge-{session.id.hex[:13]}"]
+
+
+@pytest.mark.asyncio
+async def test_destroy_raises_with_a_remedy_when_the_sandbox_is_not_deleted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.created = {"providers": ("volundr-provider",)}
+    client.delete_polls_remaining = 10**9
+    monkeypatch.setattr(adapter.asyncio, "sleep", AsyncMock())
+    manager = adapter.OpenShellGatewayPodManager(client=client, resource_delete_timeout=0.01)
+
+    with pytest.raises(RuntimeError, match="was not deleted within 0.01s") as raised:
+        await manager.destroy(session)
+
+    assert f"session {session.id}" in str(raised.value)
+    assert "delete the session again" in str(raised.value)
+    assert client.deleted_grants == []
+
+
+@pytest.mark.asyncio
+async def test_destroy_raises_when_the_gateway_refuses_the_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+
+    def refuse(name: str, *, timeout: float) -> bool:
+        raise RuntimeError("gateway unavailable")
+
+    client.delete_sandbox = refuse
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+
+    with pytest.raises(RuntimeError, match="gateway unavailable"):
+        await manager.destroy(session)
+
+
 def test_token_provider_uses_keycloak_client_credentials_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2356,7 +2941,7 @@ def test_exec_script_sends_multiline_script_over_stdin(monkeypatch: pytest.Monke
     )
 
     exit_code, output = client.exec_script(
-        sandbox_id="sandbox-id",
+        sandbox="r-sandbox",
         script="echo one\necho two\n",
         env={"A": "B"},
     )
@@ -2368,6 +2953,9 @@ def test_exec_script_sends_multiline_script_over_stdin(monkeypatch: pytest.Monke
     assert request.stdin == b"echo one\necho two\n"
     assert all("\n" not in arg and "\r" not in arg for arg in request.command)
     assert request.environment == {"A": "B"}
+    assert request.sandbox == "r-sandbox"
+    assert request.workspace_scope.workspace == "default"
+    assert request.execution_timeout.nanos_total == adapter.BOOTSTRAP_TIMEOUT_SECONDS * 10**9
 
 
 def test_write_files_includes_projection_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2403,10 +2991,11 @@ def test_write_files_includes_projection_stderr(monkeypatch: pytest.MonkeyPatch)
 
     with pytest.raises(RuntimeError, match="permission denied"):
         client.write_files(
-            sandbox_id="sandbox-id",
+            sandbox="r-sandbox",
             files={"/sandbox/.volundr/skuld.yaml": b"session: {}\n"},
         )
     assert recorded["request"].command == ["tar", "-xf", "-", "-C", "/sandbox"]
+    assert recorded["request"].sandbox == "r-sandbox"
 
 
 def test_exec_detached_sends_only_process_command_over_stdin(
@@ -2436,7 +3025,7 @@ def test_exec_detached_sends_only_process_command_over_stdin(
     )
 
     exit_code = client.exec_detached(
-        sandbox_id="sandbox-id",
+        sandbox="r-sandbox",
         command=["skuld", "serve"],
         env={"SKULD__PORT": "9200"},
         log_path="/sandbox/.volundr/skuld.log",
@@ -2448,6 +3037,8 @@ def test_exec_detached_sends_only_process_command_over_stdin(
     assert request.environment == {"SKULD__PORT": "9200"}
     assert b"nohup skuld serve" in request.stdin
     assert b"OPENAI_API_KEY" not in request.stdin
+    assert request.sandbox == "r-sandbox"
+    assert request.execution_timeout.nanos_total == adapter.DETACHED_EXEC_TIMEOUT_SECONDS * 10**9
 
 
 def test_sandbox_policy_is_built_from_adapter_config(
@@ -2472,7 +3063,6 @@ def test_sandbox_policy_is_built_from_adapter_config(
                             "host": "registry.npmjs.org",
                             "port": 443,
                             "protocol": "rest",
-                            "tls": "terminate",
                             "enforcement": "enforce",
                             "access": "full",
                         }
@@ -2489,6 +3079,37 @@ def test_sandbox_policy_is_built_from_adapter_config(
     npm = policy.network_policies["npm_https"]
     assert [endpoint.host for endpoint in npm.endpoints] == ["registry.npmjs.org"]
     assert [binary.path for binary in npm.binaries] == ["/usr/bin/node"]
+    (endpoint,) = npm.endpoints
+    assert endpoint.tls == adapter.sandbox_pb2.NETWORK_TLS_MODE_UNSPECIFIED
+    assert endpoint.enforcement == adapter.sandbox_pb2.NETWORK_ENFORCEMENT_MODE_ENFORCE
+    assert endpoint.access == adapter.sandbox_pb2.NETWORK_ACCESS_PRESET_FULL
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "message"),
+    [
+        ({"tls": "terminate"}, "omit tls to keep automatic TLS termination"),
+        ({"tls": "passthrough"}, "omit tls to keep automatic TLS termination"),
+        ({"enforcement": "strict"}, "enforcement: 'strict' is not one of"),
+        ({"access": "everything"}, "access: 'everything' is not one of"),
+    ],
+)
+def test_sandbox_policy_rejects_endpoint_modes_the_gateway_rejects(
+    monkeypatch: pytest.MonkeyPatch, endpoint, message
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    config = {
+        "version": 1,
+        "network_policies": {
+            "api": {
+                "endpoints": [{"host": "api.example.com", "port": 443, **endpoint}],
+                "binaries": [{"path": "/usr/bin/curl"}],
+            }
+        },
+    }
+
+    with pytest.raises(ValueError, match=re.escape(message)):
+        adapter._sandbox_policy_from_config(config)
 
 
 def test_sandbox_policy_requires_supported_version(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2829,8 +3450,9 @@ def test_provider_grant_names_a_credential_slot_the_gateway_accepts(monkeypatch)
         config={"volundr_enrollment_id": "1"},
     )
 
+    # OpenShell rejects slots the profile does not declare.
     slots = created[0].provider.credentials
-    assert slots == {adapter.PROVIDER_NETWORK_ONLY_CREDENTIAL: ""}
+    assert slots == {}
 
 
 def test_provider_grant_leaves_declared_credentials_for_the_token_grant(monkeypatch) -> None:
@@ -2935,7 +3557,7 @@ def test_gitlab_token_uses_bearer_provider_route():
 
 
 def test_linear_api_key_uses_scoped_inspected_header_route():
-    from volundr.adapters.outbound.openshell_gateway import _provider_profile
+    from volundr.adapters.outbound.openshell_gateway import _provider_profile, sandbox_pb2
 
     profile = _provider_profile(
         profile_id="linear-test",
@@ -2950,8 +3572,9 @@ def test_linear_api_key_uses_scoped_inspected_header_route():
     assert len(profile.endpoints) == 1
     endpoint = profile.endpoints[0]
     assert (endpoint.host, endpoint.port) == ("api.linear.app", 443)
-    assert endpoint.tls == "terminate"
-    assert endpoint.enforcement == "enforce"
+    # Unspecified TLS: OpenShell detects and terminates it, so the header is injected.
+    assert endpoint.tls == sandbox_pb2.NETWORK_TLS_MODE_UNSPECIFIED
+    assert endpoint.enforcement == sandbox_pb2.NETWORK_ENFORCEMENT_MODE_ENFORCE
     assert not getattr(endpoint, "allow_uninspected_credentials", False)
 
 
@@ -3051,8 +3674,8 @@ def test_additional_runtime_credentials_use_scoped_inspected_routes(monkeypatch,
     assert (endpoint.host, endpoint.port, endpoint.tls, endpoint.enforcement) == (
         host,
         443,
-        "terminate",
-        "enforce",
+        adapter.sandbox_pb2.NETWORK_TLS_MODE_UNSPECIFIED,
+        adapter.sandbox_pb2.NETWORK_ENFORCEMENT_MODE_ENFORCE,
     )
     assert all(binary.path != "**" for binary in profile.binaries)
 
@@ -3122,7 +3745,10 @@ def test_workflow_memory_urls_use_platform_provider_routes(monkeypatch):
         {
             "mimir": {
                 "hostedUrl": "https://mimir.example/api/v1",
-                "registryRefs": [{"kwargs": {"base_url": "https://memory.example/api/v1"}}],
+                "registryRefs": [
+                    {"kwargs": {"base_url": "https://memory.example/api/v1"}},
+                    {"url": "https://registry.example/api/v1", "authRef": "workload:mimir"},
+                ],
                 "instances": [{"url": "https://shared.example/api/v1"}],
             }
         }
@@ -3130,6 +3756,7 @@ def test_workflow_memory_urls_use_platform_provider_routes(monkeypatch):
     assert set(urls) == {
         "https://mimir.example/api/v1",
         "https://memory.example/api/v1",
+        "https://registry.example/api/v1",
         "https://shared.example/api/v1",
     }
 
@@ -3142,7 +3769,8 @@ def test_large_workflow_configs_do_not_expand_pod_driver_config(monkeypatch):
                 f"/sandbox/workspace/.flock/config/peer-{i}.yaml": "x" * 32768 for i in range(6)
             },
             "workloads": [
-                {"name": f"peer-{i}", "command": ["python", "-m", "ravn"]} for i in range(6)
+                {"name": f"peer-{i}", "image": "ravn:pinned", "command": ["python", "-m", "ravn"]}
+                for i in range(6)
             ],
         }
     }
@@ -3184,19 +3812,123 @@ def test_workload_start_waits_for_marker_and_executes(monkeypatch, tmp_path):
     assert b"did not finish workload bootstrap" in result.stderr
 
 
+_PEER = {"name": "ravn-reviewer", "image": "ravn:pinned", "command": ["python"]}
+
+
 @pytest.mark.parametrize(
     ("workload", "message"),
     [
-        ({"command": []}, "explicit command"),
-        ({"command": ["python"], "readiness_port": 8000}, "cannot gate pod readiness"),
+        ({**_PEER, "command": []}, "explicit command"),
+        # The fork's driver dropped readiness gating: it is an unknown field.
+        ({**_PEER, "readiness_port": 8000}, "fields the driver rejects: readiness_port"),
+        ({**_PEER, "args": ["x"]}, "fields the driver rejects: args"),
+        ({**_PEER, "image": ""}, "needs an image reference"),
+        ({**_PEER, "name": "ravn-" + "a" * 36}, "at most 40 characters"),
+        ({**_PEER, "name": "Ravn_Reviewer"}, "DNS-1123 label"),
+        ({**_PEER, "name": "agent"}, "is reserved"),
+        ({**_PEER, "name": "supervisor"}, "is reserved"),
+        ({**_PEER, "name": "openshell-peer"}, "is reserved"),
+        ({**_PEER, "environment": {"OPENSHELL_TOKEN": "x"}}, "reserved OPENSHELL_ prefix"),
+        ({**_PEER, "environment": {"A=B": "x"}}, "contains '='"),
+        ({**_PEER, "resources": {"requests": {"cpu": 1}}}, "quantities must be strings"),
+        (
+            {**_PEER, "volume_mounts": [{"name": "missing", "mount_path": "/data"}]},
+            "mounts undeclared volume 'missing'",
+        ),
     ],
 )
-def test_peer_container_rejects_invalid_startup(monkeypatch, workload, message):
+def test_peer_container_rejects_what_the_driver_rejects(monkeypatch, workload, message):
     adapter = _import_adapter(monkeypatch)
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match=re.escape(message)):
         adapter._driver_config_from_values(
             {"openshell": {"workloads": [workload]}}, workload_start_file="/workspace/ready"
         )
+
+
+@pytest.mark.parametrize(
+    ("openshell", "message"),
+    [
+        (
+            {
+                "volumes": [{"name": "ipc", "empty_dir": {"medium": "Memory"}}],
+                "workloads": [_PEER],
+            },
+            "empty_dir takes no options",
+        ),
+        (
+            {
+                "volumes": [{"name": "openshell-peer-0-run", "empty_dir": {}}],
+                "workloads": [_PEER],
+            },
+            "reserved prefix",
+        ),
+        (
+            {
+                "volumes": [{"name": "ipc", "empty_dir": {}}],
+                "workloads": [
+                    {**_PEER, "volume_mounts": [{"name": "ipc", "mount_path": "/run/ipc"}]}
+                ],
+            },
+            "overlaps /run",
+        ),
+        (
+            {
+                "volumes": [{"name": "ipc", "empty_dir": {}}],
+                "volumeMounts": [{"name": "ipc", "mount_path": "/.openshell/x"}],
+                "workloads": [_PEER],
+            },
+            "overlaps /.openshell",
+        ),
+        (
+            {"workloads": [{**_PEER, "name": f"peer-{i}"} for i in range(17)]},
+            "at most 16 peer workloads",
+        ),
+        ({"workloads": [_PEER, _PEER]}, "is used twice"),
+    ],
+)
+def test_peer_volumes_and_counts_match_the_driver(monkeypatch, openshell, message):
+    adapter = _import_adapter(monkeypatch)
+    with pytest.raises(ValueError, match=re.escape(message)):
+        adapter._driver_config_from_values(
+            {"openshell": openshell}, workload_start_file="/workspace/ready"
+        )
+
+
+def test_peer_workloads_send_only_the_fields_the_driver_accepts(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    driver = adapter._driver_config_from_values(
+        {
+            "openshell": {
+                "volumes": [{"name": "ipc", "empty_dir": {}}],
+                "volumeMounts": [{"name": "ipc", "mount_path": "/tmp/mesh", "read_only": False}],
+                "workloads": [
+                    {
+                        **_PEER,
+                        "resources": {"limits": {"memory": "512Mi"}},
+                        "volume_mounts": [
+                            {"name": "ipc", "mount_path": "/tmp/mesh", "read_only": False}
+                        ],
+                    }
+                ],
+            }
+        },
+        workload_start_file="/workspace/ready",
+        workload_environment={"OPENSHELL_SANDBOX": "x", "HOME": "/sandbox"},
+    )
+    (workload,) = driver["containers"]["workloads"]
+    assert set(workload) == {
+        "name",
+        "image",
+        "command",
+        "environment",
+        "resources",
+        "volume_mounts",
+    }
+    assert workload["environment"] == {"HOME": "/sandbox"}
+    assert driver["volumes"] == [{"name": "ipc", "empty_dir": {}}]
+    assert driver["containers"]["agent"]["volume_mounts"] == [
+        {"name": "ipc", "mount_path": "/tmp/mesh", "read_only": False}
+    ]
 
 
 @pytest.mark.asyncio
@@ -3225,6 +3957,36 @@ async def test_peer_containers_reject_materialized_credentials_before_create(mon
             ),
         )
     assert client.created is None
+
+
+@pytest.mark.asyncio
+async def test_start_refuses_a_flock_whose_otlp_egress_the_policy_does_not_allow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client,
+        sandbox_policy={
+            "version": 1,
+            "network_policies": {
+                "otlp": {"endpoints": [{"host": "mimir.example", "port": 443}]},
+            },
+        },
+    )
+    egress = [
+        {"host": "mimir.example", "port": 443, "purpose": "OTLP metric", "passthrough": False},
+        {"host": "loki.example", "port": 443, "purpose": "OTLP log", "passthrough": False},
+    ]
+
+    # Without the rule the exporter would retry for the sandbox's whole life.
+    with pytest.raises(ValueError, match="does not allow the OTLP log endpoint loki.example:443"):
+        await manager.start(
+            _session(),
+            SessionSpec(values={"openshell": {"egress": egress}}, pod_spec=PodSpecAdditions()),
+        )
+    assert client.created is None
+    assert client.provider_grants == []
 
 
 def test_gateway_waits_for_native_channel_readiness(monkeypatch):
@@ -3295,3 +4057,523 @@ def test_forge_controls_reach_openshell_sandbox(monkeypatch):
     assert env["SKULD__CODEX_RECEIVE_MAX_BYTES"] == "123456"
     assert json.loads(env["SKULD__PI"])["binary"] == "/opt/pi"
     assert manager.runtime_backend == "openshell"
+
+
+def _openshell_resident_manager(monkeypatch: pytest.MonkeyPatch):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_exists = False
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client,
+        volundr_api_url="https://volundr.example.test",
+        workload_audiences=["volundr-api", "mimir", "guild"],
+        ready_timeout=0.1,
+    )
+    manager.set_credential_store(
+        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
+    )
+    manager.set_workload_token_issuer(_FakeWorkloadTokenIssuer())
+    return adapter, client, manager
+
+
+def _bind_ravn_sessions(manager, store=None):
+    """Wire the Ravn session controller as composition does; returns its store."""
+    from niuu.adapters.memory_credential_store import MemoryCredentialStore
+    from volundr.adapters.outbound.ravn_gateway import RavnResidentSessionController
+
+    store = store or MemoryCredentialStore()
+    RavnResidentSessionController(manager, store)
+    return store
+
+
+async def _kept_shim_token(store, runtime) -> str | None:
+    kept = await store.get_value("resident", str(runtime.id), "ravn-openclaw")
+    return kept["token"] if kept else None
+
+
+@pytest.mark.asyncio
+async def test_ravn_resident_runs_its_openclaw_shim_with_its_own_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, client, manager = _openshell_resident_manager(monkeypatch)
+    store = _bind_ravn_sessions(manager)
+    runtime = _resident_runtime()
+
+    await manager.deploy(runtime, _resident_profile())
+
+    ravn_config = yaml.safe_load(
+        client.written_files[0]["files"]["/sandbox/.volundr/ravn.yaml"].decode()
+    )
+    assert ravn_config["gateway"]["channels"]["openclaw"] == {
+        "enabled": True,
+        "host": "0.0.0.0",
+        "port": 18790,
+        "token_env": "RAVN_OPENCLAW_TOKEN",
+        "agent_id": "main",
+        "max_live_sessions": 64,
+        "store_path": "/sandbox/workspace/.ravn/openclaw/state.db",
+    }
+    token = await _kept_shim_token(store, runtime)
+    assert token and len(token) >= 32
+    assert {process["env"]["RAVN_OPENCLAW_TOKEN"] for process in client.execs} == {token}
+    # The token reaches the processes only: never the sandbox's own environment.
+    assert "RAVN_OPENCLAW_TOKEN" not in client.created["env"]
+
+
+@pytest.mark.asyncio
+async def test_ravn_resident_has_no_shim_without_ravn_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, client, manager = _openshell_resident_manager(monkeypatch)
+
+    await manager.deploy(_resident_runtime(), _resident_profile())
+
+    ravn_config = yaml.safe_load(
+        client.written_files[0]["files"]["/sandbox/.volundr/ravn.yaml"].decode()
+    )
+    assert "openclaw" not in ravn_config["gateway"]["channels"]
+    assert all("RAVN_OPENCLAW_TOKEN" not in process["env"] for process in client.execs)
+
+
+@pytest.mark.asyncio
+async def test_a_profile_asking_for_the_shim_without_ravn_sessions_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, manager = _openshell_resident_manager(monkeypatch)
+    profile = _resident_profile()
+    profile.deployment["values"]["resident"]["openclaw"] = {"enabled": True}
+
+    with pytest.raises(ValueError, match="enables resident.openclaw"):
+        await manager.deploy(_resident_runtime(), profile)
+
+
+@pytest.mark.asyncio
+async def test_restarting_missing_processes_keeps_the_shim_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The kept token survives a Volundr restart: relaunched processes get the same one."""
+    _, _, manager = _openshell_resident_manager(monkeypatch)
+    store = _bind_ravn_sessions(manager)
+    runtime = _resident_runtime()
+    first = await manager.resident_openclaw_token(runtime)
+    _bind_ravn_sessions(manager, store)  # a restarted Volundr, same credential store
+    values = manager._with_brokered_credential_values(
+        dict(_resident_profile().deployment["values"])
+    )
+
+    _, env = await manager._resident_launch_inputs(
+        runtime, values, manager._resident_processes(runtime, values)
+    )
+
+    assert env["RAVN_OPENCLAW_TOKEN"] == first
+
+
+@pytest.mark.asyncio
+async def test_a_running_ravn_process_keeps_its_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Migration: the token the Ravn process was started with is read back and adopted."""
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    scripts: list[str] = []
+
+    def exec_script(**kwargs):
+        scripts.append(kwargs["script"])
+        return 0, "running-process-token\n"
+
+    client.exec_script = exec_script
+    manager = _deployed_resident_manager(adapter, client, runtime)
+    store = _bind_ravn_sessions(manager)
+
+    assert await manager.resident_openclaw_token(runtime) == "running-process-token"
+    assert await _kept_shim_token(store, runtime) == "running-process-token"
+    assert "/sandbox/.volundr/ravn.pid" in scripts[0] and "RAVN_OPENCLAW_TOKEN" in scripts[0]
+    # Kept from now on: never read back again.
+    assert await manager.resident_openclaw_token(runtime) == "running-process-token"
+    assert len(scripts) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_ravn_process_without_a_token_gets_a_new_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.exec_script = lambda **_kwargs: (0, "")
+    manager = _deployed_resident_manager(adapter, client, runtime)
+    store = _bind_ravn_sessions(manager)
+
+    token = await manager.resident_openclaw_token(runtime)
+
+    assert token and token == await _kept_shim_token(store, runtime)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_restarts_a_ravn_resident_once_to_start_its_shim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resident deployed before Ravn sessions were on runs without the shim."""
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_exists = True
+    scripts: list[str] = []
+
+    def exec_script(**kwargs):
+        script = kwargs["script"]
+        scripts.append(script)
+        if ":4966" in script and "kill -0" not in script:  # the shim port 18790, in hex
+            return 1, ""  # not listening
+        if "/proc/$pid/environ" in script:
+            return 0, ""  # started without a token
+        return 0, ""
+
+    client.exec_script = exec_script
+    manager = _deployed_resident_manager(adapter, client, runtime)
+    store = _bind_ravn_sessions(manager)
+
+    await manager.reconcile(runtime, _resident_profile())
+
+    token = await _kept_shim_token(store, runtime)
+    assert token
+    assert {process["env"]["RAVN_OPENCLAW_TOKEN"] for process in client.execs} == {token}
+    ravn_yaml = yaml.safe_load(
+        client.written_files[-1]["files"]["/sandbox/.volundr/ravn.yaml"].decode()
+    )
+    assert ravn_yaml["gateway"]["channels"]["openclaw"]["port"] == 18790
+
+    # Never again from this Volundr, so a shim that cannot start never loops.
+    launched = len(client.execs)
+    await manager.reconcile(runtime, _resident_profile())
+    assert len(client.execs) == launched
+
+
+@pytest.mark.asyncio
+async def test_reconcile_leaves_a_ravn_resident_whose_shim_is_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_exists = True
+    client.exec_script = lambda **_kwargs: (0, "")
+    manager = _deployed_resident_manager(adapter, client, runtime)
+    _bind_ravn_sessions(manager)
+
+    await manager.reconcile(runtime, _resident_profile())
+    await manager.reconcile(runtime, _resident_profile())
+
+    assert client.execs == []
+    assert client.written_files == []
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_ravn_resident_forgets_its_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, manager = _openshell_resident_manager(monkeypatch)
+    store = _bind_ravn_sessions(manager)
+    runtime = _resident_runtime()
+    await manager.deploy(runtime, _resident_profile())
+    assert await _kept_shim_token(store, runtime)
+
+    await manager.delete(runtime)
+
+    assert await _kept_shim_token(store, runtime) is None
+
+
+@pytest.mark.asyncio
+async def test_ravn_sessions_reach_the_shim_over_the_native_tcp_tunnel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The path Hermes residents already use, on the shim's own port."""
+    _, client, manager = _openshell_resident_manager(monkeypatch)
+    runtime = _resident_runtime()
+    assert manager.resident_openclaw_target(runtime, 18790) is None
+
+    runtime = runtime.model_copy(update={"backend_ref": {"id": "sandbox-id", "name": "r-resident"}})
+    target = manager.resident_openclaw_target(runtime, 18790)
+    again = manager.resident_openclaw_target(runtime, 18790)
+
+    assert target is not None and again is not None
+    assert (target.connect_host, target.connect_port) == ("127.0.0.1", 43210)
+    assert target.service_url == "http://ravn-openclaw.internal:18790/"
+    # The gateway resolves the forward by name; the id tells a new sandbox apart.
+    assert client.forwarded == [{"sandbox": "r-resident", "target_port": 18790}]
+
+    redeployed = runtime.model_copy(
+        update={"backend_ref": {"id": "sandbox-2", "name": "r-resident"}}
+    )
+    manager.resident_openclaw_target(redeployed, 18790)
+    assert client.closed_forwarders == [{"sandbox": "r-resident", "target_port": 18790}]
+    assert len(client.forwarded) == 2
+
+    await manager.delete(redeployed)
+    assert client.closed_forwarders.count({"sandbox": "r-resident", "target_port": 18790}) == 2
+
+
+_CURRENT_SANDBOX_IMAGE = "ghcr.io/niuulabs/openshell:niu-1099-openshell-resident"
+_OLD_SANDBOX_IMAGE = "ghcr.io/niuulabs/openshell:dev-6d5a0ce"
+
+
+def _persisted_profile(tag: str = "niu-1099-openshell-resident") -> ResidentDeploymentProfile:
+    """The resident profile with its workspace on a persistent claim."""
+    profile = _resident_profile()
+    values = profile.deployment["values"]
+    values["image"]["tag"] = tag
+    values["persistence"] = {
+        "enabled": True,
+        "existingClaim": "noatun-residents",
+        "mountPath": "/sandbox/workspace",
+    }
+    return profile
+
+
+async def _resident_on_old_image(monkeypatch: pytest.MonkeyPatch):
+    """A deployed Ravn resident whose sandbox an older Völundr created, with its token."""
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_image = _OLD_SANDBOX_IMAGE
+    client.exec_script = lambda **_kwargs: (0, "")
+    manager = _deployed_resident_manager(adapter, client, runtime)
+    store = _bind_ravn_sessions(manager)
+    await store.store("resident", str(runtime.id), "ravn-openclaw", "generic", {"token": "kept"})
+    return adapter, runtime, client, manager, store
+
+
+def _redeploying(runtime: ResidentRuntime, state=ResidentObservedState.PENDING) -> ResidentRuntime:
+    """The resident as the service records a reconcile that reported no backend."""
+    return runtime.model_copy(update={"observed_state": state, "backend_ref": {}})
+
+
+@pytest.mark.asyncio
+async def test_reconcile_recreates_a_persisted_residents_sandbox_on_the_current_image(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter, runtime, client, manager, store = await _resident_on_old_image(monkeypatch)
+    profile = _persisted_profile()
+    sandbox_name = runtime.backend_ref["name"]
+
+    with caplog.at_level("INFO", logger=adapter.__name__):
+        observation = await manager.reconcile(runtime, profile)
+
+    # Reported as owning no backend: the service redeploys it (the #1122 path).
+    assert observation.observed_state is ResidentObservedState.PENDING
+    assert observation.backend_ref == {}
+    assert observation.conditions[0].reason == "Upgrading"
+    assert client.deleted == [sandbox_name]
+    assert client.created is None
+    assert (
+        f"Upgrading resident OpenShell Muninn from {_OLD_SANDBOX_IMAGE} to "
+        f"{_CURRENT_SANDBOX_IMAGE}" in caplog.messages
+    )
+
+    deployed = await manager.deploy(_redeploying(runtime), profile)
+
+    assert client.created["image"] == _CURRENT_SANDBOX_IMAGE
+    assert client.created["annotations"]["volundr.niuu.io/image"] == _CURRENT_SANDBOX_IMAGE
+    assert client.created["annotations"]["volundr.niuu.io/replaced-image"] == _OLD_SANDBOX_IMAGE
+    assert client.created["driver_config"]["volumes"][0]["persistent_volume_claim"] == {
+        "claim_name": "noatun-residents",
+        "read_only": False,
+    }
+    assert deployed.observed_state is ResidentObservedState.ACTIVE
+    assert deployed.backend_ref["image"] == _CURRENT_SANDBOX_IMAGE
+    # Same resident, same shim token: its channels keep working.
+    assert await _kept_shim_token(store, runtime) == "kept"
+    assert {process["env"]["RAVN_OPENCLAW_TOKEN"] for process in client.execs} == {"kept"}
+
+    # Once: the new sandbox runs the current image.
+    upgraded = runtime.model_copy(update={"backend_ref": deployed.backend_ref})
+    again = await manager.reconcile(upgraded, profile)
+    assert client.deleted == [sandbox_name]
+    assert again.observed_state is ResidentObservedState.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_an_upgrade_that_would_drop_unpersisted_state_is_held(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, runtime, client, manager, _ = await _resident_on_old_image(monkeypatch)
+
+    observation = await manager.reconcile(runtime, _resident_profile())
+
+    assert client.deleted == []
+    assert client.created is None
+    assert observation.observed_state is ResidentObservedState.ACTIVE
+    _assert_held(observation.conditions[-1])
+    assert observation.backend_ref["image"] == _OLD_SANDBOX_IMAGE
+
+
+def _assert_held(condition) -> None:
+    assert (condition.type, condition.status.value, condition.reason) == (
+        "PlatformUpgrade",
+        "false",
+        "UpgradeHeld",
+    )
+    assert condition.message.startswith(
+        "No persistent workspace; the sandbox image can't change without losing /sandbox."
+    )
+    assert _OLD_SANDBOX_IMAGE in condition.message
+    assert _CURRENT_SANDBOX_IMAGE in condition.message
+
+
+@pytest.mark.asyncio
+async def test_restart_of_an_unpersisted_resident_restarts_in_place_and_never_recreates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Its state lives only in its sandbox: a Restart from Lexi must not wipe it."""
+    _, runtime, client, manager, store = await _resident_on_old_image(monkeypatch)
+
+    observation = await manager.restart(runtime, _resident_profile())
+    again = await manager.restart(runtime, _resident_profile())
+
+    assert client.deleted == []
+    assert client.deleted_services == []
+    assert client.created is None
+    # The processes restarted in the existing sandbox, as before.
+    assert [process["pid_path"] for process in client.execs] == [
+        "/sandbox/.volundr/skuld.pid",
+        "/sandbox/.volundr/ravn.pid",
+    ] * 2
+    assert {process["sandbox"] for process in client.execs} == {runtime.backend_ref["name"]}
+    for restarted in (observation, again):
+        assert restarted.observed_state is ResidentObservedState.ACTIVE
+        assert restarted.backend_ref["image"] == _OLD_SANDBOX_IMAGE
+        _assert_held(restarted.conditions[-1])
+    assert await _kept_shim_token(store, runtime) == "kept"
+
+
+@pytest.mark.asyncio
+async def test_restart_moves_a_persisted_resident_onto_the_current_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, runtime, client, manager, store = await _resident_on_old_image(monkeypatch)
+
+    observation = await manager.restart(runtime, _persisted_profile())
+
+    assert client.deleted == [runtime.backend_ref["name"]]
+    assert client.created["image"] == _CURRENT_SANDBOX_IMAGE
+    assert observation.backend_ref["image"] == _CURRENT_SANDBOX_IMAGE
+    assert all(condition.type != "PlatformUpgrade" for condition in observation.conditions)
+    assert await _kept_shim_token(store, runtime) == "kept"
+
+
+@pytest.mark.asyncio
+async def test_restart_on_the_current_image_restarts_processes_in_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, runtime, client, manager, _ = await _resident_on_old_image(monkeypatch)
+    client.sandbox_image = _CURRENT_SANDBOX_IMAGE
+
+    await manager.restart(runtime, _resident_profile())
+
+    assert client.deleted == []
+    assert client.created is None
+    assert [process["pid_path"] for process in client.execs] == [
+        "/sandbox/.volundr/skuld.pid",
+        "/sandbox/.volundr/ravn.pid",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_upgrade_is_reported_without_redeploying_in_a_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, runtime, client, manager, store = await _resident_on_old_image(monkeypatch)
+    profile = _persisted_profile()
+    await manager.reconcile(runtime, profile)
+    client.create_sandbox = Mock(side_effect=RuntimeError("image pull failed"))
+
+    with pytest.raises(RuntimeError, match="image pull failed"):
+        await manager.deploy(_redeploying(runtime), profile)
+
+    # A failed upgrade keeps the resident's identity: its token is still kept.
+    assert await _kept_shim_token(store, runtime) == "kept"
+    failed = _redeploying(runtime, ResidentObservedState.FAILED)
+    for _ in range(2):
+        observation = await manager.reconcile(failed, profile)
+        assert observation.observed_state is ResidentObservedState.FAILED
+        condition = observation.conditions[0]
+        assert (condition.type, condition.reason) == ("PlatformUpgrade", "UpgradeFailed")
+        assert "image pull failed" in condition.message
+        assert "Restart the resident to retry" in condition.message
+    assert client.create_sandbox.call_count == 1
+
+    # An explicit restart tries again.
+    del client.create_sandbox
+    restarted = await manager.restart(failed, profile)
+    assert client.created["image"] == _CURRENT_SANDBOX_IMAGE
+    assert restarted.observed_state is ResidentObservedState.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_an_older_volundr_does_not_move_the_resident_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """While Völundr itself rolls out, its old replica still deploys the image replaced."""
+    _, runtime, client, manager, _ = await _resident_on_old_image(monkeypatch)
+    client.sandbox_image = _CURRENT_SANDBOX_IMAGE
+    client.sandbox_annotations = {
+        "volundr.niuu.io/image": _CURRENT_SANDBOX_IMAGE,
+        "volundr.niuu.io/replaced-image": _OLD_SANDBOX_IMAGE,
+    }
+
+    observation = await manager.reconcile(runtime, _persisted_profile(tag="dev-6d5a0ce"))
+
+    assert client.deleted == []
+    assert all(condition.type != "PlatformUpgrade" for condition in observation.conditions)
+
+
+@pytest.mark.asyncio
+async def test_the_held_reason_reaches_the_resident_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lexi and the web read why a resident is not upgrading from its conditions."""
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from niuu.domain.models import Principal as NiuuPrincipal
+    from volundr.adapters.inbound.auth import extract_principal
+    from volundr.adapters.inbound.rest_resident_runtimes import create_resident_runtimes_router
+    from volundr.domain.services.resident_runtime import ResidentRuntimeService
+
+    _, runtime, client, manager, _ = await _resident_on_old_image(monkeypatch)
+    records = {runtime.id: runtime}
+
+    class _Repository:
+        async def get(self, runtime_id):
+            return records.get(runtime_id)
+
+        async def update(self, updated):
+            records[updated.id] = updated
+            return updated
+
+    profiles = Mock()
+    profiles.get.return_value = _resident_profile()
+    service = ResidentRuntimeService(_Repository(), profiles, [manager])
+    principal = NiuuPrincipal(
+        user_id="owner-1", email="", tenant_id="tenant-1", roles=["volundr:developer"]
+    )
+    app = FastAPI()
+    app.include_router(create_resident_runtimes_router(service))
+    app.dependency_overrides[extract_principal] = lambda: principal
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as api:
+        restarted = await api.post(f"/api/v1/forge/resident-runtimes/{runtime.id}/restart")
+        fetched = await api.get(f"/api/v1/forge/resident-runtimes/{runtime.id}")
+
+    assert restarted.status_code == fetched.status_code == 200
+    assert client.deleted == []
+    for body in (restarted.json(), fetched.json()):
+        [held] = [c for c in body["conditions"] if c["type"] == "PlatformUpgrade"]
+        assert held["status"] == "false"
+        assert held["reason"] == "UpgradeHeld"
+        assert held["message"].startswith(
+            "No persistent workspace; the sandbox image can't change without losing /sandbox."
+        )
+        assert body["backendRef"]["image"] == _OLD_SANDBOX_IMAGE

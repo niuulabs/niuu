@@ -137,6 +137,10 @@ class TestSkuldSettings:
             "SKULD__OBSERVABILITY__METRIC_ENDPOINT",
             "https://mimir:4318/v1/metrics",
         )
+        monkeypatch.setenv(
+            "SKULD__OBSERVABILITY__LOG_ENDPOINT",
+            "https://loki:4318/v1/logs",
+        )
 
         s = SkuldSettings()
 

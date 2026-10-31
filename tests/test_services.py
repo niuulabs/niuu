@@ -247,6 +247,44 @@ class TestSessionServiceWithoutBroadcaster:
         assert session.name == "Test"
 
     @pytest.mark.asyncio
+    async def test_create_session_records_the_workload_acting_for_its_owner(self, service):
+        """A resident's exchanged token makes the owner the session's owner and names
+        the resident as its actor."""
+        from niuu.domain.models import Principal
+
+        principal = Principal(
+            user_id="owner-1",
+            email="",
+            tenant_id="default",
+            roles=["volundr:developer"],
+            actor="system:serviceaccount:nats:regin",
+        )
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+            principal=principal,
+        )
+
+        assert session.owner_id == "owner-1"
+        assert session.actor_id == "system:serviceaccount:nats:regin"
+
+    @pytest.mark.asyncio
+    async def test_create_session_by_its_owner_has_no_actor(self, service):
+        from niuu.domain.models import Principal
+
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+            principal=Principal(
+                user_id="owner-1", email="", tenant_id="default", roles=["volundr:developer"]
+            ),
+        )
+
+        assert session.actor_id is None
+
+    @pytest.mark.asyncio
     async def test_start_session_works_without_broadcaster(self, service):
         """Starting a session works without a broadcaster."""
         session = await service.create_session(

@@ -9,7 +9,7 @@ the two scheduled layers below still do.
 | Layer | Trigger | Scope | Config | Events |
 | --- | --- | --- | --- | --- |
 | **Investigation loop** | Reactive: a signal arrives with no installed capability | Escalate to an agent session that authors the instrument(s) it needs with `build_tool` (inline, or commissioned via a Forge/Ting backend), reviews, canaries, installs, proposes to flock | `resident_evolution` (reviewer adapter, autonomy, rollback, `tool_build_adapter`) | `valkyrie.evolution.*`, `flock.learning.proposed`, session/drive-loop events |
-| **Consolidation dream** | Scheduled: idle + interval gates in the wakefulness state machine | Reflective pass over the whole skill registry: mark stale, promote proven private skills, hold skills implicated by feedback | `resident_wakefulness` (intervals, idle gates, promotion thresholds) | `valkyrie.state.changed`, `valkyrie.dream.started/completed` (`dream_kind: consolidation`), `learning.promoted` |
+| **Consolidation dream** | Scheduled: idle + interval gates in the wakefulness state machine | Reflective pass over the whole skill registry: mark stale, promote proven private skills, hold skills implicated by feedback; when `reflection.curation.enabled`, also curates recorded learnings (merge, supersede, prune, rewrite) and, with `reflection.self_improvement.enabled`, acts on recurring friction — see [resident-learning-consolidation.md](resident-learning-consolidation.md) | `resident_wakefulness` (intervals, idle gates, promotion thresholds), `reflection.curation`, `reflection.self_improvement` | `valkyrie.state.changed`, `valkyrie.dream.started`, then `valkyrie.dream.completed` or `valkyrie.dream.failed` (`dream_kind: consolidation`), `valkyrie.dream.snapshot`, `learning.promoted` |
 | **Mimir curation** | Cron: the `dream_cycle` trigger fires the `mimir-curator` persona | Knowledge-base hygiene: enrich, lint, cross-reference Mimir pages | `dream_cycle` (cron expression, persona, token budget) | `mimir.dream.completed` |
 
 ## Where each lives
@@ -24,6 +24,15 @@ the two scheduled layers below still do.
 - Consolidation dream: `src/ravn/valkyrie_evolution/wakefulness.py`
   (`ResidentWakefulness.dream`). Driven by the wakefulness tick; reads
   feedback episodes recorded by the feedback recorder.
+  The outcome (status, start, finish, duration, error, and the skill,
+  lesson, learned-tool and self-improvement results) is persisted in
+  `consolidation_dream_state.json` beside the last dream time and republished
+  as `valkyrie.dream.snapshot` on start and every
+  `resident_wakefulness.dream_snapshot_interval_seconds` (default 300). The
+  Valkyrie dashboard keeps each resident's last outcome as `lastDream` outside
+  its bounded event window, so the roster shows "last dream N ago" (or "dream
+  failed") and the console's *Last consolidation dream* panel lists what the
+  dream retired, merged, promoted and filed, even after a dashboard restart.
 - Mimir curation: `src/ravn/adapters/triggers/dream_cycle.py`. A drive-loop
   cron trigger; it enqueues an agent task, it does not touch resident skills.
 
@@ -63,3 +72,20 @@ publishes an already-decided `autonomy_change` ReviewItem; the resident
 applies it and confirms with `valkyrie.state.updated`. Residents persist
 pending requests in `.ravn/review_outbox.json` and re-announce them on
 restart.
+
+### Deciding a review item, and answering a resident's question
+
+`POST /api/v1/ravn/odin/reviews/{id}/decide` takes `{"decision", "reason", "answer",
+"participantId"}`:
+
+- `approved` and `rejected` work for every kind (`rejected` needs a `reason`).
+- `answered` settles an `answer_operator_question` item, the question a resident asks
+  its owner, with the free-text `answer`. The item becomes `approved` (then `applied`
+  once the resident confirms) and carries the text in `decision_answer`. The resident's
+  `submit_operator_answer` receives it verbatim, with no "Yes."/"No." prefix. A
+  blank answer, an answer on any other kind, or an `answer` sent with `approved` or
+  `rejected` is a `422`; an item that is no longer pending is a `409`; an unknown item is
+  a `404`.
+
+Forge turns pending questions into notifications and pushes so the operator's phone can
+answer them: see [Forge notifications](forge-notifications.md#resident-questions-in-the-odin-review-queue).

@@ -8,11 +8,23 @@ Ravn UI lists them alongside Forge-provisioned residents.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from niuu.domain.models import InstanceVisibility
+
+#: An RFC 1123 label, the shape of Kubernetes cluster, namespace and workload names.
+_KUBERNETES_NAME = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+
+
+class ResidentPlacement(BaseModel):
+    """Where a resident runs: the Kubernetes workload whose pods are the resident."""
+
+    cluster: str = Field(pattern=_KUBERNETES_NAME)
+    namespace: str = Field(pattern=_KUBERNETES_NAME)
+    # The Deployment name; its pods are named ``<workload>-<replicaset>-<pod>``.
+    workload: str = Field(pattern=_KUBERNETES_NAME)
 
 
 class StandaloneResident(BaseModel):
@@ -31,6 +43,20 @@ class StandaloneResident(BaseModel):
     visibility: InstanceVisibility = InstanceVisibility.SYSTEM
     owner_id: str = ""
     tenant_id: str = ""
+    # How the resident is deployed, as the fleet UI reports it. Residents read
+    # from a cluster deployment are "standalone"; ones that come from another
+    # authoritative catalog (e.g. the Valkyrie roster) name that source.
+    deployment: str = "standalone"
+    # What the resident can do. Chat is the long-standing default for a
+    # discovered deployment; a source that knows better (no chat endpoint)
+    # states its own list.
+    capabilities: list[str] = Field(default_factory=lambda: ["chat"])
+    # Reconciled lifecycle conditions, in the shape managed runtimes report.
+    conditions: list[dict[str, Any]] = Field(default_factory=list)
+    # Where it runs, when its source knows. A resident's logs are read by
+    # placement, and the fleet shows its cluster rather than the instance
+    # that happens to list it.
+    placement: ResidentPlacement | None = None
 
 
 class ResidentDiscoveryPort(Protocol):

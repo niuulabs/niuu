@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 
@@ -60,6 +61,22 @@ class ToolBuildPendingError(ToolBuildError):
         super().__init__(f"A2A task {task_id} is still running")
 
 
+class ToolBuildTaskEndedError(ToolBuildError):
+    """The commissioned remote task reached a terminal state without a result.
+
+    Unlike a transport failure, nothing can resume it: the build tool drops
+    its pending continuation and reports ``reason``, the peer's own account
+    of why the task ended.
+    """
+
+    def __init__(self, *, task_id: str, state: str, reason: str) -> None:
+        self.task_id = task_id
+        self.state = state
+        self.reason = reason
+        detail = f": {reason}" if reason else " (the peer gave no reason)"
+        super().__init__(f"A2A task {task_id} ended in state {state!r}{detail}")
+
+
 @dataclass(frozen=True)
 class ToolBuildRequest:
     """What a resident wants built, handed to a build backend."""
@@ -81,6 +98,17 @@ class ToolBuildRequest:
     operation_id: str = ""
     #: Opaque backend-owned state used to resume a durable remote build.
     continuation: dict[str, Any] = field(default_factory=dict)
+
+
+class ToolBuildTaskStatus(StrEnum):
+    """Where a suspended remote build stands."""
+
+    #: Still running, or waiting for input.
+    ACTIVE = "active"
+    #: Finished with an artifact to collect.
+    COMPLETED = "completed"
+    #: Failed, cancelled or rejected: nothing to collect or resume.
+    ENDED = "ended"
 
 
 @dataclass(frozen=True)
@@ -121,3 +149,29 @@ class ToolBuildBackend(ABC):
         Raises :class:`ToolBuildError` on failure — there is no silent
         fallback to a stub tool.
         """
+
+    async def task_status(self, task_id: str) -> ToolBuildTaskStatus:
+        """Where the suspended remote build *task_id* stands.
+
+        build_tool asks before it commissions another build of the same tool,
+        so a build that finished while the resident was elsewhere is collected
+        instead of built again. Only a backend that suspends builds has any.
+        """
+        raise ToolBuildError(
+            f"the {self.name} build backend suspends no builds, so it has no task "
+            f"{task_id!r} to report on"
+        )
+
+    async def cancel(self, task_id: str) -> str:
+        """End the suspended remote build *task_id*; return its final task state.
+
+        build_tool calls this when a newer request for the same tool replaces
+        a build that suspended (:class:`ToolBuildPendingError` or
+        :class:`ToolBuildInputRequiredError`). A task that already ended is
+        left as it is and its state returned. Only a backend that suspends
+        builds has any to cancel.
+        """
+        raise ToolBuildError(
+            f"the {self.name} build backend suspends no builds, so it has no task "
+            f"{task_id!r} to cancel"
+        )

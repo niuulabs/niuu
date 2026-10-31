@@ -341,6 +341,28 @@ def workflow_placement_from_snapshot(snapshot: dict[str, Any]) -> WorkflowPlacem
     )
 
 
+#: ``graph.workingBranch`` value for a workflow whose session must never work on
+#: the branch it delivers into: it gets its own branch, and only the workflow's
+#: own merge step (after its gate) reaches the target.
+ISOLATED_WORKING_BRANCH = "isolated"
+
+
+def workflow_uses_isolated_branch(snapshot: dict[str, Any]) -> bool:
+    """Whether the pinned workflow declares an isolated working branch."""
+    graph = snapshot.get("graph")
+    if not isinstance(graph, dict):
+        raise WorkflowDocumentError("Workflow snapshot graph must be a mapping")
+    value = str(graph.get("workingBranch") or "").strip()
+    if not value:
+        return False
+    if value != ISOLATED_WORKING_BRANCH:
+        raise WorkflowDocumentError(
+            f"Unsupported workingBranch {value!r}; the only supported value is "
+            f"{ISOLATED_WORKING_BRANCH!r}"
+        )
+    return True
+
+
 def workflow_stage_models_from_snapshot(snapshot: dict[str, Any] | None) -> list[str]:
     """Extract explicit stage-member models from a workflow snapshot graph."""
     if not snapshot:

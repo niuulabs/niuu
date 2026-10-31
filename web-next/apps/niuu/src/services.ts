@@ -22,6 +22,7 @@ import {
   createMockDispatcherService,
   createMockTingSessionService,
   createMockTrackerService,
+  createMockWorkService,
   createMockWorkflowService,
   createMockResearchService,
   createMockSpecsService,
@@ -72,6 +73,10 @@ import {
   createMockFileSystemPort,
   buildVolundrPtyWsAdapter,
   buildVolundrMetricsSseAdapter,
+  buildNotificationFeedHttpAdapter,
+  createMockNotificationFeed,
+  forgeApiBasePath,
+  type INotificationFeed,
   type IClusterAdapter,
   type Cluster,
   type IVolundrService,
@@ -115,7 +120,7 @@ export class UnsupportedSessionStoreOperationError extends Error {
 
   constructor(operation: 'create' | 'update') {
     super(
-      `The app session-store adapter does not support session ${operation}. Use the Forge lifecycle service instead.`,
+      `The app session-store adapter does not support session ${operation}. Use the session lifecycle service instead.`,
     );
     this.name = 'UnsupportedSessionStoreOperationError';
     this.operation = operation;
@@ -817,7 +822,7 @@ export function buildServiceBackendStatus(
   return Object.fromEntries(
     Object.entries(resolved).map(([serviceName, status]) => [
       serviceName,
-      status.mode === 'unavailable' && serviceName !== 'ting.work'
+      status.mode === 'unavailable'
         ? {
             ...status,
             mode: 'demo',
@@ -1363,7 +1368,7 @@ function buildVolundrClusterAdapter(volundr: IVolundrService): IClusterAdapter {
               {
                 id: 'shared',
                 slug: 'shared',
-                name: 'Shared Forge',
+                name: 'Shared host',
                 baseUrl: '',
                 enabled: true,
                 isDefault: false,
@@ -1386,7 +1391,7 @@ function buildVolundrClusterAdapter(volundr: IVolundrService): IClusterAdapter {
           {
             id: 'shared',
             slug: 'shared',
-            name: capacityFromNodes(nodes).gpu > 0 ? 'Shared GPU Forge' : 'Shared Forge',
+            name: capacityFromNodes(nodes).gpu > 0 ? 'Shared GPU host' : 'Shared host',
             baseUrl: '',
             enabled: true,
             isDefault: false,
@@ -1464,11 +1469,20 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   // ── Völundr catalog + Forge runtime ──
   const forgeBase = resolveForgeServiceBase(config);
   const volundrBase = resolveVolundrServiceBase(config);
-  const forgeVolundr = forgeBase
+  const forgeHttp = forgeBase
     ? buildVolundrHttpAdapter(createApiClient(forgeBase), undefined, {
         niuuBasePath: resolveNiuuRegistryBase(config),
       })
-    : demoService(config, 'forge', createMockVolundrService);
+    : null;
+  const forgeVolundr: IVolundrService =
+    forgeHttp ?? demoService(config, 'forge', createMockVolundrService);
+  // Notifications ride the Forge adapter's shared fleet stream — one SSE connection.
+  const notifications: INotificationFeed =
+    forgeBase && forgeHttp
+      ? buildNotificationFeedHttpAdapter(createApiClient(forgeApiBasePath(forgeBase)), {
+          stream: forgeHttp,
+        })
+      : demoService(config, 'volundr.notifications', createMockNotificationFeed);
   const catalogVolundr = volundrBase
     ? buildVolundrHttpAdapter(createApiClient(volundrBase), undefined, {
         niuuBasePath: resolveNiuuRegistryBase(config),
@@ -1543,6 +1557,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     ? buildRealmGovernanceHttpAdapter(
         createApiClient(realmGovernanceBases.realmsBase),
         createApiClient(realmGovernanceBases.workflowsBase),
+        realmGovernanceBases.realmsBase,
       )
     : demoService(config, 'valkyrie.realms', createMockRealmGovernanceService);
   const featureCatalogService = buildSharedFeatureCatalogService(config);
@@ -1606,10 +1621,12 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     ting: tingService,
     'ting.work': workClient
       ? buildWorkHttpAdapter(workClient)
-      : unavailableService<IWorkService>(
-          'ting.work',
-          'Configure a live Ting backend to view work.',
-        ),
+      : config.demoMode
+        ? createMockWorkService()
+        : unavailableService<IWorkService>(
+            'ting.work',
+            'Configure a live work backend to view work.',
+          ),
     'ting.workflowExecutions': tingClient
       ? buildWorkflowExecutionHttpAdapter(tingClient)
       : unavailableService<IWorkflowExecutionService>('ting.workflowExecutions'),
@@ -1646,6 +1663,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     // NIU-678 pages (ClustersPage, HistoryPage)
     'volundr.clusters': clusterAdapter,
     'volundr.sessions': sessionStore,
+    'volundr.notifications': notifications,
     // VolundrPage overview hooks (useVolundrClusters, useSessionStore)
     clusterAdapter,
     sessionStore,

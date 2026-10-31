@@ -18,7 +18,12 @@ import httpx
 from cli.api.guild import heartbeat
 from cli.auth.node_key import DEFAULT_NODE_KEY_FILENAME, NodeIdentity
 from cli.commands.node_instances import offered_instances_for_host
-from cli.config import DEFAULT_CONFIG_DIR, CLISettings
+from cli.config import (
+    DEFAULT_CONFIG_DIR,
+    CLISettings,
+    guild_instance_fields,
+    persist_guild_instance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +53,16 @@ async def run_heartbeat_loop(settings: CLISettings, *, iterations: int | None = 
         raise NotJoinedError("This host has not joined a Guild. Run `niuu join` first.")
 
     identity = NodeIdentity.load(Path(DEFAULT_CONFIG_DIR) / DEFAULT_NODE_KEY_FILENAME)
+    recorded = {
+        "instance_id": settings.guild.instance_id,
+        "instance_name": settings.guild.instance_name,
+        "instance_slug": settings.guild.instance_slug,
+    }
     count = 0
     while True:
         offered = offered_instances_for_host(settings)
         try:
-            await heartbeat(
+            result = await heartbeat(
                 settings.guild.url,
                 node_id=settings.guild.node_id,
                 identity=identity,
@@ -61,6 +71,13 @@ async def run_heartbeat_loop(settings: CLISettings, *, iterations: int | None = 
             logger.info("Guild heartbeat sent for node %s", settings.guild.node_id)
         except httpx.RequestError:
             logger.exception("Guild heartbeat network error; will retry next interval")
+        else:
+            # Hosts joined before the instance was recorded at join time get it here.
+            instance = guild_instance_fields(result.get("instances"))
+            if instance is not None and instance != recorded:
+                persist_guild_instance(instance)
+                recorded = instance
+                logger.info("Recorded this host's Guild instance %s", instance["instance_id"])
 
         count += 1
         if iterations is not None and count >= iterations:

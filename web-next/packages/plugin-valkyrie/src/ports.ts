@@ -10,6 +10,7 @@ import type {
   LearningFeedbackVerdict,
   LearningRecord,
   LearningScope,
+  RealmDetail,
   RealmSummary,
   RealmTrustGrant,
   ReviewItem,
@@ -177,9 +178,13 @@ export interface RealmCreate {
   autonomy_profile?: string;
 }
 
+export type RealmDetailListener = (detail: RealmDetail) => void;
+
 export interface IRealmGovernanceService {
   listRealms(): Promise<RealmSummary[]>;
   getRealm(slug: string): Promise<RealmSummary>;
+  /** Opens the authenticated ``realm.detail`` SSE channel for one realm. */
+  subscribeRealmDetail(slug: string, listener: RealmDetailListener): () => void;
   createRealm(request: RealmCreate): Promise<RealmSummary>;
   /** Removes the realm with its trust grants and capabilities; the resident is the fleet's. */
   deleteRealm(slug: string): Promise<void>;

@@ -10,14 +10,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import Any
 
-from ting.ports.channel_resolver import ChannelResolverPort
-from ting.ports.event_bus import EventBusPort, TingEvent
-from ting.ports.notification_channel import (
+from niuu.ports.channel_resolver import ChannelResolverPort, NotificationChannelUnavailableError
+from niuu.ports.notification_channel import (
     Notification,
     NotificationUrgency,
 )
+from niuu.ports.notifications import NotificationDeliveryError
+from ting.ports.event_bus import EventBusPort, TingEvent
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +55,27 @@ _STATUS_NOTIFICATION_MAP: dict[str, dict[str, Any]] = {
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class NotificationServiceStats:
+    """What the notification loop did; reported by ``/api/v1/ting/health/detailed``."""
+
+    delivered: int = 0
+    failed_deliveries: int = 0
+    failed_events: int = 0
+    last_failure: str | None = None
+
+
 class NotificationService:
     """Subscribes to EventBus events and dispatches notifications to channels.
 
     Runs as a background task alongside the main application. For each event,
     it resolves the owning user, builds a Notification, resolves that user's
     configured channels, and delivers.
+
+    Failures are never swallowed: an owner's channel that cannot be resolved or
+    a delivery that fails makes the event fail. The loop outlives one failed
+    event (other owners' notifications keep flowing) but counts it in
+    :attr:`stats`, keeps the last failure, and logs it with its traceback.
     """
 
     def __init__(
@@ -74,6 +91,7 @@ class NotificationService:
         self._running = False
         self._task: asyncio.Task[None] | None = None
         self._queue: asyncio.Queue[TingEvent] | None = None
+        self.stats = NotificationServiceStats()
 
     @property
     def running(self) -> bool:
@@ -111,30 +129,46 @@ class NotificationService:
                 continue
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.exception("Error processing notification event")
+            except Exception as exc:
+                self._record_failed_event(event, exc)
+
+    def _record_failed_event(self, event: TingEvent, exc: Exception) -> None:
+        self.stats.failed_events += 1
+        # Delivery and resolution errors are written without secrets; anything
+        # else is reported by type, its detail stays in the logged traceback.
+        failures = exc.exceptions if isinstance(exc, ExceptionGroup) else (exc,)
+        self.stats.last_failure = f"{event.event}: " + "; ".join(
+            str(failure) if _is_secret_free(failure) else type(failure).__name__
+            for failure in failures
+        )
+        logger.error("Notification for event %s failed", event.event, exc_info=exc)
 
     async def _handle_event(self, event: TingEvent) -> None:
-        """Map an event to a notification and dispatch it."""
+        """Map an event to a notification and deliver it to every channel that wants it.
+
+        Every channel is tried; the failures are then raised together.
+        """
         notification = await self._map_event(event)
         if notification is None:
             return
 
         channels = await self._channel_factory.for_owner(notification.owner_id)
-        if not channels:
-            return
-
+        failures: list[Exception] = []
         for channel in channels:
             if not channel.should_notify(notification):
                 continue
             try:
                 await channel.send(notification)
-            except Exception:
-                logger.warning(
-                    "Failed to send notification via %s",
-                    type(channel).__name__,
-                    exc_info=True,
-                )
+            except Exception as exc:
+                failures.append(exc)
+                continue
+            self.stats.delivered += 1
+        if failures:
+            self.stats.failed_deliveries += len(failures)
+            raise ExceptionGroup(
+                f"Delivering {notification.event_type} to {len(failures)} channel(s) failed",
+                failures,
+            )
 
     async def _map_event(self, event: TingEvent) -> Notification | None:
         """Convert a TingEvent into a Notification, or None if unmapped."""
@@ -304,6 +338,11 @@ class NotificationService:
             event_type="run.feedback_requested",
             metadata=metadata,
         )
+
+
+def _is_secret_free(exc: BaseException) -> bool:
+    """Errors whose message is written to be shown: delivery and resolution failures."""
+    return isinstance(exc, (NotificationDeliveryError, NotificationChannelUnavailableError))
 
 
 def _ui_url(path: str, public_origin: str) -> str:

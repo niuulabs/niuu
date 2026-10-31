@@ -225,7 +225,7 @@ async def test_handle_update_sends_error_message_on_agent_exception():
 
 
 @pytest.mark.asyncio
-async def test_send_message_truncates_long_text():
+async def test_send_message_splits_long_text():
     tg = TelegramGateway(_make_config(token_env="TK"), _make_gateway_mock())
     tg._token = "test-token"
 
@@ -235,9 +235,9 @@ async def test_send_message_truncates_long_text():
     long_text = "x" * 5000
     await tg._send_message(client, 1, long_text)
 
-    sent_text = client.post.call_args[1]["json"]["text"]
-    assert len(sent_text) <= 4096
-    assert sent_text.endswith("...")
+    sent = [call[1]["json"]["text"] for call in client.post.call_args_list]
+    assert [len(chunk) for chunk in sent] == [4096, 904]
+    assert "".join(sent) == long_text
 
 
 @pytest.mark.asyncio
@@ -449,3 +449,24 @@ async def test_run_retries_on_exception(monkeypatch):
         await tg.run()
 
     assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_chunk_is_logged_and_the_rest_is_not_sent(caplog):
+    import logging
+
+    tg = TelegramGateway(_make_config(token_env="TK"), _make_gateway_mock())
+    tg._token = "test-token"
+    rejected = MagicMock()
+    rejected.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "400", request=MagicMock(), response=MagicMock()
+    )
+    client = AsyncMock()
+    client.post = AsyncMock(return_value=rejected)
+
+    with caplog.at_level(logging.ERROR):
+        await tg._send_message(client, 7, "x" * 5000)
+
+    # A 4xx used to pass unnoticed: post() does not raise on it.
+    assert client.post.await_count == 1
+    assert "7" in caplog.text

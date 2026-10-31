@@ -20,6 +20,14 @@ class TrackerIssue(BaseModel):
     id: str = Field(description="Internal issue ID from the tracker backend")
     identifier: str = Field(description="Human-readable issue identifier (e.g. NIU-57)")
     title: str = Field(description="Issue title")
+    description: str | None = Field(
+        default=None,
+        description=(
+            "Issue body as Markdown, including acceptance criteria. Populated on "
+            "single-issue responses (get and status update); search and recent-issue "
+            "lists omit bodies to keep payloads small and return None here."
+        ),
+    )
     status: str = Field(description="Current issue status (e.g. In Progress, Done)")
     assignee: str | None = Field(
         default=None,

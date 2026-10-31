@@ -70,8 +70,6 @@ SDK = "sdk"
 PERSISTENT = "persistent_subprocess"
 TMUX = "tmux_interactive"
 
-_DEFAULT_TIER_MODES = (SDK, PERSISTENT)
-
 
 def _tmux_param() -> object:
     """The tmux_interactive param — integration-tier; skips if tmux is missing."""

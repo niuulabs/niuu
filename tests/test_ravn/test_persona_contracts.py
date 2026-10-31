@@ -718,6 +718,15 @@ class TestBuiltinSpecialistContracts:
         assert "<!-- sources: <source_id> -->" in prompt
         assert "pages_written" in cfg.produces.schema
 
+    def test_capability_publisher_uses_json_artifact_publisher(self) -> None:
+        cfg = self._load("capability-publisher")
+
+        assert "mimir_publish_artifact" in cfg.allowed_tools
+        assert "mimir_write" not in cfg.allowed_tools
+        assert "mimir_publish_artifact capabilities/{slug}/learned_tool.json" in (
+            cfg.system_prompt_template
+        )
+
     def test_all_specialist_personas_have_system_prompts(self) -> None:
         specialist_names = [
             "reviewer",

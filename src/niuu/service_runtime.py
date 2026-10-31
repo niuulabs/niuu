@@ -77,7 +77,9 @@ def configure_logging(config: LoggingConfig | None = None) -> None:
     )
 
 
-def create_workload_identity_service(config: Any) -> WorkloadIdentityService:
+def create_workload_identity_service(
+    config: Any, *, delegations: Any | None = None
+) -> WorkloadIdentityService:
     """Resolve secret material and verifier adapters at the composition boundary."""
     signing_key_pem = str(getattr(config, "signing_key_pem", "") or "")
     signing_key_env = str(getattr(config, "signing_key_env", "") or "")
@@ -108,6 +110,7 @@ def create_workload_identity_service(config: Any) -> WorkloadIdentityService:
         signing_key_pem=signing_key_pem,
         verifiers=verifiers,
         tenant_resolver=tenant_resolver,
+        delegations=delegations,
     )
 
 

@@ -179,6 +179,7 @@ class JiraTrackerAdapter(TrackerPort):
                 ]
                 detail = "; ".join(errors) or detail
             except (ValueError, AttributeError):
+                # Preserve the original HTTP failure when its error body is not structured JSON.
                 pass
             raise JiraAPIError(
                 f"Jira {method} {path} failed ({response.status_code}): {detail[:500]}"

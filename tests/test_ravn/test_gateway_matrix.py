@@ -139,7 +139,7 @@ async def test_send_text_puts_message_event(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_send_text_truncates_long_message(monkeypatch):
+async def test_send_text_splits_long_message(monkeypatch):
     monkeypatch.setenv("MX_TOKEN", "tok")
     client = _make_http_client()
     cfg = MatrixChannelConfig(
@@ -155,9 +155,8 @@ async def test_send_text_truncates_long_message(monkeypatch):
 
     await adapter.send_text("!r:h", "x" * 20)
 
-    body = client.put.call_args[1]["json"]["body"]
-    assert len(body) <= 10
-    assert body.endswith("...")
+    bodies = [call[1]["json"]["body"] for call in client.put.call_args_list]
+    assert bodies == ["x" * 10, "x" * 10]
 
 
 # ---------------------------------------------------------------------------

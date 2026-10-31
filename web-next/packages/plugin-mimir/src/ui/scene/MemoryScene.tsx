@@ -197,6 +197,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     onBackgroundClick,
     createRenderer,
   } = props;
+  const [paletteRevision, setPaletteRevision] = useState(0);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -372,6 +373,19 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     if (containerRef.current) {
       latestRef.current.palette = memoryPalette(containerRef.current);
     }
+
+    const themeObserver = new MutationObserver(() => {
+      if (!containerRef.current) return;
+      latestRef.current.palette = memoryPalette(containerRef.current);
+      setPaletteRevision((revision) => revision + 1);
+    });
+    // Observe the host's theme attributes without coupling this embeddable view
+    // to a particular theme provider. Keep the renderer and camera mounted.
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+      subtree: true,
+    });
 
     const resize = (): void => {
       const el = containerRef.current;
@@ -636,6 +650,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
       renderFrameRef.current = null;
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
       observer.disconnect();
+      themeObserver.disconnect();
       el.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
@@ -664,7 +679,12 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
 
     const palette = latestRef.current.palette;
     if (!palette) return;
-    const bgColour = new THREE.Color(0x000000);
+    const bgColour = new THREE.Color(palette.background);
+    bag.scene.background = bgColour;
+    // Additive glow washes out against a light canvas; alpha blending keeps
+    // nodes and particles visible while preserving glow on the dark themes.
+    const blending =
+      bgColour.getHSL({ h: 0, s: 0, l: 0 }).l > 0.5 ? THREE.NormalBlending : THREE.AdditiveBlending;
     const now = Date.now();
 
     const visibleIds = [...layout.nodes.keys()].filter((id) => visibility.nodes.get(id)?.visible);
@@ -709,7 +729,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     const nodeMaterial = new THREE.ShaderMaterial({
       transparent: true,
       depthWrite: false,
-      blending: THREE.AdditiveBlending,
+      blending,
       vertexShader: NODE_VERTEX_SHADER,
       fragmentShader: NODE_FRAGMENT_SHADER,
       uniforms: {
@@ -771,7 +791,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
       const material = new THREE.LineBasicMaterial({
         vertexColors: true,
         transparent: true,
-        blending: THREE.AdditiveBlending,
+        blending,
         depthWrite: false,
       });
       const lines = new THREE.LineSegments(geometry, material);
@@ -839,7 +859,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     // Paint immediately with the content/camera state just computed, rather
     // than waiting for the next animation frame.
     renderFrameRef.current?.();
-  }, [layout, visibility, colourBy, view, nodeById, maxDegree, questionTargets]);
+  }, [layout, visibility, colourBy, view, nodeById, maxDegree, questionTargets, paletteRevision]);
 
   // ---- explicit camera commands from the caller ----
   useEffect(() => {

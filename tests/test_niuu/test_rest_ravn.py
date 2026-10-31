@@ -110,6 +110,7 @@ def _client(
     instances: list[RegisteredInstance],
     *,
     embedded_forge_app: FastAPI | None = None,
+    delegations: Any | None = None,
 ) -> TestClient:
     app = FastAPI()
     app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
@@ -118,6 +119,7 @@ def _client(
         create_ravn_router(
             service,
             embedded_forge_app=embedded_forge_app,
+            delegations=delegations,
         )
     )
     app.include_router(  # type: ignore[arg-type]
@@ -780,9 +782,13 @@ class _FakeRealmService:
         self.realm = realm
         self.requested_ids: list[UUID] = []
 
-    async def get_realm(self, realm_ref: UUID) -> Realm | None:
+    async def get_realm(self, realm_ref: UUID, tenant_id: str) -> Realm | None:
         self.requested_ids.append(realm_ref)
-        if self.realm is not None and realm_ref == self.realm.id:
+        if (
+            self.realm is not None
+            and realm_ref == self.realm.id
+            and tenant_id == self.realm.tenant_id
+        ):
             return self.realm
         return None
 
@@ -799,6 +805,7 @@ def _realm(**overrides: object) -> Realm:
         "created_at": now,
         "updated_at": now,
         "autonomy_profile": "balanced",
+        "tenant_id": "tenant-a",
     }
     values.update(overrides)
     return Realm(**values)
@@ -884,6 +891,39 @@ def test_create_raven_fails_when_realm_sync_fails() -> None:
     )
 
     assert response.status_code >= 400
+    assert not create_route.calls
+
+
+@respx.mock
+def test_create_raven_refuses_a_realm_in_another_tenant() -> None:
+    """A known realm id must not copy another tenant's realm onto a target."""
+    realm = _realm(tenant_id="tenant-b")
+    embedded = FastAPI()
+    embedded.state.realm_service = _FakeRealmService(realm)
+    client = _client(
+        [_instance("noatun", base_url="http://noatun")],
+        embedded_forge_app=embedded,
+    )
+    sync_route = respx.put(f"http://noatun/api/v1/realms/by-id/{realm.id}").mock(
+        return_value=Response(200, json={})
+    )
+    create_route = respx.post("http://noatun/api/v1/ravn/ravens").mock(
+        return_value=Response(201, json={"id": "resident-id", "managed": True})
+    )
+
+    response = client.post(
+        "/api/v1/ravn/ravens",
+        headers=_headers(),
+        json={
+            "instance_id": "noatun",
+            "profile_id": "ravn-openshell",
+            "name": "Muninn",
+            "realm_id": str(realm.id),
+        },
+    )
+
+    assert response.status_code == 422
+    assert not sync_route.calls
     assert not create_route.calls
 
 
@@ -1096,6 +1136,31 @@ def test_get_raven_logs_searches_visible_targets_without_instance_hint() -> None
     assert beta.called
 
 
+@respx.mock
+@pytest.mark.parametrize(
+    ("upstream_status", "detail"),
+    [
+        (409, "No logs to read: resident 'Muninn' has no pod in namespace skuld"),
+        (502, "Failed to read resident Muninn logs: Kubernetes forbids pods/log"),
+    ],
+)
+def test_get_raven_logs_forwards_the_owning_targets_status_and_reason(
+    upstream_status: int, detail: str
+) -> None:
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/ravn/ravens/resident-id/logs").mock(
+        return_value=Response(upstream_status, json={"detail": detail})
+    )
+
+    response = client.get(
+        "/api/v1/ravn/ravens/resident-id/logs?instance_id=beta",
+        headers=_headers(),
+    )
+
+    assert response.status_code == upstream_status
+    assert response.json()["detail"] == detail
+
+
 class TestWsConnectKwargs:
     """Direct tests of the resident/session WS bridge's TLS-pinning gate."""
 
@@ -1169,3 +1234,148 @@ class TestWsConnectKwargs:
         assert result is None
         websocket.close.assert_awaited_once()
         assert websocket.close.await_args.kwargs["code"] == 1011
+
+
+# --- workload delegations recorded with a deploy -----------------------------------
+
+_PLATFORM = "https://platform.test"
+_DELEGATIONS = f"{_PLATFORM}/api/v1/tokens/workload/delegations"
+_HELM_RESIDENT = {
+    "id": "0f9e3c1a",
+    "resident_name": "Muninn",
+    "backend_ref": {"kind": "HelmRelease", "namespace": "skuld", "name": "resident-0f9e3c1a"},
+}
+
+
+def _delegating_client(*, verifier: str | None = "k8s-valhalla") -> TestClient:
+    from niuu.adapters.outbound.http_workload_delegations import HttpResidentDelegationRegistrar
+
+    config = {"workload_verifier": verifier} if verifier else {}
+    return _client(
+        [_instance("valhalla", base_url="http://valhalla", config=config)],
+        delegations=HttpResidentDelegationRegistrar(_PLATFORM),
+    )
+
+
+@respx.mock
+def test_deploying_a_resident_records_its_delegation_as_the_deploying_owner() -> None:
+    respx.post("http://valhalla/api/v1/ravn/ravens").mock(
+        return_value=Response(201, json=_HELM_RESIDENT)
+    )
+    record = respx.post(_DELEGATIONS).mock(return_value=Response(201, json={"id": "d-1"}))
+
+    response = _delegating_client().post(
+        "/api/v1/ravn/ravens", headers=_headers(), json={"instance_id": "valhalla"}
+    )
+
+    assert response.status_code == 201
+    assert response.json()["workload_delegation"] == {"status": "recorded", "id": "d-1"}
+    sent = record.calls.last.request
+    assert sent.headers["authorization"] == "Bearer test-token"
+    assert json.loads(sent.read()) == {
+        "verifier": "k8s-valhalla",
+        "subject": "system:serviceaccount:skuld:resident-0f9e3c1a",
+        "name": "Muninn",
+        "residentId": "0f9e3c1a",
+    }
+
+
+@respx.mock
+def test_instance_without_a_verifier_records_no_delegation() -> None:
+    respx.post("http://valhalla/api/v1/ravn/ravens").mock(
+        return_value=Response(201, json=_HELM_RESIDENT)
+    )
+    record = respx.post(_DELEGATIONS)
+
+    response = _delegating_client(verifier=None).post(
+        "/api/v1/ravn/ravens", headers=_headers(), json={"instance_id": "valhalla"}
+    )
+
+    assert response.json()["workload_delegation"] == {"status": "skipped"}
+    assert not record.called
+
+
+@respx.mock
+def test_a_refused_delegation_reports_failure_but_keeps_the_deploy() -> None:
+    respx.post("http://valhalla/api/v1/ravn/ravens").mock(
+        return_value=Response(201, json=_HELM_RESIDENT)
+    )
+    respx.post(_DELEGATIONS).mock(return_value=Response(422, json={"detail": "no mapping"}))
+
+    response = _delegating_client().post(
+        "/api/v1/ravn/ravens", headers=_headers(), json={"instance_id": "valhalla"}
+    )
+
+    assert response.status_code == 201
+    assert response.json()["workload_delegation"]["status"] == "failed"
+
+
+@respx.mock
+def test_deleting_a_resident_revokes_its_delegations() -> None:
+    respx.delete("http://valhalla/api/v1/ravn/ravens/0f9e3c1a").mock(return_value=Response(204))
+    listed = respx.get(_DELEGATIONS, params={"residentId": "0f9e3c1a"}).mock(
+        return_value=Response(200, json=[{"id": "d-1"}])
+    )
+    revoked = respx.delete(f"{_DELEGATIONS}/d-1").mock(return_value=Response(204))
+
+    response = _delegating_client().delete(
+        "/api/v1/ravn/ravens/0f9e3c1a?instance_id=valhalla", headers=_headers()
+    )
+
+    assert response.status_code == 204
+    assert listed.called
+    assert revoked.calls.last.request.headers["authorization"] == "Bearer test-token"
+
+
+@respx.mock
+def test_a_failed_revocation_reports_failure_and_logs_one_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from niuu.adapters.outbound.http_workload_delegations import HttpResidentDelegationRegistrar
+
+    respx.get(_DELEGATIONS).mock(return_value=Response(503))
+    registrar = HttpResidentDelegationRegistrar(_PLATFORM)
+    instance = _instance(
+        "valhalla", base_url="http://valhalla", config={"workload_verifier": "k8s-valhalla"}
+    )
+
+    with caplog.at_level("ERROR"):
+        result = asyncio.run(
+            registrar.revoke(
+                authorization="Bearer test-token",
+                instance=instance,
+                resident_id="0f9e3c1a\nforged entry",
+            )
+        )
+
+    assert result["status"] == "failed"
+    assert "503" in result["detail"]
+    [record] = caplog.records
+    assert "0f9e3c1a\\nforged entry" in record.getMessage()
+    assert "\n" not in record.getMessage()
+
+
+@respx.mock
+def test_a_delegated_caller_deploying_a_resident_records_nothing() -> None:
+    """A resident's own token (it names an actor) must not delegate onward."""
+    import jwt
+
+    respx.post("http://valhalla/api/v1/ravn/ravens").mock(
+        return_value=Response(201, json=_HELM_RESIDENT)
+    )
+    record = respx.post(_DELEGATIONS)
+    token = jwt.encode(
+        {"sub": "user-a", "act": {"sub": "system:serviceaccount:nats:regin"}},
+        "test-only-hmac-key-at-least-32-bytes-long",
+        algorithm="HS256",
+    )
+
+    response = _delegating_client().post(
+        "/api/v1/ravn/ravens",
+        headers={**_headers(), "authorization": f"Bearer {token}"},
+        json={"instance_id": "valhalla"},
+    )
+
+    assert response.status_code == 201
+    assert "workload_delegation" not in response.json()
+    assert not record.called

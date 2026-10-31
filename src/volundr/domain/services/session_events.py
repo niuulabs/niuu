@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from enum import Enum
 
+from niuu.domain.notifications import notification_visible_to
 from volundr.domain.models import EventType, Principal, RealtimeEvent, Stats
 from volundr.domain.ports import EventBroadcaster
 
@@ -31,6 +32,8 @@ class EventAudience(Enum):
     READER = "reader"
     # Names no session, owner or tenant, so no bounded subscriber can be shown it.
     UNATTRIBUTED = "unattributed"
+    # A feed entry, possibly sessionless, for its owner or an admin of its tenant.
+    NOTIFICATION = "notification"
 
 
 EVENT_AUDIENCE: dict[EventType, EventAudience] = {
@@ -48,6 +51,7 @@ EVENT_AUDIENCE: dict[EventType, EventAudience] = {
     EventType.PR_CREATED: EventAudience.SESSION,
     EventType.SESSION_READ_STATE: EventAudience.READER,
     EventType.PR_MERGED: EventAudience.UNATTRIBUTED,
+    EventType.SESSION_NOTIFICATION: EventAudience.NOTIFICATION,
 }
 
 
@@ -143,6 +147,14 @@ class SessionEventStream:
             return principal is None
         if audience is EventAudience.READER:
             return principal is None or event.data["owner_id"] == principal.user_id
+        if audience is EventAudience.NOTIFICATION:
+            return principal is None or notification_visible_to(
+                user_id=principal.user_id,
+                roles=principal.roles,
+                tenant_id=principal.tenant_id,
+                owner_id=event.data.get("owner_id"),
+                notification_tenant_id=event.data.get("tenant_id"),
+            )
         if "owner_id" not in event.data or "tenant_id" not in event.data:
             raise ValueError(
                 f"{event.type.value} event carries no owner_id/tenant_id, so it cannot be "

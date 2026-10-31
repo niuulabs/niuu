@@ -18,6 +18,10 @@ class ObservabilityConfig(BaseModel):
         default="",
         description="OTLP/HTTP metrics endpoint, including the /v1/metrics path.",
     )
+    log_endpoint: str = Field(
+        default="",
+        description="OTLP/HTTP logs endpoint, including the /v1/logs path.",
+    )
     insecure: bool = Field(
         default=False,
         description="Disable TLS for the OTLP/gRPC trace exporter.",
@@ -43,9 +47,12 @@ class ObservabilityConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_enabled_endpoints(self) -> ObservabilityConfig:
-        if self.enabled and (not self.trace_endpoint or not self.metric_endpoint):
+        if self.enabled and (
+            not self.trace_endpoint or not self.metric_endpoint or not self.log_endpoint
+        ):
             raise ValueError(
-                "observability requires trace_endpoint and metric_endpoint when enabled"
+                "observability requires trace_endpoint, metric_endpoint, and "
+                "log_endpoint when enabled"
             )
         return self
 

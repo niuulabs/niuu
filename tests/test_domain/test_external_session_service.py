@@ -454,8 +454,9 @@ class TestExternalResumeOverlay:
         broker = spec.values["broker"]
         assert broker["resumeSessionId"] == "claude-1"
         assert broker["cliType"] == "claude"
+        assert broker["transport"] == "tmux-interactive"
         assert broker["transportAdapter"] == (
-            "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
+            "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
         )
 
     def test_codex_session_uses_websocket_transport(self) -> None:

@@ -22,7 +22,7 @@ export function LaunchWizard(props: LaunchWizardProps & { initialStandard?: Forg
     <Dialog open={props.open} onOpenChange={close}>
       <DialogContent
         title="Quick launch"
-        description="Choose a Forge and a workspace, then start your session."
+        description="Choose a host and a workspace, then start your session."
         className="vol-quick__modal"
       >
         <QuickLaunch

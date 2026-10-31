@@ -8,7 +8,11 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field
 
-from volundr.domain.models import PullRequest
+from niuu.adapters.inbound.rest_repos import (
+    CIStatusResponse,
+    MergeResultResponse,
+    PullRequestResponse,
+)
 from volundr.domain.services.git_workflow import (
     GitWorkflowService,
     SessionNotFoundError,
@@ -78,58 +82,6 @@ class ConfidenceRequest(BaseModel):
 # --- Response models ---
 
 
-class PullRequestResponse(BaseModel):
-    """Response model for a pull request."""
-
-    number: int = Field(description="PR number")
-    title: str = Field(description="PR title")
-    url: str = Field(description="Web URL for the pull request")
-    repo_url: str = Field(description="Repository URL")
-    provider: str = Field(description="Git provider (github, gitlab)")
-    source_branch: str = Field(description="Source branch name")
-    target_branch: str = Field(description="Target branch name")
-    status: str = Field(description="PR status (open, merged, closed)")
-    description: str | None = Field(
-        default=None,
-        description="PR body/description",
-    )
-    ci_status: str | None = Field(
-        default=None,
-        description="CI pipeline status (passing, failing, pending)",
-    )
-    review_status: str | None = Field(
-        default=None,
-        description="Review status (approved, changes_requested, pending)",
-    )
-    created_at: str | None = Field(
-        default=None,
-        description="ISO 8601 creation timestamp",
-    )
-    updated_at: str | None = Field(
-        default=None,
-        description="ISO 8601 last update timestamp",
-    )
-
-    @classmethod
-    def from_pull_request(cls, pr: PullRequest) -> PullRequestResponse:
-        """Create response from domain model."""
-        return cls(
-            number=pr.number,
-            title=pr.title,
-            url=pr.url,
-            repo_url=pr.repo_url,
-            provider=pr.provider.value,
-            source_branch=pr.source_branch,
-            target_branch=pr.target_branch,
-            status=pr.status.value,
-            description=pr.description,
-            ci_status=pr.ci_status.value if pr.ci_status else None,
-            review_status=pr.review_status.value if pr.review_status else None,
-            created_at=pr.created_at.isoformat() if pr.created_at else None,
-            updated_at=pr.updated_at.isoformat() if pr.updated_at else None,
-        )
-
-
 class MergeConfidenceResponse(BaseModel):
     """Response model for merge confidence scoring."""
 
@@ -141,20 +93,6 @@ class MergeConfidenceResponse(BaseModel):
         description="Recommended action (auto_merge, notify_then_merge, require_approval)",
     )
     reason: str = Field(description="Human-readable rationale")
-
-
-class CIStatusResponse(BaseModel):
-    """Response model for CI status."""
-
-    status: str = Field(
-        description="CI status (passing, failing, pending, unknown)",
-    )
-
-
-class MergeResultResponse(BaseModel):
-    """Response model for merge result."""
-
-    merged: bool = Field(description="Whether the PR was successfully merged")
 
 
 class ErrorResponse(BaseModel):

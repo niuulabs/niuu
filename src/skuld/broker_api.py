@@ -17,13 +17,14 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from niuu.adapters.identity_headers import parse_roles_header
 from niuu.build_identity import build_identity
+from niuu.domain.conversation_timeline import resolve_timeline_turn
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
 from niuu.domain.text_projection import projection_revision
@@ -34,6 +35,7 @@ from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turn, is_elided_inp
 from skuld.conversation_snapshot import ConversationSnapshotTooLargeError, prepare_history_page
 from skuld.event_log import FORGE_SESSIONS_PATH
 from skuld.file_routes import register_file_routes
+from skuld.forge_mcp.routes import register_forge_mcp_routes
 from skuld.path_security import (
     UnsafePathError,
     resolve_contained_path,
@@ -165,6 +167,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def require_loopback_secret(request: Request) -> None:
+    """Admit only callers holding this broker start's loopback secret.
+
+    Guards the routes a session's helpers call on the agent's behalf — present-file,
+    session messaging, Claude hooks and the Forge MCP — so neither another host
+    (the broker may bind 0.0.0.0) nor a spoofed tool can drive them.
+    """
+    if broker._session_runtime.accepts(request.headers.get("authorization")):
+        return
+    logger.warning(
+        "Rejected %s %s: missing or invalid broker loopback token",
+        request.method,
+        request.url.path.replace("\n", " "),
+    )
+    raise HTTPException(
+        status_code=401,
+        detail="missing or invalid broker loopback token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+_LOOPBACK_GUARD = [Depends(require_loopback_secret)]
 
 
 def _is_loopback_http_client(request: Request) -> bool:
@@ -302,7 +328,7 @@ async def _enforce_room_role(request: Request, call_next):
         effective_role = await _effective_room_role(request)
     except RoomRoleResolutionError as exc:
         logger.error("Room role resolution failed: %s", exc)
-        return JSONResponse({"detail": str(exc)}, status_code=503)
+        return JSONResponse({"detail": "Room role resolution unavailable"}, status_code=503)
     # Cached for the route handler (see _room_role_from_state): resolving a
     # second time mid-request could legitimately get a DIFFERENT answer once
     # "remote" mode's short cache TTL expires between the two calls, which
@@ -534,9 +560,10 @@ async def get_conversation_history(
         "history_settled_tail_id": settled[-1].get("id") if settled else None,
     }
     if turn_id is not None:
-        turns = [turn for turn in turns if turn.get("id") == turn_id]
-        if not turns:
+        target = resolve_timeline_turn(turns, turn_id)
+        if target is None:
             raise HTTPException(404, "History item no longer exists in this projection")
+        turns = [target]
     last_activity = json_text_safe(last_activity)
     build_ms = (time.perf_counter() - t_build) * 1000.0
 
@@ -862,7 +889,7 @@ async def send_slash_command(body: _SlashCommandRequest) -> dict[str, str]:
     return {"status": "sent", "command": name}
 
 
-@app.post("/api/claude/hooks")
+@app.post("/api/claude/hooks", dependencies=_LOOPBACK_GUARD)
 async def receive_claude_hook(payload: dict[str, Any]) -> dict[str, bool]:
     """Receive Claude Code HTTP hook callbacks for interactive tmux sessions."""
     await broker.handle_claude_hook(payload)
@@ -937,6 +964,7 @@ async def restart_service(name: str) -> ServiceStatus:
 
 
 register_file_routes(app, lambda: broker)
+register_forge_mcp_routes(app, lambda: broker, dependencies=_LOOPBACK_GUARD)
 
 # --------------------------------------------------------------------------- present-file
 #
@@ -952,9 +980,22 @@ _PRESENTED_ID_RE = re.compile(r"^pf_[0-9a-f]{32}$")
 _presented_registry: dict[str, str] = {}
 
 
+_PRESENTED_DIR_MODE = 0o700
+
+
 def _presented_staging_dir() -> Path:
-    """Broker-owned staging root, OUTSIDE the workspace (keeps the git tree pristine) and on the
-    session home mount (survives broker restart)."""
+    """Broker-owned staging root, OUTSIDE the workspace (keeps the git tree pristine) and
+    persistent (survives broker restart).
+
+    Cluster sessions stage under ``{home}/.forge-presented`` on the session home mount. Local
+    sessions have no such mount, so Forge configures ``presented_files_dir`` explicitly; that
+    directory is created on demand.
+    """
+    configured = broker._settings.presented_files_dir
+    if configured:
+        root = Path(configured).expanduser()
+        root.mkdir(mode=_PRESENTED_DIR_MODE, parents=True, exist_ok=True)
+        return root.resolve(strict=True)
     home = Path(broker._settings.home_path).resolve(strict=True)
     return resolve_contained_path(home, ".forge-presented")
 
@@ -985,7 +1026,7 @@ def _rebuild_presented_registry() -> None:
         logger.warning("present-file: registry rebuild failed: %s", repr(exc))
 
 
-@app.post("/api/present-file")
+@app.post("/api/present-file", dependencies=_LOOPBACK_GUARD)
 async def present_file(body: dict) -> dict:
     """Stage a host file, emit a durable present_file turn, and return its id/metadata.
 
@@ -1141,7 +1182,7 @@ class _RoomWorkflowEventRequest(BaseModel):
 
 
 class _RoomJoinRequest(BaseModel):
-    """Request body for joining a live Environment room."""
+    """Request body for joining a live room, as a person or an agent from another session."""
 
     participant_id: str
     display_name: str = ""
@@ -1151,10 +1192,14 @@ class _RoomJoinRequest(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     surfaces: list[str] = Field(default_factory=lambda: ["skuld.room"])
     environment_action_authorities: list[str] = Field(default_factory=list)
+    participant_type: str = "human"
+    session_id: str = ""
+    subscribes_to: list[str] = Field(default_factory=list)
+    notice_context: str = ""
 
 
 class _RoomHeartbeatRequest(BaseModel):
-    """Request body for human Environment heartbeat/state updates."""
+    """Request body for a joined participant's heartbeat/state updates."""
 
     participant_id: str
     status: str | None = None
@@ -1190,9 +1235,10 @@ class _WorkflowGateResolveRequest(BaseModel):
     decision: str
     notes: str = ""
     source: str = "human"
+    decided_by: str = ""
 
 
-@app.post("/api/message")
+@app.post("/api/message", dependencies=_LOOPBACK_GUARD)
 async def send_message_to_session(body: _SendMessageRequest) -> dict:
     """Send a message to another session via Volundr's WS proxy.
 
@@ -1350,9 +1396,9 @@ async def publish_room_workflow_event(body: _RoomWorkflowEventRequest) -> dict:
 
 @app.post("/api/room/join")
 async def join_room(body: _RoomJoinRequest) -> dict:
-    """Join a human participant to a live Valkyrie Environment."""
+    """Join a person or an agent from another session to this room."""
     try:
-        participant = await broker.join_human_environment(
+        participant = await broker.join_environment(
             participant_id=body.participant_id,
             display_name=body.display_name,
             environment_id=body.environment_id,
@@ -1361,6 +1407,10 @@ async def join_room(body: _RoomJoinRequest) -> dict:
             capabilities=body.capabilities or None,
             surfaces=body.surfaces or None,
             environment_action_authorities=body.environment_action_authorities,
+            participant_type=body.participant_type,
+            session_id=body.session_id,
+            subscribes_to=body.subscribes_to or None,
+            notice_context=body.notice_context,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -1374,9 +1424,9 @@ async def join_room(body: _RoomJoinRequest) -> dict:
 
 @app.post("/api/room/heartbeat")
 async def heartbeat_room(body: _RoomHeartbeatRequest) -> dict:
-    """Update human participant presence in a live Valkyrie Environment."""
+    """Update a joined participant's presence in this room."""
     try:
-        participant = await broker.heartbeat_human_environment(
+        participant = await broker.heartbeat_environment(
             participant_id=body.participant_id,
             status=body.status,
             wakefulness=body.wakefulness,
@@ -1392,9 +1442,9 @@ async def heartbeat_room(body: _RoomHeartbeatRequest) -> dict:
 
 @app.post("/api/room/leave")
 async def leave_room(body: _RoomLeaveRequest) -> dict:
-    """Leave a human participant from a live Valkyrie Environment."""
+    """End a joined participant's membership of this room."""
     try:
-        await broker.leave_human_environment(
+        await broker.leave_environment(
             participant_id=body.participant_id,
             reason=body.reason,
         )
@@ -1505,6 +1555,7 @@ async def resolve_workflow_gate(
             body.decision,
             notes=body.notes,
             source=body.source,
+            decided_by=body.decided_by,
         )
     except LookupError as exc:
         raise HTTPException(404, str(exc))

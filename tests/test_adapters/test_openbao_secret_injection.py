@@ -436,3 +436,102 @@ def test_oauth_projection_rejects_refresh_token_field():
                 )
             ],
         )
+
+
+class TestWorkloadInjection:
+    """Residents: credentials bound to the workload's own service account."""
+
+    _MAPPINGS = [
+        CredentialMapping(
+            credential_name="xai-key",
+            file_mappings={"/run/secrets/xai-api-key": "api_key"},
+        )
+    ]
+
+    async def test_binds_the_role_to_the_workloads_own_service_account(self, adapter):
+        with (
+            patch.object(adapter, "_ensure_service_account", new=AsyncMock()) as mock_sa,
+            patch.object(adapter, "_create_or_update_configmap", new=AsyncMock()) as mock_cm,
+            patch.object(adapter._admin, "ensure_policy", new=AsyncMock()) as mock_policy,
+            patch.object(adapter._admin, "ensure_jwt_role", new=AsyncMock()) as mock_role,
+        ):
+            additions = await adapter.workload_pod_spec_additions(
+                "alice",
+                self._MAPPINGS,
+                workload_id="res-1",
+                service_account_name="resident-res-1",
+                inject_containers="ravn",
+                tenant_id="acme",
+            )
+
+        mock_sa.assert_not_awaited()
+        mock_policy.assert_awaited_once_with(
+            "volundr-workload-res-1",
+            'path "volundr/data/users/alice/xai-key" {\n  capabilities = ["read"]\n}',
+        )
+        role = mock_role.await_args.args[0]
+        assert role.bound_subject == "system:serviceaccount:skuld:resident-res-1"
+        assert role.policies == ("volundr-workload-res-1",)
+        config = mock_cm.await_args.kwargs
+        assert config["name"] == "openbao-agent-workload-res-1"
+        assert 'destination = "/run/secrets/xai-api-key"' in config["data"]["config.hcl"]
+        assert config["labels"]["volundr.niuu.io/workload-id"] == "res-1"
+        assert additions.service_account is None
+        assert additions.annotations["vault.hashicorp.com/agent-inject-containers"] == "ravn"
+        assert additions.annotations["vault.hashicorp.com/role"] == "volundr-workload-res-1"
+        assert (
+            additions.annotations["vault.hashicorp.com/agent-configmap"]
+            == "openbao-agent-workload-res-1"
+        )
+        assert additions.annotations["vault.hashicorp.com/agent-pre-populate-only"] == "true"
+        assert adapter.supports_workloads
+
+    @pytest.mark.parametrize(
+        ("mappings", "service_account", "message"),
+        [
+            ([], "resident-res-1", "at least one credential"),
+            (_MAPPINGS, "", "service account"),
+            (
+                [CredentialMapping(credential_name="x", oauth_tenant_id="acme")],
+                "resident-res-1",
+                "static credentials only",
+            ),
+        ],
+    )
+    async def test_refuses_what_it_cannot_inject(self, adapter, mappings, service_account, message):
+        with pytest.raises(ValueError, match=message):
+            await adapter.workload_pod_spec_additions(
+                "alice",
+                mappings,
+                workload_id="res-1",
+                service_account_name=service_account,
+                inject_containers="ravn",
+            )
+
+    async def test_cleanup_workload_keeps_the_service_account(self, adapter):
+        with (
+            patch.object(adapter._admin, "delete_policy", new=AsyncMock()) as mock_policy,
+            patch.object(adapter._admin, "delete_jwt_role", new=AsyncMock()) as mock_role,
+            patch.object(adapter, "_delete_configmap", new=AsyncMock()) as mock_cm,
+            patch.object(adapter, "_delete_service_account", new=AsyncMock()) as mock_sa,
+        ):
+            await adapter.cleanup_workload("res-1")
+
+        mock_role.assert_awaited_once_with("volundr-workload-res-1", auth_path="jwt-valhalla")
+        mock_policy.assert_awaited_once_with("volundr-workload-res-1")
+        mock_cm.assert_awaited_once_with("openbao-agent-workload-res-1")
+        mock_sa.assert_not_awaited()
+
+
+async def test_adapters_without_workload_support_say_so():
+    from volundr.adapters.outbound.memory_secret_injection import InMemorySecretInjectionAdapter
+
+    adapter = InMemorySecretInjectionAdapter()
+
+    assert adapter.supports_workloads is False
+    with pytest.raises(NotImplementedError, match="resident workload"):
+        await adapter.workload_pod_spec_additions(
+            "alice", [], workload_id="w", service_account_name="sa", inject_containers="ravn"
+        )
+    with pytest.raises(NotImplementedError, match="resident workload"):
+        await adapter.cleanup_workload("w")

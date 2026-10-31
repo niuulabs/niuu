@@ -1468,7 +1468,6 @@
       if (glideT >= 1) glideTo = null;
     }
 
-    const toScreen = (wx, wy) => [(wx - cam.x) * cam.z + W / 2, (wy - cam.y) * cam.z + H / 2];
     const toWorld = (sx, sy) => [(sx - W / 2) / cam.z + cam.x, (sy - H / 2) / cam.z + cam.y];
 
     function zoomAbout(factor, sx, sy) {

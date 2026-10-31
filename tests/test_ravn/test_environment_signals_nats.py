@@ -14,7 +14,7 @@ from typing import Any
 import nats.js.api as js_api
 import pytest
 
-import ravn.adapters.environment_signals_nats as signals_nats
+from ravn.adapters import environment_signals_nats as signals_nats
 from ravn.adapters.environment_signals_nats import (
     NatsJetStreamSignalAdapter,
     _sanitize_durable,
@@ -240,6 +240,7 @@ async def test_durable_transport_persists_to_inbox_without_queueing_each_poll() 
         enqueue=enqueue,
         resident_signal_processor=process,
         durable_home_enabled=True,
+        home_wake=lambda: None,
     )
     runtime._adapters = [adapter]
 

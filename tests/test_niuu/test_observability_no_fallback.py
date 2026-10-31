@@ -28,6 +28,7 @@ _ENABLED_KWARGS = {
     "enabled": True,
     "trace_endpoint": "http://localhost:4317",
     "metric_endpoint": "http://localhost:4318/v1/metrics",
+    "log_endpoint": "http://localhost:4318/v1/logs",
 }
 
 
@@ -88,6 +89,9 @@ class TestMultiComponentProcess:
         pytest.importorskip(
             "opentelemetry.exporter.otlp.proto.http.metric_exporter", exc_type=ImportError
         )
+        pytest.importorskip(
+            "opentelemetry.exporter.otlp.proto.http._log_exporter", exc_type=ImportError
+        )
         first = obs_module.configure_observability(
             ObservabilityConfig(**_ENABLED_KWARGS, service_name="volundr"),
             component="volundr",
@@ -108,6 +112,9 @@ class TestMultiComponentProcess:
         pytest.importorskip(
             "opentelemetry.exporter.otlp.proto.http.metric_exporter", exc_type=ImportError
         )
+        pytest.importorskip(
+            "opentelemetry.exporter.otlp.proto.http._log_exporter", exc_type=ImportError
+        )
         obs_module.configure_observability(
             ObservabilityConfig(**_ENABLED_KWARGS, service_name="volundr"),
             component="volundr",
@@ -116,6 +123,7 @@ class TestMultiComponentProcess:
             enabled=True,
             trace_endpoint="http://somewhere-else:4317",
             metric_endpoint="http://localhost:4318/v1/metrics",
+            log_endpoint="http://localhost:4318/v1/logs",
             service_name="ting",
         )
         with pytest.raises(RuntimeError, match="Conflicting observability configuration"):
@@ -130,6 +138,9 @@ class TestMultiComponentProcess:
         )
         pytest.importorskip(
             "opentelemetry.exporter.otlp.proto.http.metric_exporter", exc_type=ImportError
+        )
+        pytest.importorskip(
+            "opentelemetry.exporter.otlp.proto.http._log_exporter", exc_type=ImportError
         )
         obs_module.configure_observability(
             ObservabilityConfig(**_ENABLED_KWARGS, service_name="volundr"),
@@ -153,6 +164,9 @@ class TestMultiComponentProcess:
         )
         pytest.importorskip(
             "opentelemetry.exporter.otlp.proto.http.metric_exporter", exc_type=ImportError
+        )
+        pytest.importorskip(
+            "opentelemetry.exporter.otlp.proto.http._log_exporter", exc_type=ImportError
         )
         shared = obs_module.configure_observability(
             ObservabilityConfig(**_ENABLED_KWARGS, service_name="volundr"),

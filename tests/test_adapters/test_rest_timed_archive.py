@@ -87,6 +87,13 @@ async def test_timed_archive_rest_preserves_identity_before_paging_and_elision(
         assert recent["turns"] == tail["turns"]
         bad = client.get(url, params={"after": 2, "after_id": "old-cumulative-row"}).json()
         assert bad["window_offset"] == -1 and bad["turns"] == []
+        source_id = fixture["turns"][-1]["id"]
+        anchor = client.get(f"{url}/turns/{source_id}")
+        assert anchor.status_code == 200
+        assert anchor.json()["requested_turn_id"] == source_id
+        assert anchor.json()["turn"]["id"] == expected[-1]["id"]
+        assert anchor.json()["index"] == len(expected) - 1
+        assert anchor.json()["total_turns"] == len(expected)
         result = client.get(f"/api/v1/forge/sessions/{sid}/tool-result/tool-before")
         assert result.status_code == 200
         assert result.json()["content"] == "fixture-only\n"

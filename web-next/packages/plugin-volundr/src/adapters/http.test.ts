@@ -2806,3 +2806,119 @@ it('scopes metrics and resources, forwards cancellation, and rejects gateways th
   await service.getClusterResources({ signal });
   expect(client.get).toHaveBeenLastCalledWith('/cluster/resources', { signal });
 });
+
+describe('shared Forge stream listeners', () => {
+  type StreamOptions = {
+    onEvent?: (frame: { event?: string; data: string }) => void;
+    onOpen?: () => void;
+    onError?: (error: unknown) => void;
+  };
+
+  function streamHarness() {
+    let options: StreamOptions = {};
+    const close = vi.fn();
+    const openStream = vi.fn((_url: string, next: StreamOptions) => {
+      options = next;
+      return { close };
+    });
+    return { openStream, close, options: () => options };
+  }
+
+  it('hands raw events and connection status to feature listeners on one stream', async () => {
+    const client = makeClient();
+    const stream = streamHarness();
+    const svc = buildVolundrHttpAdapter(client, stream.openStream as never);
+    const sessions: Array<Array<{ id: string }>> = [];
+    const unsubscribeSessions = svc.subscribe((next) => sessions.push(next), { hydrate: false });
+    const events: Array<{ type: string; data: unknown }> = [];
+    const statuses: string[] = [];
+    const stop = svc.subscribeForgeStream({
+      onEvent: (event) => events.push(event),
+      onStatus: (status) => statuses.push(status),
+    });
+    expect(stream.openStream).toHaveBeenCalledTimes(1);
+
+    stream.options().onOpen?.();
+    const notification = { id: 'n-1', seq: 3, title: 'Done', instance_id: 'thor' };
+    stream.options().onEvent?.({
+      event: 'session_notification',
+      data: JSON.stringify(notification),
+    });
+    stream.options().onError?.(new Error('dropped'));
+
+    expect(events).toEqual([{ type: 'session_notification', data: notification }]);
+    expect(statuses).toEqual(['open', 'error']);
+    // A notification carries an id but must never touch the session cache.
+    expect(sessions.every((snapshot) => snapshot.length === 0)).toBe(true);
+
+    // A listener that joins while the stream is known reports its state immediately.
+    const late: string[] = [];
+    const stopLate = svc.subscribeForgeStream({
+      onEvent: () => {
+        throw new Error('listener bug');
+      },
+      onStatus: (status) => late.push(status),
+    });
+    expect(late).toEqual(['error']);
+    stream
+      .options()
+      .onEvent?.({ event: 'session_notification', data: JSON.stringify(notification) });
+    expect(events).toHaveLength(2);
+
+    unsubscribeSessions();
+    stopLate();
+    expect(stream.close).not.toHaveBeenCalled();
+    stop();
+    expect(stream.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-reads a cached session when its read state changes and ignores unknown sessions', async () => {
+    const client = makeClient();
+    client.get.mockImplementation(async (endpoint: string) => {
+      if (endpoint === '/sessions')
+        return [{ id: 'sess-1', name: 'alpha', status: 'running', model: 'opus' }];
+      if (endpoint.startsWith('/sessions/sess-1'))
+        return {
+          id: 'sess-1',
+          name: 'alpha',
+          status: 'running',
+          model: 'opus',
+          read_state: { is_unread: false, latest_output_seq: 9, read_through_seq: 9, revision: 2 },
+        };
+      return [];
+    });
+    const stream = streamHarness();
+    const svc = buildVolundrHttpAdapter(client, stream.openStream as never);
+    const seen: Array<Array<{ id: string; readState?: unknown }>> = [];
+    svc.subscribe((sessions) => seen.push(sessions));
+    await vi.waitFor(() => expect(seen.at(-1)).toHaveLength(1));
+
+    stream.options().onEvent?.({
+      event: 'session_read_state',
+      data: JSON.stringify({ session_id: 'sess-1', owner_id: 'user-1' }),
+    });
+    // A second hint while the first read is in flight is coalesced.
+    stream.options().onEvent?.({
+      event: 'session_read_state',
+      data: JSON.stringify({ session_id: 'sess-1', owner_id: 'user-1' }),
+    });
+    stream.options().onEvent?.({
+      event: 'session_read_state',
+      data: JSON.stringify({ session_id: 'unknown', owner_id: 'user-1' }),
+    });
+    stream.options().onEvent?.({ event: 'session_read_state', data: JSON.stringify({}) });
+
+    await vi.waitFor(() =>
+      expect(seen.at(-1)?.[0]?.readState).toEqual({
+        isUnread: false,
+        latestOutputSeq: 9,
+        readThroughSeq: 9,
+        revision: 2,
+      }),
+    );
+    const sessionReads = client.get.mock.calls.filter(([endpoint]) =>
+      String(endpoint).startsWith('/sessions/'),
+    );
+    expect(sessionReads).toHaveLength(1);
+  });
+});

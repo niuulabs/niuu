@@ -72,6 +72,16 @@ spec:
               value: {{ .Values.service.targetPort | default 8080 | quote }}
             - name: WORKERS
               value: {{ .Values.config.workers | default 1 | quote }}
+            {{- if .Values.git.provenance.enabled }}
+            # sigstore-python keeps its TUF trust-root cache under XDG_DATA_HOME and
+            # XDG_CACHE_HOME. The runtime user has no home directory and the root
+            # filesystem is read-only, so image provenance verification needs them on
+            # the writable /tmp scratch volume.
+            - name: XDG_DATA_HOME
+              value: /tmp/xdg-data
+            - name: XDG_CACHE_HOME
+              value: /tmp/xdg-cache
+            {{- end }}
             # Database secrets (override YAML config)
             - name: DATABASE__HOST
               value: {{ include "volundr.databaseHost" . | quote }}
@@ -97,6 +107,9 @@ spec:
                   name: {{ .Values.pat.issuerSecretName }}
                   key: {{ .Values.pat.issuerSecretKey | default "client-secret" }}
             {{- end }}
+            # Ravn residents' sessions by default (resident_runtimes.ravn_sessions_enabled)
+            - name: RESIDENT_RUNTIMES__RAVN_SESSIONS_ENABLED
+              value: {{ .Values.ravnResidentSessions.enabled | quote }}
             {{- if and .Values.workloadIdentity .Values.workloadIdentity.signingKey.existingSecret }}
             - name: NIUU_WORKLOAD_IDENTITY_SIGNING_KEY
               valueFrom:
@@ -185,6 +198,15 @@ spec:
                   key: {{ .secretKey }}
             {{- end }}
             {{- end }}
+            {{- range $index, $controller := .Values.residentRuntimeSessionControllers }}
+            {{- range $controller.secretKwargs }}
+            - name: RESIDENT_SESSION_CONTROLLER_{{ $index }}_SK_{{ .kwarg | upper }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+            {{- end }}
             {{- range .Values.storageAdapter.secretKwargs }}
             - name: STORAGE_ADAPTER_SK_{{ .kwarg | upper }}
               valueFrom:
@@ -236,6 +258,13 @@ spec:
             {{- end }}
             {{- range .Values.sleipnir.secretKwargs }}
             - name: SLEIPNIR_SK_{{ .kwarg | upper }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+            {{- range .Values.push.secretKwargs }}
+            - name: PUSH_SK_{{ .kwarg | upper }}
               valueFrom:
                 secretKeyRef:
                   name: {{ .secretName }}
@@ -307,12 +336,16 @@ spec:
             {{- end }}
             - name: preview-cache
               mountPath: {{ .Values.previewCache.mountPath | default "/volundr/preview-cache" }}
+            - name: scratch
+              mountPath: /tmp
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- with .Values.lifecycle }}
+          {{- if .Values.lifecycle }}
           lifecycle:
-            {{- toYaml . | nindent 12 }}
+            {{- toYaml .Values.lifecycle | nindent 12 }}
+          {{- else }}
+          {{- include "volundr.drainLifecycle" . | nindent 10 }}
           {{- end }}
         {{- if .Values.envoy.authorization.enabled }}
         - name: cedar-authz
@@ -320,6 +353,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["python", "-m", "identity.authz_main"]
           args: ["--config", "/etc/authorization/authz.yaml"]
+          {{- include "volundr.drainLifecycle" . | nindent 10 }}
           readinessProbe:
             exec:
               command:
@@ -370,6 +404,7 @@ spec:
             {{- with .Values.envoy.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- include "volundr.drainLifecycle" . | nindent 10 }}
           readinessProbe:
             tcpSocket:
               port: {{ .Values.envoy.port }}
@@ -485,6 +520,15 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        # The root filesystem is read-only; /tmp is Völundr's scratch space (Python's
+        # tempfile), e.g. the archive spools of a resident's workspace migration.
+        - name: scratch
+          {{- if .Values.scratch.sizeLimit }}
+          emptyDir:
+            sizeLimit: {{ .Values.scratch.sizeLimit }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -492,7 +536,15 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
+      {{- $affinity := deepCopy (.Values.affinity | default dict) }}
+      {{- if .Values.rollout.colocate }}
+      {{- $term := dict "topologyKey" "kubernetes.io/hostname" "labelSelector" (dict "matchLabels" (include "volundr.selectorLabels" . | fromYaml)) }}
+      {{- $podAffinity := $affinity.podAffinity | default dict }}
+      {{- $required := $podAffinity.requiredDuringSchedulingIgnoredDuringExecution | default list }}
+      {{- $_ := set $podAffinity "requiredDuringSchedulingIgnoredDuringExecution" (append $required $term) }}
+      {{- $_ := set $affinity "podAffinity" $podAffinity }}
+      {{- end }}
+      {{- with $affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}

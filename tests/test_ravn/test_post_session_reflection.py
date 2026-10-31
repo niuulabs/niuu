@@ -11,6 +11,7 @@ import pytest
 from niuu.domain.mimir import MimirPage, MimirPageMeta
 from ravn.adapters.reflection.post_session import (
     PostSessionReflectionService,
+    ReflectionError,
     _build_candidate_content,
     _build_candidate_path,
     _build_page_content,
@@ -25,7 +26,9 @@ from ravn.adapters.reflection.post_session import (
     _titles_similar,
     fetch_relevant_learnings,
 )
+from ravn.cap_telemetry import cap_hit_counts
 from ravn.config import PostSessionReflectionConfig
+from ravn.domain.models import LLMResponse, StopReason, TokenUsage
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.catalog import ravn_session_ended
 from sleipnir.domain.events import SleipnirEvent
@@ -301,7 +304,7 @@ async def test_reflection_prompt_includes_recorded_outcome_context():
 
 
 @pytest.mark.asyncio
-async def test_reflection_prompt_bounds_recorded_outcome_context():
+async def test_reflection_prompt_carries_the_recorded_outcome_context_whole():
     bus = InProcessBus()
     mimir = AsyncMock()
     llm = AsyncMock()
@@ -316,8 +319,9 @@ async def test_reflection_prompt_bounds_recorded_outcome_context():
     )
 
     prompt = llm.generate.await_args.kwargs["messages"][0]["content"]
-    assert "recorded context truncated" in prompt
-    assert "x" * 13_000 not in prompt
+    assert "x" * 20_000 in prompt
+    assert "truncated" not in prompt
+    assert cap_hit_counts() == {}
 
 
 @pytest.mark.asyncio
@@ -439,7 +443,8 @@ async def test_process_extracts_learning_from_yamlish_json():
 
 
 @pytest.mark.asyncio
-async def test_process_skips_on_llm_error():
+async def test_process_raises_when_the_llm_call_fails():
+    """A reflection that could not run is a lost lesson, not "no learning"."""
     bus = InProcessBus()
     mimir = AsyncMock()
     llm = AsyncMock()
@@ -455,13 +460,90 @@ async def test_process_skips_on_llm_error():
         "duration_s": 5.0,
         "repo_slug": "",
     }
-    # Must not raise.
-    await svc._process(payload)
+    with pytest.raises(RuntimeError, match="LLM unavailable"):
+        await svc._process(payload)
+    mimir.upsert_page.assert_not_awaited()
+
+
+def _truncated_response() -> LLMResponse:
+    return LLMResponse(
+        content="",
+        tool_calls=[],
+        stop_reason=StopReason.MAX_TOKENS,
+        usage=TokenUsage(input_tokens=1889, output_tokens=1024),
+        reasoning="r" * 4625,
+    )
+
+
+@pytest.mark.asyncio
+async def test_process_raises_when_reflection_exhausts_its_token_budget():
+    """A reasoning model cut off mid-thought names the knob instead of yielding nothing."""
+    bus = InProcessBus()
+    mimir = AsyncMock()
+    llm = AsyncMock()
+    llm.generate.return_value = _truncated_response()
+    config = _make_config(max_tokens=1024)
+    svc = PostSessionReflectionService(bus, mimir, llm, config)
+
+    with pytest.raises(ReflectionError, match="reflection.max_tokens") as raised:
+        await svc._process({"session_id": "sess-cut", "persona": "ravn", "outcome": "ok"})
+
+    assert "sess-cut" in str(raised.value)
+    assert "1024-token budget" in str(raised.value)
+    assert "reasoning 4625 chars" in str(raised.value)
+    # Asking again at the same budget would fail the same way.
+    assert llm.generate.await_count == 1
+    mimir.upsert_page.assert_not_awaited()
+    assert cap_hit_counts() == {"reflection.max_tokens": 1}
+
+
+@pytest.mark.asyncio
+async def test_reflection_sends_no_cap_by_default():
+    """1024 was a guess from non-reasoning models that Qwen3.8 spent thinking."""
+    bus = InProcessBus()
+    llm = AsyncMock()
+    llm.generate.return_value = _make_llm_response("null")
+    svc = PostSessionReflectionService(bus, AsyncMock(), llm, _make_config(max_tokens=None))
+
+    await svc._run_reflection({"outcome": "success"})
+
+    assert llm.generate.await_args.kwargs["max_tokens"] is None
+
+
+@pytest.mark.asyncio
+async def test_process_raises_after_two_empty_replies():
+    bus = InProcessBus()
+    mimir = AsyncMock()
+    llm = AsyncMock()
+    llm.generate.return_value = _make_llm_response("")
+    config = _make_config()
+    svc = PostSessionReflectionService(bus, mimir, llm, config)
+
+    with pytest.raises(ReflectionError, match="an empty reply"):
+        await svc._process({"session_id": "sess-empty", "persona": "ravn", "outcome": "ok"})
+
+    assert llm.generate.await_count == 2
     mimir.upsert_page.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_process_skips_on_malformed_json():
+async def test_process_records_nothing_when_the_model_answers_null():
+    """``null`` is the model's answer that nothing is worth learning, not a failure."""
+    bus = InProcessBus()
+    mimir = AsyncMock()
+    llm = AsyncMock()
+    llm.generate.return_value = _make_llm_response("null")
+    config = _make_config()
+    svc = PostSessionReflectionService(bus, mimir, llm, config)
+
+    await svc._process({"session_id": "sess-null", "persona": "ravn", "outcome": "ok"})
+
+    assert llm.generate.await_count == 1
+    mimir.upsert_page.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_process_raises_on_malformed_json_after_asking_again():
     bus = InProcessBus()
     mimir = AsyncMock()
     llm = AsyncMock()
@@ -469,16 +551,18 @@ async def test_process_skips_on_malformed_json():
     config = _make_config()
     svc = PostSessionReflectionService(bus, mimir, llm, config)
 
-    await svc._process(
-        {
-            "session_id": "sess-bad",
-            "persona": "ravn",
-            "outcome": "success",
-            "token_count": 100,
-            "duration_s": 5.0,
-            "repo_slug": "",
-        }
-    )
+    with pytest.raises(ReflectionError, match="no JSON .* after 2 attempts"):
+        await svc._process(
+            {
+                "session_id": "sess-bad",
+                "persona": "ravn",
+                "outcome": "success",
+                "token_count": 100,
+                "duration_s": 5.0,
+                "repo_slug": "",
+            }
+        )
+    assert llm.generate.await_count == 2
     mimir.upsert_page.assert_not_awaited()
 
 
@@ -828,6 +912,9 @@ async def test_promotion_reuses_the_recorded_learning_path_after_a_retitle():
     """One belief promotes to one page even when the model rewords its title."""
     mimir = AsyncMock()
     mimir.search.return_value = []
+    # The page it was promoted to before, which re-promotion reads to keep a
+    # curated procedure (this one has none).
+    mimir.read_page.return_value = _loop_page("First observation.")
     svc = PostSessionReflectionService(InProcessBus(), mimir, AsyncMock(), _make_config())
 
     candidate = _mark_candidate_promoted(
@@ -1044,7 +1131,8 @@ async def test_positive_feedback_promotes_referenced_candidate_without_reflectio
 
 
 @pytest.mark.asyncio
-async def test_on_session_ended_never_raises_on_error():
+async def test_on_session_ended_propagates_a_failed_reflection():
+    """The Sleipnir consumer logs (or redelivers) it; the handler does not hide it."""
     bus = InProcessBus()
     mimir = AsyncMock()
     llm = AsyncMock()
@@ -1062,8 +1150,8 @@ async def test_on_session_ended_never_raises_on_error():
         repo_slug="",
         source="test",
     )
-    # Must not raise.
-    await svc._on_session_ended(fake_event)
+    with pytest.raises(Exception, match="catastrophic failure"):
+        await svc._on_session_ended(fake_event)
 
 
 # ---------------------------------------------------------------------------
@@ -1262,14 +1350,13 @@ async def test_stop_handles_unsubscribe_exception():
 
 
 @pytest.mark.asyncio
-async def test_on_session_ended_catches_exception_from_process():
+async def test_on_session_ended_propagates_an_error_from_process():
     bus = InProcessBus()
     mimir = AsyncMock()
     llm = AsyncMock()
     config = _make_config(enabled=True)
     svc = PostSessionReflectionService(bus, mimir, llm, config)
 
-    # Patch _process to raise directly, bypassing its own error handling.
     svc._process = AsyncMock(side_effect=RuntimeError("internal failure"))
 
     fake_event = ravn_session_ended(
@@ -1281,8 +1368,33 @@ async def test_on_session_ended_catches_exception_from_process():
         repo_slug="",
         source="test",
     )
-    # Must not raise — _on_session_ended swallows all exceptions.
-    await svc._on_session_ended(fake_event)
+    with pytest.raises(RuntimeError, match="internal failure"):
+        await svc._on_session_ended(fake_event)
+
+
+@pytest.mark.asyncio
+async def test_on_event_propagates_a_failed_promotion_evidence_write():
+    """Explicit promotion evidence that cannot be recorded must not vanish."""
+    bus = InProcessBus()
+    mimir = AsyncMock()
+    mimir.read_page.side_effect = RuntimeError("mimir unavailable")
+    llm = AsyncMock()
+    svc = PostSessionReflectionService(bus, mimir, llm, _make_config(enabled=True))
+    event = SleipnirEvent(
+        event_type="feedback.recorded",
+        source="test",
+        payload={
+            "feedback_type": "useful",
+            "learning_candidate_path": "learning-candidates/general/a-lesson.md",
+        },
+        summary="useful",
+        urgency=0.1,
+        domain="code",
+        timestamp=datetime(2026, 10, 26, tzinfo=UTC),
+    )
+
+    with pytest.raises(RuntimeError, match="mimir unavailable"):
+        await svc._on_event(event)
 
 
 # ---------------------------------------------------------------------------
@@ -1291,7 +1403,7 @@ async def test_on_session_ended_catches_exception_from_process():
 
 
 @pytest.mark.asyncio
-async def test_process_skips_on_llm_returning_json_array():
+async def test_process_raises_when_the_llm_keeps_returning_a_json_array():
     bus = InProcessBus()
     mimir = AsyncMock()
     llm = AsyncMock()
@@ -1299,16 +1411,17 @@ async def test_process_skips_on_llm_returning_json_array():
     config = _make_config()
     svc = PostSessionReflectionService(bus, mimir, llm, config)
 
-    await svc._process(
-        {
-            "session_id": "s",
-            "persona": "p",
-            "outcome": "ok",
-            "token_count": 0,
-            "duration_s": 0.0,
-            "repo_slug": "",
-        }
-    )
+    with pytest.raises(ReflectionError, match="not an object \\(list\\)"):
+        await svc._process(
+            {
+                "session_id": "s",
+                "persona": "p",
+                "outcome": "ok",
+                "token_count": 0,
+                "duration_s": 0.0,
+                "repo_slug": "",
+            }
+        )
     mimir.upsert_page.assert_not_awaited()
 
 
@@ -1333,8 +1446,12 @@ async def test_write_learning_skips_on_empty_title():
 
 
 @pytest.mark.asyncio
-async def test_write_learning_handles_upsert_error_on_update():
-    existing = _make_mimir_page("learnings/general/some-thing", "Learning: Some thing")
+async def test_write_learning_raises_when_the_update_cannot_be_written():
+    existing = _make_mimir_page(
+        "learning-candidates/general/some-thing",
+        "Learning candidate: Some thing",
+        category="learning-candidates",
+    )
     bus = InProcessBus()
     mimir = AsyncMock()
     mimir.search.return_value = [existing]
@@ -1350,12 +1467,13 @@ async def test_write_learning_handles_upsert_error_on_update():
         "tags": [],
         "evidence": "e",
     }
-    # Must not raise.
-    await svc._write_learning(learning, {"session_id": "s", "repo_slug": ""})
+    # A lost write is a hard failure, never a silently dropped observation.
+    with pytest.raises(RuntimeError, match="write error"):
+        await svc._write_learning(learning, {"session_id": "s", "repo_slug": ""})
 
 
 @pytest.mark.asyncio
-async def test_write_learning_handles_upsert_error_on_create():
+async def test_write_learning_raises_when_the_candidate_cannot_be_written():
     bus = InProcessBus()
     mimir = AsyncMock()
     mimir.search.return_value = []
@@ -1371,8 +1489,8 @@ async def test_write_learning_handles_upsert_error_on_create():
         "tags": [],
         "evidence": "e",
     }
-    # Must not raise.
-    await svc._write_learning(learning, {"session_id": "s", "repo_slug": ""})
+    with pytest.raises(RuntimeError, match="write error"):
+        await svc._write_learning(learning, {"session_id": "s", "repo_slug": ""})
 
 
 # ---------------------------------------------------------------------------
@@ -1394,7 +1512,8 @@ async def test_find_existing_page_returns_none_for_empty_title():
 
 
 @pytest.mark.asyncio
-async def test_find_existing_page_returns_none_on_search_error():
+async def test_find_existing_page_raises_on_search_error():
+    """A failed search must not read as "no match": that re-records a known lesson."""
     bus = InProcessBus()
     mimir = AsyncMock()
     mimir.search.side_effect = RuntimeError("search failure")
@@ -1402,8 +1521,8 @@ async def test_find_existing_page_returns_none_on_search_error():
     config = _make_config()
     svc = PostSessionReflectionService(bus, mimir, llm, config)
 
-    result = await svc._find_existing_page("some relevant title", "")
-    assert result is None
+    with pytest.raises(RuntimeError, match="search failure"):
+        await svc._find_existing_page("some relevant title", "")
 
 
 @pytest.mark.asyncio

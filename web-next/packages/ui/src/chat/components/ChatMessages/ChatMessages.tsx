@@ -21,7 +21,9 @@ import { useCompactUxChatPrefs } from '../../compactUxPrefs';
 import './ChatMessages.css';
 import { ToolImageCard } from '../ToolImages';
 import { PresentedFileCard } from '../ConversationResources';
-import { isPresentedFileTool } from '../ToolBlock/groupContentBlocks';
+import { isNotificationCardTool, isPresentedFileTool } from '../ToolBlock/groupContentBlocks';
+import { NotificationCard } from '../NotificationCard';
+import { parseForgeNotificationPayload } from '@niuulabs/domain';
 
 const formatTime = (date: Date): string =>
   date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -353,6 +355,10 @@ function AssistantContentWithTools({
   // Older histories retain tool positions but only aggregate prose. Preserve that prose once;
   // its original position cannot be recovered here. Structured text parts remain authoritative.
   const hasText = grouped.some((item) => item.kind === 'text' && item.text.trim().length > 0);
+  // A notification turn's content is its title; the card already shows it.
+  const hasNotificationCard = grouped.some(
+    (item) => item.kind === 'single' && isNotificationCardTool(item.block.name),
+  );
 
   if (grouped.length === 0)
     return <MarkdownContent content={fallbackContent} isStreaming={isStreaming} />;
@@ -393,6 +399,13 @@ function AssistantContentWithTools({
         if (item.kind === 'single') {
           if (isPresentedFileTool(item.block.name))
             return <PresentedFileCard key={`file:${item.block.id}`} block={item.block} />;
+          const notification = isNotificationCardTool(item.block.name)
+            ? parseForgeNotificationPayload(item.block.input)
+            : null;
+          if (notification)
+            return (
+              <NotificationCard key={`notification:${item.block.id}`} notification={notification} />
+            );
           return (
             <ToolBlock key={`tool:${item.block.id}`} block={item.block} result={item.result} />
           );
@@ -408,7 +421,7 @@ function AssistantContentWithTools({
         }
         return null;
       })}
-      {!hasText && fallbackContent && (
+      {!hasText && !hasNotificationCard && fallbackContent && (
         <MarkdownContent content={fallbackContent} isStreaming={isStreaming} />
       )}
     </>

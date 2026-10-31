@@ -122,6 +122,13 @@ dispatch:
     ravnConfig: {}
     # -- Shared OTEL exporter settings; runtime service names stay ravn and skuld.
     observability: {}
+    # -- Credential Ting presents to Mimir when reading a campaign's artifacts
+    # for a caller holding a scoped workload credential (a resident's A2A build).
+    # Scoped credentials are never forwarded. Use workload identity with
+    # audience mimir; with no credential such reads fail with HTTP 503.
+    mimirServiceAuth:
+      adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
+      kwargs: {}
 
   # -- In-process (single-turn) dispatch configuration.
   # Controls the LLM used by the RavnDispatcher when running the
@@ -190,6 +197,11 @@ dispatch:
   # {repo}, {feature_branch}, {run_branch}.
   # Leave empty to use the built-in default from config.py.
   dispatchPromptTemplate: ""
+  # -- Seconds a workflow persona running on Claude Code may spend on one
+  # turn: its whole agent loop for a task, every model and tool call
+  # included. A turn that reaches it is interrupted. Raise it for slow or
+  # self-hosted models; 0 turns the limit off. Codex personas are not limited.
+  workflowCliTurnTimeoutSeconds: 120.0
 
 # Planner configuration
 planner:
@@ -219,6 +231,19 @@ a2a:
   pushAuth:
     adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
     kwargs: {}
+  # Unfinished campaigns keep their session pod. Fail (and stop) ones that wait
+  # for an answer nobody sends, or whose session makes no progress. Each expiry
+  # logs at error, counts on ting_a2a_campaigns_expired_total{reason}, and
+  # reaches the caller as FAILED with the reason. 0 disables a check.
+  staleCampaigns:
+    # -- Seconds between sweeps of active campaigns; 0 disables the sweep.
+    sweepIntervalSeconds: 300
+    # -- Fail a campaign waiting this long for an answer (INPUT_REQUIRED).
+    inputWaitTimeoutSeconds: 21600
+    # -- Fail a submitted/working campaign whose session is idle, gone, or busy
+    # with nothing recorded (heartbeats only) this long. Must exceed the longest
+    # single agent turn; workflows declare no run timeout to derive it from.
+    idleTimeoutSeconds: 7200
 
 workflowExecution:
   # Domain-neutral fan-out/join, durable waits, and the Ravn A2A gateway.
@@ -414,6 +439,9 @@ envoy:
       - /api/v1/tokens/workload/jwks
       - /health
       - /api/v1/ting/health
+      # Agent Cards are a discovery document: external A2A clients resolve it
+      # before they have any platform credential.
+      - /.well-known/agent-card.json
     # -- Additional JWT provider for short-lived Niuu workload tokens.
     # When enabled, Envoy accepts either Keycloak user tokens or workload tokens.
     workload:
@@ -460,6 +488,21 @@ envoy:
       methods:
       - POST
       required_scope: ting:workflow:launch
+    # A2A JSON-RPC (SendMessage, GetTask, CancelTask). A resident's build_tool
+    # launches workflows here with a scoped valkyrie_build token; without a
+    # required_scope the gateway-scoped-credential policy refuses every scoped
+    # token on the /api/v1/ting prefix below. Must precede that prefix: the
+    # first matching route wins.
+    - path: /api/v1/ting/a2a
+      methods:
+      - POST
+      required_scope: ting:workflow:launch
+    # Ting's A2A Agent Card at the origin root (a2a-card-api). Without this
+    # entry the gateway denies it, and no A2A client can discover Ting.
+    - path: /.well-known/agent-card.json
+      methods:
+      - GET
+      - HEAD
     - path: /api/v1/ting
       prefix: true
       methods:

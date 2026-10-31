@@ -27,6 +27,11 @@ RESIDENT_SKULD_CONFIG = "/sandbox/.volundr/skuld.yaml"
 RESIDENT_RAVN_CONFIG = "/sandbox/.volundr/ravn.yaml"
 DEFAULT_RESIDENT_PERSONA = "product-steward"
 PROCESS_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+#: Ravn's OpenClaw-protocol shim: a Ravn resident's sessions ("channels").
+RAVN_OPENCLAW_PORT = 18790
+RAVN_OPENCLAW_TOKEN_ENV = "RAVN_OPENCLAW_TOKEN"
+RAVN_OPENCLAW_STORE_PATH = f"{SANDBOX_WORKSPACE}/.ravn/openclaw/state.db"
+RAVN_OPENCLAW_MAX_SESSIONS = 64
 
 
 @dataclass(frozen=True)
@@ -443,7 +448,7 @@ def _ravn_processes(
             command=(
                 "sh",
                 "-lc",
-                'export RAVN__GATEWAY__PLATFORM__PAT_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
+                'export RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
                 f"exec /opt/niuu/bin/python -m ravn {daemon}",
             ),
             env={},
@@ -768,4 +773,55 @@ def _string_dict(value: object) -> dict[str, str]:
         str(key): str(item)
         for key, item in value.items()
         if key and item and "\x00" not in str(key) and "\x00" not in str(item)
+    }
+
+
+def resident_openclaw_shim_enabled(
+    runtime: ResidentRuntime,
+    values: dict[str, Any],
+    *,
+    tokens_provisioned: bool,
+) -> bool:
+    """Whether a Ravn resident runs its OpenClaw shim (its sessions, "channels").
+
+    On by default wherever Völundr keeps the residents' shim tokens (a Ravn
+    session controller drives the backend); a profile's
+    ``resident.openclaw.enabled`` decides explicitly. A profile that asks for the
+    shim where no token is provisioned cannot get one: that is fatal, not off.
+    """
+    if runtime.engine is not ResidentEngine.RAVN:
+        return False
+    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
+    shim = resident.get("openclaw") if isinstance(resident.get("openclaw"), dict) else {}
+    explicit = shim.get("enabled")
+    if explicit is None:
+        return tokens_provisioned
+    if explicit and not tokens_provisioned:
+        raise ValueError(
+            f"Resident profile {runtime.profile_id} enables resident.openclaw, but no "
+            "RavnResidentSessionController provides its token on this backend; enable "
+            "resident_runtimes.ravn_sessions_enabled (charts/volundr ravnResidentSessions) "
+            "or disable resident.openclaw"
+        )
+    return bool(explicit)
+
+
+def enable_resident_openclaw_shim(config: dict[str, Any], values: dict[str, Any]) -> None:
+    """Add the OpenClaw shim channel to a resident's Ravn config.
+
+    The same channel charts/skuld's ravn-configmap renders for Flux residents:
+    agent_id "main" is the session-key grammar the session controller addresses
+    (agent:main:niuu-<uuid>); the token comes from ``RAVN_OPENCLAW_TOKEN``.
+    """
+    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
+    shim = resident.get("openclaw") if isinstance(resident.get("openclaw"), dict) else {}
+    channels = config.setdefault("gateway", {}).setdefault("channels", {})
+    channels["openclaw"] = {
+        "enabled": True,
+        "host": "0.0.0.0",
+        "port": int(shim.get("port") or RAVN_OPENCLAW_PORT),
+        "token_env": RAVN_OPENCLAW_TOKEN_ENV,
+        "agent_id": "main",
+        "max_live_sessions": int(shim.get("maxSessions") or RAVN_OPENCLAW_MAX_SESSIONS),
+        "store_path": str(shim.get("storePath") or RAVN_OPENCLAW_STORE_PATH),
     }

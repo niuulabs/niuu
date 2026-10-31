@@ -3,7 +3,7 @@ id: 96ecf5df-18a0-542b-9df6-aef6aef6a5db
 name: Specification Stack
 description: End-to-end specification workflow that produces a PRD, SRD, SDD, and delivery breakdown with
   explicit review and approval gates between each artifact.
-version: 1.0.0
+version: 1.0.2
 persona_dependencies:
   specification-breakdown-critic:
     id: specification-breakdown-critic
@@ -72,7 +72,7 @@ graph:
     bindingMode: registry
     registryEntryId: mimir-yggdrasil
     url: https://mimir.yggdrasil.niuu.world/api/v1
-    authRef: integration:volundr
+    authRef: workload:mimir
     role: shared
     categories:
     - specifications
@@ -90,7 +90,7 @@ graph:
     stageMembers:
     - personaId: specification-framer
       budget: 18
-      model: gpt-5.5
+      model: gpt-5.6-terra
       consumesEventTypes:
       - spec.requested
     position:
@@ -104,7 +104,7 @@ graph:
     stageMembers:
     - personaId: specification-prd-author
       budget: 24
-      model: gpt-5.5
+      model: gpt-5.6-terra
       consumesEventTypes:
       - spec.framed
       - spec.prd.changes_requested
@@ -119,7 +119,7 @@ graph:
     stageMembers:
     - personaId: specification-prd-critic
       budget: 18
-      model: gpt-5.5
+      model: gpt-5.6-terra
       consumesEventTypes:
       - spec.prd.drafted
     position:
@@ -147,7 +147,7 @@ graph:
     stageMembers:
     - personaId: specification-srd-author
       budget: 22
-      model: gpt-5.5
+      model: gpt-5.6-terra
       consumesEventTypes:
       - spec.prd.approved
       - spec.srd.changes_requested
@@ -162,7 +162,7 @@ graph:
     stageMembers:
     - personaId: specification-srd-critic
       budget: 18
-      model: gpt-5.5
+      model: gpt-5.6-terra
       consumesEventTypes:
       - spec.srd.drafted
     position:
@@ -191,7 +191,7 @@ graph:
     stageMembers:
     - personaId: specification-sdd-author
       budget: 24
-      model: gpt-5.5
+      model: gpt-5.6-terra
       consumesEventTypes:
       - spec.srd.approved
       - spec.sdd.changes_requested
@@ -206,7 +206,7 @@ graph:
     stageMembers:
     - personaId: specification-sdd-critic
       budget: 18
-      model: gpt-5.5
+      model: gpt-5.6-terra
       consumesEventTypes:
       - spec.sdd.drafted
     position:
@@ -235,7 +235,7 @@ graph:
     stageMembers:
     - personaId: specification-breakdown-planner
       budget: 22
-      model: gpt-5.5
+      model: gpt-5.6-terra
       consumesEventTypes:
       - spec.sdd.approved
       - spec.breakdown.changes_requested
@@ -250,7 +250,7 @@ graph:
     stageMembers:
     - personaId: specification-breakdown-critic
       budget: 16
-      model: gpt-5.5
+      model: gpt-5.6-terra
       consumesEventTypes:
       - spec.breakdown.drafted
     position:
@@ -279,7 +279,7 @@ graph:
     stageMembers:
     - personaId: specification-publisher
       budget: 16
-      model: gpt-5.5
+      model: gpt-5.6-terra
       consumesEventTypes:
       - spec.breakdown.approved
     position:

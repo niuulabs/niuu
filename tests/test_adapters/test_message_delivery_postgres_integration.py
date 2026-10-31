@@ -127,6 +127,7 @@ async def _old_bootstrap(conn, files):
         try:
             await conn.execute(path.read_text())
         except asyncpg.PostgresError:
+            # This fixture intentionally reproduces the historical migration bug.
             pass
 
 

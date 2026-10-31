@@ -62,6 +62,7 @@ def _raise_for_status(response: httpx.Response) -> None:
     try:
         detail = response.json().get("detail", detail)
     except ValueError:
+        # Non-JSON error bodies are reported verbatim below.
         pass
     raise GuildAPIError(
         f"Guild returned {response.status_code}: {detail}", status_code=response.status_code

@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 import asyncpg
 
 from identity.ports import AuthorizationDeniedError
 from ting.domain.models import CampaignStageState, WorkflowCampaign, WorkflowCampaignStatus
-from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
+from ting.ports.workflow_campaign_repository import (
+    CampaignAlreadyTerminalError,
+    WorkflowCampaignRepository,
+)
+
+_TERMINAL_STATUS_VALUES = frozenset(
+    {WorkflowCampaignStatus.COMPLETED.value, WorkflowCampaignStatus.FAILED.value}
+)
 
 
 class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
@@ -28,6 +36,49 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
             ORDER BY updated_at DESC, created_at DESC
             """,
             owner_id,
+        )
+        return [self._row_to_campaign(row) for row in rows]
+
+    async def list_campaign_summaries(self, *, owner_id: str) -> list[WorkflowCampaign]:
+        rows = await self._pool.fetch(
+            """
+            SELECT id, slug, name, owner_id, workflow_id, workflow_version, workflow_name,
+                   jsonb_strip_nulls(jsonb_build_object(
+                       'workflow_revision', workflow_snapshot->'workflow_revision',
+                       'workflow_digest', workflow_snapshot->'workflow_digest',
+                       'graph', jsonb_build_object('tags', workflow_snapshot#>'{graph,tags}')
+                   )) AS workflow_snapshot,
+                   session_id, session_name, status, active_stage_id, stage_state, metadata,
+                   created_at, updated_at, last_activity_at, completed_at, connection_id,
+                   tenant_id
+            FROM workflow_campaigns
+            WHERE owner_id = $1
+            ORDER BY updated_at DESC, created_at DESC
+            """,
+            owner_id,
+        )
+        return [self._row_to_campaign(row) for row in rows]
+
+    async def list_ticket_campaigns(
+        self,
+        *,
+        owner_id: str,
+        saga_id: UUID | None = None,
+        issue_id: str | None = None,
+    ) -> list[WorkflowCampaign]:
+        rows = await self._pool.fetch(
+            """
+            SELECT *
+            FROM workflow_campaigns
+            WHERE owner_id = $1
+              AND metadata ? 'ticket'
+              AND ($2::text IS NULL OR metadata->'ticket'->>'sagaId' = $2)
+              AND ($3::text IS NULL OR metadata->'ticket'->>'issueId' = $3)
+            ORDER BY created_at
+            """,
+            owner_id,
+            str(saga_id) if saga_id is not None else None,
+            issue_id,
         )
         return [self._row_to_campaign(row) for row in rows]
 
@@ -114,8 +165,49 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
             return None
         return self._row_to_campaign(row)
 
+    async def save_ticket_campaign(
+        self,
+        campaign: WorkflowCampaign,
+        *,
+        saga_id: UUID,
+        issue_id: str,
+    ) -> str | None:
+        # An advisory lock, not a unique index: existing data may already hold
+        # duplicates, and an index would refuse to build on it. It is released
+        # with the transaction, by which time the new row is visible.
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                    f"ticket-launch:{saga_id}:{issue_id}",
+                )
+                active = await connection.fetchval(
+                    """
+                    SELECT slug
+                    FROM workflow_campaigns
+                    WHERE owner_id = $1
+                      AND metadata->'ticket'->>'sagaId' = $2
+                      AND metadata->'ticket'->>'issueId' = $3
+                      AND status IN ('pending', 'running', 'blocked')
+                      AND id <> $4
+                    ORDER BY created_at
+                    LIMIT 1
+                    """,
+                    campaign.owner_id,
+                    str(saga_id),
+                    issue_id,
+                    campaign.id,
+                )
+                if active is not None:
+                    return str(active)
+                await self._save(connection, campaign)
+        return None
+
     async def save_campaign(self, campaign: WorkflowCampaign) -> WorkflowCampaign:
-        result = await self._pool.execute(
+        return await self._save(self._pool, campaign)
+
+    async def _save(self, executor: Any, campaign: WorkflowCampaign) -> WorkflowCampaign:
+        result = await executor.execute(
             """
             INSERT INTO workflow_campaigns (
                 id,
@@ -163,6 +255,10 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
                 connection_id = EXCLUDED.connection_id
                 WHERE workflow_campaigns.tenant_id = EXCLUDED.tenant_id
                   AND workflow_campaigns.owner_id IS NOT DISTINCT FROM EXCLUDED.owner_id
+                  AND NOT (
+                      workflow_campaigns.status IN ('completed', 'failed')
+                      AND EXCLUDED.status NOT IN ('completed', 'failed')
+                  )
             """,
             campaign.id,
             campaign.slug,
@@ -186,6 +282,17 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
             campaign.tenant_id,
         )
         if result == "INSERT 0 0":
+            stored = await executor.fetchval(
+                "SELECT status FROM workflow_campaigns WHERE id = $1",
+                campaign.id,
+            )
+            if stored in _TERMINAL_STATUS_VALUES and campaign.status.value not in (
+                _TERMINAL_STATUS_VALUES
+            ):
+                raise CampaignAlreadyTerminalError(
+                    f"campaign {campaign.slug} is already {stored}; it cannot become "
+                    f"{campaign.status.value}"
+                )
             raise AuthorizationDeniedError("Resource ownership is immutable")
         return campaign
 

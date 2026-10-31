@@ -41,10 +41,124 @@ export interface ValkyrieResident {
   confidence: number;
   inboxSubjects: string[];
   toolCount: number;
+  /** When the last consolidation dream finished, whatever its outcome. */
   lastDreamAt?: string;
+  /** The last finished consolidation dream; absent until one is reported. */
+  lastDream?: DreamOutcome;
   lastActionAt?: string;
   lastObservedAt?: string;
   identitySource?: 'configured' | 'observed';
+}
+
+// ---------------------------------------------------------------------------
+// Consolidation dream — the resident's scheduled reflective pass
+// ---------------------------------------------------------------------------
+
+export type DreamStatus = 'completed' | 'noop' | 'failed';
+
+export interface RetiredLearnedTool {
+  name: string;
+  /** superseded | debug_leftover | unrunnable | unused */
+  reason: string;
+  detail: string;
+  supersededBy: string;
+}
+
+export interface DreamOutcome {
+  dreamId: string;
+  status: DreamStatus;
+  startedAt: string;
+  finishedAt: string;
+  durationSeconds: number;
+  /** Set when the dream failed: the exception type and message. */
+  error: string;
+  skills: {
+    reviewed: number;
+    promoted: string[];
+    markedStale: string[];
+    /** Promotions held for operator review (filed as review items). */
+    promotionCandidates: string[];
+  };
+  /** Lesson curation; null when it was not due this dream. */
+  lessons: {
+    reviewed: number;
+    neighbourhoodsJudged: number;
+    /** Uncurated lessons the pass did not reach before the next dream was due. */
+    remaining: number;
+    /** Promoted learnings still without a procedure when the pass stopped. */
+    rewritesRemaining: number;
+    merged: string[];
+    superseded: string[];
+    pruned: string[];
+    promoted: string[];
+    rewritten: string[];
+    auditPath: string;
+  } | null;
+  /** Learned-tool curation; null when the resident has no tool curator. */
+  learnedTools: {
+    installedBefore: number;
+    kept: number;
+    retired: RetiredLearnedTool[];
+    retiredByReason: Record<string, number>;
+    restored: string[];
+    backfilled: number;
+  } | null;
+  /** Self-improvement pass; null when it did not run this dream. */
+  selfImprovement: {
+    evaluated: number;
+    actions: string[];
+    rejected: number;
+    openFriction: number;
+  } | null;
+  feedback: { positive: number; negative: number; delivery: number };
+}
+
+/** Lessons the dream changed: merged, superseded, pruned, promoted or rewritten. */
+export function dreamLessonsCurated(dream: DreamOutcome): number {
+  const lessons = dream.lessons;
+  if (!lessons) return 0;
+  return (
+    lessons.merged.length +
+    lessons.superseded.length +
+    lessons.pruned.length +
+    lessons.promoted.length +
+    lessons.rewritten.length
+  );
+}
+
+/**
+ * What lesson curation left for the next dream, or null when it finished.
+ * A pass stops when the next dream is due, so a large backlog is curated
+ * over several dreams; this says how much is still waiting.
+ */
+export function dreamCurationBacklog(dream: DreamOutcome): string | null {
+  const lessons = dream.lessons;
+  if (!lessons) return null;
+  const parts = [
+    lessons.remaining ? `${lessons.remaining} lesson${lessons.remaining === 1 ? '' : 's'}` : '',
+    lessons.rewritesRemaining
+      ? `${lessons.rewritesRemaining} procedure${lessons.rewritesRemaining === 1 ? '' : 's'}`
+      : '',
+  ].filter(Boolean);
+  if (parts.length === 0) return null;
+  return `${parts.join(' and ')} left for the next dream`;
+}
+
+/** Proposals the dream filed: held skill promotions plus self-improvement actions. */
+export function dreamProposalsFiled(dream: DreamOutcome): number {
+  return dream.skills.promotionCandidates.length + (dream.selfImprovement?.actions.length ?? 0);
+}
+
+/** "1m 35s" / "42s" — how long a dream ran. */
+export function formatDreamDuration(seconds: number): string {
+  const whole = Math.round(seconds);
+  if (whole < 60) return `${whole}s`;
+  const minutes = Math.floor(whole / 60);
+  const rest = whole % 60;
+  if (minutes < 60) return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes ? `${hours}h ${restMinutes}m` : `${hours}h`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1008,7 +1122,7 @@ export type ReviewKind =
   | 'morning_brief';
 
 export type ReviewStatus =
-  'pending' | 'approved' | 'rejected' | 'expired' | 'applied' | 'apply_failed';
+  'pending' | 'approved' | 'rejected' | 'expired' | 'applied' | 'apply_failed' | 'withdrawn';
 
 export type ReviewRiskClass = 'low' | 'medium' | 'high' | 'critical';
 
@@ -1063,6 +1177,7 @@ const REVIEW_STATUSES: readonly ReviewStatus[] = [
   'expired',
   'applied',
   'apply_failed',
+  'withdrawn',
 ];
 
 const REVIEW_RISKS: readonly ReviewRiskClass[] = ['low', 'medium', 'high', 'critical'];
@@ -1176,6 +1291,27 @@ export interface RealmTrustGrant {
   limits: Record<string, unknown>;
   granted_by: string | null;
   granted_at: string;
+}
+
+/** Capability as returned in a realm-detail stream snapshot. */
+export interface RealmCapability {
+  id: string;
+  realm_id: string;
+  name: string;
+  kind: string;
+  status: string;
+  trust_level: number;
+  mimir_page_path: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Complete event payload for ``realm.detail`` SSE frames. */
+export interface RealmDetail {
+  realm: RealmSummary;
+  trust_grants: RealmTrustGrant[];
+  capabilities: RealmCapability[];
 }
 
 /** The subset of GET /api/v1/ting/workflows the picker reads. */

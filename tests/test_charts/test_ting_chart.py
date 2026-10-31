@@ -1,6 +1,5 @@
 """Tests for Ting Helm chart templates."""
 
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -8,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ting.config import Settings
+from ting.config import DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS, Settings
 
 CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "ting"
 TING_MIGRATIONS_DIR = Path(__file__).parent.parent.parent / "migrations" / "ting"
@@ -120,6 +119,7 @@ class TestConfigMapTemplate:
     def test_has_embedded_config_yaml(self, template_yaml):
         assert "config.yaml: |" in template_yaml
         assert "database:" in template_yaml
+        assert "observability:" in template_yaml
         assert "volundr:" in template_yaml
         assert "guild_registry:" in template_yaml
         assert ".Values.guildRegistry.baseUrl" in template_yaml
@@ -252,6 +252,31 @@ class TestConfigMapTemplate:
         # Untouched fields still come through as their real (non-zero) values.
         assert settings.watcher.reconnect_max_delay == 120.0
         assert settings.watcher.reconnect_backoff_multiplier == 2.0
+
+    def test_default_values_render_ting_default_workflow_cli_turn_timeout(self, tmp_path):
+        settings = Settings(**_config_from_rendered(_render_ting_chart(tmp_path, {})))
+
+        assert (
+            settings.dispatch.workflow_cli_turn_timeout_seconds
+            == DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS
+        )
+
+    def test_workflow_cli_turn_timeout_override_renders_into_settings(self, tmp_path):
+        rendered = _render_ting_chart(
+            tmp_path, {"dispatch": {"workflowCliTurnTimeoutSeconds": 900}}
+        )
+
+        settings = Settings(**_config_from_rendered(rendered))
+
+        assert settings.dispatch.workflow_cli_turn_timeout_seconds == 900.0
+
+    def test_workflow_cli_turn_timeout_zero_survives_rendering(self, tmp_path):
+        """0 turns the limit off; it must not become the default on the way."""
+        rendered = _render_ting_chart(tmp_path, {"dispatch": {"workflowCliTurnTimeoutSeconds": 0}})
+
+        settings = Settings(**_config_from_rendered(rendered))
+
+        assert settings.dispatch.workflow_cli_turn_timeout_seconds == 0.0
 
     def test_ci_values_render_a_config_ting_accepts(self, tmp_path):
         """The values the Helm smoke test installs with must load too."""
@@ -577,33 +602,20 @@ class TestWorkflowMigrationInitContainer:
         assert "workflow-catalog-migrate" in [c["name"] for c in init_containers]
 
 
-class TestMigrationConfigMap:
-    """Tests for embedded Ting SQL migrations."""
+def test_ting_chart_renders_mimir_service_auth(tmp_path: Path) -> None:
+    auth = {
+        "adapter": "niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter",
+        "kwargs": {
+            "exchange_url": "https://platform.test/api/v1/tokens/workload/exchange",
+            "token_file": "/var/run/secrets/niuu-workload/token",
+            "audiences": ["mimir"],
+        },
+    }
 
-    @pytest.fixture
-    def template_yaml(self) -> str:
-        return (CHART_DIR / "templates" / "migrations-configmap.yaml").read_text()
+    config = _config_from_rendered(
+        _render_ting_chart(tmp_path, {"dispatch": {"flock": {"mimirServiceAuth": auth}}})
+    )
 
-    def test_embedded_migrations_match_source_files(self, template_yaml: str) -> None:
-        pattern = re.compile(r"^  (\d+_[^:]+\.(?:up|down)\.sql): \|\n", re.MULTILINE)
-        blocks: dict[str, str] = {}
-        matches = list(pattern.finditer(template_yaml))
-        template_end = template_yaml.index("{{- end }}")
-
-        for index, match in enumerate(matches):
-            name = match.group(1)
-            start = match.end()
-            end = matches[index + 1].start() if index + 1 < len(matches) else template_end
-            lines = template_yaml[start:end].splitlines()
-            content = (
-                "\n".join(line[4:] if line.startswith("    ") else "" for line in lines).rstrip()
-                + "\n"
-            )
-            blocks[name] = content
-
-        source_files = sorted(path.name for path in TING_MIGRATIONS_DIR.glob("*.sql"))
-        assert sorted(blocks) == source_files
-
-        for filename in source_files:
-            expected = (TING_MIGRATIONS_DIR / filename).read_text().rstrip() + "\n"
-            assert blocks[filename] == expected
+    assert config["dispatch"]["flock"]["mimir_service_auth"] == auth
+    settings = Settings.model_validate(config)
+    assert settings.dispatch.flock.mimir_service_auth.kwargs["audiences"] == ["mimir"]

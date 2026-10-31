@@ -653,7 +653,7 @@ def test_archive_range_is_bounded_and_skips_malformed_lines(tmp_path) -> None:
     assert archive.count() == 7
 
 
-def test_extreme_payloads_are_deduplicated_and_share_budget():
+def test_extreme_payloads_are_deduplicated_and_reach_the_prompt_whole():
     from types import SimpleNamespace
     from unittest.mock import Mock
 
@@ -663,11 +663,11 @@ def test_extreme_payloads_are_deduplicated_and_share_budget():
     signal = SimpleNamespace(observation_count=100, aggregate=SimpleNamespace(extreme_refs=refs))
     archive = Mock()
     archive.read.side_effect = lambda ref: {"signal": {"payload": {"detail": "Z" * 5000}}}
-    rendered = "\n".join(_extreme_payload_lines(signal, 4000, archive))
+    rendered = "\n".join(_extreme_payload_lines(signal, archive))
     assert archive.read.call_count == 4
     assert rendered.count("```json") == 4
-    assert rendered.count("Z") < 4000
+    assert rendered.count("Z") == 4 * 5000
     for key, ref in refs.items():
         assert key in rendered
         assert ref in rendered
-    assert "truncated" in rendered
+    assert "truncated" not in rendered

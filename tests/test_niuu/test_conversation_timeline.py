@@ -153,3 +153,29 @@ def test_pre_stamped_part_and_unmatched_malformed_result_keep_observation():
     assert parts == before
     result = project_timeline([_user(5), _assistant(parts)], "session")
     assert [x["parts"] for x in result] == [[parts[0]], [], [parts[1]]]
+
+
+def test_durable_completion_resolves_only_to_its_terminal_fragment():
+    from niuu.domain.conversation_timeline import resolve_timeline_turn
+
+    source = _assistant([_part(2), _part(6), _part(9)])
+    source["id"] = "durable-final"
+    source["metadata"] = {"final_output": True}
+    projected = project_timeline([_user(1), _user(5), _user(8), source], "session")
+    terminal = projected[-1]
+    assert resolve_timeline_turn(projected, "durable-final") is terminal
+    assert resolve_timeline_turn(projected, terminal["id"]) is terminal
+    assert resolve_timeline_turn(projected, "user-5") is projected[2]
+    assert resolve_timeline_turn(projected, "missing") is None
+    assert (
+        resolve_timeline_turn([*projected, {**terminal, "id": "duplicate"}], "durable-final")
+        is None
+    )
+    assert resolve_timeline_turn([*projected, {"id": "durable-final"}], "durable-final") == {
+        "id": "durable-final"
+    }
+    assert project_timeline(projected, "session") == projected
+    assert all(not t["metadata"].get("final_output") for t in projected[:-1])
+    assert terminal["metadata"]["final_output"]
+    assert terminal["metadata"][TIMELINE_KEY]["source_turn_id"] == "durable-final"
+    assert projected[1]["metadata"][TIMELINE_KEY]["source_turn_terminal"] is False

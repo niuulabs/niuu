@@ -453,7 +453,8 @@ async def test_real_import_waits_for_inflight_append_then_refuses_merge(real_his
             with pytest.raises(TimeoutError):
                 await asyncio.wait_for(asyncio.shield(importing), timeout=0.1)
             # Another session is independent of this session's row lock.
-            assert await asyncio.wait_for(repo.append([_entry(unrelated)]), timeout=2) == 1
+            appended = await asyncio.wait_for(repo.append([_entry(unrelated)]), timeout=2)
+            assert appended == 1
         with pytest.raises(HistoryImportConflictError):
             await asyncio.wait_for(importing, timeout=2)
     assert await repo.latest_seq(sid) == 1

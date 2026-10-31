@@ -65,6 +65,8 @@ data:
       timeout_seconds: {{ .Values.provisioning.timeoutSeconds | default 300.0 }}
       initial_delay_seconds: {{ .Values.provisioning.initialDelaySeconds | default 5.0 }}
 
+    realm_detail_stream_interval_seconds: {{ .Values.realmDetailStreamIntervalSeconds | default 15.0 }}
+
     sleipnir:
       enabled: {{ .Values.sleipnir.enabled | default false }}
       adapter: {{ .Values.sleipnir.adapter | quote }}
@@ -77,6 +79,64 @@ data:
       {{- else }}
       secret_kwargs_env: {}
       {{- end }}
+    {{- /*
+    push.enabled delivers the needs-input push through the notification outbox: it
+    needs a notifications sink named push.attentionSink. Unless notifications.sinks
+    already has one by that name, the chart adds the PushNotificationSink for it.
+    */}}
+    {{- $notifications := deepCopy (.Values.notifications | default dict) }}
+    {{- if .Values.push.enabled }}
+    {{- $sinks := get $notifications "sinks" | default list }}
+    {{- $attentionSink := .Values.push.attentionSink | default "push" }}
+    {{- $hasSink := false }}
+    {{- range $sinks }}
+    {{- if eq (get . "name") $attentionSink }}
+    {{- $hasSink = true }}
+    {{- end }}
+    {{- end }}
+    {{- if not $hasSink }}
+    {{- $pushSink := dict "name" $attentionSink "label" (.Values.push.sink.label | default "Forge app push") "adapter" "volundr.adapters.outbound.push_notification_sink.PushNotificationSink" "max_body_chars" (.Values.push.sink.maxBodyChars | default 280) }}
+    {{- $_ := set $notifications "sinks" (append $sinks $pushSink) }}
+    {{- end }}
+    {{- end }}
+    {{- with $notifications }}
+
+    notifications: {{ toJson . }}
+    {{- end }}
+
+    push:
+      enabled: {{ .Values.push.enabled }}
+      attention_sink: {{ .Values.push.attentionSink | default "push" | quote }}
+      adapter: {{ .Values.push.adapter | quote }}
+      kwargs: {{ .Values.push.kwargs | default dict | toJson }}
+      device_registry: {{ .Values.push.deviceRegistry | default "auto" | quote }}
+      {{- if .Values.push.secretKwargs }}
+      secret_kwargs_env:
+        {{- range .Values.push.secretKwargs }}
+        {{ .kwarg }}: PUSH_SK_{{ .kwarg | upper }}
+        {{- end }}
+      {{- else }}
+      secret_kwargs_env: {}
+      {{- end }}
+    {{- /*
+    Forge session credentials need a signing key. The pod's root filesystem is
+    read-only, so the local key-file issuer cannot work here: unless forgeMcp sets
+    session_tokens.enabled explicitly, they are on only when workload identity
+    signs with a configured key. Volundr refuses to start when they are enabled
+    without a usable key.
+    */}}
+    {{- $forgeMcp := deepCopy (.Values.forgeMcp | default dict) }}
+    {{- $sessionTokens := get $forgeMcp "session_tokens" | default dict }}
+    {{- if not (hasKey $sessionTokens "enabled") }}
+    {{- $workloadSigns := false }}
+    {{- if and .Values.workloadIdentity.enabled .Values.workloadIdentity.signingKey.existingSecret }}
+    {{- $workloadSigns = true }}
+    {{- end }}
+    {{- $_ := set $sessionTokens "enabled" $workloadSigns }}
+    {{- end }}
+    {{- $_ := set $forgeMcp "session_tokens" $sessionTokens }}
+
+    forge_mcp: {{ toJson $forgeMcp }}
 
     pod_manager:
       adapter: {{ .Values.podManager.adapter | quote }}
@@ -85,7 +145,7 @@ data:
       {{- end }}
       room_role_source: {{ .Values.podManager.roomRoleSource | default "deployment" | quote }}
       room_role_cache_ttl_seconds: {{ .Values.podManager.roomRoleCacheTtlSeconds | default 5.0 }}
-      kwargs: {{ .Values.podManager.kwargs | toJson }}
+      kwargs: {{ include "volundr.openshellResidentKwargs" (dict "kwargs" .Values.podManager.kwargs "adapter" .Values.podManager.adapter "root" $) }}
       {{- if .Values.podManager.secretKwargs }}
       secret_kwargs_env:
         {{- range .Values.podManager.secretKwargs }}
@@ -125,10 +185,12 @@ data:
 
     resident_runtimes:
       reconciliation_interval_seconds: {{ .Values.residentRuntimeReconciliationIntervalSeconds | default 10.0 }}
+      a2a_public_base_url: {{ .Values.residentA2APublicBaseUrl | default "" | quote }}
+      a2a_reply_timeout_seconds: {{ .Values.residentA2AReplyTimeoutSeconds | default 45 }}
       controllers:{{ if not .Values.residentRuntimeControllers }} []{{ else }}
         {{- range $index, $controller := .Values.residentRuntimeControllers }}
         - adapter: {{ $controller.adapter | quote }}
-          kwargs: {{ $controller.kwargs | default dict | toJson }}
+          kwargs: {{ include "volundr.openshellResidentKwargs" (dict "kwargs" $controller.kwargs "adapter" $controller.adapter "root" $) }}
           {{- if $controller.secretKwargs }}
           secret_kwargs_env:
             {{- range $controller.secretKwargs }}
@@ -306,6 +368,12 @@ data:
         {{- else }}
         instances: []
         {{- end }}
+      provenance:
+        enabled: {{ .Values.git.provenance.enabled }}
+        bundle_fetch_timeout_seconds: {{ .Values.git.provenance.bundleFetchTimeoutSeconds }}
+        {{- if .Values.git.provenance.kwargs }}
+        kwargs: {{ .Values.git.provenance.kwargs | toJson }}
+        {{- end }}
 
     storage:
       adapter: {{ .Values.storageAdapter.adapter | quote }}
@@ -408,6 +476,17 @@ data:
       {{- toYaml $pat | nindent 6 }}
     {{- end }}
 
+    {{- with .Values.guild }}
+    {{- if .url }}
+
+    guild:
+      url: {{ .url | quote }}
+      instance_id: {{ required "guild.instanceId must name this Forge in its Guild's registry (GET /api/v1/niuu/targets/volundr)" .instanceId | quote }}
+      instance_name: {{ required "guild.instanceName must be this Forge's name in its Guild's registry" .instanceName | quote }}
+      instance_slug: {{ required "guild.instanceSlug must be this Forge's slug in its Guild's registry" .instanceSlug | quote }}
+    {{- end }}
+    {{- end }}
+
     workload_identity:
       enabled: {{ .Values.workloadIdentity.enabled | default false }}
       issuer: {{ .Values.workloadIdentity.issuer | default "" | quote }}
@@ -432,14 +511,13 @@ data:
       {{- if .Values.workloadIdentity.residentMapping.enabled }}
       {{- $rm := .Values.workloadIdentity.residentMapping }}
       {{- $rmNamespace := required "workloadIdentity.residentMapping.namespace is required when workloadIdentity.residentMapping.enabled=true" $rm.namespace }}
+      {{- $rmIssuer := required "workloadIdentity.residentMapping.issuer is required when workloadIdentity.residentMapping.enabled=true" $rm.issuer }}
       {{/*
-      WorkloadIdentityService.exchange() returns on the FIRST mapping that
-      matches — prepended, not appended, so residentMapping's specific
-      "...resident-" prefix is always tried before any broader operator
-      mapping on workloadIdentity.mappings (e.g. a catch-all
-      "system:serviceaccount:<ns>:" with no "resident-" requirement). An
-      operator mapping ordered first would otherwise silently win and every
-      resident would get that mapping's shared owner_id instead of its own.
+      WorkloadIdentityService.exchange() picks the MOST SPECIFIC matching
+      mapping (an exact subject over any prefix, a longer prefix over a
+      shorter one), so residentMapping's "...resident-" prefix wins over a
+      broader operator catch-all such as "system:serviceaccount:<ns>:".
+      It is still prepended, which keeps the rendered order readable.
 
       owner_id_claim_pattern is restricted to UUID-shaped resident ids
       (FluxPodManager names a per-runtime SA "resident-<runtime.id>", a
@@ -454,6 +532,7 @@ data:
             "name" $rm.name
             "verifier" $rm.verifier
             "subject_prefix" (printf "system:serviceaccount:%s:resident-" $rmNamespace)
+            "issuer" $rmIssuer
             "owner_id_claim" "sub"
             "owner_id_claim_pattern" "^system:serviceaccount:[^:]+:resident-([0-9a-f-]{36})$"
             "tenant_id" $rm.tenantId
@@ -601,6 +680,7 @@ data:
 
     ravn_flock_image: {{ .Values.ravnFlockImage | default "" | quote }}
     ravn_flock_llm_config: {{ .Values.ravnFlockLlmConfig | default dict | toJson }}
+    ravn_flock_llm_config_by_definition: {{ .Values.ravnFlockLlmConfigByDefinition | default dict | toJson }}
 
     {{- if .Values.sessionContributors }}
     session_contributors:
@@ -610,6 +690,14 @@ data:
       {{- if eq $contributor.adapter "volundr.adapters.outbound.contributors.core.CoreSessionContributor" }}
         {{- if not (hasKey $kwargs "base_domain") }}
           {{- $_ := set $kwargs "base_domain" ($root.Values.podManager.kwargs.base_domain | default "volundr.local") }}
+        {{- end }}
+      {{- end }}
+      {{- if eq $contributor.adapter "volundr.adapters.outbound.contributors.storage.StorageContributor" }}
+        {{- if not (hasKey $kwargs "home_excluded_workload_types") }}
+          {{- $_ := set $kwargs "home_excluded_workload_types" ($root.Values.storage.home.excludeWorkloadTypes | default list) }}
+        {{- end }}
+        {{- if not (hasKey $kwargs "home_colocate") }}
+          {{- $_ := set $kwargs "home_colocate" (eq ($root.Values.storage.home.accessMode | default "") "ReadWriteOnce") }}
         {{- end }}
       {{- end }}
       - adapter: {{ $contributor.adapter | quote }}

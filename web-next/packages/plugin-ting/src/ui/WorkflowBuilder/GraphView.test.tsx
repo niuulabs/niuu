@@ -765,15 +765,15 @@ describe('GraphView', () => {
       expect(card).not.toBeNull();
       expect(card).not.toHaveClass('niuu:relative');
     }
+    // Tailwind supplies border-style in the browser; without its stylesheet,
+    // jsdom computes border widths as zero. Check the component's inline accents.
     for (const kind of leftAccentCards) {
-      expect(container.querySelector(`.workflow-${kind}-card`)).toHaveStyle({
-        borderLeftWidth: '3px',
-      });
+      const card = container.querySelector<HTMLElement>(`.workflow-${kind}-card`);
+      expect(card?.style.borderLeftWidth).toBe('3px');
     }
     for (const kind of topAccentCards) {
-      expect(container.querySelector(`.workflow-${kind}-card`)).toHaveStyle({
-        borderTopWidth: '3px',
-      });
+      const card = container.querySelector<HTMLElement>(`.workflow-${kind}-card`);
+      expect(card?.style.borderTopWidth).toBe('3px');
     }
   });
 

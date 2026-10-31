@@ -2,7 +2,7 @@ schema_version: 2
 id: 195d5026-7adb-4ce7-97ee-fb1e18ea4c3a
 name: Developer Planning
 description: Investigate a delivery request and produce an exact-revision plan approved by three independent reviewers.
-version: 1.0.0
+version: 1.0.1
 persona_dependencies:
   developer-analyst:
     id: developer-analyst
@@ -53,7 +53,7 @@ graph:
         bindingFields: [plan_revision]
       stageMembers:
         - personaId: developer-analyst
-          model: gpt-5.5
+          model: gpt-5.6-terra
           budget: 32
           consumesEventTypes: [delivery.requested, plan.review.completed]
     - id: planning-reviews
@@ -63,15 +63,15 @@ graph:
       joinMode: all
       stageMembers:
         - personaId: developer-architecture-reviewer
-          model: gpt-5.5
+          model: gpt-5.6-terra
           budget: 20
           consumesEventTypes: [developer.plan.revised]
         - personaId: developer-correctness-reviewer
-          model: gpt-5.5
+          model: gpt-5.6-terra
           budget: 20
           consumesEventTypes: [developer.plan.revised]
         - personaId: developer-security-plan-reviewer
-          model: gpt-5.5
+          model: gpt-5.6-terra
           budget: 20
           consumesEventTypes: [developer.plan.revised]
     - id: planning-complete

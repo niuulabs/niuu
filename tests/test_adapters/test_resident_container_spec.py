@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from volundr.adapters.outbound.resident_container_spec import (
+    enable_resident_openclaw_shim,
     image_from_values,
     materialize_resident_container,
     materialize_resident_runtime,
@@ -19,6 +20,7 @@ from volundr.adapters.outbound.resident_container_spec import (
     resident_flock_runtime_config,
     resident_flock_skuld_config,
     resident_mesh_pod_metadata,
+    resident_openclaw_shim_enabled,
     resident_process_files,
     resident_profile_values,
     resident_runtime_section,
@@ -665,7 +667,7 @@ def test_ravn_processes_are_identical_with_and_without_an_image() -> None:
     assert ravn.command == (
         "sh",
         "-lc",
-        'export RAVN__GATEWAY__PLATFORM__PAT_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
+        'export RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
         "exec /opt/niuu/bin/python -m ravn daemon --config /sandbox/.volundr/ravn.yaml "
         "--persona 'night watch'",
     )
@@ -689,3 +691,53 @@ def test_materialize_resident_runtime_threads_realm_slug_directly() -> None:
     assert ravn_config["environment"]["charter_mimir_page"] == "realms/workshop/charter.md"
     assert ravn_config["resident_evolution"]["realm_slug"] == "workshop"
     assert ravn_config["resident_evolution"]["realm_api_base_url"] == "http://volundr"
+
+
+class TestResidentOpenClawShim:
+    """A Ravn resident's sessions ("channels") follow from the wiring, not the profile."""
+
+    @pytest.mark.parametrize(
+        ("shim", "provisioned", "expected"),
+        [
+            (None, True, True),
+            (None, False, False),
+            ({"enabled": False}, True, False),
+            ({"enabled": True}, True, True),
+            ({"enabled": False}, False, False),
+        ],
+    )
+    def test_on_by_default_where_tokens_are_provisioned(self, shim, provisioned, expected):
+        values = {"resident": {"openclaw": shim}} if shim is not None else {}
+        assert (
+            resident_openclaw_shim_enabled(_runtime(), values, tokens_provisioned=provisioned)
+            is expected
+        )
+
+    def test_asking_for_it_without_a_token_is_fatal(self):
+        with pytest.raises(ValueError, match="ravn_sessions_enabled"):
+            resident_openclaw_shim_enabled(
+                _runtime(),
+                {"resident": {"openclaw": {"enabled": True}}},
+                tokens_provisioned=False,
+            )
+
+    def test_only_ravn_residents_run_it(self):
+        hermes = _runtime().model_copy(update={"engine": ResidentEngine.HERMES})
+        assert not resident_openclaw_shim_enabled(hermes, {}, tokens_provisioned=True)
+
+    def test_profile_overrides_reach_the_channel(self):
+        config: dict = {"gateway": {"channels": {"http": {"enabled": True}}}}
+        enable_resident_openclaw_shim(
+            config,
+            {"resident": {"openclaw": {"port": 18800, "maxSessions": 8, "storePath": "/s.db"}}},
+        )
+        assert config["gateway"]["channels"]["http"] == {"enabled": True}
+        assert config["gateway"]["channels"]["openclaw"] == {
+            "enabled": True,
+            "host": "0.0.0.0",
+            "port": 18800,
+            "token_env": "RAVN_OPENCLAW_TOKEN",
+            "agent_id": "main",
+            "max_live_sessions": 8,
+            "store_path": "/s.db",
+        }

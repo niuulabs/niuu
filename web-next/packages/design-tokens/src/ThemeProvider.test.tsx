@@ -65,3 +65,15 @@ it('remembers the selected theme and restores the original dark palette after re
   second.unmount();
   localStorage.removeItem('niuu.theme');
 });
+
+it('restores a saved light theme', () => {
+  localStorage.setItem('niuu.theme', 'light');
+  const view = render(
+    <ThemeProvider theme="xteo">
+      <ThemeReader />
+    </ThemeProvider>,
+  );
+  expect(document.documentElement.dataset.theme).toBe('light');
+  view.unmount();
+  localStorage.removeItem('niuu.theme');
+});

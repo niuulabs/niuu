@@ -51,6 +51,7 @@ from ravn.resident_continuation import (
     _render_policy_observation,
     _render_scheduled_wake,
     _render_turn_record,
+    _render_withdrawn_operator_needed,
     _render_working_state,
     _slug,
     _timestamp_slug,
@@ -280,6 +281,20 @@ class MimirResidentState(ResidentStatePort):
             content=content,
         )
 
+    async def read_closed_operator_question(self, case_id: str) -> ResidentMemoryEntry | None:
+        path = str(Path(self._prefix) / _case_path(case_id, _OPERATOR_NEEDED_PATH))
+        try:
+            content = await self._mimir.read_page(path)
+        except FileNotFoundError:
+            return None
+        if _operator_marker_is_pending(content):
+            return None
+        return ResidentMemoryEntry(
+            path=path,
+            summary=_first_heading_or_line(content),
+            content=content,
+        )
+
     async def write_operator_answer(self, answer: str, *, case_id: str = "") -> str:
         now = datetime.now(UTC)
         marker_path = str(Path(self._prefix) / _case_path(case_id, _OPERATOR_NEEDED_PATH))
@@ -314,6 +329,17 @@ class MimirResidentState(ResidentStatePort):
             _render_answered_operator_needed(prior, answer_path=answer_path, answered_at=now),
         )
         return answer_path
+
+    async def withdraw_operator_needed(self, case_id: str, *, reason: str, turn_ref: str) -> str:
+        marker_path = str(Path(self._prefix) / _case_path(case_id, _OPERATOR_NEEDED_PATH))
+        prior = await self._mimir.read_page(marker_path)
+        await self._mimir.upsert_page(
+            marker_path,
+            _render_withdrawn_operator_needed(
+                prior, reason=reason, turn_ref=turn_ref, withdrawn_at=datetime.now(UTC)
+            ),
+        )
+        return marker_path
 
     async def read_operator_answer(self, case_id: str = "") -> ResidentMemoryEntry | None:
         path = str(Path(self._prefix) / _case_path(case_id, _OPERATOR_ANSWER_PATH))

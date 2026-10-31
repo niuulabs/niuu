@@ -102,10 +102,10 @@ class TestAnthropicToOpenAI:
 
     def test_system_prompt_blocks(self):
         req = self._simple_request(
-            system=[{"type": "text", "text": "Block 1."}, {"type": "text", "text": " Block 2."}]
+            system=[{"type": "text", "text": "Block 1."}, {"type": "text", "text": "Block 2."}]
         )
         payload = anthropic_to_openai(req, "gpt-4o")
-        assert payload["messages"][0]["content"] == "Block 1. Block 2."
+        assert payload["messages"][0]["content"] == "Block 1.\nBlock 2."
 
     def test_no_system_prompt(self):
         req = self._simple_request()
@@ -131,13 +131,13 @@ class TestAnthropicToOpenAI:
                     role="user",
                     content=[
                         {"type": "text", "text": "Part 1."},
-                        {"type": "text", "text": " Part 2."},
+                        {"type": "text", "text": "Part 2."},
                     ],
                 )
             ]
         )
         payload = anthropic_to_openai(req, "gpt-4o")
-        assert payload["messages"][0]["content"] == "Part 1. Part 2."
+        assert payload["messages"][0]["content"] == "Part 1.\nPart 2."
 
     def test_tool_use_block_in_assistant_message(self):
         req = self._simple_request(
@@ -185,28 +185,79 @@ class TestAnthropicToOpenAI:
         assert msg["tool_call_id"] == "tool_1"
         assert msg["content"] == "Sunny, 22°C"
 
-    def test_tool_result_with_text_preserves_both(self):
+    @pytest.mark.parametrize("text_first", [False, True])
+    def test_tool_result_with_text_puts_the_tool_message_first(self, text_first: bool):
+        text = {"type": "text", "text": "Here are the results:"}
+        result = {"type": "tool_result", "tool_use_id": "tool_1", "content": "Sunny, 22°C"}
+        req = self._simple_request(
+            messages=[
+                Message(role="user", content=[text, result] if text_first else [result, text])
+            ]
+        )
+        payload = anthropic_to_openai(req, "gpt-4o")
+        # The tool message answers the preceding tool call, so nothing may come
+        # between them; the text follows as a user message.
+        assert payload["messages"] == [
+            {"role": "tool", "tool_call_id": "tool_1", "content": "Sunny, 22°C"},
+            {"role": "user", "content": "Here are the results:"},
+        ]
+
+    def test_tool_results_follow_the_assistant_tool_calls_they_answer(self):
+        req = self._simple_request(
+            messages=[
+                Message(role="user", content="Weather in Oslo and Bergen?"),
+                Message(
+                    role="assistant",
+                    content=[
+                        ToolUseBlock(id="tool_1", name="get_weather", input={"city": "Oslo"}),
+                        ToolUseBlock(id="tool_2", name="get_weather", input={"city": "Bergen"}),
+                    ],
+                ),
+                Message(
+                    role="user",
+                    content=[
+                        ToolResultBlock(tool_use_id="tool_1", content="Sunny"),
+                        ToolResultBlock(tool_use_id="tool_2", content="Rain"),
+                        TextBlock(text="<total_tokens>9000 tokens left</total_tokens>"),
+                    ],
+                ),
+            ]
+        )
+        payload = anthropic_to_openai(req, "gpt-4o")
+        assert [m["role"] for m in payload["messages"]] == [
+            "user",
+            "assistant",
+            "tool",
+            "tool",
+            "user",
+        ]
+        assert [m.get("tool_call_id") for m in payload["messages"][2:4]] == ["tool_1", "tool_2"]
+        assert payload["messages"][4]["content"] == "<total_tokens>9000 tokens left</total_tokens>"
+
+    def test_tool_result_with_an_image_follows_with_multimodal_content(self):
         req = self._simple_request(
             messages=[
                 Message(
                     role="user",
                     content=[
-                        {"type": "text", "text": "Here are the results:"},
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": "tool_1",
-                            "content": "Sunny, 22°C",
-                        },
+                        {"type": "tool_result", "tool_use_id": "tool_1", "content": "shot taken"},
+                        {"type": "image", "source": {"type": "url", "url": "https://x/s.png"}},
+                        {"type": "text", "text": "Here it is."},
                     ],
                 )
             ]
         )
         payload = anthropic_to_openai(req, "gpt-4o")
-        # Text should appear as a user message, tool result as a tool message.
-        assert payload["messages"][0]["role"] == "user"
-        assert payload["messages"][0]["content"] == "Here are the results:"
-        assert payload["messages"][1]["role"] == "tool"
-        assert payload["messages"][1]["tool_call_id"] == "tool_1"
+        assert payload["messages"] == [
+            {"role": "tool", "tool_call_id": "tool_1", "content": "shot taken"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "https://x/s.png"}},
+                    {"type": "text", "text": "Here it is."},
+                ],
+            },
+        ]
 
     def test_tools_definition(self):
         req = self._simple_request(
@@ -586,12 +637,41 @@ class TestCacheControl:
                     role="user",
                     content=[
                         TextBlock(text="part1", cache_control=CacheControl(type="ephemeral")),
-                        TextBlock(text=" part2"),
+                        TextBlock(text="part2"),
                     ],
                 )
             ]
         )
         payload = anthropic_to_openai(req, "gpt-4o")
         msg = payload["messages"][0]
-        assert msg["content"] == "part1 part2"
+        assert msg["content"] == "part1\npart2"
         assert "cache_control" not in msg
+
+    def test_text_blocks_are_joined_a_line_apart(self):
+        req = self._simple_request(
+            system=[TextBlock(text="You are terse."), TextBlock(text="Use British spelling.")],
+            messages=[
+                Message(
+                    role="user",
+                    content=[TextBlock(text="hi"), TextBlock(text=""), TextBlock(text="note")],
+                ),
+                Message(role="assistant", content=[TextBlock(text="a"), TextBlock(text="b")]),
+                Message(
+                    role="user",
+                    content=[
+                        ToolResultBlock(
+                            tool_use_id="call_1",
+                            content=[TextBlock(text="line 1"), TextBlock(text="line 2")],
+                        )
+                    ],
+                ),
+            ],
+        )
+        payload = anthropic_to_openai(req, "gpt-4o")
+        # Empty blocks add no blank line.
+        assert [m["content"] for m in payload["messages"]] == [
+            "You are terse.\nUse British spelling.",
+            "hi\nnote",
+            "a\nb",
+            "line 1\nline 2",
+        ]

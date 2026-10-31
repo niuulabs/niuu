@@ -58,6 +58,12 @@ Options:
   task against any agent card (Ting's facade or a foreign platform).
   Configuration is a card URL plus credentials; workflow discovery happens
   via the card's skills (see `docs/operator/a2a-workflow-tasks.md`).
+  The resident must be reachable by push: builder questions arrive after the
+  commissioning turn ends, so the daemon refuses to start unless
+  `gateway.platform.a2a_push_callback_url` is set and
+  `gateway.channels.http` has `enabled` and `a2a_push_enabled` (with
+  `a2a_push_auth` verifying Ting's workload token). The callback origin must
+  also be in Ting's `a2a.push_callback_allowed_origins`.
 - `ForgeSessionToolBuildBackend` — drives a single Forge session directly.
 - Empty `tool_build_adapter` — the investigating agent writes tool code
   inline in-session (no external build; verification still runs).
@@ -150,9 +156,23 @@ resident_evolution:
   an ordinary Docker bridge cannot enforce their target or operation. A tool
   may request explicit broad `network/read_write` reach, which is treated as
   mutating by the normal autonomy/review policy.
-- `local`: explicit compatibility mode. It uses a scrubbed subprocess and
-  per-tool venvs, but it is not a security boundary and does not enforce
-  declared reach.
+- `local`: a scrubbed subprocess of the resident with per-tool venvs. It
+  enforces one reach boundary — the network. A tool whose declared reach is
+  entirely local runs with every network socket denied: a fresh user +
+  network namespace on Linux, a no-network Seatbelt profile on macOS. Local
+  kinds are `pure_compute`/`compute`/`none`, `file`/`filesystem`/`path`/
+  `workspace`, `credential`/`secret`, and `native_tool`/`host_tool`/`host_sdk`
+  (the host SDK channel keeps working). **Every other kind is network reach**
+  — `network`, `http`, `kubernetes`, `k8s_api`, `prometheus`, or a free-text
+  description — because it names something off the machine. Where the host
+  cannot isolate (Linux with unprivileged user namespaces disabled by sysctl,
+  seccomp, or Ubuntu's `kernel.apparmor_restrict_unprivileged_userns=1`), a
+  no-network tool is refused when it is loaded and again when it is run, with
+  the remedy in the error. It is never run with the network. What `local` does
+  not narrow: a networked tool gets the resident's whole network (a grant's
+  `target` is not an egress filter, and its Kubernetes reach is whatever the
+  pod's service account RBAC allows), and every tool reads the filesystem as
+  the resident's user.
 - `forge`/`devrunner`: legacy workspace-mounted persistent-container path.
   It scopes networking but exposes the workspace, so use `container` for
   autonomous generated code.
@@ -163,9 +183,49 @@ resident_evolution:
   before every Job. Requires explicit `learned_tool_k8s.namespace`,
   `deny_policy_name`, and `allow_policy_name`; the runner refuses to start
   without them (no silent unenforced fallback). Jobs run digest-pinned,
-  read-only-root, non-root/seccomp/capability-restricted, with no
-  service-account token, and requirements are never installed at invocation
-  time — bake them into a reviewed image instead.
+  read-only-root, non-root/seccomp/capability-restricted. Requirements are
+  never installed: a gate inside the Job checks them against the pinned image
+  (the devrunner image bakes in `kubernetes`, `requests` and `PyYAML`; no
+  `kubectl`, so a tool that only shells out to it fails at run time) and refuses the run, naming what is missing, otherwise.
+
+  Each run's egress is derived from the tool's declared reach
+  (`ravn.valkyrie_evolution.reach_plan`):
+
+  | Declared reach | Egress the Job gets |
+  |---|---|
+  | none, or only `pure_compute`/`process` | none (deny policy) |
+  | Kubernetes API (`kubernetes`, `k8s*`, `kubernetes.default.svc`, the SA token path) | the API server's endpoints, plus the read-only `tool_service_account` token |
+  | `namespace/service[:port]`, `svc.ns.svc[:port]`, `http://svc.ns.svc:port` | the pods behind that Service, on its target port |
+  | `https://host`, `host:port`, `ip:port` | those addresses (host names resolved at run time) |
+  | a word declared in `named_targets` (e.g. `prometheus`) | the Service the operator mapped it to |
+  | untargeted `network` with `read_write` | unrestricted egress (allow policy) |
+
+  A targeted run keeps the denied label, so the verified deny policy isolates
+  its pod from the moment it starts; a per-run NetworkPolicy owned by the Job
+  adds exactly the egress above plus cluster DNS (`dns_service`). Anything the
+  planner cannot express is refused with the remedy: an untargeted `read`
+  grant, a wildcard host, prose with no address and no declared word, a
+  filesystem path other than the service-account token, credentials, host
+  SDK calls, or Kubernetes access beyond `read`. The tool's own timeout
+  counts from container start; `job_pod_start_timeout_seconds` covers
+  scheduling and image pull.
+
+  ```yaml
+  learned_tool_k8s:
+    namespace: nats
+    image: ghcr.io/niuulabs/devrunner@sha256:<reviewed digest>
+    deny_policy_name: learned-tool-deny
+    allow_policy_name: learned-tool-allow
+    tool_service_account: <resident>-tools   # bound to read-only RBAC only
+    dns_service: kube-system/rke2-coredns-rke2-coredns
+    named_targets:
+      prometheus: monitoring/kube-prom-kube-prometheus-prometheus:9090
+  ```
+
+  The resident's own service account needs, in that namespace: create/get/
+  list/watch/delete `jobs`; create/delete `secrets` and `networkpolicies`;
+  get/list `networkpolicies`, `pods`, `pods/log`; and get `services` (any
+  target namespace) and `endpoints` (`default/kubernetes`).
 
   Peer-adoption re-verification (`verify()`) is supported on `k8s_job`: a
   peer's test suite runs in the SAME denied-network, NetworkPolicy-verified
@@ -253,9 +313,11 @@ Related bounds (all NIU-1118):
   HUD.
 - `context_management.token_estimate_safety_factor` (default 1.5) — conservative
   multiplier for providers that do not expose an exact preflight token count.
-- `resident_state.directed_message_context_max_chars` (default 4000) — bounds
-  prior room output carried into a human-directed task; the current human
-  message is not truncated.
+- A human-directed task carries the current human message and any prior room
+  message it replies to whole. `resident_state.directed_message_context_max_chars`
+  (default 4000) was removed: the prompt is bounded by
+  `context_management.max_prompt_tokens` and compaction, and a config that
+  still sets the key is refused at load.
 - `tools.max_result_chars` (default 100000, 0 = off) — caps one tool result's
   contribution to history. Compression protects the most recent messages, so
   a single giant result (observed: a 229MB mimir result) would otherwise make
@@ -282,6 +344,82 @@ resident_evolution:
 Rollback archives the tool, prunes its venv, restores the superseded version
 when one exists (through the same review gate), and reopens the capability gap.
 
+### 7. Repair, usage evidence and retirement
+
+A resident keeps **one tool per capability**, using the mechanisms that were
+already there: `find_installed_capability`, the `capability_id` version chain
+(`source_gap_id`), the `_archive` directory, and the lifecycle registry
+(`skill_management.json`).
+
+- **Repair over variant.** Before anything is commissioned, `build_tool` looks
+  for the tool that already serves the request: the declared `capability_id`,
+  the exact name, the same name in another spelling, and — when
+  `reflection.matching.mode: semantic` — the same capability in other words
+  (the lesson embedding shortlist and judge, asked "is this request the next
+  version of that tool"; with `decision.capability_matching.enabled` the
+  decision model answers instead of the lesson judge, here and in curation, and
+  a request that fails builds nothing). Retired tools are candidates too. A healthy match
+  answers `already_installed`. A failing, unverified or rolled-back match, or
+  `replace: true`, is rebuilt **as that tool's next version**: same name,
+  `version` + 1, `supersedes` the previous artifact, `provenance.repair_of`
+  recording what was asked. A build that fails verification is kept under
+  `learned_tool_artifacts/_failed/` and never replaces the installed envelope.
+- **Supersession retires.** When an installed version supersedes a
+  differently named tool, the predecessor is archived and uninstalled instead
+  of staying beside it.
+- **Usage evidence** is the lifecycle record: runs, successes, failures, last
+  use, and now `first_used_at`. `capability_list` shows it per tool; the
+  resident health snapshot carries `learned_tools_installed`,
+  `learned_tools_never_used`, `learned_tools_retired`,
+  `learned_tools_retired.<reason>` and `learned_tool_restores_total`.
+- **Capability backfill.** Each consolidation dream compares every artifact
+  whose capability was never decided by matching with the others, gives it
+  the `capability_id` of the tool it duplicates, and records the decision on
+  the envelope (`provenance.capability_matched`), so nothing is judged twice.
+- **Retirement.** The same dream then retires, in this order: tools
+  **superseded** by another runnable tool with the same capability (the
+  best-evidenced one is kept), **debug leftovers** (name starts with one of
+  `tool_curation.leftover_name_prefixes` and never succeeded), **unrunnable**
+  tools (no passing verification, rolled back, or refused by the execution
+  backend, see below), and **unused** tools —
+  never run, and installed longer than the longest install-to-first-use wait
+  known on this resident (observed first uses, or the created-to-last-use
+  bound of tools used before `first_used_at` existed). Retirement moves the
+  envelope into `_archive`, removes the code, and archives the lifecycle
+  record with `archived_reason` / `archived_detail` / `superseded_by`. A
+  `capability_list` query that matches a retired tool says so; asking
+  `build_tool` for its capability restores it. A peer's copy of a tool retired
+  here as superseded or a debug leftover is ignored, and the next dream
+  restores an unused retirement the widened window no longer supports.
+- **Tools the backend cannot load.** `capability_list`, the published learned
+  tool inventory and the bulk loader offer only what the configured
+  `learned_tool_execution_backend` can load, using the loader's own check: the
+  tool is verified, its declared reach is enforceable there, and it does not
+  import the host SDK (`ravn.sdk`) on a backend with no channel back to the
+  resident (`container`, `k8s_job`, `forge`). A tool that fails that check is
+  not dropped silently: the first time the process sees it, it is logged at
+  error level and counted as `degraded.learned_tool.refused`; the health
+  snapshot carries `learned_tools_refused` (a standing count that falls to zero
+  once each is repaired); `capability_list` names it under
+  `unavailable_learned_tools` with the reason; and `learned_tool_run` answers
+  with the `build_tool` repair rather than "use capability_list". The dream
+  retires it as `unrunnable` (it is never counted as kept; a pinned or
+  unmanaged one is listed under `refused` in the dream's `learned_tools`
+  summary), and `build_tool` for the same capability restores it as a repair
+  with the refusal as the stated problem. On such a backend `build_tool`'s
+  description tells the builder not to use the host SDK, and a build that
+  would still be refused is rejected before it replaces the working version.
+
+```yaml
+resident_evolution:
+  tool_curation:
+    enabled: true                       # needs resident_wakefulness
+    leftover_name_prefixes: [test, debug, tmp, temp, scratch]
+```
+
+`ravn learned-tools-plan --config <file>` prints what the next dream would
+backfill and retire, and why, without changing anything.
+
 ## Security model — read this honestly
 
 What each layer actually provides:
@@ -292,9 +430,9 @@ What each layer actually provides:
 | Independent verification | Correctness: the tool does what its tests say, in a clean env | Malice detection |
 | Scoped build tokens | Blast radius: a leaked build token can only launch builds | Scoping for PATs (a PAT keeps full owner authority) |
 | Env scrubbing | Hygiene: tools can't read tokens from `os.environ` (proven by test) | A wall — same-user file reads still work |
-| `local` backend | Crash/timeout isolation | Network isolation |
+| `local` backend | Crash/timeout isolation; no network for a tool that declares none (refused where the host cannot isolate) | Per-target egress filtering, filesystem isolation |
 | Docker backend (`container`) | Container + network isolation where Docker exists | Anything in Kubernetes |
-| `k8s_job` backend | Pod-per-run Kubernetes containment: verified NetworkPolicies, no SA token, non-root/seccomp/dropped capabilities, resource/time/output bounds — for both invocation and `verify()` | A Docker daemon (none needed); runtime dependency installation (bake into the pinned image) |
+| `k8s_job` backend | Pod-per-run Kubernetes containment: per-run egress derived from declared reach (API server, named Services, named addresses), a read-only tool identity only for Kubernetes-API reach, non-root/seccomp/dropped capabilities, resource/time/output bounds — for both invocation and `verify()` | A Docker daemon (none needed); runtime dependency installation (bake into the pinned image); the HTTP verb on a non-Kubernetes target (the policy fixes *where*, not *what*) |
 | Audit + rollback + capability ledger | Detection and recovery | Prevention |
 
 There is **no hard runtime wall in-process**. Real runtime containment in

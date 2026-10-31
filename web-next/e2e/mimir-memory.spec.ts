@@ -227,3 +227,33 @@ test.describe('Memory scene (/mimir)', () => {
     await expect(page.getByPlaceholder('Ask what Niuu knows…')).toBeFocused();
   });
 });
+
+test('memory canvas follows Light and dark theme changes', async ({ page }) => {
+  await setup(page);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/mimir?config=default');
+  const canvas = page.locator('.niuu-memory-scene canvas');
+  await expect(canvas).toBeVisible();
+  const selector = page.getByRole('button', { name: 'Color theme', exact: true });
+  for (const [theme, expected] of [
+    ['light', 247],
+    ['ice', 0],
+    ['light', 247],
+  ] as const) {
+    await selector.click();
+    await page
+      .getByRole('button', { name: theme === 'light' ? 'Light' : 'Native dark', exact: true })
+      .click();
+    await expect
+      .poll(() =>
+        canvas.evaluate((element) => {
+          const gl = (element as HTMLCanvasElement).getContext('webgl2');
+          if (!gl) throw new Error('WebGL2 is required for this canvas regression test');
+          return Array.from(gl.getParameter(gl.COLOR_CLEAR_VALUE) as Float32Array)
+            .slice(0, 3)
+            .map((v) => Math.round(v * 255));
+        }),
+      )
+      .toEqual([expected, expected, expected]);
+  }
+});

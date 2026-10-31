@@ -7,7 +7,7 @@ import json
 import secrets
 from contextlib import suppress
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NoReturn
 from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -17,12 +17,17 @@ from niuu.domain.models import SecretType
 from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.models import (
+    ResidentBackend,
     ResidentEngine,
     ResidentRuntime,
     ResidentSession,
     ResidentSessionStatus,
 )
-from volundr.domain.ports import ResidentChatConnection, ResidentSessionController
+from volundr.domain.ports import (
+    ResidentChatConnection,
+    ResidentSessionController,
+    unsupported_chat_command_frame,
+)
 
 HERMES_CREDENTIAL_NAME = "hermes-api-server"
 HERMES_LEGACY_CREDENTIAL_NAME = "hermes-dashboard"
@@ -147,7 +152,7 @@ class _HermesAPI:
                     yield event
 
     @staticmethod
-    def _raise_response_error(response: httpx.Response) -> None:
+    def _raise_response_error(response: httpx.Response) -> NoReturn:
         try:
             payload = response.json()
         except ValueError:
@@ -243,11 +248,8 @@ class HermesChatConnection(ResidentChatConnection):
     async def _consume_run(self, run_id: str) -> None:
         terminal = False
         try:
-            try:
-                async for event in self._api.stream_run(run_id):
-                    terminal = await self._enqueue_event(run_id, event) or terminal
-            except httpx.TransportError:
-                pass
+            async for event in self._api.stream_run(run_id):
+                terminal = await self._enqueue_event(run_id, event) or terminal
             if terminal:
                 return
             while True:
@@ -410,13 +412,21 @@ class HermesChatConnection(ResidentChatConnection):
                     "POST", f"/v1/runs/{quote(self._active_run_id, safe='')}/stop"
                 )
             return
+        # Unsupported commands are answered, not raised: an optional control frame
+        # (or a steer the capabilities frame already ruled out) must not end the chat.
         if frame_type in {"steer", "steer_active_turn"}:
-            raise HermesGatewayError("Hermes API server does not support steering active runs")
+            self._events.put_nowait(
+                unsupported_chat_command_frame(
+                    frame_type, "Hermes API server does not support steering active runs"
+                )
+            )
+            return
         if frame_type == "permission_response":
             await self._send_permission_response(frame)
             return
         if frame_type != "user":
-            raise HermesGatewayError(f"Unsupported shared chat command: {frame_type}")
+            self._events.put_nowait(unsupported_chat_command_frame(frame_type))
+            return
         if self._active_run_id:
             raise HermesGatewayError("Hermes already has an active run for this chat")
 
@@ -538,6 +548,10 @@ class HermesResidentSessionController(ResidentSessionController):
     @property
     def engine(self) -> ResidentEngine:
         return ResidentEngine.HERMES
+
+    @property
+    def runtime_backend(self) -> ResidentBackend | None:
+        return getattr(self._routes, "backend", None)
 
     async def _connect(self, runtime: ResidentRuntime) -> _HermesAPI:
         target = self._routes.resident_proxy_target(runtime)

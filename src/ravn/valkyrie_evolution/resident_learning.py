@@ -58,6 +58,13 @@ from ravn.valkyrie_evolution.models import (
     ReviewResult,
 )
 from ravn.valkyrie_evolution.ports import EvolutionReviewPort
+from ravn.valkyrie_evolution.tool_curation import (
+    RETIREMENT_REASONS,
+    RETIREMENTS_PEERS_CANNOT_UNDO,
+    ROLLED_BACK,
+    restore_learned_tool,
+    retire_superseded_predecessor,
+)
 from ravn.valkyrie_evolution.tool_runtime import (
     DEFAULT_TOOL_TIMEOUT_SECONDS,
     ToolRunResult,
@@ -786,7 +793,11 @@ class ResidentLearningRuntime:
             else skill_name
         )
 
-        await self._skills.archive(skill_name)
+        await self._skills.archive(
+            skill_name,
+            reason=ROLLED_BACK,
+            detail=tool_run.error or tool_run.stderr,
+        )
         self._prune_tool_venv(skill_name)
 
         try:
@@ -1218,11 +1229,14 @@ class ResidentLearningRuntime:
             if not case_id:
                 return "apply_failed", "operator question is missing case_id", None
             detail = item.decision_reason.strip()
-            if item.status == ReviewStatus.REJECTED.value:
+            if item.decision_answer.strip():
+                # A free-text reply goes to the resident exactly as the operator wrote it.
+                answer = item.decision_answer
+            elif item.status == ReviewStatus.REJECTED.value:
                 answer = f"No. {detail}" if detail else "No, do not proceed."
             else:
                 answer = f"Yes. {detail}" if detail else "Yes, proceed."
-            result = await self._operator_answerer(case_id=case_id, answer=answer)
+            result = await self._operator_answerer(case_id=case_id, answer=answer, via_review=True)
             if not result.get("queued"):
                 return "apply_failed", f"operator answer for {case_id} was not queued", None
             return "applied", f"operator answer queued for {case_id}", None
@@ -1520,7 +1534,48 @@ class ResidentLearningRuntime:
             await self._publish_adoption(artifact, decision)
             return decision
 
+        retired_here = await self._reconcile_retired_tool(artifact)
+        if retired_here is not None:
+            return retired_here
+
         return await self._review_canary_install(artifact, operator_item=operator_item)
+
+    async def _reconcile_retired_tool(
+        self,
+        artifact: ResidentLearningArtifact,
+    ) -> ResidentLearningDecision | None:
+        """Keep a peer's copy from undoing this resident's own retirement.
+
+        Peers republish their tools, and an adopted tool reached five residents
+        within hours. A tool retired here as superseded (this resident holds
+        the replacement) or as a debug leftover stays retired; an operator
+        command still installs it. A tool retired as unused or unrunnable is
+        restored first, so the peer's version installs in place as its next
+        version instead of beside a retired copy.
+        """
+        if artifact.artifact_type != "agent_tool" or self._tools_dir is None:
+            return None
+        name = str(artifact.learned_tool_manifest.get("name") or artifact.title)
+        record = self._skills.lifecycle_metadata(name) or {}
+        reason = str(record.get("archived_reason") or "")
+        if record.get("status") != "archived" or reason not in RETIREMENT_REASONS:
+            return None
+        if reason in RETIREMENTS_PEERS_CANNOT_UNDO and not artifact.operator_command:
+            return ResidentLearningDecision(
+                "ignored",
+                f"learned tool {name!r} is retired here ({reason}: "
+                f"{record.get('archived_detail') or ''}); a peer's copy does not bring it back",
+                relevant=True,
+            )
+        tools_dir, artifacts_dir = learned_tool_storage(self._tools_dir.parent)
+        await restore_learned_tool(
+            tools_dir=tools_dir,
+            artifacts_dir=artifacts_dir,
+            skills=self._skills,
+            name=name,
+            why=f"peer proposal {artifact.learning_id} from {artifact.source_valkyrie_id}",
+        )
+        return None
 
     async def _review_canary_install(
         self,
@@ -1556,6 +1611,7 @@ class ResidentLearningRuntime:
         verification it already earned, or require_verified_artifact would
         refuse to ever run the tool a rollback just restored.
         """
+        telemetry = get_observability()
         if request is None or build is None:
             request, build = review_inputs(artifact, self.identity)
         self_built = artifact.source_valkyrie_id == self.identity.valkyrie_id
@@ -1575,6 +1631,11 @@ class ResidentLearningRuntime:
                 relevant=True,
             )
             await self._publish_adoption(artifact, decision)
+            telemetry.count(
+                "ravn_learned_tool_installs_total",
+                attributes={"outcome": "rejected"},
+                description="Learned-tool install attempts by outcome.",
+            )
             return decision
         if not allowed and operator_item is None:
             decision = ResidentLearningDecision(
@@ -1597,10 +1658,20 @@ class ResidentLearningRuntime:
                 urgency=0.6,
             )
             await self._file_install_review(artifact, build, review, signal)
+            telemetry.count(
+                "ravn_learned_tool_installs_total",
+                attributes={"outcome": "held"},
+                description="Learned-tool install attempts by outcome.",
+            )
             return decision
 
         verify_rejection, verification = await self._verify_peer_artifact(artifact, review)
         if verify_rejection is not None:
+            telemetry.count(
+                "ravn_learned_tool_installs_total",
+                attributes={"outcome": verify_rejection.action},
+                description="Learned-tool install attempts by outcome.",
+            )
             return verify_rejection
         if verification is None:
             verification = verification_override
@@ -1629,6 +1700,11 @@ class ResidentLearningRuntime:
                     artifact.correlation_id or artifact.learning_id,
                     urgency=0.6,
                 )
+                telemetry.count(
+                    "ravn_learned_tool_installs_total",
+                    attributes={"outcome": "canary_failed"},
+                    description="Learned-tool install attempts by outcome.",
+                )
                 return ResidentLearningDecision(
                     "held",
                     f"Canary execution failed before install: {canary.error}",
@@ -1646,6 +1722,11 @@ class ResidentLearningRuntime:
                 canary_error=canary.error,
             )
             await self._publish_adoption(artifact, decision)
+            telemetry.count(
+                "ravn_learned_tool_installs_total",
+                attributes={"outcome": "canary_failed"},
+                description="Learned-tool install attempts by outcome.",
+            )
             return decision
 
         skill_name = await self._install_skill(artifact, build, verification=verification)
@@ -1669,6 +1750,11 @@ class ResidentLearningRuntime:
         )
         await self._publish_activation(artifact, skill_name, review)
         await self._publish_adoption(artifact, decision)
+        telemetry.count(
+            "ravn_learned_tool_installs_total",
+            attributes={"outcome": "installed"},
+            description="Learned-tool install attempts by outcome.",
+        )
         # Refresh the dashboard's inventory the moment a new skill lands.
         await self._refresh_skill_inventory()
         if self_built and artifact.flock_id:
@@ -1946,6 +2032,18 @@ class ResidentLearningRuntime:
             )
 
         await self._record_installed_skill(artifact, build, skill_name=skill_name)
+        if build.artifact_type == "agent_tool" and self._tools_dir is not None:
+            # An adopted version that supersedes a differently named tool
+            # replaces it, rather than installing beside it.
+            code_dir, artifacts_dir = learned_tool_storage(self._tools_dir.parent)
+            await retire_superseded_predecessor(
+                tools_dir=code_dir,
+                artifacts_dir=artifacts_dir,
+                skills=self._skills,
+                artifact=read_learned_tool_artifact(
+                    learned_tool_artifact_path(artifacts_dir, skill_name)
+                ),
+            )
         if (
             build.artifact_type != "agent_tool"
             and build.has_tool_implementation

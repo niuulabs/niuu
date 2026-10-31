@@ -148,6 +148,99 @@ path and its returned `instance_id` as the query parameter. Guild resolves that
 visible target and forwards the authenticated command without probing another
 cluster.
 
+### Upgrades follow the platform
+
+A resident runs the version its Volundr deploys now, not the one it was created
+with. When Volundr is deployed with a newer Skuld chart or image (the
+`podManager` `chart_version`, the profile's `deployment.values` images, or
+OpenShell's sandbox image), reconciliation moves each running resident to it
+once and logs `Upgrading resident <name> from <old> to <new>`. The running
+version is in the resident's `backendRef` (`platformVersion` on Flux, `image` on
+OpenShell).
+
+- **Flux:** the HelmRelease is replaced with the chart version and values the
+  profile renders now, keeping the storage it mounts (its own
+  `resident-<id>-home`/`-workspace` PVCs) and its shim token Secret, so it is a
+  rolling update with its disks and channels intact. The release records the
+  version in `niuu.world/platform-version` and the one it replaced in
+  `niuu.world/replaced-platform-version`; neither is applied again by
+  reconciliation, so an edited release is left alone and an old Volundr replica
+  does not move a resident back during Volundr's own rollout.
+- **OpenShell:** a sandbox's image is fixed at creation, so the sandbox is
+  recreated on the new image and the resident keeps its record, credentials and
+  shim token. This happens only when its sandbox keeps the workspace on a claim:
+  its own (below), or the profile's `persistence.existingClaim` with a
+  `mountPath` at or above the sandbox workspace. Without one (the profile sets
+  `persistence.enabled: false`, or Volundr manages no claims), nothing ever
+  recreates the sandbox: the upgrade is held with a `PlatformUpgrade` /
+  `UpgradeHeld` condition ("No persistent workspace; the sandbox image can't
+  change without losing /sandbox"), shown in the resident's conditions, and
+  Restart restarts its processes in place as before.
+
+### OpenShell residents' workspaces
+
+Every OpenShell resident gets its own PVC, `resident-<id>-workspace`, mounted
+at `/sandbox/workspace`. Volundr creates it on deploy and deletes it with the
+resident, in the namespace where the OpenShell gateway runs sandboxes
+(`podManager.kwargs.resident_workspace_namespace`, which the chart defaults to
+`storageAdapter.kwargs.namespace`; the chart grants Volundr the PVC rights there
+with the `<release>-resident-workspaces` Role). Size, storage class and access
+mode come from `resident_workspace_size`, `resident_storage_class` and
+`resident_access_mode`, and a profile overrides them in
+`deployment.volumes.workspace`. The claim holds Skuld's conversations, Ravn's
+`RAVN_STATE_DIR` (channels and the notification outbox), Hermes' and OpenClaw's
+state; a Ravn resident's `~/.ravn` (memory.db, the drive-loop queue and cron
+state, skills) is a link to `/sandbox/workspace/.ravn-home` on it. The rest of
+`/sandbox` (rendered config, logs, the image's tools, the Codex CLI home) is
+rebuilt with each sandbox.
+
+The claim is ReadWriteOnce and carries no node affinity of its own: a sandbox
+mounting it is scheduled wherever Kubernetes places it, and the volume attaches
+to that node. A recreated sandbox is created only once the old one is gone, so
+the volume is free to move. A storage class whose volumes are node-local binds
+the resident to that node.
+
+A resident whose sandbox predates its claim is moved onto it once, by its next
+deployment (reconcile hands it over with a `WorkspaceMigration` / `Migrating`
+condition) or its next Restart. Volundr logs `Migrating resident <name>'s
+workspace to a persistent volume` and:
+
+1. measures the workspace (and `~/.ravn`); more than
+   `resident_workspace_migration_max_size` (default 1Gi) or the claim's size is
+   refused before anything changes;
+2. creates the claim and takes the migration's lease on it;
+3. stops the resident's processes and archives its state out through the
+   sandbox exec channel;
+4. creates a new sandbox on the current image with the claim mounted, restores
+   the archive into it before any resident process starts, and reads it back:
+   every path, size and SHA-256 must match;
+5. only then deletes the old sandbox and starts the resident on its claim.
+
+Until step 5 the old sandbox is never touched beyond stopping its processes. If
+anything fails, the new sandbox is removed, the old one's processes are started
+again, and the resident reports `WorkspaceMigration` with the reason
+(`WorkspaceTooLarge`, `VerificationFailed`, `ClaimInUse`, `MigrationFailed`); it
+is retried on Restart or when Volundr restarts. Progress is kept on the claim's
+annotations (`volundr.niuu.io/workspace-migration`: `copying`, `verified`,
+`complete`, with the holding Volundr and its lease), so a Volundr that restarts
+mid-copy, or a second replica, resumes or waits rather than starting over. A
+claim that already holds a workspace is never overwritten.
+- **Restart** re-renders the resident on the current version, where that keeps
+  its state. **Resume** starts a suspended Flux resident on the current
+  version; suspended residents are not woken to upgrade.
+- A failed upgrade marks the resident failed with a `PlatformUpgrade` /
+  `UpgradeFailed` condition and is not retried until the version changes again,
+  the resident is restarted, or Volundr restarts.
+- An OpenShell resident's old sandbox that is slow to go is not a failed
+  upgrade. Every removal of a resident sandbox waits
+  `resident_sandbox_delete_timeout_seconds` (180s; sessions keep
+  `resource_delete_timeout`, 120s). If the sandbox is still being deleted after
+  that, the resident reports `PlatformUpgrade` / `Upgrading` and its
+  redeployment waits for the sandbox to go, then recreates it on its workspace
+  claim, retrying on later passes. If the gateway refuses the delete, the
+  resident keeps running on its old sandbox (`PlatformUpgrade` /
+  `UpgradeRetrying`) and the next pass tries again.
+
 Key chart values:
 
 | Value | Meaning |
@@ -217,6 +310,142 @@ Live managed and compatibility residents also appear in
 Nothing auto-stops a resident — it lives until you scale down or delete the
 release.
 
+### The Valkyrie catalog in the resident list
+
+Valkyries are deployed straight from infrastructure, so neither Forge nor
+cluster discovery lists them. The Ravn API lists them from the environment
+catalog that also feeds the Valkyrie dashboard
+(`RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON`, or a file named by
+`RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_FILE`). Each `environments[]` record's
+`valkyrie` object becomes one resident in `GET /api/v1/ravn/ravens`,
+`GET /api/v1/ravn/ravens/{id}`, `GET /api/v1/ravn/ravens/{id}/sessions`,
+`GET /api/v1/ravn/sessions` and `GET /api/v1/ravn/sessions/{id}`, in the same
+shape as a discovered standalone resident:
+
+| Catalog field (on `valkyrie`) | Resident field |
+|---|---|
+| `valkyrieId` | `id` (defaults to `valkyrie-<environment>`; must be unique in the catalog) |
+| `valkyrieName` | `resident_name` |
+| `persona` | `persona_name` |
+| the environment's `name` | `location` |
+| — | `deployment: "valkyrie"`, `kind: "resident"` |
+| `chatEndpoint` (optional) | `chat_endpoint`, and `chat` in `capabilities` |
+| `visibility` (optional) | `system` (default), `tenant` or `user`; same rules as the discovery annotations above |
+| `ownerId`, `tenantId` (optional) | Required owner for `user` visibility, tenant for `tenant` visibility |
+| `placement` (optional) | `{cluster, namespace, workload}`: the Deployment that is the Valkyrie; gives the resident its `cluster` and its logs |
+
+`chatEndpoint` is the Valkyrie's room, an absolute `wss://` URL such as
+`wss://yggdrasil.niuu.world/rooms/<id>/ws/ravn`. Without it the Valkyrie is
+still listed, but has no `chat` capability, no `chat_endpoint`, and no entry in
+the sessions listings. A malformed `chatEndpoint` (or an unknown `visibility`)
+fails at config load, as does a catalog that repeats a `valkyrieId`.
+
+Status is what telemetry actually observed, never a configured default. A
+Valkyrie whose telemetry (any runtime, presence or signal-poll event for its
+`valkyrieId`) was last seen within `RAVN_VALKYRIE_DASHBOARD_ROSTER_STALE_AFTER_SECONDS`
+(default `900`) reports `status` and `observed_state` of `active`. One that was
+never observed since the API started, or went quiet for longer, reports `idle`.
+Either way an `Observed` entry in `conditions` says which (`Fresh`, `Stale`,
+`NeverObserved`), with the age and bound for stale ones. Keep the bound above
+the resident telemetry heartbeat, or a healthy Valkyrie flickers to `idle`
+between beats. Clients that only open rooms for running agents (Lexi) will not
+load the channel of an `idle` Valkyrie.
+
+The id precedence is managed, then discovered, then catalog: a catalog Valkyrie
+never appears twice when Forge or discovery already lists the same id.
+
+A catalog Valkyrie is listed by the instance whose Ravn holds the catalog
+(ymir), so its `instance_id` names that instance and calls about it are routed
+there. Where it actually runs is its `placement.cluster`, reported as `cluster`;
+the web UI and Lexi show and group a resident by `cluster` when it has one.
+
+### Channels with catalog residents (the Forge's discovered backend)
+
+A resident's extra channels are sessions in its Ravn OpenClaw shim, which the
+Forge drives (`RavnResidentSessionController`). The Forge only drives residents
+it has a record of, so catalog Valkyries get channels through the
+`discovered` resident backend: residents the Forge discovers instead of
+deploying. It keeps one record per discovered resident (id derived from the
+resident's key, `niuu.domain.discovered_residents.discovered_resident_id`),
+reports it active while its shim's `<shim_url>/health` answers, and never
+deploys, restarts, suspends or removes it. Its profile is never offered for
+deployment.
+
+```yaml
+residentRuntimeProfiles:
+  - id: discovered-ravn
+    enabled: true
+    displayName: Discovered Ravn
+    backend: discovered
+    engine: ravn
+    capabilities: [chat, logs]          # session.* are added by the Ravn session controller
+residentRuntimeControllers:
+  - adapter: volundr.adapters.outbound.discovered_resident_runtime.DiscoveredResidentRuntimeController
+    kwargs:
+      loki_base_url: https://loki.proxy.glitnir.alfheim.niuu.world
+      residents:
+        - key: valkyrie-glitnir-k8s     # the catalog valkyrieId
+          name: Hildr
+          owner_id: <user id>           # whose record (and channels) it is
+          tenant_id: <tenant id>
+          persona_name: k8s-valkyrie
+          shim_url: https://hildr.glitnir.alfheim.niuu.world/openclaw
+          chat_endpoint: wss://yggdrasil.niuu.world/rooms/hildr/session
+          placement: {cluster: glitnir, namespace: nats, workload: valkyrie-glitnir-k8s}
+    secretKwargs:
+      - kwarg: shim_tokens              # JSON object: resident key -> its shim token
+        secretName: discovered-resident-shim-tokens
+        secretKey: tokens.json
+```
+
+Each resident runs the shim with the same token
+(`gateway.channels.openclaw` with `path: /openclaw` behind its ingress,
+`token_env: RAVN_OPENCLAW_TOKEN`, `agent_id: main`). Every resident needs a token
+and every token a resident, or the Forge refuses to start.
+
+The Ravn API keeps listing the resident under its own id. When the caller may see
+the Forge's record of it, the resident gains `session.list`, `session.create` and
+`session.delete`, its sessions list is its room plus the record's sessions (chat
+endpoints `/s/<record id>/sessions/<id>/session`), and creating or deleting a
+channel goes to that record. Without a record a catalog resident has only its
+room, and creating a channel answers `409`.
+
+### Logs of discovered and catalog residents
+
+A managed resident's logs come from its control plane. A discovered or catalog
+resident is a plain Kubernetes workload, often in a cluster with no Niuu
+instance, so `GET /api/v1/ravn/ravens/{id}/logs` reads it by its placement from
+the configured `resident_logs` adapter. The Loki adapter reads the Loki that
+every cluster's collector ships pod logs to, one tenant per cluster:
+
+```yaml
+resident_logs:
+  adapter: ravn.adapters.resident_logs.loki.LokiResidentLogAdapter
+  base_url: https://loki.proxy.glitnir.alfheim.niuu.world
+  # query_path: /{cluster}/loki/api/v1/query_range   # default; {cluster} is the tenant path
+  # lookback_seconds: 86400
+  # timeout_seconds: 15
+```
+
+It selects the workload's pods (`<workload>-<replicaset>-<pod>`) in its
+namespace; `source` names containers and `min_level` filters on the line's
+level. A discovered resident is placed when its discovery adapter names its
+`cluster` (`KubernetesResidentDiscoveryAdapter(cluster: valhalla)`); a catalog
+Valkyrie, by its `placement`. A resident without a placement, or a Ravn with no
+`resident_logs` adapter, answers `409` with what to configure; a Loki that
+cannot answer is a `502`. Logs are never reported empty in place of either.
+
+### The shared (system) resident list
+
+`GET /api/v1/ravn/ravens?visibility=system` returns only the discovered and
+catalog residents whose visibility is `system`. It never asks Forge for the
+caller's own resident runtimes, so it suits views that one identity builds and
+every signed-in user sees. The Observatory topology uses it: each site's
+Observatory has its own site identity, which owns no residents and, on a Forge
+with `membership_authority: local`, is no tenant member either. A user's own
+residents therefore do not appear on the Observatory map; they stay visible to
+their owner in Lexi and the Residents page.
+
 ## Ownership
 
 Skuld enforces session ownership at WebSocket accept (`ws_auth` in the
@@ -225,6 +454,14 @@ matching `session.ownerId` (Envoy headers, dev params, or bearer token;
 admin roles bypass; unauthenticated loopback stays open for in-pod peers).
 The resident authenticates with its platform identity, so it can join
 exactly the sessions its owner owns — nothing else.
+
+The resident's own room connection (`skuld.broker_url`) presents that same
+platform identity as a bearer token, so a room hosted remotely behind JWT
+(`wss://yggdrasil.niuu.world/rooms/<id>/ws/ravn`) accepts it. A `wss://`
+`skuld.broker_url` therefore requires `gateway.platform.enabled` (with
+`gateway.platform.access_token`, or workload identity); without it the
+resident refuses to start. A plain in-cluster `ws://` broker needs no
+identity.
 
 ## The loop back
 
@@ -239,6 +476,29 @@ Two mechanisms resume the resident when launched work lands:
   appears in that session's participant list, receives messages directed
   at it there (tagged perception, never confused with your chat), can
   `post` answers into that room, and leaves when the work completes.
+
+## Answering a resident's question
+
+When a resident needs your input it persists the question on its case first,
+then asks — in Telegram as a "needs your input" message you can reply to. Your
+reply carries the case id of the message you replied to, so it resumes exactly
+that case even when several questions are open. A message that is not a reply
+answers a question only when exactly one is open; otherwise it reaches the
+resident as ordinary input.
+
+A reply naming a case whose question is already closed (answered, withdrawn,
+superseded) is not applied to any other case. The resident logs
+`operator reply names resident case … which has no pending question`, emits
+`ravn.resident.operator_reply.unbound`, and receives your words labelled as a
+reply that bound to nothing.
+
+A case has no turn or token cap of its own. Its rechecks are bounded by the
+resident's daily budget (`budget.daily_cap_usd`; a spent budget holds tasks
+until the UTC day rolls over and counts on `ravn.cap.hits`), by one turn per
+scheduled wake, and by the repeated-decision guard below. The former
+`resident_state.continuation_max_turns` and `continuation_max_tokens` are
+refused at config load: a 3-turn cap once stopped a case on the turn that asked
+you a question, so the question was never saved.
 
 ## When a resident stops making progress
 
@@ -302,6 +562,15 @@ whose normal work involves genuinely long unchanged waits; set `0` only when
 you would rather have silence than the question, and know that a stuck
 resident will then stay stuck until you notice.
 
+Re-checked on 553 sleeping turns of the etcd-watching resident (20-27 Oct).
+Its objectives restate the same closure watch in new words and new anchor
+times every turn: normalising every timestamp in them changes nothing (the
+longest unchanged run stays 4; stripping every digit-bearing token still gives
+4). The objectives component is therefore not what a tool-blind fingerprint
+could be tightened on, and the threshold is left as calibrated. The recorded
+turns carry no tool results, so the tool-result half of the fingerprint could
+not be replayed from them.
+
 The streak is keyed on the resident, not the case, and is persisted at
 `resident/continuation/decision-streak/<resident>.md`, so it survives both
 case boundaries and restarts. Escalations log at WARNING
@@ -309,6 +578,34 @@ case boundaries and restarts. Escalations log at WARNING
 anything new`) and emit `ravn.resident.repeated_decision_escalated`; every
 counted turn increments `ravn.resident.repeated_decisions`, which is the
 metric to watch if you want to tune the threshold from real behaviour.
+
+## Escalating is asking
+
+A resident turn with `decision: escalate` asks the operator, and only its
+`question` reaches anyone. ODIN court routing (`notify`, `open_huddle`) does
+not ask a person anything, so an escalation that relied on `tier` alone ended
+in an empty room: one resident recorded 27 escalating turns with
+`continuation: sleep` and no question, believed it had told someone, and
+nobody was ever asked.
+
+The outcome contract now enforces this:
+
+- `decision: escalate` with an empty `question` is rejected like any other
+  invalid outcome. The model is sent the remedy through the existing schema
+  repair turn (write the question, or choose a decision that needs no human
+  answer such as `watch` with `continuation: sleep`), and a turn that is still
+  invalid after repair is counted against its observations as usual.
+- `continuation: ask_operator` (or `verdict: help_needed`) with an empty
+  `question` is rejected the same way. The runtime never writes a question on
+  the resident's behalf: there is no placeholder, and `open_questions`,
+  `recommendation` and `selected_next_action` are not turned into one. A turn
+  that reaches the runtime without a question anyway is recorded as an invalid
+  outcome with an error log.
+- `decision: escalate` with a `question` is persisted as an operator question
+  and delivered through the same path as `continuation: ask_operator`
+  (`/resident/operator-needed`, pending questions, the review inbox), whatever
+  `continuation` the model also chose. A known resolution still gets its one
+  redirect before the operator is asked.
 
 ## The health scorecard
 

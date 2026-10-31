@@ -9,13 +9,14 @@ from uuid import UUID, uuid4
 
 from a2a.client.card_resolver import parse_agent_card
 from cryptography.fernet import Fernet
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from ting.api.a2a_card import (
     A2A_ENDPOINT_PATH,
     BEARER_SECURITY_SCHEME,
     create_agent_card_router,
+    resolve_card_workflow_repo,
 )
 from ting.api.workflows import resolve_workflow_repo
 from ting.config import A2AConfig
@@ -107,7 +108,7 @@ def _client(
     async def _resolve_repo() -> WorkflowRepository:
         return repo
 
-    app.dependency_overrides[resolve_workflow_repo] = _resolve_repo
+    app.dependency_overrides[resolve_card_workflow_repo] = _resolve_repo
     return TestClient(app)
 
 
@@ -234,3 +235,27 @@ class TestAgentCard:
 
         card = parse_agent_card(response.json())
         assert card.supported_interfaces[0].url == f"https://niuu.example{A2A_ENDPOINT_PATH}"
+
+
+def test_card_does_not_require_a_principal() -> None:
+    """The card must stay reachable when the principal-bound repository rejects."""
+    app = FastAPI()
+    app.include_router(create_agent_card_router(A2AConfig()))
+
+    async def _principal_required() -> WorkflowRepository:
+        raise HTTPException(status_code=401, detail="The original bearer credential is required")
+
+    async def _card_repo() -> WorkflowRepository:
+        return InMemoryWorkflowRepository([])
+
+    app.dependency_overrides[resolve_workflow_repo] = _principal_required
+    app.dependency_overrides[resolve_card_workflow_repo] = _card_repo
+
+    assert TestClient(app).get("/.well-known/agent-card.json").status_code == 200
+
+
+def test_card_repository_is_unconfigured_until_the_composition_root_wires_it() -> None:
+    app = FastAPI()
+    app.include_router(create_agent_card_router(A2AConfig()))
+
+    assert TestClient(app).get("/.well-known/agent-card.json").status_code == 503

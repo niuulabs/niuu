@@ -1,0 +1,11 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/thor/repos/worktrees/niuu-activity-navigation-read-20260926
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.12.1, respx-0.23.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 9 items
+
+tests/test_adapters/test_notifications_migration.py .........            [100%]
+
+============================== 9 passed in 0.03s ===============================

@@ -580,6 +580,19 @@ class TestDeleteSession:
         get_response = client.get(f"/api/v1/forge/sessions/{session.id}")
         assert get_response.status_code == 404
 
+    async def test_delete_session_reports_undeleted_compute_as_unavailable(
+        self, client: TestClient, service: SessionService, pod_manager: MockPodManager
+    ):
+        """Compute that cannot be removed answers 503 with the remedy and keeps the session."""
+        session = await service.create_session("Test", "claude-sonnet-4")
+        pod_manager.stop_success = False
+
+        response = client.delete(f"/api/v1/forge/sessions/{session.id}")
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Pod stop failed"
+        assert client.get(f"/api/v1/forge/sessions/{session.id}").status_code == 200
+
     def test_delete_session_not_found(self, client: TestClient):
         """Returns 404 for non-existent session."""
         fake_id = uuid4()
@@ -1485,6 +1498,101 @@ class TestSessionLogAggregationProxy:
         assert response.json()["detail"] == "Session archive service not available"
 
 
+class TestSessionRoomProxy:
+    """Services reach a session's room through Forge, not the session's own origin."""
+
+    PRINCIPAL = Principal(
+        user_id="dev-user", email="dev@example.com", tenant_id="default", roles=[]
+    )
+
+    def _session(
+        self, repository: InMemorySessionRepository, owner_id: str = "dev-user"
+    ) -> Session:
+        session = Session(
+            id=uuid4(),
+            name="room-session",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint="ws://localhost:8080/s/room-session/session",
+            owner_id=owner_id,
+        )
+        asyncio.run(repository.create(session))
+        return session
+
+    def test_the_owner_reaches_the_broker_with_the_owner_room_role(
+        self, client: TestClient, repository: InMemorySessionRepository
+    ) -> None:
+        session = self._session(repository)
+        upstream = MagicMock(spec=httpx.Response)
+        upstream.content = b'{"status": "sent"}'
+        upstream.status_code = 200
+        upstream.headers = {"content-type": "application/json"}
+
+        with (
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(return_value=self.PRINCIPAL),
+            ),
+            patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.request.return_value = upstream
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/room/direct",
+                json={"target_peer_id": "flock-coordinator", "content": "start"},
+            )
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "sent"}
+        args, kwargs = mock_client.request.await_args
+        assert args[1].endswith("/s/room-session/api/room/direct")
+        assert kwargs["headers"]["x-niuu-room-role"] == "owner"
+
+    def test_someone_else_cannot_reach_the_room(
+        self, client: TestClient, repository: InMemorySessionRepository
+    ) -> None:
+        session = self._session(repository, owner_id="someone-else")
+
+        with patch(
+            "volundr.adapters.inbound.rest.extract_principal",
+            new=AsyncMock(return_value=self.PRINCIPAL),
+        ):
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/room/direct", json={"content": "start"}
+            )
+
+        assert response.status_code == 403
+
+    def test_an_unknown_room_operation_is_refused(
+        self, client: TestClient, repository: InMemorySessionRepository
+    ) -> None:
+        session = self._session(repository)
+
+        with patch(
+            "volundr.adapters.inbound.rest.extract_principal",
+            new=AsyncMock(return_value=self.PRINCIPAL),
+        ):
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/room/huddle", json={"content": "start"}
+            )
+
+        assert response.status_code == 422
+
+    def test_a_missing_session_has_no_room(self, client: TestClient) -> None:
+        with patch(
+            "volundr.adapters.inbound.rest.extract_principal",
+            new=AsyncMock(return_value=self.PRINCIPAL),
+        ):
+            response = client.post(
+                f"/api/v1/forge/sessions/{uuid4()}/room/direct", json={"content": "start"}
+            )
+
+        assert response.status_code == 404
+
+
 class TestWorkflowGateProxy:
     """Tests for native workflow gate proxy endpoints."""
 
@@ -1583,6 +1691,61 @@ class TestWorkflowGateProxy:
         assert "not resolved" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
+    async def test_resolve_workflow_gate_names_the_signed_in_person_whatever_the_body_says(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            f"file:///tmp/{session.id}",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+        request = httpx.Request(
+            "POST", f"http://localhost:8080/s/{session.id}/api/workflow/gates/g1/resolve"
+        )
+
+        with (
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user",
+                        email="dev@example.com",
+                        tenant_id="default",
+                        roles=[],
+                    )
+                ),
+            ),
+            patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.return_value = httpx.Response(
+                200, json={"status": "resolved"}, request=request
+            )
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/workflow/gates/g1/resolve",
+                json={
+                    "decision": "APPROVE",
+                    "notes": "",
+                    "source": "ting.board",
+                    "decided_by": "someone-else",
+                },
+            )
+
+        assert response.status_code == 200
+        sent = mock_client.post.await_args.kwargs["json"]
+        assert sent["decided_by"] == "dev@example.com"
+        assert sent["source"] == "ting.board"
+
+    @pytest.mark.asyncio
     async def test_resolve_workflow_gate_quotes_gate_id(
         self,
         client: TestClient,
@@ -1634,7 +1797,12 @@ class TestWorkflowGateProxy:
                 # succeeded — see ROOM_ROLE_HEADER in rest.py.
                 "x-niuu-room-role": "approver",
             },
-            json={"decision": "approved", "notes": "looks good", "source": "human"},
+            json={
+                "decision": "approved",
+                "notes": "looks good",
+                "source": "human",
+                "decided_by": "dev@example.com",
+            },
         )
 
     @pytest.mark.asyncio
@@ -1675,6 +1843,54 @@ class TestWorkflowGateProxy:
 
         assert response.status_code == 503
         assert response.json()["detail"] == "Session archive service not available"
+
+
+class TestConversationTurnPosition:
+    """A turn's position comes from the full listing, even when the broker answers the
+    item request with only that turn (as live brokers do)."""
+
+    @pytest.mark.asyncio
+    async def test_live_turn_reports_its_position_in_the_full_listing(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "live",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            "https://workspace.example.com/session",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+        turns = [
+            {"id": "u1", "role": "user", "content": "hi", "parts": []},
+            {"id": "a1", "role": "assistant", "content": "hello", "parts": []},
+            {"id": "a2", "role": "assistant", "content": "done", "parts": []},
+        ]
+
+        def reply(url, headers=None, params=None):
+            response = MagicMock(spec=httpx.Response)
+            response.status_code = 200
+            response.raise_for_status = MagicMock()
+            only = (params or {}).get("turn_id")
+            body = [t for t in turns if t["id"] == only] if only else turns
+            response.json.return_value = {"turns": body, "is_active": False}
+            return response
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.side_effect = reply
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            found = client.get(f"/api/v1/forge/sessions/{session.id}/conversation/turns/a2")
+
+        assert found.status_code == 200
+        body = found.json()
+        assert body["turn"]["id"] == "a2"
+        assert (body["index"], body["total_turns"]) == (2, 3)
 
 
 class TestHelpRequestProxy:
@@ -1875,6 +2091,29 @@ class TestFeatureFlags:
         data = response.json()
         assert "local_mounts_allowed_prefixes" in data
         assert isinstance(data["local_mounts_allowed_prefixes"], list)
+
+    def test_feature_flags_report_notifications_only_when_served(self, client: TestClient):
+        """The flag follows whether the notification feed is composed on this host."""
+        data = client.get("/api/v1/forge/feature-flags").json()
+        assert data["notifications_enabled"] is False
+        assert data["capabilities"]["notifications"] is False
+        client.app.state.notification_service = object()
+        data = client.get("/api/v1/forge/feature-flags").json()
+        assert data["notifications_enabled"] is True
+        assert data["capabilities"]["notifications"] is True
+
+    def test_feature_flags_report_forge_mcp_credentials(self, client: TestClient):
+        """Session credentials and the HTTP MCP are reported, never silently absent."""
+        capabilities = client.get("/api/v1/forge/feature-flags").json()["capabilities"]
+        assert capabilities["forge_session_tokens"] is False
+        assert capabilities["forge_session_token_key"] is None
+        assert capabilities["forge_mcp_http"] is False
+        client.app.state.forge_session_tokens = type("T", (), {"key_source": "key_file"})()
+        client.app.state.forge_mcp_http = True
+        capabilities = client.get("/api/v1/forge/feature-flags").json()["capabilities"]
+        assert capabilities["forge_session_tokens"] is True
+        assert capabilities["forge_session_token_key"] == "key_file"
+        assert capabilities["forge_mcp_http"] is True
 
 
 class TestStatsResponse:

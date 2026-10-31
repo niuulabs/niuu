@@ -280,7 +280,7 @@ def build_app(
         from cli.api.guild import join as guild_join
         from cli.auth.node_key import DEFAULT_NODE_KEY_FILENAME, NodeIdentity
         from cli.commands.node_instances import UnreachableHostError, offered_instances_for_host
-        from cli.config import DEFAULT_CONFIG_DIR, persist_guild_join
+        from cli.config import DEFAULT_CONFIG_DIR, guild_instance_fields, persist_guild_join
 
         node_name = name.strip() or os.uname().nodename
         try:
@@ -310,6 +310,7 @@ def build_app(
         warning = persist_guild_join(
             url=guild_url,
             node_id=result["nodeId"],
+            instance=guild_instance_fields(result.get("instances")),
             current_host_auth=settings.host_auth,
             identity_trust=result["identity"],
         )

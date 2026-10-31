@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from ravn.domain.events import RavnEvent, RavnEventType
+from ravn.domain.surface import strip_surface_marker
 
 _ACTIVITY_BY_EVENT: dict[RavnEventType, str] = {
     RavnEventType.THOUGHT: "thinking",
@@ -189,8 +191,22 @@ def _delegation(event: RavnEvent, persona: str) -> dict[str, Any] | None:
     return projected
 
 
+def _without_surface_marker(event: RavnEvent) -> RavnEvent:
+    """The escalation marker is for the drive loop, so a room never sees it."""
+    payload = dict(event.payload)
+    for key in ("text", "summary"):
+        if isinstance(payload.get(key), str):
+            payload[key] = strip_surface_marker(payload[key])
+    for key in ("fields", "outcome"):
+        nested = payload.get(key)
+        if isinstance(nested, dict) and isinstance(nested.get("summary"), str):
+            payload[key] = {**nested, "summary": strip_surface_marker(nested["summary"])}
+    return replace(event, payload=payload)
+
+
 def project_ravn_event(event: RavnEvent, *, persona: str = "") -> list[dict[str, Any]]:
     """Return collaboration events whose meaning is decided inside Ravn."""
+    event = _without_surface_marker(event)
     if event.type in (RavnEventType.RESPONSE, RavnEventType.ERROR):
         projected = _base(event, "message")
         projected.update(
@@ -207,6 +223,14 @@ def project_ravn_event(event: RavnEvent, *, persona: str = "") -> list[dict[str,
         )
         if event.type == RavnEventType.ERROR and event.payload.get("failure_kind"):
             projected["failureKind"] = str(event.payload["failure_kind"])
+        if event.type == RavnEventType.ERROR:
+            # Which workflow node failed, so the room can attribute the
+            # failure to a stage rather than only to a peer.
+            projected["metadata"] = {
+                key: str(event.payload[key])
+                for key in ("workflow_node_id", "persona", "failure_kind")
+                if event.payload.get(key)
+            }
         return [projected]
 
     if event.type == RavnEventType.HELP_NEEDED:

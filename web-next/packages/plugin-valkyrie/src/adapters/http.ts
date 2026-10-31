@@ -1,4 +1,4 @@
-import type { ApiClient } from '@niuulabs/query';
+import { openEventStream, type ApiClient } from '@niuulabs/query';
 import {
   normalizeReviewItem,
   type DecisionDetail,
@@ -9,6 +9,7 @@ import {
   type LearnedSkillRecord,
   type LearnedSkillSummary,
   type LearningRecord,
+  type RealmDetail,
   type RealmSummary,
   type RealmTrustGrant,
   type ReviewItem,
@@ -34,6 +35,7 @@ import type {
   ReviewSummaryFilters,
   SignalHistoryFilters,
   RealmCreate,
+  RealmDetailListener,
   TrustGrantCreate,
 } from '../ports';
 
@@ -230,6 +232,7 @@ export function buildOdinReviewHttpAdapter(client: ApiClient): IOdinReviewServic
 export function buildRealmGovernanceHttpAdapter(
   realmsClient: ApiClient,
   workflowsClient: ApiClient,
+  realmsStreamBase = '',
 ): IRealmGovernanceService {
   return {
     listRealms() {
@@ -237,6 +240,26 @@ export function buildRealmGovernanceHttpAdapter(
     },
     getRealm(slug: string) {
       return realmsClient.get<RealmSummary>(`/realms/${encodeURIComponent(slug)}`);
+    },
+    subscribeRealmDetail(slug: string, listener: RealmDetailListener) {
+      if (!realmsStreamBase) {
+        throw new Error('Realm detail stream URL is not configured');
+      }
+      const handle = openEventStream(
+        `${realmsStreamBase}/realms/${encodeURIComponent(slug)}/stream`,
+        {
+          onMessage: () => {},
+          onEvent: (frame) => {
+            if (frame.event !== 'realm.detail') return;
+            try {
+              listener(JSON.parse(frame.data) as RealmDetail);
+            } catch {
+              // A malformed frame must not stop the authenticated stream reconnect loop.
+            }
+          },
+        },
+      );
+      return () => handle.close();
     },
     createRealm(request: RealmCreate) {
       return realmsClient.post<RealmSummary>('/realms', request);

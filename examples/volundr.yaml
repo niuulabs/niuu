@@ -195,3 +195,28 @@ git:
       #   orgs:
       #     - platform
       #     - infra
+
+# Forge session notifications and their external delivery (optional).
+# Nothing leaves Forge unless a sink below (or an owner's messaging integration)
+# is selected by an owner rule. See docs/operator/forge-notifications.md.
+# notifications:
+#   enabled: true
+#   public_web_url: https://forge.example.com   # deep links in delivered messages
+#   dispatcher:
+#     enabled: true
+#     lease_seconds: 60
+#     send_timeout_seconds: 20                  # must be shorter than lease_seconds
+#     max_attempts: 8
+#     backoff_base_seconds: 5
+#     backoff_max_seconds: 900
+#     default_rate_limit: {max_count: 60, window_seconds: 3600}
+#   sinks:
+#     - name: ops-webhook
+#       label: Ops webhook
+#       adapter: niuu.adapters.notifications.webhook.WebhookNotificationSink
+#       url: https://hooks.example.com/forge
+#       secret_kwargs_env:
+#         secret: FORGE_OPS_WEBHOOK_SECRET      # env var holding the HMAC secret
+#     - name: push
+#       label: Forge app push
+#       adapter: volundr.adapters.outbound.push_notification_sink.PushNotificationSink

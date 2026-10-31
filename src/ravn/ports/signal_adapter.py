@@ -134,6 +134,9 @@ class SignalAdapter(ABC):
     async def rollback(self) -> None:
         """Release the most recently collected batch for retry after failure."""
 
+    async def close(self) -> None:
+        """Release any connection the adapter opened; called once when polling stops."""
+
     async def publish(self, publisher: SleipnirPublisher) -> list[SleipnirEvent]:
         """Collect, convert, and publish signals over Sleipnir."""
         try:

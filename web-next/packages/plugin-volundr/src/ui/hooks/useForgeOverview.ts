@@ -58,7 +58,7 @@ function useOverviewRead<T>(
     states: [
       {
         id: kind,
-        name: `Forge ${kind}`,
+        name: `Host ${kind}`,
         loading: single.isPending,
         error: single.error?.message ?? null,
         stale: single.isError && single.data !== undefined,
@@ -105,7 +105,7 @@ export function useForgeOverview() {
         ? [
             {
               id: 'registry',
-              name: 'Forge registry',
+              name: 'Host registry',
               loading: discovery.isPending,
               error: discovery.error?.message ?? null,
               stale: discovery.data !== undefined,

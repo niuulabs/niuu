@@ -34,6 +34,7 @@ def test_ensure_codex_tool_shims_adds_tracker_and_mimir_bridges(tmp_path: Path) 
 
     assert bin_dir is not None
     assert (bin_dir / "tracker_issue").exists()
+    assert (bin_dir / "mimir_publish_artifact").exists()
     assert (bin_dir / "mimir_publish_files").exists()
     assert env["RAVN_MIMIR_PATH"] == "/tmp/mimir"
     assert env["RAVN_MIMIR_NAME"] == "tmp-mimir"
@@ -41,6 +42,8 @@ def test_ensure_codex_tool_shims_adds_tracker_and_mimir_bridges(tmp_path: Path) 
     assert "PYTHONPATH=" in mimir_script
     assert "UV_CACHE_DIR=" in mimir_script
     assert "-m ravn.cli.mimir_bridge publish-files" in mimir_script
+    artifact_script = (bin_dir / "mimir_publish_artifact").read_text(encoding="utf-8")
+    assert "-m ravn.cli.mimir_bridge publish-artifact" in artifact_script
 
 
 def test_ensure_codex_tool_shims_adds_mimir_related_bridge(tmp_path: Path) -> None:
@@ -84,6 +87,7 @@ def test_ensure_codex_tool_shims_describe_each_mimir_command(tmp_path: Path) -> 
         "mimir_read",
         "mimir_read_source",
         "mimir_write",
+        "mimir_publish_artifact",
         "mimir_publish_files",
         "mimir_list",
         "mimir_related",

@@ -192,6 +192,7 @@ async def test_start_and_stop_manage_sdk_context(monkeypatch, tmp_path) -> None:
         workspace_dir=str(tmp_path),
         model="claude-opus-4-20250514",
         skip_permissions=True,
+        claude_permission_mode="bypassPermissions",
         agent_teams=True,
         system_prompt="System prompt",
         mcp_servers=[{"name": "linear", "command": "uvx", "args": ["linear-mcp"]}],
@@ -347,7 +348,10 @@ async def test_start_injects_tracker_shim_env(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
     monkeypatch.setattr(
         "skuld.transports.sdk.ensure_codex_tool_shims",
-        lambda workspace_dir, mcp_servers=None: (tmp_path / ".skuld-tools" / "bin", shim_env),
+        lambda workspace_dir, mcp_servers=None, session_env=None: (
+            tmp_path / ".skuld-tools" / "bin",
+            shim_env,
+        ),
     )
 
     transport = SDKTransport(workspace_dir=str(tmp_path))
@@ -1243,7 +1247,11 @@ async def test_flag_off_omits_can_use_tool_callback(monkeypatch, tmp_path) -> No
     factory = _ClientFactory([[]])
     monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
 
-    transport = SDKTransport(workspace_dir=str(tmp_path), skip_permissions=True)
+    transport = SDKTransport(
+        workspace_dir=str(tmp_path),
+        skip_permissions=True,
+        claude_permission_mode="bypassPermissions",
+    )
     await transport.start()
 
     assert factory.options.can_use_tool is None

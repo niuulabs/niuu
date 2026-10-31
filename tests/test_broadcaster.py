@@ -723,6 +723,37 @@ class TestInMemoryEventBroadcasterSleipnirForwarding:
         assert arg.payload["kind"] == "question"
 
     @pytest.mark.asyncio
+    async def test_session_notification_forwarded_with_severity_urgency(self):
+        """New notifications are mirrored to the bus like needs_input, with a typed
+        owner-scoped payload and urgency that follows the severity."""
+        from sleipnir.domain import registry
+        from sleipnir.domain.catalog import notification_urgency
+
+        publisher = AsyncMock()
+        publisher.publish = AsyncMock()
+        b = InMemoryEventBroadcaster(max_queue_size=10, sleipnir_publisher=publisher)
+        event = RealtimeEvent(
+            type=EventType.SESSION_NOTIFICATION,
+            data={
+                "id": "n-1",
+                "seq": 3,
+                "owner_id": "u",
+                "kind": "error",
+                "severity": "warning",
+                "source": "agent",
+                "title": "Build failed",
+            },
+            timestamp=datetime.now(UTC),
+        )
+
+        await b.publish(event)
+
+        arg = publisher.publish.call_args[0][0]
+        assert arg.event_type == registry.VOLUNDR_SESSION_NOTIFICATION
+        assert arg.urgency == notification_urgency("warning")
+        assert arg.payload["owner_id"] == "u" and arg.payload["seq"] == 3
+
+    @pytest.mark.asyncio
     async def test_session_activity_not_forwarded_to_bus(self):
         """Routine activity stays SSE-only — it must not flood the platform bus."""
         publisher = AsyncMock()

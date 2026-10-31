@@ -363,6 +363,19 @@ class PostgresSessionEventLog(SessionEventLogRepository):
         )
         return [self._row_to_entry(r) for r in rows]
 
+    async def read_seqs(self, session_id: UUID, seqs: list[int]) -> list[SessionLogEntry]:
+        if not seqs:
+            return []
+        rows = await self._pool.fetch(
+            """SELECT session_id, seq, kind, role, request_id, payload, ts
+               FROM session_event_log
+               WHERE session_id = $1 AND seq = ANY($2::bigint[])
+               ORDER BY seq ASC""",
+            session_id,
+            sorted(set(seqs)),
+        )
+        return [self._row_to_entry(r) for r in rows]
+
     async def latest_seq(self, session_id: UUID) -> int:
         value = await self._pool.fetchval(
             "SELECT MAX(seq) FROM session_event_log WHERE session_id = $1",

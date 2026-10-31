@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
 import yaml
+from pydantic import ValidationError
 
 from bifrost.__main__ import _load_config, main
 from bifrost.config import BifrostConfig
@@ -92,3 +94,33 @@ class TestMain:
         ):
             main()
             mock_run.assert_called_once()
+
+
+class TestGracefulShutdown:
+    def test_uvicorn_is_told_how_long_in_flight_streams_may_finish(self, tmp_path):
+        cfg_file = tmp_path / "bifrost.yaml"
+        cfg_file.write_text(yaml.dump({"shutdown_grace_seconds": 240}))
+
+        with (
+            patch("uvicorn.run") as mock_run,
+            patch("sys.argv", ["bifrost", "--config", str(cfg_file)]),
+        ):
+            main()
+
+        assert mock_run.call_args.kwargs["timeout_graceful_shutdown"] == 240
+
+    def test_the_default_waits_for_the_longest_request_envoy_allows(self, tmp_path):
+        cfg_file = tmp_path / "bifrost.yaml"
+        cfg_file.write_text("")
+
+        with (
+            patch("uvicorn.run") as mock_run,
+            patch("sys.argv", ["bifrost", "--config", str(cfg_file)]),
+        ):
+            main()
+
+        assert mock_run.call_args.kwargs["timeout_graceful_shutdown"] == 300
+
+    def test_a_zero_grace_is_refused_rather_than_cutting_every_stream(self):
+        with pytest.raises(ValidationError):
+            BifrostConfig(shutdown_grace_seconds=0)

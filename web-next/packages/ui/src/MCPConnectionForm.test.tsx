@@ -12,6 +12,7 @@ const metadata = {
 
 describe('MCPConnectionForm', () => {
   it('discovers OAuth before opening the authorization URL', async () => {
+    const addListener = vi.spyOn(window, 'addEventListener');
     const done = vi.fn();
     const discover = vi.fn().mockResolvedValue(metadata);
     const connect = vi
@@ -34,6 +35,10 @@ describe('MCPConnectionForm', () => {
       'href',
       'https://auth.example/authorize',
     );
+    // The storage listener is attached by a passive effect that can run after
+    // the link renders; dispatching before it exists drops the event.
+    await waitFor(() => expect(addListener).toHaveBeenCalledWith('storage', expect.any(Function)));
+    addListener.mockRestore();
     fireEvent(
       window,
       new StorageEvent('storage', { key: 'niuu:mcp-connected', newValue: 'unrelated' }),

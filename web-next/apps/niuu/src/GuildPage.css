@@ -1,0 +1,14 @@
+/* Keep informational labels quiet in Light mode. */
+[data-theme='light'] .guild-label {
+  background-color: transparent;
+  border-color: transparent;
+}
+
+[data-theme='light'] .guild-choice--selected {
+  background-color: var(--color-selection-surface);
+}
+
+[data-theme='light'] .guild-choice-icon {
+  background-color: transparent;
+  border-color: var(--color-border);
+}

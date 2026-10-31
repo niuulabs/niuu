@@ -6,9 +6,12 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
+from functools import partial
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -18,10 +21,12 @@ from niuu.adapters.inbound.rest_credentials_settings import create_credentials_s
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.inbound.rest_realms import create_realms_router
+from niuu.adapters.outbound.git_registry import create_provenance_verifier
 from niuu.adapters.postgres_credential_refresh_lock import PostgresCredentialRefreshLock
 from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.build_identity import build_identity
 from niuu.cors import apply_cors_middleware
+from niuu.domain.guild_membership import GuildInstance
 from niuu.domain.services.realm import RealmService
 from niuu.service_integrations import (
     has_seeded_linear_integration as _has_seeded_linear_integration,
@@ -42,6 +47,7 @@ from niuu.utils import import_class, resolve_secret_kwargs
 from sleipnir.adapters.audit_postgres import PostgresAuditRepository
 from sleipnir.adapters.audit_subscriber import AuditSubscriber
 from volundr.adapters.inbound.auth import extract_principal
+from volundr.adapters.inbound.forge_session_auth import ForgeSessionAuthMiddleware
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.inbound.rest_admin_settings import create_admin_settings_router
 from volundr.adapters.inbound.rest_audit import (
@@ -51,15 +57,19 @@ from volundr.adapters.inbound.rest_audit import (
 from volundr.adapters.inbound.rest_codex_credentials import create_codex_credentials_router
 from volundr.adapters.inbound.rest_credentials import create_canonical_credentials_router
 from volundr.adapters.inbound.rest_events import create_events_router
+from volundr.adapters.inbound.rest_forge_mcp import create_forge_mcp_router
 from volundr.adapters.inbound.rest_git import create_git_router
+from volundr.adapters.inbound.rest_guild import create_guild_router
 from volundr.adapters.inbound.rest_integrations import create_canonical_integrations_router
 from volundr.adapters.inbound.rest_issues import create_canonical_issues_router
 from volundr.adapters.inbound.rest_message_delivery import create_message_delivery_router
+from volundr.adapters.inbound.rest_notifications import create_notifications_router
 from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router
 from volundr.adapters.inbound.rest_openshell_credentials import (
     create_openshell_credentials_router,
 )
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
+from volundr.adapters.inbound.rest_resident_a2a import create_resident_a2a_router
 from volundr.adapters.inbound.rest_resident_runtimes import create_resident_runtimes_router
 from volundr.adapters.inbound.rest_resources import create_resources_router
 from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
@@ -79,6 +89,7 @@ from volundr.adapters.outbound.config_resident_profiles import (
 from volundr.adapters.outbound.git_registry import create_git_registry
 from volundr.adapters.outbound.linear import LinearAdapter
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
+from volundr.adapters.outbound.odin_review_notification_relay import OdinReviewNotificationRelay
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.pg_message_delivery import PostgresMessageDelivery
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
@@ -98,6 +109,14 @@ from volundr.adapters.outbound.postgres_device_tokens import PostgresDeviceToken
 from volundr.adapters.outbound.postgres_integrations import PostgresIntegrationRepository
 from volundr.adapters.outbound.postgres_launch_specs import PostgresLaunchSpecRepository
 from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
+from volundr.adapters.outbound.postgres_notifications import (
+    PostgresNotificationDeliveryRepository,
+    PostgresNotificationRepository,
+    PostgresNotificationRuleRepository,
+)
+from volundr.adapters.outbound.postgres_odin_review_relay import (
+    PostgresOdinReviewRelayStateStore,
+)
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
 from volundr.adapters.outbound.postgres_resident_runtimes import (
     PostgresResidentRuntimeRepository,
@@ -113,6 +132,10 @@ from volundr.adapters.outbound.postgres_tokens import PostgresTokenTracker
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.adapters.outbound.resident_flock import ResidentFlockAdapter
+from volundr.adapters.outbound.resident_notification_relay import (
+    RelaySettings,
+    ResidentNotificationRelay,
+)
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
 from volundr.app_shell import build_app_shell
 from volundr.catalog import build_catalog
@@ -123,6 +146,7 @@ from volundr.composition_builders import (  # noqa: F401
     _create_contributors,
     _create_credential_enrollment_runner,
     _create_external_session_providers,
+    _create_forge_session_tokens,
     _create_gateway_adapter,
     _create_http_auth_adapter,
     _create_pod_manager,
@@ -139,6 +163,7 @@ from volundr.composition_builders import (  # noqa: F401
 )
 from volundr.config import Settings
 from volundr.domain.models import SessionStatus
+from volundr.domain.notifications import NotificationSinkInfo
 from volundr.domain.ports import OpenShellCredentialGrantPort
 from volundr.domain.services import (
     ChronicleService,
@@ -152,12 +177,12 @@ from volundr.domain.services import (
     TenantService,
     TokenService,
 )
-from volundr.domain.services.attention_notifier import PushAttentionNotifier
 from volundr.domain.services.communication_ingress import CommunicationIngressService
 from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.credential_enrollment import CredentialEnrollmentService
 from volundr.domain.services.event_ingestion import EventIngestionService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
+from volundr.domain.services.notifications import NotificationService, engine_resolver_for
 from volundr.domain.services.resident_runtime import (
     ResidentRuntimeNotFoundError,
     ResidentRuntimeService,
@@ -171,11 +196,23 @@ from volundr.domain.services.workspace import WorkspaceService
 from volundr.external_modules import load_external_module_manifests
 from volundr.infrastructure.database import database_pool
 from volundr.integration_definitions import load_integration_definition_configs
+from volundr.notification_composition import (
+    NotificationDelivery,
+    create_notification_delivery,
+    create_push_channel,
+)
 
 # Interval for periodic stats and heartbeat broadcasts (seconds)
 BROADCAST_INTERVAL = 30
 
 logger = logging.getLogger(__name__)
+
+
+# Only "could not reach Bifrost" is retried: in mini mode the catalog is served by
+# this same process and is not listening yet when the lifespan starts. Any other
+# failure (HTTP error, bad payload, bad auth) means a reachable catalog answered
+# wrongly, which is a misconfiguration and must surface instead of being retried.
+_BIFROST_NOT_READY_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout)
 
 
 async def _load_bifrost_catalog(
@@ -186,18 +223,34 @@ async def _load_bifrost_catalog(
     while True:
         try:
             models = await bifrost_catalog.list_models()
-            pricing_provider.replace_models(models)
-            logger.info("Loaded %s model(s) from configured Bifrost catalog", len(models))
-            return
-        except Exception:
+        except _BIFROST_NOT_READY_ERRORS as exc:
             logger.warning(
-                "Bifrost catalog not ready yet at %s; retrying in %.1fs",
+                "Bifrost catalog not ready yet at %s (%s); retrying in %.1fs",
                 bifrost_catalog._base_url,  # noqa: SLF001
+                exc,
                 delay_seconds,
-                exc_info=True,
             )
             await asyncio.sleep(delay_seconds)
             delay_seconds = min(delay_seconds * 2, 5.0)
+            continue
+        pricing_provider.replace_models(models)
+        logger.info("Loaded %s model(s) from configured Bifrost catalog", len(models))
+        return
+
+
+def _log_bifrost_catalog_task_failure(task: asyncio.Task[None]) -> None:
+    """Make a dead catalog refresh task loud: without this it would die silently."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is None:
+        return
+    logger.error(
+        "Bifrost catalog refresh stopped: %s. Fix the catalog at bifrost.url (and bifrost.auth) "
+        "and restart Volundr; the model catalog will not refresh until then",
+        exc,
+        exc_info=exc,
+    )
 
 
 async def _refresh_bifrost_catalog(
@@ -209,6 +262,139 @@ async def _refresh_bifrost_catalog(
     while True:
         await _load_bifrost_catalog(pricing_provider, bifrost_catalog)
         await asyncio.sleep(interval_seconds)
+
+
+def _create_resident_notification_relay(
+    settings: Settings,
+    repository: Any,
+    session_controllers: list[Any],
+    notification_service: NotificationService | None,
+) -> ResidentNotificationRelay | None:
+    """Follow residents' notification outboxes into the feed (``resident_runtimes.notifications``).
+
+    Off with the feed itself: there is nowhere to record them without it.
+    """
+    config = settings.resident_runtimes.notifications
+    if notification_service is None or not config.enabled:
+        return None
+    return ResidentNotificationRelay(
+        repository,
+        session_controllers,
+        notification_service,
+        RelaySettings(
+            batch_size=config.batch_size,
+            idle_resync_seconds=config.idle_resync_seconds,
+            reconnect_initial_seconds=config.reconnect_initial_seconds,
+            reconnect_max_seconds=config.reconnect_max_seconds,
+        ),
+    )
+
+
+def _create_odin_review_relay(
+    settings: Settings,
+    pool: Any,
+    notification_service: NotificationService | None,
+) -> OdinReviewNotificationRelay | None:
+    """Follow the ODIN review queue into the feed (``notifications.odin_review_relay``).
+
+    Enabled but unable to run is fatal: the source adapter is built here, so a bad class
+    path or kwargs stops startup with the remedy instead of leaving questions unannounced.
+    """
+    config = settings.notifications.odin_review_relay
+    if not config.enabled:
+        return None
+    if notification_service is None:
+        raise RuntimeError(
+            "notifications.odin_review_relay.enabled records into the notification feed: "
+            "set notifications.enabled: true, or disable the relay"
+        )
+    if not settings.push.enabled:
+        logger.warning(
+            "ODIN review relay is on but push.enabled is false: resident questions reach the "
+            "notification feed and nothing is pushed to a phone"
+        )
+    source = import_class(config.source.adapter)(
+        **resolve_secret_kwargs(config.source.kwargs, config.source.secret_kwargs_env)
+    )
+    return OdinReviewNotificationRelay(
+        source,
+        PostgresOdinReviewRelayStateStore(pool),
+        notification_service,
+        owner_ids=config.owner_ids,
+        poll_interval_seconds=config.poll_interval_seconds,
+        push_sink=settings.push.attention_sink if settings.push.enabled else None,
+    )
+
+
+def _create_notification_service(
+    settings: Settings,
+    pool: Any,
+    *,
+    broadcaster: InMemoryEventBroadcaster,
+    integration_repository: PostgresIntegrationRepository,
+    guild_instance: GuildInstance | None = None,
+) -> NotificationService | None:
+    """Compose the notification feed, rules and outbox (``notifications.enabled``)."""
+    config = settings.notifications
+    if not config.enabled:
+        logger.info("Forge notifications disabled (notifications.enabled=false)")
+        return None
+    cli_types = {
+        name: (definition.defaults.get("broker") or {}).get("cliType")
+        for name, definition in settings.session_definitions.items()
+    }
+    return NotificationService(
+        PostgresNotificationRepository(pool),
+        PostgresNotificationRuleRepository(pool),
+        PostgresNotificationDeliveryRepository(
+            pool, max_error_chars=config.dispatcher.max_error_chars
+        ),
+        broadcaster=broadcaster,
+        reply_ready_enabled=config.reply_ready.enabled,
+        reply_title_chars=config.reply_ready.title_chars,
+        reply_body_chars=config.reply_ready.body_chars,
+        sinks=[
+            NotificationSinkInfo(
+                name=sink["name"],
+                label=str(sink.get("label") or sink["name"]),
+                requires_integration=False,
+            )
+            for sink in config.sinks
+        ],
+        engine_resolver=engine_resolver_for(cli_types, settings.default_definition),
+        integration_repository=integration_repository,
+        guild_instance=guild_instance,
+    )
+
+
+def _create_notification_delivery(
+    settings: Settings,
+    pool: Any,
+    *,
+    public_origin: str,
+    integration_repository: Any,
+    credential_store: Any,
+    device_repository: Any,
+) -> NotificationDelivery | None:
+    """Compose the outbox dispatcher (``notifications.dispatcher.enabled``).
+
+    Push sinks deliver through the channel built from ``push.adapter``.
+    """
+    config = settings.notifications
+    push_channel = None
+    if config.enabled and config.dispatcher.enabled:
+        # A broken push.adapter is a configuration error: raise rather than run
+        # delivery with every push rule quietly failing.
+        push_channel = create_push_channel(settings)
+    return create_notification_delivery(
+        settings,
+        pool,
+        public_origin=public_origin,
+        integration_repository=integration_repository,
+        credential_store=credential_store,
+        device_repository=device_repository,
+        push_channel=push_channel,
+    )
 
 
 async def _bootstrap_startup_schema(settings: Settings) -> None:
@@ -325,20 +511,27 @@ async def _reconcile_active_loop(
     session_service: SessionService,
     *,
     interval_seconds: int,
+    periodic: bool = True,
 ) -> None:
-    """Periodically reconcile session rows against pod_manager.status().
+    """Reconcile session rows against pod_manager.status(), starting at once.
 
     Pod-status authoritative (INV-9): active rows follow runtime state, while
     Kubernetes terminal rows release orphaned runtime resources. This is the
     always-on truth mechanism the heartbeat reaper could not safely provide.
+
+    The first pass runs immediately and replaces the startup pass that used to
+    run before the server bound its port: it makes a runtime call per stored
+    row, which must not hold the listener past its liveness window. With
+    ``periodic`` off (``session_liveness.reconcile_enabled: false``) only that
+    first pass runs.
     """
     logger.info(
-        "Active-session reconcile loop started, interval=%ds",
+        "Active-session reconcile loop started, interval=%ds periodic=%s",
         interval_seconds,
+        periodic,
     )
     while True:
         try:
-            await asyncio.sleep(interval_seconds)
             count = await session_service.reconcile_active_sessions()
             if count:
                 logger.info("Reconcile: corrected %d divergent session(s)", count)
@@ -347,6 +540,13 @@ async def _reconcile_active_loop(
             break
         except Exception:
             logger.exception("Active-session reconcile iteration failed")
+        if not periodic:
+            return
+        try:
+            await asyncio.sleep(interval_seconds)
+        except asyncio.CancelledError:
+            logger.info("Active-session reconcile loop cancelled")
+            break
 
 
 async def _reconcile_resident_runtimes_loop(
@@ -354,23 +554,37 @@ async def _reconcile_resident_runtimes_loop(
     *,
     interval_seconds: float,
     flock_adapter: ResidentFlockAdapter | None = None,
+    notification_relay: ResidentNotificationRelay | None = None,
 ) -> None:
-    """Periodically converge durable resident records with backend state."""
+    """Converge durable resident records with backend state, starting at once.
+
+    The first pass runs immediately in the background. It used to run before
+    the server bound its port, but a pass can upgrade every resident — on
+    OpenShell that deletes each sandbox and waits for the deletion — which held
+    startup past the liveness window and crash-looped Völundr on every
+    version bump.
+    """
     logger.info(
         "Resident runtime reconcile loop started, interval=%.1fs",
         interval_seconds,
     )
     while True:
         try:
-            await asyncio.sleep(interval_seconds)
             await service.reconcile_all()
             if flock_adapter is not None:
                 await flock_adapter.sync()
+            if notification_relay is not None:
+                await notification_relay.sync()
         except asyncio.CancelledError:
             logger.info("Resident runtime reconcile loop cancelled")
             break
         except Exception:
             logger.exception("Resident runtime reconcile iteration failed")
+        try:
+            await asyncio.sleep(interval_seconds)
+        except asyncio.CancelledError:
+            logger.info("Resident runtime reconcile loop cancelled")
+            break
 
 
 def _create_delivery_service_factory(config, integrations):
@@ -616,6 +830,8 @@ def create_app(
 
             session_persona_provider = RegistrySessionPersonaProvider(persona_registry)
             workload_identity_service = create_workload_identity_service(settings.workload_identity)
+            forge_session_tokens = _create_forge_session_tokens(settings, workload_identity_service)
+            app.state.forge_session_tokens = forge_session_tokens
             pod_manager = _create_pod_manager(settings)
             runtime_backend = _runtime_backend(settings, pod_manager)
             _validate_remote_room_role_config(settings, runtime_backend)
@@ -680,6 +896,7 @@ def create_app(
                     interval_seconds=settings.bifrost.catalog_refresh_interval_seconds,
                 )
             )
+            bifrost_catalog_task.add_done_callback(_log_bifrost_catalog_task_failure)
             resident_profile_provider = ConfigResidentDeploymentProfileProvider(
                 settings.resident_runtimes.profiles,
                 pricing_provider,
@@ -709,30 +926,6 @@ def create_app(
             broadcaster = InMemoryEventBroadcaster(
                 sleipnir_publisher=sleipnir_bus,
             )
-
-            # Push / attention notifier (optional — enabled via push.enabled).
-            # Fans a "session needs you" push out to the owner's devices when a
-            # session enters awaiting_input.
-            attention_notifier = None
-            if settings.push.enabled:
-                try:
-                    channel_cls = import_class(settings.push.adapter)
-                    channel_kwargs = resolve_secret_kwargs(
-                        settings.push.kwargs, settings.push.secret_kwargs_env
-                    )
-                    notification_channel = channel_cls(**channel_kwargs)
-                    attention_notifier = PushAttentionNotifier(
-                        device_repository,
-                        notification_channel,
-                        min_urgency=settings.push.min_urgency,
-                    )
-                    logger.info(
-                        "Push notifications enabled: adapter=%s",
-                        settings.push.adapter.rsplit(".", 1)[-1],
-                    )
-                except Exception:
-                    logger.exception("Failed to initialise push notifications")
-                    attention_notifier = None
 
             # Create services with broadcaster for real-time updates
             # Forge catalog (launch specs + session definitions), built via the
@@ -944,7 +1137,71 @@ def create_app(
                 )
             else:
                 integration_repo = PostgresIntegrationRepository(integration_pool)
+            # Residents get the owner's credentials their profile declares, injected the
+            # same way as a session's (OpenBao), bound to the resident's own identity.
+            for controller in {id(c): c for c in [pod_manager, *resident_controllers]}.values():
+                if hasattr(controller, "set_resident_credentials"):
+                    controller.set_resident_credentials(
+                        secret_injection=secret_injection,
+                        integrations=integration_repo,
+                        credential_store=credential_store,
+                    )
+            # Outside mini mode a push device is an integration: a messaging connection
+            # whose token lives in the credential store with every other integration secret.
+            if settings.push.uses_integration_devices(mini_mode=settings.local_mounts.mini_mode):
+                from volundr.adapters.outbound.integration_device_tokens import (
+                    IntegrationDeviceTokenRepository,
+                )
+
+                device_repository = IntegrationDeviceTokenRepository(
+                    integration_repo, credential_store
+                )
+                logger.info("Push devices: integration connections (credential store)")
             mapping_repository = PostgresMappingRepository(pool)
+            # A node whose instance is not recorded yet keeps running: only
+            # GET /guild reports it (503), and its items carry null instance fields.
+            guild_membership = settings.guild.membership()
+            notification_service = _create_notification_service(
+                settings,
+                pool,
+                broadcaster=broadcaster,
+                integration_repository=integration_repo,
+                guild_instance=guild_membership.instance if guild_membership else None,
+            )
+            app.state.notification_service = notification_service
+            resident_notification_relay = _create_resident_notification_relay(
+                settings,
+                resident_runtime_repository,
+                resident_session_controllers,
+                notification_service,
+            )
+            app.state.resident_notification_relay = resident_notification_relay
+            odin_review_relay = _create_odin_review_relay(settings, pool, notification_service)
+            app.state.odin_review_relay = odin_review_relay
+            notification_delivery = _create_notification_delivery(
+                settings,
+                pool,
+                public_origin=public_origin,
+                integration_repository=integration_repo,
+                credential_store=credential_store,
+                device_repository=device_repository,
+            )
+            # push.enabled: an owner registering a device gets the "Needs-input
+            # pushes" rule, so the outbox pushes each session that needs them.
+            on_device_registered = None
+            if settings.push.enabled:
+                on_device_registered = partial(
+                    notification_service.ensure_attention_push_rule,
+                    sink=settings.push.attention_sink,
+                )
+                logger.info(
+                    "Needs-input pushes on: through sink %r (adapter=%s)",
+                    settings.push.attention_sink,
+                    settings.push.adapter.rsplit(".", 1)[-1],
+                )
+            app.state.notification_dispatcher = (
+                notification_delivery.dispatcher if notification_delivery is not None else None
+            )
             tracker_factory = TrackerFactory(credential_store)
             oauth_clients = create_oauth_client_registry(
                 settings,
@@ -1029,10 +1286,12 @@ def create_app(
                 communication_route_repository=communication_route_repository,
                 public_origin=public_origin,
                 session_communication_port=session_room_port,
-                attention_notifier=attention_notifier,
                 runtime_backend=runtime_backend,
                 execution_resolver=pod_manager if execution_components is not None else None,
                 span_repository=span_repository,
+                notification_recorder=notification_service,
+                forge_session_tokens=forge_session_tokens,
+                forge_mcp_default_grants=settings.forge_mcp.default_grants,
             )
             # Local-process brokers notify the session service when they exit so
             # the DB row is reconciled promptly (pod-status authoritative) rather
@@ -1220,6 +1479,7 @@ def create_app(
             repo_service = RepoService(
                 git_registry,
                 user_integration=user_integration_service,
+                provenance_verifier=create_provenance_verifier(settings.git.provenance),
             )
 
             chronicle_repository = PostgresChronicleRepository(pool)
@@ -1335,6 +1595,7 @@ def create_app(
                 archive_service=archive_service,
                 external_session_service=external_session_service,
                 device_repository=device_repository,
+                on_device_registered=on_device_registered,
                 prefix="/api/v1/forge",
                 server_public_host=settings.server_public_host,
                 openshell_internal_gateway_url=settings.openshell_internal_gateway_url,
@@ -1349,7 +1610,20 @@ def create_app(
                 session_participant_service=session_participant_service,
             )
             app.include_router(forge_router)
-            app.include_router(create_resident_runtimes_router(resident_runtime_service))
+            app.include_router(
+                create_resident_runtimes_router(
+                    resident_runtime_service,
+                    a2a_public_base_url=settings.resident_runtimes.a2a_public_base_url,
+                )
+            )
+            app.include_router(
+                create_resident_a2a_router(
+                    resident_runtime_service,
+                    persona_provider=session_persona_provider,
+                    public_base_url=settings.resident_runtimes.a2a_public_base_url,
+                    reply_timeout_seconds=settings.resident_runtimes.a2a_reply_timeout_seconds,
+                )
+            )
             app.state.resident_runtime_service = resident_runtime_service
             app.include_router(create_codex_credentials_router(codex_credential_broker))
             credential_grant_brokers = {
@@ -1440,7 +1714,13 @@ def create_app(
             # realm_repository was already built above, before
             # ResidentRuntimeService, so it could validate realm_id at create().
             app.state.realm_service = RealmService(realm_repository)
-            app.include_router(create_realms_router(extract_principal, prefix="/api/v1/realms"))
+            app.include_router(
+                create_realms_router(
+                    extract_principal,
+                    prefix="/api/v1/realms",
+                    stream_interval_seconds=settings.realm_detail_stream_interval_seconds,
+                )
+            )
             # Let resident deployment controllers resolve a resident's realm slug
             # (for realm_slug/charter binding in the rendered container config).
             for controller in resident_controllers:
@@ -1609,11 +1889,26 @@ def create_app(
                 session_service=session_service,
                 prefix="/api/v1/forge",
                 default_show_internal=settings.replay.default_show_internal,
+                notification_service=notification_service,
             )
             app.include_router(session_log_router)
+            app.include_router(create_guild_router(guild_membership, prefix="/api/v1/forge"))
+            if notification_service is not None:
+                app.include_router(
+                    create_notifications_router(
+                        notification_service,
+                        session_service,
+                        prefix="/api/v1/forge",
+                        default_page_size=settings.notifications.default_page_size,
+                        max_page_size=settings.notifications.max_page_size,
+                    )
+                )
             app.include_router(
                 create_message_delivery_router(PostgresMessageDelivery(pool), session_service)
             )
+            if settings.forge_mcp.http.enabled:
+                app.include_router(create_forge_mcp_router(settings.forge_mcp.http))
+            app.state.forge_mcp_http = settings.forge_mcp.http.enabled
             app.include_router(
                 create_session_participants_router(
                     session_participant_service,
@@ -1701,21 +1996,27 @@ def create_app(
             # default and safe: it only corrects a row when pod_manager.status()
             # says the session is actually gone, so it never false-reaps an
             # idle-but-alive session the way the heartbeat reaper would.
-            reconcile_task: asyncio.Task | None = None
-            if settings.session_liveness.reconcile_enabled:
-                reconcile_task = asyncio.create_task(
-                    _reconcile_active_loop(
-                        session_service,
-                        interval_seconds=settings.session_liveness.reconcile_interval_seconds,
-                    )
+            # Runs its first pass immediately even when the periodic loop is
+            # disabled, as the startup pass it replaces did.
+            reconcile_task: asyncio.Task | None = asyncio.create_task(
+                _reconcile_active_loop(
+                    session_service,
+                    interval_seconds=settings.session_liveness.reconcile_interval_seconds,
+                    periodic=settings.session_liveness.reconcile_enabled,
                 )
+            )
             resident_reconcile_task = asyncio.create_task(
                 _reconcile_resident_runtimes_loop(
                     resident_runtime_service,
                     interval_seconds=settings.resident_runtimes.reconciliation_interval_seconds,
                     flock_adapter=resident_flock_adapter,
+                    notification_relay=resident_notification_relay,
                 )
             )
+            if notification_delivery is not None:
+                await notification_delivery.start()
+            if odin_review_relay is not None:
+                await odin_review_relay.start()
             if settings.telegram_ingress.enabled:
                 await telegram_ingress.start()
             else:
@@ -1726,12 +2027,11 @@ def create_app(
             if execution_credential_service is not None:
                 await execution_credential_service.start()
 
-            # Reconcile sessions stuck in PROVISIONING after a restart
+            # Re-launch readiness polls for sessions left PROVISIONING by a
+            # restart. This only schedules tasks; the session and resident
+            # reconcile passes run in their loops above so a slow runtime never
+            # holds the listener past its liveness window.
             await session_service.reconcile_provisioning_sessions()
-            await session_service.reconcile_active_sessions()
-            await resident_runtime_service.reconcile_all()
-            if resident_flock_adapter is not None:
-                await resident_flock_adapter.sync()
 
             if compute_pool is not None:
                 compute_pool_task = asyncio.create_task(compute_pool.run())
@@ -1752,6 +2052,10 @@ def create_app(
                     bifrost_catalog_task.cancel()
                     await asyncio.gather(bifrost_catalog_task, return_exceptions=True)
                 await telegram_ingress.stop()
+                if odin_review_relay is not None:
+                    await odin_review_relay.stop()
+                if notification_delivery is not None:
+                    await notification_delivery.stop()
                 background_task.cancel()
                 try:
                     await background_task
@@ -1773,9 +2077,12 @@ def create_app(
                 try:
                     await resident_reconcile_task
                 except asyncio.CancelledError:
+                    # The reconciliation task was explicitly cancelled above during shutdown.
                     pass
                 if resident_flock_adapter is not None:
                     await resident_flock_adapter.stop()
+                if resident_notification_relay is not None:
+                    await resident_notification_relay.stop()
                 await resident_runtime_service.close()
                 await event_ingestion.close_all()
                 if settings.compute is None and hasattr(pod_manager, "close"):
@@ -1804,6 +2111,9 @@ def create_app(
     app.add_middleware(
         PATRevocationMiddleware, websocket_check_interval=settings.pat.websocket_check_interval
     )
+    # Verifies forge_session bearers in every identity mode and confines them to
+    # their route allow-list (volundr.adapters.inbound.forge_session_auth).
+    app.add_middleware(ForgeSessionAuthMiddleware)
 
     @app.get("/health", tags=["Health"])
     @app.get("/api/v1/forge/health", include_in_schema=False)

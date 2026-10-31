@@ -58,6 +58,19 @@ app.kubernetes.io/part-of: volundr
 {{- end }}
 
 {{/*
+Common labels for a resource that belongs to a component other than the API.
+A second `app.kubernetes.io/component` line after "volundr.labels" is a
+duplicate mapping key: Helm keeps the last value, but strict YAML parsers
+(Fleet's kustomize post-render) reject the manifest.
+Usage: include "volundr.componentLabels" (dict "context" . "component" "x")
+*/}}
+{{- define "volundr.componentLabels" -}}
+{{- $labels := include "volundr.labels" .context | fromYaml -}}
+{{- $_ := set $labels "app.kubernetes.io/component" .component -}}
+{{- toYaml $labels -}}
+{{- end }}
+
+{{/*
 Selector labels
 */}}
 {{- define "volundr.selectorLabels" -}}
@@ -318,3 +331,55 @@ Return the session gateway hostname (defaults to sessions.{domain})
   {{- printf "sessions.%s" (include "volundr.domain" .) -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+OpenShell residents' workspace claims: the kwargs one OpenShellGatewayPodManager
+gets, with resident_workspace_namespace defaulted to the storage adapter's
+namespace (where OpenShell sessions' claims already live, i.e. where the gateway
+runs sandboxes). Setting resident_workspace_namespace, even to "", wins.
+Call with (dict "kwargs" <kwargs> "adapter" <adapter> "root" $).
+*/}}
+{{- define "volundr.openshellResidentKwargs" -}}
+{{- $kwargs := deepCopy (.kwargs | default dict) -}}
+{{- if and (contains "OpenShellGatewayPodManager" .adapter) (not (hasKey $kwargs "resident_workspace_namespace")) -}}
+{{- $_ := set $kwargs "resident_workspace_namespace" ((.root.Values.storageAdapter.kwargs).namespace | default "") -}}
+{{- end -}}
+{{- $kwargs | toJson -}}
+{{- end }}
+
+{{/*
+The namespaces where OpenShell residents' workspace claims are created, one per
+line (empty when no OpenShell controller manages claims).
+*/}}
+{{- define "volundr.openshellResidentWorkspaceNamespaces" -}}
+{{- $namespaces := list -}}
+{{- $controllers := list (dict "adapter" .Values.podManager.adapter "kwargs" .Values.podManager.kwargs) -}}
+{{- range .Values.residentRuntimeControllers -}}
+{{- $controllers = append $controllers (dict "adapter" .adapter "kwargs" .kwargs) -}}
+{{- end -}}
+{{- range $controllers -}}
+{{- if contains "OpenShellGatewayPodManager" .adapter -}}
+{{- $kwargs := include "volundr.openshellResidentKwargs" (dict "kwargs" .kwargs "adapter" .adapter "root" $) | fromJson -}}
+{{- $namespace := $kwargs.resident_workspace_namespace | default "" -}}
+{{- if and $namespace (not (has $namespace $namespaces)) -}}
+{{- $namespaces = append $namespaces $namespace -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- join "\n" $namespaces -}}
+{{- end }}
+
+{{/*
+preStop drain shared by every serving container: keep answering while the
+endpoint controller and Envoy stop routing to this pod, instead of exiting on
+SIGTERM with requests still in flight.
+*/}}
+{{- define "volundr.drainLifecycle" -}}
+{{- if gt (int .Values.rollout.drainSeconds) 0 -}}
+lifecycle:
+  preStop:
+    sleep:
+      seconds: {{ int .Values.rollout.drainSeconds }}
+{{- end -}}
+{{- end -}}
+

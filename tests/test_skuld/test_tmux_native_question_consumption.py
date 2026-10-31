@@ -161,6 +161,41 @@ def receipts(events):
     return [event for event in events if event.get("type") == "ask_user_resolved"]
 
 
+@pytest.mark.parametrize("gutter", ["", "│ "])
+async def test_wrapped_native_question_keeps_exact_identity(native_bridge, gutter):
+    transport, events = native_bridge
+    question = "Which host should collect the inventory and report its disk and memory use?"
+    questions = [{**SINGLE[0], "question": question}]
+    transport.capture_stdout = (
+        "☐ Host\n\n"
+        f"{gutter}Which host should collect the inventory\n"
+        f"{gutter}and report its disk and memory use?\n\n"
+        "❯ 1. Blue\n  2. Amber\n  3. Type something.\n"
+        "Enter to select · ↑/↓ to navigate · Esc to cancel\n"
+    )
+    rid = await transport.surface(questions)
+    transport.steps.append(("2", "❯\n"))
+    transport.consumed = {"answers": {question: "Amber"}}
+    await transport.send_control(
+        "ask_user_answer",
+        request_id=rid,
+        answers=[{"question": question, "answer": "Amber", "option_indexes": [1]}],
+    )
+    assert _send_keys(transport) == ["2"]
+    assert receipts(events)[-1]["accepted"] is True
+
+
+async def test_gutter_does_not_allow_answering_a_different_prompt(native_bridge):
+    transport, _ = native_bridge
+    transport.capture_stdout = "☐ Label\n│ A different question?\n❯ 1. Blue\n  2. Amber\n"
+    rid = await transport.surface()
+    with pytest.raises(ValueError, match="does not match"):
+        await transport.send_control(
+            "ask_user_answer", request_id=rid, answers=[{"answer": "Blue"}]
+        )
+    assert not _send_keys(transport)
+
+
 async def test_native_other_waits_for_editor_paste_and_exact_consumption(native_bridge):
     transport, events = native_bridge
     transport.capture_stdout = screen("other-before-digit")
@@ -889,3 +924,92 @@ async def test_checkbox_unknown_focus_is_rejected_without_typing(native_bridge):
             ],
         )
     assert not _send_keys(transport) and not transport.loaded_buffers and not receipts(events)
+
+
+@pytest.mark.parametrize("kind", ["question", "permission"])
+@pytest.mark.parametrize("is_error", [False, True])
+async def test_native_completion_retires_only_its_own_pending_card(native_bridge, kind, is_error):
+    transport, events = native_bridge
+    transport._skip_permissions = True
+    if kind == "question":
+        rid = await transport.surface()
+    else:
+        await transport.handle_claude_hook(
+            {
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "Bash",
+                "tool_input": {"command": "pytest"},
+                "tool_use_id": TOOL_ID,
+                "session_id": NATIVE_ID,
+            }
+        )
+        rid = next(iter(transport._pending_tty_prompts))
+    event = {
+        "hook_event_name": "PostToolUseFailure" if is_error else "PostToolUse",
+        "tool_use_id": TOOL_ID,
+        "session_id": NATIVE_ID,
+        "tool_response": {"answers": {SINGLE[0]["question"]: "Amber"}},
+    }
+    await transport.handle_claude_hook({**event, "session_id": str(uuid.uuid4())})
+    await transport.handle_claude_hook({**event, "tool_use_id": "another-tool"})
+    assert rid in transport._pending_tty_prompts and not receipts(events)
+    await transport.handle_claude_hook(event)
+    assert rid not in transport._pending_tty_prompts
+    assert receipts(events)[-1]["decision"] == "completed_elsewhere"
+    assert receipts(events)[-1]["accepted"] is False
+    assert not _send_keys(transport)
+
+
+async def test_native_hook_during_web_answer_preserves_consumption_ack(native_bridge):
+    transport, events = native_bridge
+    transport.capture_stdout = screen("other-before-digit")
+    rid = await transport.surface()
+    transport.steps.append(("2", "❯\n"))
+
+    async def complete_hook():
+        await transport.handle_claude_hook(
+            {
+                "hook_event_name": "PostToolUse",
+                "tool_use_id": TOOL_ID,
+                "session_id": NATIVE_ID,
+                "tool_response": {"answers": {SINGLE[0]["question"]: "Amber"}},
+            }
+        )
+
+    transport.on_submit = complete_hook
+    await transport.send_control("ask_user_answer", request_id=rid, answers=[{"answer": "Amber"}])
+    assert len(receipts(events)) == 1
+    assert receipts(events)[0]["accepted"] is True
+
+
+@pytest.mark.parametrize("alter", ["none", "wrong_question", "wrong_answer", "missing_answer"])
+def test_claude_284_wrapped_review_preserves_exact_question_and_answer(alter):
+    text = (
+        "Which environment should the architecture presentation target when demonstrating the "
+        "notification workflow across multiple Forge servers in the guild?"
+    )
+    plans = [
+        {"text": text, "values": ["Staging"], "multi": False},
+        {
+            "text": "Which features should the demonstration cover?",
+            "values": ["Questions", "Notifications"],
+            "multi": True,
+        },
+    ]
+    captured = screen("wrapped-review")
+    if alter == "wrong_question":
+        captured = captured.replace("presentation", "deployment")
+    if alter == "wrong_answer":
+        captured = captured.replace("→ Staging", "→ Production")
+    if alter == "missing_answer":
+        captured = captured.replace("   → Staging", "")
+    assert NativeQuestionTransport._question_review_matches(captured, plans) is (alter == "none")
+
+
+async def test_question_frame_joins_the_native_tool_and_advertises_complete_answers(native_bridge):
+    transport, events = native_bridge
+    rid = await transport.surface()
+    frame = _ask_user_questions(events)[-1]
+    assert frame["request_id"] == rid
+    assert frame["tool_use_id"] == TOOL_ID
+    assert frame["metadata"]["requires_all_answers"] is True

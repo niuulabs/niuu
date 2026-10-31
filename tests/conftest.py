@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Callable, Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -117,6 +118,29 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         (selected if mine else deselected).append(item)
     config.hook.pytest_deselected(items=deselected)
     items[:] = selected
+
+
+@pytest.fixture
+def open_outbox() -> Iterator[Callable[..., Any]]:
+    """Open resident notification outboxes that are closed when the test ends.
+
+    Each holds a SQLite connection; one a test leaves open is reported as an
+    unclosed database in whichever later test the garbage collector runs in.
+    """
+    from ravn.adapters.resident_notifications import (  # noqa: PLC0415
+        SqliteResidentNotificationOutbox,
+    )
+
+    opened: list[SqliteResidentNotificationOutbox] = []
+
+    def _open(path: Path, *, max_pending: int = 100) -> SqliteResidentNotificationOutbox:
+        outbox = SqliteResidentNotificationOutbox(path, max_pending=max_pending)
+        opened.append(outbox)
+        return outbox
+
+    yield _open
+    for outbox in opened:
+        outbox.close()
 
 
 @pytest.fixture(autouse=True)
@@ -741,6 +765,12 @@ class MockGitProvider(GitProvider):
         self._orgs = orgs
         self.validate_calls: list[str] = []
         self.list_repos_calls: list[str] = []
+        # Canned answers for the read operations; tests set what they need.
+        self.read_calls: list[tuple] = []
+        self.commit_result: Any = None
+        self.comparison_result: Any = None
+        self.ref_checks_result: Any = None
+        self.attestations_result: Any = ()
 
     @property
     def provider_type(self) -> GitProviderType:
@@ -796,6 +826,22 @@ class MockGitProvider(GitProvider):
 
             raise GitRepoNotFoundError(f"Repository not found: {repo_url}")
         return ["main", "develop", "feature/test"]
+
+    async def get_commit(self, repo_url: str, ref: str):
+        self.read_calls.append(("get_commit", repo_url, ref))
+        return self.commit_result
+
+    async def compare_refs(self, repo_url: str, base: str, head: str):
+        self.read_calls.append(("compare_refs", repo_url, base, head))
+        return self.comparison_result
+
+    async def get_ref_checks(self, repo_url: str, ref: str):
+        self.read_calls.append(("get_ref_checks", repo_url, ref))
+        return self.ref_checks_result
+
+    async def get_image_attestations(self, repo_url: str, subject_digest: str):
+        self.read_calls.append(("get_image_attestations", repo_url, subject_digest))
+        return self.attestations_result
 
 
 class MockGitRegistry:

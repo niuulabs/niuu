@@ -168,8 +168,8 @@ _INIT_EVENT = {
 @pytest.mark.parametrize(
     "factory",
     [
-        lambda ws: PersistentSubprocessTransport(ws),
-        lambda ws: SubprocessTransport(ws),
+        PersistentSubprocessTransport,
+        SubprocessTransport,
     ],
 )
 class TestTransportSlashCommands:

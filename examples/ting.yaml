@@ -17,6 +17,18 @@ logging:
   level: info
   format: text      # text or json
 
+observability:
+  enabled: false
+  service_name: ting
+  trace_endpoint: ""
+  metric_endpoint: ""
+  log_endpoint: ""
+  insecure: false
+  metric_export_interval_milliseconds: 10000
+  capture_content: false
+  content_max_chars: 8192
+  headers: {}
+
 volundr:
   url: http://localhost:8080
   # Keep false for the classic single-Volundr local setup. Set true when you
@@ -34,6 +46,12 @@ volundr:
 dispatch:
   default_model: claude-sonnet-4-6
   default_system_prompt: ""
+
+  # Seconds a workflow persona running on Claude Code may spend on one turn:
+  # its whole agent loop for a task, every model and tool call included. A turn
+  # that reaches it is interrupted. Raise it for slow or self-hosted models;
+  # 0 turns the limit off. Codex personas are not limited by it.
+  workflow_cli_turn_timeout_seconds: 120
 
   # ---------------------------------------------------------------------------
   # Flock — multi-agent ravn_flock sessions

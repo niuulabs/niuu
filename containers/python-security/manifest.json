@@ -1,0 +1,26 @@
+{
+  "python_version": "3.14.10",
+  "source_sha256": "4fae8dc3af30ad4accf6dd20cbd6c80c7882900bb91684072a9ea3475768068c",
+  "patches": [
+    {
+      "commit": "b234a2b67539f787e191d2ef19a7cbdce32874e7",
+      "sha256": "606aa1bd8124cb0d777744dfe1a89d1ba983638115372cc508f4ed4a154f3abf"
+    }
+  ],
+  "files": {
+    "poplib.py": {
+      "original": "527e714523264093910a0a0b1a55c6583f952835c89061537fc40ad98c347056",
+      "patched": "a6ffff188814b56d95b043c31d9e0dfee51ac6d6e92afe74ab070cb6136b076f"
+    }
+  },
+  "cves": [
+    "CVE-2025-15367"
+  ],
+  "upstream_fixes": [
+    {
+      "cve": "CVE-2026-12345",
+      "file": "tempfile.py",
+      "sha256": "5e2a8c5539e2aa3f4d39a364c701711ba54eeca88c17e95d31ebb83ea84de27d"
+    }
+  ]
+}

@@ -89,7 +89,7 @@ async def test_send_text_posts_to_api(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_send_text_truncates_long_message(monkeypatch):
+async def test_send_text_splits_long_message(monkeypatch):
     monkeypatch.setenv("SLACK_TOKEN", "tok")
     client = _make_http_client()
     cfg = SlackChannelConfig(
@@ -104,9 +104,8 @@ async def test_send_text_truncates_long_message(monkeypatch):
 
     await adapter.send_text("C1", "x" * 20)
 
-    sent = client.post.call_args[1]["json"]["text"]
-    assert len(sent) <= 10
-    assert sent.endswith("...")
+    sent = [call[1]["json"]["text"] for call in client.post.call_args_list]
+    assert sent == ["x" * 10, "x" * 10]
 
 
 # ---------------------------------------------------------------------------

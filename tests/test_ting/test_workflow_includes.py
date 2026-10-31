@@ -32,7 +32,6 @@ from ting.system_workflows import (
 _REVIEWER_PORTABLE = portable_persona_from_config(
     PersonaConfig(name="reviewer", system_prompt_template="Review the work under test.")
 )
-_PERSONA_DIGEST = _REVIEWER_PORTABLE.digest
 
 
 def _persona_dependency() -> dict:
@@ -621,7 +620,7 @@ _EXPECTED_DELIVERY_INCLUDED_NODES = {
         "stageMembers": [
             {
                 "personaId": "developer-analyst",
-                "model": "gpt-5.5",
+                "model": "gpt-5.6-terra",
                 "budget": 32,
                 "consumesEventTypes": ["delivery.requested", "plan.review.completed"],
             }
@@ -636,19 +635,19 @@ _EXPECTED_DELIVERY_INCLUDED_NODES = {
         "stageMembers": [
             {
                 "personaId": "developer-architecture-reviewer",
-                "model": "gpt-5.5",
+                "model": "gpt-5.6-terra",
                 "budget": 20,
                 "consumesEventTypes": ["developer.plan.revised"],
             },
             {
                 "personaId": "developer-correctness-reviewer",
-                "model": "gpt-5.5",
+                "model": "gpt-5.6-terra",
                 "budget": 20,
                 "consumesEventTypes": ["developer.plan.revised"],
             },
             {
                 "personaId": "developer-security-plan-reviewer",
-                "model": "gpt-5.5",
+                "model": "gpt-5.6-terra",
                 "budget": 20,
                 "consumesEventTypes": ["developer.plan.revised"],
             },
@@ -667,7 +666,7 @@ _EXPECTED_DELIVERY_INCLUDED_NODES = {
         "stageMembers": [
             {
                 "personaId": "developer-coordinator",
-                "model": "gpt-5.5",
+                "model": "gpt-5.6-terra",
                 "budget": 12,
                 "consumesEventTypes": ["developer.integration.requested"],
             }
@@ -682,7 +681,7 @@ _EXPECTED_DELIVERY_INCLUDED_NODES = {
         "stageMembers": [
             {
                 "personaId": "developer-integration-verifier",
-                "model": "gpt-5.5",
+                "model": "gpt-5.6-terra",
                 "budget": 28,
                 "consumesEventTypes": ["developer.integration.verified"],
             }

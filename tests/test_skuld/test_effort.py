@@ -163,16 +163,16 @@ async def test_grok_uses_discovered_option_id_and_checks_native_response(tmp_pat
         await t.send_control("set_effort", effort="ultra")
 
 
-async def test_muse_and_claude_launch_and_change(tmp_path):
+@pytest.mark.parametrize("claude_model", ["claude-fable-5-1", "claude-opus-5-5"])
+async def test_muse_and_claude_launch_and_change(tmp_path, claude_model):
     muse = MuseMSPTransport(str(tmp_path), model="muse-spark-1.3")
     await muse.send_control("set_effort", effort="none")
     assert muse._reasoning_effort == "none"
     with pytest.raises(ValueError):
         await muse.send_control("set_effort", effort="max")
-    claude = TmuxInteractiveTransport(
-        str(tmp_path), model="claude-fable-5-1", reasoning_effort="xhigh"
-    )
+    claude = TmuxInteractiveTransport(str(tmp_path), model=claude_model, reasoning_effort="xhigh")
     args = claude._interactive_argv()
+    assert args[args.index("--model") + 1] == claude_model
     assert args[args.index("--effort") + 1] == "xhigh"
     claude._wait_for_repl_ready = AsyncMock()
     claude._send_slash_command = AsyncMock()
@@ -184,6 +184,20 @@ async def test_muse_and_claude_launch_and_change(tmp_path):
     claude._turn_active = True
     with pytest.raises(ValueError, match="working"):
         await claude._set_effort("high")
+
+
+@pytest.mark.parametrize("level", ["low", "medium", "high", "xhigh", "max"])
+async def test_opus_55_preserves_selected_launch_effort(tmp_path, level):
+    claude = TmuxInteractiveTransport(
+        str(tmp_path), model="claude-opus-5-5", reasoning_effort=level
+    )
+    args = claude._interactive_argv()
+    assert args[args.index("--effort") + 1] == level
+    effort = await claude.get_effort()
+    assert effort["current"] == level
+    assert effort["levels"] == ["low", "medium", "high", "xhigh", "max"]
+    with pytest.raises(ValueError, match="Unsupported effort"):
+        await claude._set_effort("ultra")
 
 
 def test_catalog_metadata_and_host_only_additions():

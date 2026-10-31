@@ -86,6 +86,45 @@ route — scoped tokens are only as narrow as the enforcement coverage.
 `tests/test_niuu/test_token_scope.py` fails if the two drift apart in either
 direction.
 
+### Exception: session-bound Forge credentials (`forge_session`)
+
+Forge mints a second kind of scoped workload token itself, each time it
+launches a session, and hands it to that session's broker for the Forge MCP
+(`niuu.domain.services.forge_session_token.ForgeSessionTokenService`). It is
+sanctioned on the same grounds as `valkyrie_build`: a broker acting for a
+session needs a credential narrower than its owner's, and there is no OIDC
+principal for "this one session".
+
+- The JWT carries `token_use: "forge_session"`, `sub` = the session owner,
+  `workload_session_id` = the one session it is bound to and
+  `workload_launch_id` = that launch. It is signed by the workload-identity
+  issuer when that has a configured key, otherwise (mini mode) by Forge's own
+  key file (`forge_mcp.session_tokens`). Enabled with no usable key is fatal at
+  startup, never "mint nothing".
+- Its `scopes` are bounded to its own family, `FORGE_SESSION_SCOPES`:
+  `forge:notify` and `forge:session:read` for every session, plus
+  `forge:session:message` / `forge:session:lifecycle` only through an operator
+  grant. The family is part of `KNOWN_WORKLOAD_SCOPES` and keyed by
+  `SCOPES_BY_TOKEN_USE` (`src/niuu/domain/services/token_scope.py`) — a
+  constant, for the same reason as above.
+- Enforcement is deny-by-default: at the edge a `forge_session` token is
+  admitted only on the Forge session route allow-list
+  (`niuu.domain.services.forge_session_policy`); at a route, `require_scope(...)`
+  admits it only with one of the named scopes of its own family, and a check
+  naming none of them denies it (unlike `valkyrie_build`, where such a check
+  does not apply). Forge then verifies every presented token against the live
+  session row (`volundr.adapters.inbound.forge_session_auth`): the session must
+  exist, be on the same launch, and not be stopped or archived, so restarting a
+  session revokes the previous launch's token.
+
+Known gap (deliberate, for now): only the local process pod manager delivers
+the credential to the broker (`delivers_forge_session_token`). The Kubernetes,
+Flux and OpenShell pod managers do not, so sessions they launch have no Forge
+MCP credential. The Volundr chart therefore leaves `session_tokens` off unless
+workload identity signs with a configured key. When adding a NEW Forge route a
+session broker may call, add it to the allow-list and give it a
+`require_scope(...)` naming a `forge:*` scope.
+
 ### Exception: Ed25519 node-request signing (`niuu join`)
 
 A joined node's heartbeat/leave calls (`POST /api/v1/niuu/guild/nodes/{id}/heartbeat`,

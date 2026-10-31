@@ -22,6 +22,7 @@ from niuu.adapters.outbound.http_agent_directory import HttpAgentDirectoryClient
 from niuu.adapters.outbound.http_observatory_topology import (
     HttpObservatoryTopologyClient,
 )
+from niuu.adapters.outbound.http_workload_delegations import HttpResidentDelegationRegistrar
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_guild_join import PostgresGuildJoinRepository
 from niuu.adapters.postgres_instances import PostgresInstanceRepository
@@ -269,12 +270,20 @@ def create_app(
                             loaded_settings.forge_stream_keepalive_seconds
                         ),
                         forge_stream_queue_maxsize=loaded_settings.forge_stream_queue_maxsize,
+                        guild_membership=loaded_settings.guild.membership(),
                     )
                 )
                 app.include_router(
                     create_ravn_router(
                         instance_service,
                         embedded_forge_app=embedded_forge_app,
+                        delegations=(
+                            HttpResidentDelegationRegistrar(
+                                loaded_settings.guild_workload_delegation_url
+                            )
+                            if loaded_settings.guild_workload_delegation_url
+                            else None
+                        ),
                     )
                 )
                 app.include_router(

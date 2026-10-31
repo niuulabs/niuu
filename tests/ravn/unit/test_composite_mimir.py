@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -444,9 +444,16 @@ async def test_read_source_raises_once_the_retry_budget_is_spent() -> None:
         read_retry_max_backoff_seconds=0.001,
     )
 
-    with pytest.raises(MimirUnavailableError, match="could not read source"):
-        await adapter.read_source("src-1")
-    assert shared.port.read_source.await_count > 1
+    # Advance only the adapter's clock, independently of CI scheduling latency.
+    with (
+        patch("ravn.adapters.mimir.composite.time") as clock,
+        patch("ravn.adapters.mimir.composite.asyncio.sleep", new_callable=AsyncMock) as sleep,
+    ):
+        clock.monotonic.side_effect = [0.0, 0.001, 0.005]
+        with pytest.raises(MimirUnavailableError, match="after 2 attempt\\(s\\)"):
+            await adapter.read_source("src-1")
+    assert shared.port.read_source.await_count == 2
+    sleep.assert_awaited_once_with(0.001)
 
 
 @pytest.mark.asyncio

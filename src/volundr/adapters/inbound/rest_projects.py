@@ -8,8 +8,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from volundr.domain.execution_catalog import ExecutionSelectionError
 from volundr.domain.project_ports import ProjectConflictError
-from volundr.domain.projects import ForgeProject, ProjectReceipt
-from volundr.domain.services.projects import ProjectNotFoundError, ProjectService
+from volundr.domain.projects import (
+    PROJECT_BRIEF_MAX_CHARS,
+    ForgeProject,
+    ProjectReceipt,
+    SessionReference,
+)
+from volundr.domain.services.projects import UNCHANGED, ProjectNotFoundError, ProjectService
 from volundr.domain.services.session import SessionAccessDeniedError
 
 
@@ -24,14 +29,22 @@ class ProjectUpdate(BaseModel):
     revision: int = Field(ge=1)
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=4000)
+    brief: str | None = Field(default=None, max_length=PROJECT_BRIEF_MAX_CHARS)
     status: Literal["active", "archived"] | None = None
+    repo_url: str | None = Field(default=None, max_length=2048)
     workspace_path: str | None = Field(default=None, max_length=2048)
 
 
 class SessionProjectAssignment(BaseModel):
+    """Attach, move, re-parent or detach. ``project_id: null`` detaches unless a local
+    ``parent`` is named, in which case the session joins that parent's project.
+    Omitting ``parent`` keeps the current one within a project (cleared on a move)."""
+
     model_config = ConfigDict(extra="forbid")
-    project_id: UUID
+    project_id: UUID | None = None
     expected_revision: int = Field(ge=0)
+    role: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]{0,39}$")
+    parent: SessionReference | None = None
 
 
 def create_session_projects_router(service: ProjectService, principal_for_request) -> APIRouter:
@@ -57,7 +70,14 @@ def create_session_projects_router(service: ProjectService, principal_for_reques
     ) -> dict:
         principal = await principal_for_request(request)
         session = await project_result(
-            service.assign_session(session_id, data.project_id, data.expected_revision, principal)
+            service.assign_session(
+                session_id,
+                data.project_id,
+                data.expected_revision,
+                principal,
+                role=data.role,
+                parent=data.parent if "parent" in data.model_fields_set else UNCHANGED,
+            )
         )
         return membership(session)
 
@@ -93,10 +113,8 @@ def create_projects_router(service: ProjectService, principal_for_request) -> AP
 
     @router.post("", status_code=201)
     async def register_project(request: Request, project: ForgeProject) -> ForgeProject:
-        if "id" not in project.model_fields_set:
-            raise HTTPException(
-                422, "Registration requires the stable project UUID from project.json"
-            )
+        # A name is a complete request. Send a client-generated id to make retries
+        # idempotent; a repository and checkout can be attached later.
         principal = await principal_for_request(request)
         return await project_result(service.register(project, principal))
 
@@ -120,14 +138,18 @@ def create_projects_router(service: ProjectService, principal_for_request) -> AP
         request: Request, project_id: UUID, data: ProjectUpdate
     ) -> ForgeProject:
         principal = await principal_for_request(request)
-        changes = data.model_dump(exclude={"revision"}, exclude_unset=True)
+        changes = {
+            key: "" if value is None else value
+            for key, value in data.model_dump(exclude={"revision"}, exclude_unset=True).items()
+            if value is not None or key in {"description", "brief", "repo_url", "workspace_path"}
+        }
         return await project_result(service.update(project_id, changes, data.revision, principal))
 
     @router.get("/{project_id}/context")
     async def project_context(request: Request, project_id: UUID) -> dict:
         principal = await principal_for_request(request)
         project = await project_result(service.get(project_id, principal))
-        context, revision = await project_result(service.workspace.context(project))
+        context, revision = await project_result(service.context(project))
         return {"project_id": project.id, "context": context, "revision": revision}
 
     @router.get("/{project_id}/receipts")

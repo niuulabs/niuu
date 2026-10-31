@@ -10,6 +10,8 @@ from ting.api.flock_config import create_flock_config_router
 from ting.api.settings import create_settings_router
 from ting.config import AuthConfig, FlockConfig, PersonaOverride, Settings
 
+_ADMIN_HEADERS = {"x-auth-user-id": "dev-user", "x-auth-roles": "volundr:admin"}
+
 
 def _make_app(flock: FlockConfig | None = None) -> FastAPI:
     """Build a minimal FastAPI app with the flock config router."""
@@ -26,7 +28,7 @@ def _make_app(flock: FlockConfig | None = None) -> FastAPI:
 
 @pytest.fixture()
 def client() -> TestClient:
-    return TestClient(_make_app())
+    return TestClient(_make_app(), headers=_ADMIN_HEADERS)
 
 
 @pytest.fixture()
@@ -37,7 +39,7 @@ def client_enabled() -> TestClient:
         llm_config={"model": "claude-sonnet-4-6"},
         sleipnir_publish_urls=["http://sleipnir:4222"],
     )
-    return TestClient(_make_app(flock=flock))
+    return TestClient(_make_app(flock=flock), headers=_ADMIN_HEADERS)
 
 
 class TestGetFlockConfig:
@@ -137,3 +139,14 @@ class TestPatchFlockConfig:
         assert resp.status_code == 200
         assert settings_resp.status_code == 200
         assert settings_resp.json()["flock_name"] == "default"
+
+
+class TestFlockConfigIsAdminOnly:
+    def test_a_developer_cannot_change_shared_flock_settings(self) -> None:
+        client = TestClient(_make_app(), headers={"x-auth-user-id": "alice"})
+        client.headers["x-auth-roles"] = "volundr:developer"
+
+        resp = client.patch("/api/v1/ting/flock/config", json={"flock_enabled": True})
+
+        assert resp.status_code == 403
+        assert client.get("/api/v1/ting/flock/config").json()["flock_enabled"] is False

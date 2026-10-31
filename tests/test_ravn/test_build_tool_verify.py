@@ -4,17 +4,20 @@ install a hard-failed tool."""
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-import ravn.adapters.tools.build_tool as build_tool_mod
+from ravn.adapters.tools import build_tool as build_tool_mod
 from ravn.adapters.tools.build_tool import DEFAULT_MAX_REPAIR_ATTEMPTS, BuildTool
 from ravn.ports.tool_build_backend import (
     ToolBuildInputRequiredError,
     ToolBuildPendingError,
     ToolBuildResult,
+    ToolBuildTaskEndedError,
+    ToolBuildTaskStatus,
 )
 from ravn.valkyrie_evolution.tool_verification import VerificationResult
 
@@ -66,7 +69,12 @@ def _tool(
 
 
 def _persisted_provenance(tmp_path: Path) -> dict[str, Any]:
-    arts = list((tmp_path / "arts").glob("*.json"))
+    # A build that failed verification is kept under _failed/, never over the
+    # installed envelope; either way its provenance is on disk.
+    arts = [
+        *(tmp_path / "arts").glob("*.json"),
+        *(tmp_path / "arts" / "_failed").glob("*.json"),
+    ]
     assert arts, "artifact was not persisted"
     return dict(json.loads(arts[0].read_text())["provenance"])
 
@@ -205,6 +213,95 @@ async def test_empty_test_code_is_rejected_even_with_a_review_requester_configur
     assert filed == []
 
 
+async def test_commissioned_build_public_metrics_are_recorded_by_lifecycle_once(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class _Span:
+        def set_attribute(self, _name: str, _value: object) -> None:
+            return None
+
+    class _Telemetry:
+        def __init__(self) -> None:
+            self.counts: list[tuple[str, dict[str, object], str]] = []
+            self.durations: list[tuple[str, dict[str, object], str]] = []
+
+        @contextmanager
+        def span(self, _name: str, **_kwargs: object):
+            yield _Span()
+
+        def event(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def set_attributes(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def mark_error(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def count(
+            self,
+            name: str,
+            *,
+            attributes: dict[str, object],
+            description: str = "",
+        ) -> None:
+            self.counts.append((name, attributes, description))
+
+        def duration(
+            self,
+            name: str,
+            _seconds: float,
+            *,
+            attributes: dict[str, object],
+            description: str = "",
+        ) -> None:
+            self.durations.append((name, attributes, description))
+
+    class _Backend:
+        name = "a2a"
+
+        async def build(self, _request: Any) -> ToolBuildResult:
+            return ToolBuildResult(
+                manifest=_manifest(),
+                tool_code=_ECHO_TOOL,
+                test_code=_ECHO_TEST,
+                requirements=[],
+                provenance={"builder": "remote"},
+            )
+
+    telemetry = _Telemetry()
+    monkeypatch.setattr(build_tool_mod, "get_observability", lambda: telemetry)
+    tool, registered = _tool(tmp_path, build_backend=_Backend())
+
+    result = await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+
+    assert result.is_error is False
+    assert len(registered) == 1
+    public_counts = [
+        (attributes, description)
+        for name, attributes, description in telemetry.counts
+        if name == "ravn_tool_build_total"
+    ]
+    assert public_counts == [
+        (
+            {"backend": "a2a", "outcome": "registered"},
+            "Ravn tool-build operations by backend and outcome.",
+        )
+    ]
+    public_durations = [
+        (attributes, description)
+        for name, attributes, description in telemetry.durations
+        if name == "ravn_tool_build_duration_seconds"
+    ]
+    assert public_durations == [
+        (
+            {"backend": "a2a", "outcome": "registered"},
+            "Ravn tool-build operation duration.",
+        )
+    ]
+
+
 async def test_dependency_heal_appends_missing_module_then_installs(tmp_path, monkeypatch) -> None:
     """First verify fails on a missing module; deps-heal appends it and the
     re-verify passes, so the tool installs — no LLM, no backend."""
@@ -262,9 +359,11 @@ async def test_verify_fails_with_no_backend_returns_error_and_does_not_install(
     assert "verification failed" in result.content
     assert "AssertionError: boom" in result.content
     assert registered == []
-    # Verification outcome still recorded in provenance for the failed build.
+    # Verification outcome still recorded in provenance for the failed build,
+    # outside the installed envelope's path.
     prov = _persisted_provenance(tmp_path)
     assert prov["verification"]["ok"] is False
+    assert not (tmp_path / "arts" / "echo_tool.json").exists()
 
 
 async def test_backend_recommission_repairs_on_verify_failure_then_installs(
@@ -352,6 +451,60 @@ async def test_verify_failure_exhausts_repair_budget_and_aborts(tmp_path, monkey
     assert prov["verification"]["ok"] is False
     assert prov["verification"]["attempts"] == 2
     assert list((tmp_path / "arts" / "pending-commissions").glob("*.json")) == []
+
+
+async def test_repair_budget_spans_push_suspended_repairs(tmp_path, monkeypatch) -> None:
+    """Every commissioned repair suspends for a push and is resumed in a new call.
+
+    The budget used to be counted per call, so each resume started again at
+    zero and a tool that never verified was rebuilt forever (Regin: 18 builds).
+    """
+    commissions: list[str] = []
+
+    class _Backend:
+        name = "a2a"
+        supports_restart_recovery = True
+
+        async def build(self, request: Any) -> ToolBuildResult:
+            if not request.continuation:
+                task_id = f"task-{len(commissions) + 1}"
+                commissions.append(task_id)
+                raise ToolBuildPendingError(
+                    task_id=task_id,
+                    push_registered=True,
+                    continuation={
+                        "task_id": task_id,
+                        "input_kind": "pending",
+                        "push_registered": True,
+                    },
+                )
+            return ToolBuildResult(
+                manifest=_manifest(),
+                tool_code=_ECHO_TOOL,
+                test_code=_ECHO_TEST,
+                requirements=[],
+            )
+
+    def always_fail(**_: Any) -> VerificationResult:
+        return VerificationResult(ok=False, logs="still broken", missing_module=None)
+
+    monkeypatch.setattr(build_tool_mod, "verify_learned_tool_in_ephemeral_venv", always_fail)
+    tool, registered = _tool(tmp_path, build_backend=_Backend(), max_repair_attempts=2)
+
+    result = await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+    for _ in range(10):
+        pending = json.loads(result.content) if not result.is_error else None
+        if not pending or pending.get("status") != "pending":
+            break
+        result = await tool.execute(pending["resume_with"])
+
+    assert result.is_error is True
+    assert "2 repair attempt" in result.content
+    # The initial build plus exactly two repairs — never a fourth commission.
+    assert commissions == ["task-1", "task-2", "task-3"]
+    assert registered == []
+    assert _persisted_provenance(tmp_path)["verification"]["attempts"] == 2
+    assert list((tmp_path / "arts" / "pending-builds").glob("*.json")) == []
 
 
 async def test_commissioned_build_question_is_persisted_and_resumed(tmp_path) -> None:
@@ -466,6 +619,43 @@ async def test_commissioned_build_push_pending_resumes_without_answer(tmp_path) 
     assert list((tmp_path / "arts" / "pending-builds").glob("*.json")) == []
 
 
+async def test_a_continuation_whose_task_ended_is_dropped_with_the_reason(tmp_path) -> None:
+    """Regin kept pending builds for A2A tasks that had failed or been cancelled
+    days earlier: a resumed build that the peer had ended raised and left its
+    continuation behind, so the resident still held a build nothing could resume."""
+
+    class _Backend:
+        name = "a2a"
+
+        async def build(self, request: Any) -> ToolBuildResult:
+            if not request.continuation:
+                raise ToolBuildPendingError(
+                    task_id="task-push-1",
+                    push_registered=True,
+                    continuation={
+                        "task_id": "task-push-1",
+                        "input_kind": "pending",
+                        "push_registered": True,
+                    },
+                )
+            raise ToolBuildTaskEndedError(
+                task_id="task-push-1",
+                state="TASK_STATE_FAILED",
+                reason="Session idle for over 2 hours without finishing.",
+            )
+
+    tool, registered = _tool(tmp_path, build_backend=_Backend())
+    await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+    assert len(list((tmp_path / "arts" / "pending-builds").glob("*.json"))) == 1
+
+    resumed = await tool.execute({"continuation_task_id": "task-push-1"})
+
+    assert resumed.is_error is True
+    assert "Session idle for over 2 hours without finishing." in resumed.content
+    assert list((tmp_path / "arts" / "pending-builds").glob("*.json")) == []
+    assert registered == []
+
+
 async def test_commissioned_build_rejects_scalar_declared_reach(tmp_path) -> None:
     class _Backend:
         name = "a2a"
@@ -507,6 +697,266 @@ async def test_commissioned_build_rejects_unknown_continuation_task(tmp_path) ->
     assert result.is_error is True
     assert "no pending commissioned build exists" in result.content
     assert registered == []
+
+
+class _SuspendingBackend:
+    """Suspends every fresh build as its own A2A task; records cancellations."""
+
+    name = "a2a"
+
+    def __init__(self, *, input_kind: str = "pending") -> None:
+        self.launched: list[str] = []
+        self.resumed: list[str] = []
+        self.cancelled: list[str] = []
+        #: Where each task stands remotely; a task not listed is still running.
+        self.statuses: dict[str, ToolBuildTaskStatus] = {}
+        self._input_kind = input_kind
+
+    async def build(self, request: Any) -> ToolBuildResult:
+        if request.continuation:
+            self.resumed.append(request.continuation["task_id"])
+            return ToolBuildResult(
+                manifest=_manifest(),
+                tool_code=_ECHO_TOOL,
+                test_code=_ECHO_TEST,
+                requirements=[],
+            )
+        task_id = f"task-{len(self.launched) + 1}"
+        self.launched.append(task_id)
+        continuation = {"task_id": task_id, "input_kind": self._input_kind}
+        if self._input_kind == "pending":
+            raise ToolBuildPendingError(
+                task_id=task_id, push_registered=True, continuation=continuation
+            )
+        raise ToolBuildInputRequiredError(
+            task_id=task_id,
+            input_kind=self._input_kind,
+            prompt="Which namespace?",
+            continuation=continuation,
+        )
+
+    async def task_status(self, task_id: str) -> ToolBuildTaskStatus:
+        return self.statuses.get(task_id, ToolBuildTaskStatus.ACTIVE)
+
+    async def cancel(self, task_id: str) -> str:
+        self.cancelled.append(task_id)
+        return "TASK_STATE_CANCELED"
+
+
+def _pending_builds(tmp_path: Path) -> list[Path]:
+    return list((tmp_path / "arts" / "pending-builds").glob("*.json"))
+
+
+async def test_a_reworded_request_cancels_the_suspended_build_it_replaces(tmp_path) -> None:
+    """Regin reworded its request for one tool every half hour while each
+    earlier build sat suspended, leaving 25 open Ting campaigns for it."""
+    backend = _SuspendingBackend()
+    tool, _ = _tool(tmp_path, build_backend=backend)
+
+    await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+    second = await tool.execute(
+        {"manifest": _manifest(), "build_request": "build an echo tool, in place"}
+    )
+
+    assert json.loads(second.content)["task_id"] == "task-2"
+    assert backend.launched == ["task-1", "task-2"]
+    assert backend.cancelled == ["task-1"]
+    assert len(_pending_builds(tmp_path)) == 1
+
+    stale = await tool.execute({"continuation_task_id": "task-1"})
+    assert stale.is_error is True
+    assert "superseded" in stale.content
+
+
+async def test_the_same_request_resumes_its_suspended_build(tmp_path) -> None:
+    backend = _SuspendingBackend()
+    tool, registered = _tool(tmp_path, build_backend=backend)
+    request = {"manifest": _manifest(), "build_request": "build an echo tool"}
+
+    await tool.execute(dict(request))
+    again = await tool.execute(dict(request))
+
+    assert again.is_error is False
+    assert backend.launched == ["task-1"]
+    assert backend.resumed == ["task-1"]
+    assert backend.cancelled == []
+    assert len(registered) == 1
+    assert _pending_builds(tmp_path) == []
+
+
+async def test_the_same_request_while_its_build_awaits_an_answer_points_at_it(tmp_path) -> None:
+    backend = _SuspendingBackend(input_kind="question")
+    tool, _ = _tool(tmp_path, build_backend=backend)
+    request = {"manifest": _manifest(), "build_request": "build an echo tool"}
+
+    await tool.execute(dict(request))
+    again = await tool.execute(dict(request))
+
+    assert again.is_error is True
+    assert "continuation_task_id='task-1'" in again.content
+    assert backend.launched == ["task-1"]
+    assert backend.cancelled == []
+    assert len(_pending_builds(tmp_path)) == 1
+
+
+async def test_a_suspended_build_of_another_tool_is_left_alone(tmp_path) -> None:
+    backend = _SuspendingBackend()
+    tool, _ = _tool(tmp_path, build_backend=backend)
+
+    await tool.execute({"manifest": _manifest("other_tool"), "build_request": "build it"})
+    await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+
+    assert backend.launched == ["task-1", "task-2"]
+    assert backend.cancelled == []
+    assert len(_pending_builds(tmp_path)) == 2
+
+
+async def test_a_finished_build_is_collected_before_another_is_commissioned(tmp_path) -> None:
+    """valhalla commissioned a third build of one tool while two finished
+    builds of it sat uncollected; superseding them would have thrown the
+    finished work away and built it again."""
+    backend = _SuspendingBackend()
+    tool, registered = _tool(tmp_path, build_backend=backend)
+    await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+    backend.statuses["task-1"] = ToolBuildTaskStatus.COMPLETED
+
+    result = await tool.execute(
+        {"manifest": _manifest(), "build_request": "build an echo tool, in place"}
+    )
+
+    assert result.is_error is False, result.content
+    assert backend.launched == ["task-1"]
+    assert backend.resumed == ["task-1"]
+    assert backend.cancelled == []
+    assert len(registered) == 1
+    assert _pending_builds(tmp_path) == []
+
+
+async def test_a_finished_build_that_had_asked_a_question_needs_no_answer(tmp_path) -> None:
+    backend = _SuspendingBackend(input_kind="question")
+    tool, registered = _tool(tmp_path, build_backend=backend)
+    request = {"manifest": _manifest(), "build_request": "build an echo tool"}
+    await tool.execute(dict(request))
+    backend.statuses["task-1"] = ToolBuildTaskStatus.COMPLETED
+
+    result = await tool.execute(dict(request))
+
+    assert result.is_error is False, result.content
+    assert backend.resumed == ["task-1"]
+    assert len(registered) == 1
+
+
+async def test_an_ended_build_is_dropped_and_the_new_request_commissioned(tmp_path) -> None:
+    backend = _SuspendingBackend()
+    tool, _ = _tool(tmp_path, build_backend=backend)
+    await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+    backend.statuses["task-1"] = ToolBuildTaskStatus.ENDED
+
+    await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool, in place"})
+
+    assert backend.launched == ["task-1", "task-2"]
+    assert backend.cancelled == []
+    assert backend.resumed == []
+    assert len(_pending_builds(tmp_path)) == 1
+
+
+async def test_a_canary_that_reports_an_error_is_not_installed(tmp_path) -> None:
+    """jarnvidr's kubelet tool could only ever answer {"error": "... 403"};
+    counted as a passing canary it was installed, looked healthy, and was
+    rebuilt again and again."""
+    tool, registered = _tool(tmp_path)
+
+    result = await tool.execute(
+        {
+            "manifest": _manifest(),
+            "tool_code": "def run(payload):\n    return {'error': 'HTTP Error 403: Forbidden'}\n",
+            "test_code": (
+                "import _verify_tool\n\ndef test_it():\n"
+                "    assert 'error' in _verify_tool.run({})\n"
+            ),
+            "canary_input": {"node_name": "n1"},
+        }
+    )
+
+    assert result.is_error is True
+    assert "Canary failed" in result.content
+    assert "403" in result.content
+    assert registered == []
+
+
+async def test_a_failed_canary_leaves_the_installed_version_in_place(tmp_path) -> None:
+    """The build was written over the working tool before its canary ran, so
+    a failed canary left the broken version installed on disk."""
+    tool, registered = _tool(tmp_path)
+    working = await tool.execute(
+        {"manifest": _manifest(), "tool_code": _ECHO_TOOL, "test_code": _ECHO_TEST}
+    )
+    assert working.is_error is False
+    envelope = tmp_path / "arts" / "echo_tool.json"
+    before = envelope.read_text()
+    code_before = {p.name: p.read_text() for p in (tmp_path / "tools").glob("*.py")}
+
+    failed = await tool.execute(
+        {
+            "manifest": _manifest(),
+            "tool_code": "def run(payload):\n    return {'error': 'needs PROMETHEUS_URL'}\n",
+            "test_code": (
+                "import _verify_tool\n\ndef test_it():\n"
+                "    assert 'error' in _verify_tool.run({})\n"
+            ),
+            "canary_input": {"query": "up"},
+            "replace": True,
+        }
+    )
+
+    assert failed.is_error is True
+    assert "installed version is unchanged" in failed.content
+    assert envelope.read_text() == before
+    assert {p.name: p.read_text() for p in (tmp_path / "tools").glob("*.py")} == code_before
+    assert list((tmp_path / "arts" / "_failed").glob("echo_tool__*.json"))
+    assert len(registered) == 1
+
+
+async def test_a_failed_first_canary_installs_nothing(tmp_path) -> None:
+    tool, registered = _tool(tmp_path)
+
+    failed = await tool.execute(
+        {
+            "manifest": _manifest(),
+            "tool_code": "def run(payload):\n    return {'error': 'no endpoint'}\n",
+            "test_code": (
+                "import _verify_tool\n\ndef test_it():\n"
+                "    assert 'error' in _verify_tool.run({})\n"
+            ),
+            "canary_input": {},
+        }
+    )
+
+    assert failed.is_error is True
+    assert not (tmp_path / "arts" / "echo_tool.json").exists()
+    assert list((tmp_path / "tools").glob("*.py")) == []
+    assert registered == []
+
+
+async def test_a_failed_cancel_launches_no_second_build(tmp_path) -> None:
+    from ravn.ports.tool_build_backend import ToolBuildError
+
+    class _Unreachable(_SuspendingBackend):
+        async def cancel(self, task_id: str) -> str:
+            raise ToolBuildError("A2A GetTask returned HTTP 503")
+
+    backend = _Unreachable()
+    tool, _ = _tool(tmp_path, build_backend=backend)
+
+    await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+    second = await tool.execute(
+        {"manifest": _manifest(), "build_request": "build an echo tool, in place"}
+    )
+
+    assert second.is_error is True
+    assert "HTTP 503" in second.content
+    assert backend.launched == ["task-1"]
+    assert len(_pending_builds(tmp_path)) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -598,8 +1048,39 @@ async def test_capability_id_is_recorded_on_the_artifact(tmp_path) -> None:
     assert envelope["source_signal_ids"] == ["signal-1", "signal-2"]
 
 
-async def test_a_rename_with_new_code_chains_on_the_declared_capability(tmp_path) -> None:
-    tool, _ = _tool(tmp_path)
+async def test_a_rename_for_the_same_capability_is_not_a_second_tool(tmp_path) -> None:
+    """Without replace, a renamed build for an owned capability builds nothing."""
+    tool, registered = _tool(tmp_path)
+    await tool.execute(
+        {
+            "manifest": _manifest(),
+            "tool_code": _ECHO_TOOL,
+            "test_code": _ECHO_TEST_LOOSE,
+            "capability_id": "echo.payload",
+        }
+    )
+
+    renamed = await tool.execute(
+        {
+            "manifest": _manifest("echo_payload_v2"),
+            "tool_code": "def run(payload):\n    return {'echo': payload, 'v': 2}\n",
+            "test_code": _ECHO_TEST_LOOSE,
+            "capability_id": "echo.payload",
+        }
+    )
+
+    payload = json.loads(renamed.content)
+    assert payload["status"] == "already_installed"
+    assert payload["tool_name"] == "echo_tool"
+    assert payload["matched_by"] == "capability_id"
+    assert "version 2 of 'echo_tool'" in payload["detail"]
+    assert not (tmp_path / "arts" / "echo_payload_v2.json").exists()
+    assert len(registered) == 1
+
+
+async def test_a_renamed_revision_is_installed_in_place_as_the_next_version(tmp_path) -> None:
+    """With replace, the revision becomes version 2 of the existing tool, not a sibling."""
+    tool, registered = _tool(tmp_path)
     first = await tool.execute(
         {
             "manifest": _manifest(),
@@ -610,17 +1091,27 @@ async def test_a_rename_with_new_code_chains_on_the_declared_capability(tmp_path
     )
     first_id = json.loads(first.content)["artifact_id"]
 
-    await tool.execute(
+    revised = await tool.execute(
         {
             "manifest": _manifest("echo_payload_v2"),
             "tool_code": "def run(payload):\n    return {'echo': payload, 'v': 2}\n",
             "test_code": _ECHO_TEST_LOOSE,
             "capability_id": "echo.payload",
+            "replace": True,
         }
     )
 
-    renamed = json.loads((tmp_path / "arts" / "echo_payload_v2.json").read_text())
-    assert renamed["supersedes"] == first_id
+    summary = json.loads(revised.content)
+    assert revised.is_error is False
+    assert summary["tool_name"] == "echo_tool"
+    assert summary["version"] == 2
+    assert summary["supersedes"] == first_id
+    assert summary["repair_of"]["requested_name"] == "echo_payload_v2"
+    assert not (tmp_path / "arts" / "echo_payload_v2.json").exists()
+    envelope = json.loads((tmp_path / "arts" / "echo_tool.json").read_text())
+    assert envelope["version"] == 2
+    assert "'v': 2" in envelope["tool_code"]
+    assert [entry[1] for entry in registered] == [False, True]
 
 
 # ---------------------------------------------------------------------------

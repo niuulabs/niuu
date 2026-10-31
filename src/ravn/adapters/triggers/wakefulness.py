@@ -4,6 +4,13 @@ When the operator stops typing for ``silence_threshold_seconds``, this trigger
 runs a cheap LLM reflection on the conversation and emits 0–N follow-up intents
 as threads into Mímir via ``create_thread()``.
 
+The conversation comes from the injected ``transcript`` source (in the daemon,
+:meth:`ravn.adapters.channels.gateway.RavnGateway.transcript_since`): the
+operator's recent exchange, bounded by ``max_transcript_chars``.  A pass with
+no conversation since the previous reflection makes no LLM call and records no
+timestamp — there is nothing to reflect on, and a model asked anyway invents
+intents that become Mímir threads and then full agent tasks.
+
 Build order step 3 from the Vaka vision (§4.1, §12).
 
 Two reflection passes
@@ -32,6 +39,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from niuu.ports.mimir import MimirPort
+from ravn.cap_telemetry import require_complete
 from ravn.config import WakefulnessConfig
 from ravn.domain.interaction_tracker import LastInteractionTracker
 from ravn.domain.models import AgentTask
@@ -40,13 +48,21 @@ from ravn.ports.trigger import TriggerPort
 
 logger = logging.getLogger(__name__)
 
-_STATE_FILE_NAME = "wakefulness_state.json"
+# ``(since, max_chars) -> transcript``: the operator conversation that happened
+# after ``since`` (everything when ``None``), at most ``max_chars`` of it,
+# newest last.  Empty string when there is none.
+TranscriptSource = Callable[[datetime | None, int], str]
 
-_REFLECTION_MAX_TOKENS = 512
+_STATE_FILE_NAME = "wakefulness_state.json"
 
 _SHALLOW_PROMPT = """\
 You are reflecting on a conversation between an AI assistant and its operator.
 The operator has been silent for a while.
+
+The conversation, oldest first:
+<conversation>
+{conversation}
+</conversation>
 
 Answer two questions:
 1. What is unfinished from this conversation that is worth pursuing?
@@ -68,6 +84,11 @@ Respond ONLY with valid JSON — no markdown fences, no commentary.\
 _DEEP_PROMPT = """\
 You are performing a deep reflection on a long-silent conversation between an AI
 assistant and its operator.
+
+The conversation, oldest first:
+<conversation>
+{conversation}
+</conversation>
 
 Consider the broader context: recurring themes, long-term goals mentioned, and
 any patterns in what the operator cares about.
@@ -99,6 +120,7 @@ class WakefulnessTrigger(TriggerPort):
         mimir:      Mímir adapter for creating threads.
         llm:        LLM adapter for the reflection call.
         config:     Wakefulness configuration.
+        transcript: Source of the operator conversation the reflection is about.
         state_dir:  Directory for persisting reflection timestamps.
                     Defaults to ``~/.ravn/daemon``.
     """
@@ -109,12 +131,14 @@ class WakefulnessTrigger(TriggerPort):
         mimir: MimirPort,
         llm: LLMPort,
         config: WakefulnessConfig,
+        transcript: TranscriptSource,
         state_dir: Path | None = None,
     ) -> None:
         self._tracker = tracker
         self._mimir = mimir
         self._llm = llm
         self._config = config
+        self._transcript = transcript
         self._state_dir = state_dir or Path.home() / ".ravn" / "daemon"
         self._last_reflection_at: datetime | None = None
         self._last_deep_reflection_at: datetime | None = None
@@ -143,11 +167,10 @@ class WakefulnessTrigger(TriggerPort):
                 await self._poll_once()
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
-                logger.warning("WakefulnessTrigger: poll error: %s", exc)
-                # Prevent tight loop on repeated errors
-                await asyncio.sleep(self._config.poll_interval_seconds)
-                continue
+            except Exception:
+                # The reflection timestamps only advance after a pass succeeds,
+                # so the next poll retries it; the failure itself is an error.
+                logger.exception("WakefulnessTrigger: reflection pass failed; retrying next poll")
 
             await asyncio.sleep(self._config.poll_interval_seconds)
 
@@ -164,10 +187,11 @@ class WakefulnessTrigger(TriggerPort):
         # Deep reflection pass — broader context, longer silence.
         if silence_seconds >= self._config.deep_reflection_threshold_seconds:
             if not self._in_deep_cooldown(now):
-                await self._reflect(deep=True)
-                self._last_deep_reflection_at = now
-                self._save_state()
-                return
+                reflected = await self._reflect(deep=True, since=self._last_deep_reflection_at)
+                if reflected:
+                    self._last_deep_reflection_at = now
+                    self._save_state()
+                    return
 
         # Shallow reflection pass.
         if silence_seconds < self._config.silence_threshold_seconds:
@@ -176,9 +200,20 @@ class WakefulnessTrigger(TriggerPort):
         if self._in_shallow_cooldown(now):
             return
 
-        await self._reflect(deep=False)
+        # Any earlier reflection, deep or shallow, already covered what came before it.
+        reflected = await self._reflect(deep=False, since=self._latest_reflection_at())
+        if not reflected:
+            return
         self._last_reflection_at = now
         self._save_state()
+
+    def _latest_reflection_at(self) -> datetime | None:
+        stamps = [
+            stamp
+            for stamp in (self._last_reflection_at, self._last_deep_reflection_at)
+            if stamp is not None
+        ]
+        return max(stamps, default=None)
 
     def _in_shallow_cooldown(self, now: datetime) -> bool:
         if self._last_reflection_at is None:
@@ -192,18 +227,29 @@ class WakefulnessTrigger(TriggerPort):
         elapsed = (now - self._last_deep_reflection_at).total_seconds()
         return elapsed < self._config.deep_reflection_cooldown_seconds
 
-    async def _reflect(self, *, deep: bool) -> None:
-        """Run LLM reflection and create threads for each intent."""
+    async def _reflect(self, *, deep: bool, since: datetime | None) -> bool:
+        """Reflect on the conversation since *since* and create a thread per intent.
+
+        Returns ``False`` without calling the LLM when there is no conversation
+        since *since*; ``True`` once the reflection and its threads are done.
+        """
+        conversation = self._transcript(since, self._config.max_transcript_chars)
+        if not conversation:
+            logger.debug(
+                "WakefulnessTrigger: no conversation since %s; nothing to reflect on", since
+            )
+            return False
+
         label = "deep" if deep else "shallow"
         logger.info("WakefulnessTrigger: running %s reflection", label)
 
         prompt_template = _DEEP_PROMPT if deep else _SHALLOW_PROMPT
-        prompt = prompt_template.format(max_intents=self._config.max_intents_per_reflection)
+        prompt = prompt_template.format(
+            max_intents=self._config.max_intents_per_reflection,
+            conversation=conversation,
+        )
 
         intents = await self._call_llm(prompt)
-        if intents is None:
-            return
-
         capped = intents[: self._config.max_intents_per_reflection]
 
         for intent in capped:
@@ -211,49 +257,51 @@ class WakefulnessTrigger(TriggerPort):
             if not title:
                 continue
 
-            try:
-                await self._mimir.create_thread(
-                    title=title,
-                    weight=self._config.initial_thread_weight,
-                    context_refs=None,
-                    next_action_hint=intent.get("next_action_hint"),
-                )
-                logger.info(
-                    "WakefulnessTrigger: created thread %r (why=%s)",
-                    title,
-                    intent.get("why", ""),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "WakefulnessTrigger: failed to create thread %r: %s",
-                    title,
-                    exc,
-                )
-
-    async def _call_llm(self, prompt: str) -> list[dict] | None:
-        """Call the LLM and parse a JSON array of intents."""
-        try:
-            response = await self._llm.generate(
-                messages=[{"role": "user", "content": prompt}],
-                tools=[],
-                system="You are a reflective assistant. Respond only with valid JSON.",
-                model=self._config.llm_alias,
-                max_tokens=_REFLECTION_MAX_TOKENS,
+            await self._mimir.create_thread(
+                title=title,
+                weight=self._config.initial_thread_weight,
+                context_refs=None,
+                next_action_hint=intent.get("next_action_hint"),
             )
+            logger.info(
+                "WakefulnessTrigger: created thread %r (why=%s)",
+                title,
+                intent.get("why", ""),
+            )
+        return True
+
+    async def _call_llm(self, prompt: str) -> list[dict]:
+        """Ask for the follow-up intents; raises when the model gives no usable answer."""
+        response = await self._llm.generate(
+            messages=[{"role": "user", "content": prompt}],
+            tools=[],
+            system="You are a reflective assistant. Respond only with valid JSON.",
+            model=self._config.llm_alias,
+            # Uncapped: the old 512-token cap ended inside a reasoning model's
+            # thinking, and the empty answer read as "nothing unfinished".
+            max_tokens=None,
+        )
+        require_complete(
+            response,
+            knob="wakefulness",
+            budget=None,
+            model=self._config.llm_alias,
+            purpose="the wakefulness reflection",
+        )
+        try:
             parsed = json.loads(response.content)
-            if not isinstance(parsed, list):
-                logger.warning(
-                    "WakefulnessTrigger: LLM returned non-array JSON: %s",
-                    type(parsed).__name__,
-                )
-                return None
-            return parsed
         except json.JSONDecodeError as exc:
-            logger.warning("WakefulnessTrigger: malformed JSON from LLM: %s", exc)
-            return None
-        except Exception as exc:
-            logger.warning("WakefulnessTrigger: LLM call failed: %s", exc)
-            return None
+            raise ValueError(
+                f"WakefulnessTrigger: {self._config.llm_alias!r} answered with no JSON "
+                f"({response.content[:200]!r}); set wakefulness.llm_alias to a model that "
+                "follows JSON instructions"
+            ) from exc
+        if not isinstance(parsed, list):
+            raise ValueError(
+                f"WakefulnessTrigger: {self._config.llm_alias!r} answered with "
+                f"{type(parsed).__name__}, not a JSON array of intents"
+            )
+        return parsed
 
     # ------------------------------------------------------------------
     # State persistence
@@ -264,19 +312,13 @@ class WakefulnessTrigger(TriggerPort):
         state_file = self._state_dir / _STATE_FILE_NAME
         if not state_file.exists():
             return
-        try:
-            raw = json.loads(state_file.read_text(encoding="utf-8"))
-            if "last_reflection_at" in raw:
-                self._last_reflection_at = datetime.fromisoformat(raw["last_reflection_at"])
-            if "last_deep_reflection_at" in raw:
-                self._last_deep_reflection_at = datetime.fromisoformat(
-                    raw["last_deep_reflection_at"]
-                )
-        except Exception as exc:
-            logger.warning("WakefulnessTrigger: could not load state: %s", exc)
-            # Reset state on load failure to avoid stuck cooldowns
-            self._last_reflection_at = None
-            self._last_deep_reflection_at = None
+        # Unreadable state raises: resetting it would silently re-run every
+        # reflection. Delete the file to start the cooldowns over.
+        raw = json.loads(state_file.read_text(encoding="utf-8"))
+        if "last_reflection_at" in raw:
+            self._last_reflection_at = datetime.fromisoformat(raw["last_reflection_at"])
+        if "last_deep_reflection_at" in raw:
+            self._last_deep_reflection_at = datetime.fromisoformat(raw["last_deep_reflection_at"])
 
     def _save_state(self) -> None:
         """Persist reflection timestamps to the state file."""
@@ -287,7 +329,4 @@ class WakefulnessTrigger(TriggerPort):
             state["last_reflection_at"] = self._last_reflection_at.isoformat()
         if self._last_deep_reflection_at is not None:
             state["last_deep_reflection_at"] = self._last_deep_reflection_at.isoformat()
-        try:
-            state_file.write_text(json.dumps(state), encoding="utf-8")
-        except Exception as exc:
-            logger.warning("WakefulnessTrigger: could not save state: %s", exc)
+        state_file.write_text(json.dumps(state), encoding="utf-8")

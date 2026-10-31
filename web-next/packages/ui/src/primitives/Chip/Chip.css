@@ -31,3 +31,9 @@
   color: var(--color-text-muted);
   background: transparent;
 }
+
+/* Informational labels stay unboxed in the Light palette. */
+[data-theme='light'] .niuu-chip:not(.niuu-chip--critical) {
+  background: transparent;
+  border-color: transparent;
+}

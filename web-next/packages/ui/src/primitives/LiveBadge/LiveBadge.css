@@ -32,3 +32,8 @@
     transform: scale(1.2);
   }
 }
+
+[data-theme='light'] .niuu-live-badge {
+  background: transparent;
+  border-color: transparent;
+}

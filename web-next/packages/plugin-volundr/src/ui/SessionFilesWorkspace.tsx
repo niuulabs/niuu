@@ -2,12 +2,15 @@ import { useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { cn, useConversationResources } from '@niuulabs/ui';
 import type { IFileSystemPort, FileTreeNode } from '../ports/IFileSystemPort';
+import type { ReviewControls } from '../domain/reviewComments';
 import { FileViewer } from './FileTree/FileViewer';
 import './SessionFilesWorkspace.css';
 
 interface SessionFilesWorkspaceProps {
   sessionId: string;
   filesystem: IFileSystemPort;
+  /** Adds line comments to the file viewer; omitted for sessions that cannot take a review. */
+  review?: ReviewControls;
 }
 
 interface BrowserNode extends FileTreeNode {
@@ -21,7 +24,11 @@ interface UploadItem {
   error?: string;
 }
 
-export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWorkspaceProps) {
+export function SessionFilesWorkspace({
+  sessionId,
+  filesystem,
+  review,
+}: SessionFilesWorkspaceProps) {
   const queryClient = useQueryClient();
   const resources = useConversationResources();
   const uploadRef = useRef<HTMLInputElement | null>(null);
@@ -609,6 +616,7 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
               isLoading={viewerLoading}
               error={viewerError}
               onClose={resetViewer}
+              review={review}
             />
           </div>
         </div>

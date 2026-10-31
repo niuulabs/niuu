@@ -226,11 +226,13 @@ export function buildSetupHttpAdapter(clients: SetupHttpClients): ISetupService 
       slug: string,
       credentialName: string,
       oauthApp: string = '',
+      connectionId: string = '',
     ): Promise<Enrollment> {
       const row = await clients.integrations.post<EnrollmentWire>('/enrollments', {
         slug,
         credential_name: credentialName,
         oauth_app: oauthApp,
+        ...(connectionId ? { connection_id: connectionId } : {}),
       });
       return mapEnrollment(row);
     },

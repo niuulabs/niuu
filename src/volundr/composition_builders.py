@@ -5,6 +5,13 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
+from niuu.adapters.workload_identity.key_file import (
+    SigningKeyFileError,
+    load_or_create_rsa_key_pem,
+)
+from niuu.config_models import WorkloadIdentityConfig
+from niuu.domain.services.forge_session_token import ForgeSessionTokenService
+from niuu.domain.services.workload_identity import WorkloadIdentityService
 from niuu.ports.credentials import CredentialRefreshLockPort
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class, resolve_secret_kwargs
@@ -12,6 +19,7 @@ from volundr.adapters.outbound.contributors.workflow_execution_credentials impor
     WorkflowExecutionCredentialContributor,
 )
 from volundr.config import Settings
+from volundr.domain.models import ResidentBackend, ResidentEngine
 from volundr.domain.ports import (
     ArchiveStorePort,
     AuthorizationPort,
@@ -22,6 +30,7 @@ from volundr.domain.ports import (
     GatewayPort,
     IntegrationRepository,
     PodManager,
+    ResidentOpenClawShimHost,
     ResidentRuntimeController,
     ResidentSessionController,
     ResourceProvider,
@@ -41,6 +50,63 @@ from volundr.domain.services.workflow_execution_credentials import (
 from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjectionPort
 
 logger = logging.getLogger(__name__)
+
+KEY_SOURCE_WORKLOAD_IDENTITY = "workload_identity"
+KEY_SOURCE_KEY_FILE = "key_file"
+
+
+class ForgeSessionCredentialsUnavailableError(RuntimeError):
+    """Forge session credentials are enabled but no signing key is usable."""
+
+
+def _create_forge_session_tokens(
+    settings: Settings,
+    workload_identity: WorkloadIdentityService,
+) -> ForgeSessionTokenService | None:
+    """The issuer of scoped session credentials, or ``None`` when they are disabled.
+
+    The workload-identity issuer signs them when it is enabled with a configured
+    key: the same key Envoy validates through the workload JWKS. Otherwise (local
+    mini mode) Forge uses its own RSA key file, generated once. When credentials are
+    enabled but neither key is usable, Forge refuses to start: sessions would run
+    with their broker credential and the Forge MCP would silently offer no grants.
+    """
+    cfg = settings.forge_mcp.session_tokens
+    if not cfg.enabled:
+        logger.info("Forge session credentials: disabled (forge_mcp.session_tokens.enabled)")
+        return None
+    if workload_identity.enabled and workload_identity.has_configured_key:
+        logger.info("Forge session credentials: signed by the workload identity issuer")
+        return ForgeSessionTokenService(
+            workload_identity,
+            audiences=settings.workload_identity.audiences,
+            ttl_seconds=cfg.ttl_seconds,
+            key_source=KEY_SOURCE_WORKLOAD_IDENTITY,
+        )
+    try:
+        pem = load_or_create_rsa_key_pem(cfg.signing_key_file, key_size=cfg.signing_key_bits)
+    except SigningKeyFileError as exc:
+        raise ForgeSessionCredentialsUnavailableError(
+            f"Forge session credentials are enabled but have no usable signing key: {exc}. "
+            "Fix forge_mcp.session_tokens.signing_key_file, enable workload_identity with "
+            "a signing key, or set forge_mcp.session_tokens.enabled: false."
+        ) from exc
+    issuer = WorkloadIdentityService(
+        WorkloadIdentityConfig(
+            enabled=True,
+            issuer=cfg.issuer,
+            audiences=list(cfg.audiences),
+            key_id=cfg.key_id,
+        ),
+        signing_key_pem=pem,
+    )
+    logger.info("Forge session credentials: signed with the local key file")
+    return ForgeSessionTokenService(
+        issuer,
+        audiences=cfg.audiences,
+        ttl_seconds=cfg.ttl_seconds,
+        key_source=KEY_SOURCE_KEY_FILE,
+    )
 
 
 def _create_workflow_execution_credential_service(
@@ -295,7 +361,10 @@ def _create_resident_session_controllers(
     runtime_controllers: list[ResidentRuntimeController],
     credential_store: CredentialStorePort,
 ) -> list[ResidentSessionController]:
-    """Create configured engine adapters against their owning runtime backend."""
+    """Create configured engine adapters against their owning runtime backend.
+
+    Plus the default Ravn session controllers (``_default_ravn_session_controllers``).
+    """
     controllers_by_backend = {controller.backend: controller for controller in runtime_controllers}
     session_controllers: list[ResidentSessionController] = []
     for config in settings.resident_runtimes.session_controllers:
@@ -321,7 +390,59 @@ def _create_resident_session_controllers(
             )
         session_controllers.append(instance)
         logger.info("Resident session controller: %s", config.adapter.rsplit(".", 1)[-1])
+    session_controllers.extend(
+        _default_ravn_session_controllers(
+            settings,
+            runtime_controllers,
+            session_controllers,
+            credential_store,
+        )
+    )
     return session_controllers
+
+
+def _ravn_session_hosts(
+    settings: Settings,
+    runtime_controllers: list[ResidentRuntimeController],
+    configured_backends: set[ResidentBackend | None],
+) -> list[ResidentRuntimeController]:
+    """The shim-hosting backends that get a default Ravn session controller."""
+    if not settings.resident_runtimes.ravn_sessions_enabled or None in configured_backends:
+        return []
+    return [
+        controller
+        for controller in runtime_controllers
+        if isinstance(controller, ResidentOpenClawShimHost)
+        and controller.backend not in configured_backends
+    ]
+
+
+def _default_ravn_session_controllers(
+    settings: Settings,
+    runtime_controllers: list[ResidentRuntimeController],
+    configured: list[ResidentSessionController],
+    credential_store: CredentialStorePort,
+) -> list[ResidentSessionController]:
+    """Ravn sessions on every backend that hosts the Ravn OpenClaw shim.
+
+    A Ravn resident's sessions ("channels") need no per-cluster wiring and no
+    secret: each shim-hosting backend gets a RavnResidentSessionController unless
+    session_controllers already names a Ravn controller for it, which wins. Each
+    resident's shim token is its own, kept in the credential store.
+    """
+    from volundr.adapters.outbound.ravn_gateway import RavnResidentSessionController
+
+    wired = {
+        controller.runtime_backend
+        for controller in configured
+        if controller.engine is ResidentEngine.RAVN
+    }
+    hosts = _ravn_session_hosts(settings, runtime_controllers, wired)
+    defaults: list[ResidentSessionController] = []
+    for controller in hosts:
+        defaults.append(RavnResidentSessionController(controller, credential_store))
+        logger.info("Resident session controller: Ravn on %s (default)", controller.backend.value)
+    return defaults
 
 
 def _runtime_backend(settings: Settings, pod_manager: PodManager) -> str:
@@ -568,6 +689,9 @@ def _create_contributors(
             ravn_kwargs["init_writer_image"] = settings.ravn_flock_init_writer_image
         if settings.ravn_flock_llm_config:
             ravn_kwargs["default_llm_config"] = settings.ravn_flock_llm_config
+        ravn_kwargs["llm_config_by_definition"] = settings.ravn_flock_llm_config_by_definition
+        ravn_kwargs["session_definitions"] = settings.session_definitions
+        ravn_kwargs["default_definition"] = settings.default_definition
         contributors.append(RavnFlockContributor(**ravn_kwargs))
         logger.info("Session contributor: ravn_flock (auto-wired)")
 

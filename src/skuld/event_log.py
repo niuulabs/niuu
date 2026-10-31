@@ -35,6 +35,10 @@ class EventLogRejectedError(RuntimeError):
     """
 
 
+class _EventLogHeadUnavailableError(Exception):
+    """The event-log head fetch failed in a way a retry can fix (network, 5xx, 401, 408, 429)."""
+
+
 def sanitize_log(value: object) -> str:
     """Sanitize a value for safe log output (prevent log injection)."""
     return str(value).replace("\\n", "\\\\n").replace("\\r", "\\\\r")
@@ -358,7 +362,7 @@ class EventLogMixin:
                 return inner
         return None
 
-    def _enqueue_event_log(self, data: dict, *, ts: datetime | None = None) -> None:
+    def _enqueue_event_log(self, data: dict, *, ts: datetime | None = None) -> dict | None:
         """Buffer a raw CLI frame for durable persistence. Never raises.
 
         Runs for every frame regardless of attached channels — this is what
@@ -366,9 +370,12 @@ class EventLogMixin:
 
         ``ts`` lets the CLI-event handler share one observation instant with
         live transcript reduction. Other callers retain the prior behavior.
+
+        Returns the buffered entry (``None`` when the durable log is off) so a
+        caller can watch it with :meth:`_watch_event_log_entry`.
         """
         if not self._settings.event_log_enabled or not self.volundr_api_url:
-            return
+            return None
         self._event_log_seq += 1
         observed_at = (ts or datetime.now(UTC)).isoformat()
         caps = getattr(self._transport, "capabilities", None)
@@ -396,8 +403,9 @@ class EventLogMixin:
         # and is logged loudly so the loss is visible.
         overflow = len(self._event_log_buffer) - self._settings.event_log_max_buffer
         if overflow <= 0:
-            return
+            return entry
         dropped = self._event_log_buffer[:overflow]
+        self._settle_event_log_receipts(dropped, stored=False)
         # True hole size: a prior overflow's sentinel may itself be among the frames
         # dropped this round. Counting it as a single frame would UNDER-report under
         # sustained overflow (the hole it stood for vanishes). Fold its accumulated
@@ -441,6 +449,55 @@ class EventLogMixin:
                 "ts": datetime.now(UTC).isoformat(),
             },
         )
+        return entry
+
+    # -- flush receipts: let a caller learn whether ONE entry reached Forge.
+
+    def _watch_event_log_entry(self, entry: dict) -> asyncio.Future[bool]:
+        """Future resolving True once Forge stores ``entry``, False if it is dropped.
+
+        Must be called in the same synchronous step as the enqueue that produced
+        ``entry`` (no await in between), so the entry cannot have been flushed yet.
+        """
+        future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        if not any(buffered is entry for buffered in self._event_log_buffer):
+            future.set_result(False)  # already dropped by an overflow in the same step
+            return future
+        self._event_log_receipts[id(entry)] = (entry, future)
+        return future
+
+    def _settle_event_log_receipts(
+        self, entries: list[dict], *, stored: bool, conflicts: frozenset[int] = frozenset()
+    ) -> None:
+        if not self._event_log_receipts:
+            return
+        for entry in entries:
+            receipt = self._event_log_receipts.pop(id(entry), None)
+            if receipt is None:
+                continue
+            future = receipt[1]
+            if not future.done():
+                future.set_result(stored and entry["seq"] not in conflicts)
+
+    @staticmethod
+    def _append_conflicts(response: httpx.Response) -> frozenset[int]:
+        """Seqs Forge reported as conflicting (stored frame differs from ours)."""
+        try:
+            body = response.json()
+        except ValueError:
+            return frozenset()
+        if not isinstance(body, dict) or not isinstance(body.get("conflicts"), list):
+            return frozenset()
+        return frozenset(seq for seq in body["conflicts"] if isinstance(seq, int))
+
+    async def _await_event_log_receipt(
+        self, future: asyncio.Future[bool], timeout_s: float
+    ) -> bool | None:
+        """True stored, False lost, None still pending after ``timeout_s``."""
+        try:
+            return await asyncio.wait_for(asyncio.shield(future), timeout=timeout_s)
+        except TimeoutError:
+            return None
 
     async def _emit_broker_frame(self, frame: dict) -> None:
         """Single choke point for BROKER-ORIGINATED frames (FR-1 / INV-1).
@@ -566,10 +623,19 @@ class EventLogMixin:
             except Exception:
                 logger.debug("event log flush iteration failed", exc_info=True)
 
+    #: Head-fetch backoff while Volundr or its identity provider is unavailable.
+    EVENT_LOG_RESUME_INITIAL_DELAY = 2.0
+    EVENT_LOG_RESUME_MAX_DELAY = 60.0
+
     @staticmethod
     def _is_transient_status(status: int) -> bool:
-        """5xx, timeouts, and rate limits recover on retry; other rejections never do."""
-        return status >= 500 or status in (408, 429)
+        """5xx, timeouts, rate limits and 401 recover on retry; other rejections never do.
+
+        A 401 is what an identity outage looks like: Volundr's proxy answers it when it
+        cannot fetch the keys that verify the workload token (``Jwks remote fetch is
+        failed``), and the workload token itself is refreshed before every request.
+        """
+        return status >= 500 or status in (401, 408, 429)
 
     async def _flush_event_log(self) -> None:
         """Serialize flushes and acknowledge only the sequence range actually sent."""
@@ -607,6 +673,10 @@ class EventLogMixin:
             # Its prefix may now contain NEW frames, so deleting len(batch) loses
             # unsent output. Acknowledge the sent prefix by seq, trimming any gap
             # created in flight so it cannot collide with a now-persisted row.
+            if self._event_log_receipts:
+                self._settle_event_log_receipts(
+                    batch, stored=True, conflicts=self._append_conflicts(response)
+                )
             acknowledged = max(
                 entry["payload"]["last_seq"] if entry["kind"] == "log_gap" else entry["seq"]
                 for entry in batch
@@ -633,26 +703,48 @@ class EventLogMixin:
         appends would hit ON CONFLICT DO NOTHING and silently vanish. Seeding
         from the stored head keeps the sequence monotonic across restarts.
 
-        Runs during broker startup, so a head fetch that cannot succeed fails
-        the boot: guessing seq 0 instead risks exactly the silent swallow the
-        resume exists to prevent, and a permanent rejection here means every
-        later flush would fail too.
+        A head fetch that a retry can fix (Volundr or its identity provider
+        down) does not fail the boot: the broker starts, frames wait in the
+        buffer with provisional seqs, and a background task keeps asking for
+        the head. Nothing is flushed before the head is known, so the
+        provisional seqs are re-based above it exactly as for the capture
+        window (``_resume_seq_from_head``). A permanent rejection (wrong
+        session id or URL, malformed head) still fails the boot.
         """
         if not self._settings.event_log_enabled or not self.volundr_api_url:
             return
+        try:
+            head = await self._fetch_event_log_head()
+        except _EventLogHeadUnavailableError as exc:
+            logger.warning(
+                "Durable event log head unavailable (%s); starting without it and retrying "
+                "in the background. Output is buffered until Volundr answers.",
+                sanitize_log(exc),
+            )
+            self._event_log_task = asyncio.create_task(self._event_log_resume_loop())
+            self._event_log_task.add_done_callback(self._on_event_log_worker_done)
+            return
+        await self._resume_seq_from_head(head)
+        self._event_log_head_known = True
+        self._event_log_task = asyncio.create_task(self._event_log_flush_loop())
+        self._event_log_task.add_done_callback(self._on_event_log_worker_done)
+        logger.info("Durable event log started (resume seq=%d)", self._event_log_seq)
+
+    async def _fetch_event_log_head(self) -> int:
+        """GET the stored head; a retryable failure raises ``_EventLogHeadUnavailableError``."""
         client = await self._get_http_client()
         path = self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id) + "/head"
         try:
             response = await client.get(path)
         except httpx.HTTPError as exc:
-            raise EventLogRejectedError(
-                f"Volundr is unreachable for the event-log head fetch at "
-                f"{self.volundr_api_url}{path}: {exc}. The durable event log is "
-                "configured (volundr_api_url is set) so it must work — fix "
-                "connectivity, or unset volundr_api_url / set event_log_enabled: "
-                "false to run without a durable log."
+            raise _EventLogHeadUnavailableError(
+                f"Volundr is unreachable at {self.volundr_api_url}{path}: {exc}"
             ) from exc
         if response.status_code >= 300:
+            if self._is_transient_status(response.status_code):
+                raise _EventLogHeadUnavailableError(
+                    f"Volundr answered {response.status_code}: {response.text[:200]}"
+                )
             raise EventLogRejectedError(
                 f"Volundr rejected the durable event log head fetch for session "
                 f"{self.session_id} ({response.status_code}): {response.text[:200]}. "
@@ -670,10 +762,34 @@ class EventLogMixin:
                 f"Cannot initialize durable event log for session {self.session_id}: "
                 "a valid head is required before starting the agent"
             ) from exc
-        await self._resume_seq_from_head(head)
-        self._event_log_task = asyncio.create_task(self._event_log_flush_loop())
-        self._event_log_task.add_done_callback(self._on_event_log_worker_done)
-        logger.info("Durable event log started (resume seq=%d)", self._event_log_seq)
+        return head
+
+    async def _event_log_resume_loop(self) -> None:
+        """Background: fetch the head with backoff, then run the flush loop.
+
+        One task for both phases, so shutdown cancels whichever is running and a
+        permanent rejection in either takes the broker down (``_on_event_log_worker_done``).
+        """
+        delay = self.EVENT_LOG_RESUME_INITIAL_DELAY
+        while not self._event_log_stopping:
+            await asyncio.sleep(delay)
+            try:
+                head = await self._fetch_event_log_head()
+            except _EventLogHeadUnavailableError as exc:
+                delay = min(delay * 2, self.EVENT_LOG_RESUME_MAX_DELAY)
+                logger.warning(
+                    "Durable event log head still unavailable (%s); %d frames buffered, "
+                    "retrying in %.0fs",
+                    sanitize_log(exc),
+                    len(self._event_log_buffer),
+                    delay,
+                )
+                continue
+            await self._resume_seq_from_head(head)
+            self._event_log_head_known = True
+            logger.info("Durable event log started (resume seq=%d)", self._event_log_seq)
+            await self._event_log_flush_loop()
+            return
 
     @staticmethod
     def _on_event_log_worker_done(task: asyncio.Task) -> None:
@@ -729,6 +845,14 @@ class EventLogMixin:
             self._event_log_task.cancel()
             await asyncio.gather(self._event_log_task, return_exceptions=True)
             self._event_log_task = None
+        if not self._event_log_head_known:
+            # Provisional seqs could collide with stored rows: never flush them blind.
+            if self._event_log_buffer:
+                logger.critical(
+                    "Durable event log head never fetched — %d frames lost on shutdown",
+                    len(self._event_log_buffer),
+                )
+            return
         # Final best-effort drain so the last turn isn't lost on shutdown.
         for _ in range(self._settings.event_log_max_buffer):
             async with self._event_log_lock:

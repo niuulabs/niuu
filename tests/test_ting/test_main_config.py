@@ -4,9 +4,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from bifrost.config import BifrostConfig, ManagedModelConfig
 from niuu.service_runtime import _get_auth_mode, _validate_identity_adapter_class
-from ting.config import AuthConfig, Settings, VolundrConfig
-from ting.main import _use_local_volundr_factory, _workflow_execution_token_issuer
+from ting.config import AuthConfig, DispatchConfig, Settings, VolundrConfig
+from ting.main import (
+    _dispatch_service_config,
+    _use_local_volundr_factory,
+    _workflow_execution_token_issuer,
+)
 
 
 class TestTingAuthModeGuard:
@@ -104,3 +109,39 @@ def test_workflow_execution_uses_enabled_token_issuer_in_any_auth_mode() -> None
     enabled = SimpleNamespace(enabled=True)
 
     assert _workflow_execution_token_issuer(settings, enabled) is enabled
+
+
+@pytest.mark.parametrize("timeout_seconds", [900.0, 0.0])
+def test_dispatch_service_gets_the_configured_workflow_cli_turn_timeout(
+    timeout_seconds: float,
+) -> None:
+    settings = Settings(dispatch=DispatchConfig(workflow_cli_turn_timeout_seconds=timeout_seconds))
+
+    assert _dispatch_service_config(settings).workflow_cli_turn_timeout_seconds == timeout_seconds
+
+
+def test_dispatch_service_keeps_the_120_second_default() -> None:
+    assert _dispatch_service_config(Settings()).workflow_cli_turn_timeout_seconds == 120.0
+
+
+def test_dispatch_service_config_carries_the_dispatch_settings() -> None:
+    model = ManagedModelConfig(id="gpt-5.5", name="GPT-5.5", vendor="openai")
+    settings = Settings(
+        dispatch=DispatchConfig(
+            default_system_prompt="Be terse.",
+            default_model="gpt-5.5",
+            default_session_definition="skuldCodex",
+            dispatch_prompt_template="Do {identifier}",
+        ),
+        bifrost=BifrostConfig(models=[model]),
+    )
+
+    config = _dispatch_service_config(settings)
+
+    assert config.default_system_prompt == "Be terse."
+    assert config.default_model == "gpt-5.5"
+    assert config.default_session_definition == "skuldCodex"
+    assert config.dispatch_prompt_template == "Do {identifier}"
+    assert config.session_definitions is settings.session_definitions
+    assert config.configured_models == [model]
+    assert config.live_flock is settings.dispatch.flock

@@ -96,6 +96,11 @@ class LocalVolundrAdapterFactory:
     async def for_principal(self, principal: Principal) -> list[VolundrPort]:
         return [self._adapter]
 
+    async def for_principal_with_unresolved(
+        self, principal: Principal
+    ) -> tuple[list[VolundrPort], int]:
+        return [self._adapter], 0
+
     async def primary_for_principal(self, principal: Principal) -> VolundrPort | None:
         return self._adapter
 
@@ -157,6 +162,18 @@ class VolundrAdapterFactory:
             principal.user_id, principal=principal
         )
         return adapters
+
+    async def for_principal_with_unresolved(
+        self, principal: Principal
+    ) -> tuple[list[VolundrPort], int]:
+        """Like ``for_principal``, but also reports how many registered instances
+        could not be resolved this call.
+
+        A caller that looks for a session across the principal's Forges must
+        know whether it asked every one of them: a session missing from the
+        Forges that resolved is only "gone" when none was left out.
+        """
+        return await self._resolve_connections(principal.user_id, principal=principal)
 
     async def primary_for_principal(self, principal: Principal) -> VolundrPort | None:
         adapters, _unresolved = await self._resolve_connections(

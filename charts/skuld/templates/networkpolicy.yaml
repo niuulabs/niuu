@@ -13,11 +13,20 @@ spec:
   ingress:
     - ports:
         - protocol: TCP
-          port: {{ if .Values.envoy.enabled }}{{ .Values.envoy.port }}{{ else }}{{ .Values.service.port }}{{ end }}
+          port: {{ if include "skuld.envoyEnabled" . }}{{ .Values.envoy.port }}{{ else }}{{ .Values.service.port }}{{ end }}
       {{- with .Values.networkPolicy.ingressFrom }}
       from:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+    {{- if and (include "skuld.residentEnabled" .) .Values.resident.openclaw.enabled }}
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.resident.openclaw.port }}
+      {{- with .Values.resident.openclaw.ingressFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
     {{- with .Values.networkPolicy.extraIngress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

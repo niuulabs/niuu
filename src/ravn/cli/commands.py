@@ -27,14 +27,19 @@ from ravn.cli.mcp_runtime import (  # noqa: F401
 from ravn.config import ProjectConfig, Settings
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.models import (
-    AgentTask,
+    AgentTask as AgentTask,
+)
+from ravn.domain.models import (
     Message,
-    OutputMode,
     Session,
     TodoItem,
     TodoStatus,
     TokenUsage,
 )
+from ravn.domain.models import (
+    OutputMode as OutputMode,
+)
+from ravn.domain.notification_channel import current_notification_channel
 from ravn.domain.profile import RavnProfile
 from ravn.ports.checkpoint import CheckpointPort
 from ravn.ports.executor import ExecutionAgentPort
@@ -52,8 +57,6 @@ from ravn.workflow_runtime import (  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
-# Extracted runtime wrappers resolve these legacy module globals at call time.
-_RUNTIME_MODEL_EXPORTS = (AgentTask, OutputMode)
 
 app = typer.Typer(
     name="ravn",
@@ -176,6 +179,11 @@ from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _RealmBuildConfig,
     _attach_agent_build_tool,
     _build_executor,
+    _build_friction_ledger,
+    _build_capability_matcher,
+    _build_learning_consolidation,
+    _build_learning_curator,
+    _build_self_improvement,
     _build_llm,
     _build_memory,
     _build_mimir,
@@ -203,6 +211,7 @@ from ravn.cli.runtime_builders import (  # noqa: E402, F401
 from ravn.cli.tool_builders import (  # noqa: E402, F401
     _MIMIR_TOOL_NAMES,
     _apply_trust_filter,
+    _build_compaction,
     _build_compressor,
     _build_hooks,
     _build_prompt_builder,
@@ -533,6 +542,7 @@ def _build_agent(
     memory = _build_memory(settings, llm=llm)
     mimir = _build_mimir(settings)
     memory = _with_mimir_fact_capture(memory, mimir)
+    learning_consolidation = _build_learning_consolidation(settings, llm)
     iteration_budget = _build_iteration_budget(settings, max_iterations)
     tools = _build_tools(
         settings,
@@ -546,7 +556,9 @@ def _build_agent(
         persona_config=persona_config,
         permission=permission,
     )
-    compressor = None if cli_transport_executor else _build_compressor(settings, llm)
+    compressor, native_compaction = (
+        (None, None) if cli_transport_executor else _build_compaction(settings, llm, resolved_model)
+    )
     prompt_builder = _build_prompt_builder(settings)
     pre_hooks, post_hooks = _build_hooks(settings)
     checkpoint_port = _build_checkpoint(settings)
@@ -580,10 +592,18 @@ def _build_agent(
         inject_learnings=settings.reflection.inject_learnings,
         max_learnings_injected=settings.reflection.max_learnings_injected,
         learning_token_budget=settings.reflection.learning_token_budget,
+        learning_index=learning_consolidation.lessons if learning_consolidation else None,
+        learning_entry_max_chars=settings.reflection.learning_entry_max_chars,
+        max_route_recoveries=settings.reflection.verified_promotion.max_route_recoveries,
+        route_excerpt_chars=settings.reflection.verified_promotion.excerpt_chars,
+        max_friction_signals=(
+            settings.reflection.friction.max_signals if settings.reflection.friction.enabled else 0
+        ),
         episode_summary_max_chars=settings.agent.episode_summary_max_chars,
         episode_task_max_chars=settings.agent.episode_task_max_chars,
         iteration_budget=iteration_budget,
         compressor=compressor,
+        native_compaction=native_compaction,
         prompt_builder=prompt_builder,
         reflection_model=settings.effective_memory_reflection_model(),
         reflection_max_tokens=settings.memory.reflection_max_tokens,
@@ -601,6 +621,7 @@ def _build_agent(
         persona_config=persona_config,
         stop_on_outcome=persona_config.stop_on_outcome if persona_config else False,
         max_prompt_tokens=settings.context_management.max_prompt_tokens,
+        compaction_target_tokens=settings.context_management.compaction_target_tokens,
         context_window_tokens=settings.context_management.context_window_tokens,
         token_estimate_safety_factor=settings.context_management.token_estimate_safety_factor,
         max_tool_result_chars=settings.tools.max_result_chars,
@@ -722,11 +743,18 @@ async def _run_with_signals(
         if _refl_mimir is not None:
             from ravn.adapters.reflection.post_session import PostSessionReflectionService
 
+            _refl_llm = _build_llm(settings)
+            _refl_consolidation = _build_learning_consolidation(settings, _refl_llm)
             reflection_svc = PostSessionReflectionService(
                 subscriber=in_process_bus,
                 mimir=_refl_mimir,
-                llm=_build_llm(settings),
+                llm=_refl_llm,
                 config=settings.effective_post_session_reflection_config(),
+                lessons=_refl_consolidation.lessons if _refl_consolidation else None,
+                judge=_refl_consolidation.judge if _refl_consolidation else None,
+                friction=_build_friction_ledger(
+                    settings, mimir=_refl_mimir, consolidation=_refl_consolidation
+                ),
             )
             await reflection_svc.start()
 
@@ -806,13 +834,7 @@ async def _load_checkpoint_session(
     # Reconstruct session from checkpoint messages.
     session = Session()
     for raw_msg in checkpoint.messages:
-        session.messages.append(
-            Message(
-                role=raw_msg["role"],
-                content=raw_msg["content"],
-                reasoning=raw_msg.get("reasoning", ""),
-            )
-        )
+        session.messages.append(Message.from_api_dict(raw_msg))
 
     # Restore todo list.
     for raw_todo in checkpoint.todos:
@@ -916,6 +938,7 @@ def tool_mcp(
     task_id: str = typer.Option("", "--task-id", hidden=True),
     traceparent: str = typer.Option("", "--traceparent", hidden=True),
     tracestate: str = typer.Option("", "--tracestate", hidden=True),
+    notification_channel: str = typer.Option("", "--notification-channel", hidden=True),
 ) -> None:
     """Serve the active Ravn ToolPort set over MCP stdio."""
     if config:
@@ -935,12 +958,18 @@ def tool_mcp(
             "ravn.runtime.component": "tool_mcp",
         },
     )
+    notification_outbox = None
     try:
         project_config = ProjectConfig.discover()
         ravn_profile = _require_profile(profile)
         effective_persona = persona or (ravn_profile.persona if ravn_profile else "")
         persona_config = _require_persona(effective_persona, project_config, settings=settings)
         tools = _build_tool_mcp_tools(settings, persona_config=persona_config)
+        notification_outbox = _tool_mcp_notification_outbox(settings, persona_config)
+        if notification_outbox is not None:
+            from ravn.adapters.tools.notify import ResidentNotifyTool
+
+            tools.append(ResidentNotifyTool(notification_outbox))
 
         from ravn.adapters.mcp.tool_port_server import ToolPortMcpServer
 
@@ -961,15 +990,55 @@ def tool_mcp(
         allowed_tools = _expand_allowed_tools(
             set(persona_config.allowed_tools or []) if persona_config is not None else set()
         )
+        build_tool_enabled = "build_tool" in allowed_tools
         _attach_agent_build_tool(
             server,
             _resolve_workspace(settings),
-            enabled="build_tool" in allowed_tools,
+            enabled=build_tool_enabled,
             settings=settings,
+            # Same lineage matching as a resident: with semantic lesson
+            # matching configured, a build is tied to the tool it repairs by
+            # meaning, not only by name.
+            capability_matcher=(
+                _build_capability_matcher(
+                    settings, _build_learning_consolidation(settings, _build_llm(settings))
+                )
+                if build_tool_enabled
+                and (
+                    settings.effective_post_session_reflection_config().matching.mode == "semantic"
+                    or settings.decision.capability_matching.enabled
+                )
+                else None
+            ),
         )
-        asyncio.run(server.run_stdio())
+        # What the agent notifies from this server names the channel its turn runs in;
+        # asyncio.run copies this context into the server's task.
+        channel_token = current_notification_channel.set(notification_channel or None)
+        try:
+            asyncio.run(server.run_stdio())
+        finally:
+            current_notification_channel.reset(channel_token)
     finally:
+        # Closed on every exit, including a failure while the server is built.
+        if notification_outbox is not None:
+            notification_outbox.close()
         shutdown_observability()
+
+
+def _tool_mcp_notification_outbox(settings: Settings, persona_config: Any | None) -> Any | None:
+    """The resident's outbox for the ``notify`` tool a CLI agent reaches over MCP.
+
+    A CLI-backed persona (Codex, Claude Code) runs its tools in this server, not in the
+    daemon, so it gets ``notify`` here on the same terms as the daemon's own agents:
+    wherever the outbox exists, unless disabled or forbidden. This process writes the
+    resident's outbox file directly; Forge reads it on its next pull.
+    """
+    from ravn.cli.daemon_runtime import _notify_tool_allowed
+    from ravn.cli.resident_runtime_wiring import build_resident_notification_outbox
+
+    if not _notify_tool_allowed(settings, persona_config):
+        return None
+    return build_resident_notification_outbox(settings)
 
 
 def _build_tool_mcp_tools(settings: Settings, *, persona_config: Any | None) -> list[Any]:
@@ -1074,7 +1143,6 @@ def inbox_migrate(
     before its original file is removed, so an interrupted run simply resumes.
     Reports counts so the operator can reconcile before and after.
     """
-    import asyncio  # noqa: PLC0415
 
     from ravn.resident_inbox import LocalResidentInbox  # noqa: PLC0415
 
@@ -1109,7 +1177,6 @@ def memory_backfill_embeddings(
     each batch commits before the next is fetched, so a run interrupted or
     refused partway can simply be run again.
     """
-    import asyncio  # noqa: PLC0415
 
     if config:
         os.environ["RAVN_CONFIG"] = config
@@ -1137,6 +1204,73 @@ def memory_backfill_embeddings(
     )
     typer.echo(f"embedded  : {embedded}")
     typer.echo(f"remaining : {remaining}")
+
+
+@app.command("learnings-curate")
+def learnings_curate(
+    config: str = typer.Option("", "--config", help="Path to the ravn config file."),
+) -> None:
+    """Run one learning-curation pass now, outside the dream schedule.
+
+    The same pass the consolidation dream runs: every lesson not yet curated has
+    its neighbourhood judged once, paraphrases fold into one lesson, and the
+    lesson is marked ``curated``. Useful to consolidate a backlog at once rather
+    than over the next dream, and safe to repeat — a second run only judges
+    lessons recorded since. Every change is recorded on a Mímir audit page.
+    """
+
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+    settings = Settings()
+    if not settings.reflection.curation.enabled:
+        typer.echo("reflection.curation.enabled is false; nothing to curate.", err=True)
+        raise typer.Exit(1)
+    mimir = _build_mimir(settings)
+    curator = _build_learning_curator(
+        settings,
+        mimir=mimir,
+        consolidation=_build_learning_consolidation(settings, _build_llm(settings)),
+    )
+    report = asyncio.run(curator.curate())
+    for key, value in report.summary().items():
+        shown = len(value) if isinstance(value, list) else value
+        typer.echo(f"{key:<21}: {shown}")
+
+
+@app.command("learned-tools-plan")
+def learned_tools_plan(
+    config: str = typer.Option("", "--config", help="Path to the ravn config file."),
+) -> None:
+    """Print what the next consolidation dream would retire from the learned tools.
+
+    Read-only: it computes the same plan the dream applies, with the same
+    lifecycle usage, capability judge and never-used window, and prints it as
+    JSON. Nothing is moved, archived or written; retirement happens only in
+    the dream, so the running resident's lifecycle registry stays the one
+    writer.
+    """
+
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+    settings = Settings()
+    workspace = _resolve_workspace(settings)
+    consolidation = _build_learning_consolidation(settings, _build_llm(settings))
+    from ravn.valkyrie_evolution.tool_curation import LifecycleSnapshot  # noqa: PLC0415
+
+    curator = _build_learned_tool_curator(
+        settings,
+        workspace=workspace,
+        skills=LifecycleSnapshot(
+            _resident_ravn_state_dir(workspace, settings) / "skill_management.json"
+        ),
+        matcher=_build_capability_matcher(settings, consolidation),
+        persist=False,
+    )
+    if curator is None:
+        typer.echo("resident_evolution.tool_curation.enabled is false; nothing to plan.", err=True)
+        raise typer.Exit(1)
+    plan = asyncio.run(curator.plan())
+    typer.echo(json.dumps(plan.to_dict(), indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -1354,11 +1488,18 @@ def gateway(
 def _make_channel_tasks(
     channels_cfg: Any,
     gw: Any,
+    *,
+    notifications: Any | None = None,
+    voice_factory: Any | None = None,
 ) -> list[tuple[Any, str]]:
     """Create asyncio tasks for the extended gateway channel adapters.
 
     Returns a list of ``(task, name)`` pairs so callers can populate both
     a task list and a display list without duplicating the if-chain.
+    ``notifications`` is the resident notification outbox the OpenClaw shim
+    serves to Forge (``build_resident_notification_outbox``). ``voice_factory``
+    builds the voice channel for the runtime's persona
+    (``ravn.cli.voice_wiring.build_voice_gateway``).
     """
     from ravn.adapters.channels.gateway_discord import DiscordGateway
     from ravn.adapters.channels.gateway_matrix import MatrixGateway
@@ -1369,7 +1510,8 @@ def _make_channel_tasks(
     pairs: list[tuple[Any, str]] = []
     if getattr(channels_cfg, "openclaw", None) is not None and channels_cfg.openclaw.enabled:
         task = asyncio.create_task(
-            OpenClawGateway(channels_cfg.openclaw, gw).run(), name="openclaw"
+            OpenClawGateway(channels_cfg.openclaw, gw, notifications=notifications).run(),
+            name="openclaw",
         )
         pairs.append((task, "openclaw"))
     if channels_cfg.discord.enabled:
@@ -1386,6 +1528,14 @@ def _make_channel_tasks(
             WhatsAppGateway(channels_cfg.whatsapp, gw).run(), name="whatsapp"
         )
         pairs.append((task, "whatsapp"))
+    voice_cfg = getattr(channels_cfg, "voice", None)
+    if voice_cfg is not None and voice_cfg.enabled:
+        if voice_factory is None:
+            raise RuntimeError(
+                "gateway.channels.voice is enabled but this runtime builds no voice channel"
+            )
+        task = asyncio.create_task(voice_factory().run(), name="voice")
+        pairs.append((task, "voice"))
     return pairs
 
 
@@ -1421,7 +1571,9 @@ async def _run_gateway(
     cli_transport_executor = _uses_cli_transport_executor(persona_config)
     llm = None if cli_transport_executor else _build_llm(settings)
     memory = _build_memory(settings, llm=llm)
-    compressor = None if cli_transport_executor else _build_compressor(settings, llm)
+    compressor, native_compaction = (
+        (None, None) if cli_transport_executor else _build_compaction(settings, llm, resolved_model)
+    )
     prompt_builder = _build_prompt_builder(settings)
     pre_hooks, post_hooks = _build_hooks(settings)
 
@@ -1494,6 +1646,7 @@ async def _run_gateway(
             episode_task_max_chars=settings.agent.episode_task_max_chars,
             iteration_budget=budget,
             compressor=compressor,
+            native_compaction=native_compaction,
             prompt_builder=prompt_builder,
             reflection_model=settings.effective_memory_reflection_model(),
             reflection_max_tokens=settings.memory.reflection_max_tokens,
@@ -1519,7 +1672,12 @@ async def _run_gateway(
         ht = HttpGateway(settings.gateway.channels.http, gw)
         tasks.append(asyncio.create_task(ht.run(), name="http"))
 
-    for task, _ in _make_channel_tasks(settings.gateway.channels, gw):
+    def _voice_factory() -> Any:
+        from ravn.cli.voice_wiring import build_voice_gateway
+
+        return build_voice_gateway(settings, persona_config)
+
+    for task, _ in _make_channel_tasks(settings.gateway.channels, gw, voice_factory=_voice_factory):
         tasks.append(task)
 
     typer.echo(f"Gateway started ({len(tasks)} channel(s) active). Press Ctrl+C to stop.")
@@ -1694,6 +1852,7 @@ _RESIDENT_RUNTIME_WIRING_NAMES = frozenset(
         "_build_resident_learning_runtime",
         "_build_realm_capability_sync",
         "_build_resident_wakefulness",
+        "_build_learned_tool_curator",
         "_build_odin_court",
         "_run_odin_court_sweep",
         "_build_feedback_recorder",
@@ -1722,6 +1881,9 @@ _build_realm_capability_sync = _runtime_wrapper(
 )
 _build_resident_wakefulness = _runtime_wrapper(
     _resident_runtime_wiring, "_build_resident_wakefulness", _RESIDENT_RUNTIME_WIRING_NAMES
+)
+_build_learned_tool_curator = _runtime_wrapper(
+    _resident_runtime_wiring, "_build_learned_tool_curator", _RESIDENT_RUNTIME_WIRING_NAMES
 )
 _build_odin_court = _runtime_wrapper(
     _resident_runtime_wiring, "_build_odin_court", _RESIDENT_RUNTIME_WIRING_NAMES

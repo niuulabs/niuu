@@ -13,6 +13,7 @@ import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient as _TestClient
 
+from niuu.domain.discovered_residents import discovered_resident_id
 from ravn.api import create_app
 from ravn.api.valkyrie_config import (
     ValkyrieDashboardConfig,
@@ -32,7 +33,9 @@ from ravn.api.valkyries import (
     create_valkyrie_router,
 )
 from ravn.api.warden_stream import WardenStreamBroker
+from ravn.cap_telemetry import degraded_counts, reset_cap_hits
 from ravn.config import ValkyrieTelemetryConfig
+from ravn.ports.resident_logs import ResidentLogSourceError
 from ravn.ports.warden_deployer import (
     WardenDeploymentError,
     WardenDeploymentResult,
@@ -42,6 +45,7 @@ from ravn.warden import WardenSpec, WardenStore
 from ravn.warden.artifacts import service_label, start_command, write_runtime_config
 from ravn.warden.models import WardenObservation, WardenSupervisor
 from sleipnir.domain.events import SleipnirEvent
+from sleipnir.ports.events import StreamNotFoundError
 
 
 def TestClient(app, **kwargs):  # noqa: N802 — test client factory
@@ -220,7 +224,9 @@ def test_status_endpoint_reports_live_counts(client: TestClient):
     assert resp.json() == {
         "service": "ravn",
         "session_count": 1,
-        "fleet_member_count": 0,
+        # No managed or discovered residents; the one fleet member is the
+        # catalog Valkyrie (Sigrun) from the client fixture's environment catalog.
+        "fleet_member_count": 1,
         "healthy": True,
     }
 
@@ -2193,6 +2199,92 @@ def test_valkyrie_dashboard_telemetry_subscription_starts_streams_concurrently()
     asyncio.run(start_and_check())
 
 
+class _FakeTelemetrySubscription:
+    def __init__(self) -> None:
+        self.unsubscribed = False
+
+    async def unsubscribe(self) -> None:
+        self.unsubscribed = True
+
+
+class _ScriptedTelemetrySubscriber:
+    """A telemetry subscriber whose subscribe calls fail in a scripted order."""
+
+    def __init__(self, *failures: BaseException | None) -> None:
+        self._failures = list(failures)
+        self.attempts = 0
+        self.stopped = False
+        self.subscription = _FakeTelemetrySubscription()
+
+    async def start(self) -> None:
+        return None
+
+    async def subscribe(self, event_types, handler):
+        del event_types, handler
+        self.attempts += 1
+        failure = self._failures.pop(0) if self._failures else None
+        if failure is not None:
+            raise failure
+        return self.subscription
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+
+def _telemetry_subscription(*subscribers) -> ValkyrieTelemetrySubscription:
+    return ValkyrieTelemetrySubscription(
+        projection=ValkyrieDashboardProjection(),
+        subscribers=list(subscribers),
+        event_types=["*"],
+        startup_delay_seconds=0,
+        subscriber_start_timeout_seconds=1,
+        retry_interval_seconds=30,
+    )
+
+
+def test_valkyrie_dashboard_does_not_start_when_a_configured_stream_is_missing():
+    present = _ScriptedTelemetrySubscriber()
+    missing = _ScriptedTelemetrySubscriber(StreamNotFoundError("stream gone"))
+    subscription = _telemetry_subscription(
+        ("obs-valaskjalf-events/obs.valaskjalf", present),
+        ("obs-vanaheim-events/obs.vanaheim", missing),
+    )
+
+    with pytest.raises(StreamNotFoundError) as raised:
+        asyncio.run(subscription.start())
+
+    message = str(raised.value)
+    assert "obs-vanaheim-events/obs.vanaheim is configured but does not exist" in message
+    assert "valkyrie.telemetry.nats_streams" in message
+    assert present.subscription.unsubscribed
+    assert present.stopped and missing.stopped
+
+
+def test_valkyrie_dashboard_reports_a_stream_found_missing_on_retry():
+    reset_cap_hits()
+    flaky = _ScriptedTelemetrySubscriber(
+        ConnectionError("hub unreachable"),
+        StreamNotFoundError("stream gone"),
+        None,
+    )
+    subscription = _telemetry_subscription(("obs-vanaheim-events/obs.vanaheim", flaky))
+
+    subscription._retry_interval_seconds = 0
+
+    async def run() -> None:
+        await subscription.start()
+        assert flaky.attempts == 1
+        assert subscription._retry_task is not None
+        await subscription._retry_task
+        assert degraded_counts() == {"valkyrie_dashboard.telemetry_stream": 1}
+        assert flaky.attempts == 3
+        await subscription.stop()
+
+    asyncio.run(run())
+
+    assert flaky.subscription.unsubscribed
+
+
 def test_valkyrie_dashboard_mutations(client: TestClient):
     autonomy = client.post(
         "/api/v1/ravn/valkyrie/autonomy",
@@ -3160,3 +3252,225 @@ def test_workshop_inventory_and_telemetry_share_environment_id(monkeypatch):
     assert dashboard["environments"][0]["identitySource"] == "observed"
     assert dashboard["valkyries"][0]["environmentId"] == env_id
     assert dashboard["telemetry"]["runtime"][0]["environmentId"] == env_id
+
+
+@respx.mock
+@pytest.mark.parametrize("status", [401, 403])
+def test_resident_list_answers_the_platforms_refusal_of_the_caller(client: TestClient, status):
+    """A credential the platform Forge refuses is the caller's answer, never a 500.
+
+    Ymir's Observatory polled this with a site principal that has no local tenant
+    membership; the Forge's 401 surfaced as an unhandled 500 for weeks.
+    """
+    respx.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+        return_value=httpx.Response(status, json={"detail": "Local tenant membership is required"})
+    )
+
+    resp = client.get("/api/v1/ravn/ravens")
+
+    assert resp.status_code == status
+    assert resp.json() == {"detail": "Local tenant membership is required"}
+
+
+@respx.mock
+def test_resident_list_reports_a_platform_failure_as_a_bad_gateway(client: TestClient):
+    respx.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+        return_value=httpx.Response(500, text="boom")
+    )
+
+    resp = client.get("/api/v1/ravn/ravens")
+
+    assert resp.status_code == 502
+    assert resp.json() == {
+        "detail": "platform answered HTTP 500 for /api/v1/forge/resident-runtimes"
+    }
+
+
+@respx.mock
+def test_system_resident_list_serves_a_caller_the_platform_would_refuse(client: TestClient):
+    """Ymir's Observatory site identity has no tenant membership, so the Forge
+    refuses it; the shared system list never asks the Forge and still answers."""
+    forge = respx.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+        return_value=httpx.Response(401, json={"detail": "Local tenant membership is required"})
+    )
+
+    resp = client.get("/api/v1/ravn/ravens", params={"visibility": "system"})
+
+    assert resp.status_code == 200
+    assert [r["resident_name"] for r in resp.json()] == ["Sigrun"]
+    assert not forge.called
+
+
+def test_resident_list_rejects_an_unknown_visibility(client: TestClient):
+    resp = client.get("/api/v1/ravn/ravens", params={"visibility": "everyone"})
+
+    assert resp.status_code == 422
+
+
+class _FakeResidentLogs:
+    def __init__(self, failure: Exception | None = None) -> None:
+        self.failure = failure
+        self.placements: list[object] = []
+
+    async def read_logs(self, placement, *, lines, sources, min_level):
+        if self.failure is not None:
+            raise self.failure
+        self.placements.append(placement)
+        return {"entries": [{"timestampMs": 1, "message": "ready"}], "bufferTotal": 1}
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _placed_client(monkeypatch, logs: _FakeResidentLogs | None) -> TestClient:
+    catalog = json.loads(_valkyrie_catalog())
+    catalog["environments"][0]["valkyrie"]["placement"] = {
+        "cluster": "valhalla",
+        "namespace": "nats",
+        "workload": "valkyrie-valhalla-k8s",
+    }
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", json.dumps(catalog))
+    return TestClient(create_app(resident_logs=logs))
+
+
+@respx.mock
+def test_a_catalog_valkyries_logs_are_read_by_its_placement(monkeypatch):
+    """A Valkyrie is no Forge runtime; its id never reaches the Forge, which
+    would reject it as a malformed UUID."""
+    forge = respx.route(url__startswith="http://localhost:8080/api/v1/forge/")
+    logs = _FakeResidentLogs()
+
+    resp = _placed_client(monkeypatch, logs).get(
+        "/api/v1/ravn/ravens/valkyrie-valhalla-k8s/logs", params={"lines": 5}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["bufferTotal"] == 1
+    assert [p.cluster for p in logs.placements] == ["valhalla"]
+    assert not forge.called
+
+
+_VALHALLA_RECORD = str(discovered_resident_id("valkyrie-valhalla-k8s"))
+_FORGE_RUNTIMES = "http://localhost:8080/api/v1/forge/resident-runtimes"
+
+
+@respx.mock
+def test_a_catalog_valkyrie_never_reaches_the_forge_by_its_catalog_id(monkeypatch):
+    """Only the record the Forge would keep for it, by its derived UUID, is asked for."""
+    by_catalog_id = respx.route(url__startswith=f"{_FORGE_RUNTIMES}/valkyrie-valhalla-k8s")
+    respx.get(f"{_FORGE_RUNTIMES}/{_VALHALLA_RECORD}").mock(return_value=httpx.Response(404))
+    client = _placed_client(monkeypatch, None)
+
+    detail = client.get("/api/v1/ravn/ravens/valkyrie-valhalla-k8s")
+    sessions = client.get("/api/v1/ravn/ravens/valkyrie-valhalla-k8s/sessions")
+    created = client.post("/api/v1/ravn/ravens/valkyrie-valhalla-k8s/sessions", json={"title": "x"})
+
+    assert detail.status_code == 200
+    assert detail.json()["cluster"] == "valhalla"
+    assert detail.json()["capabilities"] == []
+    assert sessions.status_code == 200
+    assert sessions.json() == []
+    assert created.status_code == 409
+    assert "has not discovered it" in created.json()["detail"]
+    assert not by_catalog_id.called
+
+
+def _discovered_record() -> dict:
+    return {
+        "id": _VALHALLA_RECORD,
+        "name": "Sigrun",
+        "backend": "discovered",
+        "engine": "ravn",
+        "backendRef": {"key": "valkyrie-valhalla-k8s"},
+        "capabilities": ["chat", "session.list", "session.create", "session.delete"],
+        "observedState": "active",
+    }
+
+
+@respx.mock
+def test_a_discovered_valkyrie_opens_channels_through_its_forge_record(monkeypatch):
+    respx.get(_FORGE_RUNTIMES).mock(return_value=httpx.Response(200, json=[_discovered_record()]))
+    respx.get(f"{_FORGE_RUNTIMES}/{_VALHALLA_RECORD}").mock(
+        return_value=httpx.Response(200, json=_discovered_record())
+    )
+    native = {"id": "11111111-2222-4333-8444-555555555555", "title": "Triage", "status": "idle"}
+    listed = respx.get(f"{_FORGE_RUNTIMES}/{_VALHALLA_RECORD}/sessions").mock(
+        return_value=httpx.Response(200, json=[native])
+    )
+    created = respx.post(f"{_FORGE_RUNTIMES}/{_VALHALLA_RECORD}/sessions").mock(
+        return_value=httpx.Response(201, json=native)
+    )
+    deleted = respx.delete(f"{_FORGE_RUNTIMES}/{_VALHALLA_RECORD}/sessions/{native['id']}").mock(
+        return_value=httpx.Response(204)
+    )
+    client = _placed_client(monkeypatch, None)
+
+    ravens = client.get("/api/v1/ravn/ravens").json()
+    sessions = client.get("/api/v1/ravn/ravens/valkyrie-valhalla-k8s/sessions").json()
+    new = client.post("/api/v1/ravn/ravens/valkyrie-valhalla-k8s/sessions", json={"title": "x"})
+    gone = client.delete(f"/api/v1/ravn/ravens/valkyrie-valhalla-k8s/sessions/{native['id']}")
+
+    assert [raven["id"] for raven in ravens] == ["valkyrie-valhalla-k8s"]
+    assert {"session.list", "session.create", "session.delete"} <= set(ravens[0]["capabilities"])
+    assert [session["id"] for session in sessions] == [native["id"]]
+    assert sessions[0]["ravn_id"] == "valkyrie-valhalla-k8s"
+    assert sessions[0]["chat_endpoint"] == (
+        f"/s/{_VALHALLA_RECORD}/sessions/{native['id']}/session"
+    )
+    assert new.status_code == 201
+    assert new.json()["chat_endpoint"].startswith(f"/s/{_VALHALLA_RECORD}/")
+    assert gone.status_code == 204
+    assert listed.called and created.called and deleted.called
+
+
+@pytest.mark.parametrize(
+    ("logs", "ravn_id", "status", "detail"),
+    [
+        (None, "valkyrie-valhalla-k8s", 409, "resident_logs.adapter"),
+        (_FakeResidentLogs(), "nobody", 404, "no resident 'nobody'"),
+        (
+            _FakeResidentLogs(ResidentLogSourceError("Loki down")),
+            "valkyrie-valhalla-k8s",
+            502,
+            "Loki",
+        ),
+        (_FakeResidentLogs(ValueError("min_level 'x'")), "valkyrie-valhalla-k8s", 422, "min_level"),
+    ],
+)
+def test_resident_logs_answer_each_failure_with_its_own_status(
+    monkeypatch, logs, ravn_id, status, detail
+):
+    resp = _placed_client(monkeypatch, logs).get(f"/api/v1/ravn/ravens/{ravn_id}/logs")
+
+    assert resp.status_code == status
+    assert detail in resp.json()["detail"]
+
+
+@respx.mock
+def test_the_configured_loki_adapter_serves_resident_logs(monkeypatch):
+    from ravn.config import Settings
+
+    loki = respx.get("https://loki.test/valhalla/loki/api/v1/query_range").mock(
+        return_value=httpx.Response(200, json={"data": {"result": []}})
+    )
+    catalog = json.loads(_valkyrie_catalog())
+    catalog["environments"][0]["valkyrie"]["placement"] = {
+        "cluster": "valhalla",
+        "namespace": "nats",
+        "workload": "valkyrie-valhalla-k8s",
+    }
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", json.dumps(catalog))
+    settings = Settings(
+        resident_logs={
+            "adapter": "ravn.adapters.resident_logs.loki.LokiResidentLogAdapter",
+            "base_url": "https://loki.test",
+        }
+    )
+
+    resp = TestClient(create_app(settings=settings)).get(
+        "/api/v1/ravn/ravens/valkyrie-valhalla-k8s/logs"
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"entries": [], "bufferTotal": 0}
+    assert loki.called

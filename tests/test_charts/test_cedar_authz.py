@@ -255,6 +255,59 @@ def test_ting_scope_is_bound_to_launch_route(path, allowed):
     assert app["readinessProbe"]["httpGet"]["port"] == 8443
 
 
+@pytest.mark.parametrize(
+    "method,path,admitted",
+    [
+        ("GET", "/.well-known/agent-card.json", True),
+        ("HEAD", "/.well-known/agent-card.json", True),
+        ("POST", "/.well-known/agent-card.json", False),
+        ("POST", "/api/v1/ting/a2a", True),
+    ],
+)
+def test_ting_gateway_admits_its_a2a_card_and_endpoint(method, path, admitted):
+    """The gateway denies every unlisted route; A2A clients must reach Ting's card."""
+    docs = render_cedar(chart=CHART.parent / "ting")
+    config = next(
+        yaml.safe_load(d["data"]["authz.yaml"])
+        for d in docs
+        if d["kind"] == "ConfigMap" and "authz.yaml" in d["data"]
+    )
+    routes = AuthorizationGatewayConfig.model_validate(config).routes
+    assert any(method in route.methods and route.matches(path) for route in routes) is admitted
+
+
+def test_ting_a2a_endpoint_admits_launch_scoped_tokens():
+    """build_tool sends A2A messages with a ting:workflow:launch scoped token.
+
+    The gateway-scoped-credential policy refuses a scoped token on any route
+    whose required_scope is empty, so the A2A endpoint must carry the launch
+    scope itself rather than fall through to the /api/v1/ting prefix.
+    """
+    docs = render_cedar(chart=CHART.parent / "ting")
+    config = next(
+        yaml.safe_load(d["data"]["authz.yaml"])
+        for d in docs
+        if d["kind"] == "ConfigMap" and "authz.yaml" in d["data"]
+    )
+    routes = AuthorizationGatewayConfig.model_validate(config).routes
+    route = next(r for r in routes if "POST" in r.methods and r.matches("/api/v1/ting/a2a"))
+    assert route.required_scope == "ting:workflow:launch"
+
+
+def test_ting_agent_card_bypasses_jwt_validation():
+    """A2A discovery occurs before a caller has a platform credential."""
+    envoy = envoy_config(render_cedar(chart=CHART.parent / "ting"))
+    filters = envoy["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0][
+        "typed_config"
+    ]["http_filters"]
+    jwt_authn = next(
+        filter_ for filter_ in filters if filter_["name"] == "envoy.filters.http.jwt_authn"
+    )
+    rules = jwt_authn["typed_config"]["rules"]
+
+    assert {"match": {"prefix": "/.well-known/agent-card.json"}} in rules
+
+
 @pytest.mark.parametrize("path,prefix", [("/api/{id}/launch", True), ("/api/item-{id}", False)])
 def test_ambiguous_route_templates_rejected(path, prefix):
     from identity.authz_config import GatewayRoute

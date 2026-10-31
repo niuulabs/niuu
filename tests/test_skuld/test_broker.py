@@ -34,7 +34,6 @@ from skuld.broker import (
     send_message_to_session,
 )
 from skuld.config import SkuldSettings
-from skuld.event_log import EventLogRejectedError
 from skuld.transports import (
     CodexSubprocessTransport,
     SDKTransport,
@@ -864,6 +863,33 @@ class TestBroker:
 
         first_publish.assert_awaited_once()
         restarted_publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("marker", ["not valid JSON", "directory"])
+    async def test_unreadable_workflow_acknowledgment_does_not_repeat_kickoff(
+        self, tmp_path, marker
+    ):
+        settings = SkuldSettings(
+            session={"id": "wf-unreadable", "workspace_dir": str(tmp_path)},
+            workflow_trigger={
+                "enabled": True,
+                "node_id": "trigger-1",
+                "event_type": "code.requested",
+            },
+        )
+        broker = Broker(settings=settings)
+        marker_path = tmp_path / ".skuld" / "workflow_kickoff_wf-unreadable.json"
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        if marker == "directory":
+            marker_path.mkdir()
+            expected = OSError
+        else:
+            marker_path.write_text(marker)
+            expected = ValueError
+        with patch.object(broker, "_publish_workflow_trigger", new=AsyncMock()) as publish:
+            with pytest.raises(expected):
+                await broker._run_workflow_trigger_task()
+        publish.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_restored_terminal_outcome_skips_workflow_prompt_and_kickoff(self, tmp_path):
@@ -1791,6 +1817,46 @@ class TestBroker:
         )
 
     @pytest.mark.asyncio
+    async def test_peer_error_failure_names_the_failing_workflow_node(self, test_broker):
+        """A peer that dies during setup reports its node, so Ting can fail that stage."""
+        test_broker._room_bridge = MagicMock()
+        test_broker._room_bridge.participants = {}
+        test_broker._report_activity_state = AsyncMock(return_value=True)
+        test_broker._finish_trace_span = AsyncMock()
+        test_broker._is_room_only_workflow_session = MagicMock(return_value=True)
+
+        error = (
+            "RuntimeError: Persona requires durable workflow execution tools, but an "
+            "owner-bound workflow_execution runtime context is not configured"
+        )
+        await test_broker._observe_room_peer_event(
+            "flock-kvm-research-coordinator",
+            "error",
+            {
+                "task_id": "event_research_coordinate_fe4ae2efb1c879c7",
+                "data": error,
+                "metadata": {
+                    "workflow_node_id": "research-coordinate",
+                    "persona": "kvm-research-coordinator",
+                    "failure_kind": "RuntimeError",
+                },
+            },
+        )
+
+        test_broker._report_activity_state.assert_awaited_once_with(
+            "error",
+            extra_metadata={
+                "failure_source": "ravn_flock",
+                "failure_peer_id": "flock-kvm-research-coordinator",
+                "failure_persona": "kvm-research-coordinator",
+                "error": error,
+                "failure_workflow_node_id": "research-coordinate",
+                "failure_kind": "RuntimeError",
+                "failure_task_id": "event_research_coordinate_fe4ae2efb1c879c7",
+            },
+        )
+
+    @pytest.mark.asyncio
     async def test_peer_git_checkpoint_signals_increment_artifacts(self, test_broker):
         test_broker._room_bridge = MagicMock()
 
@@ -1989,7 +2055,29 @@ class TestBroker:
         test_broker._emit_pipeline_event.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_routing_only_peer_outcome_can_activate_native_workflow_gate(self, tmp_path):
+    @pytest.mark.parametrize(
+        ("explanation_fields", "expected_explanation"),
+        [
+            (
+                {"reason": "The requirements have been reconciled."},
+                "The requirements have been reconciled.",
+            ),
+            (
+                {"rationale": "The requirements have been reconciled."},
+                "The requirements have been reconciled.",
+            ),
+            (
+                {
+                    "reason": "The requirements have been reconciled.",
+                    "rationale": "This fallback must not be shown.",
+                },
+                "The requirements have been reconciled.",
+            ),
+        ],
+    )
+    async def test_routing_only_peer_outcome_can_activate_native_workflow_gate(
+        self, tmp_path, explanation_fields, expected_explanation
+    ):
         settings = SkuldSettings(
             session={"id": "sess-gate-1", "workspace_dir": str(tmp_path)},
             workflow={
@@ -2033,6 +2121,7 @@ class TestBroker:
         broker_under_test._room_bridge.participants = {
             "flock-reviewer": MagicMock(persona="reviewer")
         }
+        broker_under_test._room_bridge.tell_joined_sessions = AsyncMock()
         broker_under_test._emit_pipeline_event = AsyncMock()
         broker_under_test._emit_workflow_gate_help_needed_sleipnir_event = AsyncMock()
         broker_under_test._report_activity_state = AsyncMock()
@@ -2051,6 +2140,7 @@ class TestBroker:
                     "fields": {
                         "verdict": "ready_for_gate",
                         "summary": "PRD is ready for approval.",
+                        **explanation_fields,
                     },
                 },
             },
@@ -2062,6 +2152,7 @@ class TestBroker:
         assert gates[0]["status"] == "pending"
         assert gates[0]["pending_behavior"] == "help_needed"
         assert gates[0]["triggered_by_event_type"] == "spec.prd.ready_for_gate"
+        assert gates[0]["summary"] == f"PRD is ready for approval. — {expected_explanation}"
         broker_under_test._emit_workflow_gate_help_needed_sleipnir_event.assert_awaited_once()
         broker_under_test._report_activity_state.assert_awaited_once()
         pending_events = [
@@ -5218,14 +5309,18 @@ class TestShutdownEdgeCases:
                 await test_broker.shutdown()
 
     @pytest.mark.asyncio
-    async def test_startup_with_unreachable_volundr_fails_loudly(self, test_broker):
-        """A configured durable log that cannot start is fatal, not degraded.
+    async def test_startup_with_unreachable_volundr_starts_and_keeps_retrying(self, test_broker):
+        """An unreachable Volundr is retryable: exiting would only crash-loop the pod.
 
-        volundr_api_url names a backend that must hold the transcript; booting
-        without it would silently record nothing.
+        The broker starts and asks for the durable head in the background; until it
+        has it, nothing is flushed, so no output is written at a guessed seq.
         """
-        with pytest.raises(EventLogRejectedError):
-            await test_broker.startup()
+        await test_broker.startup()
+        try:
+            assert test_broker._event_log_task is not None
+            assert not test_broker._event_log_head_known
+        finally:
+            await test_broker.shutdown()
 
     @pytest.mark.asyncio
     async def test_startup_without_event_log_succeeds(self, tmp_path):
@@ -6538,26 +6633,26 @@ class TestBrokerRoomAdapter:
         assert b._room_bridge is None
 
     @pytest.mark.asyncio
-    async def test_join_heartbeat_leave_human_environment(self, room_settings):
+    async def test_join_heartbeat_leave_environment(self, room_settings):
         bus = InProcessBus()
         captured = EventCapture(bus, ["participant.*"])
         await captured.start()
         b = Broker(settings=room_settings, sleipnir_publisher=bus)
 
-        joined = await b.join_human_environment(
+        joined = await b.join_environment(
             participant_id="human:jozef",
             display_name="Jozef",
             environment_id="cluster-a",
             role="owner",
             room_id="huddle-1",
         )
-        heartbeat = await b.heartbeat_human_environment(
+        heartbeat = await b.heartbeat_environment(
             participant_id="human:jozef",
             status="busy",
             wakefulness="wakeful",
             attention_state="reviewing",
         )
-        await b.leave_human_environment(participant_id="human:jozef", reason="done")
+        await b.leave_environment(participant_id="human:jozef", reason="done")
         await bus.flush()
 
         assert joined["participant_type"] == "human"
@@ -6573,13 +6668,13 @@ class TestBrokerRoomAdapter:
         await captured.stop()
 
     @pytest.mark.asyncio
-    async def test_join_human_environment_binds_capabilities_to_environment_authorities(
+    async def test_join_environment_binds_capabilities_to_environment_authorities(
         self,
         room_settings,
     ):
         b = Broker(settings=room_settings)
 
-        joined = await b.join_human_environment(
+        joined = await b.join_environment(
             participant_id="human:approver",
             display_name="Approver",
             environment_id="cluster-a",
@@ -6597,7 +6692,7 @@ class TestBrokerRoomAdapter:
         b._transport = AsyncMock()
         broadcast = AsyncMock()
         b._channels.broadcast = broadcast
-        await b.join_human_environment(
+        await b.join_environment(
             participant_id="human:teacher",
             display_name="Teacher",
             environment_id="cluster-a",
@@ -6625,7 +6720,7 @@ class TestBrokerRoomAdapter:
     async def test_directed_room_message_preserves_metadata_to_target(self, room_settings):
         b = Broker(settings=room_settings)
         b._transport = AsyncMock()
-        await b.join_human_environment(
+        await b.join_environment(
             participant_id="human:approver",
             display_name="Approver",
             environment_id="cluster-a",
@@ -6658,7 +6753,7 @@ class TestBrokerRoomAdapter:
     @pytest.mark.asyncio
     async def test_room_capability_check_rejects_unauthorized_control(self, room_settings):
         b = Broker(settings=room_settings)
-        await b.join_human_environment(
+        await b.join_environment(
             participant_id="human:observer",
             display_name="Observer",
             environment_id="cluster-a",
@@ -6682,7 +6777,7 @@ class TestBrokerRoomAdapter:
         recorder = EnvironmentFeedbackRecorder(subscriber=bus, publisher=bus, memory=memory)
         await recorder.start()
         b = Broker(settings=room_settings, sleipnir_publisher=bus)
-        await b.join_human_environment(
+        await b.join_environment(
             participant_id="human:owner",
             display_name="Owner",
             environment_id="cluster-a",

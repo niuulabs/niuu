@@ -411,7 +411,7 @@ async def test_reap_dead_teammates_noop_without_live_pane_transport() -> None:
 @pytest.mark.asyncio
 async def test_get_plan_and_get_agents_endpoints(monkeypatch) -> None:
     """The /api/plan and /api/agents endpoints answer from live broker state."""
-    import skuld.broker as broker_mod
+    from skuld import broker as broker_mod
 
     fresh = broker_mod.Broker()
     monkeypatch.setattr(broker_mod, "broker", fresh)
@@ -468,7 +468,7 @@ def _usage_line(message_id: str, *, inp: int = 0, out: int = 0, read: int = 0, c
 async def _wire_broker_to_transport(tmp_path, monkeypatch):
     """A fresh Broker + real tmux transport, with agent_update frames forwarded as they
     would be by the live event bus. Returns (broker_mod, broker, transport)."""
-    import skuld.broker as broker_mod
+    from skuld import broker as broker_mod
     from skuld.transports.tmux_interactive import TmuxInteractiveTransport
 
     fresh = broker_mod.Broker()
@@ -643,7 +643,7 @@ def test_agents_endpoint_include_finished_query_flag(monkeypatch) -> None:
     `?include_finished=1` is what appends the retained corpses."""
     from fastapi.testclient import TestClient
 
-    import skuld.broker as broker_mod
+    from skuld import broker as broker_mod
 
     fresh = broker_mod.Broker()
     monkeypatch.setattr(broker_mod, "broker", fresh)

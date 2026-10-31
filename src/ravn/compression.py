@@ -59,14 +59,13 @@ log, expose via events, or surface to the user.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 
 from ravn.budget import TokenEstimator
+from ravn.cap_telemetry import require_complete
+from ravn.domain.exceptions import ContextCompressionError, LLMError
 from ravn.domain.models import LLMResponse, Message, TodoItem
 from ravn.ports.llm import LLMPort
-
-logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # LLM prompt constants
@@ -98,18 +97,6 @@ _MEMORY_ANCHOR_TEMPLATE = (
 
 _COMPACTED_PLACEHOLDER = "[Compacted context]\n\n{document}"
 
-_FALLBACK_DOCUMENT = (
-    "## Active task\n"
-    "Unknown\n\n"
-    "## Decisions made\n"
-    "- [summary unavailable]\n\n"
-    "## Errors encountered\n"
-    "- None\n\n"
-    "## Actions completed\n"
-    "- None\n\n"
-    "## Open questions\n"
-    "- None"
-)
 
 # ---------------------------------------------------------------------------
 # Result dataclass
@@ -150,7 +137,8 @@ class ContextCompressor:
     model:
         Model identifier used for generating compaction documents.
     max_tokens:
-        Max tokens for compaction document generation (default 1024).
+        Answer cap for the compaction document; ``None`` (the default) sends
+        none. A document that reaches it raises ``ContextCompressionError``.
     protect_first:
         Number of messages at the start of history to preserve unchanged.
     protect_last:
@@ -162,7 +150,9 @@ class ContextCompressor:
         Configured context-window size. Zero means unknown.
     output_reserve:
         Tokens reserved for model output when deriving a prompt budget from
-        ``context_window``.
+        ``context_window``. ``None`` means the answer is uncapped, so the window
+        says nothing about the prompt's share and only an explicit
+        ``prompt_budget_tokens`` triggers compaction.
     """
 
     def __init__(
@@ -170,12 +160,12 @@ class ContextCompressor:
         llm: LLMPort,
         *,
         model: str,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
         protect_first: int = 2,
         protect_last: int = 6,
         compression_threshold: float = 0.8,
         context_window: int = 0,
-        output_reserve: int = 0,
+        output_reserve: int | None = 0,
         token_estimate_safety_factor: float = 1.0,
     ) -> None:
         self._llm = llm
@@ -185,7 +175,7 @@ class ContextCompressor:
         self._protect_last = protect_last
         self._threshold = compression_threshold
         self._context_window = max(0, context_window)
-        self._output_reserve = max(0, output_reserve)
+        self._output_reserve = None if output_reserve is None else max(0, output_reserve)
         self._token_estimate_safety_factor = max(1.0, token_estimate_safety_factor)
 
     # ------------------------------------------------------------------
@@ -231,7 +221,11 @@ class ContextCompressor:
         list is returned unchanged.
         """
         original_count = len(messages)
-        configured_budget = max(0, self._context_window - self._output_reserve)
+        configured_budget = (
+            max(0, self._context_window - self._output_reserve)
+            if self._output_reserve is not None
+            else 0
+        )
         budget = prompt_budget_tokens or configured_budget
         if budget <= 0:
             return messages, CompressionResult(
@@ -299,6 +293,15 @@ class ContextCompressor:
 
         middle_start = protect_first
         middle_end = total - protect_last if protect_last > 0 else total
+        # A tool call and its result must stay on the same side of the cut.
+        # Protecting the first two messages of a turn kept the assistant's tool
+        # calls while their results were summarised away, and the ChatGPT
+        # Responses backend rejects a call with no output ("No tool output
+        # found for function call") — every resumed resident turn failed so.
+        while middle_start > 0 and _has_block(messages[middle_start - 1], "tool_use"):
+            middle_start -= 1
+        while middle_start < middle_end < total and _has_block(messages[middle_end], "tool_result"):
+            middle_end -= 1
         middle = messages[middle_start:middle_end]
 
         if not middle:
@@ -312,8 +315,8 @@ class ContextCompressor:
             content=_COMPACTED_PLACEHOLDER.format(document=document),
         )
 
-        head = messages[:protect_first]
-        tail = messages[total - protect_last :] if protect_last > 0 else []
+        head = messages[:middle_start]
+        tail = messages[middle_end:]
         # middle (len M) is replaced by 1 compacted message → removed = M - 1
         removed = len(middle) - 1
         return head + [compacted_msg] + tail, removed
@@ -342,15 +345,42 @@ class ContextCompressor:
                 model=self._model,
                 max_tokens=self._max_tokens,
             )
-            return response.content.strip() or _FALLBACK_DOCUMENT
-        except Exception as exc:
-            logger.warning("Compaction document generation failed: %s", exc)
-            return _FALLBACK_DOCUMENT
+            # A state document cut off mid-way would replace the history it
+            # failed to finish summarising.
+            require_complete(
+                response,
+                knob="context_management.compression_max_tokens",
+                budget=self._max_tokens,
+                model=self._model,
+                purpose="the compaction state document",
+            )
+        except LLMError as exc:
+            raise ContextCompressionError(
+                f"compaction of {len(messages)} message(s) failed: the state document "
+                f"could not be generated with {self._model!r}: {exc}. Fix the model call, "
+                "or set context_management.compaction to 'native' or 'off' for this model"
+            ) from exc
+        document = response.content.strip()
+        if not document:
+            raise ContextCompressionError(
+                f"compaction of {len(messages)} message(s) failed: {self._model!r} returned "
+                "an empty state document; history was left as it was"
+            )
+        return document
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _has_block(message: Message, block_type: str) -> bool:
+    """Whether *message* carries a content block of *block_type*."""
+    if isinstance(message.content, str):
+        return False
+    return any(
+        isinstance(block, dict) and block.get("type") == block_type for block in message.content
+    )
 
 
 def _extract_content_text(content: str | list[dict]) -> str:

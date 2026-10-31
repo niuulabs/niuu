@@ -129,13 +129,30 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
         user_id: str,
         session_id: str,
     ) -> PodSpecAdditions:
-        role_name = self._role_name(session_id)
+        return PodSpecAdditions(
+            annotations=self._injection_annotations(
+                role_name=self._role_name(session_id),
+                configmap_name=self._configmap_name(session_id),
+                inject_containers=self._inject_containers,
+                pre_populate_only=not self._oauth_mount,
+            ),
+            service_account=self._service_account_name(session_id),
+        )
+
+    def _injection_annotations(
+        self,
+        *,
+        role_name: str,
+        configmap_name: str,
+        inject_containers: str,
+        pre_populate_only: bool,
+    ) -> dict[str, str]:
         annotations = {
             _INJECT_ANNOTATION: "true",
             _INIT_FIRST_ANNOTATION: "true",
             _PRE_POPULATE_ANNOTATION: "true",
-            _PRE_POPULATE_ONLY_ANNOTATION: "false" if self._oauth_mount else "true",
-            _CONFIG_MAP_ANNOTATION: self._configmap_name(session_id),
+            _PRE_POPULATE_ONLY_ANNOTATION: "true" if pre_populate_only else "false",
+            _CONFIG_MAP_ANNOTATION: configmap_name,
             _SECRET_VOLUME_PATH_ANNOTATION: "/run/secrets",
             _AUTH_TYPE_ANNOTATION: "jwt",
             _AUTH_PATH_ANNOTATION: self._auth_mount_path(),
@@ -143,17 +160,87 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
         }
         if self._copy_volume_mounts_from:
             annotations[_COPY_VOLUME_MOUNTS_ANNOTATION] = self._copy_volume_mounts_from
-        if self._inject_containers:
-            annotations[_INJECT_CONTAINERS_ANNOTATION] = self._inject_containers
+        if inject_containers:
+            annotations[_INJECT_CONTAINERS_ANNOTATION] = inject_containers
         if self._openbao_namespace:
             annotations[_OPENBAO_NAMESPACE_ANNOTATION] = self._openbao_namespace
         if self._agent_image:
             annotations[_AGENT_IMAGE_ANNOTATION] = self._agent_image
+        return annotations
 
-        return PodSpecAdditions(
-            annotations=annotations,
-            service_account=self._service_account_name(session_id),
+    @property
+    def supports_workloads(self) -> bool:
+        return True
+
+    async def workload_pod_spec_additions(
+        self,
+        user_id: str,
+        credential_mappings: list[CredentialMapping],
+        *,
+        workload_id: str,
+        service_account_name: str,
+        inject_containers: str,
+        tenant_id: str | None = None,
+    ) -> PodSpecAdditions:
+        if not credential_mappings:
+            raise ValueError("A workload credential injection needs at least one credential")
+        if not service_account_name:
+            raise ValueError("A workload credential injection needs the workload's service account")
+        if any(mapping.oauth_tenant_id for mapping in credential_mappings):
+            raise ValueError("Resident workloads take static credentials only, not managed OAuth")
+        role_name = self._workload_role_name(workload_id)
+        configmap_name = self._workload_configmap_name(workload_id)
+        await self._admin.ensure_policy(
+            role_name, self._session_policy(user_id, credential_mappings)
         )
+        await self._admin.ensure_jwt_role(
+            OpenBaoJWTAuthRole(
+                name=role_name,
+                auth_path=self._auth_path,
+                bound_audiences=(self._audience,),
+                bound_subject=self._admin.service_account_subject(
+                    self._namespace, service_account_name
+                ),
+                policies=(role_name,),
+                ttl=self._role_ttl,
+            )
+        )
+        config_hcl = self._build_agent_config_hcl(
+            user_id=user_id, credential_mappings=credential_mappings, role_name=role_name
+        )
+        await self._create_or_update_configmap(
+            name=configmap_name,
+            data={"config.hcl": config_hcl, "config-init.hcl": config_hcl},
+            labels={
+                "app.kubernetes.io/managed-by": "volundr",
+                "volundr.niuu.io/workload-id": workload_id,
+            },
+            annotations={
+                "volundr.niuu.io/openbao-role": role_name,
+                "volundr.niuu.io/service-account": service_account_name,
+                "volundr.niuu.io/user-id": user_id,
+            },
+        )
+        return PodSpecAdditions(
+            annotations=self._injection_annotations(
+                role_name=role_name,
+                configmap_name=configmap_name,
+                inject_containers=inject_containers,
+                pre_populate_only=True,
+            )
+        )
+
+    async def cleanup_workload(self, workload_id: str) -> None:
+        role_name = self._workload_role_name(workload_id)
+        await self._admin.delete_jwt_role(role_name, auth_path=self._auth_path)
+        await self._admin.delete_policy(role_name)
+        await self._delete_configmap(self._workload_configmap_name(workload_id))
+
+    def _workload_role_name(self, workload_id: str) -> str:
+        return f"{self._mount_path}-workload-{self._sanitize_name(workload_id)[:32]}"
+
+    def _workload_configmap_name(self, workload_id: str) -> str:
+        return self._k8s_name(self._configmap_prefix, f"workload-{workload_id}")
 
     async def ensure_secret_provider_class(
         self,

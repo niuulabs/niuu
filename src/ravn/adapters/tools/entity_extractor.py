@@ -30,6 +30,7 @@ from mimir.compiled_truth import (
 )
 from niuu.domain.mimir import EntityType, MimirSource, PageConfidence, slugify
 from niuu.ports.mimir import MimirPort
+from ravn.cap_telemetry import record_truncation, require_complete
 from ravn.config import MimirIngestConfig
 from ravn.ports.llm import LLMPort
 
@@ -44,7 +45,7 @@ _EXTRACTION_PROMPT = """\
 Extract named entities from the following source document.
 
 Source title: {title}
-Source content (first 3000 chars):
+Source content (first {excerpt_chars} chars):
 {content}
 
 Return a JSON object with a single key "entities" containing an array of objects.
@@ -104,16 +105,11 @@ class EntityExtractor:
         updated_paths: list[str] = []
 
         for entity in entities:
-            try:
-                path = await self._apply(entity, source, date_str)
-                if path:
-                    updated_paths.append(path)
-            except Exception as exc:
-                logger.warning(
-                    "entity_extractor: failed to apply entity %r: %s",
-                    entity.name,
-                    exc,
-                )
+            # A failed page write raises: logging it lost the entity while the
+            # ingest reported the pages it did write as the whole result.
+            path = await self._apply(entity, source, date_str)
+            if path:
+                updated_paths.append(path)
 
         return updated_paths
 
@@ -122,28 +118,54 @@ class EntityExtractor:
     # ------------------------------------------------------------------
 
     async def _extract(self, source: MimirSource) -> list[ExtractedEntity]:
-        """Call the LLM and parse the entity list.  Returns [] on failure."""
+        """Call the LLM and parse the entity list; raises when it gives no usable answer.
+
+        An empty list is the model finding no entities. A failed or cut-off call
+        used to return the same empty list, so the source read as entity-free.
+        """
+        excerpt_chars = self._config.entity_source_excerpt_chars
+        if len(source.content) > excerpt_chars:
+            record_truncation(
+                "mimir.ingest.entity_source_excerpt_chars",
+                what=f"source {source.source_id!r} read for entity extraction",
+                kept=excerpt_chars,
+                total=len(source.content),
+            )
         prompt = _EXTRACTION_PROMPT.format(
             title=source.title,
-            content=source.content[:3000],
+            content=source.content[:excerpt_chars],
+            excerpt_chars=excerpt_chars,
+        )
+        response = await self._llm.generate(
+            messages=[{"role": "user", "content": prompt}],
+            tools=[],
+            system=_EXTRACTION_SYSTEM,
+            model=self._config.entity_model,
+            max_tokens=self._config.entity_max_tokens,
+        )
+        require_complete(
+            response,
+            knob="mimir.ingest.entity_max_tokens",
+            budget=self._config.entity_max_tokens,
+            model=self._config.entity_model,
+            purpose=f"entity extraction for source {source.source_id!r}",
         )
         try:
-            response = await self._llm.generate(
-                messages=[{"role": "user", "content": prompt}],
-                tools=[],
-                system=_EXTRACTION_SYSTEM,
-                model=self._config.entity_model,
-                max_tokens=self._config.entity_max_tokens,
-            )
             raw = json.loads(response.content)
-            return self._parse_entities(raw.get("entities", []))
-        except Exception as exc:
-            logger.warning(
-                "entity_extractor: LLM extraction failed for source %r: %s",
-                source.source_id,
-                exc,
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"entity extraction for source {source.source_id!r}: "
+                f"{self._config.entity_model!r} answered with no JSON "
+                f"({response.content[:200]!r}); set mimir.ingest.entity_model to a model "
+                "that follows JSON instructions, or mimir.ingest.entity_detection: false"
+            ) from exc
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"entity extraction for source {source.source_id!r}: "
+                f"{self._config.entity_model!r} answered with {type(raw).__name__}, "
+                "not an object"
             )
-            return []
+        return self._parse_entities(raw.get("entities", []))
 
     def _parse_entities(self, raw: list[dict]) -> list[ExtractedEntity]:
         """Validate and convert the raw LLM response into ExtractedEntity objects."""

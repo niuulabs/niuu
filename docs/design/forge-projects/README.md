@@ -1,3 +1,5 @@
+> **Lightweight projects (2026-09-26):** [LIGHTWEIGHT-PROJECTS.md](LIGHTWEIGHT-PROJECTS.md) supersedes this contract where they differ: a project is a named grouping created from a name, its Git repository is optional and replaceable, and sessions attach, move and detach with a role and coordinator. Every request below is still accepted.
+
 > **Implementation update (2026-09-11):** [IMPLEMENTATION.md](IMPLEMENTATION.md) is the current contract. A project is a Git meta-repository with multiple coordinator sessions, coordinated through a Forge CLI skill. Ting is not required. The original design below is retained as a design snapshot.
 
 # Forge Projects — vision and recommended direction

@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from ravn.compression import (
-    _FALLBACK_DOCUMENT,
     CompressionResult,
     ContextCompressor,
     _extract_content_text,
@@ -15,6 +14,7 @@ from ravn.compression import (
     _format_todo_anchor,
     _format_transcript,
 )
+from ravn.domain.exceptions import ContextCompressionError, LLMError
 from ravn.domain.models import LLMResponse, Message, StopReason, TodoItem, TodoStatus, TokenUsage
 from ravn.ports.llm import LLMPort
 
@@ -193,6 +193,62 @@ class TestContextCompressorCompression:
         assert result_msgs[-2].content == "Last 1"
 
     @pytest.mark.asyncio
+    async def test_tool_calls_and_their_results_stay_on_one_side_of_the_cut(self):
+        """Regin's resumed turns: the protected head kept six tool calls and the
+        middle summarised their results, which the Responses backend rejects."""
+
+        def _calls(ids: list[str]) -> Message:
+            return Message(
+                role="assistant",
+                content=[{"type": "tool_use", "id": i, "name": "t", "input": {}} for i in ids],
+            )
+
+        def _results(ids: list[str]) -> Message:
+            return Message(
+                role="user",
+                content=[
+                    {"type": "tool_result", "tool_use_id": i, "content": "r " * 40} for i in ids
+                ],
+            )
+
+        compressor = ContextCompressor(
+            _make_llm(_long_doc()),
+            model="gpt-6-sol",
+            context_window=100,
+            compression_threshold=0.1,
+            protect_first=2,
+            protect_last=1,
+        )
+        msgs = [
+            Message(role="user", content="Resume the case with the operator's answer."),
+            _calls(["a1", "a2", "a3", "a4", "a5", "a6"]),
+            _results(["a1", "a2", "a3", "a4", "a5", "a6"]),
+            _calls(["b1"]),
+            _results(["b1"]),
+        ]
+
+        result_msgs, result = await compressor.maybe_compress(msgs)
+
+        assert result.was_compressed
+        calls = [
+            b["id"]
+            for m in result_msgs
+            if isinstance(m.content, list)
+            for b in m.content
+            if b["type"] == "tool_use"
+        ]
+        results = [
+            b["tool_use_id"]
+            for m in result_msgs
+            if isinstance(m.content, list)
+            for b in m.content
+            if b["type"] == "tool_result"
+        ]
+        assert calls == results == ["b1"]
+        assert result_msgs[0].content == "Resume the case with the operator's answer."
+        assert result_msgs[-2:] == msgs[-2:]
+
+    @pytest.mark.asyncio
     async def test_no_compression_when_protected_zone_covers_all(self):
         """When protect_first + protect_last >= total messages, no middle to compact."""
         llm = _make_llm()
@@ -228,9 +284,9 @@ class TestContextCompressorCompression:
         assert result.compression_count >= 1
 
     @pytest.mark.asyncio
-    async def test_llm_failure_falls_back_to_fallback_document(self):
+    async def test_llm_failure_raises_and_keeps_history(self):
         llm = MagicMock(spec=LLMPort)
-        llm.generate = AsyncMock(side_effect=RuntimeError("API error"))
+        llm.generate = AsyncMock(side_effect=LLMError("API error", status_code=502))
         compressor = ContextCompressor(
             llm,
             model="claude-sonnet-4-6",
@@ -239,19 +295,33 @@ class TestContextCompressorCompression:
             protect_first=1,
             protect_last=1,
         )
-        # Need at least 2 compressible middle messages so removed >= 1
         msgs = [
             Message(role="user", content="x" * 40),  # protected head
             Message(role="assistant", content="x" * 40),  # middle 1
             Message(role="user", content="x" * 40),  # middle 2
             Message(role="assistant", content="x" * 40),  # protected tail
         ]
-        result_msgs, result = await compressor.maybe_compress(msgs)
-        # Should still compact; document = fallback
-        assert result.was_compressed
-        compacted_msg = result_msgs[1]  # protected(1) + compacted + protected(1)
-        assert "[Compacted context]" in str(compacted_msg.content)
-        assert "summary unavailable" in str(compacted_msg.content)
+        original = list(msgs)
+        with pytest.raises(ContextCompressionError, match="API error") as raised:
+            await compressor.maybe_compress(msgs)
+        assert isinstance(raised.value.__cause__, LLMError)
+        assert msgs == original
+
+    @pytest.mark.asyncio
+    async def test_unexpected_failures_are_not_swallowed(self):
+        llm = MagicMock(spec=LLMPort)
+        llm.generate = AsyncMock(side_effect=RuntimeError("bug"))
+        compressor = ContextCompressor(
+            llm,
+            model="m",
+            context_window=20,
+            compression_threshold=0.1,
+            protect_first=1,
+            protect_last=1,
+        )
+        msgs = [Message(role="user", content="x" * 40) for _ in range(4)]
+        with pytest.raises(RuntimeError, match="bug"):
+            await compressor.maybe_compress(msgs)
 
 
 class TestContextCompressorContextWindowLookup:
@@ -430,8 +500,8 @@ class TestIntelligentCompaction:
         assert doc in compacted.content
 
     @pytest.mark.asyncio
-    async def test_fallback_document_on_empty_llm_response(self):
-        """Empty LLM response falls back to the fallback document."""
+    async def test_empty_llm_response_raises(self):
+        """An empty state document is refused rather than replacing the history."""
         llm = MagicMock(spec=LLMPort)
         llm.generate = AsyncMock(
             return_value=LLMResponse(
@@ -455,10 +525,8 @@ class TestIntelligentCompaction:
             Message(role="user", content="x" * 40),
             Message(role="assistant", content="x" * 20),
         ]
-        result_msgs, result = await compressor.maybe_compress(msgs)
-        assert result.was_compressed
-        compacted = result_msgs[1]
-        assert _FALLBACK_DOCUMENT in compacted.content
+        with pytest.raises(ContextCompressionError, match="empty state document"):
+            await compressor.maybe_compress(msgs)
 
     @pytest.mark.asyncio
     async def test_structured_system_prompt_used(self):

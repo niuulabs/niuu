@@ -18,7 +18,9 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport
-from skuld.transports.mcp_config import build_codex_mcp_overrides
+from skuld.transports.mcp_config import build_codex_mcp_overrides, toml_value
+from skuld.transports.session_env import session_process_env
+from skuld.transports.session_tools import SessionTools
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
@@ -27,6 +29,7 @@ _CODEX_ENV_VARS = ("CODEX_CLI_PATH", "SKULD_CODEX_CLI_PATH")
 _CODEX_BUNDLE_CANDIDATES = (
     "/Applications/Codex.app/Contents/Resources/codex",
     "/Applications/Codex.app/Contents/MacOS/Codex",
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
 )
 
 # ---------------------------------------------------------------------------
@@ -113,9 +116,11 @@ class CodexSubprocessTransport(CLITransport):
         skip_permissions: bool = True,
         approval_policy: str = "",
         sandbox: str = "",
+        session_tools: SessionTools | None = None,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
+        self._session_tools = session_tools
         self._model = model
         self._mcp_overrides = build_codex_mcp_overrides(mcp_servers or [])
         self._mcp_servers = list(mcp_servers or [])
@@ -128,13 +133,14 @@ class CodexSubprocessTransport(CLITransport):
         self._completed_text_items: dict[str, str] = {}
         self._text_item_indexes: dict[str, int] = {}
         self._native_thread_id: str | None = None
-        self._env = dict(os.environ)
+        self._env = session_process_env()
         _ensure_codex_home(self._env)
 
     async def start(self) -> None:
         _, shim_env = ensure_codex_tool_shims(
             self.workspace_dir,
             mcp_servers=self._mcp_servers,
+            session_env=self._session_tools.env if self._session_tools else None,
         )
         if shim_env:
             self._env.update(shim_env)
@@ -174,6 +180,10 @@ class CodexSubprocessTransport(CLITransport):
                 cmd.extend(["--sandbox", self._sandbox])
         for key, value in self._mcp_overrides:
             cmd.extend(["-c", f"{key}={value}"])
+        if self._session_tools is not None and self._session_tools.instructions:
+            # Additive capability text (base_instructions would replace Codex's prompt).
+            instructions = toml_value(self._session_tools.instructions)
+            cmd.extend(["-c", f"developer_instructions={instructions}"])
         cmd.append(content)
 
         logger.info("Running Codex CLI (model: %s)", self._model)

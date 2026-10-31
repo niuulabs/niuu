@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -24,6 +25,7 @@ import pytest
 from niuu.domain.mimir import MimirPage, MimirPageMeta, MimirSourceMeta, ThreadState
 from ravn.adapters.triggers.thread_enricher import ThreadEnricher
 from ravn.config import ThreadConfig
+from ravn.domain.exceptions import OutputTruncatedError
 from ravn.domain.models import LLMResponse, StopReason, TokenUsage
 
 # ---------------------------------------------------------------------------
@@ -351,8 +353,14 @@ class TestFactOrReferencePage:
 
 
 class TestLLMFailures:
+    """A failed classification fails the sweep, which then retries the same pages.
+
+    These were "does not crash" tests: the failure was logged, the watermark
+    advanced past the page, and the page was never classified.
+    """
+
     @pytest.mark.asyncio
-    async def test_llm_exception_does_not_crash(self) -> None:
+    async def test_llm_exception_fails_the_sweep_without_advancing(self, tmp_path: Path) -> None:
         mimir = AsyncMock()
         mimir.list_pages = AsyncMock(return_value=[_page_meta()])
         mimir.list_sources = AsyncMock(return_value=[])
@@ -362,13 +370,14 @@ class TestLLMFailures:
         llm = AsyncMock()
         llm.generate = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
 
-        enricher = _make_enricher(mimir=mimir, llm=llm)
-        # Must not raise
-        await enricher._poll_once()
+        enricher = _make_enricher(mimir=mimir, llm=llm, state_dir=tmp_path)
+        with pytest.raises(RuntimeError, match="LLM unavailable"):
+            await enricher._poll_once()
         mimir.upsert_page.assert_not_called()
+        assert enricher._load_state() is None
 
     @pytest.mark.asyncio
-    async def test_llm_invalid_json_does_not_crash(self) -> None:
+    async def test_llm_invalid_json_raises_naming_the_model(self) -> None:
         mimir = AsyncMock()
         mimir.list_pages = AsyncMock(return_value=[_page_meta()])
         mimir.list_sources = AsyncMock(return_value=[])
@@ -385,11 +394,54 @@ class TestLLMFailures:
         llm.generate = AsyncMock(return_value=bad)
 
         enricher = _make_enricher(mimir=mimir, llm=llm)
-        await enricher._poll_once()
+        with pytest.raises(ValueError, match="enricher_llm_alias"):
+            await enricher._poll_once()
         mimir.upsert_page.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_page_error_does_not_abort_remaining_pages(self) -> None:
+    async def test_non_object_json_raises(self) -> None:
+        mimir = AsyncMock()
+        mimir.list_pages = AsyncMock(return_value=[_page_meta()])
+        mimir.list_sources = AsyncMock(return_value=[])
+        mimir.get_page = AsyncMock(return_value=_page())
+
+        llm = AsyncMock()
+        llm.generate = AsyncMock(
+            return_value=LLMResponse(
+                content="[1, 2]",
+                tool_calls=[],
+                stop_reason=StopReason.END_TURN,
+                usage=TokenUsage(input_tokens=1, output_tokens=1),
+            )
+        )
+
+        enricher = _make_enricher(mimir=mimir, llm=llm)
+        with pytest.raises(ValueError, match="not an object"):
+            await enricher._poll_once()
+
+    @pytest.mark.asyncio
+    async def test_truncated_classification_raises_and_sends_no_cap(self) -> None:
+        mimir = AsyncMock()
+        mimir.list_pages = AsyncMock(return_value=[_page_meta()])
+        mimir.list_sources = AsyncMock(return_value=[])
+        mimir.get_page = AsyncMock(return_value=_page())
+
+        cut = LLMResponse(
+            content='{"is_thread": tr',
+            tool_calls=[],
+            stop_reason=StopReason.MAX_TOKENS,
+            usage=TokenUsage(input_tokens=10, output_tokens=5),
+        )
+        llm = AsyncMock()
+        llm.generate = AsyncMock(return_value=cut)
+
+        enricher = _make_enricher(mimir=mimir, llm=llm)
+        with pytest.raises(OutputTruncatedError, match="thread.enricher"):
+            await enricher._poll_once()
+        assert llm.generate.call_args.kwargs["max_tokens"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_page_error_stops_the_sweep(self, tmp_path: Path) -> None:
         page_a = _page_meta(path="technical/a.md")
         page_b = _page_meta(path="technical/b.md")
 
@@ -404,10 +456,28 @@ class TestLLMFailures:
         llm = AsyncMock()
         llm.generate = AsyncMock(return_value=_llm_response(is_thread=True, confidence=0.9))
 
-        enricher = _make_enricher(mimir=mimir, llm=llm)
-        await enricher._poll_once()
+        enricher = _make_enricher(mimir=mimir, llm=llm, state_dir=tmp_path)
+        with pytest.raises(RuntimeError, match="transient error"):
+            await enricher._poll_once()
+        # Not advanced, so the next sweep looks at page a again.
+        assert enricher._load_state() is None
 
-        assert mimir.get_page.call_count == 2
+    @pytest.mark.asyncio
+    async def test_run_logs_a_failed_sweep_as_an_error_and_keeps_polling(
+        self, caplog: pytest.LogCaptureFixture, tmp_path: Path
+    ) -> None:
+        mimir = AsyncMock()
+        mimir.list_pages = AsyncMock(
+            side_effect=[RuntimeError("mimir down"), asyncio.CancelledError()]
+        )
+
+        enricher = _make_enricher(mimir=mimir, state_dir=tmp_path)
+        enricher._config.enricher_poll_interval_seconds = 0
+        with caplog.at_level(logging.ERROR), pytest.raises(asyncio.CancelledError):
+            await enricher.run(AsyncMock())
+        assert any(
+            r.levelno == logging.ERROR and "sweep failed" in r.getMessage() for r in caplog.records
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -427,11 +497,13 @@ class TestStatePersistence:
         loaded = enricher._load_state()
         assert loaded == ts
 
-    def test_load_handles_corrupt_state_file(self, tmp_path: Path) -> None:
+    def test_load_raises_on_a_corrupt_state_file(self, tmp_path: Path) -> None:
+        # Starting over would silently re-classify every page.
         state_file = tmp_path / "thread_enricher_state.json"
         state_file.write_text("not valid json", encoding="utf-8")
         enricher = _make_enricher(state_dir=tmp_path)
-        assert enricher._load_state() is None
+        with pytest.raises(json.JSONDecodeError):
+            enricher._load_state()
 
     @pytest.mark.asyncio
     async def test_poll_once_persists_last_checked_at(self, tmp_path: Path) -> None:

@@ -205,6 +205,9 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
             else None
         )
         self._client_loaded = core_v1 is not None
+        # The ApiClient this adapter opened (and must close); injected clients
+        # stay with their owner.
+        self._api_client: Any | None = None
         selected_provider = provider
         if selected_provider is None and raw_items is None and not raw_items_file:
             selected_provider = self._provider_from_kubernetes
@@ -304,9 +307,19 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
             if not kubeconfig and self._kubeconfig_env:
                 kubeconfig = os.environ.get(self._kubeconfig_env, "")
             await config.load_kube_config(config_file=kubeconfig or None)
-        self._core_v1 = client.CoreV1Api()
+        self._api_client = client.ApiClient()
+        self._core_v1 = client.CoreV1Api(self._api_client)
         self._client_loaded = True
         return self._core_v1
+
+    async def close(self) -> None:
+        """Close the ApiClient (and its aiohttp session) this adapter opened."""
+        if self._api_client is None:
+            return
+        api_client, self._api_client = self._api_client, None
+        self._core_v1 = None
+        self._client_loaded = False
+        await api_client.close()
 
     def normalize_event(self, raw: Any) -> NormalizedSignal:
         metadata = _field(raw, "metadata", default={}) or {}

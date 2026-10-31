@@ -129,6 +129,8 @@ data:
       {{- if .Values.dispatch.dispatchPromptTemplate }}
       dispatch_prompt_template: {{ .Values.dispatch.dispatchPromptTemplate | quote }}
       {{- end }}
+      # No `| default`: 0 (no per-turn limit) must reach Ting as 0.
+      workflow_cli_turn_timeout_seconds: {{ .Values.dispatch.workflowCliTurnTimeoutSeconds }}
       {{- if and .Values.dispatch.inProcess .Values.dispatch.inProcess.llmConfig }}
       in_process:
         llm_config: {{ .Values.dispatch.inProcess.llmConfig | toJson }}
@@ -141,6 +143,12 @@ data:
         {{- end }}
         {{- if .Values.dispatch.flock.observability }}
         observability: {{ .Values.dispatch.flock.observability | toJson }}
+        {{- end }}
+        {{- with .Values.dispatch.flock.mimirServiceAuth }}
+        mimir_service_auth:
+          adapter: {{ .adapter | quote }}
+          kwargs:
+            {{- toYaml .kwargs | nindent 12 }}
         {{- end }}
       {{- end }}
 
@@ -179,6 +187,10 @@ data:
         adapter: {{ .Values.a2a.pushAuth.adapter | quote }}
         kwargs:
           {{- toYaml .Values.a2a.pushAuth.kwargs | nindent 10 }}
+      stale_campaigns:
+        sweep_interval_seconds: {{ .Values.a2a.staleCampaigns.sweepIntervalSeconds }}
+        input_wait_timeout_seconds: {{ .Values.a2a.staleCampaigns.inputWaitTimeoutSeconds }}
+        idle_timeout_seconds: {{ .Values.a2a.staleCampaigns.idleTimeoutSeconds }}
     {{- end }}
 
     workflow_execution:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -19,17 +20,26 @@ from cryptography.hazmat.primitives.serialization import (
     load_pem_private_key,
 )
 
-from niuu.domain.models import Principal
+from niuu.domain.models import Principal, WorkloadDelegation
 from niuu.domain.services.token_scope import (
+    VALKYRIE_BUILD_SCOPES,
     VALKYRIE_BUILD_TOKEN_USE,
     bound_workload_scopes,
 )
 from niuu.ports.owner_tenant_resolver import OwnerTenantResolverPort
+from niuu.ports.workload_delegations import WorkloadDelegationRepository
 from niuu.ports.workload_identity import (
     IssuedWorkloadToken,
     WorkloadIdentityVerifier,
     WorkloadTokenIssuer,
+    WorkloadTokenVerificationError,
 )
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_ISSUER = "niuu-workload"
+#: Claims every token this service mints carries; verification requires them.
+_REQUIRED_CLAIMS = ("exp", "iat", "iss", "aud", "sub")
 
 
 @dataclass(frozen=True)
@@ -72,6 +82,50 @@ def _claim(claims: dict[str, Any], path: str) -> Any:
     return current
 
 
+#: ``owner_from`` value: the caller acts for the owner its delegation record names.
+OWNER_FROM_DELEGATION = "delegation"
+
+#: Characters a ``subject_prefix`` must end on, so it names a whole segment of the
+#: subject: "...:resident-" admits "...:resident-<id>", while a bare "...:muninn" would
+#: also admit "...:muninn-anything" (a different ServiceAccount).
+_PREFIX_SEPARATORS = (":", "-", "/", ".", "_", "@")
+
+
+def _mapping_problem(mapping: Any) -> str:
+    """Why a mapping can never admit a caller, or '' when it is well formed.
+
+    A malformed mapping is skipped (fail closed) rather than matched loosely: the
+    exchange can only be as narrow as its loosest mapping.
+    """
+    name = str(getattr(mapping, "name", "") or "?")
+    subject = str(getattr(mapping, "subject", "") or "").strip()
+    subject_prefix = str(getattr(mapping, "subject_prefix", "") or "").strip()
+    if not str(getattr(mapping, "issuer", "") or "").strip():
+        return f"Workload identity mapping {name!r} has no issuer"
+    if not subject and not subject_prefix:
+        return f"Workload identity mapping {name!r} names neither subject nor subject_prefix"
+    if subject_prefix and not subject_prefix.endswith(_PREFIX_SEPARATORS):
+        return (
+            f"Workload identity mapping {name!r} subject_prefix {subject_prefix!r} must end "
+            f"on one of {' '.join(_PREFIX_SEPARATORS)} (use subject for one exact identity)"
+        )
+    owner_from = str(getattr(mapping, "owner_from", "") or "").strip()
+    if owner_from and owner_from != OWNER_FROM_DELEGATION:
+        return f"Workload identity mapping {name!r} has unknown owner_from {owner_from!r}"
+    return ""
+
+
+def _owner_from(mapping: Any) -> str:
+    return str(getattr(mapping, "owner_from", "") or "").strip()
+
+
+def _specificity(mapping: Any) -> tuple[int, int]:
+    """Rank a matching mapping: an exact subject beats any prefix, a longer prefix a shorter."""
+    if str(getattr(mapping, "subject", "") or "").strip():
+        return (2, 0)
+    return (1, len(str(getattr(mapping, "subject_prefix", "") or "").strip()))
+
+
 class WorkloadIdentityService(WorkloadTokenIssuer):
     """Validate workload proofs and mint short-lived Volundr JWTs."""
 
@@ -82,6 +136,7 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         signing_key_pem: str = "",
         verifiers: dict[str, WorkloadIdentityVerifier] | None = None,
         tenant_resolver: OwnerTenantResolverPort | None = None,
+        delegations: WorkloadDelegationRepository | None = None,
     ) -> None:
         self._config = config
         configured_pem = signing_key_pem or str(getattr(config, "signing_key_pem", "") or "")
@@ -89,6 +144,7 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         self._private_key = self._load_or_generate_key(configured_pem)
         self._verifiers = dict(verifiers or {})
         self._tenant_resolver = tenant_resolver
+        self._delegations = delegations
 
     @property
     def enabled(self) -> bool:
@@ -98,6 +154,20 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
     def trusted_signing_configured(self) -> bool:
         """Whether the key came from configuration shared with token verifiers."""
         return self._trusted_signing_configured
+
+    @property
+    def has_configured_key(self) -> bool:
+        """True when the signing key came from configuration.
+
+        Without one the key is generated per process, so every token it minted
+        (Forge session credentials included) stops verifying when the process
+        restarts. Same fact as :attr:`trusted_signing_configured`.
+        """
+        return self._trusted_signing_configured
+
+    @property
+    def issuer(self) -> str:
+        return str(getattr(self._config, "issuer", "") or DEFAULT_ISSUER)
 
     def jwks(self) -> dict[str, Any]:
         public_numbers = self._private_key.public_key().public_numbers()
@@ -126,29 +196,89 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         if not token.strip():
             raise WorkloadIdentityError("Missing workload token")
 
-        build_scopes = bound_workload_scopes(scopes)
+        build_scopes = bound_workload_scopes(scopes, allowed=VALKYRIE_BUILD_SCOPES)
         last_error: Exception | None = None
+        # Each verifier checks the proof once; several mappings usually share one.
+        verified: dict[str, dict[str, Any] | Exception] = {}
+        candidates: list[
+            tuple[tuple[int, int], Any, dict[str, Any], WorkloadDelegation | None]
+        ] = []
         for mapping in getattr(self._config, "mappings", []) or []:
+            problem = _mapping_problem(mapping)
+            if problem:
+                last_error = WorkloadIdentityError(problem)
+                continue
             verifier_name = getattr(mapping, "verifier", "kubernetes")
             verifier = self._verifiers.get(verifier_name)
             if verifier is None:
                 last_error = WorkloadIdentityError(f"Verifier not configured: {verifier_name}")
                 continue
-            try:
-                claims = await verifier.verify(token)
-            except Exception as exc:
-                last_error = exc
+            if verifier_name not in verified:
+                try:
+                    verified[verifier_name] = await verifier.verify(token)
+                except Exception as exc:
+                    verified[verifier_name] = exc
+            claims = verified[verifier_name]
+            if isinstance(claims, Exception):
+                last_error = claims
                 continue
-            if self._matches(mapping, claims):
-                return await self._issue(
-                    mapping,
-                    claims,
-                    audiences=self._resolve_audiences(audiences),
-                    build_scopes=build_scopes,
+            if not self._matches(mapping, claims):
+                continue
+            delegation = None
+            if _owner_from(mapping) == OWNER_FROM_DELEGATION:
+                # Admit only a workload some owner has delegated to: without an
+                # active record this mapping does not apply to the caller at all.
+                delegation = await self._active_delegation(verifier_name, claims)
+                if delegation is None:
+                    last_error = WorkloadIdentityError(
+                        f"No active delegation for {claims.get('sub')!r} on {verifier_name!r}"
+                    )
+                    continue
+            candidates.append((_specificity(mapping), mapping, claims, delegation))
+
+        if candidates:
+            candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+            best, mapping, claims, delegation = candidates[0]
+            tied = [str(getattr(c[1], "name", "") or "?") for c in candidates if c[0] == best]
+            if len(tied) > 1:
+                raise WorkloadIdentityError(
+                    "Workload proof matches several equally specific identity mappings: "
+                    + ", ".join(tied)
                 )
+            return await self._issue(
+                mapping,
+                claims,
+                audiences=self._resolve_audiences(audiences),
+                build_scopes=build_scopes,
+                delegation=delegation,
+            )
 
         detail = f": {last_error}" if last_error else ""
         raise WorkloadIdentityError(f"No workload identity mapping matched{detail}")
+
+    async def _active_delegation(
+        self, verifier_name: str, claims: dict[str, Any]
+    ) -> WorkloadDelegation | None:
+        subject = str(claims.get("sub") or "")
+        if self._delegations is None or not subject:
+            return None
+        return await self._delegations.get_active(verifier_name, subject)
+
+    def delegation_mapping_for(self, verifier: str, subject: str) -> str | None:
+        """The ``owner_from: delegation`` mapping that would admit this workload, if any.
+
+        Lets the delegation API refuse a record no mapping could ever use.
+        """
+        for mapping in getattr(self._config, "mappings", []) or []:
+            if _mapping_problem(mapping) or _owner_from(mapping) != OWNER_FROM_DELEGATION:
+                continue
+            if str(getattr(mapping, "verifier", "kubernetes")) != verifier:
+                continue
+            exact = str(getattr(mapping, "subject", "") or "").strip()
+            prefix = str(getattr(mapping, "subject_prefix", "") or "").strip()
+            if (exact and subject == exact) or (prefix and subject.startswith(prefix)):
+                return str(getattr(mapping, "name", "") or "?")
+        return None
 
     def _resolve_audiences(self, requested: list[str] | None) -> list[str]:
         allowed = [str(aud) for aud in (getattr(self._config, "audiences", []) or ["volundr-api"])]
@@ -281,12 +411,21 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         *,
         audiences: list[str],
         build_scopes: list[str] | None = None,
+        delegation: WorkloadDelegation | None = None,
     ) -> WorkloadExchangeResult:
-        owner_id = self._resolve_owner_id(mapping, claims)
-        tenant_id = await self._resolve_tenant_id(mapping, owner_id)
+        if delegation is not None:
+            owner_id = delegation.owner_id
+            tenant_id = delegation.tenant_id or "default"
+        else:
+            owner_id = self._resolve_owner_id(mapping, claims)
+            tenant_id = await self._resolve_tenant_id(mapping, owner_id)
         roles = [str(role) for role in (getattr(mapping, "roles", []) or ["volundr:developer"])]
         workload_subject = str(claims.get("sub") or "")
-        workload_name = str(getattr(mapping, "name", "") or workload_subject)
+        workload_name = str(
+            (delegation.name if delegation else "")
+            or getattr(mapping, "name", "")
+            or workload_subject
+        )
         email = str(getattr(mapping, "email", "") or "")
         principal = Principal(
             user_id=owner_id,
@@ -301,6 +440,17 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         # workload_owner_scoped on the issued token rather than silently
         # trusting a possibly-shared owner_id.
         owner_scoped = bool(str(getattr(mapping, "owner_id_claim", "") or "").strip())
+        # The exchange is the one place that knows which workload a token speaks for:
+        # record it, so a request made "as" the owner can be traced to its actor.
+        logger.info(
+            "Workload exchange: mapping=%s workload=%s owner=%s tenant=%s roles=%s audiences=%s",
+            workload_name,
+            workload_subject,
+            owner_id,
+            tenant_id,
+            ",".join(roles),
+            ",".join(audiences),
+        )
         issued = self.issue_token(
             principal=principal,
             workload_subject=workload_subject,
@@ -312,6 +462,11 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
                 **({"scopes": list(build_scopes)} if build_scopes else {}),
                 "issuer": str(claims.get("iss") or ""),
                 "owner_scoped": owner_scoped,
+                **(
+                    {"delegation_id": str(delegation.id), "resident_id": delegation.resident_id}
+                    if delegation is not None
+                    else {}
+                ),
             },
         )
         return WorkloadExchangeResult(
@@ -331,19 +486,25 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         audiences: list[str],
         token_use: str = "",
         claims: dict[str, Any] | None = None,
+        ttl_seconds: int | None = None,
     ) -> IssuedWorkloadToken:
         """Mint a workload JWT for a principal authenticated by another adapter."""
         if not self.enabled:
             raise WorkloadIdentityError("Workload identity exchange is disabled")
         resolved_audiences = self._resolve_audiences(audiences)
         now = int(time.time())
-        expires_at = now + int(getattr(self._config, "token_ttl_seconds", 900))
+        lifetime = (
+            ttl_seconds
+            if ttl_seconds is not None
+            else int(getattr(self._config, "token_ttl_seconds", 900))
+        )
+        expires_at = now + lifetime
         resource_access = {
             audience: {"roles": principal.roles}
             for audience in _resource_access_audiences(resolved_audiences)
         }
         payload: dict[str, Any] = {
-            "iss": getattr(self._config, "issuer", "") or "niuu-workload",
+            "iss": self.issuer,
             "sub": principal.user_id,
             "aud": resolved_audiences,
             "iat": now,
@@ -359,6 +520,10 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
             "workload_name": workload_name,
             "resource_access": resource_access,
         }
+        # RFC 8693 actor claim: the workload acting on behalf of ``sub``. Absent when the
+        # token speaks for its subject directly (the subject is its own actor).
+        if workload_subject and workload_subject != principal.user_id:
+            payload["act"] = {"sub": workload_subject}
         extra_claims = dict(claims or {})
         workload_issuer = str(extra_claims.pop("issuer", ""))
         payload["workload_issuer"] = workload_issuer
@@ -378,6 +543,20 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
             headers={"kid": getattr(self._config, "key_id", "niuu-workload")},
         )
         return IssuedWorkloadToken(token=token, expires_at=expires_at)
+
+    def verify_token(self, token: str) -> dict[str, Any]:
+        """Verify a token this service minted: RS256 signature, expiry, issuer, audience."""
+        try:
+            return jwt.decode(
+                token,
+                self._private_key.public_key(),
+                algorithms=["RS256"],
+                audience=self._resolve_audiences(None),
+                issuer=self.issuer,
+                options={"require": list(_REQUIRED_CLAIMS)},
+            )
+        except jwt.InvalidTokenError as exc:
+            raise WorkloadTokenVerificationError(str(exc)) from exc
 
     def _load_or_generate_key(self, pem: str) -> RSAPrivateKey:
         if pem:

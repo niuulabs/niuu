@@ -233,3 +233,66 @@ def test_every_captured_turn_terminates_exactly_once(fixture: str) -> None:
     _, events = run_turn(load(fixture))
     terminals = [e for e in events if e["state"] in {"final", "error", "aborted"}]
     assert len(terminals) == 1, f"{fixture} produced {len(terminals)} terminal events"
+
+
+class TestNativeGatewayFields:
+    """The fields Volundr's OpenClaw session controller reads off a native gateway."""
+
+    def test_messages_carry_flat_answer_content_without_thinking_or_tools(self) -> None:
+        tr = TurnTranslator(session_key="agent:main:niuu-1", run_id="run-1")
+        tr.ingest({"type": "thought", "payload": {"text": "hmm", "thinking": True}})
+        tr.ingest({"type": "tool_start", "payload": {"tool_name": "bash", "input": {}}})
+        tr.ingest({"type": "tool_result", "payload": {"tool_name": "bash", "result": "out"}})
+        events = tr.ingest({"type": "response", "payload": {"text": "done"}})
+        assert events[-1]["message"]["content"] == "done"
+
+    def test_error_terminals_carry_error_message(self) -> None:
+        tr = TurnTranslator(session_key="agent:main:niuu-1", run_id="run-1")
+        [event] = tr.ingest({"type": "error", "payload": {"message": "model down"}})
+        assert event["errorMessage"] == "model down"
+        assert event["error"]["message"] == "model down"
+
+    def test_aborted_terminals_carry_no_error_message(self) -> None:
+        tr = TurnTranslator(session_key="agent:main:niuu-1", run_id="run-1")
+        [event] = tr.aborted()
+        assert "errorMessage" not in event
+
+
+class TestCumulativeSnapshots:
+    """``message`` is the whole answer so far: every delta extends the previous one."""
+
+    @staticmethod
+    def _contents(events: list[dict]) -> list[str]:
+        return [e["message"]["content"] for e in events]
+
+    def test_a_repeated_full_message_is_not_appended(self) -> None:
+        tr = TurnTranslator(session_key="agent:main:niuu-1", run_id="run-1")
+        events = []
+        for text in ("I", "’m", " here."):
+            events += tr.ingest({"type": "thought", "payload": {"text": text}})
+        # A CLI executor's ``assistant`` event re-sends what it just streamed.
+        assert tr.ingest({"type": "thought", "payload": {"text": "I’m here."}}) == []
+        events += tr.ingest({"type": "response", "payload": {"text": "I’m here."}})
+        assert self._contents(events) == ["I", "I’m", "I’m here.", "I’m here."]
+
+    def test_each_snapshot_extends_the_last_through_tools(self) -> None:
+        tr = TurnTranslator(session_key="agent:main:niuu-1", run_id="run-1")
+        frames = [
+            {"type": "thought", "payload": {"text": "Let me look."}},
+            {"type": "tool_start", "payload": {"tool_name": "read_file", "input": {}}},
+            {"type": "tool_result", "payload": {"tool_name": "read_file", "result": "x"}},
+            {"type": "thought", "payload": {"text": "It is "}},
+            {"type": "thought", "payload": {"text": "niuu."}},
+            {"type": "response", "payload": {"text": "It is niuu."}},
+        ]
+        contents = self._contents([e for f in frames for e in tr.ingest(f)])
+        assert contents[-1] == "Let me look.It is niuu."
+        for previous, current in zip(contents, contents[1:], strict=False):
+            assert current.startswith(previous)
+
+    def test_a_whole_turn_response_after_a_tool_is_not_repeated(self) -> None:
+        tr = TurnTranslator(session_key="agent:main:niuu-1", run_id="run-1")
+        tr.ingest({"type": "thought", "payload": {"text": "Let me look."}})
+        tr.ingest({"type": "tool_start", "payload": {"tool_name": "read_file", "input": {}}})
+        [final] = tr.ingest({"type": "response", "payload": {"text": "Let me look.It is niuu."}})
+        assert final["message"]["content"] == "Let me look.It is niuu."

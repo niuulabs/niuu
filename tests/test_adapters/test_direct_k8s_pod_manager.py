@@ -269,6 +269,28 @@ class TestEnvironment:
         assert env_dict["SKULD__TELEGRAM__NOTIFY_ONLY"] == "true"
         assert env_dict["SKULD__TELEGRAM__TOPIC_MODE"] == "topic_per_session"
 
+    def test_build_env_maps_claude_permission_mode(
+        self,
+        pod_manager: DirectK8sPodManager,
+        sample_session: Session,
+    ) -> None:
+        """Pods do not read the node config file, so the definition carries the mode."""
+        spec = make_spec(broker={"cliType": "claude", "claudePermissionMode": "auto"})
+        env = pod_manager._build_env(sample_session, spec)
+
+        env_dict = {e["name"]: e["value"] for e in env if "value" in e}
+        assert env_dict["SKULD__CLAUDE_PERMISSION_MODE"] == "auto"
+
+    def test_build_env_without_claude_permission_mode_leaves_it_unset(
+        self,
+        pod_manager: DirectK8sPodManager,
+        sample_session: Session,
+    ) -> None:
+        spec = make_spec(broker={"cliType": "claude"})
+        env = pod_manager._build_env(sample_session, spec)
+
+        assert "SKULD__CLAUDE_PERMISSION_MODE" not in {e["name"] for e in env}
+
     def test_build_env_with_broker_telegram_fixed_topic(
         self,
         pod_manager: DirectK8sPodManager,

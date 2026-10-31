@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 
@@ -57,7 +58,7 @@ async def bridge(tmp_path):
         await transport.stop()
 
 
-async def hook(transport, event, *, tool="AskUserQuestion", questions=None):
+async def hook(transport, event, *, tool="AskUserQuestion", questions=None, mode=None):
     await transport.handle_claude_hook(
         {
             "hook_event_name": event,
@@ -66,6 +67,7 @@ async def hook(transport, event, *, tool="AskUserQuestion", questions=None):
             "tool_use_id": TOOL_ID,
             "session_id": NATIVE_ID,
             "transcript_path": str(transport.native_path),
+            **({"permission_mode": mode} if mode else {}),
         }
     )
 
@@ -296,3 +298,163 @@ async def test_unknown_native_allow_scope_is_not_mapped_to_one_time_permission(b
             "ask_user_answer", request_id=rid, answers=[{"answer": "Allow"}]
         )
     assert _send_keys(transport) == []
+
+
+@pytest.mark.parametrize("mode", ["auto", "bypassPermissions"])
+async def test_no_gate_mode_reported_by_claude_has_one_card(bridge, mode):
+    """A runner sets auto mode in Claude's user settings, so Skuld's own flag is off."""
+    transport, events = bridge
+    assert transport._skip_permissions is False
+    transport.capture_stdout = QUESTION_MENU
+    await hook(transport, "PreToolUse", mode=mode)
+    await hook(transport, "PermissionRequest", mode=mode)
+    questions = _ask_user_questions(events)
+    assert [q["metadata"]["control_kind"] for q in questions] == ["question"]
+    assert any(e.get("type") == "claude_permission_request" for e in events)
+    transport.steps.append(("2", "❯\n"))
+    transport.consumed = {"answers": {QUESTIONS[0]["question"]: "Amber"}}
+    await transport.send_control(
+        "ask_user_answer", request_id=questions[0]["request_id"], answers=[{"answer": "Amber"}]
+    )
+    assert _send_keys(transport) == ["2"]
+
+
+@pytest.mark.parametrize("mode", ["default", "acceptEdits", "plan"])
+async def test_gating_mode_reported_by_claude_keeps_the_permission(bridge, mode):
+    """Claude's live mode wins over Skuld's flag: these modes render a real gate."""
+    transport, events = bridge
+    transport._skip_permissions = True
+    await hook(transport, "PreToolUse", mode=mode)
+    await hook(transport, "PermissionRequest", mode=mode)
+    kinds = [q["metadata"]["control_kind"] for q in _ask_user_questions(events)]
+    assert kinds == ["question", "permission"]
+
+
+YES_NO = [
+    {
+        "header": "Proceed",
+        "question": "Should I continue with the build?",
+        "options": [{"label": "Yes"}, {"label": "No"}],
+        "multiSelect": False,
+    }
+]
+YES_NO_MENU = """☐ Proceed
+Should I continue with the build?
+❯ 1. Yes
+  2. No
+  3. Type something.
+Enter to select · ↑/↓ to navigate · Esc to cancel
+"""
+
+
+@pytest.mark.parametrize("answer", ["Allow", "Allow & don't ask again", "Deny"])
+async def test_phantom_permission_never_answers_a_yes_no_question(bridge, answer):
+    """A Yes/No question menu looks like a permission menu; its phantom must send nothing."""
+    transport, events = bridge
+    transport.capture_stdout = YES_NO_MENU
+    await hook(transport, "PreToolUse", questions=YES_NO)
+    await hook(transport, "PermissionRequest", questions=YES_NO)
+    question, permission = _ask_user_questions(events)
+    assert permission["metadata"]["control_kind"] == "permission"
+    with pytest.raises(ValueError, match="pending question, not this permission"):
+        await transport.send_control(
+            "ask_user_answer", request_id=permission["request_id"], answers=[{"answer": answer}]
+        )
+    assert _send_keys(transport) == []
+    assert permission["request_id"] in transport._pending_tty_prompts
+    assert question["request_id"] in transport._pending_tty_prompts
+    assert not any(e.get("type") == "ask_user_resolved" for e in events)
+
+
+WORKFLOW_MENU = """Run this workflow?
+ review-kse: 5 agents, about 40 tool calls
+❯ 1. Yes, run it
+  2. View raw script
+  3. No
+"""
+
+
+async def _workflow_gate(transport, events):
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Workflow",
+            "tool_input": {"name": "review-kse", "script": "export const meta = {}"},
+            "tool_use_id": TOOL_ID,
+            "session_id": NATIVE_ID,
+            "permission_mode": "auto",
+        }
+    )
+    for _ in range(200):
+        cards = _ask_user_questions(events)
+        if len(cards) == 2:
+            return cards
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"the live Workflow menu was never offered: {cards}")
+
+
+async def test_custom_gate_menu_is_offered_with_its_live_rows(bridge):
+    """Regression: KSE fleet (30 Sep). Workflow's own gate was unanswerable for 44 min."""
+    transport, events = bridge
+    transport.capture_stdout = WORKFLOW_MENU
+    generic, live = await _workflow_gate(transport, events)
+    assert generic["request_id"] == live["request_id"]
+    assert [o["label"] for o in generic["questions"][0]["options"]] == [
+        "Allow",
+        "Allow & don't ask again",
+        "Deny",
+    ]
+    assert [o["label"] for o in live["questions"][0]["options"]] == [
+        "Yes, run it",
+        "View raw script",
+        "No",
+    ]
+    transport.steps.append(("1", "❯\n"))
+    await transport.send_control(
+        "ask_user_answer", request_id=live["request_id"], answers=[{"answer": "Yes, run it"}]
+    )
+    assert _send_keys(transport) == ["1"]
+    resolved = [e for e in events if e.get("type") == "ask_user_resolved"]
+    assert [(e["request_id"], e["decision"]) for e in resolved] == [
+        (live["request_id"], "Yes, run it")
+    ]
+
+
+async def test_generic_deny_picks_a_custom_gate_s_own_no_row(bridge):
+    transport, events = bridge
+    transport.capture_stdout = WORKFLOW_MENU
+    _, live = await _workflow_gate(transport, events)
+    transport.steps.append(("3", "❯\n"))
+    await transport.send_control(
+        "ask_user_answer", request_id=live["request_id"], answers=[{"answer": "Deny"}]
+    )
+    assert _send_keys(transport) == ["3"]  # the menu's own "No", not Escape
+
+
+@pytest.mark.parametrize(
+    "answer,error",
+    [
+        # A generic Allow never maps onto a custom affirmative row (scope unknown).
+        ("Allow", "live Claude menu"),
+        ("Allow & don't ask again", "live Claude menu"),
+        ("View raw scripts", "declared Claude permission option"),
+    ],
+)
+async def test_a_custom_gate_refuses_what_its_menu_cannot_do(bridge, answer, error):
+    transport, events = bridge
+    transport.capture_stdout = WORKFLOW_MENU
+    _, live = await _workflow_gate(transport, events)
+    with pytest.raises(ValueError, match=error):
+        await transport.send_control(
+            "ask_user_answer", request_id=live["request_id"], answers=[{"answer": answer}]
+        )
+    assert _send_keys(transport) == []
+    assert live["request_id"] in transport._pending_tty_prompts
+
+
+async def test_the_standard_permission_menu_keeps_the_generic_card(bridge):
+    transport, events = bridge
+    transport.capture_stdout = PERMISSION_MENU
+    await hook(transport, "PermissionRequest", tool="Bash")
+    await asyncio.sleep(0.2)
+    assert len(_ask_user_questions(events)) == 1

@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
-from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
+from ting.domain.models import CampaignStageState, WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.workflow_campaign_lifecycle import TERMINAL_SESSION_STOPPED_KEY
 from ting.domain.services.workflow_campaign_projector import (
     WorkflowCampaignProjector,
     _status_from_session,
 )
 from ting.ports.volundr import ActivityEvent
+from ting.ports.workflow_campaign_repository import CampaignAlreadyTerminalError
 
 
 def _campaign(
@@ -621,3 +623,454 @@ class TestConnectionAffinity:
 
         assert factory.connection_calls == []
         assert factory.primary_calls == 1
+
+
+def _staged_campaign() -> WorkflowCampaign:
+    """A running campaign on a two-stage graph, framed and now coordinating."""
+    return replace(
+        _campaign(),
+        workflow_snapshot={
+            "graph": {
+                "nodes": [
+                    {
+                        "id": "research-frame",
+                        "kind": "stage",
+                        "label": "Frame the inquiry",
+                        "stageMembers": [{"personaId": "research-framer"}],
+                    },
+                    {
+                        "id": "research-coordinate",
+                        "kind": "stage",
+                        "label": "Define and dispatch exploration threads",
+                        "stageMembers": [{"personaId": "kvm-research-coordinator"}],
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "research-frame", "target": "research-coordinate"}
+                ],
+            }
+        },
+        active_stage_id="research-coordinate",
+        stage_state=[
+            CampaignStageState(
+                stage_id="research-frame", label="Frame the inquiry", status="complete"
+            ),
+            CampaignStageState(
+                stage_id="research-coordinate",
+                label="Define and dispatch exploration threads",
+                status="active",
+            ),
+        ],
+    )
+
+
+_SETUP_CRASH = (
+    "RuntimeError: Persona requires durable workflow execution tools, but an "
+    "owner-bound workflow_execution runtime context is not configured"
+)
+
+
+@pytest.mark.asyncio
+async def test_peer_failure_fails_the_campaign_and_records_the_failed_stage() -> None:
+    """A stage whose Ravn crashed fails the campaign and says which stage and why."""
+    adapter = _Adapter()
+    campaign = _staged_campaign()
+    projector, repo, event_bus = _projector(adapter)
+    repo.get_active_campaign_by_session.return_value = campaign
+
+    await projector.handle_activity(
+        ActivityEvent(
+            session_id=campaign.session_id,
+            state="error",
+            metadata={
+                "failure_source": "ravn_flock",
+                "failure_peer_id": "flock-kvm-research-coordinator",
+                "failure_persona": "kvm-research-coordinator",
+                "failure_workflow_node_id": "research-coordinate",
+                "failure_task_id": "event_research_coordinate_fe4ae2efb1c879c7",
+                "error": _SETUP_CRASH,
+            },
+            owner_id=campaign.owner_id,
+        ),
+        campaign.owner_id,
+    )
+
+    failed = repo.save_campaign.await_args_list[0].args[0]
+    assert failed.status == WorkflowCampaignStatus.FAILED
+    assert failed.metadata["failure_error"] == _SETUP_CRASH
+    assert failed.metadata["failure_stage_id"] == "research-coordinate"
+    assert failed.metadata["failure_task_id"] == "event_research_coordinate_fe4ae2efb1c879c7"
+    assert failed.active_stage_id == "research-coordinate"
+    assert [(stage.stage_id, stage.status) for stage in failed.stage_state] == [
+        ("research-frame", "complete"),
+        ("research-coordinate", "failed"),
+    ]
+    assert failed.stage_state[1].reason == _SETUP_CRASH
+    emitted = event_bus.emit.await_args_list[0].args[0]
+    assert emitted.event == "workflow.campaign.failed"
+    assert emitted.data["error"] == _SETUP_CRASH
+    assert emitted.data["failed_stage_id"] == "research-coordinate"
+
+
+@pytest.mark.asyncio
+async def test_reconnect_attributes_a_missed_peer_failure_by_persona() -> None:
+    adapter = _Adapter(
+        session_status="running",
+        activity_state="error",
+        activity_metadata={
+            "failure_source": "ravn_flock",
+            "failure_persona": "kvm-research-coordinator",
+            "error": _SETUP_CRASH,
+        },
+    )
+    projector, repo, _ = _projector(adapter)
+
+    await projector._refresh_campaign(_staged_campaign())
+
+    failed = repo.save_campaign.await_args_list[0].args[0]
+    assert failed.status == WorkflowCampaignStatus.FAILED
+    assert failed.metadata["failure_stage_id"] == "research-coordinate"
+    assert failed.stage_state[1].status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_authoritative_publish_supersedes_blocked_help_gate_without_attestation() -> None:
+    """A retry that publishes a tool must close the earlier help-needed gate."""
+    campaign = _campaign(completion_event="capability.ready")
+    adapter = _Adapter()
+    projector, repo, _ = _projector(adapter)
+    repo.get_active_campaign_by_session.return_value = campaign
+
+    recorded = await projector.record_help_needed(
+        {"summary": "Publisher needs the durable artifact path."},
+        campaign.owner_id,
+        session_id=campaign.session_id,
+        gate={"node_id": "capability-publish", "status": "blocked"},
+    )
+
+    assert recorded is True
+    blocked = repo.save_campaign.await_args.args[0]
+    assert blocked.status == WorkflowCampaignStatus.BLOCKED
+
+    repo.get_active_campaign_by_session.return_value = blocked
+    handled = await projector.handle_activity(
+        ActivityEvent(
+            session_id=campaign.session_id,
+            state="idle",
+            metadata={
+                "completion_source": "ravn_flock",
+                "completion_event_type": "capability.ready",
+                "completion_peer_id": "workflow-stop:capability-complete",
+                "outcome_valid": True,
+                "structured_outcome": {
+                    "verdict": "approve",
+                    "authoritative": True,
+                    "checks": [
+                        {
+                            "persona": "capability-publisher",
+                            "event_type": "capability.ready",
+                            "verdict": "published",
+                        }
+                    ],
+                },
+            },
+            owner_id=campaign.owner_id,
+        ),
+        campaign.owner_id,
+    )
+
+    assert handled is True
+    completed = repo.save_campaign.await_args_list[1].args[0]
+    assert completed.status == WorkflowCampaignStatus.COMPLETED
+    assert completed.completed_at is not None
+    assert adapter.stopped == [campaign.session_id]
+
+
+# ---------------------------------------------------------------------------
+# Stale campaign expiry
+# ---------------------------------------------------------------------------
+
+_HOUR = 3600.0
+
+
+def _sweeping_projector(adapter: _Adapter) -> tuple[WorkflowCampaignProjector, AsyncMock]:
+    repo = AsyncMock()
+    repo.save_campaign = AsyncMock(side_effect=lambda campaign: campaign)
+    projector = WorkflowCampaignProjector(
+        repo=repo,
+        volundr_factory=_Factory(adapter),
+        event_bus=AsyncMock(),
+        sweep_interval_seconds=300.0,
+        input_wait_timeout_seconds=6 * _HOUR,
+        idle_timeout_seconds=2 * _HOUR,
+    )
+    return projector, repo
+
+
+def _aged(status: WorkflowCampaignStatus, hours: float) -> WorkflowCampaign:
+    then = datetime.now(UTC) - timedelta(hours=hours)
+    return replace(_campaign(status), updated_at=then, last_activity_at=then)
+
+
+class _IdleAdapter(_Adapter):
+    def __init__(
+        self,
+        *,
+        last_active: datetime | None,
+        missing: bool = False,
+        activity_state_since: datetime | None = None,
+        updated_at: datetime | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._last_active = last_active
+        self._missing = missing
+        self._activity_state_since = activity_state_since
+        self._updated_at = updated_at
+
+    async def get_session(self, session_id, *, auth_token=None, principal=None):
+        if self._missing:
+            return None
+        session = await super().get_session(session_id)
+        session.last_active = self._last_active
+        session.activity_state_since = self._activity_state_since
+        session.updated_at = self._updated_at
+        return session
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_input_request_expires_and_stops_its_session() -> None:
+    """Regin's builder tasks sat in INPUT_REQUIRED for up to 19 hours, each
+    holding a session pod on the one node all its sessions had to share."""
+    adapter = _Adapter()
+    projector, repo = _sweeping_projector(adapter)
+    stale = _aged(WorkflowCampaignStatus.BLOCKED, 7)
+    fresh = _aged(WorkflowCampaignStatus.BLOCKED, 1)
+    repo.list_active_campaigns.return_value = [stale, fresh]
+
+    assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 1
+
+    saved = [call.args[0] for call in repo.save_campaign.await_args_list]
+    failed = [c for c in saved if c.status == WorkflowCampaignStatus.FAILED]
+    # Saved once failed, then again with the session-stopped receipt.
+    assert {c.id for c in failed} == {stale.id}
+    assert "No answer to the input request within 6 hours" in failed[0].metadata["failure_error"]
+    assert failed[-1].metadata[TERMINAL_SESSION_STOPPED_KEY] is True
+    assert adapter.stopped == [stale.session_id]
+
+
+@pytest.mark.asyncio
+async def test_an_idle_session_expires_loudly_and_is_counted(monkeypatch, caplog) -> None:
+    long_ago = datetime.now(UTC) - timedelta(hours=5)
+    counted: list[tuple[str, dict]] = []
+    telemetry = SimpleNamespace(
+        count=lambda name, *, attributes, description="": counted.append((name, attributes)),
+        duration=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "ting.domain.services.workflow_campaign_projector.get_observability", lambda: telemetry
+    )
+    projector, repo = _sweeping_projector(_IdleAdapter(last_active=long_ago, activity_state="idle"))
+    campaign = _aged(WorkflowCampaignStatus.RUNNING, 5)
+    repo.list_active_campaigns.return_value = [campaign]
+
+    with caplog.at_level("ERROR"):
+        assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 1
+
+    failed = repo.save_campaign.await_args_list[0].args[0]
+    assert "Session idle for over 2 hours" in failed.metadata["failure_error"]
+    assert ("ting_a2a_campaigns_expired_total", {"reason": "idle"}) in counted
+    expiry_logs = [r for r in caplog.records if "Expiring workflow campaign" in r.getMessage()]
+    assert expiry_logs and expiry_logs[0].levelname == "ERROR"
+    assert "a2a.stale_campaigns.idle_timeout_seconds=7200s" in expiry_logs[0].getMessage()
+    assert campaign.slug in expiry_logs[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_a_flock_session_that_went_idle_names_its_last_outcome() -> None:
+    long_ago = datetime.now(UTC) - timedelta(hours=5)
+    projector, repo = _sweeping_projector(
+        _IdleAdapter(
+            last_active=long_ago,
+            activity_state="idle",
+            activity_metadata={
+                "flock_idle": {
+                    "event_type": "code.completed",
+                    "verdict": "help_needed",
+                    "persona": "coder",
+                }
+            },
+        )
+    )
+    repo.list_active_campaigns.return_value = [_aged(WorkflowCampaignStatus.RUNNING, 5)]
+
+    assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 1
+
+    error = repo.save_campaign.await_args_list[0].args[0].metadata["failure_error"]
+    assert "The last workflow outcome was code.completed (verdict help_needed) from coder" in error
+
+
+@pytest.mark.asyncio
+async def test_a_busy_session_that_only_heartbeats_expires_as_no_progress(
+    monkeypatch, caplog
+) -> None:
+    """Skuld re-sends its busy report as a heartbeat for as long as the broker
+    lives. Two builder sessions claimed busy for eleven hours after their last
+    peer finished; heartbeats kept last_active fresh, so the sweep never fired."""
+    counted: list[tuple[str, dict]] = []
+    telemetry = SimpleNamespace(
+        count=lambda name, *, attributes, description="": counted.append((name, attributes)),
+        duration=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "ting.domain.services.workflow_campaign_projector.get_observability", lambda: telemetry
+    )
+    now = datetime.now(UTC)
+    projector, repo = _sweeping_projector(
+        _IdleAdapter(
+            last_active=now - timedelta(seconds=20),
+            activity_state="active",
+            activity_state_since=now - timedelta(hours=11),
+            updated_at=now - timedelta(hours=10, minutes=30),
+        )
+    )
+    repo.list_active_campaigns.return_value = [_aged(WorkflowCampaignStatus.RUNNING, 11)]
+
+    with caplog.at_level("ERROR"):
+        assert await projector.expire_stale_campaigns(now=now) == 1
+
+    failed = repo.save_campaign.await_args_list[0].args[0]
+    error = failed.metadata["failure_error"]
+    assert failed.status == WorkflowCampaignStatus.FAILED
+    assert "reported busy with no recorded progress for over 2 hours" in error
+    assert "only heartbeats since" in error
+    assert ("ting_a2a_campaigns_expired_total", {"reason": "no_progress"}) in counted
+    expiry_logs = [r for r in caplog.records if "Expiring workflow campaign" in r.getMessage()]
+    assert [r.levelname for r in expiry_logs] == ["ERROR"]
+    assert "idle_timeout_seconds=7200s" in expiry_logs[0].getMessage()
+    assert "no recorded progress" in expiry_logs[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_a_busy_session_reporting_no_progress_times_is_judged_from_the_campaign() -> None:
+    projector, repo = _sweeping_projector(
+        _IdleAdapter(last_active=datetime.now(UTC), activity_state="active")
+    )
+    repo.list_active_campaigns.return_value = [_aged(WorkflowCampaignStatus.RUNNING, 5)]
+
+    assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 1
+    error = repo.save_campaign.await_args_list[0].args[0].metadata["failure_error"]
+    assert "no recorded progress" in error
+    assert "last workflow outcome" not in error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state_since_hours", "updated_hours"),
+    [(5, 1), (1, 5), (1, None), (None, 1)],
+)
+async def test_a_busy_session_with_recent_progress_is_kept(
+    state_since_hours: float | None, updated_hours: float | None
+) -> None:
+    now = datetime.now(UTC)
+
+    def _ago(hours: float | None) -> datetime | None:
+        return None if hours is None else now - timedelta(hours=hours)
+
+    projector, repo = _sweeping_projector(
+        _IdleAdapter(
+            last_active=now,
+            activity_state="tool_executing",
+            activity_state_since=_ago(state_since_hours),
+            updated_at=_ago(updated_hours),
+        )
+    )
+    repo.list_active_campaigns.return_value = [_aged(WorkflowCampaignStatus.RUNNING, 5)]
+
+    assert await projector.expire_stale_campaigns(now=now) == 0
+    repo.save_campaign.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recent_session_activity_keeps_an_old_campaign_alive() -> None:
+    recently = datetime.now(UTC) - timedelta(minutes=10)
+    projector, repo = _sweeping_projector(_IdleAdapter(last_active=recently, activity_state="idle"))
+    repo.list_active_campaigns.return_value = [_aged(WorkflowCampaignStatus.PENDING, 5)]
+
+    assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_vanished_session_expires_its_campaign() -> None:
+    projector, repo = _sweeping_projector(_IdleAdapter(last_active=None, missing=True))
+    repo.list_active_campaigns.return_value = [_aged(WorkflowCampaignStatus.RUNNING, 3)]
+
+    assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 1
+    failed = repo.save_campaign.await_args_list[0].args[0]
+    assert "no longer exists" in failed.metadata["failure_error"]
+
+
+@pytest.mark.asyncio
+async def test_zero_timeouts_disable_expiry_and_the_sweep() -> None:
+    repo = AsyncMock()
+    projector = WorkflowCampaignProjector(
+        repo=repo,
+        volundr_factory=_Factory(_Adapter()),
+        event_bus=AsyncMock(),
+        sweep_interval_seconds=300.0,
+    )
+    repo.list_active_campaigns.return_value = [
+        _aged(WorkflowCampaignStatus.BLOCKED, 100),
+        _aged(WorkflowCampaignStatus.RUNNING, 100),
+    ]
+    assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 0
+    await projector.start()
+    assert projector._sweep_task is None
+    await projector.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_runs_on_its_interval_and_stops_cleanly(monkeypatch) -> None:
+    projector, repo = _sweeping_projector(_Adapter())
+    repo.list_active_campaigns.return_value = []
+    swept = asyncio.Event()
+
+    async def _expire(*, now):
+        swept.set()
+        return 0
+
+    monkeypatch.setattr(projector, "expire_stale_campaigns", _expire)
+    projector._sweep_interval = 0.01
+    await projector.start()
+    await asyncio.wait_for(swept.wait(), timeout=1)
+    await projector.stop()
+    assert projector._sweep_task is None
+
+
+@pytest.mark.asyncio
+async def test_one_campaign_failing_its_check_does_not_stop_the_sweep() -> None:
+    projector, repo = _sweeping_projector(_Adapter())
+    good = _aged(WorkflowCampaignStatus.BLOCKED, 7)
+    bad = _aged(WorkflowCampaignStatus.RUNNING, 7)
+    repo.list_active_campaigns.return_value = [bad, good]
+    projector._campaign_adapter = AsyncMock(side_effect=[RuntimeError("unreachable"), _Adapter()])
+
+    assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stale_event_does_not_reopen_a_finished_campaign() -> None:
+    projector, repo, event_bus = _projector(_Adapter())
+    blocked = _campaign(WorkflowCampaignStatus.RUNNING)
+    repo.get_active_campaign_by_session.return_value = blocked
+    repo.save_campaign = AsyncMock(side_effect=CampaignAlreadyTerminalError("already failed"))
+
+    handled = await projector.record_help_needed(
+        {"summary": "need input"},
+        "user-1",
+        session_id="session-123",
+        gate={"node_id": "gate"},
+    )
+
+    assert handled is True
+    event_bus.emit.assert_not_awaited()

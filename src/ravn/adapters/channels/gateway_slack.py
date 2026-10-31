@@ -26,6 +26,7 @@ from typing import Any
 import httpx
 
 from ravn.adapters.channels._http_mixin import GatewayHttpMixin
+from ravn.adapters.channels._message_split import split_message
 from ravn.adapters.channels._slash_commands import GATEWAY_SLASH_PROMPTS
 from ravn.adapters.channels.gateway import RavnGateway
 from ravn.config import SlackChannelConfig
@@ -103,13 +104,11 @@ class SlackGateway(GatewayHttpMixin, GatewayChannelPort):
 
     async def send_text(self, chat_id: str, text: str) -> None:
         """Post *text* to the Slack channel *chat_id*."""
-        limit = self._config.message_max_chars
-        if len(text) > limit:
-            text = text[: limit - 3] + "..."
-        await self._api_post(
-            "chat.postMessage",
-            json={"channel": chat_id, "text": text},
-        )
+        for chunk in split_message(text, self._config.message_max_chars):
+            await self._api_post(
+                "chat.postMessage",
+                json={"channel": chat_id, "text": chunk},
+            )
 
     async def send_image(self, chat_id: str, image: bytes, caption: str = "") -> None:
         """Upload *image* bytes to *chat_id* via files.upload."""

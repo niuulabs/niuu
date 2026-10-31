@@ -178,21 +178,27 @@ class ComputePoolService:
             except (ComputeLeaseBusyError, ValueError):
                 pass  # Concurrent assignment owns the guest now; never dispose its data.
         leases = await self.repository.list(self.pool_id, include_released=False)
-        warm = sum(
-            lease.session_id is None
-            and lease.state in {LeaseState.PROVISIONING, LeaseState.READY, LeaseState.IDLE}
-            and lease.profile == policy.profile
-            and (
-                (default_plan is None and lease.execution_plan is None)
-                or (
-                    default_plan is not None
-                    and lease.execution_plan is not None
-                    and lease.execution_plan.host_compatibility_digest
-                    == default_plan.host_compatibility_digest
-                )
-            )
-            for lease in leases
+        # Idle expiry only trims capacity above the warm minimum. The configured
+        # spares stay warm indefinitely; churning them would just reprovision.
+        now = datetime.now(UTC)
+        expired = sorted(
+            (
+                lease
+                for lease in leases
+                if lease.state == LeaseState.IDLE
+                and lease.idle_since is not None
+                and (now - lease.idle_since).total_seconds() >= policy.idle_timeout_seconds
+                and self._is_warm_spare(lease, policy, default_plan)
+            ),
+            key=lambda lease: lease.idle_since or now,
         )
+        warm = sum(self._is_warm_spare(lease, policy, default_plan) for lease in leases)
+        for lease in expired[: max(0, warm - policy.warm_min)]:
+            try:
+                await self.dispose(lease.id)
+            except (ComputeLeaseBusyError, ValueError):
+                continue  # Concurrent assignment owns the guest now; never dispose its data.
+            warm -= 1
         if not failures and not policy.paused and not policy.drain and warm < policy.warm_min:
             for _ in range(policy.warm_min - warm):
                 try:
@@ -277,17 +283,7 @@ class ComputePoolService:
             await self.dispose(lease.id)
             return
         lease = await self.leases.reconcile(lease.id)
-        expired = (
-            lease.idle_since is not None
-            and (datetime.now(UTC) - lease.idle_since).total_seconds()
-            >= policy.idle_timeout_seconds
-        )
-        if (
-            policy.drain
-            or expired
-            or lease.profile != policy.profile
-            or lease.state == LeaseState.FAILED
-        ):
+        if policy.drain or lease.profile != policy.profile or lease.state == LeaseState.FAILED:
             await self.dispose(lease.id)
             return
         if lease.state != LeaseState.READY or not lease.machine or not lease.machine.addresses:
@@ -357,6 +353,24 @@ class ComputePoolService:
         if runtime is None:
             raise RuntimeError("Pinned execution runtime binding is unavailable")
         return runtime
+
+    def _is_warm_spare(
+        self,
+        lease: ComputeLease,
+        policy: ComputePoolPolicy,
+        default_plan: ResolvedExecutionPlan | None,
+    ) -> bool:
+        if lease.session_id is not None:
+            return False
+        if lease.state not in {LeaseState.PROVISIONING, LeaseState.READY, LeaseState.IDLE}:
+            return False
+        if lease.profile != policy.profile:
+            return False
+        if default_plan is None or lease.execution_plan is None:
+            return default_plan is None and lease.execution_plan is None
+        return (
+            lease.execution_plan.host_compatibility_digest == default_plan.host_compatibility_digest
+        )
 
     def _host_compatible(
         self,

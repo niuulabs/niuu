@@ -14,6 +14,18 @@
 #
 # Precedence (highest to lowest): env vars > yaml file > defaults
 
+observability:
+  enabled: false
+  service_name: ravn
+  trace_endpoint: ""
+  metric_endpoint: ""
+  log_endpoint: ""
+  insecure: false
+  metric_export_interval_milliseconds: 10000
+  capture_content: false
+  content_max_chars: 8192
+  headers: {}
+
 # ---------------------------------------------------------------------------
 # Anthropic API
 # ---------------------------------------------------------------------------
@@ -27,7 +39,10 @@
 # llm:
 #   model: ""                    # your model name
 #   max_tokens: 8192
-#   max_retries: 3
+#   gateway_outage_window_seconds: 120  # how long one model call is retried while the gateway is down
+#                                       # (refused connection, 5xx, cut stream): size to a gateway rollout; 0 disables
+#   retry_base_delay: 1.0               # first retry delay (seconds); doubles each attempt
+#   gateway_outage_max_backoff_seconds: 10
 #   timeout: 120
 #   provider:
 #     adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
@@ -66,10 +81,15 @@ thread:
 # Wakefulness trigger (NIU-565)
 #
 # Detects operator silence and runs a cheap LLM reflection to emit follow-up
-# intents as threads into Mímir.  Enabled in M2.
+# intents as threads into Mímir.
+#
+# It reflects on the conversation held by the daemon's gateway sessions, so it
+# needs a gateway channel (gateway.channels.<name>.enabled: true); enabled
+# without one, the daemon refuses to start.  max_transcript_chars bounds how
+# much of that conversation goes into each reflection prompt.
 # ---------------------------------------------------------------------------
 wakefulness:
-  enabled: true
+  enabled: false
   silence_threshold_seconds: 1800         # 30 min of silence triggers shallow reflection
   reflection_cooldown_seconds: 3600       # at most one shallow reflection per hour
   deep_reflection_threshold_seconds: 7200 # 2 h silence triggers deep reflection
@@ -78,6 +98,7 @@ wakefulness:
   max_intents_per_reflection: 5
   initial_thread_weight: 5.0
   poll_interval_seconds: 60
+  max_transcript_chars: 12000
 
 # ---------------------------------------------------------------------------
 # Recap trigger (NIU-569)

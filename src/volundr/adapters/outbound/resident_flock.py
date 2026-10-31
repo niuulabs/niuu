@@ -16,7 +16,7 @@ from niuu.mesh.identity import MeshIdentity
 from ravn.adapters.discovery.event_bus import EventBusDiscoveryAdapter
 from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
 from ravn.domain.events import RavnEvent, RavnEventType
-from volundr.domain.models import ResidentObservedState
+from volundr.domain.models import ResidentEngine, ResidentObservedState
 from volundr.domain.ports import (
     ResidentChatConnection,
     ResidentRuntimeRepository,
@@ -43,6 +43,9 @@ class _ResidentReaction:
     runner: asyncio.Task[None] | None = None
 
 
+_NATIVE_MESH_ENGINES = frozenset({ResidentEngine.RAVN})
+
+
 @dataclass
 class _ResidentPeer:
     mesh: SleipnirMeshAdapter
@@ -62,7 +65,14 @@ class ResidentFlockAdapter:
         persona_provider: SessionPersonaProvider | None = None,
     ) -> None:
         self._repository = repository
-        self._controllers = {controller.engine: controller for controller in session_controllers}
+        # A Ravn resident is its own peer on the flock mesh (its pod runs Ravn's Sleipnir
+        # adapter under the same peer id), so bridging it here would put that peer on the
+        # bus twice. Its session controller serves sessions and chat, not the flock.
+        self._controllers = {
+            controller.engine: controller
+            for controller in session_controllers
+            if controller.engine not in _NATIVE_MESH_ENGINES
+        }
         self._bus = bus
         self._persona_provider = persona_provider
         self._peers: dict[UUID, _ResidentPeer] = {}

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import itertools
+import json
 import logging
 import re
 import time
@@ -14,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from niuu.observability import get_observability
 from niuu.ports.mimir import MimirPort
 from ravn.budget import IterationBudget, TokenEstimator
+from ravn.cap_telemetry import record_cap_hit, record_truncation, require_complete
 from ravn.compression import CompressionResult, ContextCompressor
 from ravn.config import ExtendedThinkingConfig
 from ravn.domain.budget import compute_cost as _compute_cost_usd
@@ -28,6 +31,7 @@ from ravn.domain.exceptions import (
     PermissionDeniedError,
     PromptBudgetExceededError,
 )
+from ravn.domain.harness_telemetry import HarnessStepTelemetryRecord
 from ravn.domain.models import (
     Episode,
     LLMResponse,
@@ -41,13 +45,16 @@ from ravn.domain.models import (
     ToolResult,
     TurnResult,
 )
+from ravn.harness_telemetry import emit_harness_step
 from ravn.ports.channel import ChannelPort
 from ravn.ports.checkpoint import CheckpointPort
 from ravn.ports.llm import LLMPort, SystemPrompt
 from ravn.ports.memory import MemoryPort
+from ravn.ports.native_compaction import NativeCompactionPort
 from ravn.ports.permission import PermissionPort
 from ravn.ports.tool import ToolPort
 from ravn.prompt_builder import PromptBuilder
+from ravn.resident_text import compact_line
 
 if TYPE_CHECKING:
     from niuu.domain.outcome import ParsedOutcome
@@ -69,6 +76,23 @@ PostToolHook = Callable[[ToolCall, ToolResult], Coroutine[Any, Any, None]]
 UserInputFn = Callable[[str], Coroutine[Any, Any, str]]
 
 _ASK_USER_TOOL_NAME = "ask_user"
+# Shown in the live thought stream when the model connection dropped after part
+# of an answer had already been displayed and the request is being re-issued.
+_STREAM_RESTART_NOTICE = "\n[model connection interrupted; restarting this response]\n"
+
+
+def _llm_error_category(exc: BaseException) -> str:
+    """Classify a terminal provider exception without exporting its content."""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, asyncio.CancelledError):
+            return "aborted"
+        if isinstance(current, TimeoutError) or "timeout" in type(current).__name__.lower():
+            return "timeout"
+        current = current.__cause__ or current.__context__
+    return "provider_error"
 
 
 class RavnAgent:
@@ -96,7 +120,9 @@ class RavnAgent:
         *,
         system_prompt: str,
         model: str,
-        max_tokens: int,
+        # The answer cap for every model turn; None sends none, so the
+        # provider's own limit (maximum output, or the rest of the window) applies.
+        max_tokens: int | None,
         max_iterations: int,
         pre_tool_hooks: list[PreToolHook] | None = None,
         post_tool_hooks: list[PostToolHook] | None = None,
@@ -106,9 +132,10 @@ class RavnAgent:
         episode_task_max_chars: int = 200,
         iteration_budget: IterationBudget | None = None,
         compressor: ContextCompressor | None = None,
+        native_compaction: NativeCompactionPort | None = None,
         prompt_builder: PromptBuilder | None = None,
         reflection_model: str = "claude-haiku-4-5-20251001",
-        reflection_max_tokens: int = 512,
+        reflection_max_tokens: int | None = None,
         task_summary_max_chars: int = 200,
         input_token_cost_per_million: float = 3.0,
         output_token_cost_per_million: float = 15.0,
@@ -132,6 +159,19 @@ class RavnAgent:
         inject_learnings: bool = False,
         max_learnings_injected: int = 5,
         learning_token_budget: int = 500,
+        # Ranks injected learnings by meaning-relevance to the first turn's input
+        # when given (a ravn.adapters.reflection.lessons.LessonIndex); without
+        # one, learnings are injected by recency.
+        learning_index: Any | None = None,
+        learning_entry_max_chars: int = 0,
+        # Route recoveries (a tool failed, then succeeded with other input)
+        # carried on ravn.session.ended as first-hand evidence for reflection;
+        # 0 records none.
+        max_route_recoveries: int = 0,
+        route_excerpt_chars: int = 240,
+        # Tool-level friction (unrecovered failures, timeouts, retries) carried
+        # on ravn.session.ended for the friction ledger; 0 records none.
+        max_friction_signals: int = 0,
         # NIU-594: persona config for outcome block parsing
         persona_config: PersonaConfig | None = None,
         # Retained for constructor compatibility. A tool-use response is never
@@ -139,6 +179,7 @@ class RavnAgent:
         stop_on_outcome: bool = False,
         # NIU-1118: hard per-call prompt budget; 0 disables
         max_prompt_tokens: int = 0,
+        compaction_target_tokens: int = 0,
         context_window_tokens: int = 0,
         token_estimate_safety_factor: float = 1.0,
         # NIU-1118: cap one tool result's contribution to history; 0 disables
@@ -160,7 +201,13 @@ class RavnAgent:
         self._episode_summary_max_chars = episode_summary_max_chars
         self._episode_task_max_chars = episode_task_max_chars
         self._iteration_budget = iteration_budget
+        if compressor is not None and native_compaction is not None:
+            raise ValueError(
+                "RavnAgent was given both a client-side compressor and native compaction; "
+                "a model's context is compacted by one of them, never both"
+            )
         self._compressor = compressor
+        self._native_compaction = native_compaction
         self._prompt_builder = prompt_builder
         # Set identity on prompt_builder if provided — this was missing and caused
         # empty system prompts when using PromptBuilder with personas.
@@ -197,22 +244,36 @@ class RavnAgent:
         self._inject_learnings_enabled = inject_learnings
         self._max_learnings_injected = max_learnings_injected
         self._learning_token_budget = learning_token_budget
+        self._learning_index = learning_index
+        self._learning_entry_max_chars = learning_entry_max_chars
+        self._max_route_recoveries = max(0, max_route_recoveries)
+        self._route_excerpt_chars = route_excerpt_chars
+        self._route_recoveries: list[dict[str, str]] = []
+        self._max_friction_signals = max(0, max_friction_signals)
+        self._friction: list[dict[str, str]] = []
         # NIU-594: persona config for outcome block parsing
         self._persona_config = persona_config
         self._context_window_tokens = max(0, context_window_tokens)
         self._token_estimate_safety_factor = max(1.0, token_estimate_safety_factor)
-        if self._context_window_tokens and self._max_tokens >= self._context_window_tokens:
-            raise ValueError("max_tokens must be smaller than context_window_tokens")
+        # The window is the real bound on a prompt. With an answer cap the cap
+        # is reserved out of it; with none, the prompt may fill it, and an answer
+        # that then does not fit comes back cut off and raises.
+        window_ceiling = self._context_window_tokens
+        if self._context_window_tokens and self._max_tokens is not None:
+            if self._max_tokens >= self._context_window_tokens:
+                raise ValueError("max_tokens must be smaller than context_window_tokens")
+            window_ceiling = self._context_window_tokens - self._max_tokens
         prompt_ceilings = [
-            value
-            for value in (
-                max(0, max_prompt_tokens),
-                max(0, self._context_window_tokens - self._max_tokens),
-            )
-            if value > 0
+            value for value in (max(0, max_prompt_tokens), window_ceiling) if value > 0
         ]
         self._max_prompt_tokens = min(prompt_ceilings) if prompt_ceilings else 0
+        # Compaction aims under the latency target; the ceiling above only refuses.
+        self._compaction_target_tokens = max(0, compaction_target_tokens)
         self._last_prompt_budget_status: dict[str, int | float | bool] = {}
+        self._last_provider_duration_ms: float | None = None
+        self._last_ttft_ms: float | None = None
+        self._last_usage_available = False
+        self._last_usage: TokenUsage | None = None
         # NIU-1118: cap one tool result's contribution to history; 0 disables
         self._max_tool_result_chars = max_tool_result_chars
 
@@ -322,7 +383,7 @@ class RavnAgent:
         """
         total_tokens = self._session.total_usage.total_tokens
         duration_s = round(time.monotonic() - self._session_wall_start, 3)
-        return ravn_session_ended(
+        event = ravn_session_ended(
             session_id=str(self._session.id),
             persona=self._persona,
             outcome=outcome,
@@ -332,6 +393,20 @@ class RavnAgent:
             repo_slug=self._repo_slug,
             correlation_id=self._task_id,
         )
+        if self._route_recoveries:
+            event.payload["route_recoveries"] = [dict(item) for item in self._route_recoveries]
+        friction = [dict(item) for item in self._friction]
+        if (
+            self._max_friction_signals
+            and self._iteration_budget is not None
+            and self._iteration_budget.exhausted
+        ):
+            friction.append(
+                {"kind": "budget_exhausted", "tool": "", "input": "", "detail": outcome}
+            )
+        if friction:
+            event.payload["friction"] = friction
+        return event
 
     async def emit_session_ended(self, outcome: str) -> None:
         """Publish ravn.session.ended to Sleipnir.
@@ -379,6 +454,7 @@ class RavnAgent:
     async def repair_outcome(self, prompt: str) -> TurnResult:
         """Repair output formatting without replaying history or executing tools."""
         if self._iteration_budget is not None and self._iteration_budget.exhausted:
+            self._record_iteration_cap("iteration_budget.total")
             raise MaxIterationsError(self._max_iterations)
         system = "Repair the supplied outcome contract. Preserve the evidence and decisions."
         messages = [{"role": "user", "content": prompt}]
@@ -397,6 +473,13 @@ class RavnAgent:
             system=system,
             model=self._model,
             max_tokens=self._max_tokens,
+        )
+        require_complete(
+            response,
+            knob="llm.max_tokens",
+            budget=self._max_tokens,
+            model=self._model,
+            purpose="outcome repair",
         )
         if self._iteration_budget is not None:
             self._iteration_budget.consume()
@@ -450,10 +533,11 @@ class RavnAgent:
         # rules over many episodes, not per-turn context, so re-reading every
         # turn would spend the budget without changing the content.
         if self._turn_count == 1:
-            await self._inject_learnings()
+            await self._inject_learnings(user_input)
 
         # Check budget before starting the turn.
         if self._iteration_budget is not None and self._iteration_budget.exhausted:
+            self._record_iteration_cap("iteration_budget.total")
             raise MaxIterationsError(self._max_iterations)
 
         # Build the effective system prompt. When using a prompt_builder,
@@ -528,6 +612,7 @@ class RavnAgent:
                     last_tool_result=turn_tool_results[-1] if turn_tool_results else None,
                     interrupted_by=InterruptReason.BUDGET_EXHAUSTED,
                 )
+                self._record_iteration_cap("iteration_budget.total")
                 raise MaxIterationsError(self._max_iterations)
 
             # Optionally compress context before calling the LLM.
@@ -553,103 +638,155 @@ class RavnAgent:
                 explicit=explicit_thinking,
                 last_had_tool_error=last_had_tool_error,
             )
+            recovery_state = "retry_after_tool_error" if last_had_tool_error else "none"
 
-            llm_response = await self._call_llm_streaming(
-                system_prompt=effective_system,
-                messages=messages_for_llm,
-                thinking=thinking_param,
-            )
+            step_attributes = {
+                "ravn.harness.step.id": f"{self._session.id}:{self._turn_count}:{iteration}",
+                "ravn.harness.type": "native",
+                "ravn.harness.phase": "model_turn",
+            }
+            with get_observability().span("ravn harness step", attributes=step_attributes):
+                try:
+                    llm_response = await self._call_llm_streaming(
+                        system_prompt=effective_system,
+                        messages=messages_for_llm,
+                        thinking=thinking_param,
+                    )
+                    # Before anything acts on it: a cut-off answer is not a
+                    # conclusion, and a cut-off tool call has no real arguments.
+                    require_complete(
+                        llm_response,
+                        knob="llm.max_tokens",
+                        budget=self._max_tokens,
+                        model=self._model,
+                        purpose="the agent turn",
+                    )
+                except BaseException as exc:
+                    stop_reason = "aborted" if isinstance(exc, asyncio.CancelledError) else "error"
+                    self._emit_native_harness_step(
+                        iteration=iteration,
+                        prompt_sections=prompt_sections,
+                        message_count=len(messages_for_llm),
+                        response=None,
+                        tool_wall_time_ms=0.0,
+                        recovery_state=stop_reason,
+                        terminal_stop_reason=stop_reason,
+                        llm_error_category=_llm_error_category(exc),
+                    )
+                    raise
 
-            # Consume one iteration from the budget.
-            if self._iteration_budget is not None:
-                self._iteration_budget.consume()
+                # Consume one iteration from the budget.
+                if self._iteration_budget is not None:
+                    self._iteration_budget.consume()
 
-            cumulative_usage = cumulative_usage + llm_response.usage
+                cumulative_usage = cumulative_usage + llm_response.usage
 
-            if llm_response.stop_reason != StopReason.TOOL_USE:
-                if llm_response.content:
-                    await self._channel.emit(
-                        RavnEvent.response(
-                            source=self._source_id,
-                            text=llm_response.content,
-                            correlation_id=self._session.id,
-                            session_id=self._session.id,
+                if llm_response.stop_reason != StopReason.TOOL_USE:
+                    if llm_response.content:
+                        await self._channel.emit(
+                            RavnEvent.response(
+                                source=self._source_id,
+                                text=llm_response.content,
+                                correlation_id=self._session.id,
+                                session_id=self._session.id,
+                            )
+                        )
+                    final_response = llm_response.content
+                    self._session.add_message(
+                        Message(
+                            role="assistant",
+                            content=llm_response.content,
+                            reasoning=llm_response.reasoning,
+                            reasoning_details=llm_response.reasoning_details,
+                            provider_items=llm_response.provider_items,
+                            provider_protocol=llm_response.provider_protocol,
                         )
                     )
-                final_response = llm_response.content
-                self._session.add_message(
+                    self._emit_native_harness_step(
+                        iteration=iteration,
+                        prompt_sections=prompt_sections,
+                        message_count=len(messages_for_llm),
+                        response=llm_response,
+                        tool_wall_time_ms=0.0,
+                        recovery_state=recovery_state,
+                    )
+                    break
+
+                # Track partial response for checkpointing during tool-call iterations.
+                if llm_response.content:
+                    final_response = llm_response.content
+
+                # Append the assistant message (with tool calls) to history.
+                assistant_content = _build_assistant_content(llm_response)
+                self._session.messages.append(
                     Message(
                         role="assistant",
-                        content=llm_response.content,
+                        content=assistant_content,
                         reasoning=llm_response.reasoning,
+                        reasoning_details=llm_response.reasoning_details,
+                        provider_items=llm_response.provider_items,
+                        provider_protocol=llm_response.provider_protocol,
                     )
                 )
-                break
 
-            # Track partial response for checkpointing during tool-call iterations.
-            if llm_response.content:
-                final_response = llm_response.content
+                # Execute all tool calls sequentially and collect results.
+                tool_results_content = []
+                tool_wall_time_ms = 0.0
+                last_had_tool_error = False
+                for tool_call in llm_response.tool_calls:
+                    turn_tool_calls.append(tool_call)
 
-            # Append the assistant message (with tool calls) to history.
-            assistant_content = _build_assistant_content(llm_response)
-            self._session.messages.append(
-                Message(
-                    role="assistant",
-                    content=assistant_content,
-                    reasoning=llm_response.reasoning,
+                    # NIU-537: auto-snapshot before destructive operations.
+                    if (
+                        self._auto_checkpoint_before_destructive
+                        and tool_call.name in DESTRUCTIVE_TOOL_NAMES
+                    ):
+                        await self._maybe_save_snapshot(label=f"auto: before {tool_call.name}")
+
+                    tool_started = time.monotonic()
+                    result = await self._execute_tool(
+                        tool_call, batch_size=len(llm_response.tool_calls)
+                    )
+                    tool_wall_time_ms += (time.monotonic() - tool_started) * 1_000
+
+                    # Inject budget warning into the tool result content.
+                    result = _maybe_append_budget_warning(result, self._iteration_budget)
+
+                    if result.is_error:
+                        last_had_tool_error = True
+                    turn_tool_results.append(result)
+                    tool_results_content.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_call.id,
+                            "content": result.content,
+                            "is_error": result.is_error,
+                        }
+                    )
+
+                    # Write a crash-safe checkpoint after every tool call.
+                    await self._write_checkpoint(
+                        user_input=user_input,
+                        partial_response=final_response,
+                        last_tool_call=tool_call,
+                        last_tool_result=result,
+                        interrupted_by=None,
+                    )
+
+                    # NIU-537: increment tool counter and check cadence/budget triggers.
+                    self._tool_call_count += 1
+                    await self._check_auto_snapshot_triggers(tool_call.name)
+
+                # Append tool results as a user message.
+                self._session.messages.append(Message(role="user", content=tool_results_content))
+                self._emit_native_harness_step(
+                    iteration=iteration,
+                    prompt_sections=prompt_sections,
+                    message_count=len(messages_for_llm),
+                    response=llm_response,
+                    tool_wall_time_ms=tool_wall_time_ms,
+                    recovery_state=recovery_state,
                 )
-            )
-
-            # Execute all tool calls sequentially and collect results.
-            tool_results_content = []
-            last_had_tool_error = False
-            for tool_call in llm_response.tool_calls:
-                turn_tool_calls.append(tool_call)
-
-                # NIU-537: auto-snapshot before destructive operations.
-                if (
-                    self._auto_checkpoint_before_destructive
-                    and tool_call.name in DESTRUCTIVE_TOOL_NAMES
-                ):
-                    await self._maybe_save_snapshot(label=f"auto: before {tool_call.name}")
-
-                result = await self._execute_tool(tool_call)
-
-                # NIU-1118: cap the result BEFORE it enters history — one
-                # oversized result lands in the compression-protected tail
-                # and would make the rest of the turn unrecoverable.
-                result = self._truncate_oversized_tool_result(tool_call, result)
-
-                # Inject budget warning into the tool result content.
-                result = _maybe_append_budget_warning(result, self._iteration_budget)
-
-                if result.is_error:
-                    last_had_tool_error = True
-                turn_tool_results.append(result)
-                tool_results_content.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_call.id,
-                        "content": result.content,
-                        "is_error": result.is_error,
-                    }
-                )
-
-                # Write a crash-safe checkpoint after every tool call.
-                await self._write_checkpoint(
-                    user_input=user_input,
-                    partial_response=final_response,
-                    last_tool_call=tool_call,
-                    last_tool_result=result,
-                    interrupted_by=None,
-                )
-
-                # NIU-537: increment tool counter and check cadence/budget triggers.
-                self._tool_call_count += 1
-                await self._check_auto_snapshot_triggers(tool_call.name)
-
-            # Append tool results as a user message.
-            self._session.messages.append(Message(role="user", content=tool_results_content))
         else:
             await self._write_checkpoint(
                 user_input=user_input,
@@ -658,10 +795,12 @@ class RavnAgent:
                 last_tool_result=turn_tool_results[-1] if turn_tool_results else None,
                 interrupted_by=InterruptReason.BUDGET_EXHAUSTED,
             )
+            self._record_iteration_cap("agent.max_iterations")
             raise MaxIterationsError(self._max_iterations)
 
         self._session.record_turn(cumulative_usage)
         duration_seconds = time.monotonic() - start_time
+        self._record_route_recoveries(turn_tool_calls, turn_tool_results)
 
         # NIU-594: build a partial result to pass into episode extraction
         partial_result = TurnResult(
@@ -934,6 +1073,8 @@ class RavnAgent:
         self,
         tool_call: ToolCall,
         result: ToolResult,
+        *,
+        batch_size: int = 1,
     ) -> ToolResult:
         """Bound a single tool result's contribution to the conversation.
 
@@ -947,11 +1088,20 @@ class RavnAgent:
         prompt budget can actually hold — see
         :meth:`_budget_tool_result_char_limit` for why the configured one alone
         was not enough.
+
+        ``batch_size`` is the number of tool calls the model made in this step.
+        Their results all land in ONE protected message, so the budget-derived
+        allowance for that slot is split between them. Capping each result on
+        its own let four parallel calls put ~4x the slot's allowance into the
+        protected tail; compaction could not shrink it, and the resident's
+        turn died on the prompt budget at 77k against a 64k ceiling.
         """
         content = result.content
         if not isinstance(content, str):
             return result
         budget_limit = self._budget_tool_result_char_limit()
+        if budget_limit > 0 and batch_size > 1:
+            budget_limit //= batch_size
         limits = [value for value in (self._max_tool_result_chars, budget_limit) if value > 0]
         if not limits:
             return result
@@ -959,14 +1109,17 @@ class RavnAgent:
         if len(content) <= limit:
             return result
         dropped = len(content) - limit
-        logger.warning(
-            "tool result for %r truncated: %d of %d chars dropped "
-            "(max_tool_result_chars=%d, prompt-budget limit=%d)",
-            tool_call.name,
-            dropped,
-            len(content),
-            self._max_tool_result_chars,
-            budget_limit,
+        record_truncation(
+            "tools.max_result_chars"
+            if limit == self._max_tool_result_chars
+            else "context_management.max_prompt_tokens",
+            what=f"tool result for {tool_call.name!r}",
+            kept=limit,
+            total=len(content),
+            remedy=(
+                f"the model was told to narrow the query (max_tool_result_chars="
+                f"{self._max_tool_result_chars}, prompt-budget limit={budget_limit})"
+            ),
         )
         marker = (
             f"\n\n[tool result truncated: {dropped} characters beyond the "
@@ -979,7 +1132,26 @@ class RavnAgent:
             is_error=result.is_error,
         )
 
-    async def _inject_learnings(self) -> None:
+    def _record_route_recoveries(
+        self,
+        calls: list[ToolCall],
+        results: list[ToolResult],
+    ) -> None:
+        """Keep this turn's route recoveries and tool friction for the session-ended record."""
+        room = self._max_route_recoveries - len(self._route_recoveries)
+        if room > 0:
+            self._route_recoveries.extend(
+                _route_recoveries(
+                    calls, results, limit=room, excerpt_chars=self._route_excerpt_chars
+                )
+            )
+        room = self._max_friction_signals - len(self._friction)
+        if room > 0:
+            self._friction.extend(
+                _tool_friction(calls, results, limit=room, excerpt_chars=self._route_excerpt_chars)
+            )
+
+    async def _inject_learnings(self, query: str = "") -> None:
         """Put promoted Mímir learnings into the system prompt for this session.
 
         Restored from NIU-588, which added it and was then dropped in c1253e9d
@@ -1012,6 +1184,9 @@ class RavnAgent:
             repo_slug=self._repo_slug,
             max_pages=self._max_learnings_injected,
             token_budget=self._learning_token_budget,
+            query=query,
+            lessons=self._learning_index,
+            entry_max_chars=self._learning_entry_max_chars,
         )
         if learnings_text:
             self._prompt_builder.set_learnings_context(learnings_text)
@@ -1037,6 +1212,8 @@ class RavnAgent:
             to the compactor as an anchor so the structured state document can
             reference relevant past context.
         """
+        if self._native_compaction is not None:
+            return self._drop_natively_compacted_history()
         if self._compressor is None:
             return self._session.messages
 
@@ -1050,7 +1227,7 @@ class RavnAgent:
             self._session.messages,
             system_tokens=system_tokens,
             tool_tokens=tool_tokens,
-            prompt_budget_tokens=self._max_prompt_tokens,
+            prompt_budget_tokens=self._compaction_target_tokens or self._max_prompt_tokens,
             todos=self._session.todos or None,
             memory_summary=memory_summary or None,
         )
@@ -1065,6 +1242,37 @@ class RavnAgent:
                 result.compression_count,
                 result.removed_message_count,
             )
+        return messages
+
+    def _drop_natively_compacted_history(self) -> list[Message]:
+        """Drop the history the provider's latest compaction item already carries.
+
+        With native compaction the provider compacts inside the request and
+        returns an opaque compaction item; everything before it is in that item.
+        Keeping it would grow the history — and the prompt estimate and the
+        checkpoint — without bound while the provider no longer reads it.
+        """
+        messages = self._session.messages
+        start = self._native_compaction.compaction_window_start(
+            [message.to_api_dict() for message in messages]
+        )
+        if start <= 0:
+            return messages
+        original_count = len(messages)
+        del messages[:start]
+        self._last_compression_result = CompressionResult(
+            original_count=original_count,
+            final_count=len(messages),
+            compression_count=1,
+            removed_message_count=start,
+        )
+        logger.info(
+            "Native compaction: dropped %d message(s) the provider's compaction item "
+            "supersedes (%d → %d)",
+            start,
+            original_count,
+            len(messages),
+        )
         return messages
 
     async def _maybe_save_snapshot(self, *, label: str = "") -> None:
@@ -1259,21 +1467,35 @@ class RavnAgent:
             "3. What patterns from previous episodes are confirmed or contradicted?"
         )
 
-        try:
-            response = await self._llm.generate(
-                [{"role": "user", "content": prompt}],
-                tools=[],
-                system=(
-                    "You are Ravn reflecting on a completed task. "
-                    "Be concise, factual, and specific. No preamble."
-                ),
-                model=self._reflection_model,
-                max_tokens=self._reflection_max_tokens,
-            )
-            return response.content
-        except Exception as exc:
-            logger.warning("Reflection LLM call failed: %s", exc)
-            return f"Reflection unavailable: {exc}"
+        response = await self._llm.generate(
+            [{"role": "user", "content": prompt}],
+            tools=[],
+            system=(
+                "You are Ravn reflecting on a completed task. "
+                "Be concise, factual, and specific. No preamble."
+            ),
+            model=self._reflection_model,
+            max_tokens=self._reflection_max_tokens,
+        )
+        # A reasoning model can spend the whole budget thinking and return a
+        # truncated or empty reflection, which would be recorded as if it were
+        # the model's view of the turn.
+        require_complete(
+            response,
+            knob="memory.reflection_max_tokens",
+            budget=self._reflection_max_tokens,
+            model=self._reflection_model,
+            purpose="the post-task reflection",
+        )
+        return response.content
+
+    def _record_iteration_cap(self, knob: str) -> None:
+        """Count a turn stopped by its iteration limit (it raises MaxIterationsError)."""
+        record_cap_hit(
+            knob,
+            f"turn stopped after {self._max_iterations} model iteration(s) with the work "
+            f"unfinished (checkpointed); raise {knob} if the work needs more steps",
+        )
 
     def _resolve_thinking(
         self,
@@ -1304,6 +1526,70 @@ class RavnAgent:
 
         return None
 
+    def _emit_native_harness_step(
+        self,
+        *,
+        iteration: int,
+        prompt_sections: dict[str, int],
+        message_count: int,
+        response: LLMResponse | None,
+        tool_wall_time_ms: float,
+        recovery_state: str,
+        terminal_stop_reason: str | None = None,
+        llm_error_category: str | None = None,
+    ) -> None:
+        """Emit the normalized record without replacing established LLM telemetry."""
+        compression = self._last_compression_result
+        unavailable: dict[str, str] = {"provider_call.id": "provider_does_not_expose_request_id"}
+        observed_usage = self._last_usage if self._last_usage_available else None
+        if observed_usage is None:
+            unavailable["usage"] = (
+                "provider_call_did_not_complete"
+                if response is None
+                else "provider_did_not_report_usage"
+            )
+        if self._last_ttft_ms is None:
+            unavailable["timing.ttft_ms"] = (
+                "provider_call_terminated_before_text"
+                if response is None
+                else "no_streamed_text_token"
+            )
+        if self._last_provider_duration_ms is None:
+            unavailable["timing.provider_duration_ms"] = "provider_duration_not_observed"
+        record = HarnessStepTelemetryRecord(
+            step_id=f"{self._session.id}:{self._turn_count}:{iteration}",
+            session_id=str(self._session.id),
+            task_id=self._task_id,
+            turn=self._turn_count,
+            attempt=iteration,
+            phase="model_turn",
+            harness_type="native",
+            model=self._model,
+            provider=type(self._llm).__name__,
+            provider_call_id=None,
+            context_section_estimates=dict(prompt_sections),
+            context_message_count=message_count,
+            context_tool_schema_count=len(self._tools),
+            compaction_applied=compression.was_compressed if compression is not None else False,
+            compaction_passes=compression.compression_count if compression is not None else 0,
+            compaction_messages_removed=(
+                compression.removed_message_count if compression is not None else 0
+            ),
+            provider_duration_ms=self._last_provider_duration_ms,
+            ttft_ms=self._last_ttft_ms,
+            tool_wall_time_ms=tool_wall_time_ms,
+            tool_call_count=len(response.tool_calls) if response is not None else 0,
+            usage=observed_usage,
+            stop_reason=(
+                str(response.stop_reason) if response is not None else terminal_stop_reason
+            ),
+            llm_error_category=llm_error_category,
+            retry_index=iteration,
+            recovery_state=recovery_state,
+            unavailable=unavailable,
+        )
+        emit_harness_step(record)
+
     async def _call_llm_streaming(
         self,
         system_prompt: SystemPrompt | None = None,
@@ -1330,6 +1616,7 @@ class RavnAgent:
                 "gen_ai.agent.name",
             )
         }
+        self._last_provider_duration_ms = None
         started = time.monotonic()
         with telemetry.span(f"chat {self._model}", attributes=attributes) as span:
             telemetry.event(
@@ -1350,18 +1637,21 @@ class RavnAgent:
                     messages=messages,
                     thinking=thinking,
                 )
-            except Exception:
+            except BaseException:
+                duration = time.monotonic() - started
+                self._last_provider_duration_ms = duration * 1_000
                 telemetry.count(
                     "ravn.agent.llm.calls",
                     attributes={**metric_attributes, "error.type": "exception"},
                 )
                 telemetry.duration(
                     "gen_ai.client.operation.duration",
-                    time.monotonic() - started,
+                    duration,
                     attributes={**metric_attributes, "error.type": "exception"},
                 )
                 raise
             duration = time.monotonic() - started
+            self._last_provider_duration_ms = duration * 1_000
             span.set_attribute("gen_ai.usage.input_tokens", response.usage.input_tokens)
             span.set_attribute("gen_ai.usage.output_tokens", response.usage.output_tokens)
             span.set_attribute("ravn.llm.tool_call_count", len(response.tool_calls))
@@ -1411,9 +1701,17 @@ class RavnAgent:
         """Call the LLM with streaming and accumulate into an LLMResponse."""
         accumulated_text = ""
         accumulated_reasoning = ""
+        accumulated_reasoning_details: list[dict] = []
+        provider_items: list[dict] = []
+        provider_protocol = ""
+        self._last_ttft_ms = None
+        self._last_usage_available = False
+        self._last_usage = None
+        stream_started = time.monotonic()
         tool_calls: list[ToolCall] = []
         final_usage = TokenUsage(input_tokens=0, output_tokens=0)
         stop_reason = StopReason.END_TURN
+        truncated = False
         effective: SystemPrompt = (
             system_prompt if system_prompt is not None else self._system_prompt
         )
@@ -1434,6 +1732,8 @@ class RavnAgent:
             match event.type:
                 case StreamEventType.TEXT_DELTA:
                     if event.text:
+                        if self._last_ttft_ms is None:
+                            self._last_ttft_ms = (time.monotonic() - stream_started) * 1_000
                         accumulated_text += event.text
                         await self._channel.emit(
                             RavnEvent.thought(
@@ -1454,12 +1754,49 @@ class RavnAgent:
                                 self._session.id,
                             )
                         )
+                case StreamEventType.REASONING_DETAILS:
+                    if event.reasoning_details:
+                        accumulated_reasoning_details.extend(event.reasoning_details)
+                case StreamEventType.PROVIDER_ITEMS:
+                    if event.provider_items:
+                        provider_items.extend(event.provider_items)
+                        provider_protocol = event.provider_protocol
                 case StreamEventType.TOOL_CALL:
                     if event.tool_call:
                         tool_calls.append(event.tool_call)
                 case StreamEventType.MESSAGE_DONE:
+                    truncated = truncated or event.stop_reason == StopReason.MAX_TOKENS
                     if event.usage:
                         final_usage = event.usage
+                        self._last_usage = event.usage
+                        self._last_usage_available = True
+                case StreamEventType.STREAM_RESTART:
+                    # The connection dropped mid-answer and the adapter is sending
+                    # the same request again. What arrived belonged to an answer
+                    # that will not complete, and the new one starts over, so none
+                    # of it may reach the turn -- least of all a tool call, which
+                    # would otherwise run once for each attempt. Tools only run
+                    # after this stream ends, so discarding here is sufficient.
+                    if accumulated_text or accumulated_reasoning:
+                        await self._channel.emit(
+                            RavnEvent.thought(
+                                self._source_id,
+                                _STREAM_RESTART_NOTICE,
+                                self._session.id,
+                                self._session.id,
+                            )
+                        )
+                    accumulated_text = ""
+                    accumulated_reasoning = ""
+                    accumulated_reasoning_details = []
+                    provider_items = []
+                    provider_protocol = ""
+                    tool_calls = []
+                    final_usage = TokenUsage(input_tokens=0, output_tokens=0)
+                    truncated = False
+                    self._last_ttft_ms = None
+                    self._last_usage = None
+                    self._last_usage_available = False
 
         # Decided after the stream rather than inside MESSAGE_DONE, because
         # MESSAGE_DONE is not the last event. Servers that send a usage chunk
@@ -1469,6 +1806,8 @@ class RavnAgent:
         # Whether the model asked for tools does not depend on event order.
         if tool_calls:
             stop_reason = StopReason.TOOL_USE
+        if truncated:
+            stop_reason = StopReason.MAX_TOKENS
 
         return LLMResponse(
             content=accumulated_text,
@@ -1476,15 +1815,18 @@ class RavnAgent:
             stop_reason=stop_reason,
             usage=final_usage,
             reasoning=accumulated_reasoning,
+            reasoning_details=accumulated_reasoning_details,
+            provider_items=provider_items,
+            provider_protocol=provider_protocol,
         )
 
-    async def _execute_tool(self, tool_call: ToolCall) -> ToolResult:
+    async def _execute_tool(self, tool_call: ToolCall, *, batch_size: int = 1) -> ToolResult:
         from ravn.tool_observability import execute_observed_tool
 
         return await execute_observed_tool(
             name=tool_call.name,
             arguments=tool_call.input,
-            execute=lambda: self._execute_tool_observed(tool_call),
+            execute=lambda: self._execute_tool_observed(tool_call, batch_size=batch_size),
             call_id=tool_call.id,
             agent_name=self._persona or "ravn",
             conversation_id=str(self._session.id),
@@ -1492,7 +1834,12 @@ class RavnAgent:
             iteration=self._trace_iteration,
         )
 
-    async def _execute_tool_observed(self, tool_call: ToolCall) -> ToolResult:
+    async def _execute_tool_observed(
+        self,
+        tool_call: ToolCall,
+        *,
+        batch_size: int = 1,
+    ) -> ToolResult:
         """Execute a single tool call, enforcing permissions and running hooks.
 
         The ``ask_user`` tool is intercepted before regular dispatch and
@@ -1500,7 +1847,11 @@ class RavnAgent:
         present in the tools registry.
         """
         if tool_call.name == _ASK_USER_TOOL_NAME:
-            return await self._intercept_ask_user(tool_call)
+            return self._truncate_oversized_tool_result(
+                tool_call,
+                await self._intercept_ask_user(tool_call),
+                batch_size=batch_size,
+            )
 
         tool = self._tools.get(tool_call.name)
 
@@ -1576,6 +1927,11 @@ class RavnAgent:
             except Exception as exc:
                 logger.warning("Post-tool hook failed for '%s': %s", tool_call.name, exc)
 
+        # NIU-1118: cap the result BEFORE it enters history — one oversized
+        # result lands in the compression-protected tail and would make the
+        # rest of the turn unrecoverable. Before the event too: an uncapped
+        # result is larger than a NATS message, and the channel loses it.
+        result = self._truncate_oversized_tool_result(tool_call, result, batch_size=batch_size)
         await self._channel.emit(
             RavnEvent.tool_result(
                 self._source_id,
@@ -1687,6 +2043,123 @@ def _infer_tags(tool_names: list[str]) -> list[str]:
     if not tags:
         tags.append("general")
     return tags
+
+
+def _route_recoveries(
+    calls: list[ToolCall],
+    results: list[ToolResult],
+    *,
+    limit: int,
+    excerpt_chars: int,
+) -> list[dict[str, str]]:
+    """Find tool calls that failed and were then recovered by a different route.
+
+    A recovery is a failed call followed, later in the same turn, by a
+    successful call to the same tool with different input — the agent hit a
+    wall and found a way round it. Each failure is paired with the first such
+    success. These come from the tool results themselves, so a lesson tied to
+    one is verified rather than the model's recollection.
+    """
+    if limit <= 0:
+        return []
+    pairs = list(zip(calls, results, strict=False))
+    recoveries: list[dict[str, str]] = []
+    for index, (failed_call, failed_result) in enumerate(pairs):
+        if not failed_result.is_error:
+            continue
+        failed_input = _tool_input_key(failed_call)
+        for later_call, later_result in pairs[index + 1 :]:
+            if later_call.name != failed_call.name or later_result.is_error:
+                continue
+            if _tool_input_key(later_call) == failed_input:
+                continue
+            recoveries.append(
+                {
+                    "tool": failed_call.name,
+                    "failed_input": compact_line(failed_input, limit=excerpt_chars),
+                    "failed_result": compact_line(failed_result.content, limit=excerpt_chars),
+                    "succeeded_input": compact_line(
+                        _tool_input_key(later_call), limit=excerpt_chars
+                    ),
+                    "succeeded_result": compact_line(later_result.content, limit=excerpt_chars),
+                }
+            )
+            break
+        if len(recoveries) >= limit:
+            break
+    return recoveries
+
+
+_TIMEOUT_MARKERS = ("timed out", "timeout")
+
+
+def _recovered_failures(pairs: list[tuple[ToolCall, ToolResult]]) -> set[int]:
+    """Indices of failed calls later recovered by the same tool with other input."""
+    recovered: set[int] = set()
+    for index, (call, result) in enumerate(pairs):
+        if not result.is_error:
+            continue
+        key = _tool_input_key(call)
+        if any(
+            later_call.name == call.name
+            and not later_result.is_error
+            and _tool_input_key(later_call) != key
+            for later_call, later_result in pairs[index + 1 :]
+        ):
+            recovered.add(index)
+    return recovered
+
+
+def _tool_friction(
+    calls: list[ToolCall],
+    results: list[ToolResult],
+    *,
+    limit: int,
+    excerpt_chars: int,
+) -> list[dict[str, str]]:
+    """Tool-level friction in one turn, read from its own tool results.
+
+    ``retry`` is a call repeated with the same input after it failed;
+    ``timeout`` and ``tool_failure`` are failures nothing later recovered (a
+    recovered failure is a route recovery, recorded separately as a
+    workaround). One signal per kind and call.
+    """
+    if limit <= 0:
+        return []
+    pairs = list(zip(calls, results, strict=False))
+    recovered = _recovered_failures(pairs)
+    failed: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
+    signals: list[dict[str, str]] = []
+    for index, (call, result) in enumerate(pairs):
+        key = (call.name, _tool_input_key(call))
+        if key in failed:
+            kind = "retry"
+        elif result.is_error and index not in recovered:
+            lowered = result.content.casefold()
+            kind = "timeout" if any(m in lowered for m in _TIMEOUT_MARKERS) else "tool_failure"
+        else:
+            kind = ""
+        if result.is_error:
+            failed.add(key)
+        if not kind or (kind, *key) in seen:
+            continue
+        seen.add((kind, *key))
+        signals.append(
+            {
+                "kind": kind,
+                "tool": call.name,
+                "input": compact_line(key[1], limit=excerpt_chars),
+                "detail": compact_line(result.content, limit=excerpt_chars),
+            }
+        )
+        if len(signals) >= limit:
+            break
+    return signals
+
+
+def _tool_input_key(call: ToolCall) -> str:
+    return json.dumps(call.input, sort_keys=True, default=str)
 
 
 def _determine_outcome(tool_results: list[ToolResult]) -> Outcome:

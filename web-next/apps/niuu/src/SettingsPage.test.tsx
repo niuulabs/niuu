@@ -4,6 +4,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ConfigProvider, ServicesProvider } from '@niuulabs/plugin-sdk';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  SETUP_SERVICE_KEY,
+  createMockSetupService,
+  type IntegrationConnection,
+} from '@niuulabs/plugin-setup';
 import { SettingsPage } from './SettingsPage';
 
 const apiMocks = vi.hoisted(() => ({
@@ -935,6 +940,170 @@ describe('SettingsPage', () => {
     expect(screen.queryByText('Create a new credential')).toBeNull();
   });
 
+  describe('reconnecting an account that signs in through the provider dialog', () => {
+    const codexAccount = (status: string, errorCode: string | null = null) => ({
+      id: 'codex-1',
+      slug: 'codex',
+      integrationType: 'ai_provider',
+      credentialName: 'codex-work',
+      credentialStatus: status,
+      credentialErrorCode: errorCode,
+      enabled: true,
+      config: {},
+    });
+
+    function mockOpenAIIntegrations(account: ReturnType<typeof codexAccount>) {
+      routerMocks.params = { providerId: 'integrations', sectionId: 'connections' };
+      apiMocks.get.mockImplementation(async (path: string) => {
+        if (path === '/settings') {
+          return {
+            title: 'Integrations',
+            scope: 'user',
+            sections: [
+              {
+                id: 'connections',
+                label: 'Connections',
+                fields: [],
+                resources: [
+                  {
+                    id: 'integration_connections',
+                    type: 'integrations',
+                    label: 'Integration connections',
+                    listPath: '/api/v1/integrations',
+                    catalogPath: '/api/v1/integrations/catalog',
+                    createPath: '/api/v1/integrations',
+                    deletePath: '/api/v1/integrations/{id}',
+                    credentialListPath: '/api/v1/credentials/user',
+                    testPath: '/api/v1/integrations/{id}/test',
+                    oauthAuthorizePath: '/api/v1/integrations/oauth/{slug}/authorize',
+                    oauthDisconnectPath: '/api/v1/integrations/oauth/{slug}/disconnect',
+                    enrollmentStartPath: '/api/v1/integrations/enrollments',
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        if (path === '/api/v1/credentials/user') return { credentials: [] };
+        if (path === '/api/v1/integrations') return [account];
+        if (path === '/api/v1/integrations/catalog') {
+          return [
+            {
+              id: 'codex',
+              slug: 'codex',
+              name: 'OpenAI Codex (ChatGPT)',
+              integration_type: 'ai_provider',
+              auth_type: 'device_code',
+              credential_schema: {},
+              config_schema: {},
+              credential_enrollment: {
+                method: 'codex_device',
+                credential_field: 'auth.json',
+                default_credential_name: 'codex-credentials',
+              },
+              sign_in_available: true,
+            },
+            {
+              id: 'openai',
+              slug: 'openai',
+              name: 'OpenAI',
+              integration_type: 'ai_provider',
+              auth_type: 'api_key',
+              credential_schema: {
+                required: ['api_key'],
+                properties: { api_key: { label: 'API key', type: 'password' } },
+              },
+              config_schema: {},
+            },
+          ];
+        }
+        throw new Error(`Unexpected GET ${path}`);
+      });
+      // The recovery dialog signs in through the setup service, like the chat one.
+      const setup = createMockSetupService({ latencyMs: 0 });
+      vi.spyOn(setup, 'listIntegrations').mockResolvedValue([account as IntegrationConnection]);
+      return setup;
+    }
+
+    it('shows an expired account as needing a reconnect and signs that same account in again', async () => {
+      const setup = mockOpenAIIntegrations(
+        codexAccount('auth_required', 'oauth_reconnect_required'),
+      );
+      const start = vi.spyOn(setup, 'startEnrollment');
+      wrap(
+        <ServicesProvider services={{ [SETUP_SERVICE_KEY]: setup }}>
+          <SettingsPage />
+        </ServicesProvider>,
+      );
+
+      const status = await screen.findByText('codex-work needs reconnecting');
+      expect(status.className).toContain('settings-shell__status--error');
+      expect(
+        screen.getByText('The provider no longer accepts the stored sign-in. Sign in again.'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Connected as/)).toBeNull();
+      expect(screen.getByRole('button', { name: /OpenAI Codex.*reconnect required/ })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Add another OpenAI Codex (ChatGPT) account' }));
+      // The connection list flags it too, with its own Reconnect.
+      expect(screen.getByText(/^Reconnect required\./)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Reconnect codex' })).toBeTruthy();
+
+      const reconnect = screen.getByRole('button', { name: 'Reconnect codex-work' });
+      expect(reconnect.className).not.toContain('settings-shell__save-button--secondary');
+      fireEvent.click(reconnect);
+
+      expect(await screen.findByText('Reconnect an account')).toBeInTheDocument();
+      await screen.findByRole('option', { name: /codex-work/ });
+      expect(screen.getByLabelText('Account')).toHaveValue('codex-1');
+      fireEvent.click(screen.getByTestId('setup-signin-start-codex'));
+      // Same connection id and credential name: the backend refreshes it in place.
+      await waitFor(() =>
+        expect(start).toHaveBeenCalledWith('codex', 'codex-work', 'default', 'codex-1'),
+      );
+      expect(apiMocks.post).not.toHaveBeenCalledWith('/api/v1/integrations', expect.anything());
+
+      const listReads = apiMocks.get.mock.calls.filter(
+        ([path]) => path === '/api/v1/integrations',
+      ).length;
+      fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+      await waitFor(() => expect(screen.queryByText('Reconnect an account')).toBeNull());
+      await waitFor(() =>
+        expect(
+          apiMocks.get.mock.calls.filter(([path]) => path === '/api/v1/integrations').length,
+        ).toBeGreaterThan(listReads),
+      );
+    });
+
+    it('shows a working account as connected and keeps Reconnect as a secondary action', async () => {
+      const setup = mockOpenAIIntegrations(codexAccount('active'));
+      wrap(
+        <ServicesProvider services={{ [SETUP_SERVICE_KEY]: setup }}>
+          <SettingsPage />
+        </ServicesProvider>,
+      );
+
+      const status = await screen.findByText('Connected as codex-work');
+      expect(status.className).toContain('settings-shell__status--success');
+      expect(screen.queryByText(/needs reconnecting/)).toBeNull();
+      expect(screen.queryByText(/^Reconnect required/)).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Reconnect codex' })).toBeNull();
+      expect(screen.getByRole('button', { name: /OpenAI Codex.*· connected/ })).toBeTruthy();
+      const reconnect = screen.getByRole('button', { name: 'Reconnect codex-work' });
+      expect(reconnect.className).toContain('settings-shell__save-button--secondary');
+      fireEvent.click(reconnect);
+      expect(await screen.findByText('Reconnect an account')).toBeInTheDocument();
+    });
+
+    it('still reports the expired account when no setup service can reconnect it', async () => {
+      mockOpenAIIntegrations(codexAccount('auth_required'));
+      wrap(<SettingsPage />);
+
+      expect(await screen.findByText('codex-work needs reconnecting')).toBeInTheDocument();
+      expect(screen.getByText('Its sign-in expired or was revoked.')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Reconnect codex-work' })).toBeNull();
+    });
+  });
+
   it('renders the missing-provider state when a service base URL is not configured', async () => {
     routerMocks.params = { providerId: 'ting', sectionId: '' };
 
@@ -963,7 +1132,7 @@ describe('SettingsPage', () => {
       </ConfigProvider>,
     );
 
-    expect(await screen.findByRole('heading', { name: 'Ting Settings' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Work Settings' })).toBeTruthy();
     expect(
       screen.getByText(
         'This service does not have a live settings endpoint configured in the current host profile.',
@@ -1265,7 +1434,7 @@ describe('SettingsPage', () => {
 
     wrap(<SettingsPage />);
 
-    expect(await screen.findByRole('heading', { name: 'Ting Settings' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Work Settings' })).toBeTruthy();
     expect(await screen.findByText(expectedCopy)).toBeTruthy();
     expect(await screen.findByText('Response detail:')).toBeTruthy();
   });

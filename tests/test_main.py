@@ -1,5 +1,6 @@
 """Tests for the main application factory."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,6 +16,9 @@ from volundr.main import (
     _bootstrap_startup_schema,
     _ensure_preview_cache_dir_writable,
     _load_bifrost_catalog,
+    _log_bifrost_catalog_task_failure,
+    _reconcile_active_loop,
+    _reconcile_resident_runtimes_loop,
     create_app,
 )
 
@@ -27,6 +31,12 @@ def user_repository(monkeypatch):
     repository.create.side_effect = lambda user: user
     monkeypatch.setattr("volundr.main.PostgresUserRepository", lambda _pool: repository)
     return repository
+
+
+@pytest.fixture(autouse=True)
+def _no_notification_dispatcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These lifespans run on a mocked pool; the outbox loop has its own tests."""
+    monkeypatch.setenv("NOTIFICATIONS__DISPATCHER__ENABLED", "false")
 
 
 class TestCreateApp:
@@ -221,6 +231,53 @@ class TestLifespan:
                 assert response.status_code == 200
 
         assert events[:3] == ["external_modules", "bootstrap", "database_pool"]
+
+    def test_health_answers_while_resident_reconcile_is_still_running(self) -> None:
+        """A resident pass that upgrades sandboxes for minutes must not gate the listener."""
+        import threading
+
+        from fastapi.testclient import TestClient
+
+        mock_pool = AsyncMock()
+        mock_pool.get_max_size = MagicMock(return_value=10)
+        started = threading.Event()
+
+        @asynccontextmanager
+        async def _mock_db_pool(_config):
+            yield mock_pool
+
+        async def _never_finishes(_self) -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        with (
+            patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
+            patch("volundr.main.database_pool", _mock_db_pool),
+            patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
+                new=AsyncMock(return_value=0),
+            ),
+            patch(
+                "volundr.domain.services.resident_runtime.ResidentRuntimeService.reconcile_all",
+                new=_never_finishes,
+            ),
+        ):
+            app = create_app()
+            with TestClient(app) as client:
+                assert started.wait(timeout=5)
+                assert client.get("/health").status_code == 200
 
     def test_lifespan_rejects_durable_compute_policy_before_health(self) -> None:
         """A persisted policy cannot make the app healthy with an invalid profile."""
@@ -598,6 +655,61 @@ class TestLifespan:
         subscriber.start.assert_awaited_once()
         subscriber.stop.assert_awaited_once()
 
+    def test_lifespan_starts_and_stops_notification_delivery(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The outbox dispatcher runs for the app's lifetime when notifications are on."""
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("NOTIFICATIONS__DISPATCHER__ENABLED", "true")
+        mock_pool = AsyncMock()
+        mock_pool.get_max_size = MagicMock(return_value=10)
+        delivery = MagicMock()
+        delivery.start = AsyncMock()
+        delivery.stop = AsyncMock()
+        captured: dict[str, object] = {}
+
+        def _fake_delivery(settings, pool, **kwargs):
+            captured.update(kwargs, settings=settings, pool=pool)
+            return delivery
+
+        @asynccontextmanager
+        async def _mock_db_pool(_config):
+            yield mock_pool
+
+        with (
+            patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
+            patch("volundr.main.database_pool", _mock_db_pool),
+            patch("volundr.main._create_notification_delivery", side_effect=_fake_delivery),
+            patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
+                new=AsyncMock(),
+            ),
+        ):
+            app = create_app(public_origin="https://forge.example.com")
+            with TestClient(app) as client:
+                assert client.get("/health").status_code == 200
+                delivery.start.assert_awaited_once()
+                delivery.stop.assert_not_awaited()
+                assert app.state.notification_dispatcher is delivery.dispatcher
+
+        delivery.stop.assert_awaited_once()
+        assert captured["pool"] is mock_pool
+        assert captured["public_origin"] == "https://forge.example.com"
+        assert captured["settings"].notifications.dispatcher.enabled is True
+
 
 class TestBifrostCatalogLoading:
     """Tests for background Bifrost catalog refresh behavior."""
@@ -647,6 +759,81 @@ class TestBifrostCatalogLoading:
 
         assert sleep_calls == [0.1]
         assert [model.id for model in provider.list_models()] == ["gpt-5.5"]
+
+    @pytest.mark.asyncio
+    async def test_load_bifrost_catalog_retries_on_connect_timeout(self):
+        provider = HardcodedPricingProvider()
+        catalog = type(
+            "FakeCatalog",
+            (),
+            {
+                "_base_url": "http://guild.test",
+                "list_models": AsyncMock(
+                    side_effect=[
+                        httpx.ConnectTimeout("slow"),
+                        [ManagedModel(id="gpt-5.5", name="GPT-5.5", vendor="openai")],
+                    ]
+                ),
+            },
+        )()
+
+        with patch("volundr.main.asyncio.sleep", new=AsyncMock()) as sleep:
+            await _load_bifrost_catalog(provider, catalog)
+
+        assert sleep.await_count == 1
+        assert [model.id for model in provider.list_models()] == ["gpt-5.5"]
+
+    @pytest.mark.asyncio
+    async def test_load_bifrost_catalog_raises_on_non_connect_error(self):
+        """A reachable catalog that answers badly is a misconfiguration, not 'not ready'."""
+        provider = HardcodedPricingProvider()
+        request = httpx.Request("GET", "http://guild.test/api/v1/bifrost/models")
+        response = httpx.Response(401, request=request)
+        error = httpx.HTTPStatusError("unauthorized", request=request, response=response)
+        catalog = type(
+            "FakeCatalog",
+            (),
+            {
+                "_base_url": "http://guild.test",
+                "list_models": AsyncMock(side_effect=error),
+            },
+        )()
+
+        with (
+            patch("volundr.main.asyncio.sleep", new=AsyncMock()) as sleep,
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await _load_bifrost_catalog(provider, catalog)
+
+        assert sleep.await_count == 0
+        assert catalog.list_models.await_count == 1
+        assert provider.list_models() == []
+
+    @pytest.mark.asyncio
+    async def test_catalog_task_failure_is_logged_at_error_with_remedy(self, caplog):
+        async def _fail() -> None:
+            raise RuntimeError("boom")
+
+        task = asyncio.create_task(_fail())
+        task.add_done_callback(_log_bifrost_catalog_task_failure)
+        with caplog.at_level("ERROR", logger="volundr.main"):
+            await asyncio.gather(task, return_exceptions=True)
+            await asyncio.sleep(0)
+
+        [record] = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert "bifrost.url" in record.getMessage()
+        assert record.exc_info is not None
+
+    @pytest.mark.asyncio
+    async def test_catalog_task_cancellation_is_not_logged(self, caplog):
+        task = asyncio.create_task(asyncio.sleep(10))
+        task.add_done_callback(_log_bifrost_catalog_task_failure)
+        task.cancel()
+        with caplog.at_level("ERROR", logger="volundr.main"):
+            await asyncio.gather(task, return_exceptions=True)
+            await asyncio.sleep(0)
+
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
 
     def test_lifespan_does_not_block_on_unavailable_bifrost_catalog_startup(self):
         """Volundr should boot and keep retrying when Bifrost is not ready yet."""
@@ -743,3 +930,68 @@ async def test_periodic_broadcast_sends_a_figure_less_stats_tick_then_a_heartbea
 
     assert (tick.type, tick.data) == (EventType.STATS_UPDATED, {})
     assert heartbeat.type is EventType.HEARTBEAT
+
+
+class TestStartupReconcilePasses:
+    """The startup passes run first in their background loops, never before bind."""
+
+    @staticmethod
+    def _stop_at_first_sleep(order: list[str]):
+        async def _sleep(_seconds: float) -> None:
+            order.append("sleep")
+            raise asyncio.CancelledError
+
+        return _sleep
+
+    async def test_session_loop_reconciles_before_its_first_sleep(self, monkeypatch) -> None:
+        order: list[str] = []
+        service = MagicMock()
+        service.reconcile_active_sessions = AsyncMock(
+            side_effect=lambda: order.append("reconcile") or 0
+        )
+        monkeypatch.setattr("volundr.main.asyncio.sleep", self._stop_at_first_sleep(order))
+
+        await _reconcile_active_loop(service, interval_seconds=60)
+
+        assert order == ["reconcile", "sleep"]
+
+    async def test_session_loop_runs_one_pass_when_periodic_reconcile_is_off(
+        self, monkeypatch
+    ) -> None:
+        order: list[str] = []
+        service = MagicMock()
+        service.reconcile_active_sessions = AsyncMock(
+            side_effect=lambda: order.append("reconcile") or 0
+        )
+        monkeypatch.setattr("volundr.main.asyncio.sleep", self._stop_at_first_sleep(order))
+
+        await _reconcile_active_loop(service, interval_seconds=60, periodic=False)
+
+        assert order == ["reconcile"]
+
+    async def test_resident_loop_converges_before_its_first_sleep(self, monkeypatch) -> None:
+        order: list[str] = []
+        service = MagicMock()
+        service.reconcile_all = AsyncMock(side_effect=lambda: order.append("reconcile"))
+        flock = MagicMock(sync=AsyncMock(side_effect=lambda: order.append("flock")))
+        relay = MagicMock(sync=AsyncMock(side_effect=lambda: order.append("relay")))
+        monkeypatch.setattr("volundr.main.asyncio.sleep", self._stop_at_first_sleep(order))
+
+        await _reconcile_resident_runtimes_loop(
+            service, interval_seconds=10.0, flock_adapter=flock, notification_relay=relay
+        )
+
+        assert order == ["reconcile", "flock", "relay", "sleep"]
+
+    async def test_resident_loop_failure_is_logged_and_retried_next_interval(
+        self, monkeypatch, caplog
+    ) -> None:
+        order: list[str] = []
+        service = MagicMock()
+        service.reconcile_all = AsyncMock(side_effect=RuntimeError("openshell unavailable"))
+        monkeypatch.setattr("volundr.main.asyncio.sleep", self._stop_at_first_sleep(order))
+
+        await _reconcile_resident_runtimes_loop(service, interval_seconds=10.0)
+
+        assert order == ["sleep"]
+        assert "Resident runtime reconcile iteration failed" in caplog.text

@@ -9,7 +9,7 @@ import {
 } from '../adapters/mock';
 import { LIST_LIMIT } from '../domain';
 import { wrapWithValkyrie } from '../testing/wrapWithValkyrie';
-import { ValkyrieConsolePage } from './ValkyrieConsolePage';
+import { DreamPanel, ValkyrieConsolePage } from './ValkyrieConsolePage';
 
 describe('ValkyrieConsolePage', () => {
   it('shows the loading state first', () => {
@@ -23,9 +23,7 @@ describe('ValkyrieConsolePage', () => {
 
     expect(await screen.findByTestId('valkyrie-console-page')).toBeInTheDocument();
     expect(screen.getByTestId('valkyrie-roster')).toHaveTextContent(seed.valkyries[0]!.name);
-    expect(screen.getByTestId('valkyrie-console-hero')).toHaveTextContent(
-      `valkyrie:${seed.valkyries[0]!.name}`,
-    );
+    expect(screen.getByTestId('valkyrie-console-hero')).toHaveTextContent(seed.valkyries[0]!.name);
     expect(screen.getByTestId('valkyrie-current-situation')).toBeInTheDocument();
     expect(screen.getByTestId('valkyrie-signal-timeline')).toBeInTheDocument();
     expect(screen.getByTestId('valkyrie-authority')).toHaveTextContent('Authority & autonomy');
@@ -865,7 +863,7 @@ describe('hero actions', () => {
     // Saga's host environment has no huddle in the seed.
     await user.click(screen.getByRole('button', { name: /Saga/ }));
     await waitFor(() =>
-      expect(screen.getByTestId('valkyrie-console-hero')).toHaveTextContent('valkyrie:Saga'),
+      expect(screen.getByTestId('valkyrie-console-hero')).toHaveTextContent('Saga'),
     );
     expect(screen.getByTestId('valkyrie-join-huddle')).toBeDisabled();
     expect(screen.getByTestId('valkyrie-direct-message')).toBeDisabled();
@@ -896,4 +894,111 @@ it('shows an autonomy update failure instead of silently resetting the selector'
   await user.click(screen.getByTestId('valkyrie-change-autonomy'));
   await user.selectOptions(screen.getByLabelText('Autonomy mode for Sigrun'), ['guarded']);
   expect(await screen.findByRole('alert')).toHaveTextContent('Valkyrie not found');
+});
+
+describe('DreamPanel', () => {
+  const seed = createSeedValkyrieDashboard();
+  const byId = (id: string) => seed.valkyries.find((entry) => entry.id === id)!;
+
+  it('summarises the last dream and lists what it retired and merged', () => {
+    render(<DreamPanel valkyrie={byId('valkyrie-valhalla-sigrun')} />);
+
+    const panel = screen.getByTestId('valkyrie-last-dream');
+    expect(screen.getByTestId('dream-status')).toHaveTextContent(/^Completed · \d+[smhd] ago$/);
+    expect(panel).toHaveTextContent('1m 35s');
+    expect(panel).toHaveTextContent('1 promoted · 1 stale');
+    expect(panel).toHaveTextContent('2 merged of 38 reviewed');
+    expect(panel).toHaveTextContent('1 superseded · 1 debug leftover · 1 unused');
+    expect(panel).toHaveTextContent('1 held promotions · 1 improvements');
+
+    const retired = screen.getByTestId('dream-retired-tools');
+    expect(retired).toHaveTextContent('Learned tools retired · 3');
+    expect(retired).toHaveTextContent('k8s_quantity_parse_v1');
+    expect(retired).toHaveTextContent('replaced by k8s_quantity_parse');
+    expect(retired).toHaveTextContent('scratch probe from an investigation');
+    expect(screen.getByTestId('dream-lessons-merged')).toHaveTextContent(
+      'lessons/oom-restart-loop.md',
+    );
+    expect(screen.getByTestId('dream-lessons-superseded')).toHaveTextContent(
+      'lessons/evict-on-pressure.md',
+    );
+    expect(screen.getByTestId('dream-skills-stale')).toHaveTextContent('legacy-node-drain');
+    expect(screen.getByTestId('dream-promotions-held')).toHaveTextContent('noisy-probe-mute');
+    expect(screen.getByTestId('dream-improvement-actions')).toHaveTextContent(
+      'commission_tool:friction-node-pressure',
+    );
+    // Empty lists are not rendered as empty sections.
+    expect(screen.queryByTestId('dream-lessons-pruned')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('dream-restored-tools')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('dream-error')).not.toBeInTheDocument();
+  });
+
+  it('shows a failed dream as failed, with its error', () => {
+    render(<DreamPanel valkyrie={byId('valkyrie-printer-eir')} />);
+
+    expect(screen.getByTestId('dream-status')).toHaveTextContent(/^Failed/);
+    expect(screen.getByTestId('dream-status')).toHaveClass('niuu:text-critical');
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'MimirUnavailable: 503 from mimir-shared while listing lessons',
+    );
+    const panel = screen.getByTestId('valkyrie-last-dream');
+    expect(panel).toHaveTextContent('not due');
+    expect(panel).toHaveTextContent('not curated');
+    expect(panel).toHaveTextContent('no learned-tool curator on this resident');
+  });
+
+  it('says so when a failed dream reported no error text', () => {
+    const eir = byId('valkyrie-printer-eir');
+    render(<DreamPanel valkyrie={{ ...eir, lastDream: { ...eir.lastDream!, error: '' } }} />);
+    expect(screen.getByRole('alert')).toHaveTextContent('failed without reporting an error');
+  });
+
+  it('says how much lesson curation left for the next dream', () => {
+    const sigrun = byId('valkyrie-valhalla-sigrun');
+    const dream = sigrun.lastDream!;
+    render(
+      <DreamPanel
+        valkyrie={{
+          ...sigrun,
+          lastDream: { ...dream, lessons: { ...dream.lessons!, remaining: 127 } },
+        }}
+      />,
+    );
+    expect(screen.getByTestId('valkyrie-last-dream')).toHaveTextContent(
+      '2 merged of 38 reviewed · 127 lessons left for the next dream',
+    );
+  });
+
+  it('notes a curator run that retired nothing', () => {
+    const sigrun = byId('valkyrie-valhalla-sigrun');
+    const dream = sigrun.lastDream!;
+    render(
+      <DreamPanel
+        valkyrie={{
+          ...sigrun,
+          lastDream: {
+            ...dream,
+            learnedTools: { ...dream.learnedTools!, retired: [], retiredByReason: {} },
+          },
+        }}
+      />,
+    );
+    expect(screen.getByTestId('valkyrie-last-dream')).toHaveTextContent(
+      '19 installed, none retired',
+    );
+    expect(screen.queryByTestId('dream-retired-tools')).not.toBeInTheDocument();
+  });
+
+  it('explains a resident that has not reported a finished dream', () => {
+    const { rerender } = render(<DreamPanel valkyrie={byId('valkyrie-host-email')} />);
+    expect(screen.getByTestId('valkyrie-last-dream')).toHaveTextContent(
+      'No finished consolidation dream has been reported by this resident yet.',
+    );
+    expect(screen.queryByTestId('dream-status')).not.toBeInTheDocument();
+
+    rerender(<DreamPanel valkyrie={{ ...byId('valkyrie-host-email'), wakefulness: 'dreaming' }} />);
+    expect(screen.getByTestId('valkyrie-last-dream')).toHaveTextContent(
+      'Dreaming now — no earlier dream has been reported.',
+    );
+  });
 });

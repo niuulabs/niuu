@@ -1,6 +1,61 @@
 """Unit tests for the FanInBuffer in drive_loop.py."""
 
-from ravn.drive_loop import FanInBuffer
+from ravn.drive_loop import GATE_FEEDBACK_KEY, FanInBuffer
+
+
+class TestGateFeedback:
+    """A person's gate comment stays with the work until someone has checked it."""
+
+    @staticmethod
+    def _accept(payload: dict):
+        return FanInBuffer().try_accept_consumer(
+            event_type="code.changed",
+            event_payload=payload,
+            root_correlation_id="root1",
+            persona_name="reviewer",
+            consumes_event_types=["code.changed"],
+            strategy="merge",
+        )
+
+    def test_the_work_after_a_gate_carries_its_comment_to_the_reviewer(self):
+        result = self._accept(
+            {"persona": "coder", "outcome": {}, GATE_FEEDBACK_KEY: "Handle the empty case."}
+        )
+
+        assert result.gate_feedback == "Handle the empty case."
+        assert "Reviewer comment, which this work must address" in result.merged_context
+        assert "Handle the empty case." in result.merged_context
+
+    def test_a_gate_answer_starts_the_chain(self):
+        result = self._accept(
+            {"persona": "workflow-gate", "fields": {"notes": "Handle the empty case."}}
+        )
+
+        assert result.gate_feedback == "Handle the empty case."
+
+    def test_another_personas_notes_are_not_a_persons_comment(self):
+        result = self._accept({"persona": "coder", "fields": {"notes": "Refactored a helper."}})
+
+        assert result.gate_feedback == ""
+        assert "Reviewer comment" not in result.merged_context
+
+    def test_a_merged_fan_in_keeps_the_comment(self):
+        buffer = FanInBuffer()
+        for event_type, payload in (
+            ("code.changed", {"persona": "coder", GATE_FEEDBACK_KEY: "Handle the empty case."}),
+            ("security.checked", {"persona": "security"}),
+        ):
+            result = buffer.try_accept_consumer(
+                event_type=event_type,
+                event_payload=payload,
+                root_correlation_id="root1",
+                persona_name="reviewer",
+                consumes_event_types=["code.changed", "security.checked"],
+                strategy="all_must_pass",
+            )
+
+        assert result.gate_feedback == "Handle the empty case."
+        assert "Handle the empty case." in result.merged_context
 
 
 class TestMergeStrategy:
@@ -19,6 +74,35 @@ class TestMergeStrategy:
         assert result is not None
         assert result.persona_name == "reviewer"
         assert "code.changed" in result.merged_context
+
+    def test_a_gate_comment_reaches_the_agent(self):
+        buf = FanInBuffer()
+        result = buf.try_accept_consumer(
+            event_type="review.changes_requested",
+            event_payload={
+                "persona": "workflow-gate",
+                "fields": {"verdict": "changes_requested", "notes": "Handle the empty case."},
+            },
+            root_correlation_id="root1",
+            persona_name="coder",
+            consumes_event_types=["delivery.requested", "review.changes_requested"],
+            strategy="any_pass",
+        )
+        assert result is not None
+        assert "Handle the empty case." in result.merged_context
+
+    def test_an_event_without_a_comment_adds_nothing(self):
+        buf = FanInBuffer()
+        result = buf.try_accept_consumer(
+            event_type="merge.approved",
+            event_payload={"persona": "workflow-gate", "fields": {"notes": "  "}},
+            root_correlation_id="root1",
+            persona_name="closer",
+            consumes_event_types=["merge.approved"],
+            strategy="merge",
+        )
+        assert result is not None
+        assert "Reviewer comment" not in result.merged_context
 
     def test_multi_event_merge_returns_immediately(self):
         buf = FanInBuffer()
@@ -320,6 +404,19 @@ class TestProducerAggregation:
         assert result is not None
         assert buf.pending_count == 0
         assert "PASS" in result.merged_context
+
+    def test_non_contributor_outcome_opens_no_slot(self):
+        buf = FanInBuffer()
+        buf.set_contributors("review.verdict", ["reviewer", "security-auditor"])
+        result = buf.try_accept_producer(
+            contributes_to="review.verdict",
+            producer_persona="coder",
+            event_type="code.changed",
+            event_payload={"persona": "coder"},
+            root_correlation_id="root1",
+        )
+        assert result is None
+        assert buf.pending_count == 0
 
     def test_no_contributors_registered_returns_none(self):
         buf = FanInBuffer()

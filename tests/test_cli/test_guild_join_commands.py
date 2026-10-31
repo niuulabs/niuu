@@ -139,6 +139,54 @@ class TestJoin:
 
         AuthConfig(**saved["host_auth"])
 
+    def test_records_this_hosts_forge_instance_in_the_guild(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Forge reads the same file to serve GET /api/v1/forge/guild."""
+        config_file = tmp_path / "config.yaml"
+        monkeypatch.setenv("NIUU_CONFIG", str(config_file))
+        app = _build_test_app(_joinable_settings())
+        join_result = {
+            "nodeId": "node-123",
+            "instances": [
+                {
+                    "id": "inst-1",
+                    "kind": "volundr",
+                    "slug": "spark-1",
+                    "name": "spark-1",
+                    "baseUrl": "https://spark-1.lan:8080",
+                    "visibility": "user",
+                }
+            ],
+            "identity": {"mode": "none", "issuers": []},
+        }
+        fake_identity = AsyncMock()
+        fake_identity.public_key_b64 = "cHVibGljLWtleQ=="
+        with (
+            patch("cli.auth.node_key.NodeIdentity.load_or_create", return_value=fake_identity),
+            patch("cli.api.guild.join", AsyncMock(return_value=join_result)),
+        ):
+            result = runner.invoke(
+                app,
+                ["join", "https://guild.example.com", "--code", "the-code", "--name", "spark-1"],
+            )
+
+        assert result.exit_code == 0, result.output
+        saved = yaml.safe_load(config_file.read_text())
+        assert saved["guild"] == {
+            "url": "https://guild.example.com",
+            "node_id": "node-123",
+            "instance_id": "inst-1",
+            "instance_name": "spark-1",
+            "instance_slug": "spark-1",
+        }
+
+        from niuu.config_models import GuildMembershipConfig
+
+        membership = GuildMembershipConfig(**saved["guild"]).membership()
+        assert membership is not None and membership.instance is not None
+        assert membership.instance.id == "inst-1"
+
     def test_reports_guild_api_errors(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setenv("NIUU_CONFIG", str(tmp_path / "config.yaml"))
         app = _build_test_app(_joinable_settings())

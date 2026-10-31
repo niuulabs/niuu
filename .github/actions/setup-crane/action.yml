@@ -1,0 +1,32 @@
+name: Set up crane
+description: >-
+  Install a pinned, checksum-verified crane (google/go-containerregistry) for
+  registry-side tag and digest operations. Linux x86_64 runners only.
+inputs:
+  version:
+    description: go-containerregistry release to install.
+    required: false
+    default: "0.22.1"
+  sha256:
+    description: SHA-256 of go-containerregistry_Linux_x86_64.tar.gz for that release.
+    required: false
+    default: "0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0"
+runs:
+  using: composite
+  steps:
+    - name: Install crane
+      shell: bash
+      env:
+        CRANE_VERSION: ${{ inputs.version }}
+        CRANE_SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        archive="${RUNNER_TEMP}/go-containerregistry.tar.gz"
+        curl --retry 5 --retry-all-errors --retry-delay 2 -sSfL \
+          "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+          -o "${archive}"
+        echo "${CRANE_SHA256}  ${archive}" | sha256sum -c -
+        mkdir -p "${RUNNER_TEMP}/crane-bin"
+        tar -xzf "${archive}" -C "${RUNNER_TEMP}/crane-bin" crane
+        echo "${RUNNER_TEMP}/crane-bin" >> "$GITHUB_PATH"
+        "${RUNNER_TEMP}/crane-bin/crane" version

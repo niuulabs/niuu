@@ -7,15 +7,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import ravn.cli.commands as commands_mod
 from ravn.adapters.realm.client import BuildGrant
 from ravn.adapters.tools.build_tool import attach_build_tool
+from ravn.cli import commands as commands_mod
 from ravn.cli.commands import (
     _attach_agent_build_tool,
     _build_tool_build_backend,
     _resolve_realm_build_config,
 )
+from ravn.cli.runtime_builders import require_tool_build_push
 from ravn.config import Settings
+from ravn.domain.exceptions import ConfigurationError
 
 
 @pytest.fixture(autouse=True)
@@ -85,6 +87,8 @@ def test_tool_mcp_attaches_build_tool_for_allowed_persona(tmp_path) -> None:
         tmp_path,
         enabled=True,
         settings=settings,
+        # Lexical lesson matching (the default) asks for no meaning-based judge.
+        capability_matcher=None,
     )
     server.run_stdio.assert_awaited_once()
 
@@ -198,6 +202,61 @@ def test_build_tool_build_backend_injects_a2a_activity_emitter() -> None:
     assert backend is not None
     assert backend._activity_emitter is emitter
     assert backend._push_callback_url == "https://ivaldi.example/a2a/push"
+
+
+_A2A_EVOLUTION = {
+    "tool_build_adapter": "ravn.adapters.tool_build.A2AToolBuildBackend",
+    "tool_build_kwargs": {"card_url": "https://ting.example/.well-known/agent-card.json"},
+}
+_PUSH_HTTP = {"enabled": True, "a2a_push_enabled": True}
+
+
+def test_require_tool_build_push_accepts_a_push_reachable_resident() -> None:
+    settings = Settings(
+        gateway={
+            "platform": {"a2a_push_callback_url": "https://ivaldi.example/a2a/push"},
+            "channels": {"http": _PUSH_HTTP},
+        },
+        resident_evolution=_A2A_EVOLUTION,
+    )
+
+    require_tool_build_push(settings)
+
+
+def test_require_tool_build_push_ignores_inline_building() -> None:
+    require_tool_build_push(Settings())
+
+
+def test_require_tool_build_push_ignores_backends_without_push() -> None:
+    settings = Settings(
+        resident_evolution={
+            "tool_build_adapter": "ravn.adapters.tool_build.ForgeSessionToolBuildBackend",
+        }
+    )
+
+    require_tool_build_push(settings)
+
+
+def test_require_tool_build_push_rejects_missing_callback_url() -> None:
+    settings = Settings(
+        gateway={"channels": {"http": _PUSH_HTTP}},
+        resident_evolution=_A2A_EVOLUTION,
+    )
+
+    with pytest.raises(ConfigurationError, match="a2a_push_callback_url"):
+        require_tool_build_push(settings)
+
+
+def test_require_tool_build_push_rejects_disabled_push_channel() -> None:
+    settings = Settings(
+        gateway={"platform": {"a2a_push_callback_url": "https://ivaldi.example/a2a/push"}},
+        resident_evolution=_A2A_EVOLUTION,
+    )
+
+    with pytest.raises(ConfigurationError, match="a2a_push_enabled") as raised:
+        require_tool_build_push(settings)
+
+    assert "a2a_push_callback_url" not in str(raised.value)
 
 
 # ---------------------------------------------------------------------------

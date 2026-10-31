@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ChatConnectionsButton } from '@niuulabs/ui';
 import { createMockSetupService } from '../adapters/mock';
 import { renderWithSetup } from '../testing/renderWithSetup';
-import { ConnectionRecoveryProvider } from './ConnectionRecoveryProvider';
+import { ConnectionRecoveryDialog, ConnectionRecoveryProvider } from './ConnectionRecoveryProvider';
 
 const account = {
   id: 'account-1',
@@ -37,7 +37,10 @@ describe('chat account recovery', () => {
     await screen.findByRole('option', { name: /codex-work/ });
     fireEvent.change(screen.getByLabelText('Account'), { target: { value: account.id } });
     fireEvent.click(screen.getByTestId('setup-signin-start-codex'));
-    await waitFor(() => expect(start).toHaveBeenCalledWith('codex', 'codex-work', 'default'));
+    // The sign-in names the existing connection, so the backend refreshes it in place.
+    await waitFor(() =>
+      expect(start).toHaveBeenCalledWith('codex', 'codex-work', 'default', account.id),
+    );
     expect(screen.getByText('Current conversation')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Return to chat' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -90,6 +93,35 @@ describe('chat account recovery', () => {
     expect(connect).toHaveBeenLastCalledWith(
       expect.objectContaining({ connectionId: account.id, credentialName: 'openai-work' }),
     );
+  });
+
+  it('opens on a given account with Settings copy and explains why it needs a sign-in', async () => {
+    const service = createMockSetupService({ latencyMs: 0 });
+    vi.spyOn(service, 'listIntegrations').mockResolvedValue([
+      { ...account, credentialErrorCode: 'oauth_reconnect_required' },
+    ]);
+    const start = vi.spyOn(service, 'startEnrollment');
+    const onClose = vi.fn();
+    renderWithSetup(
+      <ConnectionRecoveryDialog
+        context="settings"
+        initialConnectionId={account.id}
+        onClose={onClose}
+      />,
+      { service },
+    );
+    await screen.findByRole('option', { name: /codex-work/ });
+    expect(screen.getByLabelText('Account')).toHaveValue(account.id);
+    expect(screen.getByTestId('setup-recovery-problem')).toHaveTextContent(
+      'The provider no longer accepts the stored sign-in',
+    );
+    expect(screen.queryByRole('button', { name: 'Return to chat' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('setup-signin-start-codex'));
+    await waitFor(() =>
+      expect(start).toHaveBeenCalledWith('codex', 'codex-work', 'default', account.id),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(onClose).toHaveBeenCalled();
   });
 
   it('reports account list failures and allows retry', async () => {

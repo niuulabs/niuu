@@ -18,6 +18,7 @@ import httpx
 
 from ravn.adapters.tools.mimir_tools import (
     MimirIngestTool,
+    MimirPublishArtifactTool,
     MimirPublishFilesTool,
     MimirReadSourceTool,
     MimirReadTool,
@@ -161,6 +162,27 @@ async def _run_write(args: argparse.Namespace) -> int:
     return _print_result(result)
 
 
+async def _run_publish_artifact(args: argparse.Namespace) -> int:
+    if args.content:
+        content = str(args.content)
+    elif args.content_file:
+        file_path = Path(str(args.content_file)).expanduser()
+        content = (
+            sys.stdin.read() if str(file_path) == "-" else file_path.read_text(encoding="utf-8")
+        )
+    else:
+        content = sys.stdin.read()
+    tool = MimirPublishArtifactTool(_adapter())
+    result = await tool.execute(
+        {
+            "path": args.path,
+            "content": content,
+            "mimir": args.mimir or None,
+        }
+    )
+    return _print_result(result)
+
+
 async def _run_publish_files(args: argparse.Namespace) -> int:
     tool = MimirPublishFilesTool(_adapter(), workspace=_workspace())
     result = await tool.execute({"paths": list(args.paths), "mimir": args.mimir or None})
@@ -227,6 +249,12 @@ def _build_parser() -> argparse.ArgumentParser:
     write.add_argument("--content-file", default="-")
     write.add_argument("--mimir", default="")
 
+    publish_artifact = sub.add_parser("publish-artifact")
+    publish_artifact.add_argument("path")
+    publish_artifact.add_argument("--content", default="")
+    publish_artifact.add_argument("--content-file", default="")
+    publish_artifact.add_argument("--mimir", default="")
+
     publish_files = sub.add_parser("publish-files")
     publish_files.add_argument("paths", nargs="+")
     publish_files.add_argument("--mimir", default="")
@@ -256,6 +284,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_run_read_source(args))
     if command == "write":
         return asyncio.run(_run_write(args))
+    if command == "publish-artifact":
+        return asyncio.run(_run_publish_artifact(args))
     if command == "publish-files":
         return asyncio.run(_run_publish_files(args))
     if command == "related":

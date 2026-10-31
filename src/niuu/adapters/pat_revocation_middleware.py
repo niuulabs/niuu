@@ -22,9 +22,16 @@ from niuu.domain.health_paths import DEFAULT_HEALTH_PATHS
 from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 
 #: Exact paths served without identity: the root and per-service health
-#: checks Guild probes (see DEFAULT_HEALTH_PATHS) and the workload JWKS.
+#: checks Guild probes (see DEFAULT_HEALTH_PATHS), the workload JWKS, and the
+#: A2A Agent Card — a discovery document clients resolve before they hold any
+#: platform credential (Envoy's jwt_authn bypass lists it for the same reason).
 _UNAUTHENTICATED_READ_PATHS = frozenset(
-    {"/health", "/api/v1/tokens/workload/jwks", *DEFAULT_HEALTH_PATHS.values()}
+    {
+        "/health",
+        "/api/v1/tokens/workload/jwks",
+        "/.well-known/agent-card.json",
+        *DEFAULT_HEALTH_PATHS.values(),
+    }
 )
 #: Node-originated Guild endpoints carry no bearer JWT at all — they are
 #: authenticated by an Ed25519 signature over the request instead (see
@@ -66,6 +73,17 @@ class PATRevocationMiddleware:
         ):
             await self.app(scope, receive, send)
             return
+        if (
+            scope["type"] == "http"
+            and scope.get("method") in ("GET", "HEAD")
+            and scope["path"] in _UNAUTHENTICATED_READ_PATHS
+        ):
+            # Served without identity, so a credential the caller happens to
+            # present grants nothing here and must not refuse the read either.
+            # A least-privilege scoped token was denied the public Agent Card
+            # while an anonymous request got it.
+            await self.app(scope, receive, send)
+            return
         validator = getattr(scope["app"].state, "pat_validator", None)
         headers = Headers(scope=scope)
         auth = headers.get("authorization", "")
@@ -95,11 +113,7 @@ class PATRevocationMiddleware:
             return
         if scope["type"] == "http":
             if self._authenticate_http and not (
-                (
-                    scope.get("method") in ("GET", "HEAD")
-                    and scope["path"] in _UNAUTHENTICATED_READ_PATHS
-                )
-                or (scope.get("method") == "POST" and _NODE_SIGNED_PATH.fullmatch(scope["path"]))
+                scope.get("method") == "POST" and _NODE_SIGNED_PATH.fullmatch(scope["path"])
             ):
                 if not isinstance(identity, HeaderAuthenticationPort):
                     await JSONResponse(
@@ -211,6 +225,7 @@ class PATRevocationMiddleware:
                     try:
                         await asyncio.wait_for(closing.wait(), timeout=delay)
                     except TimeoutError:
+                        # The deadline triggers the next expiry and revocation check.
                         pass
                     if closed or not await valid():
                         break

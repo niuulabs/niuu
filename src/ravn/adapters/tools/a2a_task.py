@@ -13,6 +13,8 @@ from uuid import uuid4
 from niuu.domain.agent_directory import AgentDirectoryEntry
 from niuu.observability import get_observability
 from ravn.adapters.tool_build.http import AsyncJsonHttpClient, normalize_http_origin
+from ravn.cap_telemetry import record_cap_hit
+from ravn.domain.a2a_status import a2a_status_text
 from ravn.domain.models import ToolResult
 from ravn.ports.agent_directory import PeerAgentDirectoryPort
 from ravn.ports.tool import ToolPort
@@ -24,6 +26,8 @@ _DEFAULT_RESULT_MAX_CHARS = 12_000
 _DEFAULT_MESSAGE_MAX_CHARS = 12_000
 _PERSISTED_MESSAGE_ID = object()
 _PERSISTED_AUTH_TOKEN = object()
+_TICKET_METADATA_KEY = "ticket"
+_TICKET_PINNED_METADATA = ("repo", "branch", "baseBranch", _TICKET_METADATA_KEY)
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +49,10 @@ class A2ATaskTool(ToolPort):
         activity_finder: A2AActivityFinder | None = None,
         default_connection_id: str = "",
         default_metadata: dict[str, Any] | None = None,
+        gate_decisions: bool = True,
         push_callback_url: str = "",
     ) -> None:
+        self._gate_decisions = gate_decisions
         self._directory = agent_directory
         self._client = client
         self._trusted_origins = frozenset(
@@ -101,6 +107,13 @@ class A2ATaskTool(ToolPort):
                     "type": "string",
                     "description": "A2A task id; required for get, reply, and cancel.",
                 },
+                "context_id": {
+                    "type": "string",
+                    "description": (
+                        "For start: the context_id of an earlier task with the same peer, "
+                        "to continue that conversation instead of opening a new one."
+                    ),
+                },
                 "answer": {
                     "type": "string",
                     "description": "Answer or requested revision; required for reply.",
@@ -139,6 +152,16 @@ class A2ATaskTool(ToolPort):
     def required_permission(self) -> str:
         return "a2a:task"
 
+    def _pinned_metadata(self) -> dict[str, Any]:
+        """What ties a launch to its ticket and branch is set for it, never by the model."""
+        if _TICKET_METADATA_KEY not in self._default_metadata:
+            return {}
+        return {
+            key: self._default_metadata[key]
+            for key in _TICKET_PINNED_METADATA
+            if key in self._default_metadata
+        }
+
     async def execute(self, input: dict) -> ToolResult:
         telemetry = get_observability()
         operation = str(input.get("operation") or "").strip().lower()
@@ -149,7 +172,12 @@ class A2ATaskTool(ToolPort):
         }
         with telemetry.span("ravn.a2a.task", attributes=attributes) as span:
             try:
-                if operation == "start":
+                if not self._gate_decisions and _answers_a_gate(input):
+                    result = _error(
+                        "This agent cannot answer workflow gates. The person decides them "
+                        "on the board's Review tab."
+                    )
+                elif operation == "start":
                     async with self._start_lock:
                         result = await self._execute_observed(input)
                 else:
@@ -273,9 +301,11 @@ class A2ATaskTool(ToolPort):
                 active_only=bool(input.get("active_only", False)),
                 limit=limit,
             )
+            payload: dict[str, Any] = {"operation": "find", "tasks": []}
+            _append_while_fits(payload, "tasks", matches, self._result_max_chars)
             return ToolResult(
                 tool_call_id="",
-                content=json.dumps({"operation": "find", "tasks": matches}, indent=2),
+                content=json.dumps(payload, indent=2, default=str),
             )
 
         agent_id = str(input.get("agent_id") or "").strip()
@@ -320,8 +350,10 @@ class A2ATaskTool(ToolPort):
             metadata = {
                 **self._default_metadata,
                 **(supplied if isinstance(supplied, dict) else {}),
+                **self._pinned_metadata(),
             }
             input = {**input, "metadata": metadata}
+            context_id = str(input.get("context_id") or "").strip()
             request_fingerprint = hashlib.sha256(
                 json.dumps(
                     [
@@ -330,6 +362,8 @@ class A2ATaskTool(ToolPort):
                         input.get("prompt"),
                         metadata,
                         self._default_connection_id,
+                        # Only when given, so fingerprints of earlier starts still match.
+                        *([context_id] if context_id else []),
                     ],
                     sort_keys=True,
                 ).encode()
@@ -401,7 +435,7 @@ class A2ATaskTool(ToolPort):
                 "question": _pending_question(task),
                 "prompt": _truncate(str(input.get("prompt") or ""), 500),
                 "status_message": _truncate(
-                    str(status.get("message") or status.get("update") or ""),
+                    a2a_status_text(status),
                     500,
                 ),
                 "source_tool": self.name,
@@ -472,12 +506,15 @@ class A2ATaskTool(ToolPort):
             trace_context = get_observability().inject()
             if trace_context:
                 metadata["traceContext"] = trace_context
+            context_id = str(input.get("context_id") or "").strip()
+            self._validate_message(context_id, "context_id")
             return await self._rpc(
                 endpoint,
                 "SendMessage",
                 {
                     "message": {
                         "messageId": str(input.get(_PERSISTED_MESSAGE_ID) or uuid4()),
+                        **({"contextId": context_id} if context_id else {}),
                         "role": "ROLE_USER",
                         "parts": [{"text": prompt}],
                         "metadata": metadata,
@@ -681,7 +718,7 @@ def _render_response_payload(
     }
     if push_registered is not None:
         payload["push_registered"] = push_registered
-    message = status.get("message") or status.get("update")
+    message = a2a_status_text(status)
     if message:
         payload["status_message"] = _truncate(str(message), 2_000)
     result = task.get("result")
@@ -730,15 +767,29 @@ def _append_while_fits(
 ) -> None:
     target = payload[key]
     assert isinstance(target, list)
-    for value in values[:16]:
-        bounded = _bounded_item(value, max_chars=max(256, max_chars // 3))
-        target.append(bounded)
-        if len(json.dumps(payload, indent=2, default=str)) > max_chars:
+
+    def overflows() -> bool:
+        return len(json.dumps(payload, indent=2, default=str)) > max_chars
+
+    for value in values:
+        target.append(_bounded_item(value, max_chars=max(256, max_chars // 3)))
+        if not overflows():
+            continue
+        target.pop()
+        target.append({"truncated": f"additional {key} omitted"})
+        # The marker is what tells the reader the list is partial, so it
+        # takes the place of the last item when both will not fit.
+        while overflows() and len(target) > 1:
+            del target[-2]
+        if overflows():
             target.pop()
-            target.append({"truncated": f"additional {key} omitted"})
-            if len(json.dumps(payload, indent=2, default=str)) > max_chars:
-                target.pop()
-            break
+        shown = max(0, len(target) - 1)
+        record_cap_hit(
+            "gateway.platform.a2a_result_max_chars",
+            f"A2A task result: {len(values) - shown} of {len(values)} {key} omitted to "
+            f"fit {max_chars} characters; raise gateway.platform.a2a_result_max_chars",
+        )
+        break
 
 
 def _bounded_item(value: Any, *, max_chars: int) -> Any:
@@ -748,7 +799,17 @@ def _bounded_item(value: Any, *, max_chars: int) -> Any:
     if isinstance(value, dict):
         identity = {
             key: value[key]
-            for key in ("artifactId", "artifact_id", "requestId", "gateId", "id", "name")
+            for key in (
+                "artifactId",
+                "artifact_id",
+                "requestId",
+                "gateId",
+                "id",
+                "name",
+                "task_id",
+                "agent_id",
+                "state",
+            )
             if key in value
         }
         identity["content_excerpt"] = _truncate(rendered, max(64, max_chars - 160))
@@ -758,6 +819,13 @@ def _bounded_item(value: Any, *, max_chars: int) -> Any:
 
 def _truncate(value: str, max_chars: int) -> str:
     return value if len(value) <= max_chars else f"{value[: max_chars - 1]}…"
+
+
+def _answers_a_gate(input: dict[str, Any]) -> bool:
+    metadata = input.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    return bool(metadata.get("gateDecision") or metadata.get("gateId"))
 
 
 def _error(message: str) -> ToolResult:

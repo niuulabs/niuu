@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 from contextlib import contextmanager
 
+import jwt
 from fastapi import HTTPException, Request, status
 
 from identity.models import Principal
@@ -16,8 +18,45 @@ def _split_roles(raw: str) -> list[str]:
     return [role.strip() for role in raw.split(",") if role.strip()]
 
 
+def presented_actor(request: Request) -> str:
+    """The workload acting for the caller: ``act.sub`` of the one bearer presented.
+
+    Read after the identity adapter has accepted that same bearer (Envoy verified it
+    and forwarded it, or the token adapter verified it), and only to attribute the
+    request. Never authorize on it: a caller presenting several different tokens gets
+    no actor rather than a guess.
+    """
+    tokens = set()
+    authorization = request.headers.get("authorization", "").strip()
+    if authorization.lower().startswith("bearer "):
+        tokens.add(authorization[7:].strip())
+    for name in ("token", "access_token"):
+        value = request.query_params.get(name)
+        if value:
+            tokens.add(value)
+    tokens.discard("")
+    if len(tokens) != 1:
+        return ""
+    try:
+        claims = jwt.decode(tokens.pop(), options={"verify_signature": False, "verify_exp": False})
+    except jwt.InvalidTokenError:
+        return ""
+    act = claims.get("act") if isinstance(claims, dict) else None
+    actor = act.get("sub") if isinstance(act, dict) else None
+    return actor.strip() if isinstance(actor, str) else ""
+
+
 async def extract_principal(request: Request) -> Principal:
-    """FastAPI dependency: validate identity and extract Principal.
+    """FastAPI dependency: validate identity and extract Principal, naming its actor."""
+    principal = await _extract_principal(request)
+    actor = presented_actor(request)
+    if actor and not principal.actor:
+        principal = dataclasses.replace(principal, actor=actor)
+    return principal
+
+
+async def _extract_principal(request: Request) -> Principal:
+    """Validate identity and extract Principal.
 
     Supports two modes:
     - Envoy header mode: reads trusted headers injected by the Envoy sidecar

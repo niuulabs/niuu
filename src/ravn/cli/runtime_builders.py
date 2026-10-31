@@ -8,14 +8,20 @@ import inspect
 import logging
 import os
 from collections.abc import Awaitable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-from niuu.adapters.outbound.http_auth import WorkloadIdentityBearerTokenAuthAdapter
-from ravn.config import PermissionConfig, Settings, ToolGroupConfig
+from niuu.adapters.outbound.http_auth import (
+    StaticBearerTokenAuthAdapter,
+    WorkloadIdentityBearerTokenAuthAdapter,
+)
+from niuu.ports.http_auth import HttpAuthPort
+from ravn.config import PermissionConfig, PlatformToolsConfig, Settings, ToolGroupConfig
+from ravn.domain.exceptions import ConfigurationError
 from ravn.domain.permission_mode import PermissionMode, parse_permission_mode
 from ravn.ports.executor import ExecutorPort
 
@@ -66,6 +72,8 @@ def _attach_agent_build_tool(
     drive_loop: Any | None = None,
     a2a_activity_emitter: Any | None = None,
     installed_artifact_recorder: Any | None = None,
+    capability_matcher: Any | None = None,
+    skill_manager: Any | None = None,
 ) -> Any:
     """Attach build_tool when the active persona explicitly allows it."""
     if not enabled:
@@ -150,12 +158,40 @@ def _attach_agent_build_tool(
             max_repair_attempts=settings.resident_evolution.build_repair_attempts,
             flock_confidence=settings.resident_evolution.self_registered_tool_confidence,
             installed_artifact_recorder=installed_artifact_recorder,
+            capability_matcher=capability_matcher,
+            skill_manager=skill_manager,
         )
     except TypeError:
         logger.debug("build_tool not attached: executor does not support dynamic tools")
-    except Exception as exc:
-        logger.warning("Failed to attach build_tool to signal investigation: %s", exc)
     return agent
+
+
+def require_tool_build_push(settings: Settings) -> None:
+    """Refuse to start a resident that commissions A2A builds it cannot hear back from.
+
+    A builder that asks a question after the commissioning turn ends can only
+    reach the resident by push. Without it the question went unanswered, the
+    build held its session pod in INPUT_REQUIRED, and the resident commissioned
+    the same tool again — every Kubernetes resident on 2026-10-24.
+    """
+    adapter = settings.resident_evolution.tool_build_adapter
+    if not adapter:
+        return
+    if not _constructor_accepts_kwarg(_import_class(adapter), "push_callback_url"):
+        return
+    missing: list[str] = []
+    if not settings.gateway.platform.a2a_push_callback_url:
+        missing.append("gateway.platform.a2a_push_callback_url (the public URL of /a2a/push)")
+    http = settings.gateway.channels.http
+    if not (http.enabled and http.a2a_push_enabled):
+        missing.append("gateway.channels.http.enabled and a2a_push_enabled")
+    if missing:
+        raise ConfigurationError(
+            f"resident_evolution.tool_build_adapter {adapter} commissions builds over A2A, "
+            "but this resident cannot receive their push notifications: set "
+            + "; ".join(missing)
+            + ", or remove tool_build_adapter to build tools inline"
+        )
 
 
 def _build_tool_build_backend(
@@ -357,9 +393,11 @@ def _build_llm(settings: Settings) -> Any:
     kwargs = _inject_secrets(dict(prov.kwargs), prov.secret_kwargs_env)
 
     kwargs.setdefault("model", settings.effective_model())
-    kwargs.setdefault("max_tokens", settings.effective_max_tokens())
-    kwargs.setdefault("max_retries", settings.llm.max_retries)
     kwargs.setdefault("retry_base_delay", settings.llm.retry_base_delay)
+    kwargs.setdefault("gateway_outage_window_seconds", settings.llm.gateway_outage_window_seconds)
+    kwargs.setdefault(
+        "gateway_outage_max_backoff_seconds", settings.llm.gateway_outage_max_backoff_seconds
+    )
     kwargs.setdefault("timeout", settings.llm.timeout)
 
     primary: LLMPort = cls(**kwargs)
@@ -405,6 +443,12 @@ def _build_executor(
                     **runtime_kwargs,
                     **(configured_kwargs or {}),
                 }
+            if kwargs.get("model_gateway"):
+                # The persona asked for the gateway; the session supplies where
+                # it is. The executor refuses to build if it has none.
+                runtime = loaded_settings.runtime_executor
+                kwargs["model_gateway_url"] = runtime.model_gateway_url
+                kwargs["model_gateway_token"] = runtime.model_gateway_token
     else:
         runtime_transport_adapter = loaded_settings.runtime_executor.transport_adapter.strip()
         if runtime_transport_adapter:
@@ -480,24 +524,28 @@ def _codex_auth_provider(settings: Settings) -> Any | None:
         return None
 
     platform = settings.gateway.platform
-    base_url = platform.base_url.strip()
     # Explicitly configured, not merely defaulted. base_url falls back to
     # http://localhost:8080, which is right for a developer running Völundr
     # locally and meaningless inside a flock pod — building a provider against
     # it would turn a missing-config error into a confusing connection failure
     # at the first model call.
-    if "base_url" not in platform.model_fields_set or not base_url:
-        # Flock personas share Skuld's platform origin. OpenShell authenticates
-        # that HTTP path through its provider proxy and has no projected
-        # workload-token exchange URL. Native Kubernetes still supplies one.
-        base_url = (
-            settings.runtime_executor.volundr_api_url.strip()
-            or _platform_origin_from_exchange_url()
-        )
+    platform_url = platform.base_url.strip() if "base_url" in platform.model_fields_set else ""
+    # The broker is cluster-local: it is the Völundr this runtime's own Skuld
+    # calls (SKULD__VOLUNDR_API_URL / runtime_executor.volundr_api_url), the
+    # Forge that runs this pod. gateway.platform is the platform, which a
+    # resident uses for platform APIs and which need not serve the broker at
+    # all. OpenShell authenticates that HTTP path through its provider proxy
+    # and has no projected workload-token exchange URL. Native Kubernetes
+    # still supplies one.
+    base_url = (
+        settings.runtime_executor.volundr_api_url.strip()
+        or platform_url
+        or _platform_origin_from_exchange_url()
+    )
     if not base_url:
         raise RuntimeError(
-            "Configured Codex auth requires gateway.platform.base_url, "
-            "runtime_executor.volundr_api_url (SKULD__VOLUNDR_API_URL), or "
+            "Configured Codex auth requires runtime_executor.volundr_api_url "
+            "(SKULD__VOLUNDR_API_URL), gateway.platform.base_url, or "
             "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL"
         )
 
@@ -508,14 +556,7 @@ def _codex_auth_provider(settings: Settings) -> Any | None:
     # kubernetes.io service-account token, whose audience the exchange rejects.
     # Handing over the default silently replaced a working credential with one
     # that could only ever 401.
-    auth_kwargs: dict[str, Any] = {"base_url": base_url}
-    if "workload_token_file" in platform.model_fields_set:
-        auth_kwargs["token_file"] = platform.workload_token_file
-    if "workload_exchange_url" in platform.model_fields_set:
-        auth_kwargs["exchange_url"] = platform.workload_exchange_url
-    if "workload_audiences" in platform.model_fields_set:
-        auth_kwargs["audiences"] = list(platform.workload_audiences)
-    auth = WorkloadIdentityBearerTokenAuthAdapter(**auth_kwargs)
+    auth = _codex_broker_auth(platform, exchange_base_url=platform_url or base_url)
 
     async def _client() -> httpx.AsyncClient:
         # HttpAuthPort.headers() is synchronous — it performs the token
@@ -528,6 +569,28 @@ def _codex_auth_provider(settings: Settings) -> Any | None:
         http_client_provider=_client,
         **dict(settings.runtime_executor.codex_auth_kwargs),
     )
+
+
+def _codex_broker_auth(platform: PlatformToolsConfig, *, exchange_base_url: str) -> HttpAuthPort:
+    """The credential a persona presents to the Codex token broker.
+
+    An explicit platform bearer wins, as it does for every other platform
+    client (``client_from_workload_identity``): it is a PAT off-cluster, or the
+    workload-bound token a sandbox runtime mediates — OpenShell has no projected
+    token to exchange, so a configured token file there can only fail.
+    """
+    if platform.access_token:
+        return StaticBearerTokenAuthAdapter(token=platform.access_token)
+    # The workload token is exchanged at the platform when one is configured;
+    # only the broker call itself goes to the cluster's Völundr.
+    auth_kwargs: dict[str, Any] = {"base_url": exchange_base_url}
+    if "workload_token_file" in platform.model_fields_set:
+        auth_kwargs["token_file"] = platform.workload_token_file
+    if "workload_exchange_url" in platform.model_fields_set:
+        auth_kwargs["exchange_url"] = platform.workload_exchange_url
+    if "workload_audiences" in platform.model_fields_set:
+        auth_kwargs["audiences"] = list(platform.workload_audiences)
+    return WorkloadIdentityBearerTokenAuthAdapter(**auth_kwargs)
 
 
 def _transport_mcp_servers(settings: Settings) -> list[dict[str, Any]]:
@@ -585,6 +648,314 @@ def _uses_cli_transport_executor(
 # ---------------------------------------------------------------------------
 
 
+def _build_embedding_port(settings: Settings) -> Any:
+    """Construct the configured embedding adapter, or raise with the remedy."""
+    # Asking for embeddings and silently getting lexical-only search is the
+    # failure this must not have: retrieval keeps working, quality collapses,
+    # and nothing says so. Configuration that cannot be honoured is a
+    # startup error, not a warning.
+    try:
+        cls = _import_class(settings.embedding.adapter)
+        kwargs = _inject_secrets(
+            settings.embedding.kwargs,
+            settings.embedding.secret_kwargs_env,
+        )
+        return cls(**kwargs)
+    except Exception as exc:
+        raise RuntimeError(
+            f"embedding.enabled is true but the adapter "
+            f"{settings.embedding.adapter!r} could not be constructed: {exc}. "
+            f"Set embedding.enabled=false to run with lexical-only search, or "
+            f"fix the adapter configuration — memory will not silently degrade."
+        ) from exc
+
+
+def build_decision_port(settings: Settings) -> Any:
+    """Construct the configured decision model port, observed, or raise with the remedy.
+
+    Returns None only when ``decision.enabled`` is false. A feature that needs the port while it
+    is disabled is a configuration error, raised here rather than discovered per turn.
+    """
+    from ravn.decision_observability import ObservedDecisionPort  # noqa: PLC0415
+    from ravn.dynamic_adapters import import_adapter  # noqa: PLC0415
+
+    config = settings.decision
+    if not config.enabled:
+        if config.resident_first_opinion.enabled:
+            raise ConfigurationError(
+                "decision.resident_first_opinion.enabled is true but decision.enabled is false; "
+                "enable and configure decision, or turn the first opinion off"
+            )
+        if config.capability_matching.enabled:
+            raise ConfigurationError(
+                "decision.capability_matching.enabled is true but decision.enabled is false; "
+                "enable and configure decision, or turn capability matching off"
+            )
+        return None
+    kwargs = dict(config.kwargs)
+    for kwarg_name, env_var in config.secret_kwargs_env.items():
+        value = os.environ.get(env_var, "").strip()
+        if not value:
+            raise ConfigurationError(
+                f"decision.secret_kwargs_env maps {kwarg_name!r} to {env_var!r}, which is not "
+                "set; inject the secret, or remove the mapping for a keyless backend"
+            )
+        kwargs[kwarg_name] = value
+    try:
+        adapter = import_adapter(config.adapter)(**kwargs)
+    except Exception as exc:
+        raise ConfigurationError(
+            f"decision.enabled is true but the adapter {config.adapter!r} could not be "
+            f"constructed: {exc}. Fix decision.adapter/kwargs, or set decision.enabled=false"
+        ) from exc
+    return ObservedDecisionPort(adapter)
+
+
+def build_resident_first_opinion(settings: Settings, *, has_resident_runtime: bool) -> Any:
+    """The observe-only resident first opinion, or None when it is not enabled.
+
+    Building it also builds the decision port, so a configured but unbuildable backend fails
+    startup whether or not anything consumes it yet.
+    """
+    decision_port = build_decision_port(settings)
+    config = settings.decision.resident_first_opinion
+    if not config.enabled:
+        return None
+    if not has_resident_runtime:
+        raise ConfigurationError(
+            "decision.resident_first_opinion.enabled is true but this daemon runs no resident "
+            "runtime, so there are no resident turns to give an opinion on"
+        )
+    from ravn.resident_first_opinion import ResidentFirstOpinion  # noqa: PLC0415
+
+    return ResidentFirstOpinion(
+        decision_port,
+        max_observation_chars=config.max_observation_chars,
+        max_mandate_chars=config.max_mandate_chars,
+    )
+
+
+def build_resident_slot_attention(settings: Settings, first_opinion: Any) -> Any:
+    """Per-slot opinions (and the gate, when enabled) sharing the first opinion's decision port."""
+    from ravn.resident_attention import (  # noqa: PLC0415
+        AttentionGatePolicy,
+        ResidentSlotAttention,
+    )
+
+    config = settings.decision.resident_first_opinion
+    return ResidentSlotAttention(
+        first_opinion.decisions,
+        policy=AttentionGatePolicy(
+            skip_tiers=frozenset(config.gate.skip_tiers),
+            skip_decisions=frozenset(config.gate.skip_decisions),
+            min_skip_probability=config.gate.min_skip_probability,
+        ),
+        gate_enabled=config.gate.enabled,
+        max_observation_chars=config.max_observation_chars,
+        max_mandate_chars=config.max_mandate_chars,
+        max_working_state_chars=config.max_working_state_chars,
+    )
+
+
+@dataclass(frozen=True)
+class LearningConsolidation:
+    """Lesson index and judge shared by reflection, curation, and injection."""
+
+    lessons: Any
+    judge: Any
+
+
+def _build_learning_consolidation(settings: Settings, llm: Any) -> LearningConsolidation | None:
+    """Build meaning-based lesson matching when reflection asks for it.
+
+    Needed by ``reflection.matching.mode: semantic`` and by
+    ``reflection.curation.enabled``. Either one without embeddings, or without
+    a native LLM for the judge, is a startup error: running on lexical matching
+    instead is the paraphrase blindness the operator configured away from.
+    """
+    reflection = settings.effective_post_session_reflection_config()
+    wanted = [
+        name
+        for name, on in (
+            ("reflection.matching.mode: semantic", reflection.matching.mode == "semantic"),
+            ("reflection.curation.enabled", reflection.curation.enabled),
+            ("reflection.friction.enabled", reflection.friction.enabled),
+            ("reflection.self_improvement.enabled", reflection.self_improvement.enabled),
+        )
+        if on
+    ]
+    if not wanted:
+        return None
+    if not settings.embedding.enabled:
+        raise RuntimeError(
+            f"{', '.join(wanted)} compare lessons and friction by embedding, but "
+            "embedding.enabled is false. Enable and configure embedding, or turn those "
+            "settings off (reflection.matching.mode: lexical)."
+        )
+    if llm is None:
+        raise RuntimeError(
+            "semantic learning consolidation needs a native LLM adapter for its judge, "
+            "but this runtime has none (CLI-transport executor). Set "
+            "reflection.matching.mode: lexical and reflection.curation.enabled: false."
+        )
+    from ravn.adapters.reflection.lesson_judge import LessonJudge  # noqa: PLC0415
+    from ravn.adapters.reflection.lessons import LessonIndex  # noqa: PLC0415
+
+    return LearningConsolidation(
+        lessons=LessonIndex(
+            _build_embedding_port(settings),
+            batch_size=reflection.matching.embed_batch_size,
+        ),
+        judge=LessonJudge(
+            llm,
+            model=reflection.matching.judge_llm_alias,
+            max_tokens=reflection.matching.judge_max_tokens,
+            attempts=reflection.matching.judge_attempts,
+            excerpt_chars=reflection.matching.judge_excerpt_chars,
+        ),
+    )
+
+
+def _build_capability_matcher(
+    settings: Settings,
+    consolidation: LearningConsolidation | None,
+) -> Any | None:
+    """Meaning-based learned-tool matching, on the lesson-matching machinery.
+
+    Present exactly when lessons are matched semantically
+    (``reflection.matching.mode: semantic``): the same embedding shortlist and
+    threshold pick the candidates, and the lesson judge decides whether two tools
+    serve one capability. With lexical matching only declared capability ids and
+    names link tools, which is what that setting asks for.
+
+    With ``decision.capability_matching.enabled`` the decision model judges instead
+    of the lesson judge. It keeps the embedding shortlist, so without semantic
+    matching a resident cannot start.
+    """
+    config = settings.decision.capability_matching
+    reflection = settings.effective_post_session_reflection_config()
+    semantic = reflection.matching.mode == "semantic" and consolidation is not None
+    if config.enabled and not semantic:
+        raise ConfigurationError(
+            "decision.capability_matching.enabled is true but it shortlists tools by embedding, "
+            "which needs reflection.matching.mode: semantic and embedding.enabled: true; "
+            "set those, or turn capability matching off"
+        )
+    if not semantic:
+        return None
+    from ravn.adapters.reflection.capability_matching import (  # noqa: PLC0415
+        SemanticCapabilityMatcher,
+        SystemOneCapabilityMatcher,
+    )
+
+    if config.enabled:
+        return SystemOneCapabilityMatcher(
+            lessons=consolidation.lessons,
+            decisions=build_decision_port(settings),
+            similarity_threshold=reflection.matching.similarity_threshold,
+            min_same_probability=config.min_same_probability,
+            excerpt_chars=reflection.matching.judge_excerpt_chars,
+        )
+    return SemanticCapabilityMatcher(
+        lessons=consolidation.lessons,
+        judge=consolidation.judge,
+        similarity_threshold=reflection.matching.similarity_threshold,
+        max_candidates=reflection.matching.max_related,
+        excerpt_chars=reflection.matching.judge_excerpt_chars,
+    )
+
+
+def _build_friction_ledger(
+    settings: Settings,
+    *,
+    mimir: Any,
+    consolidation: LearningConsolidation | None,
+) -> Any | None:
+    """Build the friction ledger when friction capture is enabled."""
+    reflection = settings.effective_post_session_reflection_config()
+    if not reflection.friction.enabled:
+        return None
+    if consolidation is None or mimir is None:
+        raise RuntimeError(
+            "reflection.friction.enabled is true but there is no Mímir mount or lesson "
+            "index to record friction in; configure mimir and embedding, or set "
+            "reflection.friction.enabled: false"
+        )
+    from ravn.adapters.reflection.friction import FrictionLedger  # noqa: PLC0415
+
+    return FrictionLedger(mimir=mimir, lessons=consolidation.lessons, config=reflection.friction)
+
+
+def _build_self_improvement(
+    settings: Settings,
+    *,
+    mimir: Any,
+    consolidation: LearningConsolidation | None,
+    ledger: Any | None,
+    drive_loop: Any | None,
+    resident_id: str,
+) -> Any | None:
+    """Build the self-improvement pass when it is enabled.
+
+    It acts on recorded friction with curated learnings, so it needs friction
+    capture and learning curation; either missing is a startup error.
+    """
+    reflection = settings.effective_post_session_reflection_config()
+    if not reflection.self_improvement.enabled:
+        return None
+    if ledger is None or consolidation is None or not reflection.curation.enabled:
+        raise RuntimeError(
+            "reflection.self_improvement.enabled is true but it acts on recorded friction "
+            "with curated learnings: enable reflection.friction and reflection.curation "
+            "(with embedding), or set reflection.self_improvement.enabled: false"
+        )
+    from ravn.adapters.reflection.self_improvement import SelfImprovementPass  # noqa: PLC0415
+
+    return SelfImprovementPass(
+        mimir=mimir,
+        ledger=ledger,
+        lessons=consolidation.lessons,
+        judge=consolidation.judge,
+        config=reflection.self_improvement,
+        procedure_max_chars=reflection.learning_entry_max_chars,
+        resident_id=resident_id,
+        # Improvements that need a tool or a ticket run as ordinary resident tasks.
+        dispatch=drive_loop.enqueue if drive_loop is not None else None,
+    )
+
+
+def _build_learning_curator(
+    settings: Settings,
+    *,
+    mimir: Any,
+    consolidation: LearningConsolidation | None,
+) -> Any | None:
+    """Build the dream-time learning curator when curation is enabled."""
+    reflection = settings.effective_post_session_reflection_config()
+    if not reflection.curation.enabled:
+        return None
+    if consolidation is None or mimir is None:
+        raise RuntimeError(
+            "reflection.curation.enabled is true but there is no Mímir mount or lesson "
+            "index to curate; configure mimir and embedding, or set "
+            "reflection.curation.enabled: false"
+        )
+    from ravn.adapters.reflection.learning_curation import LearningCurator  # noqa: PLC0415
+
+    return LearningCurator(
+        mimir=mimir,
+        lessons=consolidation.lessons,
+        judge=consolidation.judge,
+        config=reflection.curation,
+        similarity_threshold=reflection.matching.similarity_threshold,
+        max_related=reflection.matching.max_related,
+        evidence_duplicate_similarity=reflection.matching.evidence_duplicate_similarity,
+        min_repetitions=reflection.candidate_min_repetitions,
+        verified_recovery_promotes=reflection.verified_promotion.route_recovery_promotes,
+        procedure_max_chars=reflection.learning_entry_max_chars,
+    )
+
+
 def _build_memory(settings: Settings, llm: Any = None) -> Any:
     """Build the memory adapter (SQLite or Postgres), or None."""
     backend = settings.memory.backend
@@ -592,26 +963,7 @@ def _build_memory(settings: Settings, llm: Any = None) -> Any:
     if backend in {"", "none", "disabled", "off"}:
         return None
 
-    embedding_port = None
-    if settings.embedding.enabled:
-        # Asking for embeddings and silently getting lexical-only search is the
-        # failure this must not have: retrieval keeps working, quality collapses,
-        # and nothing says so. Configuration that cannot be honoured is a
-        # startup error, not a warning.
-        try:
-            cls = _import_class(settings.embedding.adapter)
-            kwargs = _inject_secrets(
-                settings.embedding.kwargs,
-                settings.embedding.secret_kwargs_env,
-            )
-            embedding_port = cls(**kwargs)
-        except Exception as exc:
-            raise RuntimeError(
-                f"embedding.enabled is true but the adapter "
-                f"{settings.embedding.adapter!r} could not be constructed: {exc}. "
-                f"Set embedding.enabled=false to run with lexical-only search, or "
-                f"fix the adapter configuration — memory will not silently degrade."
-            ) from exc
+    embedding_port = _build_embedding_port(settings) if settings.embedding.enabled else None
 
     reranker_port = None
     if getattr(settings, "reranker", None) is not None and settings.reranker.enabled:

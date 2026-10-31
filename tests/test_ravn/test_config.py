@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from ravn.config import (
     TRUST_CATEGORY_TOOLS,
@@ -15,7 +17,6 @@ from ravn.config import (
     HookConfig,
     HooksConfig,
     KubernetesToolsConfig,
-    LLMAdapterConfig,
     LLMConfig,
     LLMProviderConfig,
     LoggingConfig,
@@ -40,17 +41,10 @@ class TestAgentConfig:
     def test_defaults(self) -> None:
         c = AgentConfig()
         assert "claude" in c.model
-        assert c.max_tokens > 0
+        # Deprecated in favour of llm.max_tokens; unset unless a config says otherwise.
+        assert c.max_tokens is None
         assert c.max_iterations > 0
         assert c.system_prompt != ""
-
-
-class TestLLMAdapterConfig:
-    def test_defaults(self) -> None:
-        c = LLMAdapterConfig()
-        assert "AnthropicAdapter" in c.adapter
-        assert c.max_retries >= 0
-        assert c.timeout > 0
 
 
 # ---------------------------------------------------------------------------
@@ -75,8 +69,10 @@ class TestLLMConfig:
     def test_defaults(self) -> None:
         c = LLMConfig()
         assert "claude" in c.model
-        assert c.max_tokens > 0
-        assert c.max_retries >= 0
+        # No cap by default: the provider's own limit bounds the answer.
+        assert c.max_tokens is None
+        assert not hasattr(c, "max_retries")
+        assert c.gateway_outage_window_seconds > 0
         assert c.timeout > 0
         assert isinstance(c.provider, LLMProviderConfig)
 
@@ -89,8 +85,8 @@ class TestObservabilityConfig:
         assert config.capture_content is False
         assert config.service_name == "ravn"
 
-    def test_enabled_requires_separate_trace_and_metric_endpoints(self) -> None:
-        with pytest.raises(ValueError, match="trace_endpoint and metric_endpoint"):
+    def test_enabled_requires_separate_trace_metric_and_log_endpoints(self) -> None:
+        with pytest.raises(ValueError, match="trace_endpoint, metric_endpoint, and log_endpoint"):
             ObservabilityConfig(enabled=True, trace_endpoint="https://tempo:4317")
 
     def test_enabled_accepts_glitnir_style_endpoints(self) -> None:
@@ -98,6 +94,7 @@ class TestObservabilityConfig:
             enabled=True,
             trace_endpoint="https://eitri.grpc-tempo.example:443",
             metric_endpoint="https://mimir.example/eitri/otlp/v1/metrics",
+            log_endpoint="https://loki.example/eitri/otlp/v1/logs",
             capture_content=True,
             content_max_chars=20_000,
         )
@@ -105,6 +102,25 @@ class TestObservabilityConfig:
         assert config.enabled is True
         assert config.capture_content is True
         assert config.content_max_chars == 20_000
+
+
+SETUP_CONFIGS = Path(__file__).parents[2] / "scripts" / "setups" / "configs"
+
+
+def _enabled_observability_setup_configs() -> list[Path]:
+    return [
+        path
+        for path in sorted(SETUP_CONFIGS.glob("*.yaml"))
+        if (yaml.safe_load(path.read_text()) or {}).get("observability", {}).get("enabled")
+    ]
+
+
+@pytest.mark.parametrize("config_path", _enabled_observability_setup_configs())
+def test_enabled_ravn_setup_config_parses(config_path: Path) -> None:
+    with patch.dict(os.environ, {"RAVN_CONFIG": str(config_path)}):
+        settings = Settings()
+
+    assert settings.observability.enabled is True
 
 
 def test_kubernetes_tool_can_use_local_kubeconfig() -> None:
@@ -150,7 +166,31 @@ class TestReflectionModelFallbacks:
         settings.llm.model = "Qwen/Qwen3.6-35B-A3B-FP8"
         settings.reflection.llm_alias = "fast"
 
-        assert settings.effective_post_session_reflection_config() is settings.reflection
+        resolved = settings.effective_post_session_reflection_config()
+
+        assert resolved.llm_alias == "fast"
+        # An empty judge alias means "the reflection model".
+        assert resolved.matching.judge_llm_alias == "fast"
+        assert settings.reflection.matching.judge_llm_alias == ""
+
+    def test_post_session_reflection_config_keeps_explicit_judge_alias(self) -> None:
+        settings = Settings()
+        settings.reflection.llm_alias = "fast"
+        settings.reflection.matching.judge_llm_alias = "judge"
+
+        resolved = settings.effective_post_session_reflection_config()
+
+        assert resolved is settings.reflection
+        assert resolved.matching.judge_llm_alias == "judge"
+
+    def test_post_session_reflection_judge_follows_resolved_agent_model(self) -> None:
+        settings = Settings()
+        settings.llm.model = "Qwen/Qwen3.6-35B-A3B-FP8"
+        settings.reflection.llm_alias = "agent"
+
+        resolved = settings.effective_post_session_reflection_config()
+
+        assert resolved.matching.judge_llm_alias == "Qwen/Qwen3.6-35B-A3B-FP8"
 
 
 class TestToolAdapterConfig:
@@ -457,7 +497,6 @@ class TestSettings:
     def test_defaults(self) -> None:
         s = Settings()
         assert isinstance(s.agent, AgentConfig)
-        assert isinstance(s.llm_adapter, LLMAdapterConfig)
         assert isinstance(s.permission, PermissionConfig)
         assert isinstance(s.logging, LoggingConfig)
         # NIU-427 new sections
@@ -1097,3 +1136,128 @@ class TestValkyrieRuntimeConfig:
     def test_invalid_canonical_ranges_fail(self, section: str, field: str, value: int) -> None:
         with pytest.raises(ValueError, match=field):
             Settings(valkyrie={section: {field: value}})
+
+
+class TestPlatformAccessToken:
+    """``gateway.platform.access_token`` carries any platform bearer, not only a PAT."""
+
+    def test_config_key_sets_the_platform_bearer(self) -> None:
+        settings = Settings(gateway={"platform": {"access_token": "bearer-1"}})
+
+        assert settings.gateway.platform.access_token == "bearer-1"
+
+    def test_env_var_sets_the_platform_bearer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN", "bearer-from-env")
+
+        assert Settings().gateway.platform.access_token == "bearer-from-env"
+
+    def test_renamed_pat_token_key_fails_loudly(self) -> None:
+        # Silently ignoring the old key would drop the credential.
+        with pytest.raises(ValueError, match="renamed to gateway.platform.access_token"):
+            Settings(gateway={"platform": {"pat_token": "bearer-1"}})
+
+    def test_renamed_pat_token_env_fails_loudly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("RAVN_GATEWAY__PLATFORM__PAT_TOKEN", "bearer-from-env")
+
+        with pytest.raises(ValueError, match="RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN"):
+            Settings()
+
+
+class TestPromptBudgetDerivation:
+    """The context window bounds the prompt; compaction aims under a separate target."""
+
+    def test_a_window_without_a_cap_is_the_ceiling(self) -> None:
+        settings = Settings(context_management={"context_window_tokens": 131072})
+        assert settings.prompt_ceiling_tokens() == 131072
+        assert settings.compaction_budget_tokens() == 131072
+
+    def test_an_answer_cap_is_reserved_out_of_the_window(self) -> None:
+        settings = Settings(
+            llm={"max_tokens": 32000}, context_management={"context_window_tokens": 131072}
+        )
+        assert settings.prompt_ceiling_tokens() == 99072
+
+    def test_the_compaction_target_does_not_lower_the_ceiling(self) -> None:
+        settings = Settings(
+            context_management={
+                "context_window_tokens": 1048576,
+                "compaction_target_tokens": 48000,
+            }
+        )
+        assert settings.prompt_ceiling_tokens() == 1048576
+        assert settings.compaction_budget_tokens() == 48000
+
+    def test_a_window_with_a_cap_derives_the_budget(self) -> None:
+        settings = Settings(
+            llm={"max_tokens": 32000}, context_management={"context_window_tokens": 131072}
+        )
+        assert settings.effective_max_tokens() == 32000
+
+    def test_a_window_with_an_explicit_budget_needs_no_cap(self) -> None:
+        settings = Settings(
+            context_management={"context_window_tokens": 131072, "max_prompt_tokens": 100000}
+        )
+        assert settings.effective_max_tokens() is None
+
+
+class TestRemovedContinuationCaps:
+    """Rechecks are bounded by the daily budget, one turn per wake and the decision guard."""
+
+    @pytest.mark.parametrize("key", ["continuation_max_turns", "continuation_max_tokens"])
+    def test_a_config_still_setting_it_is_refused(self, key: str) -> None:
+        with pytest.raises(ValueError, match=f"resident_state.{key} no longer exist"):
+            Settings(resident_state={key: 3})
+
+
+class TestRemovedCharacterCaps:
+    """Content a resident carries is bounded by the model's window, not a character guess."""
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "continuation_context_max_chars",
+            "continuation_tool_result_max_chars",
+            "directed_message_context_max_chars",
+        ],
+    )
+    def test_a_resident_state_config_still_setting_it_is_refused(self, key: str) -> None:
+        with pytest.raises(ValueError) as refused:
+            Settings(resident_state={key: 4000})
+
+        message = str(refused.value)
+        assert f"resident_state.{key} no longer exists" in message
+        assert "context_management.max_prompt_tokens" in message
+        assert "remove the key" in message
+
+    def test_a_reflection_config_still_setting_the_context_cap_is_refused(self) -> None:
+        with pytest.raises(ValueError) as refused:
+            Settings(reflection={"context_max_chars": 12000})
+
+        message = str(refused.value)
+        assert "reflection.context_max_chars no longer exists" in message
+        assert "sent to the reflection model whole" in message
+        assert "remove the key" in message
+
+    def test_every_removed_key_is_named_when_several_are_set(self) -> None:
+        with pytest.raises(ValueError) as refused:
+            Settings(
+                resident_state={
+                    "continuation_context_max_chars": 1,
+                    "continuation_tool_result_max_chars": 1,
+                }
+            )
+
+        message = str(refused.value)
+        assert "resident_state.continuation_context_max_chars no longer exists" in message
+        assert "resident_state.continuation_tool_result_max_chars no longer exists" in message
+
+    def test_the_defaults_carry_none_of_the_removed_keys(self) -> None:
+        settings = Settings()
+
+        for key in (
+            "continuation_context_max_chars",
+            "continuation_tool_result_max_chars",
+            "directed_message_context_max_chars",
+        ):
+            assert not hasattr(settings.resident_state, key)
+        assert not hasattr(settings.reflection, "context_max_chars")

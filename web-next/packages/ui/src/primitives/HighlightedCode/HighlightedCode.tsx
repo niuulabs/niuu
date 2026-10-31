@@ -27,7 +27,11 @@ export function HighlightedCode({ code, lang = 'text', className, testId }: High
     void (async () => {
       try {
         const { codeToHtml } = await import('shiki');
-        const out = await codeToHtml(code, { lang, theme: 'github-dark-dimmed' });
+        const out = await codeToHtml(code, {
+          lang,
+          themes: { light: 'github-light', dark: 'github-dark-dimmed' },
+          defaultColor: 'dark',
+        });
         if (!cancelled) setHtml(out);
       } catch {
         if (!cancelled) setHtml(null);

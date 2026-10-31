@@ -126,6 +126,7 @@ async def test_workload_identity_exchange_mints_owner_scoped_token() -> None:
     assert claims["sub"] == OWNER_ID
     assert claims["tenant_id"] == "default"
     assert claims["workload_sub"] == WORKLOAD_SUBJECT
+    assert claims["act"] == {"sub": WORKLOAD_SUBJECT}
     assert claims["workload_cluster"] == "ymir"
     assert claims["resource_access"]["volundr"]["roles"] == ["admin", "volundr:developer"]
     assert result.principal.user_id == OWNER_ID
@@ -1017,3 +1018,129 @@ def _render_chart(chart: str) -> str:
     if result.returncode != 0:
         pytest.fail(f"helm template failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
     return result.stdout
+
+
+def _prefix_mapping(*, name: str, subject_prefix: str, owner_id: str) -> SimpleNamespace:
+    mapping = _fixed_mapping(name=name, subject="", owner_id=owner_id)
+    mapping.subject_prefix = subject_prefix
+    return mapping
+
+
+@pytest.mark.asyncio
+async def test_exact_subject_mapping_beats_an_earlier_prefix_mapping() -> None:
+    """The most specific mapping wins, not the first one listed."""
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+    service._config.mappings[:] = [
+        _prefix_mapping(
+            name="namespace-wide",
+            subject_prefix="system:serviceaccount:valkyrie:",
+            owner_id="shared",
+        ),
+        _fixed_mapping(name="ravn", subject=WORKLOAD_SUBJECT, owner_id="ravn-owner"),
+    ]
+
+    result = await service.exchange(_workload_token(proof_key))
+
+    assert result.principal.user_id == "ravn-owner"
+    assert result.workload_name == "ravn"
+
+
+@pytest.mark.asyncio
+async def test_longer_prefix_beats_a_shorter_one_listed_first() -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+    service._config.mappings[:] = [
+        _prefix_mapping(
+            name="namespace-wide", subject_prefix="system:serviceaccount:skuld:", owner_id="shared"
+        ),
+        _prefix_mapping(
+            name="sessions",
+            subject_prefix="system:serviceaccount:skuld:openbao-session-",
+            owner_id="sessions-owner",
+        ),
+    ]
+
+    result = await service.exchange(
+        _workload_token(proof_key, subject="system:serviceaccount:skuld:openbao-session-abc")
+    )
+
+    assert result.principal.user_id == "sessions-owner"
+
+
+@pytest.mark.asyncio
+async def test_equally_specific_matches_are_refused() -> None:
+    """Two mappings admitting the same caller at the same rank is a misconfiguration."""
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+    service._config.mappings[:] = [
+        _fixed_mapping(name="first", subject=WORKLOAD_SUBJECT, owner_id="a"),
+        _fixed_mapping(name="second", subject=WORKLOAD_SUBJECT, owner_id="b"),
+    ]
+
+    with pytest.raises(WorkloadIdentityError, match="several equally specific.*first, second"):
+        await service.exchange(_workload_token(proof_key))
+
+
+@pytest.mark.asyncio
+async def test_mapping_without_issuer_admits_no_one() -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+    service._config.mappings[0].issuer = ""
+
+    with pytest.raises(WorkloadIdentityError, match="'ravn-valkyrie' has no issuer"):
+        await service.exchange(_workload_token(proof_key))
+
+
+@pytest.mark.asyncio
+async def test_mapping_without_subject_or_prefix_admits_no_one() -> None:
+    """A claims-only mapping would admit every ServiceAccount the verifier accepts."""
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+    service._config.mappings[0].subject = ""
+
+    with pytest.raises(WorkloadIdentityError, match="neither subject nor subject_prefix"):
+        await service.exchange(_workload_token(proof_key))
+
+
+@pytest.mark.asyncio
+async def test_prefix_must_end_on_a_separator() -> None:
+    """A bare "...:muninn" prefix would also admit "...:muninn-anything"."""
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+    service._config.mappings[0].subject = ""
+    service._config.mappings[0].subject_prefix = "system:serviceaccount:valkyrie:rav"
+    service._config.mappings[0].claims = {}
+
+    with pytest.raises(WorkloadIdentityError, match="must end on one of"):
+        await service.exchange(_workload_token(proof_key))
+
+
+def test_token_that_speaks_for_its_own_subject_carries_no_actor() -> None:
+    """``act`` names a different party acting for ``sub``; a self-issued token has none."""
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+
+    issued = service.issue_token(
+        principal=Principal(user_id="node-owner", email="", tenant_id="default", roles=[]),
+        workload_subject="node-owner",
+        workload_name="guild-node-pairing",
+        audiences=["guild"],
+    )
+
+    assert "act" not in service.verify_token(issued.token)
+
+
+@pytest.mark.asyncio
+async def test_exchange_logs_which_workload_it_spoke_for(caplog: pytest.LogCaptureFixture) -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+
+    with caplog.at_level("INFO", logger="niuu.domain.services.workload_identity"):
+        result = await service.exchange(_workload_token(proof_key))
+
+    line = next(r.getMessage() for r in caplog.records if "Workload exchange" in r.getMessage())
+    assert "mapping=ravn-valkyrie" in line
+    assert f"workload={WORKLOAD_SUBJECT}" in line
+    assert f"owner={OWNER_ID}" in line
+    assert result.token not in line

@@ -606,9 +606,12 @@ class TestResidentWorkloadIdentityConfigFirst:
         )
         workload = broker_cfg["workload_identity"]
         assert workload["token_file"] == "/var/run/secrets/niuu-workload/token"
+        # The identity is exchanged at the platform; volundr.apiUrl is the
+        # cluster's own Völundr, which serves the resident's Forge calls.
         assert workload["exchange_url"] == (
-            "https://volundr.example/api/v1/tokens/workload/exchange"
+            "http://niuu-volundr.volundr.svc.cluster.local:80/api/v1/tokens/workload/exchange"
         )
+        assert broker_cfg["volundr_api_url"] == "https://volundr.example"
         assert broker_cfg["session"]["model"] == "gpt-5.6-sol"
         assert broker_cfg["session"]["reasoning_effort"] == "high"
 
@@ -622,6 +625,31 @@ class TestResidentWorkloadIdentityConfigFirst:
         )
         assert broker_cfg["volundr_api_url"] == "https://volundr.example"
         assert broker_cfg["usage_report_path"] == ("/api/v1/forge/resident-runtimes/muninn/usage")
+
+    @pytest.mark.parametrize(
+        ("broker", "enabled"),
+        [({}, True), ({"eventLogEnabled": False, "activityReportingEnabled": False}, False)],
+        ids=["forge-session", "no-forge-session"],
+    )
+    def test_forge_session_event_log_and_activity_follow_broker_values(
+        self, tmp_path, broker, enabled
+    ):
+        from skuld.config import SkuldSettings
+
+        values = json.loads(json.dumps(self.RESIDENT_VALUES))
+        values["broker"] = broker
+        broker_cfg = next(
+            yaml.safe_load(cm["data"]["config.yaml"])
+            for cm in self._configmaps(_render_skuld_chart(tmp_path, values)).values()
+            if "config.yaml" in cm.get("data", {})
+            and "transport_adapter" in cm["data"]["config.yaml"]
+        )
+
+        assert broker_cfg["event_log_enabled"] is enabled
+        assert broker_cfg["activity_reporting_enabled"] is enabled
+        settings = SkuldSettings.model_validate(broker_cfg)
+        assert settings.event_log_enabled is enabled
+        assert settings.activity_reporting_enabled is enabled
 
     def test_resident_replica_count_supports_real_suspend_and_resume(self, tmp_path):
         suspended = dict(self.RESIDENT_VALUES)
@@ -725,6 +753,31 @@ class TestResidentWorkloadIdentityConfigFirst:
             "key": "password",
         }
 
+    def test_ravn_config_carries_platform_a2a_peers_only_when_set(self, tmp_path):
+        def platform(values: dict) -> dict:
+            configmaps = self._configmaps(_render_skuld_chart(tmp_path, values))
+            ravn_cm = next(cm for name, cm in configmaps.items() if name.endswith("-ravn-config"))
+            return yaml.safe_load(ravn_cm["data"]["config.yaml"])["gateway"]["platform"]
+
+        default = platform(dict(self.RESIDENT_VALUES))
+        assert "a2a_agent_card_urls" not in default
+        assert "a2a_default_connection_id" not in default
+
+        values = dict(self.RESIDENT_VALUES)
+        values["resident"] = {
+            **values["resident"],
+            "platform": {
+                **values["resident"]["platform"],
+                "a2aAgentCardUrls": ["https://platform.test/.well-known/agent-card.json"],
+                "a2aDefaultConnectionId": "Valhalla",
+            },
+        }
+        configured = platform(values)
+        assert configured["a2a_agent_card_urls"] == [
+            "https://platform.test/.well-known/agent-card.json"
+        ]
+        assert configured["a2a_default_connection_id"] == "Valhalla"
+
     def test_ravn_config_carries_platform_workload_fields(self, rendered):
         configmaps = self._configmaps(rendered)
         ravn_cm = next(cm for name, cm in configmaps.items() if name.endswith("-ravn-config"))
@@ -734,7 +787,7 @@ class TestResidentWorkloadIdentityConfigFirst:
         assert platform["enabled"] is True
         assert platform["workload_token_file"] == "/var/run/secrets/niuu-workload/token"
         assert platform["workload_exchange_url"] == (
-            "https://volundr.example/api/v1/tokens/workload/exchange"
+            "http://niuu-volundr.volundr.svc.cluster.local:80/api/v1/tokens/workload/exchange"
         )
         assert platform["workflow_aliases"]["research"]["name"] == "Research Campaign"
         assert platform["workflow_aliases"]["research"]["defaults"]["gate_auto_forward_after"] == ""
@@ -780,6 +833,24 @@ class TestResidentWorkloadIdentityConfigFirst:
             == "https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange"
         )
 
+    def test_explicit_platform_exchange_reaches_both_containers(self, tmp_path):
+        exchange = "https://platform.example/api/v1/tokens/workload/exchange"
+        values = json.loads(json.dumps(self.RESIDENT_VALUES))
+        values["resident"]["platform"]["workloadExchangeUrl"] = exchange
+        values["resident"]["budget"] = {"enabled": True}
+        configs = [
+            yaml.safe_load(cm["data"]["config.yaml"])
+            for cm in self._configmaps(_render_skuld_chart(tmp_path, values)).values()
+            if "config.yaml" in cm.get("data", {})
+        ]
+        broker_cfg = next(config for config in configs if "transport_adapter" in config)
+        ravn_cfg = next(config for config in configs if "persona" in config)
+
+        assert broker_cfg["workload_identity"]["exchange_url"] == exchange
+        assert ravn_cfg["gateway"]["platform"]["workload_exchange_url"] == exchange
+        assert ravn_cfg["resident_budget"]["kwargs"]["workload_exchange_url"] == exchange
+        assert broker_cfg["volundr_api_url"] == "https://volundr.example"
+
     def test_resident_wakefulness_is_rendered(self, tmp_path):
         values = dict(self.RESIDENT_VALUES)
         values["resident"] = {
@@ -800,6 +871,80 @@ class TestResidentWorkloadIdentityConfigFirst:
         rendered = _render_skuld_chart(tmp_path, {})
         assert "workload_identity" not in rendered
         assert "NIUU_WORKLOAD_IDENTITY" not in rendered
+
+
+_VOLUNDR_CODEX_AUTH = "skuld.codex_auth.VolundrCodexAuthProvider"
+_BROKER_TOKEN_PATH = "https://volundr.example/api/v1/internal/credentials/codex/tokens"
+
+
+def render_resident_ravn_config(tmp_path: Path, *, broker: dict, platform: bool = True) -> dict:
+    """The resident's rendered ravn config.yaml, with ``broker`` values set."""
+    values = json.loads(json.dumps(TestResidentWorkloadIdentityConfigFirst.RESIDENT_VALUES))
+    values["broker"] = broker
+    values["resident"]["platform"]["enabled"] = platform
+    rendered = _render_skuld_chart(tmp_path, values)
+    for doc in yaml.safe_load_all(rendered):
+        if (
+            isinstance(doc, dict)
+            and doc.get("kind") == "ConfigMap"
+            and doc["metadata"]["name"].endswith("-ravn-config")
+        ):
+            return yaml.safe_load(doc["data"]["config.yaml"])
+    pytest.fail("ravn config was not rendered")
+    raise AssertionError("ravn config was not rendered")
+
+
+class TestResidentRavnCodexAuth:
+    """The ravn container's Codex transport uses the skuld container's broker."""
+
+    def test_ravn_config_carries_the_same_codex_auth_as_the_broker(self, tmp_path):
+        broker = {
+            "codexAuth": {
+                "adapter": _VOLUNDR_CODEX_AUTH,
+                "kwargs": {"token_path": _BROKER_TOKEN_PATH},
+            }
+        }
+        values = json.loads(json.dumps(TestResidentWorkloadIdentityConfigFirst.RESIDENT_VALUES))
+        values["broker"] = broker
+        rendered = _render_skuld_chart(tmp_path, values)
+        configs = [
+            yaml.safe_load(doc["data"]["config.yaml"])
+            for doc in yaml.safe_load_all(rendered)
+            if isinstance(doc, dict)
+            and doc.get("kind") == "ConfigMap"
+            and "config.yaml" in doc.get("data", {})
+        ]
+        broker_cfg = next(config for config in configs if "transport_adapter" in config)
+        ravn_cfg = next(config for config in configs if "persona" in config)
+
+        # Same broker contract, on the same (cluster) Völundr as the skuld
+        # container — not on the platform the ravn uses for platform APIs.
+        assert ravn_cfg["runtime_executor"] == {
+            "codex_auth_adapter": broker_cfg["codex_auth"]["adapter"],
+            "codex_auth_kwargs": broker_cfg["codex_auth"]["kwargs"],
+            "volundr_api_url": broker_cfg["volundr_api_url"],
+        }
+        assert ravn_cfg["runtime_executor"]["volundr_api_url"] == "https://volundr.example"
+        assert ravn_cfg["gateway"]["platform"]["base_url"] == (
+            "http://niuu-volundr.volundr.svc.cluster.local:80"
+        )
+        assert ravn_cfg["runtime_executor"]["codex_auth_kwargs"] == {
+            "token_path": _BROKER_TOKEN_PATH
+        }
+
+    @pytest.mark.parametrize(
+        ("broker", "platform"),
+        [
+            ({}, True),
+            ({"codexAuth": {"adapter": "skuld.codex_auth.HostCodexAuthProvider"}}, True),
+            ({"codexAuth": {"adapter": _VOLUNDR_CODEX_AUTH}}, False),
+        ],
+        ids=["no-codex-auth", "host-login", "no-workload-identity"],
+    )
+    def test_host_login_residents_render_no_codex_auth(self, tmp_path, broker, platform):
+        config = render_resident_ravn_config(tmp_path, broker=broker, platform=platform)
+
+        assert "runtime_executor" not in config
 
 
 class TestResidentTriggersAndBudget:
@@ -1524,3 +1669,201 @@ class TestResidentServiceAccount:
         docs = self._render("--set", "resident.serviceAccount.create=true")
         sa = self._service_account(docs)
         assert sa["metadata"]["name"] == "resident-abc123"
+
+
+class TestResidentVoice:
+    """resident.voice: the Ravn voice channel behind /voice/ on the resident's route."""
+
+    _MINTERS = {
+        "xai": {
+            "adapter": "ravn.adapters.voice.client_secrets.XaiRealtimeMinter",
+            "kwargs": {"key_file": "/run/secrets/xai-api-key"},
+        }
+    }
+
+    def _values(self, **voice: object) -> dict:
+        return {
+            "session": {"ownerId": "owner-1"},
+            "resident": {
+                "enabled": True,
+                "persona": "sidekick",
+                "voice": {"enabled": True, "minters": self._MINTERS, **voice},
+            },
+        }
+
+    def test_off_by_default(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(
+            tmp_path, {"resident": {"enabled": True, "persona": "sidekick"}}
+        )
+
+        assert "voice" not in _ravn_config_from_rendered(rendered)["gateway"]["channels"]
+        assert "location /voice/" not in rendered
+
+    def test_channel_config_is_valid_ravn_configuration(self, tmp_path: Path) -> None:
+        from ravn.config import VoiceChannelConfig
+
+        rendered = _render_skuld_chart(
+            tmp_path, self._values(timeZone="Europe/Amsterdam", models={"grok": "grok-voice-3.0"})
+        )
+        channel = _ravn_config_from_rendered(rendered)["gateway"]["channels"]["voice"]
+        config = VoiceChannelConfig(**channel)
+
+        assert config.enabled and config.host == "127.0.0.1" and config.port == 18791
+        assert config.store_path == "/workspace/.ravn/voice/calls.db"
+        assert config.time_zone == "Europe/Amsterdam"
+        assert config.models == {"grok": "grok-voice-3.0"}
+        assert config.minters["xai"].kwargs == {"key_file": "/run/secrets/xai-api-key"}
+        assert config.room_broker_url == "http://127.0.0.1:8081"
+        assert config.room_participant_id == "flock-sidekick"
+        assert config.owner_id == "owner-1" and config.user_id_header == "x-auth-user-id"
+        # The resident introduces itself by its own name (here its persona, without one).
+        assert config.display_name == "sidekick"
+
+    def test_nginx_forwards_voice_to_the_channel_with_upgrade(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(tmp_path, self._values(port=19001))
+
+        assert "location /voice/ {\n                proxy_pass http://127.0.0.1:19001/;" in rendered
+
+    def test_room_copy_can_be_switched_off(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(tmp_path, self._values(roomCopy=False))
+        channel = _ravn_config_from_rendered(rendered)["gateway"]["channels"]["voice"]
+
+        assert "room_broker_url" not in channel
+
+    @pytest.mark.parametrize(
+        ("change", "message"),
+        [
+            ({"minters": {}}, "resident.voice.enabled needs resident.voice.minters"),
+            ({"owner": ""}, "resident.voice.enabled needs session.ownerId"),
+        ],
+    )
+    def test_voice_that_cannot_serve_fails_to_render(
+        self, tmp_path: Path, change: dict, message: str
+    ) -> None:
+        helm = shutil.which("helm")
+        if not helm:
+            pytest.skip("helm is not installed")
+        values = self._values(**{k: v for k, v in change.items() if k != "owner"})
+        if "owner" in change:
+            values["session"]["ownerId"] = change["owner"]
+        values_file = tmp_path / "values.yaml"
+        values_file.write_text(yaml.safe_dump(values), encoding="utf-8")
+
+        result = subprocess.run(
+            [helm, "template", "skuld-test", str(CHART_DIR), "-f", str(values_file)],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode != 0
+        assert message in result.stderr
+
+
+class TestResidentOpenClawSessions:
+    """resident.openclaw: the Ravn shim behind Volundr's resident sessions API."""
+
+    _VALUES = {
+        "resident": {
+            "enabled": True,
+            "persona": "product-steward",
+            "openclaw": {"enabled": True, "tokenSecret": {"name": "volundr-ravn-openclaw"}},
+        },
+        "networkPolicy": {"enabled": True},
+    }
+
+    def test_on_by_default_with_the_releases_own_token_secret(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(
+            tmp_path, {"resident": {"enabled": True, "persona": "product-steward"}}
+        )
+        assert _ravn_config_from_rendered(rendered)["gateway"]["channels"]["openclaw"]["enabled"]
+        ravn = next(
+            c
+            for c in _deployment_from_rendered(rendered)["spec"]["template"]["spec"]["containers"]
+            if c["name"] == "ravn"
+        )
+        token = next(e for e in ravn["env"] if e["name"] == "RAVN_OPENCLAW_TOKEN")
+        # Volundr's resident-<id>-openclaw for release resident-<id>.
+        assert token["valueFrom"]["secretKeyRef"]["name"].endswith("-openclaw")
+        assert token["valueFrom"]["secretKeyRef"]["key"] == "token"
+
+    def test_absent_when_switched_off(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(
+            tmp_path,
+            {
+                "resident": {
+                    "enabled": True,
+                    "persona": "product-steward",
+                    "openclaw": {"enabled": False},
+                }
+            },
+        )
+        assert "openclaw" not in _ravn_config_from_rendered(rendered)["gateway"]["channels"]
+        assert "ravn-openclaw" not in rendered
+
+    def test_shim_config_token_port_and_service(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(tmp_path, self._VALUES)
+        shim = _ravn_config_from_rendered(rendered)["gateway"]["channels"]["openclaw"]
+        assert shim == {
+            "enabled": True,
+            "host": "0.0.0.0",
+            "port": 18790,
+            "token_env": "RAVN_OPENCLAW_TOKEN",
+            "agent_id": "main",
+            "max_live_sessions": 64,
+            "store_path": "/workspace/.ravn/openclaw/state.db",
+        }
+
+        deployment = _deployment_from_rendered(rendered)
+        ravn = next(
+            c for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == "ravn"
+        )
+        token = next(e for e in ravn["env"] if e["name"] == "RAVN_OPENCLAW_TOKEN")
+        assert token["valueFrom"]["secretKeyRef"] == {
+            "name": "volundr-ravn-openclaw",
+            "key": "token",
+        }
+        assert {"name": "ravn-openclaw", "containerPort": 18790, "protocol": "TCP"} in ravn["ports"]
+
+        documents = [d for d in yaml.safe_load_all(rendered) if isinstance(d, dict)]
+        service = next(d for d in documents if d["kind"] == "Service")
+        assert {
+            "port": 18790,
+            "targetPort": "ravn-openclaw",
+            "protocol": "TCP",
+            "name": "openclaw",
+        } in service["spec"]["ports"]
+        policy = next(d for d in documents if d["kind"] == "NetworkPolicy")
+        assert {"ports": [{"protocol": "TCP", "port": 18790}]} in policy["spec"]["ingress"]
+
+    def test_token_secret_defaults_to_the_releases_own(self) -> None:
+        helm = shutil.which("helm")
+        if not helm:
+            pytest.skip("helm is not installed")
+        result = subprocess.run(
+            [
+                helm,
+                "template",
+                "resident-abc",
+                str(CHART_DIR),
+                "--set",
+                "resident.enabled=true",
+                "--set",
+                "resident.persona=product-steward",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        deployment = next(
+            doc
+            for doc in yaml.safe_load_all(result.stdout)
+            if isinstance(doc, dict) and doc.get("kind") == "Deployment"
+        )
+        ravn = next(
+            c for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == "ravn"
+        )
+        token = next(e for e in ravn["env"] if e["name"] == "RAVN_OPENCLAW_TOKEN")
+        assert token["valueFrom"]["secretKeyRef"] == {
+            "name": "resident-abc-openclaw",
+            "key": "token",
+        }

@@ -62,6 +62,8 @@ logger = logging.getLogger(__name__)
 
 # Default configuration values
 DEFAULT_WORKSPACES_DIR = "~/.niuu/workspaces"
+# Broker-owned present-file staging for local sessions, under the workspaces dir.
+LOCAL_PRESENTED_FILES_DIR = ".forge-presented"
 DEFAULT_CLAUDE_BINARY = "claude"
 # Capable hosts run many sessions comfortably (each ~0.5 GB); the practical
 # ceiling is the Claude/Codex *subscription* concurrency, not the box. Deployments
@@ -450,6 +452,27 @@ def _materialize_local_mimir_config(
     }
 
 
+#: Broker settings carrying the session credential (skuld ``forge_mcp.token`` /
+#: ``forge_mcp.grants``). Skuld scrubs the token from every agent process it spawns.
+FORGE_MCP_TOKEN_ENV = "SKULD__FORGE_MCP__TOKEN"
+FORGE_MCP_GRANTS_ENV = "SKULD__FORGE_MCP__GRANTS"
+
+
+def _apply_forge_session_env(env: dict[str, str], spec: SessionSpec) -> None:
+    """Put this launch's session credential (and only it) into the broker env.
+
+    The token travels only in the broker's process environment: never argv, the
+    state file or a log line.
+    """
+    env.pop(FORGE_MCP_TOKEN_ENV, None)
+    env.pop(FORGE_MCP_GRANTS_ENV, None)
+    credential = spec.forge_session
+    if credential is None:
+        return
+    env[FORGE_MCP_TOKEN_ENV] = credential.token
+    env[FORGE_MCP_GRANTS_ENV] = ",".join(grant.value for grant in credential.grants)
+
+
 def _localize_mcp_servers(raw_servers: object, workspace: Path) -> list[dict[str, Any]]:
     if not isinstance(raw_servers, list):
         return []
@@ -492,6 +515,11 @@ class LocalProcessPodManager(PodManager):
     @property
     def runtime_backend(self) -> str:
         return "process"
+
+    @property
+    def delivers_forge_session_token(self) -> bool:
+        """The broker receives its session credential in its own process env."""
+        return True
 
     def __init__(
         self,
@@ -1191,6 +1219,14 @@ class LocalProcessPodManager(PodManager):
         env["SKULD__PORT"] = str(port)
         env.setdefault("SKULD__TRANSPORT", "sdk")
         env["SKULD__PERSISTENCE_MOUNT_PATH"] = str(self._workspaces_dir)
+        # A local session has no per-session home mount: its agent runs with this
+        # host HOME. Tell the broker so present-file accepts ~ files, and give it a
+        # per-session staging dir outside the workspace (the cluster layout
+        # {mount}/{id}/home does not exist here).
+        env["SKULD__HOME_DIR"] = env.get("HOME") or str(Path.home())
+        env["SKULD__PRESENTED_FILES_DIR"] = str(
+            self._workspaces_dir / LOCAL_PRESENTED_FILES_DIR / session_id
+        )
 
         # Volundr API URL so Skuld can post chronicles/timeline events back
         server_host = self._server_host
@@ -1211,6 +1247,10 @@ class LocalProcessPodManager(PodManager):
         # Claude transports still need the CLI binary location.
         if env.get("SKULD__CLI_TYPE", "claude") == "claude":
             env["SKULD__CLI_BINARY"] = self._resolve_claude_binary()
+
+        # Last, so neither Forge's own environment nor launch-spec env can supply
+        # (or keep) a session credential that this launch did not mint.
+        _apply_forge_session_env(env, spec)
 
         log_path = workspace / ".skuld.log"
         # Multiple sessions may share a workspace; retain diagnostics from every
@@ -1821,6 +1861,13 @@ class LocalProcessPodManager(PodManager):
             sandbox = broker.get("sandbox")
             if sandbox:
                 env["SKULD__SANDBOX"] = str(sandbox)
+
+            # Per-definition override of the node's claude_permission_mode (node config file).
+            claude_permission_mode = broker.get(
+                "claudePermissionMode", broker.get("claude_permission_mode")
+            )
+            if claude_permission_mode:
+                env["SKULD__CLAUDE_PERMISSION_MODE"] = str(claude_permission_mode)
 
             if "agentTeams" in broker:
                 env["SKULD__AGENT_TEAMS"] = str(bool(broker["agentTeams"])).lower()

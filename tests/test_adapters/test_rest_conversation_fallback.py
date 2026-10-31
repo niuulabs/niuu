@@ -221,3 +221,33 @@ async def test_conversation_404_when_session_missing():
     resp = client.get(_CONV_PATH.format(sid=session.id))
 
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_single_turn_reports_its_absolute_position():
+    """A turn id resolves to its index in the same index space the windowed read uses."""
+    session = Session(name="anchor", model="claude-sonnet-4", status=SessionStatus.STOPPED)
+    event_log = InMemoryEventLog(_durable_turns(session.id))
+    client = _build_client(session, event_log)
+    await _seed(client, session)
+    turns = client.get(_CONV_PATH.format(sid=session.id)).json()["turns"]
+    target = turns[-1]
+
+    body = client.get(_CONV_PATH.format(sid=session.id) + f"/turns/{target['id']}").json()
+
+    assert body["turn"]["id"] == target["id"]
+    assert body["index"] == len(turns) - 1
+    assert body["total_turns"] == len(turns)
+    window = client.get(
+        _CONV_PATH.format(sid=session.id), params={"after": body["index"] - 1}
+    ).json()
+    assert window["turns"][0]["id"] == target["id"]
+
+
+@pytest.mark.asyncio
+async def test_single_turn_unknown_id_is_404():
+    session = Session(name="anchor-miss", model="claude-sonnet-4", status=SessionStatus.STOPPED)
+    client = _build_client(session, InMemoryEventLog(_durable_turns(session.id)))
+    await _seed(client, session)
+    response = client.get(_CONV_PATH.format(sid=session.id) + "/turns/no-such-turn")
+    assert response.status_code == 404

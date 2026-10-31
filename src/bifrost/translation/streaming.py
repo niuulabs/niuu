@@ -210,7 +210,6 @@ async def openai_stream_to_anthropic(
                 {"type": "content_block_stop", "index": block_index},
             )
             block_index += 1
-            active_block_type = ""
 
         for acc in tool_call_accumulator.values():
             try:

@@ -3,27 +3,36 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import json
 import logging
 import math
 import re
+import socket
 import time
 import uuid
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from ravn.adapters.kubernetes_pod_logs import read_pod_log
 from ravn.valkyrie_evolution.learned_tools import (
     DEFAULT_CONTAINED_TOOL_IMAGE,
-    NETWORK_REACH_KINDS,
     REACH_ENFORCEMENT_ENFORCED,
     REACH_ENFORCEMENT_UNAVAILABLE,
     LearnedToolError,
     LearnedToolInfrastructureError,
 )
 from ravn.valkyrie_evolution.models import ToolReachGrant
+from ravn.valkyrie_evolution.reach_plan import (
+    EgressPlan,
+    HostTarget,
+    ServiceTarget,
+    parse_service_ref,
+    plan_egress,
+)
 from ravn.valkyrie_evolution.tool_runtime import HostCall, ToolRunResult
 from ravn.valkyrie_evolution.tool_verification import (
     DEFAULT_VERIFY_TIMEOUT_SECONDS,
@@ -45,6 +54,18 @@ _MAX_OUTPUT_BYTES = 256 * 1024
 #: leftovers (a crash before the finally-block delete ran) with a label
 #: selector instead of grepping names.
 _MANAGED_BY_LABEL = {"app.kubernetes.io/managed-by": "ravn-k8s-job-runner"}
+#: Job-controller label carrying the Job's name on every pod it creates; the
+#: per-run NetworkPolicy selects exactly that run's pod by it.
+_JOB_NAME_LABEL = "batch.kubernetes.io/job-name"
+#: First words a tool Job prints, and its exit status, when the runner image
+#: does not satisfy the tool's declared requirements. Trusted together only.
+_REQUIREMENTS_MARKER = "ravn-k8s-job: runner image does not satisfy:"
+_REQUIREMENTS_EXIT = 86
+#: Prefix of the one log line carrying a tool's JSON result. A pod log is
+#: the container's stdout and stderr interleaved, so a warning a tool's
+#: libraries print (urllib3's InsecureRequestWarning, say) would otherwise
+#: corrupt the result.
+_RESULT_MARKER = "ravn-k8s-job-result: "
 
 
 @dataclass
@@ -63,6 +84,12 @@ class JobExecutor(Protocol):
     """Execute one tool in a separate runtime boundary."""
 
     enforces_reach: bool
+    #: Service account a Job with Kubernetes API reach runs as ("" = none).
+    tool_service_account: str
+    #: ``namespace/name`` of the cluster DNS Service ("" = none configured).
+    dns_service: str
+    #: Operator-declared words a reach target may use for a Service.
+    named_targets: Mapping[str, str]
 
     async def execute(
         self,
@@ -74,7 +101,7 @@ class JobExecutor(Protocol):
         entry_point: str,
         requirements: Sequence[str],
         timeout_seconds: float,
-        network_allowed: bool,
+        egress: EgressPlan,
     ) -> JobRunResult: ...
 
     async def execute_verification(
@@ -97,8 +124,8 @@ class KubernetesJobLearnedToolRunner:
     supports_host_call = False
     #: verify() re-runs a peer's test_code in the SAME NetworkPolicy-verified,
     #: denied-network Job boundary run() uses (never on this resident's own
-    #: host) — see :meth:`verify`. A peer's declared requirements are
-    #: refused outright, the same posture run() takes at invocation time.
+    #: host) — see :meth:`verify`. Requirements are never installed: the
+    #: pinned runner image must already satisfy them, checked inside the Job.
     supports_verify = True
 
     def __init__(self, *, executor: JobExecutor, image: str = DEFAULT_TOOL_RUN_IMAGE) -> None:
@@ -108,6 +135,25 @@ class KubernetesJobLearnedToolRunner:
     @property
     def enforces_reach(self) -> bool:
         return bool(self._executor.enforces_reach)
+
+    def check_reach(self, declared_reach: Sequence[ToolReachGrant]) -> None:
+        self._egress(declared_reach)
+
+    def _egress(self, declared_reach: Sequence[ToolReachGrant]) -> EgressPlan:
+        """The egress *declared_reach* earns, or the reason it cannot run here."""
+        plan = plan_egress(declared_reach, named_targets=self._executor.named_targets)
+        if plan.kubernetes_api and not self._executor.tool_service_account:
+            raise LearnedToolError(
+                "this tool declares Kubernetes API reach, but no read-only tool identity "
+                "is configured; set resident_evolution.learned_tool_k8s.tool_service_account"
+            )
+        if plan.scoped and not self._executor.dns_service:
+            raise LearnedToolError(
+                "this tool declares targeted network reach, which needs the cluster DNS "
+                "Service in its NetworkPolicy; set "
+                "resident_evolution.learned_tool_k8s.dns_service"
+            )
+        return plan
 
     async def run(
         self,
@@ -131,13 +177,7 @@ class KubernetesJobLearnedToolRunner:
                 infrastructure=True,
             )
         try:
-            network_allowed = _network_reach(declared_reach)
-            if requirements:
-                raise LearnedToolError(
-                    "k8s_job does not install packages at invocation time; use a reviewed "
-                    "immutable runner image containing the dependency and declare no runtime "
-                    "requirements"
-                )
+            egress = self._egress(declared_reach)
             code = Path(tool_path).read_text(encoding="utf-8")
             bundle_size = len(code.encode()) + len(json.dumps(payload, default=str).encode())
             if bundle_size > _MAX_BUNDLE_BYTES:
@@ -159,9 +199,9 @@ class KubernetesJobLearnedToolRunner:
                 code=code,
                 payload=payload,
                 entry_point=entry_point,
-                requirements=(),
+                requirements=tuple(requirements),
                 timeout_seconds=timeout_seconds,
-                network_allowed=network_allowed,
+                egress=egress,
             )
         except Exception as exc:  # noqa: BLE001 - infrastructure failure is evidence
             return ToolRunResult(
@@ -174,10 +214,17 @@ class KubernetesJobLearnedToolRunner:
         enforcement = (
             REACH_ENFORCEMENT_ENFORCED if run.network_enforced else REACH_ENFORCEMENT_UNAVAILABLE
         )
+        if run.exit_code != 0 and run.stderr.startswith(_REQUIREMENTS_MARKER):
+            return ToolRunResult(
+                ok=False,
+                error=run.stderr.strip(),
+                enforcement=enforcement,
+                infrastructure=True,
+            )
         if run.timed_out:
             return ToolRunResult(
                 ok=False,
-                error=f"learned tool timed out after {timeout_seconds}s",
+                error=_timeout_error(timeout_seconds, egress),
                 stderr=run.stderr,
                 enforcement=enforcement,
             )
@@ -232,14 +279,11 @@ class KubernetesJobLearnedToolRunner:
         NetworkPolicy-verified Kubernetes Job — the SAME boundary run() uses,
         never on this resident's own host.
 
-        *requirements* are declined outright, the same posture as run():
-        installing a peer's chosen packages would need its own throwaway
-        Job with real egress (arbitrary sdist build code, the metadata
-        endpoint, in-cluster services) for a tool that — on this backend —
-        can never actually run with those requirements anyway (run() refuses
-        them at invocation time), so there is nothing legitimate for that
-        egress to buy. A tool needing dependencies belongs in a reviewed,
-        pinned runner image instead.
+        *requirements* are never installed — that would need a throwaway
+        Job with real egress running arbitrary sdist build code. The pinned
+        runner image must already satisfy them; the Job checks that before
+        the test runs, and a requirement the image lacks declines the
+        proposal with the remedy (bake it into the reviewed image).
         """
         del entry_point  # accepted for parity; the test module drives the run.
         defects = static_defects(tool_code, requirements)
@@ -248,15 +292,6 @@ class KubernetesJobLearnedToolRunner:
                 ok=False,
                 logs="static verification failed:\n" + "\n".join(f"  - {d}" for d in defects),
                 missing_module=first_undeclared_import(tool_code, requirements),
-            )
-        if requirements:
-            return VerificationResult(
-                ok=False,
-                logs=(
-                    "k8s_job requires dependencies baked into the runner image; it "
-                    "does not install packages for run() or verify() — declare no "
-                    "runtime requirements, or verify on the 'container' backend"
-                ),
             )
         if not test_code.strip():
             return VerificationResult(
@@ -272,7 +307,7 @@ class KubernetesJobLearnedToolRunner:
                 tool_name=tool_name,
                 tool_code=tool_code,
                 test_code=test_code,
-                requirements=(),
+                requirements=tuple(requirements),
                 timeout_seconds=timeout_seconds,
             )
         except LearnedToolInfrastructureError:
@@ -324,31 +359,6 @@ def _verification_result_from_job(
     )
 
 
-def _network_reach(declared_reach: Sequence[ToolReachGrant]) -> bool:
-    network = False
-    for grant in declared_reach:
-        kind = grant.kind.casefold()
-        if kind in {"", "pure_compute"} or grant.access == "none":
-            continue
-        is_network = kind in NETWORK_REACH_KINDS or kind.startswith("http")
-        if not is_network:
-            raise LearnedToolError(
-                f"k8s_job cannot enforce declared reach kind {grant.kind!r}; refusing to run"
-            )
-        if grant.target.strip():
-            raise LearnedToolError(
-                "k8s_job cannot enforce target-specific network reach "
-                f"({grant.target}); refusing to widen it to unrestricted egress"
-            )
-        if grant.access != "read_write":
-            raise LearnedToolError(
-                "k8s_job can enforce only broad network/read_write reach; "
-                f"refusing to treat sockets as {grant.access!r}"
-            )
-        network = True
-    return network
-
-
 def _run_name(stem: str) -> str:
     name = f"ravn-tool-{_k8s_safe_component(stem, max_len=40)}-{uuid.uuid4().hex[:8]}"
     return name[:_DNS1123_MAX_LENGTH]
@@ -370,6 +380,9 @@ class _ExecutorConfig:
     job_tmp_size: str = "64Mi"
     job_pod_start_timeout_seconds: float = 120.0
     job_ttl_seconds_after_finished: int = 3600
+    tool_service_account: str = ""
+    dns_service: str = ""
+    named_targets: Mapping[str, str] = field(default_factory=dict)
 
 
 class KubernetesJobExecutor:
@@ -378,6 +391,14 @@ class KubernetesJobExecutor:
     The executor verifies both configured NetworkPolicies through the live API
     immediately before every Job. A pod label alone is never treated as
     enforcement evidence.
+
+    A run whose declared reach names targets is a *scoped* run: its pod
+    carries the denied label, so the verified deny policy isolates it from
+    the moment it starts, and a per-run NetworkPolicy owned by the Job adds
+    exactly the egress the reach names — the API server, the pods behind a
+    named Service, or a named address — plus cluster DNS. A run with
+    Kubernetes API reach also runs as ``tool_service_account``, whose RBAC
+    must be read-only: it is the only cluster identity a tool ever holds.
     """
 
     def __init__(
@@ -395,6 +416,9 @@ class KubernetesJobExecutor:
         job_tmp_size: str = "64Mi",
         job_pod_start_timeout_seconds: float = 120.0,
         job_ttl_seconds_after_finished: int = 3600,
+        tool_service_account: str = "",
+        dns_service: str = "",
+        named_targets: Mapping[str, str] | None = None,
         batch_v1: Any | None = None,
         core_v1: Any | None = None,
         networking_v1: Any | None = None,
@@ -406,6 +430,15 @@ class KubernetesJobExecutor:
             raise LearnedToolError("k8s_job requires explicit deny and allow policy names")
         if "@sha256:" not in image:
             raise LearnedToolError("k8s_job runner image must be pinned by sha256 digest")
+        if dns_service and not _NAMESPACED_NAME_RE.fullmatch(dns_service):
+            raise LearnedToolError(
+                f"learned_tool_k8s.dns_service must be 'namespace/name', got {dns_service!r}"
+            )
+        for word, ref in (named_targets or {}).items():
+            try:
+                parse_service_ref(ref)
+            except ValueError as exc:
+                raise LearnedToolError(f"learned_tool_k8s.named_targets[{word!r}]: {exc}") from exc
         self._config = _ExecutorConfig(
             namespace=namespace,
             image=image,
@@ -419,6 +452,9 @@ class KubernetesJobExecutor:
             job_tmp_size=job_tmp_size,
             job_pod_start_timeout_seconds=job_pod_start_timeout_seconds,
             job_ttl_seconds_after_finished=job_ttl_seconds_after_finished,
+            tool_service_account=tool_service_account,
+            dns_service=dns_service,
+            named_targets=dict(named_targets or {}),
         )
         self._batch_v1 = batch_v1
         self._core_v1 = core_v1
@@ -434,6 +470,18 @@ class KubernetesJobExecutor:
         """Whether a live policy check has succeeded for this executor."""
         return self._policies_verified
 
+    @property
+    def tool_service_account(self) -> str:
+        return self._config.tool_service_account
+
+    @property
+    def dns_service(self) -> str:
+        return self._config.dns_service
+
+    @property
+    def named_targets(self) -> Mapping[str, str]:
+        return self._config.named_targets
+
     async def execute(
         self,
         *,
@@ -444,25 +492,57 @@ class KubernetesJobExecutor:
         entry_point: str,
         requirements: Sequence[str],
         timeout_seconds: float,
-        network_allowed: bool,
+        egress: EgressPlan,
     ) -> JobRunResult:
-        if requirements:
-            raise LearnedToolError("k8s_job runtime requirements must be empty")
-        effective_image = image or self._config.image
-        if "@sha256:" not in effective_image:
-            raise LearnedToolError("k8s_job runner image must be pinned by sha256 digest")
-        batch, core, networking = await self._load_clients()
-        label = NETWORK_ALLOWED_LABEL if network_allowed else NETWORK_DENIED_LABEL
-        await self._verify_network_policies(networking, network_label=label)
+        effective_image = self._pinned_image(image)
+        async with self._clients() as clients:
+            return await self._execute(
+                clients,
+                run_name=run_name,
+                image=effective_image,
+                code=code,
+                payload=payload,
+                entry_point=entry_point,
+                requirements=requirements,
+                timeout_seconds=timeout_seconds,
+                egress=egress,
+            )
+
+    async def _execute(
+        self,
+        clients: tuple[Any, Any, Any],
+        *,
+        run_name: str,
+        image: str,
+        code: str,
+        payload: dict[str, Any],
+        entry_point: str,
+        requirements: Sequence[str],
+        timeout_seconds: float,
+        egress: EgressPlan,
+    ) -> JobRunResult:
+        batch, core, networking = clients
+        label = NETWORK_ALLOWED_LABEL if egress.unrestricted else NETWORK_DENIED_LABEL
+        await self._verify_network_policies(networking, network_label=label, run_name=run_name)
+        # Resolved before anything is created: a target that does not exist
+        # fails the run with nothing to clean up.
+        egress_rules = await self._egress_rules(core, egress) if egress.scoped else None
         created_secret = False
         created_job = False
+        created_policy = False
         try:
             body = self._job_body(
                 run_name=run_name,
-                image=effective_image,
-                command=["python", "-I", "-B", "-c", _BOOTSTRAP],
+                image=image,
+                command=_gated_command(["-I", "-B", "-c", _BOOTSTRAP], "/tool/requirements.txt"),
                 network_label=label,
-                active_deadline_seconds=timeout_seconds,
+                # The tool's own timeout counts from when its container
+                # starts; Kubernetes' ceiling covers the pod-start budget too.
+                active_deadline_seconds=timeout_seconds
+                + self._config.job_pod_start_timeout_seconds,
+                service_account=(
+                    self._config.tool_service_account if egress.kubernetes_api else None
+                ),
                 env=[
                     {"name": "RAVN_TOOL_ENTRY", "value": entry_point},
                     {"name": "HOME", "value": "/tmp"},
@@ -484,17 +564,30 @@ class KubernetesJobExecutor:
             # already exists, so this ordering costs nothing.
             job = await batch.create_namespaced_job(self._config.namespace, body)
             created_job = True
-            await self._create_secret(core, run_name, code, payload, owner_job_uid=_job_uid(job))
+            owner_uid = _job_uid(job)
+            if egress_rules is not None:
+                # Before the Secret: the pod cannot start until its Secret
+                # exists, so its egress is in place before any tool code runs.
+                await networking.create_namespaced_network_policy(
+                    self._config.namespace,
+                    _scoped_policy_body(run_name, egress_rules, owner_uid),
+                )
+                created_policy = True
+            await self._create_secret(
+                core, run_name, code, payload, requirements, owner_job_uid=owner_uid
+            )
             created_secret = True
-            timed_out = not await self._wait_for_completion(batch, run_name, timeout_seconds)
+            exit_code = await self._wait_started_completion(batch, core, run_name, timeout_seconds)
+            timed_out = exit_code is None
             logs = "" if timed_out else await self._read_pod_logs(core, run_name)
             output_exceeded = len(logs.encode()) > self._config.output_limit_bytes
             if output_exceeded:
                 logs = logs.encode()[: self._config.output_limit_bytes].decode(errors="replace")
-            exit_code = 124 if timed_out else await self._exit_code(batch, run_name)
+            exit_code = 124 if exit_code is None else exit_code
+            result, diagnostics = _split_result(logs)
             return JobRunResult(
-                stdout=logs,
-                stderr=logs if exit_code else "",
+                stdout=result,
+                stderr=diagnostics,
                 exit_code=exit_code,
                 timed_out=timed_out,
                 output_exceeded=output_exceeded,
@@ -506,6 +599,7 @@ class KubernetesJobExecutor:
                 core,
                 job_name=run_name if created_job else None,
                 secret_name=run_name if created_secret else None,
+                policy=(networking, run_name) if created_policy else None,
             )
 
     async def execute_verification(
@@ -523,11 +617,8 @@ class KubernetesJobExecutor:
         denied-network Job boundary :meth:`execute` enforces for a tool with
         no network reach.
 
-        *requirements* are refused here too — the caller
-        (:meth:`KubernetesJobLearnedToolRunner.verify`) already declines a
-        peer proposal with requirements before ever reaching the API; this
-        is defense in depth, the same belt-and-suspenders check
-        :meth:`execute` makes for itself.
+        *requirements* are checked inside the Job against the pinned image
+        before the test runs; nothing is installed.
 
         A hung test is distinguished from an infrastructure failure by
         whether the container ever started (see :meth:`_wait_verify_completion`):
@@ -536,30 +627,54 @@ class KubernetesJobExecutor:
         tests hang must be durably rejected, not retried forever on
         redelivery because every attempt "looks like" an outage.
         """
+        effective_image = self._pinned_image(image)
+        async with self._clients() as clients:
+            return await self._execute_verification(
+                clients,
+                run_name=run_name,
+                image=effective_image,
+                tool_name=tool_name,
+                tool_code=tool_code,
+                test_code=test_code,
+                requirements=requirements,
+                timeout_seconds=timeout_seconds,
+            )
+
+    async def _execute_verification(
+        self,
+        clients: tuple[Any, Any, Any],
+        *,
+        run_name: str,
+        image: str,
+        tool_name: str,
+        tool_code: str,
+        test_code: str,
+        requirements: Sequence[str],
+        timeout_seconds: float,
+    ) -> JobRunResult:
         del tool_name  # no longer used for naming; every verify file name is fixed.
-        if requirements:
-            raise LearnedToolError("k8s_job verification requirements must be empty")
-        effective_image = image or self._config.image
-        if "@sha256:" not in effective_image:
-            raise LearnedToolError("k8s_job runner image must be pinned by sha256 digest")
-        batch, core, networking = await self._load_clients()
+        batch, core, networking = clients
         # verify() always runs its test Job denied-network, so the additive
         # check always applies here (unlike execute(), which only applies
         # it for a denied-network invocation).
-        await self._verify_network_policies(networking, network_label=NETWORK_DENIED_LABEL)
+        await self._verify_network_policies(
+            networking, network_label=NETWORK_DENIED_LABEL, run_name=run_name
+        )
 
         created_secret = False
         created_job = False
         try:
             body = self._job_body(
                 run_name=run_name,
-                image=effective_image,
-                command=[
-                    "python",
-                    "/verify/_verify_runner.py",
-                    "/verify/_verify_tool.py",
-                    "/verify/_verify_test.py",
-                ],
+                image=image,
+                command=_gated_command(
+                    [
+                        "/verify/_verify_runner.py",
+                        "/verify/_verify_tool.py",
+                        "/verify/_verify_test.py",
+                    ],
+                    "/verify/requirements.txt",
+                ),
                 network_label=NETWORK_DENIED_LABEL,
                 # The test's own timeout only starts counting once the
                 # container is actually running (see
@@ -568,6 +683,7 @@ class KubernetesJobExecutor:
                 # activeDeadlineSeconds has to cover both budgets.
                 active_deadline_seconds=timeout_seconds
                 + self._config.job_pod_start_timeout_seconds,
+                service_account=None,
                 env=[
                     {"name": "HOME", "value": "/tmp"},
                     {"name": "PYTHONDONTWRITEBYTECODE", "value": "1"},
@@ -586,15 +702,16 @@ class KubernetesJobExecutor:
             job = await batch.create_namespaced_job(self._config.namespace, body)
             created_job = True
             await self._create_verify_secret(
-                core, run_name, tool_code, test_code, owner_job_uid=_job_uid(job)
+                core, run_name, tool_code, test_code, requirements, owner_job_uid=_job_uid(job)
             )
             created_secret = True
-            timed_out = await self._wait_verify_completion(batch, core, run_name, timeout_seconds)
+            exit_code = await self._wait_started_completion(batch, core, run_name, timeout_seconds)
+            timed_out = exit_code is None
             logs = await self._read_pod_logs(core, run_name)
             output_exceeded = len(logs.encode()) > self._config.output_limit_bytes
             if output_exceeded:
                 logs = logs.encode()[: self._config.output_limit_bytes].decode(errors="replace")
-            exit_code = 124 if timed_out else await self._exit_code(batch, run_name)
+            exit_code = 124 if exit_code is None else exit_code
             return JobRunResult(
                 stdout=logs,
                 exit_code=exit_code,
@@ -610,14 +727,14 @@ class KubernetesJobExecutor:
                 secret_name=run_name if created_secret else None,
             )
 
-    async def _wait_verify_completion(
+    async def _wait_started_completion(
         self,
         batch: Any,
         core: Any,
         run_name: str,
         timeout_seconds: float,
-    ) -> bool:
-        """Wait for the verify Job to reach a terminal state.
+    ) -> int | None:
+        """Wait for a tool or verify Job's container to finish.
 
         The test's own *timeout_seconds* budget starts counting from the
         container's actual ``state.running.startedAt`` — never from when
@@ -625,14 +742,20 @@ class KubernetesJobExecutor:
         the time the test itself gets to run (a 100s pull ahead of a 30s
         test must not become "ran for 0s, therefore hung").
 
-        Returns ``True`` when the container ran for at least
-        *timeout_seconds* without the Job reaching a terminal state — a
-        genuine test hang, reported by the caller as a failed verification,
-        never infrastructure. Raises :class:`LearnedToolInfrastructureError`
-        when the container never started within its own
-        ``job_pod_start_timeout_seconds`` budget (scheduling, image pull),
-        or when ``_infra_failure_reason`` finds a definite cause once the
-        Job is marked failed.
+        The run is over when its container terminates, not when the Job
+        controller gets round to marking the Job finished: that update lags
+        the container by seconds (2-4s measured on a quiet cluster), and
+        counted against the budget it made a tool that finished in 7s of a
+        10s budget report a timeout and lose its result.
+
+        Returns the container's exit code, or ``None`` when the container
+        ran for at least *timeout_seconds* without finishing — a genuine
+        hang, reported by the caller as a timeout, never infrastructure.
+        Raises :class:`LearnedToolInfrastructureError` when the container
+        never started within its own ``job_pod_start_timeout_seconds``
+        budget (scheduling, image pull), or when ``_pod_infra_reason``
+        finds a definite cluster-driven cause once the Job failed or its
+        container stopped.
         """
         wait_start = time.monotonic()
         pod_start_deadline = wait_start + self._config.job_pod_start_timeout_seconds
@@ -646,34 +769,44 @@ class KubernetesJobExecutor:
             job = await batch.read_namespaced_job(run_name, self._config.namespace)
             status = _job_status(job)
             if status.get("succeeded"):
-                return False
+                return 0
             if status.get("failed"):
                 reason = await self._infra_failure_reason(core, run_name)
                 if reason:
                     raise LearnedToolInfrastructureError(
-                        f"verification Job {run_name} never ran its container: {reason}"
+                        f"Job {run_name} never ran its container: {reason}"
                     )
-                return False
+                return 1
+            pods = await self._pods(core, run_name)
+            exit_code = next(
+                (code for code in map(_container_exit_code, pods) if code is not None), None
+            )
+            if exit_code is not None:
+                reason = next(filter(None, map(_pod_infra_reason, pods)), None)
+                if reason:
+                    raise LearnedToolInfrastructureError(
+                        f"Job {run_name} container was stopped by the cluster: {reason}"
+                    )
+                return exit_code
             if started_at is None:
-                started_at = await self._pod_started_at(core, run_name)
+                started_at = next(filter(None, map(_container_started_at, pods)), None)
             now = time.monotonic()
             if started_at is None and now >= pod_start_deadline:
                 reason = await self._infra_failure_reason(core, run_name)
                 detail = f" ({reason})" if reason else ""
                 raise LearnedToolInfrastructureError(
-                    f"verification Job {run_name} pod did not start within "
+                    f"Job {run_name} pod did not start within "
                     f"{self._config.job_pod_start_timeout_seconds}s{detail}"
                 )
             if started_at is not None:
                 ran_for = (dt.datetime.now(dt.UTC) - started_at).total_seconds()
                 if ran_for >= timeout_seconds:
-                    return True
+                    return None
             if now >= backstop_deadline:
                 reason = await self._infra_failure_reason(core, run_name)
                 detail = f" ({reason})" if reason else ""
                 raise LearnedToolInfrastructureError(
-                    f"verification Job {run_name} did not complete within "
-                    f"{timeout_seconds}s{detail}"
+                    f"Job {run_name} did not complete within {timeout_seconds}s{detail}"
                 )
             # Wake at whichever budget is actually relevant next: the
             # pod-start deadline while nothing has started yet, the
@@ -685,26 +818,13 @@ class KubernetesJobExecutor:
             )
 
     async def _infra_failure_reason(self, core: Any, run_name: str) -> str | None:
-        pods = await core.list_namespaced_pod(
-            self._config.namespace, label_selector=f"job-name={run_name}"
-        )
-        items = getattr(pods, "items", pods)
-        for pod in items:
-            reason = _pod_infra_reason(pod)
-            if reason:
-                return reason
-        return None
+        return next(filter(None, map(_pod_infra_reason, await self._pods(core, run_name))), None)
 
-    async def _pod_started_at(self, core: Any, run_name: str) -> dt.datetime | None:
+    async def _pods(self, core: Any, run_name: str) -> list[Any]:
         pods = await core.list_namespaced_pod(
             self._config.namespace, label_selector=f"job-name={run_name}"
         )
-        items = getattr(pods, "items", pods)
-        for pod in items:
-            started_at = _container_started_at(pod)
-            if started_at is not None:
-                return started_at
-        return None
+        return list(getattr(pods, "items", pods))
 
     async def _cleanup(
         self,
@@ -713,6 +833,7 @@ class KubernetesJobExecutor:
         *,
         job_name: str | None,
         secret_name: str | None,
+        policy: tuple[Any, str] | None = None,
     ) -> None:
         """Best-effort teardown of exactly what was actually created.
 
@@ -734,6 +855,16 @@ class KubernetesJobExecutor:
             cleanups.append(
                 (f"payload Secret of Job {job_name!r}", self._delete_secret(core, secret_name))
             )
+        if policy is not None:
+            networking, policy_name = policy
+            cleanups.append(
+                (
+                    f"egress NetworkPolicy of Job {job_name!r}",
+                    networking.delete_namespaced_network_policy(
+                        policy_name, self._config.namespace
+                    ),
+                )
+            )
         if not cleanups:
             return
         results = await asyncio.shield(
@@ -749,6 +880,7 @@ class KubernetesJobExecutor:
         name: str,
         tool_code: str,
         test_code: str,
+        requirements: Sequence[str],
         *,
         owner_job_uid: str,
     ) -> None:
@@ -772,6 +904,7 @@ class KubernetesJobExecutor:
                     "_verify_tool.py": tool_code,
                     "_verify_test.py": test_code,
                     "_verify_runner.py": TEST_RUNNER_SCRIPT,
+                    "requirements.txt": "\n".join(requirements),
                 },
                 "type": "Opaque",
             },
@@ -785,6 +918,7 @@ class KubernetesJobExecutor:
         command: list[str],
         network_label: str,
         active_deadline_seconds: float,
+        service_account: str | None,
         env: list[dict[str, str]],
         volume_mounts: list[dict[str, Any]],
         volumes: list[dict[str, Any]],
@@ -801,6 +935,9 @@ class KubernetesJobExecutor:
         timeout only starts counting once the container is actually
         running) so Kubernetes never kills the Job out from under a polling
         loop that has not yet reached its own conclusion.
+
+        *service_account* mounts that account's token (a run with Kubernetes
+        API reach); ``None`` runs with no token at all.
         """
         labels = {self._config.network_policy_label_key: network_label}
         body: dict[str, Any] = {
@@ -851,26 +988,51 @@ class KubernetesJobExecutor:
                 },
             },
         }
+        if service_account:
+            pod_spec = body["spec"]["template"]["spec"]
+            pod_spec["serviceAccountName"] = service_account
+            pod_spec["automountServiceAccountToken"] = True
         if self._config.job_ttl_seconds_after_finished > 0:
             body["spec"]["ttlSecondsAfterFinished"] = self._config.job_ttl_seconds_after_finished
         return body
 
-    async def _load_clients(self) -> tuple[Any, Any, Any]:
+    def _pinned_image(self, image: str) -> str:
+        effective_image = image or self._config.image
+        if "@sha256:" not in effective_image:
+            raise LearnedToolError("k8s_job runner image must be pinned by sha256 digest")
+        return effective_image
+
+    @contextlib.asynccontextmanager
+    async def _clients(self) -> AsyncIterator[tuple[Any, Any, Any]]:
+        """Yield the API groups for ONE call, closing the ApiClient this call opened.
+
+        ``kubernetes_asyncio.ApiClient`` owns an aiohttp session. The runner
+        is rebuilt for every learned-tool load, so a client cached on it would
+        never be closed and the garbage collector would log "Unclosed client
+        session". Injected clients stay with their owner and are not closed.
+        """
         if self._clients_loaded:
-            return self._batch_v1, self._core_v1, self._networking_v1
+            yield self._batch_v1, self._core_v1, self._networking_v1
+            return
         from kubernetes_asyncio import client, config  # noqa: PLC0415
 
         if self._in_cluster:
             config.load_incluster_config()
         else:
             await config.load_kube_config()
-        self._batch_v1 = client.BatchV1Api()
-        self._core_v1 = client.CoreV1Api()
-        self._networking_v1 = client.NetworkingV1Api()
-        self._clients_loaded = True
-        return self._batch_v1, self._core_v1, self._networking_v1
+        api_client = client.ApiClient()
+        try:
+            yield (
+                client.BatchV1Api(api_client),
+                client.CoreV1Api(api_client),
+                client.NetworkingV1Api(api_client),
+            )
+        finally:
+            await api_client.close()
 
-    async def _verify_network_policies(self, networking: Any, *, network_label: str) -> None:
+    async def _verify_network_policies(
+        self, networking: Any, *, network_label: str, run_name: str
+    ) -> None:
         """Verify the two named policies by name, and — only for a
         denied-network invocation — that no OTHER policy in the namespace
         also grants denied pods egress.
@@ -912,10 +1074,10 @@ class KubernetesJobExecutor:
                 "for learned-tool allowed pods"
             )
         if network_label == NETWORK_DENIED_LABEL:
-            await self._verify_no_additional_denied_egress(networking)
+            await self._verify_no_additional_denied_egress(networking, run_name=run_name)
         self._policies_verified = True
 
-    async def _verify_no_additional_denied_egress(self, networking: Any) -> None:
+    async def _verify_no_additional_denied_egress(self, networking: Any, *, run_name: str) -> None:
         """NetworkPolicies are additive: a correctly-shaped deny policy is
         void if some OTHER policy in the namespace also selects denied pods
         and grants them any egress — a namespace-wide "allow DNS" policy
@@ -933,7 +1095,7 @@ class KubernetesJobExecutor:
             if name in {self._config.deny_policy_name, self._config.allow_policy_name}:
                 continue
             if _policy_grants_egress_to_denied_pods(
-                data, label_key=self._config.network_policy_label_key
+                data, label_key=self._config.network_policy_label_key, run_name=run_name
             ):
                 raise LearnedToolError(
                     f"NetworkPolicy {name!r} also selects learned-tool denied pods (label "
@@ -943,12 +1105,53 @@ class KubernetesJobExecutor:
                     "rescope it before enabling k8s_job"
                 )
 
+    async def _egress_rules(self, core: Any, egress: EgressPlan) -> list[dict[str, Any]]:
+        """Resolve *egress* against the live cluster into NetworkPolicy rules.
+
+        Every rule names concrete pods or addresses as they are right now; a
+        named target that does not exist fails the run instead of being
+        dropped.
+        """
+        dns_namespace, dns_name = self._config.dns_service.split("/", 1)
+        dns_what = f"DNS Service {self._config.dns_service}"
+        dns = await core.read_namespaced_service(dns_name, dns_namespace)
+        rules: list[dict[str, Any]] = [
+            {
+                "to": [_pod_peer(dns_namespace, _service_selector(dns, what=dns_what))],
+                "ports": _service_ports(dns, None, what=dns_what),
+            }
+        ]
+        if egress.kubernetes_api:
+            endpoints = await core.read_namespaced_endpoints("kubernetes", "default")
+            addresses, ports = _endpoint_addresses(endpoints)
+            rules.append({"to": [_ip_block(address) for address in addresses], "ports": ports})
+        for target in egress.services:
+            rules.append(await self._service_rule(core, target))
+        for host in egress.hosts:
+            addresses = await _resolve(host)
+            rules.append(
+                {
+                    "to": [_ip_block(address) for address in addresses],
+                    "ports": [{"protocol": "TCP", "port": host.port}],
+                }
+            )
+        return rules
+
+    async def _service_rule(self, core: Any, target: ServiceTarget) -> dict[str, Any]:
+        what = f"Service {target.namespace}/{target.name}"
+        service = await core.read_namespaced_service(target.name, target.namespace)
+        return {
+            "to": [_pod_peer(target.namespace, _service_selector(service, what=what))],
+            "ports": _service_ports(service, target.port, what=what),
+        }
+
     async def _create_secret(
         self,
         core: Any,
         run_name: str,
         code: str,
         payload: dict[str, Any],
+        requirements: Sequence[str],
         *,
         owner_job_uid: str,
     ) -> None:
@@ -960,22 +1163,14 @@ class KubernetesJobExecutor:
                     "labels": dict(_MANAGED_BY_LABEL),
                     "ownerReferences": _owner_references(name=run_name, uid=owner_job_uid),
                 },
-                "stringData": {"tool.py": code, "payload.json": json.dumps(payload)},
+                "stringData": {
+                    "tool.py": code,
+                    "payload.json": json.dumps(payload),
+                    "requirements.txt": "\n".join(requirements),
+                },
                 "type": "Opaque",
             },
         )
-
-    async def _wait_for_completion(self, batch: Any, run_name: str, timeout_seconds: float) -> bool:
-        deadline = time.monotonic() + timeout_seconds
-        while True:
-            job = await batch.read_namespaced_job(run_name, self._config.namespace)
-            status = _job_status(job)
-            if status.get("succeeded") or status.get("failed"):
-                return True
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False
-            await asyncio.sleep(min(self._config.poll_interval_seconds, remaining))
 
     async def _read_pod_logs(self, core: Any, run_name: str) -> str:
         pods = await core.list_namespaced_pod(
@@ -984,15 +1179,12 @@ class KubernetesJobExecutor:
         items = getattr(pods, "items", pods)
         if not items:
             return ""
-        return await core.read_namespaced_pod_log(
+        return await read_pod_log(
+            core,
             _pod_name(items[0]),
             self._config.namespace,
             limit_bytes=self._config.output_limit_bytes + 1,
         )
-
-    async def _exit_code(self, batch: Any, run_name: str) -> int:
-        status = _job_status(await batch.read_namespaced_job(run_name, self._config.namespace))
-        return 0 if status.get("succeeded") else 1
 
     async def _delete_job(self, batch: Any, run_name: str) -> None:
         await batch.delete_namespaced_job(
@@ -1059,12 +1251,19 @@ _JOB_CONTROLLER_LABEL_KEYS = frozenset(
 )
 
 
+#: Job-controller label keys whose value is the Job's own name — known for
+#: the run being checked, so a policy selecting a DIFFERENT run's pod by it
+#: provably does not select this one.
+_JOB_NAME_LABEL_KEYS = frozenset({"job-name", _JOB_NAME_LABEL})
+
+
 def _selector_term_matches_denied_pod(
     key: str,
     operator: str,
     values: Sequence[str],
     *,
     label_key: str,
+    run_name: str | None = None,
 ) -> bool:
     """Whether one ``matchExpressions`` term (or a `matchLabels` entry
     modeled as ``operator="In"``) is satisfied by a learned-tool denied
@@ -1082,6 +1281,16 @@ def _selector_term_matches_denied_pod(
             return NETWORK_DENIED_LABEL in values
         if operator == "NotIn":
             return NETWORK_DENIED_LABEL not in values
+        if operator == "Exists":
+            return True
+        if operator == "DoesNotExist":
+            return False
+        return True  # unknown operator: fail closed
+    if key in _JOB_NAME_LABEL_KEYS and run_name is not None:
+        if operator == "In":
+            return run_name in values
+        if operator == "NotIn":
+            return run_name not in values
         if operator == "Exists":
             return True
         if operator == "DoesNotExist":
@@ -1107,7 +1316,9 @@ def _selector_term_matches_denied_pod(
     return True  # unknown operator: fail closed
 
 
-def _selector_matches_denied_pod(selector: dict[str, Any], *, label_key: str) -> bool:
+def _selector_matches_denied_pod(
+    selector: dict[str, Any], *, label_key: str, run_name: str | None = None
+) -> bool:
     """True when *selector* (a NetworkPolicy's ``podSelector``) would select
     a learned-tool denied pod. An empty selector matches every pod in the
     namespace. Every matchLabels entry and every matchExpressions term must
@@ -1117,7 +1328,9 @@ def _selector_matches_denied_pod(selector: dict[str, Any], *, label_key: str) ->
     if not labels and not expressions:
         return True
     labels_match = all(
-        _selector_term_matches_denied_pod(key, "In", [value], label_key=label_key)
+        _selector_term_matches_denied_pod(
+            key, "In", [value], label_key=label_key, run_name=run_name
+        )
         for key, value in labels.items()
     )
     expressions_match = all(
@@ -1126,13 +1339,16 @@ def _selector_matches_denied_pod(selector: dict[str, Any], *, label_key: str) ->
             expr.get("operator") or "",
             expr.get("values") or [],
             label_key=label_key,
+            run_name=run_name,
         )
         for expr in expressions
     )
     return labels_match and expressions_match
 
 
-def _policy_grants_egress_to_denied_pods(data: dict[str, Any], *, label_key: str) -> bool:
+def _policy_grants_egress_to_denied_pods(
+    data: dict[str, Any], *, label_key: str, run_name: str | None = None
+) -> bool:
     """True when *data* (an arbitrary NetworkPolicy, not one of the two
     verified by name) would ALSO apply to learned-tool denied pods and
     grant them some egress. NetworkPolicies are additive in Kubernetes, so
@@ -1148,7 +1364,7 @@ def _policy_grants_egress_to_denied_pods(data: dict[str, Any], *, label_key: str
     if not applies_to_egress or not egress:
         return False
     selector = spec.get("pod_selector") or spec.get("podSelector") or {}
-    return _selector_matches_denied_pod(selector, label_key=label_key)
+    return _selector_matches_denied_pod(selector, label_key=label_key, run_name=run_name)
 
 
 def _job_status(job: Any) -> dict[str, Any]:
@@ -1224,9 +1440,19 @@ _INFRA_WAITING_REASONS = frozenset(
 #: a positively-identified cluster-driven cause overrides it.
 _INFRA_EVICTION_MARKERS = ("drain", "preempt", "taint")
 
+#: How the kubelet opens a node-pressure eviction. It appends "Container
+#: <name> was using <usage>, request is <request>" for each container over
+#: its request, so a message with no such clause blames the node, not the
+#: tool: on jarnvidr a full image filesystem evicted tool pods that were
+#: still pulling their image.
+_NODE_PRESSURE_EVICTION = "the node was low on resource"
+_CONTAINER_OVER_REQUEST = "was using"
+
 
 def _eviction_is_infrastructure(message: str) -> bool:
     lowered = message.lower()
+    if lowered.startswith(_NODE_PRESSURE_EVICTION):
+        return _CONTAINER_OVER_REQUEST not in lowered
     return any(marker in lowered for marker in _INFRA_EVICTION_MARKERS)
 
 
@@ -1303,6 +1529,187 @@ def _container_started_at(pod: Any) -> dt.datetime | None:
     return None
 
 
+def _container_exit_code(pod: Any) -> int | None:
+    """The exit code of the pod's container once it has terminated, or None
+    while it has not. Jobs run with ``restartPolicy: Never`` and
+    ``backoffLimit: 0``, so a terminated container is the run's outcome."""
+    data = pod.to_dict() if hasattr(pod, "to_dict") else pod
+    if not isinstance(data, dict):
+        return None
+    status = data.get("status") or {}
+    container_statuses = status.get("container_statuses") or status.get("containerStatuses") or []
+    for container_status in container_statuses:
+        terminated = (container_status.get("state") or {}).get("terminated") or {}
+        exit_code = terminated.get("exit_code", terminated.get("exitCode"))
+        if exit_code is not None:
+            return int(exit_code)
+    return None
+
+
+_NAMESPACED_NAME_RE = re.compile(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-a-z0-9.]*[a-z0-9])?")
+
+#: Runs first in every tool and verify Job: refuses to start the tool unless
+#: the pinned image already satisfies every declared requirement, then
+#: replaces itself with the real command. Nothing is ever installed.
+_REQUIREMENTS_GATE = f"""\
+import importlib.metadata
+import os
+import sys
+
+from packaging.requirements import Requirement
+
+missing = []
+with open(sys.argv[1], encoding="utf-8") as handle:
+    lines = [line.strip() for line in handle.read().splitlines() if line.strip()]
+for line in lines:
+    requirement = Requirement(line)
+    try:
+        version = importlib.metadata.version(requirement.name)
+    except importlib.metadata.PackageNotFoundError:
+        missing.append(line + " (not installed)")
+        continue
+    if requirement.specifier and not requirement.specifier.contains(version, prereleases=True):
+        missing.append(line + " (image has " + version + ")")
+if missing:
+    print(
+        "{_REQUIREMENTS_MARKER} " + "; ".join(missing)
+        + " -- bake it into the reviewed runner image (learned_tool_k8s.image)",
+        end="",
+    )
+    sys.exit({_REQUIREMENTS_EXIT})
+os.execv(sys.executable, [sys.executable, *sys.argv[2:]])
+"""
+
+
+def _split_result(logs: str) -> tuple[str, str]:
+    """Split a tool Job's log into its JSON result line and everything else."""
+    lines = logs.splitlines()
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index].startswith(_RESULT_MARKER):
+            result = lines[index].removeprefix(_RESULT_MARKER)
+            return result, "\n".join(lines[:index] + lines[index + 1 :]).strip()
+    return "", logs.strip()
+
+
+def _timeout_error(timeout_seconds: float, egress: EgressPlan) -> str:
+    """A timeout that names the network the run had.
+
+    The NetworkPolicy drops a connection to anything the declared reach does
+    not name, so the tool sees no refusal: the connection hangs until this
+    timeout. Reported as a bare timeout, a tool that probed one undeclared
+    address looked like slow code, and residents rebuilt it again and again.
+    """
+    message = f"learned tool timed out after {timeout_seconds}s"
+    if egress.unrestricted:
+        return message
+    return (
+        f"{message}. Its Job could reach {egress.describe()}; a connection to anything "
+        "else is dropped by the network policy and hangs until this timeout instead of "
+        "failing, so check that the tool contacts only its declared reach"
+    )
+
+
+def _gated_command(python_args: list[str], requirements_path: str) -> list[str]:
+    """``python <python_args>``, run only once the requirements gate passes."""
+    return ["python", "-I", "-c", _REQUIREMENTS_GATE, requirements_path, *python_args]
+
+
+def _scoped_policy_body(
+    run_name: str, egress_rules: list[dict[str, Any]], owner_job_uid: str
+) -> dict[str, Any]:
+    """The per-run NetworkPolicy: exactly this run's pod, exactly its egress.
+
+    It only ADDS egress — the pod also carries the denied label, so the
+    verified deny policy isolates it until this policy is in force.
+    """
+    return {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+            "name": run_name,
+            "labels": dict(_MANAGED_BY_LABEL),
+            "ownerReferences": _owner_references(name=run_name, uid=owner_job_uid),
+        },
+        "spec": {
+            "podSelector": {"matchLabels": {_JOB_NAME_LABEL: run_name}},
+            "policyTypes": ["Ingress", "Egress"],
+            "ingress": [],
+            "egress": egress_rules,
+        },
+    }
+
+
+def _pod_peer(namespace: str, selector: dict[str, str]) -> dict[str, Any]:
+    return {
+        "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": namespace}},
+        "podSelector": {"matchLabels": selector},
+    }
+
+
+async def _resolve(host: HostTarget) -> list[str]:
+    """The addresses *host* names right now; an IP names itself."""
+    try:
+        socket.inet_pton(socket.AF_INET6 if ":" in host.host else socket.AF_INET, host.host)
+    except OSError:
+        pass
+    else:
+        return [host.host]
+    infos = await asyncio.get_running_loop().getaddrinfo(
+        host.host, host.port, type=socket.SOCK_STREAM
+    )
+    addresses = sorted({str(info[4][0]) for info in infos})
+    if not addresses:
+        raise LearnedToolError(f"reach host {host.host!r} resolves to no address")
+    return addresses
+
+
+def _ip_block(address: str) -> dict[str, Any]:
+    suffix = "/128" if ":" in address else "/32"
+    return {"ipBlock": {"cidr": f"{address}{suffix}"}}
+
+
+def _service_ports(service: Any, port: int | None, *, what: str) -> list[dict[str, Any]]:
+    """NetworkPolicy ports for a Service: the target port behind *port*, or
+    every target port when no port is named. Pod-level, as policies apply
+    after the Service's address translation."""
+    data = service.to_dict() if hasattr(service, "to_dict") else service
+    ports = (data.get("spec") or {}).get("ports") or []
+    selected = [entry for entry in ports if port is None or entry.get("port") == port]
+    if not selected:
+        raise LearnedToolError(f"{what} exposes no port {port}")
+    rules = []
+    for entry in selected:
+        target = entry.get("target_port") or entry.get("targetPort") or entry.get("port")
+        rules.append({"protocol": entry.get("protocol") or "TCP", "port": target})
+    return rules
+
+
+def _service_selector(service: Any, *, what: str) -> dict[str, str]:
+    data = service.to_dict() if hasattr(service, "to_dict") else service
+    selector = (data.get("spec") or {}).get("selector") or {}
+    if not selector:
+        raise LearnedToolError(
+            f"{what} has no pod selector, so no NetworkPolicy can name the pods behind "
+            "it; reach it by address (host:port) instead"
+        )
+    return dict(selector)
+
+
+def _endpoint_addresses(endpoints: Any) -> tuple[list[str], list[dict[str, Any]]]:
+    data = endpoints.to_dict() if hasattr(endpoints, "to_dict") else endpoints
+    addresses: list[str] = []
+    ports: list[dict[str, Any]] = []
+    for subset in data.get("subsets") or []:
+        addresses.extend(entry["ip"] for entry in subset.get("addresses") or [])
+        ports.extend(
+            {"protocol": entry.get("protocol") or "TCP", "port": entry["port"]}
+            for entry in subset.get("ports") or []
+        )
+    if not addresses or not ports:
+        raise LearnedToolError("the Kubernetes API Service default/kubernetes has no endpoints")
+    return addresses, ports
+
+
 _BOOTSTRAP = """\
 import importlib.util
 import json
@@ -1314,7 +1721,7 @@ spec.loader.exec_module(module)
 with open("/tool/payload.json", encoding="utf-8") as handle:
     payload = json.load(handle)
 result = getattr(module, os.environ["RAVN_TOOL_ENTRY"])(payload)
-print(json.dumps(result), end="")
+print("\\nravn-k8s-job-result: " + json.dumps(result), flush=True)
 """
 
 

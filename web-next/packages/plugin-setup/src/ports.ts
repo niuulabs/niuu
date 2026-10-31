@@ -37,8 +37,15 @@ export interface ISetupService {
    * Start (or resume) an interactive provider sign-in for a catalog entry.
    * `oauthApp` names which of the provider's OAuth applications this account
    * signs in through (GitHub, GitLab); empty means the default one.
+   * `connectionId` names the existing connection a reconnect signs in again,
+   * so the backend refreshes that connection in place instead of adding one.
    */
-  startEnrollment(slug: string, credentialName: string, oauthApp?: string): Promise<Enrollment>;
+  startEnrollment(
+    slug: string,
+    credentialName: string,
+    oauthApp?: string,
+    connectionId?: string,
+  ): Promise<Enrollment>;
   /** Current state of a sign-in; the backend polls the login helper on each read. */
   getEnrollment(enrollmentId: string): Promise<Enrollment>;
   cancelEnrollment(enrollmentId: string): Promise<Enrollment>;

@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { createRoute, redirect } from '@tanstack/react-router';
-import { BriefcaseBusiness } from 'lucide-react';
+import { WorkIcon } from '@niuulabs/ui';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { WorkflowBuilderPage } from './ui/WorkflowBuilderPage';
 import { WorkflowsRoute } from './ui/WorkflowsRoute';
@@ -62,18 +62,16 @@ function resolveLegacySettingsTarget(sectionId?: string): string {
 export const tingPlugin = definePlugin({
   id: 'ting',
   rune: 'T',
-  title: 'Ting',
-  subtitle: 'sagas · runs · dispatch',
+  icon: createElement(WorkIcon),
+  title: 'Work',
+  subtitle: 'run and oversee work',
   simple: {
     tabs: ['work', 'workflows', 'builder'],
-    title: 'Ting',
-    subtitle: 'run and oversee work',
-    icon: createElement(BriefcaseBusiness, { size: 17, 'aria-hidden': true }),
   },
   tabs: [
-    { id: 'work', label: 'Work', rune: '◈', path: '/ting/work' },
-    { id: 'workflows', label: 'Workflows', rune: '⚙', path: '/ting/workflows' },
-    { id: 'builder', label: 'Builder', rune: '◇', path: '/ting/workflows/build' },
+    { id: 'work', label: 'Board', path: '/ting/work' },
+    { id: 'workflows', label: 'Workflows', path: '/ting/workflows' },
+    { id: 'builder', label: 'Builder', path: '/ting/workflows/build' },
   ],
   routes: (rootRoute) => [
     createRoute({
@@ -434,6 +432,7 @@ export {
 } from './ui/WorkflowLaunchForm';
 export { WorkflowStrip, gateWaitsForPerson, type WorkflowStripProps } from './ui/WorkflowStrip';
 export { SimpleWorkflowsPage } from './ui/SimpleWorkflowsPage';
+export { BoardWorkflowsCard } from './ui/BoardWorkflowsCard';
 export { WorkflowCard } from './ui/WorkflowCard';
 export { StageProgressRail } from './ui/StageProgressRail';
 export { StepDots } from './ui/StepDots';

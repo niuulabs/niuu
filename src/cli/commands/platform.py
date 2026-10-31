@@ -1206,6 +1206,17 @@ def create_platform_commands(
         skuld_main()
 
     @platform_app.command(
+        "forge-mcp",
+        hidden=True,
+        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    )
+    def forge_mcp(ctx: typer.Context) -> None:
+        """Run the Forge MCP stdio server for one agent CLI (internal, spawned by Skuld)."""
+        from skuld.forge_mcp.stdio import main as forge_mcp_main
+
+        raise typer.Exit(forge_mcp_main(list(ctx.args)))
+
+    @platform_app.command(
         hidden=True,
         context_settings={
             "allow_extra_args": True,

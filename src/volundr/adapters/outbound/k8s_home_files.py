@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from volundr.adapters.outbound import user_home_files
+from volundr.domain.models import LABEL_HOME_CLAIM
 from volundr.domain.ports import HomeStorageBusyError
 
 
@@ -26,6 +27,7 @@ def browser_manifest(user_id: str, claim: str, image: str, lifetime: int) -> dic
                 "app.kubernetes.io/component": "home-browser",
                 "app.kubernetes.io/managed-by": "volundr",
                 "volundr/owner": user_id,
+                LABEL_HOME_CLAIM: claim,
             },
         },
         "spec": {
@@ -39,19 +41,14 @@ def browser_manifest(user_id: str, claim: str, image: str, lifetime: int) -> dic
                 "runAsNonRoot": True,
                 "seccompProfile": {"type": "RuntimeDefault"},
             },
-            # Match the same ownership/placement rule as the user's coding pods.
-            # Self-affinity permits the first pod when the user has no sessions.
+            # Sit beside the pods that already mount this home claim (RWO).
+            # Self-affinity permits the first pod when no session mounts it.
             "affinity": {
                 "podAffinity": {
                     "requiredDuringSchedulingIgnoredDuringExecution": [
                         {
                             "topologyKey": "kubernetes.io/hostname",
-                            "labelSelector": {
-                                "matchLabels": {
-                                    "app.kubernetes.io/name": "skuld",
-                                    "volundr/owner": user_id,
-                                }
-                            },
+                            "labelSelector": {"matchLabels": {LABEL_HOME_CLAIM: claim}},
                         }
                     ]
                 }

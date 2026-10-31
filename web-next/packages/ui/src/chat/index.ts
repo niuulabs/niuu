@@ -67,6 +67,20 @@ export {
 export type { PublicTextEvent } from './hooks/orderedPublicText';
 
 export {
+  NotificationCard,
+  notificationAnchorId,
+  NotificationKindIcon,
+  notificationTone,
+  NOTIFICATION_KIND_LABELS,
+  NOTIFICATION_SEVERITY_LABELS,
+} from './components/NotificationCard';
+export type {
+  NotificationCardProps,
+  NotificationKindIconProps,
+  NotificationTone,
+} from './components/NotificationCard';
+
+export {
   ConversationResourceProvider,
   ConversationLink,
   ConversationImage,

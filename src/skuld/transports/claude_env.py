@@ -47,6 +47,7 @@ import sys
 from pathlib import Path
 
 from niuu.observability import get_observability
+from skuld.transports.session_env import session_process_env
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +67,11 @@ def claude_spawn_env(*, gateway_url: str = "", gateway_token: str = "") -> dict[
                 "ModelGatewayConfig), or fix the session contributor that should have "
                 "supplied one (volundr.adapters.outbound.contributors.model_gateway)."
             )
+        # never hand the broker's credentials to the model
         env = {
-            k: v for k, v in os.environ.items() if k != "CLAUDECODE" and k != "ANTHROPIC_API_KEY"
+            k: v
+            for k, v in session_process_env().items()
+            if k != "CLAUDECODE" and k != "ANTHROPIC_API_KEY"
         }
         env["ANTHROPIC_BASE_URL"] = gateway_url.strip().rstrip("/")
         env["ANTHROPIC_AUTH_TOKEN"] = gateway_token
@@ -76,12 +80,13 @@ def claude_spawn_env(*, gateway_url: str = "", gateway_token: str = "") -> dict[
         return env
 
     mode = os.environ.get("SKULD__CLAUDE_AUTH", "subscription").strip().lower()
+    base = session_process_env()  # never hand the broker's credentials to the model
     if mode == "api_key":
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        env = {k: v for k, v in base.items() if k != "CLAUDECODE"}
         env.update(get_observability().inject())
         return env
 
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE" and k not in _API_KEY_VARS}
+    env = {k: v for k, v in base.items() if k != "CLAUDECODE" and k not in _API_KEY_VARS}
     # On macOS the CLI stores its OAuth login in the Keychain, so the
     # credentials file only signals a missing login on other platforms.
     if (

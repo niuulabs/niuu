@@ -63,7 +63,7 @@ async def test_persisted_final_read_and_duplicate_do_not_resurrect_unread(txn_po
         SessionReadStateChange(state="read", through_seq=10, expected_revision=1),
     )
     assert state.is_unread and state.latest_output_seq == 20
-    state = await repo.change_read_state(
+    await repo.change_read_state(
         session.id,
         "reader-a",
         SessionReadStateChange(state="unread", through_seq=20, expected_revision=2),

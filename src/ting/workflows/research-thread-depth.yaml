@@ -2,7 +2,7 @@ schema_version: 2
 id: bf5f97dd-d89b-4f3e-a8fc-ea61a42685a5
 name: Research Thread — Depth
 description: Run the depth explorer over the framed research question and produce a structured finding for the parent research campaign.
-version: 1.0.0
+version: 1.0.2
 persona_dependencies:
   research-explorer-depth:
     id: research-explorer-depth
@@ -42,7 +42,7 @@ graph:
       bindingMode: registry
       registryEntryId: mimir-yggdrasil
       url: https://mimir.yggdrasil.niuu.world/api/v1
-      authRef: integration:volundr
+      authRef: workload:mimir
       role: shared
       categories: [research, memory, sources]
       position: {x: 320, y: 480}
@@ -53,7 +53,7 @@ graph:
       joinMode: any
       stageMembers:
         - personaId: research-explorer-depth
-          model: gpt-5.5
+          model: gpt-5.6-terra
           budget: 22
           consumesEventTypes: [research.framed]
     - id: thread-complete

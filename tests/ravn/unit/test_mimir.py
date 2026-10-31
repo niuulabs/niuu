@@ -31,6 +31,7 @@ from ravn.adapters.mimir.markdown import (
 from ravn.adapters.tools.mimir_tools import (
     MimirIngestTool,
     MimirLintTool,
+    MimirPublishArtifactTool,
     MimirPublishFilesTool,
     MimirQueryTool,
     MimirReadSourceTool,
@@ -691,6 +692,33 @@ async def test_mimir_write_tool_success(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    ["friction/escalation/x.md", "/friction/x.md", "./friction/x.md", "notes/../friction/x.md"],
+)
+async def test_mimir_write_tool_refuses_a_reserved_page(tmp_path: Path, path: str) -> None:
+    adapter = _make_adapter(tmp_path)
+    tool = MimirWriteTool(adapter, reserved_prefixes=["friction/"])
+
+    result = await tool.execute({"path": path, "content": "# Closed by hand"})
+
+    assert result.is_error
+    assert "friction/ pages are records Ravn keeps itself" in result.content
+    assert not (tmp_path / "mimir" / "wiki" / "friction").exists()
+
+
+@pytest.mark.asyncio
+async def test_mimir_write_tool_writes_beside_a_reserved_prefix(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    tool = MimirWriteTool(adapter, reserved_prefixes=["friction"])
+
+    result = await tool.execute({"path": "friction-notes/x.md", "content": "# Notes"})
+
+    assert not result.is_error
+    assert (tmp_path / "mimir" / "wiki" / "friction-notes" / "x.md").exists()
+
+
+@pytest.mark.asyncio
 async def test_mimir_write_tool_research_page_requires_source_ids(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)
     tool = MimirWriteTool(adapter)
@@ -754,6 +782,38 @@ async def test_mimir_write_tool_non_md_extension() -> None:
     result = await tool.execute({"path": "research/bad.txt", "content": "# Title"})
     assert result.is_error
     assert ".md" in result.content
+
+
+@pytest.mark.asyncio
+async def test_mimir_publish_artifact_writes_and_verifies_json_capability(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    tool = MimirPublishArtifactTool(adapter)
+    path = "capabilities/build-widget/learned_tool.json"
+    content = json.dumps(
+        {
+            "manifest": {"name": "widget"},
+            "tool_code": "def run(): pass",
+            "test_code": "def test_run(): pass",
+            "requirements": [],
+        }
+    )
+
+    result = await tool.execute({"path": path, "content": content})
+
+    assert not result.is_error
+    assert await adapter.read_page(path) == content
+
+
+@pytest.mark.asyncio
+async def test_mimir_publish_artifact_rejects_non_json_capability_path() -> None:
+    tool = MimirPublishArtifactTool(MagicMock())
+
+    result = await tool.execute(
+        {"path": "capabilities/build-widget/learned_tool.md", "content": "{}"}
+    )
+
+    assert result.is_error
+    assert "capabilities/*.json" in result.content
 
 
 @pytest.mark.asyncio
@@ -910,10 +970,10 @@ async def test_mimir_lint_tool_reports_issues(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_build_mimir_tools_returns_seven(tmp_path: Path) -> None:
+def test_build_mimir_tools_returns_artifact_publisher(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)
     tools = build_mimir_tools(adapter, workspace=tmp_path)
-    assert len(tools) == 8
+    assert len(tools) == 9
     names = {t.name for t in tools}
     assert names == {
         "mimir_ingest",
@@ -921,6 +981,7 @@ def test_build_mimir_tools_returns_seven(tmp_path: Path) -> None:
         "mimir_read",
         "mimir_read_source",
         "mimir_write",
+        "mimir_publish_artifact",
         "mimir_publish_files",
         "mimir_search",
         "mimir_lint",

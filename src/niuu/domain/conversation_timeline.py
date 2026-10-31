@@ -95,9 +95,17 @@ def _project_run(turns: list[dict], session_id: str) -> list[dict]:
                     "is_error",
                     "error",
                     "messageType",
+                    "final_output",
                 ):
                     meta.pop(key, None)
-            meta[TIMELINE_KEY] = {**anchor, "fragment": True}
+            previous = timeline(turn.get("metadata")) or {}
+            meta[TIMELINE_KEY] = {
+                **anchor,
+                "fragment": True,
+                "source_turn_id": previous.get("source_turn_id", turn["id"]),
+                "source_turn_terminal": slot == last_slot
+                and previous.get("source_turn_terminal", True),
+            }
             fragment = {
                 **turn,
                 "id": str(
@@ -145,3 +153,25 @@ def project_timeline(turns: list[dict], session_id: str) -> list[dict]:
         result.append(turn)
     result.extend(_project_run(run, session_id))
     return result
+
+
+def resolve_timeline_turn(turns: list[dict], turn_id: str) -> dict | None:
+    """Resolve an exact row or its recorded terminal source-turn alias, never text/time.
+
+    Notifications refer to durable completion IDs; observation-order presentation
+    can split that turn into stable display fragments. Its terminal fragment is
+    where the completion belongs. Unknown or ambiguous aliases remain unresolved.
+    """
+    exact = next((turn for turn in turns if turn.get("id") == turn_id), None)
+    if exact is not None:
+        return exact
+    matches = []
+    for turn in turns:
+        stamp = timeline(turn.get("metadata"))
+        if (
+            stamp
+            and stamp.get("source_turn_id") == turn_id
+            and stamp.get("source_turn_terminal") is True
+        ):
+            matches.append(turn)
+    return matches[0] if len(matches) == 1 else None

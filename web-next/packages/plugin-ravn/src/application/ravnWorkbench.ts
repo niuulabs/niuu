@@ -7,7 +7,7 @@
  * backend reports no failing condition, the reason is null and the UI says so.
  */
 
-import type { Ravn, ResidentCondition } from '../domain/ravn';
+import { ravnPlace, type Ravn, type ResidentCondition } from '../domain/ravn';
 import type { Session } from '../domain/session';
 import { nameForRavn } from '../domain/residentActions';
 import { belongsToRavn } from './conversations';
@@ -102,13 +102,16 @@ export function describeCondition(condition: Pick<ResidentCondition, 'type' | 'r
   return reason ? `${head} · ${reason}` : head;
 }
 
-/** Where the ravn runs, for people: the target's name, else its slug, else the backend. */
+/**
+ * Where the ravn runs, for people: its cluster or target name, else the
+ * target's slug, else its location or backend.
+ */
 export function ravnTarget(
-  ravn: Pick<Ravn, 'instanceName' | 'instanceSlug' | 'location' | 'backend' | 'kind'>,
+  ravn: Pick<Ravn, 'cluster' | 'instanceName' | 'instanceSlug' | 'location' | 'backend' | 'kind'>,
 ): string {
-  const named = ravn.instanceName || ravn.instanceSlug || ravn.location || ravn.backend;
+  const named = ravnPlace(ravn) || ravn.instanceSlug || ravn.location || ravn.backend;
   if (named) return named;
-  return ravn.kind === 'session' ? 'this Forge' : 'unassigned';
+  return ravn.kind === 'session' ? 'this host' : 'unassigned';
 }
 
 export function isSessionRavn(ravn: Pick<Ravn, 'kind'>): boolean {

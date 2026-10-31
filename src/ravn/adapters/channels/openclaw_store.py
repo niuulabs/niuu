@@ -114,13 +114,13 @@ class StoredMessage:
             "messageId": self.message_id,
             "role": self.role,
             "blocks": self.blocks,
-            "content": _flatten_text(self.blocks),
+            "content": flatten_text(self.blocks),
             "createdAt": self.created_at_ms,
             "runId": self.run_id,
         }
 
 
-def _flatten_text(blocks: list[dict[str, Any]]) -> str:
+def flatten_text(blocks: list[dict[str, Any]]) -> str:
     """Plain-text fallback for clients that ignore ``blocks``.
 
     Deliberately mirrors the client's own filter: only plain text contributes,
@@ -132,6 +132,42 @@ def _flatten_text(blocks: list[dict[str, Any]]) -> str:
         for b in blocks
         if isinstance(b, dict) and b.get("type") not in skip
     )
+
+
+def _session_entry(row: sqlite3.Row) -> dict[str, Any]:
+    """A session row in the ``sessions.list`` shape ``GatewaySession(from:)`` parses."""
+    entry: dict[str, Any] = {
+        "key": row["session_key"],
+        "sessionId": row["session_key"],
+        "kind": row["kind"],
+        "agentId": row["agent_id"],
+        "updatedAt": row["updated_at_ms"],
+        "status": row["status"],
+        "hidden": bool(row["hidden"]),
+    }
+    # ``hasActiveRun`` and ``label`` are the native gateway's names for the
+    # same facts; Volundr's OpenClaw session controller reads them.
+    entry["hasActiveRun"] = row["status"] == "busy"
+    if row["display_name"]:
+        entry["displayName"] = row["display_name"]
+        entry["label"] = row["display_name"]
+    if row["derived_title"]:
+        entry["derivedTitle"] = row["derived_title"]
+    if row["last_message_preview"]:
+        entry["lastMessagePreview"] = row["last_message_preview"]
+    usage = {
+        k: row[c]
+        for k, c in (
+            ("totalTokens", "total_tokens"),
+            ("inputTokens", "input_tokens"),
+            ("outputTokens", "output_tokens"),
+            ("estimatedCostUsd", "estimated_cost_usd"),
+        )
+        if row[c] is not None
+    }
+    if usage:
+        entry["usage"] = usage
+    return entry
 
 
 class OpenClawStore:
@@ -212,37 +248,18 @@ class OpenClawStore:
         cur = self._conn.execute(
             "SELECT * FROM sessions ORDER BY updated_at_ms DESC LIMIT ?", (limit,)
         )
-        out: list[dict[str, Any]] = []
-        for row in cur.fetchall():
-            entry: dict[str, Any] = {
-                "key": row["session_key"],
-                "sessionId": row["session_key"],
-                "kind": row["kind"],
-                "agentId": row["agent_id"],
-                "updatedAt": row["updated_at_ms"],
-                "status": row["status"],
-                "hidden": bool(row["hidden"]),
-            }
-            if row["display_name"]:
-                entry["displayName"] = row["display_name"]
-            if row["derived_title"]:
-                entry["derivedTitle"] = row["derived_title"]
-            if row["last_message_preview"]:
-                entry["lastMessagePreview"] = row["last_message_preview"]
-            usage = {
-                k: row[c]
-                for k, c in (
-                    ("totalTokens", "total_tokens"),
-                    ("inputTokens", "input_tokens"),
-                    ("outputTokens", "output_tokens"),
-                    ("estimatedCostUsd", "estimated_cost_usd"),
-                )
-                if row[c] is not None
-            }
-            if usage:
-                entry["usage"] = usage
-            out.append(entry)
-        return out
+        return [_session_entry(row) for row in cur.fetchall()]
+
+    def session_entry(self, session_key: str) -> dict[str, Any] | None:
+        """One session in the ``sessions.list`` row shape, or None."""
+        row = self.get_session(session_key)
+        return _session_entry(row) if row is not None else None
+
+    def reset_busy_sessions(self) -> int:
+        """Mark every ``busy`` session idle; for startup, when no turn can still be running."""
+        cur = self._conn.execute("UPDATE sessions SET status = 'idle' WHERE status = 'busy'")
+        self._conn.commit()
+        return cur.rowcount
 
     def session_count(self) -> int:
         cur = self._conn.execute("SELECT COUNT(*) AS n FROM sessions")
@@ -294,7 +311,7 @@ class OpenClawStore:
                 (message_id, session_key, role, json.dumps(blocks), ts, run_id, seq),
             )
 
-        preview = _flatten_text(blocks).strip().replace("\n", " ")
+        preview = flatten_text(blocks).strip().replace("\n", " ")
         self._conn.execute(
             "UPDATE sessions SET updated_at_ms = ?, last_message_preview = ? WHERE session_key = ?",
             (ts, preview[:200] or None, session_key),

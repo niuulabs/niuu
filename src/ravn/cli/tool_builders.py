@@ -64,8 +64,14 @@ def _build_tools(
     a2a_activity_emitter: Callable[[dict[str, object]], Awaitable[None]] | None = None,
     a2a_activity_finder: Callable[..., Awaitable[list[dict[str, Any]]]] | None = None,
     skill_manager: Any | None = None,
+    learned_tool_resolver: Any | None = None,
 ) -> list[Any]:
     """Build the tool list from the built-in registry, filtered by profile.
+
+    *learned_tool_resolver* is the long-lived resolver a daemon builds once at
+    its composition root and shares with every task, so the venv sweep, the
+    inventory publish and the refusal report happen once per process. Callers
+    that inject nothing (the single-run CLI) get a resolver built here.
 
     The registry (``builtin_registry.BUILTIN_TOOLS``) drives all built-in
     tool construction.  Custom tools from ``settings.tools.custom`` are
@@ -119,9 +125,11 @@ def _build_tools(
     # loads every artifact as a native callable (NIU-1118).
     dispatch_learned_tools = settings.resident_evolution.learned_tool_injection_mode == "dispatch"
     if dispatch_learned_tools:
-        resolver = _build_learned_tool_resolver(settings, workspace)
-        if resolver is not None:
-            runtime_ctx["learned_tool_resolver"] = resolver
+        runtime_ctx["learned_tool_resolver"] = (
+            learned_tool_resolver
+            if learned_tool_resolver is not None
+            else _build_learned_tool_resolver(settings, workspace)
+        )
 
     # One lifecycle registry backs skill discovery, management, and learned-tool
     # execution. Resident daemons inject their long-lived registry; other
@@ -146,7 +154,13 @@ def _build_tools(
 
     resolver = runtime_ctx.get("learned_tool_resolver")
     if resolver is not None:
-        runtime_ctx["learned_tools_provider"] = resolver.list_artifacts
+        # Only what this backend can load is offered; what it refuses is named
+        # separately so it is repaired instead of silently missing.
+        runtime_ctx["learned_tools_provider"] = resolver.list_loadable_artifacts
+        runtime_ctx["refused_learned_tools"] = resolver.list_refused
+        runtime_ctx["retired_learned_tools"] = _retired_learned_tools(
+            _resident_ravn_state_dir(workspace, settings), runtime_ctx.get("skill_manager")
+        )
 
     if "workflow" in include_groups:
         workflow_sources = _build_workflow_capability_sources(settings)
@@ -183,7 +197,7 @@ def _build_tools(
             if platform.anonymous_dev_mode
             else client_from_workload_identity(
                 base_url=platform.base_url,
-                external_token=platform.pat_token,
+                external_token=platform.access_token,
                 workload_token_file=platform.workload_token_file,
                 workload_exchange_url=platform.workload_exchange_url,
                 workload_audiences=platform.workload_audiences,
@@ -339,6 +353,11 @@ def _build_tools(
                 workspace=workspace,
                 entity_extractor=entity_extractor,
                 event_emitter=mimir_event_emitter,
+                reserved_prefixes=(
+                    [settings.reflection.friction.ledger_prefix]
+                    if settings.reflection.friction.enabled
+                    else []
+                ),
             )
         )
 
@@ -358,6 +377,7 @@ def _build_tools(
                 workspace,
                 tools,
                 skill_manager=skill_manager,
+                resolver=learned_tool_resolver,
             )
         )
 
@@ -417,33 +437,63 @@ def _build_tools(
     return tools
 
 
-def _build_learned_tool_resolver(settings: Settings, workspace: Path) -> Any | None:
-    """Construct the on-demand learned-tool resolver, sweeping stale venvs."""
-    from ravn.valkyrie_evolution.learned_tools import (  # noqa: PLC0415
-        LearnedToolError,
-        LearnedToolResolver,
+def learned_tool_resolver_from_settings(settings: Settings, workspace: Path) -> Any:
+    """Construct the learned-tool resolver the settings describe, with no side effects.
+
+    Raises :class:`~ravn.valkyrie_evolution.learned_tools.LearnedToolError`
+    when the configured execution backend cannot be built; the resident does
+    not start without it. The message names the setting to change.
+    """
+    from ravn.valkyrie_evolution.learned_tools import LearnedToolResolver  # noqa: PLC0415
+
+    return LearnedToolResolver(
+        state_dir=_resident_ravn_state_dir(workspace, settings),
+        execution_backend=settings.resident_evolution.learned_tool_execution_backend,
+        execution_backend_kwargs=(
+            settings.resident_evolution.learned_tool_k8s.model_dump()
+            if settings.resident_evolution.learned_tool_execution_backend == "k8s_job"
+            else None
+        ),
+        workspace_root=workspace,
+        timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
     )
 
-    try:
-        resolver = LearnedToolResolver(
-            state_dir=_resident_ravn_state_dir(workspace, settings),
-            execution_backend=settings.resident_evolution.learned_tool_execution_backend,
-            execution_backend_kwargs=(
-                settings.resident_evolution.learned_tool_k8s.model_dump()
-                if settings.resident_evolution.learned_tool_execution_backend == "k8s_job"
-                else None
-            ),
-            workspace_root=workspace,
-            timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
-        )
-    except LearnedToolError as exc:
-        logger.warning("Skipping learned tools: %s", exc)
-        return None
+
+def _build_learned_tool_resolver(settings: Settings, workspace: Path) -> Any:
+    """Construct the on-demand learned-tool resolver, sweeping stale venvs.
+
+    No fallback: learned tools are always configured (there is no setting that
+    turns them off), so a resolver that cannot be built stops startup with the
+    remedy in the error instead of leaving the resident without its tools.
+    """
+    resolver = learned_tool_resolver_from_settings(settings, workspace)
     resolver.sweep_orphaned_venvs()
     from ravn.tool_observability import publish_learned_tool_inventory  # noqa: PLC0415
 
-    publish_learned_tool_inventory(resolver.list_artifacts())
+    publish_learned_tool_inventory(resolver.list_loadable_artifacts())
     return resolver
+
+
+def _retired_learned_tools(state_dir: Path, skill_manager: Any | None) -> Any:
+    """List the retired learned tools under *state_dir*, read fresh each call."""
+    from ravn.valkyrie_evolution.learned_tools import learned_tool_storage  # noqa: PLC0415
+    from ravn.valkyrie_evolution.tool_curation import tool_inventory  # noqa: PLC0415
+
+    code_dir, artifacts_dir = learned_tool_storage(state_dir)
+
+    def retired() -> list[Any]:
+        return [
+            entry
+            for entry in tool_inventory(
+                tools_dir=code_dir,
+                artifacts_dir=artifacts_dir,
+                skills=skill_manager,
+                include_retired=True,
+            )
+            if entry.retired
+        ]
+
+    return retired
 
 
 def _load_resident_learned_tools(
@@ -452,6 +502,7 @@ def _load_resident_learned_tools(
     existing_tools: list[Any],
     *,
     skill_manager: Any | None = None,
+    resolver: Any | None = None,
 ) -> list[Any]:
     """Legacy bulk mode: load every learned tool as a native callable.
 
@@ -459,22 +510,20 @@ def _load_resident_learned_tools(
     default dispatch mode exposes learned tools through capability_list +
     learned_tool_run instead, so the prompt does not grow with the catalog.
     """
-    resolver = _build_learned_tool_resolver(settings, workspace)
     if resolver is None:
-        return []
+        resolver = _build_learned_tool_resolver(settings, workspace)
     seen = {tool.name for tool in existing_tools}
     loaded: list[Any] = []
-    for artifact in resolver.list_artifacts():
+    # Tools this backend refuses are reported by the resolver's inventory
+    # (error log, degraded count) and left to the repair path; they are not
+    # callables, so they are never loaded and never listed.
+    for artifact in resolver.list_loadable_artifacts():
         name = artifact.manifest.name
         if skill_manager is not None and skill_manager.status(name) == "archived":
             continue
         if name in seen:
             continue
-        try:
-            tool = resolver.load(name)
-        except Exception as exc:
-            logger.warning("Failed to load learned tool %s: %s", name, exc)
-            continue
+        tool = resolver.load(name)
         seen.add(tool.name)
         loaded.append(tool)
     return loaded
@@ -677,8 +726,74 @@ def _build_hooks(settings: Settings) -> tuple[list[PreToolHook], list[PostToolHo
 # ---------------------------------------------------------------------------
 
 
+def _build_compaction(settings: Settings, llm: Any, model: str) -> tuple[Any, Any]:
+    """Build *model*'s compaction: ``(compressor, native_compaction)``.
+
+    At most one is set, as ``context_management.compaction`` (or its
+    ``compaction_models`` entry for *model*) says:
+
+    - ``ravn``: Ravn's ContextCompressor, and no native compaction;
+    - ``native``: the provider compacts — the adapter is told to for *model*
+      and returned as the native-compaction port; Ravn never compacts;
+    - ``off``: neither.
+
+    Raises:
+        ConfigurationError: ``native`` for an adapter that cannot compact
+            natively, or with no prompt budget to derive the threshold from.
+    """
+    from ravn.config import CompactionMode  # noqa: PLC0415
+
+    match settings.context_management.compaction_for(model):
+        case CompactionMode.RAVN:
+            return _build_compressor(settings, llm), None
+        case CompactionMode.NATIVE:
+            return None, _enable_native_compaction(settings, llm, model)
+        case CompactionMode.OFF:
+            return None, None
+    raise AssertionError("Unreachable compaction mode")
+
+
+def _enable_native_compaction(settings: Settings, llm: Any, model: str) -> Any:
+    """Turn on provider compaction for *model* on *llm* and return the port.
+
+    The provider counts real tokens while Ravn's budget is a conservative
+    estimate (``token_estimate_safety_factor``), so the threshold is the same
+    point Ravn's own compactor would fire at — ``compression_threshold`` of the
+    prompt budget — converted back to real tokens.
+
+    Raises:
+        ConfigurationError: The adapter has no native compaction, or there is
+            no prompt budget (``max_prompt_tokens`` or ``context_window_tokens``).
+    """
+    from ravn.domain.exceptions import ConfigurationError  # noqa: PLC0415
+    from ravn.ports.native_compaction import NativeCompactionPort  # noqa: PLC0415
+
+    if not isinstance(llm, NativeCompactionPort):
+        raise ConfigurationError(
+            f"context_management.compaction is 'native' for model {model!r}, but the LLM "
+            f"adapter {type(llm).__name__} cannot ask its provider to compact. Use an adapter "
+            "whose protocol has provider compaction "
+            "(ravn.adapters.llm.openai_responses.OpenAIResponsesAdapter, or the Anthropic / "
+            "Bifröst Anthropic adapters), or set compaction to 'ravn' or 'off' for this model"
+        )
+    cm = settings.context_management
+    budget = settings.compaction_budget_tokens()
+    if budget <= 0:
+        raise ConfigurationError(
+            f"context_management.compaction is 'native' for model {model!r} but no prompt "
+            "size is configured to derive the compaction threshold from: set "
+            "context_management.context_window_tokens (or compaction_target_tokens)"
+        )
+    threshold = int(budget * cm.compression_threshold / cm.token_estimate_safety_factor)
+    llm.enable_native_compaction(model=model, threshold_tokens=threshold)
+    logger.info(
+        "Native compaction enabled for %s: provider compacts above %d tokens", model, threshold
+    )
+    return llm
+
+
 def _build_compressor(settings: Settings, llm: Any) -> Any:
-    """Build the context compressor, or None."""
+    """Build Ravn's client-side context compressor."""
     from ravn.compression import ContextCompressor
 
     cm = settings.context_management

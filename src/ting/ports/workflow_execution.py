@@ -17,10 +17,9 @@ from ting.domain.workflow_execution import (
 )
 
 
-class WorkflowExecutionRepository[
-    ExecutionT: WorkflowExecution,
-    ChildT: WorkflowChildExecution,
-](ABC):
+class WorkflowExecutionRepository[ExecutionT: WorkflowExecution, ChildT: WorkflowChildExecution](
+    ABC
+):
     """Atomic ledger operations required by any expanded workflow domain."""
 
     @abstractmethod

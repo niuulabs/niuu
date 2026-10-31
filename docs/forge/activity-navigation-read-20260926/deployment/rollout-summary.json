@@ -1,0 +1,33 @@
+{
+  "source": "4b44432fec51b521c5d2d40ce6de2bd5d5650c8a",
+  "build": "forge-activity-read-20260926",
+  "passed": true,
+  "started_at": "2026-09-26T22:09:46.986697+00:00",
+  "finished_at": "2026-09-26T22:10:08.282052+00:00",
+  "protected_processes": 64,
+  "live_gateways": 21,
+  "session_rows": 710,
+  "preserved_process_identities": true,
+  "preserved_gateway_routes": true,
+  "preserved_sessions": true,
+  "stable_config_and_launcher": true,
+  "settled_165_turn_prefix": {
+    "count": 165,
+    "exact_content_match": true,
+    "ids_match": true
+  },
+  "migration": [
+    "000071_forge_notification_reads.up.sql|b52942b02f15d19d300c7d2330a74c43477adedc0c3779a53bd9a0b3904389bf",
+    "forge_notification_reads"
+  ],
+  "healthcheck_timer": "active",
+  "backup": {
+    "path": "/home/thor/.local/share/niuu/rollouts/forge-activity-read-20260926/volundr-before.dump",
+    "sha256": "0900f5f116e75d5d25b89b0010c20ac9028b65d8a9aaa086c5ea5190a4caec99",
+    "table_of_contents_entries": 408,
+    "restore_test_run": false
+  },
+  "old_gateways_upgraded": false,
+  "known_old_Codex_reply_alias": 404,
+  "canonical_activity_anchor": 200
+}

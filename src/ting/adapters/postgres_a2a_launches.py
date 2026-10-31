@@ -73,6 +73,18 @@ class PostgresA2ALaunchReservationRepository(A2ALaunchReservationRepository):
         )
         return _from_row(row) if row is not None else None
 
+    async def release(self, reservation_id: UUID, *, lease_token: UUID) -> None:
+        await self._pool.execute(
+            """
+            UPDATE a2a_launch_reservations
+            SET state = 'reserved', lease_token = NULL, lease_expires_at = NULL,
+                updated_at = NOW()
+            WHERE id = $1 AND lease_token = $2
+            """,
+            reservation_id,
+            lease_token,
+        )
+
     async def mark_launched(
         self, reservation_id: UUID, *, lease_token: UUID, session_id: str
     ) -> A2ALaunchReservation:

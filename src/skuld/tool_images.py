@@ -35,6 +35,11 @@ def image_payloads(content: Any) -> list[dict[str, Any]]:
         if not isinstance(block, dict):
             continue
         kind = block.get("type")
+        if not isinstance(kind, str):
+            # A JSON tool result can carry a non-string ``type`` (an Artifact tool result's
+            # ``type`` is an object); it is never an image block, and hashing it for the set
+            # test below raised ``TypeError: unhashable type`` and failed the whole history page.
+            continue
         if kind == "image":
             source = block.get("source")
             if isinstance(source, dict):

@@ -83,6 +83,54 @@ async def test_list_volundr_targets_forwards_principal_and_bearer_token() -> Non
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_scoped_request_bearer_is_not_forwarded_to_guild() -> None:
+    """A resident's build token is admitted only on its own entry points.
+
+    Forwarding it to Guild's instance registry turned every scoped A2A launch
+    into a 403 on the Volundr target lookup (NIU-1143); Ting uses its own
+    credential there instead.
+    """
+    import jwt
+
+    scoped = jwt.encode(
+        {
+            "sub": "user-1",
+            "token_use": "valkyrie_build",
+            "scopes": ["ting:workflow:launch"],
+            "act": {"sub": "system:serviceaccount:nats:regin"},
+        },
+        "test-only-hmac-key-at-least-32-bytes-long",
+        algorithm="HS256",
+    )
+    request = Request(
+        {"type": "http", "headers": [(b"authorization", f"Bearer {scoped}".encode())]}
+    )
+    assert extract_bearer_token(request) == scoped
+
+    route = respx.get("https://guild.test/api/v1/niuu/instances").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    client = GuildInstanceRegistryClient("https://guild.test", auth=_StaticAuth("service-jwt"))
+
+    try:
+        await client.list_volundr_targets(
+            Principal(
+                user_id="user-1",
+                email="user-1@example.com",
+                tenant_id="tenant-a",
+                roles=["volundr:developer"],
+            )
+        )
+    finally:
+        await client.close()
+
+    sent = route.calls[0].request
+    assert sent.headers["authorization"] == "Bearer service-jwt"
+    assert sent.headers["x-auth-user-id"] == "user-1"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_list_volundr_targets_uses_configured_auth_without_request_bearer() -> None:
     request = Request({"type": "http", "headers": [], "query_string": b""})
     assert extract_bearer_token(request) is None

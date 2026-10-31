@@ -98,12 +98,13 @@ observability:
   enabled: true
   trace_endpoint: "http://otel-collector:4317"     # OTLP/gRPC
   metric_endpoint: "http://otel-collector:4318/v1/metrics"  # OTLP/HTTP
+  log_endpoint: "http://otel-collector:4318/v1/logs"  # OTLP/HTTP — Loki via collector
   insecure: true          # disable TLS on the gRPC trace exporter
   capture_content: false  # redacted, size-bounded event content on spans
   headers: {}              # optional OTLP headers (e.g. auth), both exporters
 ```
 
-`enabled: true` requires both `trace_endpoint` and `metric_endpoint` — it fails
+`enabled: true` requires `trace_endpoint`, `metric_endpoint`, and `log_endpoint` — it fails
 loudly at startup otherwise, per the no-fallbacks rule: a configured-but-broken
 exporter must stop the process, not run quietly without traces. `enabled` false
 (the default) is a decision, not a degraded fallback.

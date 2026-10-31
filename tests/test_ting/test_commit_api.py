@@ -236,7 +236,7 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [MetadataTracker()]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
-        app.dependency_overrides[resolve_git] = lambda: MockGit()
+        app.dependency_overrides[resolve_git] = MockGit
         app.state.settings = _dev_settings()
         client = TestClient(app)
 

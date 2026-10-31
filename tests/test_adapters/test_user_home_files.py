@@ -105,6 +105,15 @@ async def test_browser_lifecycle_and_busy_delete(monkeypatch):
     assert browser_manifest("bob", "b", "image", 123)["spec"]["activeDeadlineSeconds"] == 123
 
 
+def test_home_browser_sits_beside_the_pods_that_mount_its_claim():
+    manifest = browser_manifest("bob", "home-claim", "image", 60)
+    assert manifest["metadata"]["labels"]["volundr/home-claim"] == "home-claim"
+    (term,) = manifest["spec"]["affinity"]["podAffinity"][
+        "requiredDuringSchedulingIgnoredDuringExecution"
+    ]
+    assert term["labelSelector"] == {"matchLabels": {"volundr/home-claim": "home-claim"}}
+
+
 async def test_k8s_owner_and_missing_home():
     adapter = K8sStorageAdapter(file_browser_image="image")
     adapter._api_client = api = AsyncMock()
@@ -156,20 +165,16 @@ def test_route_delete_never_reports_preparation_as_success():
     )
     app.include_router(create_user_storage_router(storage))
     client = TestClient(app)
-    assert (
-        client.delete(
-            "/api/v1/forge/storage/home?path=tmp", headers={"x-auth-user-id": "alice"}
-        ).status_code
-        == 409
+    response = client.delete(
+        "/api/v1/forge/storage/home?path=tmp", headers={"x-auth-user-id": "alice"}
     )
+    assert response.status_code == 409
     storage.manage_user_home.assert_awaited_once_with("alice", "delete", "tmp")
     storage.manage_user_home.return_value = {"status": "ready", "deleted": "tmp"}
-    assert (
-        client.delete(
-            "/api/v1/forge/storage/home?path=tmp", headers={"x-auth-user-id": "alice"}
-        ).status_code
-        == 200
+    response = client.delete(
+        "/api/v1/forge/storage/home?path=tmp", headers={"x-auth-user-id": "alice"}
     )
+    assert response.status_code == 200
 
 
 async def test_k8s_browser_expands_existing_home_and_deprovisions_helper(monkeypatch):

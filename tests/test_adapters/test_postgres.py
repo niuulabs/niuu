@@ -97,6 +97,19 @@ class TestPostgresSessionRepositoryCreate:
         assert call_args[0][2] == sample_session.name
         assert call_args[0][3] == sample_session.model
 
+    async def test_create_records_the_acting_workload(
+        self, repository: PostgresSessionRepository, mock_pool, sample_session: Session
+    ):
+        """actor_id is the INSERT's last column, so a delegated session keeps its actor."""
+        delegated = sample_session.model_copy(
+            update={"actor_id": "system:serviceaccount:nats:regin"}
+        )
+        await repository.create(delegated)
+
+        call_args = mock_pool.execute.call_args[0]
+        assert "coordination, actor_id)" in call_args[0]
+        assert call_args[-1] == "system:serviceaccount:nats:regin"
+
     async def test_create_returns_session(
         self, repository: PostgresSessionRepository, sample_session: Session
     ):

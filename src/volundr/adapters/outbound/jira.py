@@ -14,7 +14,8 @@ from urllib.parse import urlsplit
 import httpx
 
 from tracker.models import TrackerConnectionStatus, TrackerIssue
-from tracker.ports import IssueTrackerProvider
+from tracker.ports import IssueTrackerProvider, TrackerRequestError
+from volundr.adapters.outbound.jira_adf import adf_to_markdown, text_to_adf
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,9 @@ _ACCESSIBLE_RESOURCES_URL = "https://api.atlassian.com/oauth/token/accessible-re
 _ATLASSIAN_API_ROOT = "https://api.atlassian.com/ex/jira"
 _DEFAULT_TIMEOUT_SECONDS = 15.0
 _ISSUE_FIELDS = "summary,status,assignee,labels,priority,project"
+# Single-issue fetches also return the body; search and recent lists omit it
+# to keep payloads small (callers fetch the issue by key to read it).
+_ISSUE_DETAIL_FIELDS = f"{_ISSUE_FIELDS},description"
 
 # Priority mapping: Jira priority names to numeric values
 _PRIORITY_MAP: dict[str, int] = {
@@ -31,6 +35,16 @@ _PRIORITY_MAP: dict[str, int] = {
     "low": 4,
     "lowest": 5,
 }
+
+# TrackerIssue priority scale (1=urgent … 4=low) to Jira's default priority names.
+# 0 means "no priority" and leaves the field unset.
+_CREATE_PRIORITY_NAMES: dict[int, str] = {
+    1: "Highest",
+    2: "High",
+    3: "Medium",
+    4: "Low",
+}
+_DEFAULT_ISSUE_TYPE = "Task"
 
 
 class JiraAdapter(IssueTrackerProvider):
@@ -50,6 +64,7 @@ class JiraAdapter(IssueTrackerProvider):
         cloud_id: str = "",
         project_keys: list[str] | None = None,
         labels: list[str] | None = None,
+        issue_type: str = _DEFAULT_ISSUE_TYPE,
         timeout: float = _DEFAULT_TIMEOUT_SECONDS,
         **_extra: object,
     ) -> None:
@@ -85,6 +100,8 @@ class JiraAdapter(IssueTrackerProvider):
             raise ValueError("cloud_id may contain only letters, digits, and dashes")
         self._project_keys = self._clean_scope_values(project_keys)
         self._labels = self._clean_scope_values(labels)
+        # A blank catalog field means "not set": the documented default applies.
+        self._issue_type = issue_type.strip() or _DEFAULT_ISSUE_TYPE
         self._client = httpx.AsyncClient(
             headers={
                 "Authorization": authorization,
@@ -204,7 +221,7 @@ class JiraAdapter(IssueTrackerProvider):
             response = await self._request(
                 "GET",
                 f"/issue/{issue_id}",
-                params={"fields": _ISSUE_FIELDS},
+                params={"fields": _ISSUE_DETAIL_FIELDS},
             )
             if response.status_code == 404:
                 return None
@@ -244,7 +261,7 @@ class JiraAdapter(IssueTrackerProvider):
 
         if target is None:
             available = [t.get("name", "") for t in transitions]
-            raise JiraAPIError(
+            raise TrackerRequestError(
                 f"Transition '{status}' not available. Available: {', '.join(available)}"
             )
 
@@ -262,6 +279,86 @@ class JiraAdapter(IssueTrackerProvider):
             raise JiraAPIError(f"Issue not found after update: {issue_id}")
         return updated
 
+    async def update_issue(
+        self,
+        issue_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> TrackerIssue:
+        """Rewrite a Jira issue's summary and/or description."""
+        fields: dict[str, Any] = {}
+        if title is not None:
+            fields["summary"] = title
+        if description is not None:
+            fields["description"] = text_to_adf(description)
+        if not fields:
+            raise TrackerRequestError("Nothing to update: give a title and/or a description")
+        if self._project_keys or self._labels:
+            if await self.get_issue(issue_id) is None:
+                raise TrackerRequestError(
+                    f"Issue is outside this Jira connection's configured scope: {issue_id}"
+                )
+
+        response = await self._request("PUT", f"/issue/{issue_id}", json={"fields": fields})
+        if response.status_code == 400:
+            raise TrackerRequestError(f"Jira rejected the edit to {issue_id}: {response.text}")
+        response.raise_for_status()
+
+        updated = await self.get_issue(issue_id)
+        if updated is None:
+            raise JiraAPIError(f"Issue not found after update: {issue_id}")
+        return updated
+
+    async def create_issue(
+        self,
+        title: str,
+        description: str,
+        *,
+        team: str,
+        labels: list[str] | None = None,
+        priority: int | None = None,
+    ) -> TrackerIssue:
+        """Create a Jira issue in project ``team`` with the configured issue type.
+
+        The connection's scope labels are always added so the new issue stays
+        visible through this connection. Jira validation failures (unknown
+        project, issue type or priority) raise :class:`TrackerRequestError`
+        with Jira's own error text.
+        """
+        violation = self._project_scope_violation(team)
+        if violation:
+            raise TrackerRequestError(violation)
+        if priority is not None and not 0 <= priority <= len(_CREATE_PRIORITY_NAMES):
+            raise TrackerRequestError(f"Priority must be between 0 and 4, got {priority}")
+
+        fields: dict[str, Any] = {
+            "project": {"key": team},
+            "summary": title,
+            "description": text_to_adf(description),
+            "issuetype": {"name": self._issue_type},
+        }
+        all_labels = list(dict.fromkeys([*(labels or []), *self._labels]))
+        if all_labels:
+            fields["labels"] = all_labels
+        if priority:
+            fields["priority"] = {"name": _CREATE_PRIORITY_NAMES[priority]}
+
+        response = await self._request("POST", "/issue", json={"fields": fields})
+        if response.status_code == 400:
+            raise TrackerRequestError(f"Jira rejected the issue in project {team}: {response.text}")
+        response.raise_for_status()
+        key = str(response.json().get("key") or "")
+        if not key:
+            raise JiraAPIError(
+                f"Jira create response did not include an issue key: {response.text}"
+            )
+
+        created = await self.get_issue(key)
+        if created is None:
+            raise JiraAPIError(f"Created Jira issue {key} could not be read back")
+        return created
+
     @staticmethod
     def _jql_string(value: str) -> str:
         escaped = value.replace("\\", "\\\\").replace('"', '\\"')
@@ -275,15 +372,20 @@ class JiraAdapter(IssueTrackerProvider):
             raise ValueError("Jira scope values must be a list of strings")
         return tuple(dict.fromkeys(value.strip() for value in (values or []) if value.strip()))
 
-    def _require_allowed_project(self, project_id: str) -> None:
-        if self._project_keys and project_id.casefold() not in {
+    def _project_scope_violation(self, project_id: str) -> str | None:
+        if not self._project_keys or project_id.casefold() in {
             key.casefold() for key in self._project_keys
         }:
-            allowed = ", ".join(self._project_keys)
-            raise JiraAPIError(
-                f"Project {project_id!r} is outside this Jira connection's configured scope "
-                f"({allowed})"
-            )
+            return None
+        allowed = ", ".join(self._project_keys)
+        return (
+            f"Project {project_id!r} is outside this Jira connection's configured scope ({allowed})"
+        )
+
+    def _require_allowed_project(self, project_id: str) -> None:
+        violation = self._project_scope_violation(project_id)
+        if violation:
+            raise JiraAPIError(violation)
 
     def _project_jql_parts(self) -> list[str]:
         if not self._project_keys:
@@ -325,6 +427,7 @@ class JiraAdapter(IssueTrackerProvider):
             id=issue["id"],
             identifier=issue.get("key", issue["id"]),
             title=fields.get("summary", ""),
+            description=adf_to_markdown(fields.get("description")),
             status=(fields.get("status") or {}).get("name", "Unknown"),
             assignee=assignee.get("displayName") if assignee else None,
             labels=fields.get("labels", []),

@@ -16,6 +16,8 @@ class ActivityReportingMixin:
 
     _RUNNING_RAW_STATES = ("active", "tool_executing")
     _TURN_END_RAW_STATES = ("idle", "stopped", "error")
+    # Flock peer events that mean a peer is doing work right now.
+    _PEER_WORK_EVENT_TYPES = frozenset({"task_started", "thought", "thinking", "tool_start"})
 
     async def _report_session_start(self) -> None:
         """Report the session start timeline event (once)."""
@@ -38,6 +40,59 @@ class ActivityReportingMixin:
             },
             model=self.model,
         )
+
+    async def _report_room_peer_working(self) -> None:
+        """Report ``active`` while flock peers work in a room-only workflow session.
+
+        A flock workflow session has no CLI transport of its own, so the CLI
+        frames that drive activity everywhere else never arrive; peer progress
+        is the only evidence of work. A human gate, an unanswered peer help
+        request, or a reported terminal flock outcome owns the state instead.
+        """
+        if not self._is_room_only_workflow_session():
+            return
+        if self._pending_attention or self._activity_state in ("stopped", "error"):
+            return
+        if any(request.status == "pending" for request in self._pending_help_requests.values()):
+            return
+        if (
+            self._flock_completion_reported
+            or self._flock_failure_reported
+            or self._pending_terminal_activity is not None
+        ):
+            return
+        await self._report_activity_state("active")
+
+    async def _report_room_flock_idle(self) -> None:
+        """Report ``idle`` once no flock peer has a task in flight.
+
+        Peer work is the only thing that makes a room-only workflow session
+        ``active``, so when the last started task completes and nothing owns
+        the state instead, the session is idle. Staying ``active`` kept the
+        heartbeat re-asserting work that had stopped: two builder sessions sat
+        "busy" for eleven hours after their last peer finished, and nothing
+        downstream could tell them from sessions still working. The last peer
+        outcome rides along so whoever closes the session can say where the
+        workflow stopped.
+        """
+        if not self._is_room_only_workflow_session():
+            return
+        if any(self._peer_tasks_in_flight.values()):
+            return
+        if self._activity_state not in self._RUNNING_RAW_STATES:
+            return
+        if self._pending_attention:
+            return
+        if any(request.status == "pending" for request in self._pending_help_requests.values()):
+            return
+        if (
+            self._flock_completion_reported
+            or self._flock_failure_reported
+            or self._pending_terminal_activity is not None
+        ):
+            return
+        extra = {"flock_idle": dict(self._last_flock_outcome)} if self._last_flock_outcome else None
+        await self._report_activity_state("idle", extra_metadata=extra)
 
     @classmethod
     def _coarse_bucket(cls, state: str) -> str:
@@ -137,7 +192,7 @@ class ActivityReportingMixin:
             pending = {"kind": terminal_kind, "payload": payload}
             self._pending_terminal_activity = pending
 
-        if not self.volundr_api_url:
+        if not self.volundr_api_url or not self._settings.activity_reporting_enabled:
             return False
 
         # Stays set until Forge acknowledges a report for the state the broker is

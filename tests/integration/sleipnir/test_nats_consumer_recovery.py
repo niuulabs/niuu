@@ -59,6 +59,9 @@ pytestmark = pytest.mark.broker
 _HEALTH_CHECK_INTERVAL_S = 0.3
 _RECOVERY_BACKOFF_S = [0.2, 0.5]
 _RECOVERY_TIMEOUT_S = 10.0
+# Upper bound on messages published until both queue-group members receive one;
+# with fair random balancing, 64 all landing on one member is ~1e-19.
+_QUEUE_GROUP_MAX_MESSAGES = 64
 
 
 def _transport(
@@ -209,13 +212,18 @@ async def test_queue_group_survives_durable_recreation():
         assert worker_a._subscriber.stats()["consumer_recovered"] >= 1  # noqa: SLF001
         assert worker_b._subscriber.stats()["consumer_recovered"] >= 1  # noqa: SLF001
 
-        events = [
-            make_event(event_id=f"recreate-{idx}", event_type="recreate.signal") for idx in range(6)
-        ]
-        for event in events:
+        # A queue group balances randomly: a fixed six messages all landed on
+        # one worker about 3% of the time.  Publish one at a time, letting
+        # each be delivered, until both workers have received at least one
+        # (capped, so a worker that truly never receives still fails below).
+        events: list[SleipnirEvent] = []
+        for idx in range(_QUEUE_GROUP_MAX_MESSAGES):
+            event = make_event(event_id=f"recreate-{idx}", event_type="recreate.signal")
+            events.append(event)
             await publisher.publish(event)
-
-        await _wait_for(lambda: len(received_a) + len(received_b) >= len(events), timeout=5.0)
+            await _wait_for(lambda: len(received_a) + len(received_b) >= len(events), timeout=5.0)
+            if received_a and received_b:
+                break
 
     delivered_ids = [event.event_id for event in [*received_a, *received_b]]
     assert set(delivered_ids) == {event.event_id for event in events}

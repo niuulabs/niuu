@@ -225,3 +225,22 @@ it('drops a tool-only message without prose but preserves unstructured prose', (
   expect(result.current.visibleMessages).toHaveLength(1);
   expect(result.current.visibleMessages[0]?.content).toBe('Summary');
 });
+it('keeps Forge notification cards visible while hiding the raw notify call', () => {
+  const card = {
+    type: 'tool_use' as const,
+    id: 'nt_1',
+    name: 'forge_notification',
+    input: { kind: 'milestone', title: 'Done' },
+  };
+  expect(
+    hideToolParts([
+      {
+        type: 'tool_use',
+        id: 'call',
+        name: 'mcp__forge__notify',
+        input: { kind: 'milestone', title: 'Done' },
+      },
+      card,
+    ]),
+  ).toEqual([{ type: 'tool_separator', id: 'call' }, card]);
+});

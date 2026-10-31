@@ -9,6 +9,7 @@ import json
 import httpx
 import pytest
 
+from niuu.ports.notifications import NotificationDeliveryError
 from ting.adapters.webhook_notification import WebhookNotificationAdapter
 from ting.ports.notification_channel import Notification, NotificationUrgency
 
@@ -90,42 +91,44 @@ async def test_should_notify_respects_min_urgency() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_skips_when_url_empty(caplog: pytest.LogCaptureFixture) -> None:
+async def test_send_without_url_raises() -> None:
     adapter = WebhookNotificationAdapter(url="")
-    with caplog.at_level("WARNING"):
+    with pytest.raises(NotificationDeliveryError, match="no url configured") as raised:
         await adapter.send(_notification())
     await adapter.close()
-    assert "url not configured" in caplog.text
+    assert raised.value.retryable is False
 
 
 @pytest.mark.asyncio
-async def test_send_swallows_http_errors(caplog: pytest.LogCaptureFixture) -> None:
+async def test_send_raises_on_http_errors() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, text="upstream down")
 
     transport = httpx.MockTransport(handler)
-    adapter = WebhookNotificationAdapter(url="https://example.com/hook")
+    adapter = WebhookNotificationAdapter(url="https://example.com/hook/secret-path")
     adapter._client = httpx.AsyncClient(transport=transport)
 
-    with caplog.at_level("WARNING"):
+    with pytest.raises(NotificationDeliveryError, match="HTTP 503") as raised:
         await adapter.send(_notification())
     await adapter.close()
-    assert "returned 503" in caplog.text
+    assert raised.value.retryable is True
+    assert "secret-path" not in str(raised.value)
 
 
 @pytest.mark.asyncio
-async def test_send_swallows_network_errors(caplog: pytest.LogCaptureFixture) -> None:
+async def test_send_raises_on_network_errors_without_the_url() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("dns failure")
+        raise httpx.ConnectError("dns failure for https://example.com/hook/secret-path")
 
     transport = httpx.MockTransport(handler)
-    adapter = WebhookNotificationAdapter(url="https://example.com/hook")
+    adapter = WebhookNotificationAdapter(url="https://example.com/hook/secret-path")
     adapter._client = httpx.AsyncClient(transport=transport)
 
-    with caplog.at_level("WARNING"):
+    with pytest.raises(NotificationDeliveryError, match="ConnectError") as raised:
         await adapter.send(_notification())
     await adapter.close()
-    assert "Failed to deliver webhook" in caplog.text
+    assert "secret-path" not in str(raised.value)
+    assert raised.value.__cause__ is None
 
 
 @pytest.mark.asyncio

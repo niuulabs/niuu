@@ -20,8 +20,11 @@ logger = logging.getLogger(__name__)
 
 
 class ReviewDecisionRequest(BaseModel):
+    #: ``approved``, ``rejected``, or ``answered`` (a question only; needs ``answer``).
     decision: str
     reason: str = ""
+    #: The free-text reply when ``decision`` is ``answered``; reaches the resident verbatim.
+    answer: str = ""
     participantId: str = ""  # noqa: N815
 
 
@@ -162,6 +165,7 @@ def create_odin_review_router(
                 decision=request.decision,
                 operator_id=operator_id,
                 reason=request.reason,
+                answer=request.answer,
             )
         except ReviewDecisionError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc

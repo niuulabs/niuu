@@ -21,6 +21,7 @@ const tingMocks = vi.hoisted(() => ({
   createMockDispatcherService: vi.fn(() => ({ kind: 'mock-dispatcher' })),
   createMockTingSessionService: vi.fn(() => ({ kind: 'mock-sessions' })),
   createMockTrackerService: vi.fn(() => ({ kind: 'mock-tracker' })),
+  createMockWorkService: vi.fn(() => ({ kind: 'mock-work' })),
   createMockWorkflowService: vi.fn(() => ({ kind: 'mock-workflows' })),
   createMockResearchService: vi.fn(() => ({ kind: 'mock-research' })),
   createMockSpecsService: vi.fn(() => ({ kind: 'mock-specs' })),
@@ -111,6 +112,13 @@ const volundrMocks = vi.hoisted(() => ({
   buildVolundrFileSystemHttpAdapter: vi.fn((options) => ({ kind: 'filesystem', options })),
   buildVolundrPtyWsAdapter: vi.fn(() => ({})),
   buildVolundrMetricsSseAdapter: vi.fn(() => ({})),
+  buildNotificationFeedHttpAdapter: vi.fn((client, options) => ({
+    kind: 'notifications',
+    client,
+    options,
+  })),
+  createMockNotificationFeed: vi.fn(() => ({ kind: 'mock-notifications' })),
+  forgeApiBasePath: vi.fn((basePath: string) => basePath),
 }));
 
 vi.mock('@niuulabs/query', () => ({
@@ -519,6 +527,22 @@ describe('buildServices live base selection', () => {
 
     expect(observatoryMocks.createMockAgentDirectory).not.toHaveBeenCalled();
     expect(isUnavailableService(services['observatory.agents'])).toBe(true);
+  });
+
+  it('serves work from the mock only when demo mode is explicit', () => {
+    const demo = buildServices({ demoMode: true, services: {} } as any);
+    expect(demo['ting.work']).toEqual({ kind: 'mock-work' });
+
+    tingMocks.createMockWorkService.mockClear();
+    const live = buildServices({ demoMode: false, services: {} } as any);
+    expect(tingMocks.createMockWorkService).not.toHaveBeenCalled();
+    expect(isUnavailableService(live['ting.work'])).toBe(true);
+  });
+
+  it('reports work as a demo adapter in demo mode', () => {
+    const status = buildServiceBackendStatus({ demoMode: true, services: {} } as any);
+
+    expect(status['ting.work']?.mode).toBe('demo');
   });
 
   it('builds separate forge runtime and volundr catalog adapters', () => {
@@ -1650,6 +1674,31 @@ describe('buildServices', () => {
     expect((services.sessionStore as any).kind).toBe('mock-session-store');
     expect((services['volundr.clusters'] as any).kind).toBe('mock-clusters');
     expect((services.clusterAdapter as any).kind).toBe('mock-clusters');
+    expect((services['volundr.notifications'] as any).kind).toBe('mock-notifications');
+  });
+
+  it('builds the notifications feed on the Forge base, sharing the Forge fleet stream', () => {
+    const forgeAdapter = { kind: 'forge-http', subscribeForgeStream: vi.fn() };
+    // The Forge runtime adapter is built first, before the catalog adapter.
+    volundrMocks.buildVolundrHttpAdapter.mockReturnValueOnce(forgeAdapter as any);
+    const services = buildServices({
+      theme: 'ice',
+      plugins: {},
+      services: { forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' } },
+    } as any);
+    const feed = services['volundr.notifications'] as any;
+    expect(feed.kind).toBe('notifications');
+    expect(feed.client).toEqual({ basePath: 'http://localhost:8080/api/v1/forge' });
+    expect(volundrMocks.forgeApiBasePath).toHaveBeenCalledWith(
+      'http://localhost:8080/api/v1/forge',
+    );
+    // The feed listens on the Forge adapter itself, not on a second stream.
+    expect(feed.options.stream).toBe(forgeAdapter);
+  });
+
+  it('leaves notifications unavailable without a Forge or demo mode', () => {
+    const services = buildServices({ theme: 'ice', plugins: {}, services: {} } as any);
+    expect(isUnavailableService(services['volundr.notifications'])).toBe(true);
   });
 
   it('maps lifecycle variants and subscription updates through the live session store', async () => {
@@ -1976,6 +2025,7 @@ describe('buildServices', () => {
     expect(valkyrieMocks.buildRealmGovernanceHttpAdapter).toHaveBeenCalledWith(
       { basePath: 'http://localhost:8080/api/v1' },
       { basePath: 'http://localhost:8080/api/v1/ting' },
+      'http://localhost:8080/api/v1',
     );
     expect(services['valkyrie.realms']).toMatchObject({ kind: 'valkyrie-realms' });
   });

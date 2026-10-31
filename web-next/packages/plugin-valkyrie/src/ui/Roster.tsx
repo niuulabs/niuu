@@ -62,6 +62,24 @@ function wakefulnessClasses(state: WakefulnessState): string {
   return 'niuu:text-brand';
 }
 
+/** "last dream 12m ago", or "dream failed 12m ago" when the last one failed. */
+export function DreamAge({ valkyrie }: { valkyrie: ValkyrieResident }) {
+  const finishedAt = valkyrie.lastDream?.finishedAt || valkyrie.lastDreamAt;
+  if (!finishedAt) return null;
+  const failed = valkyrie.lastDream?.status === 'failed';
+  return (
+    <span
+      data-testid={`roster-last-dream-${valkyrie.id}`}
+      title={failed ? `${finishedAt} — ${valkyrie.lastDream?.error}` : finishedAt}
+      className={`niuu:mt-0.5 niuu:block niuu:truncate niuu:text-[11px] ${
+        failed ? 'niuu:text-critical' : 'niuu:text-text-muted'
+      }`}
+    >
+      {failed ? 'dream failed' : 'last dream'} {timeAgo(finishedAt)} ago
+    </span>
+  );
+}
+
 function ActivityBars({ entry, bars }: { entry: RosterEntry; bars: number[] }) {
   const health = entry.environment?.health ?? 'healthy';
   return (
@@ -115,7 +133,7 @@ function RosterRow({
             health,
           )}`}
         >
-          ᛒ
+          {valkyrie.name.charAt(0)}
         </span>
         <span
           className={`niuu:absolute niuu:-bottom-1 niuu:-left-1 niuu:flex niuu:h-4 niuu:w-4 niuu:items-center niuu:justify-center niuu:rounded-full niuu:bg-bg-secondary ${wakefulnessClasses(
@@ -136,6 +154,7 @@ function RosterRow({
           </span>
           <span className={healthClasses(health)}>{health}</span>
         </span>
+        <DreamAge valkyrie={valkyrie} />
       </span>
       <span className="niuu:flex niuu:shrink-0 niuu:flex-col niuu:items-end niuu:gap-1.5">
         <ActivityBars entry={entry} bars={bars} />
@@ -204,9 +223,9 @@ export function Roster({
         </div>
         <input
           type="search"
-          aria-label="Filter valkyries"
+          aria-label="Filter residents"
           data-testid="roster-filter"
-          placeholder="Filter valkyries..."
+          placeholder="Filter residents..."
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           className="niuu:w-full niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-1.5 niuu:text-sm niuu:text-text-primary niuu:placeholder:text-text-muted"
@@ -259,7 +278,7 @@ export function Roster({
         })}
         {groups.length === 0 ? (
           <p data-testid="roster-empty" className="niuu:px-1 niuu:text-xs niuu:text-text-muted">
-            No valkyries match &quot;{query.trim()}&quot;.
+            No residents match &quot;{query.trim()}&quot;.
           </p>
         ) : null}
       </div>

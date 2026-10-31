@@ -140,6 +140,28 @@ class TestSessionEventStream:
         assert await _received(stream, T1_ADMIN) == [hint]
         assert await _received(stream, ALICE) == []
 
+    async def test_notification_goes_to_its_owner_and_tenant_admin_only(self, sessions):
+        session_bound = _event(
+            EventType.SESSION_NOTIFICATION,
+            id="n1",
+            session_id="alice-s",
+            owner_id="alice",
+            tenant_id="t1",
+        )
+        sessionless = _event(
+            EventType.SESSION_NOTIFICATION,
+            id="n2",
+            session_id=None,
+            owner_id="alice",
+            tenant_id="t1",
+        )
+        events = [session_bound, sessionless]
+        stream = _stream(_FiniteBroadcaster(list(events)), sessions)
+        assert await _received(stream, ALICE) == events
+        assert await _received(stream, T1_ADMIN) == events
+        assert await _received(stream, BOB) == []
+        assert await _received(stream, T2_ADMIN) == []
+
     async def test_unattributed_events_reach_no_bounded_subscriber(
         self, sessions, repository, pod_manager
     ):

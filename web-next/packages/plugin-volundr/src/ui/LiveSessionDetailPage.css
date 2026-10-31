@@ -2412,3 +2412,260 @@
     display: none;
   }
 }
+
+/* Light palette: retain the original dark surfaces in all other themes. */
+[data-theme='light'] .niuu-live-telemetry-panel::-webkit-scrollbar-track {
+  background: var(--color-bg-tertiary);
+}
+[data-theme='light'] .niuu-live-telemetry__section-label,
+[data-theme='light'] .niuu-live-telemetry__metric-label,
+[data-theme='light'] .niuu-live-telemetry__run-pill-divider {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__swatch {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-tertiary);
+}
+[data-theme='light'] .niuu-live-telemetry__swatch--active,
+[data-theme='light'] .niuu-live-telemetry__swatch--blocked {
+  border-color: var(--color-border);
+}
+[data-theme='light'] .niuu-live-telemetry__loading,
+[data-theme='light'] .niuu-live-telemetry__empty-title {
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .niuu-live-telemetry__empty-copy {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__delta-pill--slower {
+  background: transparent;
+  color: var(--color-critical);
+}
+[data-theme='light'] .niuu-live-telemetry__delta-pill--faster {
+  background: transparent;
+  color: var(--status-healthy);
+}
+[data-theme='light']
+  .niuu-live-telemetry__timeline-row--selected
+  .niuu-live-telemetry__timeline-label-title {
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .niuu-live-telemetry__timeline-label-dot,
+[data-theme='light'] .niuu-live-telemetry__timeline-track {
+  background: var(--color-bg-tertiary);
+}
+[data-theme='light'] .niuu-live-telemetry__timeline-bar--hovered,
+[data-theme='light']
+  .niuu-live-telemetry__turn-bar-col--selected
+  .niuu-live-telemetry__turn-bar-stack {
+  outline: 1px solid var(--color-border);
+}
+[data-theme='light'] .niuu-live-telemetry__timeline-bar--hatched::after {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--color-bg-tertiary) 0 6px,
+    var(--color-bg-secondary) 6px 12px
+  );
+}
+[data-theme='light'] .niuu-live-telemetry__timeline-bar-copy {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__timeline-tooltip {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .niuu-live-telemetry__timeline-tooltip-title,
+[data-theme='light'] .niuu-live-telemetry__timeline-tooltip-meta,
+[data-theme='light'] .niuu-live-telemetry__timeline-tooltip-key,
+[data-theme='light'] .niuu-live-telemetry__timeline-tooltip-value,
+[data-theme='light'] .niuu-live-telemetry__timeline-tooltip-breakdown-item,
+[data-theme='light'] .niuu-live-telemetry__tools-title {
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .niuu-live-telemetry__timeline-tooltip-breakdown-swatch {
+  border: 1px solid var(--color-border);
+}
+[data-theme='light'] .niuu-live-telemetry__timeline-tooltip-breakdown-swatch--active,
+[data-theme='light'] .niuu-live-telemetry__timeline-tooltip-breakdown-swatch--blocked {
+  border-color: var(--color-border);
+}
+[data-theme='light'] .niuu-live-telemetry__tools-summary,
+[data-theme='light'] .niuu-live-telemetry__tools-footnote,
+[data-theme='light'] .niuu-live-telemetry__tools-tool-subtitle,
+[data-theme='light'] .niuu-live-telemetry__tools-row-note {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__tools-filter {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .niuu-live-telemetry__tools-filter--selected {
+  border-color: var(--color-border);
+}
+[data-theme='light'] .niuu-live-telemetry__tools-filter-count,
+[data-theme='light'] .niuu-live-telemetry__tools-columns {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__tools-rows {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-tertiary);
+}
+[data-theme='light'] .niuu-live-telemetry__tools-row {
+  background: var(--color-bg-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__tools-badge {
+  background: transparent;
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .niuu-live-telemetry__tools-tool-title,
+[data-theme='light'] .niuu-live-telemetry__tools-metric,
+[data-theme='light'] .niuu-live-telemetry__tools-share-label {
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .niuu-live-telemetry__tools-metric--muted {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__tools-share-track {
+  background: var(--color-bg-tertiary);
+}
+[data-theme='light'] .niuu-live-telemetry__tools-row-note {
+  color: var(--color-accent-amber);
+}
+[data-theme='light'] .niuu-live-telemetry__tools-empty {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__breakdown-title {
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .niuu-live-telemetry__breakdown-summary,
+[data-theme='light'] .niuu-live-telemetry__breakdown-columns,
+[data-theme='light'] .niuu-live-telemetry__breakdown-chevron {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__breakdown-stage {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__breakdown-stage--selected {
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border);
+}
+[data-theme='light'] .niuu-live-telemetry__breakdown-dot,
+[data-theme='light'] .niuu-live-telemetry__breakdown-percent-track {
+  background: var(--color-bg-tertiary);
+}
+[data-theme='light'] .niuu-live-telemetry__breakdown-stage-label,
+[data-theme='light'] .niuu-live-telemetry__breakdown-total-label {
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .niuu-live-telemetry__breakdown-stage-meta {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__breakdown-duration,
+[data-theme='light'] .niuu-live-telemetry__breakdown-total-duration,
+[data-theme='light'] .niuu-live-telemetry__breakdown-total-percent,
+[data-theme='light'] .niuu-live-telemetry__breakdown-percent span,
+[data-theme='light'] .niuu-live-telemetry__breakdown-task-duration {
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .niuu-live-telemetry__breakdown-delta-pill {
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__state-stack-track {
+  background: var(--color-bg-tertiary);
+}
+[data-theme='light'] .niuu-live-telemetry__state-stack-meta {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__breakdown-stage-children {
+  background: var(--color-bg-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__breakdown-task-branch {
+  border-bottom: 1px solid var(--color-border);
+}
+[data-theme='light'] .niuu-live-telemetry__breakdown-task-label {
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .niuu-live-telemetry__breakdown-task-track {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__breakdown-task-segment--wait,
+[data-theme='light'] .niuu-live-telemetry__breakdown-task-segment--system {
+  border: 1px dashed var(--color-border);
+}
+[data-theme='light'] .niuu-live-telemetry__breakdown-task-warning {
+  color: var(--color-accent-amber);
+}
+[data-theme='light'] .niuu-live-telemetry__breakdown-total-row {
+  background: var(--color-bg-tertiary);
+}
+[data-theme='light'] .niuu-live-telemetry__turn-head-title-label {
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .niuu-live-telemetry__turn-head-summary,
+[data-theme='light'] .niuu-live-telemetry__turn-legend,
+[data-theme='light'] .niuu-live-telemetry__turn-detail-key,
+[data-theme='light'] .niuu-live-telemetry__turn-reset,
+[data-theme='light'] .niuu-live-telemetry__turn-axis-label {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__turn-legend-swatch {
+  border: 1px solid var(--color-border);
+}
+[data-theme='light'] .niuu-live-telemetry__turn-legend-swatch--model,
+[data-theme='light'] .niuu-live-telemetry__turn-legend-swatch--tool {
+  border-color: var(--color-border);
+}
+[data-theme='light'] .niuu-live-telemetry__turn-chart,
+[data-theme='light'] .niuu-live-telemetry__turn-side {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__turn-grid-line,
+[data-theme='light'] .niuu-live-telemetry__turn-stat-line {
+  border-top: 1px dashed var(--color-border);
+}
+[data-theme='light'] .niuu-live-telemetry__turn-stat-label {
+  background: var(--color-bg-secondary);
+  color: var(--color-brand);
+}
+[data-theme='light'] .niuu-live-telemetry__turn-bar-stack {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__turn-bar-label {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__turn-side-title,
+[data-theme='light'] .niuu-live-telemetry__turn-list-item-label,
+[data-theme='light'] .niuu-live-telemetry__turn-detail-value {
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .niuu-live-telemetry__turn-list,
+[data-theme='light'] .niuu-live-telemetry__turn-detail-lines,
+[data-theme='light'] .niuu-live-telemetry__turn-tool-row {
+  border-top: 1px solid var(--color-border);
+}
+[data-theme='light'] .niuu-live-telemetry__turn-list::-webkit-scrollbar-track,
+[data-theme='light'] .niuu-live-telemetry__turn-detail-lines::-webkit-scrollbar-track {
+  background: var(--color-bg-tertiary);
+}
+[data-theme='light'] .niuu-live-telemetry__turn-list-item-meta {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .niuu-live-telemetry__turn-list-item-duration {
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .niuu-live-telemetry__turn-tool-chip {
+  background: transparent;
+  color: var(--color-text-primary);
+}
+@media (max-width: 720px) {
+  [data-theme='light'] .niuu-live-telemetry__metric-card {
+    border-top: 1px solid var(--color-border);
+  }
+}

@@ -781,7 +781,7 @@ class LinearTrackerAdapter(TrackerPort):
                  retry_count, reason, owner_id, tenant_id, phase_tracker_id, saga_tracker_id,
                  chronicle_summary, reviewer_session_id, review_round, tracker_connection_id)
             VALUES ($1, COALESCE($2, 'PENDING'), $3, $4, $5,
-                    COALESCE($6, 0), $7, $8, $9, $10, $11, $12, $13,
+                    COALESCE($6, 0), $7, $8, COALESCE($9, ''), $10, $11, $12, $13,
                     COALESCE($14, 0), $15)
             ON CONFLICT (tracker_connection_id, tracker_id) DO UPDATE SET
                 status              = COALESCE($2, run_progress.status),

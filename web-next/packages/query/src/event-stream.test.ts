@@ -105,6 +105,31 @@ describe('openEventStream', () => {
     expect(String(errors[0])).toContain('500');
   });
 
+  it('reports every accepted connection through onOpen, including reconnects', async () => {
+    vi.useFakeTimers();
+    global.fetch = vi.fn(async () => mockSseResponse(['data: x\n\n']));
+    const onOpen = vi.fn();
+
+    const handle = openEventStream('/stream', { onMessage: () => {}, onOpen });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    // The server closed the stream cleanly; the helper reconnects after the base backoff.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(onOpen).toHaveBeenCalledTimes(2);
+    handle.close();
+  });
+
+  it('does not report onOpen for a rejected connection', async () => {
+    global.fetch = vi.fn(async () => new Response('nope', { status: 503 }));
+    const onOpen = vi.fn();
+
+    const handle = openEventStream('/stream', { onMessage: () => {}, onOpen, onError: () => {} });
+    await new Promise((r) => setTimeout(r, 10));
+    handle.close();
+
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
   it('close() stops the stream and aborts in-flight fetches', async () => {
     // A fetch that never resolves — simulates a long-lived SSE connection.
     const abortSpy = vi.fn();

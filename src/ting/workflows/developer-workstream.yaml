@@ -2,7 +2,7 @@ schema_version: 2
 id: 98133eab-cd89-44d1-b32d-26c82f99dddc
 name: Developer Workstream
 description: Implement one isolated work order, run trusted verification, and independently review its immutable candidate.
-version: 1.0.0
+version: 1.0.1
 persona_dependencies:
   developer-coordinator:
     id: developer-coordinator
@@ -72,7 +72,7 @@ graph:
       joinMode: any
       stageMembers:
         - personaId: developer-coder
-          model: gpt-5.5
+          model: gpt-5.6-terra
           budget: 40
           consumesEventTypes: [developer.workstream.requested, developer.workstream.repair_requested]
     - id: workstream-verify
@@ -82,7 +82,7 @@ graph:
       joinMode: any
       stageMembers:
         - personaId: developer-coordinator
-          model: gpt-5.5
+          model: gpt-5.6-terra
           budget: 12
           consumesEventTypes: [developer.candidate.produced]
     - id: workstream-reviews
@@ -92,15 +92,15 @@ graph:
       joinMode: all
       stageMembers:
         - personaId: developer-code-reviewer
-          model: gpt-5.5
+          model: gpt-5.6-terra
           budget: 24
           consumesEventTypes: [developer.candidate.verified]
         - personaId: developer-security-reviewer
-          model: gpt-5.5
+          model: gpt-5.6-terra
           budget: 24
           consumesEventTypes: [developer.candidate.verified]
         - personaId: developer-adversarial-reviewer
-          model: gpt-5.5
+          model: gpt-5.6-terra
           budget: 24
           consumesEventTypes: [developer.candidate.verified]
     - id: workstream-acceptance
@@ -120,7 +120,7 @@ graph:
         bindingFields: [attempt_id, candidate_sha, candidate_tree]
       stageMembers:
         - personaId: developer-coordinator
-          model: gpt-5.5
+          model: gpt-5.6-terra
           budget: 12
           consumesEventTypes: [developer.review.completed]
     - id: workstream-complete

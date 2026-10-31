@@ -1,3 +1,4 @@
+import { ResidentsIcon } from '@niuulabs/ui';
 import { createRoute, redirect } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ActivityPage } from './ui/ActivityPage';
@@ -38,12 +39,13 @@ const createLegacyRedirect =
 export const valkyriePlugin = definePlugin({
   id: 'valkyrie',
   rune: 'V',
-  title: 'Valkyrie',
-  subtitle: 'resident telemetry',
+  icon: <ResidentsIcon />,
+  title: 'Resident console',
+  subtitle: 'what your residents are doing',
   tabs: [
-    { id: 'console', label: 'Console', rune: 'ᛒ', path: '/valkyrie' },
-    { id: 'activity', label: 'Activity', rune: '↔', path: '/valkyrie/activity' },
-    { id: 'inbox', label: 'Inbox', rune: '◇', path: '/valkyrie/inbox' },
+    { id: 'console', label: 'Roster', path: '/valkyrie' },
+    { id: 'activity', label: 'Activity', path: '/valkyrie/activity' },
+    { id: 'inbox', label: 'Inbox', path: '/valkyrie/inbox' },
   ],
   routes: (rootRoute) => [
     createRoute({
@@ -146,6 +148,9 @@ export {
   decisionNeedsApproval,
   decisionSkillName,
   decisionSubject,
+  dreamLessonsCurated,
+  dreamProposalsFiled,
+  formatDreamDuration,
   grantWorkflowName,
   isToolBuilderWorkflow,
   latestBuildGrant,
@@ -168,6 +173,8 @@ export type {
   AutonomyMode,
   DecisionDetail,
   DecisionRecord,
+  DreamOutcome,
+  DreamStatus,
   EnvironmentHealth,
   EnvironmentKind,
   EnvironmentSummary,
@@ -181,8 +188,11 @@ export type {
   LearningRecord,
   LearningScope,
   LearningStatus,
+  RealmCapability,
+  RealmDetail,
   RealmSummary,
   RealmTrustGrant,
+  RetiredLearnedTool,
   ReviewItem,
   ReviewKind,
   ReviewRiskClass,
@@ -210,5 +220,6 @@ export type {
   ReviewSummaryFilters,
   SignalHistoryFilters,
   RealmCreate,
+  RealmDetailListener,
   TrustGrantCreate,
 } from './ports';

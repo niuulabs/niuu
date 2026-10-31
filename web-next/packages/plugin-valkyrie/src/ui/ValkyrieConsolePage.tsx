@@ -10,6 +10,7 @@ import {
   Inbox,
   Mail,
   MessageSquare,
+  Moon,
   Settings2,
   Shield,
   Sparkles,
@@ -23,7 +24,11 @@ import {
   decisionHeadline,
   decisionNeedsApproval,
   decisionSubject,
+  dreamCurationBacklog,
+  dreamLessonsCurated,
+  dreamProposalsFiled,
   environmentKindLabel,
+  formatDreamDuration,
   latestBuildGrant,
   learningFeedbackVerdictLabel,
   openHuddleForEnvironment,
@@ -34,6 +39,7 @@ import {
   LIST_LIMIT,
   type AutonomyMode,
   type DecisionRecord,
+  type DreamOutcome,
   type GroupedDecision,
   type HuddleSummary,
   type LearnedSkillSummary,
@@ -72,10 +78,12 @@ import {
   autonomyModeHint,
   decisionStatusCopy,
   describeIdleSituation,
+  dreamStatusCopy,
   errorMessage,
   isLearnedSkillState,
   operationalStateCopy,
   outcomeCopy,
+  retirementReasonCopy,
   reviewKindLabel,
   severityCopy,
   wakefulnessCopy,
@@ -122,7 +130,7 @@ function taskSeverities(
 function ConsoleLoading() {
   return (
     <div data-testid="valkyrie-console-loading" className={`niuu:p-6 niuu:text-sm ${MUTED}`}>
-      Loading Valkyrie console...
+      Loading resident console...
     </div>
   );
 }
@@ -142,7 +150,7 @@ function ConsoleError({ message }: { message: string }) {
 function EmptyConsole() {
   return (
     <div data-testid="valkyrie-console-empty" className={`${PANEL} niuu:m-4 niuu:p-6 ${MUTED}`}>
-      No resident Valkyries have announced yet.
+      No residents have announced yet.
     </div>
   );
 }
@@ -364,7 +372,7 @@ function Hero({
           <div className="niuu:flex niuu:items-center niuu:gap-3">
             <span className="niuu:relative niuu:shrink-0">
               <span className="niuu:flex niuu:h-14 niuu:w-14 niuu:items-center niuu:justify-center niuu:rounded-full niuu:border niuu:border-brand niuu:bg-brand/10 niuu:text-3xl niuu:text-brand">
-                ᛒ
+                {valkyrie.name.charAt(0)}
               </span>
               <span className="niuu:absolute niuu:-bottom-1 niuu:-left-1 niuu:flex niuu:h-5 niuu:w-5 niuu:items-center niuu:justify-center niuu:rounded-full niuu:bg-bg-secondary niuu:text-brand">
                 {wakefulnessIcon(valkyrie.wakefulness)}
@@ -372,7 +380,7 @@ function Hero({
             </span>
             <div className="niuu:min-w-0">
               <h1 className="niuu:truncate niuu:font-mono niuu:text-2xl niuu:font-semibold niuu:text-text-primary">
-                valkyrie:{valkyrie.name}
+                {valkyrie.name}
               </h1>
               <p className="niuu:mt-1 niuu:text-sm niuu:text-text-muted">
                 {valkyrie.persona} · {valkyrie.specialty}
@@ -438,7 +446,7 @@ function Hero({
                 updateAutonomy.mutate({
                   valkyrieId: valkyrie.id,
                   mode: event.target.value as AutonomyMode,
-                  reason: 'Operator change from the Valkyrie console',
+                  reason: 'Operator change from the resident console',
                   participantId: OPERATOR_PARTICIPANT_ID,
                 })
               }
@@ -476,7 +484,7 @@ function Hero({
           className="niuu:mt-4 niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-3"
         >
           <div className="niuu:text-[11px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-muted">
-            charter — what this valkyrie is for
+            charter — what this resident is for
           </div>
           <p className="niuu:mt-2 niuu:text-sm niuu:leading-6 niuu:text-text-primary">
             {valkyrie.charter}
@@ -895,8 +903,8 @@ function AuthorityPanel({
         {realmExists ? (
           <>
             <p className={`niuu:mt-1 niuu:text-xs ${MUTED}`}>
-              The realm&apos;s build grant pins the Ting workflow this resident uses to build tools
-              and sets its effective build autonomy.
+              The realm&apos;s build grant pins the workflow this resident uses to build tools and
+              sets its effective build autonomy.
             </p>
             <ToolBuilderGrantCard realm={realm} />
           </>
@@ -1494,6 +1502,219 @@ function LearnedSkillsPanel({
   );
 }
 
+function DreamList({ label, items, testId }: { label: string; items: string[]; testId: string }) {
+  if (items.length === 0) return null;
+  return (
+    <div data-testid={testId}>
+      <div className="niuu:text-[11px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.12em] niuu:text-text-muted">
+        {label} · {items.length}
+      </div>
+      <ul className="niuu:mt-2 niuu:flex niuu:flex-col niuu:gap-1">
+        {items.map((item) => (
+          <li
+            key={item}
+            className="niuu:truncate niuu:font-mono niuu:text-xs niuu:text-text-secondary"
+            title={item}
+          >
+            {item}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function RetiredToolsList({ dream }: { dream: DreamOutcome }) {
+  const retired = dream.learnedTools?.retired ?? [];
+  if (retired.length === 0) return null;
+  return (
+    <div data-testid="dream-retired-tools">
+      <div className="niuu:text-[11px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.12em] niuu:text-text-muted">
+        Learned tools retired · {retired.length}
+      </div>
+      <ul className="niuu:mt-2 niuu:flex niuu:flex-col niuu:gap-2">
+        {retired.map((tool) => {
+          const reason = retirementReasonCopy(tool.reason);
+          return (
+            <li key={tool.name} className="niuu:rounded-md niuu:bg-bg-primary niuu:p-2">
+              <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
+                <span className="niuu:truncate niuu:font-mono niuu:text-xs niuu:text-brand">
+                  {tool.name}
+                </span>
+                <span
+                  title={reason.description}
+                  className="niuu:shrink-0 niuu:text-[10px] niuu:text-text-muted"
+                >
+                  {reason.label}
+                </span>
+              </div>
+              {tool.supersededBy ? (
+                <p className="niuu:mt-1 niuu:text-xs niuu:text-text-secondary">
+                  replaced by <span className="niuu:font-mono">{tool.supersededBy}</span>
+                </p>
+              ) : null}
+              {tool.detail ? (
+                <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">{tool.detail}</p>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function retiredByReasonDetail(dream: DreamOutcome): string | undefined {
+  const byReason = Object.entries(dream.learnedTools?.retiredByReason ?? {});
+  if (byReason.length === 0) return undefined;
+  return byReason
+    .map(([reason, count]) => `${count} ${retirementReasonCopy(reason).label.toLowerCase()}`)
+    .join(' · ');
+}
+
+/** The resident's last consolidation dream: when, how long, and what it changed. */
+export function DreamPanel({ valkyrie }: { valkyrie: ValkyrieResident }) {
+  const dream = valkyrie.lastDream;
+  const status = dream ? dreamStatusCopy(dream.status) : null;
+  const failed = dream?.status === 'failed';
+  return (
+    <section className={PANEL_PAD} data-testid="valkyrie-last-dream">
+      <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
+        <div className="niuu:flex niuu:items-center niuu:gap-2">
+          <Moon size={15} className="niuu:text-brand" aria-hidden="true" />
+          <h2 className="niuu:text-base niuu:font-semibold niuu:text-text-primary">
+            Last consolidation dream
+          </h2>
+        </div>
+        {dream && status ? (
+          <span
+            data-testid="dream-status"
+            title={status.description}
+            className={`niuu:text-xs ${failed ? 'niuu:text-critical' : MUTED}`}
+          >
+            {status.label} · {timeAgo(dream.finishedAt)} ago
+          </span>
+        ) : null}
+      </div>
+      {!dream ? (
+        <p className={`niuu:mt-4 niuu:text-sm ${MUTED}`}>
+          {valkyrie.wakefulness === 'dreaming'
+            ? 'Dreaming now — no earlier dream has been reported.'
+            : 'No finished consolidation dream has been reported by this resident yet.'}
+        </p>
+      ) : (
+        <>
+          {failed ? (
+            <p
+              role="alert"
+              data-testid="dream-error"
+              className="niuu:mt-4 niuu:rounded-md niuu:border niuu:border-solid niuu:border-critical-bo niuu:bg-critical-bg niuu:p-2 niuu:font-mono niuu:text-xs niuu:text-critical"
+            >
+              {dream.error || 'The dream failed without reporting an error.'}
+            </p>
+          ) : null}
+          <div className="niuu:mt-4 niuu:grid niuu:gap-3 niuu:md:grid-cols-5">
+            <Metric
+              label="ran for"
+              value={formatDreamDuration(dream.durationSeconds)}
+              detail={`finished ${new Date(dream.finishedAt).toLocaleString()}`}
+            />
+            <Metric
+              label="skills"
+              value={`${dream.skills.promoted.length} promoted · ${dream.skills.markedStale.length} stale`}
+              detail={`${dream.skills.reviewed} reviewed`}
+            />
+            <Metric
+              label="lessons curated"
+              value={dream.lessons ? String(dreamLessonsCurated(dream)) : 'not due'}
+              detail={
+                dream.lessons
+                  ? [
+                      `${dream.lessons.merged.length} merged of ${dream.lessons.reviewed} reviewed`,
+                      dreamCurationBacklog(dream),
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')
+                  : 'lesson curation did not run this dream'
+              }
+            />
+            <Metric
+              label="tools retired"
+              value={dream.learnedTools ? String(dream.learnedTools.retired.length) : 'not curated'}
+              detail={
+                dream.learnedTools
+                  ? (retiredByReasonDetail(dream) ??
+                    `${dream.learnedTools.installedBefore} installed, none retired`)
+                  : 'no learned-tool curator on this resident'
+              }
+            />
+            <Metric
+              label="proposals filed"
+              value={String(dreamProposalsFiled(dream))}
+              detail={`${dream.skills.promotionCandidates.length} held promotions · ${
+                dream.selfImprovement?.actions.length ?? 0
+              } improvements`}
+            />
+          </div>
+          <div className="niuu:mt-4 niuu:grid niuu:gap-4 niuu:md:grid-cols-2">
+            <RetiredToolsList dream={dream} />
+            <DreamList
+              label="Learned tools restored"
+              items={dream.learnedTools?.restored ?? []}
+              testId="dream-restored-tools"
+            />
+            <DreamList
+              label="Lessons merged"
+              items={dream.lessons?.merged ?? []}
+              testId="dream-lessons-merged"
+            />
+            <DreamList
+              label="Lessons superseded"
+              items={dream.lessons?.superseded ?? []}
+              testId="dream-lessons-superseded"
+            />
+            <DreamList
+              label="Lessons pruned"
+              items={dream.lessons?.pruned ?? []}
+              testId="dream-lessons-pruned"
+            />
+            <DreamList
+              label="Lessons rewritten"
+              items={dream.lessons?.rewritten ?? []}
+              testId="dream-lessons-rewritten"
+            />
+            <DreamList
+              label="Lessons promoted"
+              items={dream.lessons?.promoted ?? []}
+              testId="dream-lessons-promoted"
+            />
+            <DreamList
+              label="Skills promoted"
+              items={dream.skills.promoted}
+              testId="dream-skills-promoted"
+            />
+            <DreamList
+              label="Skills marked stale"
+              items={dream.skills.markedStale}
+              testId="dream-skills-stale"
+            />
+            <DreamList
+              label="Promotions held for review"
+              items={dream.skills.promotionCandidates}
+              testId="dream-promotions-held"
+            />
+            <DreamList
+              label="Self-improvement actions"
+              items={dream.selfImprovement?.actions ?? []}
+              testId="dream-improvement-actions"
+            />
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
   const [selectedId, setSelectedId] = useState(() => dashboard.valkyries[0]?.id ?? '');
   const [viewedSkillName, setViewedSkillName] = useState<string | null>(null);
@@ -1581,7 +1802,7 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
       <main className="niuu:min-h-0 niuu:overflow-auto niuu:p-5">
         <div className="niuu:mb-4 niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:text-xs niuu:text-text-muted">
           <div className="niuu:font-mono">
-            Valkyrie / valkyries / <span className="niuu:text-text-primary">{selected.name}</span>
+            Residents / <span className="niuu:text-text-primary">{selected.name}</span>
           </div>
           <div className="niuu:flex niuu:items-center niuu:gap-3">
             <span>resident {dashboard.valkyries.length}</span>
@@ -1608,6 +1829,7 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
             skills={skills}
             onViewSkill={setViewedSkillName}
           />
+          <DreamPanel valkyrie={selected} />
           <div className="niuu:grid niuu:gap-4 niuu:xl:grid-cols-[minmax(0,1fr)_360px]">
             <div className="niuu:flex niuu:flex-col niuu:gap-4">
               <section className={PANEL_PAD}>
@@ -1696,7 +1918,7 @@ export function ValkyrieConsolePage() {
   if (error) {
     return (
       <ConsoleError
-        message={error instanceof Error ? error.message : 'Unable to load Valkyrie console'}
+        message={error instanceof Error ? error.message : 'Unable to load resident console'}
       />
     );
   }

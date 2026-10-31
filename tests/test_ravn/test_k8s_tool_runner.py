@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import logging
 import re
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -21,6 +22,7 @@ from ravn.valkyrie_evolution.k8s_tool_runner import (
     JobRunResult,
     KubernetesJobExecutor,
     KubernetesJobLearnedToolRunner,
+    _container_exit_code,
     _container_started_at,
     _job_uid,
     _k8s_safe_component,
@@ -41,6 +43,7 @@ from ravn.valkyrie_evolution.learned_tools import (
     read_learned_tool_artifact,
 )
 from ravn.valkyrie_evolution.models import ToolReachGrant
+from ravn.valkyrie_evolution.reach_plan import EgressPlan, HostTarget, ServiceTarget
 from ravn.valkyrie_evolution.resident_learning import (
     ResidentLearningArtifact,
     ResidentLearningIdentity,
@@ -53,6 +56,9 @@ _DNS1123_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 
 class _FakeExecutor:
     enforces_reach = True
+    tool_service_account = "tool-reader"
+    dns_service = "kube-system/kube-dns"
+    named_targets: dict[str, str] = {}
 
     def __init__(self, result: JobRunResult) -> None:
         self.result = result
@@ -81,46 +87,114 @@ async def test_runner_requests_denied_network_and_preserves_enforcement(tmp_path
     assert result.ok
     assert result.result == {"answer": 42}
     assert result.enforcement == "enforced"
-    assert executor.calls[0]["network_allowed"] is False
+    assert executor.calls[0]["egress"] == EgressPlan()
 
 
 @pytest.mark.asyncio
-async def test_runner_allows_only_broad_read_write_network_reach(tmp_path) -> None:
+async def test_runner_derives_each_runs_egress_from_its_declared_reach(tmp_path) -> None:
     executor = _FakeExecutor(JobRunResult(stdout='{"ok": true}', network_enforced=True))
     runner = KubernetesJobLearnedToolRunner(executor=executor)
     tool = _write_tool(tmp_path)
 
-    allowed = await runner.run(
-        tool,
-        {},
-        entry_point="run",
-        timeout_seconds=30,
-        declared_reach=[ToolReachGrant(kind="network", access="read_write")],
-    )
-    targeted = await runner.run(
-        tool,
-        {},
-        entry_point="run",
-        timeout_seconds=30,
-        declared_reach=[ToolReachGrant(kind="network", target="api.example", access="read_write")],
-    )
-    filesystem = await runner.run(
-        tool,
-        {},
-        entry_point="run",
-        timeout_seconds=30,
-        declared_reach=[ToolReachGrant(kind="filesystem", target="/tmp", access="read")],
-    )
+    async def run(*grants: ToolReachGrant):
+        return await runner.run(
+            tool, {}, entry_point="run", timeout_seconds=30, declared_reach=list(grants)
+        )
 
-    assert allowed.ok
-    assert executor.calls[0]["network_allowed"] is True
-    assert not targeted.ok and "target-specific" in targeted.error
-    assert not filesystem.ok and "cannot enforce declared reach" in filesystem.error
-    assert len(executor.calls) == 1
+    unrestricted = await run(ToolReachGrant(kind="network", access="read_write"))
+    kubernetes = await run(ToolReachGrant(kind="kubernetes", target="pods/log", access="read"))
+    prometheus = await run(
+        ToolReachGrant(kind="network", target="monitoring/kube-prom-prometheus:9090", access="read")
+    )
+    filesystem = await run(ToolReachGrant(kind="filesystem", target="/tmp", access="read"))
+    untargeted_read = await run(ToolReachGrant(kind="http", access="read"))
+
+    assert unrestricted.ok and kubernetes.ok and prometheus.ok
+    assert executor.calls[0]["egress"] == EgressPlan(unrestricted=True)
+    assert executor.calls[1]["egress"] == EgressPlan(kubernetes_api=True)
+    assert executor.calls[2]["egress"] == EgressPlan(
+        services=(ServiceTarget("monitoring", "kube-prom-prometheus", 9090),)
+    )
+    assert not filesystem.ok and filesystem.infrastructure
+    assert "service-account token" in filesystem.error
+    assert not untargeted_read.ok and "names no target" in untargeted_read.error
+    assert len(executor.calls) == 3
 
 
 @pytest.mark.asyncio
-async def test_runner_refuses_runtime_dependency_installation(tmp_path) -> None:
+async def test_a_timeout_names_the_only_network_the_run_had(tmp_path) -> None:
+    """valhalla's Prometheus tool probed Services its reach did not name; the
+    policy dropped those connections, each hung, and the run was reported as a
+    bare timeout, so the resident rebuilt code that only needed its reach."""
+    executor = _FakeExecutor(JobRunResult(timed_out=True, network_enforced=True))
+    runner = KubernetesJobLearnedToolRunner(executor=executor)
+
+    result = await runner.run(
+        _write_tool(tmp_path),
+        {},
+        entry_point="run",
+        timeout_seconds=10,
+        declared_reach=[
+            ToolReachGrant(kind="network", target="monitoring/prometheus:9090", access="read")
+        ],
+    )
+
+    assert not result.ok
+    assert result.error.startswith("learned tool timed out after 10s.")
+    assert "could reach only monitoring/prometheus:9090, plus cluster DNS" in result.error
+    assert "dropped by the network policy and hangs" in result.error
+
+
+@pytest.mark.asyncio
+async def test_an_unrestricted_run_times_out_without_a_network_note(tmp_path) -> None:
+    executor = _FakeExecutor(JobRunResult(timed_out=True, network_enforced=True))
+    runner = KubernetesJobLearnedToolRunner(executor=executor)
+
+    result = await runner.run(
+        _write_tool(tmp_path),
+        {},
+        entry_point="run",
+        timeout_seconds=10,
+        declared_reach=[ToolReachGrant(kind="network", access="read_write")],
+    )
+
+    assert result.error == "learned tool timed out after 10s"
+
+
+def test_runner_refuses_unenforceable_reach_at_load() -> None:
+    runner = KubernetesJobLearnedToolRunner(
+        executor=_FakeExecutor(JobRunResult(stdout="{}", network_enforced=True))
+    )
+
+    runner.check_reach([])
+    runner.check_reach([ToolReachGrant(kind="pure_compute")])
+    runner.check_reach([ToolReachGrant(kind="kubernetes", target="pods/log", access="read")])
+    with pytest.raises(LearnedToolError, match="read-only Kubernetes identity"):
+        runner.check_reach([ToolReachGrant(kind="kubernetes", access="write")])
+    with pytest.raises(LearnedToolError, match="wildcard"):
+        runner.check_reach([ToolReachGrant(kind="http", target="*:10255", access="read")])
+    with pytest.raises(LearnedToolError, match="cannot derive a NetworkPolicy destination"):
+        runner.check_reach(
+            [ToolReachGrant(kind="http", target="in-cluster Prometheus service", access="read")]
+        )
+    with pytest.raises(LearnedToolError, match="no channel back"):
+        runner.check_reach([ToolReachGrant(kind="native_tool", target="kubernetes_inspect")])
+
+
+def test_runner_refuses_reach_its_deployment_cannot_serve() -> None:
+    executor = _FakeExecutor(JobRunResult(stdout="{}", network_enforced=True))
+    executor.tool_service_account = ""
+    executor.dns_service = ""
+    runner = KubernetesJobLearnedToolRunner(executor=executor)
+
+    with pytest.raises(LearnedToolError, match="tool_service_account"):
+        runner.check_reach([ToolReachGrant(kind="kubernetes", access="read")])
+    with pytest.raises(LearnedToolError, match="dns_service"):
+        runner.check_reach([ToolReachGrant(kind="network", target="ns/svc:80", access="read")])
+
+
+@pytest.mark.asyncio
+async def test_runner_hands_requirements_to_the_image_gate(tmp_path) -> None:
     executor = _FakeExecutor(JobRunResult(stdout='{"ok": true}', network_enforced=True))
     runner = KubernetesJobLearnedToolRunner(executor=executor)
 
@@ -129,19 +203,33 @@ async def test_runner_refuses_runtime_dependency_installation(tmp_path) -> None:
         {},
         entry_point="run",
         timeout_seconds=30,
-        requirements=["httpx==1.0"],
+        requirements=["kubernetes>=37"],
+    )
+
+    assert result.ok
+    assert executor.calls[0]["requirements"] == ("kubernetes>=37",)
+
+
+@pytest.mark.asyncio
+async def test_runner_reports_an_unsatisfied_requirement_as_infrastructure(tmp_path) -> None:
+    gate = (
+        "ravn-k8s-job: runner image does not satisfy: kubernetes (not installed) -- "
+        "bake it into the reviewed runner image (learned_tool_k8s.image)"
+    )
+    executor = _FakeExecutor(JobRunResult(stdout=gate, stderr=gate, exit_code=1))
+    runner = KubernetesJobLearnedToolRunner(executor=executor)
+
+    result = await runner.run(
+        _write_tool(tmp_path),
+        {},
+        entry_point="run",
+        timeout_seconds=30,
+        requirements=["kubernetes"],
     )
 
     assert not result.ok
-    assert "does not install packages at invocation time" in result.error
-    assert executor.calls == []
-
-
-# --------------------------------------------------------------------------
-# DNS-1123 job naming — a peer-controlled title must never be able to
-# produce an invalid Kubernetes object name (str.isalnum() is Unicode-aware
-# and accepts 'é'/'ツ', which a real cluster rejects with a 422).
-# --------------------------------------------------------------------------
+    assert result.infrastructure
+    assert "kubernetes (not installed)" in result.error
 
 
 class TestDns1123SafeNaming:
@@ -409,6 +497,9 @@ class TestPodInfraReason:
             "Pod ephemeral local storage usage exceeds the total limit of containers",
             "Container tool was using 200Mi, which exceeds its request of 64Mi memory",
             "node pressure",
+            "The node was low on resource: ephemeral-storage. Threshold quantity: 984127912, "
+            "available: 494504Ki. Container tool was using 900Mi, request is 0, has larger "
+            "consumption of ephemeral-storage. ",
             "",
         ],
     )
@@ -423,6 +514,8 @@ class TestPodInfraReason:
             "Pod was terminated due to node drain",
             "The pod was preempted by a higher priority pod",
             "deleted due to NoExecute taint",
+            "The node was low on resource: ephemeral-storage. Threshold quantity: 984127912, "
+            "available: 494504Ki. ",
         ],
     )
     def test_cluster_driven_eviction_is_an_infra_reason(self, message: str) -> None:
@@ -541,6 +634,20 @@ class TestContainerStartedAt:
         assert _container_started_at(object()) is None
 
 
+class _RawLogResponse:
+    """What kubernetes_asyncio returns for _preload_content=False."""
+
+    def __init__(self, body: str) -> None:
+        self._body = body
+        self.released = False
+
+    async def text(self) -> str:
+        return self._body
+
+    def release(self) -> None:
+        self.released = True
+
+
 class _FakeBatchV1:
     def __init__(self) -> None:
         self.jobs: dict[str, Any] = {}
@@ -573,11 +680,51 @@ class _FakeCoreV1:
         pod = type("Pod", (), {"metadata": type("M", (), {"name": "pod-1"})()})()
         return type("List", (), {"items": [pod]})()
 
-    async def read_namespaced_pod_log(self, name: str, namespace: str, *, limit_bytes: int) -> str:
-        return self.log
+    async def read_namespaced_pod_log(
+        self, name: str, namespace: str, *, limit_bytes: int, _preload_content: bool
+    ) -> _RawLogResponse:
+        assert _preload_content is False  # a parsed JSON log comes back as str(dict)
+        return _RawLogResponse(self.log)
 
     async def delete_namespaced_secret(self, name, namespace) -> None:
         self.deleted.append(name)
+
+    async def read_namespaced_service(self, name: str, namespace: str) -> dict:
+        services = {
+            ("kube-system", "kube-dns"): {
+                "spec": {
+                    "selector": {"k8s-app": "kube-dns"},
+                    "ports": [
+                        {"port": 53, "targetPort": 53, "protocol": "UDP"},
+                        {"port": 53, "targetPort": 53, "protocol": "TCP"},
+                    ],
+                }
+            },
+            ("monitoring", "prom"): {
+                "spec": {
+                    "selector": {"app": "prometheus"},
+                    "ports": [
+                        {"port": 9090, "targetPort": "http-web", "protocol": "TCP"},
+                        {"port": 8080, "targetPort": 8080, "protocol": "TCP"},
+                    ],
+                }
+            },
+            ("default", "headless-ext"): {"spec": {"ports": [{"port": 80}]}},
+        }
+        if (namespace, name) not in services:
+            raise RuntimeError(f"services {name!r} not found")
+        return services[(namespace, name)]
+
+    async def read_namespaced_endpoints(self, name: str, namespace: str) -> dict:
+        assert (namespace, name) == ("default", "kubernetes")
+        return {
+            "subsets": [
+                {
+                    "addresses": [{"ip": "10.0.0.11"}, {"ip": "10.0.0.12"}],
+                    "ports": [{"port": 6443, "protocol": "TCP"}],
+                }
+            ]
+        }
 
 
 class _FakeNetworkingV1:
@@ -591,6 +738,14 @@ class _FakeNetworkingV1:
         self.reads: list[str] = []
         self.list_calls = 0
         self._extra_policies = extra_policies or []
+        self.created: list[dict[str, Any]] = []
+        self.deleted: list[str] = []
+
+    async def create_namespaced_network_policy(self, namespace: str, body: dict) -> None:
+        self.created.append(body)
+
+    async def delete_namespaced_network_policy(self, name: str, namespace: str) -> None:
+        self.deleted.append(name)
 
     async def read_namespaced_network_policy(self, name: str, namespace: str) -> dict:
         self.reads.append(name)
@@ -647,7 +802,7 @@ async def test_live_executor_verifies_policies_and_builds_locked_down_job() -> N
         entry_point="run",
         requirements=[],
         timeout_seconds=30,
-        network_allowed=False,
+        egress=EgressPlan(),
     )
 
     assert result.exit_code == 0
@@ -666,9 +821,11 @@ async def test_live_executor_verifies_policies_and_builds_locked_down_job() -> N
     assert container["securityContext"]["capabilities"] == {"drop": ["ALL"]}
     assert "@sha256:" in container["image"]
     assert job["spec"]["ttlSecondsAfterFinished"] == 3600
-    # run() has no separate pod-start budget concept: activeDeadlineSeconds
-    # is exactly the invocation timeout, unlike verify()'s combined budget.
-    assert job["spec"]["activeDeadlineSeconds"] == 30
+    # The tool's timeout counts from container start; Kubernetes' ceiling
+    # also covers the pod-start budget (default 120s), as verify()'s does.
+    assert job["spec"]["activeDeadlineSeconds"] == 150
+    assert "serviceAccountName" not in pod
+    assert core.secrets[0]["stringData"]["requirements.txt"] == ""
     assert core.secrets[0]["stringData"]["payload.json"] == '{"q": 1}'
     assert core.secrets[0]["metadata"]["labels"]["app.kubernetes.io/managed-by"]
     # Job created first, so the Secret can carry an ownerReference to its
@@ -696,7 +853,7 @@ async def test_live_executor_fails_before_creating_workload_when_policy_is_wrong
             entry_point="run",
             requirements=[],
             timeout_seconds=30,
-            network_allowed=False,
+            egress=EgressPlan(),
         )
 
     assert executor.enforces_reach is False
@@ -720,7 +877,7 @@ async def test_live_executor_ttl_omitted_when_disabled() -> None:
         entry_point="run",
         requirements=[],
         timeout_seconds=30,
-        network_allowed=False,
+        egress=EgressPlan(),
     )
 
     assert "ttlSecondsAfterFinished" not in batch.created[0]["spec"]
@@ -745,7 +902,7 @@ async def test_live_executor_skips_additive_check_for_an_allowed_network_run() -
         entry_point="run",
         requirements=[],
         timeout_seconds=30,
-        network_allowed=True,
+        egress=EgressPlan(unrestricted=True),
     )
 
     assert network.list_calls == 0
@@ -766,10 +923,320 @@ async def test_live_executor_runs_additive_check_for_a_denied_network_run() -> N
         entry_point="run",
         requirements=[],
         timeout_seconds=30,
-        network_allowed=False,
+        egress=EgressPlan(),
     )
 
     assert network.list_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_scoped_run_gets_exactly_its_declared_egress_and_a_read_only_identity() -> None:
+    batch = _FakeBatchV1()
+    core = _FakeCoreV1('{"ok": true}')
+    network = _FakeNetworkingV1()
+    executor = _executor(
+        batch=batch,
+        core=core,
+        network=network,
+        tool_service_account="valkyrie-tools",
+        dns_service="kube-system/kube-dns",
+    )
+
+    await executor.execute(
+        run_name="ravn-tool-scoped-1",
+        image=DEFAULT_TOOL_RUN_IMAGE,
+        code="def run(p): return {'ok': True}",
+        payload={},
+        entry_point="run",
+        requirements=["kubernetes>=37"],
+        timeout_seconds=10,
+        egress=EgressPlan(
+            kubernetes_api=True,
+            services=(ServiceTarget("monitoring", "prom", 9090),),
+            hosts=(HostTarget("10.40.161.58", 3030),),
+        ),
+    )
+
+    job = batch.created[0]
+    pod = job["spec"]["template"]["spec"]
+    # Isolated by the verified deny policy from the moment it starts...
+    assert job["spec"]["template"]["metadata"]["labels"] == {
+        "niuu.world/tool-network": NETWORK_DENIED_LABEL
+    }
+    # ...and runs as the read-only tool identity, nothing else.
+    assert pod["serviceAccountName"] == "valkyrie-tools"
+    assert pod["automountServiceAccountToken"] is True
+    assert core.secrets[0]["stringData"]["requirements.txt"] == "kubernetes>=37"
+    assert pod["containers"][0]["command"][4] == "/tool/requirements.txt"
+
+    policy = network.created[0]
+    assert policy["metadata"]["name"] == "ravn-tool-scoped-1"
+    assert policy["metadata"]["ownerReferences"][0]["uid"] == "uid-ravn-tool-scoped-1"
+    assert policy["spec"]["podSelector"] == {
+        "matchLabels": {"batch.kubernetes.io/job-name": "ravn-tool-scoped-1"}
+    }
+    assert policy["spec"]["ingress"] == []
+    dns, api, prom, host = policy["spec"]["egress"]
+    assert dns["to"][0]["namespaceSelector"] == {
+        "matchLabels": {"kubernetes.io/metadata.name": "kube-system"}
+    }
+    assert dns["to"][0]["podSelector"] == {"matchLabels": {"k8s-app": "kube-dns"}}
+    assert {(r["protocol"], r["port"]) for r in dns["ports"]} == {("UDP", 53), ("TCP", 53)}
+    assert api == {
+        "to": [{"ipBlock": {"cidr": "10.0.0.11/32"}}, {"ipBlock": {"cidr": "10.0.0.12/32"}}],
+        "ports": [{"protocol": "TCP", "port": 6443}],
+    }
+    # Pod-level target port, since policy applies after Service translation.
+    assert prom["ports"] == [{"protocol": "TCP", "port": "http-web"}]
+    assert prom["to"][0]["podSelector"] == {"matchLabels": {"app": "prometheus"}}
+    assert host == {
+        "to": [{"ipBlock": {"cidr": "10.40.161.58/32"}}],
+        "ports": [{"protocol": "TCP", "port": 3030}],
+    }
+    assert network.deleted == ["ravn-tool-scoped-1"]
+    assert batch.deleted == ["ravn-tool-scoped-1"]
+
+
+@pytest.mark.asyncio
+async def test_scoped_run_fails_before_creating_anything_when_a_target_is_missing() -> None:
+    batch = _FakeBatchV1()
+    core = _FakeCoreV1("{}")
+    network = _FakeNetworkingV1()
+    executor = _executor(
+        batch=batch, core=core, network=network, dns_service="kube-system/kube-dns"
+    )
+
+    with pytest.raises(RuntimeError, match="not found"):
+        await executor.execute(
+            run_name="ravn-tool-missing",
+            image=DEFAULT_TOOL_RUN_IMAGE,
+            code="def run(p): return {}",
+            payload={},
+            entry_point="run",
+            requirements=[],
+            timeout_seconds=10,
+            egress=EgressPlan(services=(ServiceTarget("monitoring", "gone", 9090),)),
+        )
+    with pytest.raises(LearnedToolError, match="no pod selector"):
+        await executor.execute(
+            run_name="ravn-tool-headless",
+            image=DEFAULT_TOOL_RUN_IMAGE,
+            code="def run(p): return {}",
+            payload={},
+            entry_point="run",
+            requirements=[],
+            timeout_seconds=10,
+            egress=EgressPlan(services=(ServiceTarget("default", "headless-ext", None),)),
+        )
+    with pytest.raises(LearnedToolError, match="exposes no port 1234"):
+        await executor.execute(
+            run_name="ravn-tool-badport",
+            image=DEFAULT_TOOL_RUN_IMAGE,
+            code="def run(p): return {}",
+            payload={},
+            entry_point="run",
+            requirements=[],
+            timeout_seconds=10,
+            egress=EgressPlan(services=(ServiceTarget("monitoring", "prom", 1234),)),
+        )
+
+    assert batch.created == []
+    assert network.created == []
+
+
+@pytest.mark.asyncio
+async def test_another_runs_policy_does_not_block_a_denied_run_but_a_wide_one_does() -> None:
+    other_run = {
+        "metadata": {"name": "ravn-tool-other-1"},
+        "spec": {
+            "podSelector": {"matchLabels": {"batch.kubernetes.io/job-name": "ravn-tool-other-1"}},
+            "policyTypes": ["Ingress", "Egress"],
+            "egress": [{"to": [{"ipBlock": {"cidr": "10.0.0.11/32"}}]}],
+        },
+    }
+    this_run = {
+        "metadata": {"name": "intruder"},
+        "spec": {
+            "podSelector": {"matchLabels": {"job-name": "ravn-tool-this-1"}},
+            "policyTypes": ["Egress"],
+            "egress": [{}],
+        },
+    }
+    common = {
+        "image": DEFAULT_TOOL_RUN_IMAGE,
+        "code": "def run(p): return {}",
+        "payload": {},
+        "entry_point": "run",
+        "requirements": [],
+        "timeout_seconds": 10,
+        "egress": EgressPlan(),
+    }
+    allowed = _executor(
+        batch=_FakeBatchV1(),
+        core=_FakeCoreV1("{}"),
+        network=_FakeNetworkingV1(extra_policies=[other_run]),
+    )
+    await allowed.execute(run_name="ravn-tool-this-1", **common)
+
+    blocked = _executor(
+        batch=_FakeBatchV1(),
+        core=_FakeCoreV1("{}"),
+        network=_FakeNetworkingV1(extra_policies=[this_run]),
+    )
+    with pytest.raises(LearnedToolError, match="intruder"):
+        await blocked.execute(run_name="ravn-tool-this-1", **common)
+
+
+def test_executor_rejects_malformed_dns_and_named_targets() -> None:
+    with pytest.raises(LearnedToolError, match="dns_service"):
+        _executor(
+            batch=_FakeBatchV1(),
+            core=_FakeCoreV1("{}"),
+            network=_FakeNetworkingV1(),
+            dns_service="kube-dns",
+        )
+    with pytest.raises(LearnedToolError, match="named_targets"):
+        _executor(
+            batch=_FakeBatchV1(),
+            core=_FakeCoreV1("{}"),
+            network=_FakeNetworkingV1(),
+            named_targets={"prometheus": "prometheus:9090"},
+        )
+
+
+@pytest.mark.parametrize(
+    ("requirements", "installed"),
+    [
+        (["packaging"], True),
+        (["packaging>=1"], True),
+        (["packaging<1"], False),
+        (["no-such-dist-xyz"], False),
+    ],
+)
+def test_requirements_gate_runs_the_command_only_when_the_image_satisfies_it(
+    tmp_path, requirements: list[str], installed: bool
+) -> None:
+    import subprocess
+    import sys
+
+    from ravn.valkyrie_evolution.k8s_tool_runner import _REQUIREMENTS_MARKER, _gated_command
+
+    reqs = tmp_path / "requirements.txt"
+    reqs.write_text("\n".join(requirements))
+    command = _gated_command(["-c", "print('tool ran', end='')"], str(reqs))
+    command[0] = sys.executable
+
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+
+    if installed:
+        assert completed.returncode == 0
+        assert completed.stdout == "tool ran"
+        return
+    assert completed.returncode == 86
+    assert completed.stdout.startswith(_REQUIREMENTS_MARKER)
+    assert "learned_tool_k8s.image" in completed.stdout
+
+
+@pytest.mark.asyncio
+async def test_run_pod_start_budget_is_separate_from_the_tool_timeout() -> None:
+    """A run whose pod never starts is infrastructure, not a tool timeout."""
+    batch = _FakeVerifyBatchV1({"succeeded": None, "failed": None})
+    core = _FakeVerifyCoreV1(
+        pod_status={
+            "phase": "Pending",
+            "container_statuses": [
+                {"state": {"waiting": {"reason": "ImagePullBackOff", "message": "denied"}}}
+            ],
+        }
+    )
+    executor = _verify_executor(batch=batch, core=core, job_pod_start_timeout_seconds=0.05)
+    executor._config = replace(executor._config, poll_interval_seconds=0.01)
+
+    with pytest.raises(LearnedToolInfrastructureError, match="did not start"):
+        await executor.execute(
+            run_name="ravn-tool-pull-fails",
+            image=DEFAULT_TOOL_RUN_IMAGE,
+            code="def run(p): return {}",
+            payload={},
+            entry_point="run",
+            requirements=[],
+            timeout_seconds=10,
+            egress=EgressPlan(),
+        )
+
+
+def _terminated_since_2020(exit_code: int, **status: Any) -> dict[str, Any]:
+    """A pod whose container started long before any budget and has exited."""
+    return {
+        "phase": "Running",
+        **status,
+        "container_statuses": [
+            {
+                "state": {
+                    "terminated": {"started_at": "2020-01-01T00:00:00Z", "exit_code": exit_code}
+                }
+            }
+        ],
+    }
+
+
+async def _execute(executor: KubernetesJobExecutor) -> JobRunResult:
+    return await executor.execute(
+        run_name="ravn-tool-finished",
+        image=DEFAULT_TOOL_RUN_IMAGE,
+        code="def run(p): return {}",
+        payload={},
+        entry_point="run",
+        requirements=[],
+        timeout_seconds=10,
+        egress=EgressPlan(),
+    )
+
+
+async def test_a_run_ends_when_its_container_exits_not_when_the_job_is_marked() -> None:
+    """jarnvidr's Job controller marked Jobs succeeded 2-4s after their
+    container exited; counted against a 10s budget, a tool that finished in
+    7s was reported as a timeout and its result thrown away."""
+    batch = _FakeVerifyBatchV1({"succeeded": None, "failed": None})
+    core = _FakeVerifyCoreV1(
+        log='ravn-k8s-job-result: {"ok": true}', pod_status=_terminated_since_2020(0)
+    )
+
+    result = await _execute(_verify_executor(batch=batch, core=core))
+
+    assert not result.timed_out
+    assert (result.exit_code, result.stdout) == (0, '{"ok": true}')
+
+
+async def test_a_container_exit_code_is_the_runs_exit_code() -> None:
+    batch = _FakeVerifyBatchV1({"succeeded": None, "failed": None})
+    core = _FakeVerifyCoreV1(log="Traceback", pod_status=_terminated_since_2020(3))
+
+    result = await _execute(_verify_executor(batch=batch, core=core))
+
+    assert (result.timed_out, result.exit_code, result.stderr) == (False, 3, "Traceback")
+
+
+async def test_a_container_the_cluster_stopped_is_infrastructure() -> None:
+    batch = _FakeVerifyBatchV1({"succeeded": None, "failed": None})
+    core = _FakeVerifyCoreV1(
+        pod_status=_terminated_since_2020(
+            137, reason="Evicted", message="Pod was terminated due to node drain"
+        )
+    )
+
+    with pytest.raises(LearnedToolInfrastructureError, match="stopped by the cluster: evicted"):
+        await _execute(_verify_executor(batch=batch, core=core))
+
+
+def test_container_exit_code_reads_only_a_terminated_container() -> None:
+    def pod(state: dict[str, Any]) -> dict[str, Any]:
+        return {"status": {"containerStatuses": [{"state": state}]}}
+
+    assert _container_exit_code(pod({"terminated": {"exitCode": 2}})) == 2
+    assert _container_exit_code(pod({"running": {"startedAt": "2020-01-01T00:00:00Z"}})) is None
+    assert _container_exit_code({"status": {}}) is None
+    assert _container_exit_code(object()) is None
 
 
 def test_k8s_backend_requires_explicit_verified_deployment_coordinates(tmp_path) -> None:
@@ -873,8 +1340,11 @@ class _FakeVerifyCoreV1:
         pod = {"metadata": {"name": f"{job_name}-pod"}, "status": dict(self._pod_status)}
         return SimpleNamespace(items=[pod])
 
-    async def read_namespaced_pod_log(self, name: str, namespace: str, *, limit_bytes: int) -> str:
-        return self.log
+    async def read_namespaced_pod_log(
+        self, name: str, namespace: str, *, limit_bytes: int, _preload_content: bool
+    ) -> _RawLogResponse:
+        assert _preload_content is False  # a parsed JSON log comes back as str(dict)
+        return _RawLogResponse(self.log)
 
 
 def _verify_executor(
@@ -929,24 +1399,36 @@ class TestKubernetesJobVerify:
         assert not result.ok
         assert result.missing_module == "requests"
 
-    async def test_verify_rejects_declared_requirements_without_touching_the_api(self) -> None:
-        class _UnreachableExecutor:
-            enforces_reach = True
-
-            async def execute_verification(self, **kwargs: Any) -> JobRunResult:
-                raise AssertionError("k8s_job must decline requirements before reaching the API")
-
-        runner = KubernetesJobLearnedToolRunner(executor=_UnreachableExecutor())  # type: ignore[arg-type]
+    async def test_verify_checks_requirements_against_the_image_inside_the_job(self) -> None:
+        batch = _FakeVerifyBatchV1()
+        core = _FakeVerifyCoreV1(log="verify: ran 1 test callable(s)")
+        runner = KubernetesJobLearnedToolRunner(executor=_verify_executor(batch=batch, core=core))
 
         result = await runner.verify(
-            tool_name="net_tool",
-            tool_code=_OK_TOOL_CODE,
+            tool_name="k8s_tool",
+            tool_code="import kubernetes\n" + _OK_TOOL_CODE,
             test_code=_OK_TEST_CODE,
-            requirements=["requests==2.31.0"],
+            requirements=["kubernetes>=37"],
+        )
+
+        assert result.ok
+        assert core.secrets[0]["stringData"]["requirements.txt"] == "kubernetes>=37"
+
+    async def test_verify_declines_a_requirement_the_image_lacks(self) -> None:
+        gate = "ravn-k8s-job: runner image does not satisfy: absent_pkg (not installed)"
+        batch = _FakeVerifyBatchV1({"succeeded": None, "failed": 1})
+        core = _FakeVerifyCoreV1(log=gate)
+        runner = KubernetesJobLearnedToolRunner(executor=_verify_executor(batch=batch, core=core))
+
+        result = await runner.verify(
+            tool_name="needs_absent",
+            tool_code="import absent_pkg\n" + _OK_TOOL_CODE,
+            test_code=_OK_TEST_CODE,
+            requirements=["absent_pkg"],
         )
 
         assert not result.ok
-        assert "baked into the runner image" in result.logs
+        assert "absent_pkg (not installed)" in result.logs
 
     async def test_verify_empty_test_code_is_structural_only(self) -> None:
         class _UnreachableExecutor:
@@ -982,8 +1464,10 @@ class TestKubernetesJobVerify:
         assert pod_spec["automountServiceAccountToken"] is False
         assert pod_spec["enableServiceLinks"] is False
         container = pod_spec["containers"][0]
-        assert container["command"] == [
-            "python",
+        assert container["command"][:3] == ["python", "-I", "-c"]
+        assert "runner image does not satisfy" in container["command"][3]
+        assert container["command"][4:] == [
+            "/verify/requirements.txt",
             "/verify/_verify_runner.py",
             "/verify/_verify_tool.py",
             "/verify/_verify_test.py",
@@ -1001,6 +1485,7 @@ class TestKubernetesJobVerify:
             "_verify_tool.py",
             "_verify_test.py",
             "_verify_runner.py",
+            "requirements.txt",
         }
         assert core.secrets[0]["stringData"]["_verify_tool.py"] == _OK_TOOL_CODE
         assert core.secrets[0]["metadata"]["labels"]["app.kubernetes.io/managed-by"]
@@ -1244,25 +1729,6 @@ class TestKubernetesJobVerify:
 
         assert batch.created == []
 
-    async def test_executor_level_requirements_check_is_defense_in_depth(self) -> None:
-        """The runner already declines requirements before ever calling the
-        executor; execute_verification() checks again itself, the same
-        belt-and-suspenders posture execute() takes for its own checks."""
-        batch = _FakeVerifyBatchV1()
-        core = _FakeVerifyCoreV1()
-        executor = _verify_executor(batch=batch, core=core)
-
-        with pytest.raises(LearnedToolError, match="requirements must be empty"):
-            await executor.execute_verification(
-                run_name="ravn-verify-direct",
-                image=DEFAULT_TOOL_RUN_IMAGE,
-                tool_name="t",
-                tool_code=_OK_TOOL_CODE,
-                test_code=_OK_TEST_CODE,
-                requirements=["requests"],
-                timeout_seconds=30,
-            )
-
     async def test_executor_level_image_pin_check_is_defense_in_depth(self) -> None:
         batch = _FakeVerifyBatchV1()
         core = _FakeVerifyCoreV1()
@@ -1405,6 +1871,9 @@ class _FakeE2EExecutor:
     verified Job mechanics; this fake just records and always succeeds."""
 
     enforces_reach = True
+    tool_service_account = "tool-reader"
+    dns_service = "kube-system/kube-dns"
+    named_targets: dict[str, str] = {}
 
     def __init__(self) -> None:
         self.verify_calls: list[dict[str, Any]] = []
@@ -1543,15 +2012,15 @@ class TestPeerAdoptionThroughK8sJob:
         assert '"ok": true' in result.content
         assert len(executor.run_calls) == 2
 
-    async def test_peer_proposal_with_requirements_is_declined_before_touching_the_k8s_api(
+    async def test_peer_proposal_whose_requirement_the_image_lacks_is_rejected(
         self,
         tmp_path,
     ) -> None:
-        """Regression for the egress-for-nothing bug: a peer tool with
-        requirements must be rejected at verify() time, never given its own
-        Job with real egress only to be rejected anyway at canary."""
-        batch = _FakeVerifyBatchV1()
-        core = _FakeVerifyCoreV1()
+        """Nothing is installed for a peer: its verification Job's gate finds
+        the requirement missing from the pinned image and declines it."""
+        gate = "ravn-k8s-job: runner image does not satisfy: absent_pkg==1.0 (not installed)"
+        batch = _FakeVerifyBatchV1({"succeeded": None, "failed": 1})
+        core = _FakeVerifyCoreV1(log=gate)
         network = _FakeNetworkingV1()
         executor = KubernetesJobExecutor(
             namespace="ravn",
@@ -1565,19 +2034,18 @@ class TestPeerAdoptionThroughK8sJob:
         runner = KubernetesJobLearnedToolRunner(executor=executor)
         peer, _bus = _peer_runtime(tmp_path, runner=runner, name="cluster-k8s-reqs")
         artifact = _peer_agent_tool_artifact(
-            tool_code=_OK_TOOL_CODE,
+            tool_code="import absent_pkg\n" + _OK_TOOL_CODE,
             test_code=_OK_TEST_CODE,
             manifest_name="net_probe",
-            requirements=["requests==2.31.0"],
+            requirements=["absent_pkg==1.0"],
         )
 
         decision = await peer.evaluate_and_apply(artifact)
 
         assert decision.action == "rejected"
-        # Never touched the k8s API at all — declined before verify() ever
-        # reaches the executor.
-        assert batch.created == []
-        assert core.secrets == []
+        assert core.secrets[0]["stringData"]["requirements.txt"] == "absent_pkg==1.0"
+        # Verification only: the tool itself never ran.
+        assert len(batch.created) == 1
 
     async def test_peer_adoption_end_to_end_through_a_real_executor_and_fake_k8s_client(
         self,
@@ -1588,7 +2056,14 @@ class TestPeerAdoptionThroughK8sJob:
         `_FakeE2EExecutor` — exercises the actual Job/Secret bodies, the
         NetworkPolicy check, and cleanup for both verify() and run()."""
         batch = _FakeVerifyBatchV1()
-        core = _FakeVerifyCoreV1(log=json.dumps({"ok": True}))
+        # A real Job log: library warnings on stderr interleaved with the
+        # marked result line the bootstrap prints last.
+        core = _FakeVerifyCoreV1(
+            log=(
+                "InsecureRequestWarning: Unverified HTTPS request\n"
+                "ravn-k8s-job-result: " + json.dumps({"ok": True})
+            )
+        )
         network = _FakeNetworkingV1()
         executor = KubernetesJobExecutor(
             namespace="ravn",
@@ -1617,3 +2092,58 @@ class TestPeerAdoptionThroughK8sJob:
         assert "_verify_runner.py" in "".join(
             verify_job["spec"]["template"]["spec"]["containers"][0]["command"]
         )
+
+
+@pytest.mark.asyncio
+async def test_a_tool_result_survives_warnings_interleaved_in_its_job_log() -> None:
+    batch = _FakeBatchV1()
+    core = _FakeCoreV1(
+        "/usr/lib/python3/urllib3/connectionpool.py:1100: InsecureRequestWarning\n"
+        "  warnings.warn(\n"
+        'ravn-k8s-job-result: {"pods": 3}'
+    )
+    executor = _executor(batch=batch, core=core, network=_FakeNetworkingV1())
+
+    run = await executor.execute(
+        run_name="ravn-tool-noisy-1",
+        image=DEFAULT_TOOL_RUN_IMAGE,
+        code="def run(p): return {'pods': 3}",
+        payload={},
+        entry_point="run",
+        requirements=[],
+        timeout_seconds=10,
+        egress=EgressPlan(),
+    )
+
+    assert run.stdout == '{"pods": 3}'
+    assert "InsecureRequestWarning" in run.stderr
+
+
+def test_a_job_log_without_a_result_line_is_all_diagnostics() -> None:
+    from ravn.valkyrie_evolution.k8s_tool_runner import _split_result
+
+    assert _split_result("Traceback (most recent call last):\n  boom") == (
+        "",
+        "Traceback (most recent call last):\n  boom",
+    )
+
+
+class TestEgressResolution:
+    async def test_a_host_name_resolves_to_its_current_addresses(self) -> None:
+        from ravn.valkyrie_evolution.k8s_tool_runner import _resolve
+
+        assert "127.0.0.1" in await _resolve(HostTarget("localhost", 80))
+        assert await _resolve(HostTarget("10.1.2.3", 80)) == ["10.1.2.3"]
+        assert await _resolve(HostTarget("fd00::1", 80)) == ["fd00::1"]
+
+    def test_ip_blocks_are_single_addresses(self) -> None:
+        from ravn.valkyrie_evolution.k8s_tool_runner import _ip_block
+
+        assert _ip_block("10.1.2.3") == {"ipBlock": {"cidr": "10.1.2.3/32"}}
+        assert _ip_block("fd00::1") == {"ipBlock": {"cidr": "fd00::1/128"}}
+
+    def test_an_api_service_without_endpoints_is_refused(self) -> None:
+        from ravn.valkyrie_evolution.k8s_tool_runner import _endpoint_addresses
+
+        with pytest.raises(LearnedToolError, match="no endpoints"):
+            _endpoint_addresses({"subsets": []})

@@ -1,7 +1,8 @@
 import { useLazyToolDetail } from '../HistoryDetailsContext';
 import { ConversationLink } from '../ConversationResources';
 import { useState } from 'react';
-import { ChevronRight, ChevronDown } from 'lucide-react';
+import { Bell, ChevronRight, ChevronDown } from 'lucide-react';
+import { isForgeNotifyCall } from '@niuulabs/domain';
 import { cn } from '../../../utils/cn';
 import { ToolIcon } from './ToolIcon';
 import { getToolLabel, getToolCategory } from './toolLabels';
@@ -186,14 +187,26 @@ interface ToolBlockProps {
 export function ToolBlock({ block, result, defaultOpen = false }: ToolBlockProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const detail = useLazyToolDetail(block, result, isOpen);
-  const label = getToolLabel(block.name);
-  const category = getToolCategory(block.name);
-  const preview = extractPreview(block);
+  // The Forge MCP notify call renders as its own notification card; keep the raw
+  // call as a quiet, expandable line so it stays debuggable without duplicating it.
+  const notifyCall = isForgeNotifyCall(block.name, block.input);
+  const label = notifyCall
+    ? result?.is_error
+      ? 'Notification failed'
+      : 'Notified'
+    : getToolLabel(block.name);
+  const category = notifyCall ? 'mcp' : getToolCategory(block.name);
+  const preview = notifyCall
+    ? typeof block.input.title === 'string'
+      ? block.input.title
+      : ''
+    : extractPreview(block);
 
   return (
     <div
       className={cn('niuu-chat-tool-block', `niuu-chat-tool-block--${category}`)}
       data-testid="tool-block"
+      data-tool-kind={notifyCall ? 'forge-notify' : undefined}
     >
       <button
         type="button"
@@ -211,7 +224,11 @@ export function ToolBlock({ block, result, defaultOpen = false }: ToolBlockProps
           }
         }}
       >
-        <ToolIcon toolName={block.name} className="niuu-chat-tool-icon" />
+        {notifyCall ? (
+          <Bell className="niuu-chat-tool-icon" aria-hidden="true" />
+        ) : (
+          <ToolIcon toolName={block.name} className="niuu-chat-tool-icon" />
+        )}
         <span className="niuu-chat-tool-label">{label}</span>
         {!isOpen && preview && <span className="niuu-chat-tool-preview">{preview}</span>}
         <span className="niuu-chat-tool-chevron">

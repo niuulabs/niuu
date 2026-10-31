@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
+def client(tmp_path, monkeypatch, module_broker_runtime):
     from skuld import broker as bmod
     from skuld import broker_api as api_mod
 
@@ -28,7 +28,13 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(bmod.broker._channels, "broadcast", _fake_broadcast)
     monkeypatch.setattr(bmod.broker, "_conversation_turns", [])
     api_mod._presented_registry.clear()
-    c = TestClient(bmod.app, headers={"x-niuu-room-role": "owner"})
+    c = TestClient(
+        bmod.app,
+        headers={
+            "authorization": module_broker_runtime.authorization,
+            "x-niuu-room-role": "owner",
+        },
+    )
     c.logged = logged  # type: ignore[attr-defined]
     c.broadcast = broadcast  # type: ignore[attr-defined]
     return c
@@ -134,3 +140,64 @@ def test_registry_rebuild_recovers_after_restart(client, tmp_path):
     api_mod._rebuild_presented_registry()
     assert fid in api_mod._presented_registry
     assert client.get(f"/api/files/presented/{fid}").content == b"recovered"
+
+
+@pytest.mark.parametrize("authorization", [None, "Bearer wrong", "Basic abc", "Bearer "])
+def test_present_file_requires_the_loopback_secret(client, tmp_path, authorization):
+    src = tmp_path / "doc.txt"
+    src.write_bytes(b"secret-guarded")
+    headers = {"authorization": authorization} if authorization is not None else {}
+    unauthenticated = TestClient(client.app, headers=headers)
+    response = unauthenticated.post("/api/present-file", json={"path": str(src)})
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+    assert client.logged == []
+
+
+def test_configured_staging_dir_is_created_outside_the_home(tmp_path, monkeypatch):
+    from skuld import broker as bmod
+    from skuld import broker_api as api_mod
+
+    target = tmp_path / "presented" / "session-1"
+    monkeypatch.setattr(bmod.broker._settings, "presented_files_dir", str(target))
+    monkeypatch.setattr(bmod.broker._settings, "home_dir", str(tmp_path / "missing-home"))
+    staged = api_mod._presented_staging_dir()
+    assert staged == target.resolve()
+    assert (target.stat().st_mode & 0o777) == 0o700
+
+
+def test_local_mode_accepts_files_from_the_real_home(tmp_path, monkeypatch, module_broker_runtime):
+    """Local mode: home_dir is the HOME the agent runs with and staging is explicit."""
+    from skuld import broker as bmod
+    from skuld import broker_api as api_mod
+
+    home = tmp_path / "home"
+    (home / "notes").mkdir(parents=True)
+    report = home / "notes" / "report.md"
+    report.write_text("# from home")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    staging = tmp_path / "state" / "presented"
+    monkeypatch.setattr(bmod.broker, "workspace_dir", str(workspace))
+    monkeypatch.setattr(bmod.broker._settings, "home_dir", str(home))
+    monkeypatch.setattr(bmod.broker._settings, "presented_files_dir", str(staging))
+    monkeypatch.setattr(bmod.broker, "_enqueue_event_log", lambda frame: None)
+    monkeypatch.setattr(bmod.broker, "_save_conversation_history", lambda: None)
+    monkeypatch.setattr(bmod.broker, "_conversation_turns", [])
+
+    async def _no_broadcast(frame):
+        return None
+
+    monkeypatch.setattr(bmod.broker._channels, "broadcast", _no_broadcast)
+    api_mod._presented_registry.clear()
+    client = TestClient(bmod.app, headers={"authorization": module_broker_runtime.authorization})
+
+    response = client.post("/api/present-file", json={"path": str(report)})
+
+    assert response.status_code == 200, response.text
+    fid = response.json()["file_id"]
+    assert (staging / fid / "content").read_text() == "# from home"
+    assert client.get(f"/api/files/presented/{fid}").content == b"# from home"
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("x")
+    assert client.post("/api/present-file", json={"path": str(outside)}).status_code == 400

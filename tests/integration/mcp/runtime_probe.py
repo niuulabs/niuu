@@ -205,15 +205,16 @@ for line in sys.stdin:
     token.write_text(
         json.dumps({"access_token": "codex-initial", "expires_at": "2099-01-01T00:00:00Z"})
     )
-    proc = subprocess.Popen(
-        cmd,
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=open(root / "codex-errors", "w"),
-        text=True,
-        bufsize=1,
-    )
+    with (root / "codex-errors").open("w") as stderr:
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr,
+            text=True,
+            bufsize=1,
+        )
 
     def request(i, method, params):
         proc.stdin.write(json.dumps({"id": i, "method": method, "params": params}) + "\n")

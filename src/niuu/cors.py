@@ -9,6 +9,11 @@ from niuu.adapters.inbound.source_health import SOURCE_FAILURES_HEADER
 from niuu.config import CorsConfig
 
 
+def _exposed_headers(cors: CorsConfig) -> list[str]:
+    """The configured exposed headers plus the source-failures header, once each."""
+    return list(dict.fromkeys([*cors.expose_headers, SOURCE_FAILURES_HEADER]))
+
+
 def apply_cors_middleware(app: FastAPI, cors: CorsConfig) -> None:
     """Attach CORSMiddleware when CORS origins are configured."""
     if not cors.allowed_origins:
@@ -21,7 +26,8 @@ def apply_cors_middleware(app: FastAPI, cors: CorsConfig) -> None:
         allow_methods=cors.allow_methods,
         allow_headers=cors.allow_headers,
         # Browsers hide all custom response headers from cross-origin JS by
-        # default — without this, X-Niuu-Source-Failures is silently
-        # unreadable from a browser client even though the server sent it.
-        expose_headers=[SOURCE_FAILURES_HEADER],
+        # default — without this, X-Niuu-Source-Failures (and the configured
+        # headers, e.g. X-Forge-Unavailable-Instances) are silently unreadable
+        # from a browser client even though the server sent them.
+        expose_headers=_exposed_headers(cors),
     )

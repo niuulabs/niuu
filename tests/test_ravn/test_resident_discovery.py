@@ -102,6 +102,29 @@ class TestKubernetesResidentDiscoveryAdapter:
         assert resident.owner_id == "user-a"
         assert resident.tenant_id == "tenant-a"
 
+    async def test_a_named_cluster_places_each_resident_on_its_deployment(self) -> None:
+        adapter = KubernetesResidentDiscoveryAdapter(
+            namespace="volundr",
+            cluster="valhalla",
+            apps_api=SimpleNamespace(
+                list_namespaced_deployment=lambda **kwargs: SimpleNamespace(items=[_deployment()])
+            ),
+        )
+
+        (resident,) = await adapter.list_residents()
+
+        assert resident.placement is not None
+        assert resident.placement.model_dump() == {
+            "cluster": "valhalla",
+            "namespace": "volundr",
+            "workload": "resident-muninn",
+        }
+
+    async def test_without_a_cluster_a_resident_has_no_placement(self) -> None:
+        (resident,) = await _adapter_for(_deployment()).list_residents()
+
+        assert resident.placement is None
+
     async def test_defaults_when_annotations_absent(self) -> None:
         residents = await _adapter_for(_deployment()).list_residents()
 
@@ -192,7 +215,7 @@ class TestKubernetesListingPlumbing:
     """Shared deployment-listing behavior (no client library installed)."""
 
     async def test_no_token_mounted_returns_empty(self, tmp_path, monkeypatch) -> None:
-        import ravn.adapters.kubernetes_deployments as kd
+        from ravn.adapters import kubernetes_deployments as kd
 
         monkeypatch.setattr(kd, "_SERVICE_ACCOUNT_ROOT", tmp_path)
         adapter = KubernetesResidentDiscoveryAdapter(namespace="volundr")
@@ -201,7 +224,7 @@ class TestKubernetesListingPlumbing:
 
     @respx.mock
     async def test_incluster_rest_listing_maps_residents(self, tmp_path, monkeypatch) -> None:
-        import ravn.adapters.kubernetes_deployments as kd
+        from ravn.adapters import kubernetes_deployments as kd
 
         (tmp_path / "token").write_text("sa-token", encoding="utf-8")
         monkeypatch.setattr(kd, "_SERVICE_ACCOUNT_ROOT", tmp_path)
@@ -255,7 +278,7 @@ class TestKubernetesListingPlumbing:
     async def test_incluster_rest_all_namespaces_error_returns_empty(
         self, tmp_path, monkeypatch
     ) -> None:
-        import ravn.adapters.kubernetes_deployments as kd
+        from ravn.adapters import kubernetes_deployments as kd
 
         (tmp_path / "token").write_text("sa-token", encoding="utf-8")
         monkeypatch.setattr(kd, "_SERVICE_ACCOUNT_ROOT", tmp_path)

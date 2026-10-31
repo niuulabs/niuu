@@ -6,6 +6,8 @@ from uuid import uuid4
 
 import pytest
 
+from ravn.config import Settings
+from ravn.workflow_runtime import _workflow_allowed_outcome_topics
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_document import workflow_document_revision
@@ -96,7 +98,10 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         "Saga Planning",
         "Specification Stack",
         "Tracker Delivery Flow",
+        "Reviewed Delivery Flow",
+        "Ticket Planning Flow",
         "Code & Review Flow",
+        "Infra Change Flow",
         "Tool & Skill Builder",
         "Developer Delivery",
         "Developer Planning",
@@ -144,7 +149,7 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert research_resources["Research Memory"]["url"] == (
         "https://mimir.yggdrasil.niuu.world/api/v1"
     )
-    assert research_resources["Research Memory"]["authRef"] == "integration:volundr"
+    assert research_resources["Research Memory"]["authRef"] == "workload:mimir"
 
     planning_flow = next(workflow for workflow in workflows if workflow.name == "Saga Planning")
     assert {"planning", "saga"}.issubset(set(planning_flow.graph["tags"]))
@@ -188,7 +193,7 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert planning_resources["Planning Memory"]["url"] == (
         "https://mimir.yggdrasil.niuu.world/api/v1"
     )
-    assert planning_resources["Planning Memory"]["authRef"] == "integration:volundr"
+    assert planning_resources["Planning Memory"]["authRef"] == "workload:mimir"
 
     specification_flow = next(
         workflow for workflow in workflows if workflow.name == "Specification Stack"
@@ -249,7 +254,7 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert specification_resources["Specification Memory"]["url"] == (
         "https://mimir.yggdrasil.niuu.world/api/v1"
     )
-    assert specification_resources["Specification Memory"]["authRef"] == "integration:volundr"
+    assert specification_resources["Specification Memory"]["authRef"] == "workload:mimir"
 
     delivery_flow = next(
         workflow for workflow in workflows if workflow.name == "Tracker Delivery Flow"
@@ -279,8 +284,40 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         for member in node["stageMembers"]
     ] == ["gpt-5.6-terra"] * 4
     delivery_edge_labels = {edge["label"] for edge in delivery_flow.graph["edges"]}
+    assert "code.blocked -> code.blocked" in delivery_edge_labels
     assert "review.changes_requested -> review.changes_requested" in delivery_edge_labels
     assert "review.passed -> review.passed" in delivery_edge_labels
+    delivery_gates = {
+        node["id"]: node for node in delivery_flow.graph["nodes"] if node.get("kind") == "gate"
+    }
+    assert delivery_gates["delivery-blocked"] == {
+        "id": "delivery-blocked",
+        "kind": "gate",
+        "label": "Delivery blocked",
+        "condition": (
+            "Review the coder's stated reason, correct the ticket, then re-commission the delivery."
+        ),
+        "mode": "human_approval",
+        "pendingBehavior": "help_needed",
+        "instructions": (
+            "The requested change could not be completed as written. Review the implementation "
+            "outcome and update the ticket before re-commissioning."
+        ),
+        "position": {"x": 704, "y": 480},
+    }
+    delivery_settings = Settings.model_validate(
+        {
+            "workflow": {
+                "workflow_id": "tracker-delivery-flow",
+                "name": "Tracker Delivery Flow",
+                "graph": delivery_flow.graph,
+            }
+        }
+    )
+    assert _workflow_allowed_outcome_topics(delivery_settings, node_id="delivery-implement") == {
+        "code.changed",
+        "code.blocked",
+    }
     delivery_resources = {
         node["label"]: node
         for node in delivery_flow.graph["nodes"]
@@ -317,7 +354,7 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         member["personaId"] for member in code_review_stage_members["Merge and close ticket"]
     ] == ["closer"]
     assert all(
-        member.get("model") == "gpt-5.5"
+        member.get("model") == "gpt-5.6-terra"
         for members in code_review_stage_members.values()
         for member in members
     )
@@ -332,7 +369,7 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert code_review_resources["Delivery Memory"]["url"] == (
         "https://mimir.yggdrasil.niuu.world/api/v1"
     )
-    assert code_review_resources["Delivery Memory"]["authRef"] == "integration:volundr"
+    assert code_review_resources["Delivery Memory"]["authRef"] == "workload:mimir"
 
     builder_flow = next(
         workflow for workflow in workflows if workflow.name == "Tool & Skill Builder"
@@ -392,7 +429,7 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert builder_resources["Capability Memory"]["url"] == (
         "https://mimir.yggdrasil.niuu.world/api/v1"
     )
-    assert builder_resources["Capability Memory"]["authRef"] == "integration:volundr"
+    assert builder_resources["Capability Memory"]["authRef"] == "workload:mimir"
     builder_binding = next(
         binding
         for binding in builder_flow.graph["resourceBindings"]
@@ -460,7 +497,10 @@ async def test_seed_system_workflows_preserves_authored_and_obsolete_entries() -
         "Saga Planning",
         "Specification Stack",
         "Tracker Delivery Flow",
+        "Reviewed Delivery Flow",
+        "Ticket Planning Flow",
         "Code & Review Flow",
+        "Infra Change Flow",
         "Tool & Skill Builder",
         "Developer Delivery",
         "Developer Planning",
@@ -598,7 +638,7 @@ async def test_seed_reclassified_legacy_row_matching_package_is_replaced_not_com
 async def test_seed_reclassified_legacy_research_campaign_reseeds_current_version(
     monkeypatch,
 ) -> None:
-    """The real Research Campaign case: a legacy 1.0.0 row, package now 2.0.0.
+    """The real Research Campaign case: a legacy 1.0.0 row, package now 2.0.2.
 
     A version mismatch already took the reseed branch before this fix (it
     never reached the strict content-hash comparison), so this locks in that
@@ -608,7 +648,7 @@ async def test_seed_reclassified_legacy_research_campaign_reseeds_current_versio
     seed = next(
         workflow for workflow in load_system_workflows() if workflow.name == "Research Campaign"
     )
-    assert seed.version == "2.0.0"
+    assert seed.version == "2.0.2"
     legacy = replace(
         seed,
         version="1.0.0",
@@ -630,7 +670,7 @@ async def test_seed_reclassified_legacy_research_campaign_reseeds_current_versio
 
     assert repo.save_calls == saved
     assert saved[0].id == seed.id
-    assert saved[0].version == "2.0.0"
+    assert saved[0].version == "2.0.2"
     assert saved[0].graph == seed.graph
     assert saved[0].origin == "bundled"
 
@@ -639,7 +679,7 @@ async def test_seed_reclassified_legacy_research_campaign_reseeds_current_versio
     rerun = await seed_system_workflows(repo)
 
     assert repo.save_calls == []
-    assert rerun[0].version == "2.0.0"
+    assert rerun[0].version == "2.0.2"
 
 
 @pytest.mark.asyncio
@@ -681,3 +721,70 @@ async def test_seed_reclassifies_orphaned_never_versioned_row_as_authored(
     repo.save_calls.clear()
     await seed_system_workflows(repo)
     assert repo.save_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "workflow",
+    [workflow for workflow in load_system_workflows() if "mimir" in str(workflow.graph)],
+    ids=lambda workflow: workflow.name,
+)
+async def test_bundled_memory_wells_provision_without_a_stored_integration(workflow) -> None:
+    """Every launch path (UI, Ting, A2A) provisions a bundled workflow's memory well.
+
+    The wells authenticate with the session's own workload identity. A well that
+    names ``integration:<slug>`` instead fails provisioning for every owner who has
+    no integration with that slug — which is how an A2A-launched Research Thread
+    failed with "Memory well requires attached integration(s)".
+    """
+    from unittest.mock import AsyncMock
+
+    from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_mimir_from_snapshot
+    from volundr.adapters.outbound.contributors.secrets import SecretInjectionContributor
+    from volundr.domain.ports import SessionContext
+
+    mimir = workflow_mimir_from_snapshot(build_workflow_snapshot(workflow))
+    refs = mimir.get("registry_refs") or []
+    assert refs, f"{workflow.name} declares a memory well but projects none"
+    assert not [ref for ref in refs if str(ref.get("auth_ref") or "").startswith("integration:")]
+
+    store = AsyncMock()
+    contributor = SecretInjectionContributor(credential_store=store)
+    context = SessionContext(workload_type="ravn_flock", workload_config={"mimir": mimir})
+
+    assert await contributor._build_mappings(context, "owner-without-a-volundr-integration") == []
+    store.get.assert_not_called()
+
+
+def test_infra_change_flow_merges_only_after_the_resident_approves() -> None:
+    """Merging an infra change deploys it, so nothing reaches the closer unapproved."""
+    workflow = next(w for w in load_system_workflows() if w.name == "Infra Change Flow")
+    nodes = {node["id"]: node for node in workflow.graph["nodes"]}
+    gate = nodes["infra-change-merge-gate"]
+    edges = {(edge["source"], edge["target"]): edge["label"] for edge in workflow.graph["edges"]}
+
+    assert gate["kind"] == "gate"
+    assert gate["mode"] == "human_approval"
+    assert "autoForwardAfter" not in gate
+    assert edges[("infra-change-review", "infra-change-merge-gate")].startswith("review.passed")
+    assert edges[("infra-change-merge-gate", "infra-change-close")].startswith("merge.approved")
+    assert ("infra-change-review", "infra-change-close") not in edges
+    closer = nodes["infra-change-close"]["stageMembers"][0]
+    assert closer["consumesEventTypes"] == ["merge.approved"]
+
+
+def test_infra_change_flow_works_on_an_isolated_branch() -> None:
+    from ting.domain.workflow_snapshot import workflow_uses_isolated_branch
+
+    workflow = next(w for w in load_system_workflows() if w.name == "Infra Change Flow")
+
+    assert workflow_uses_isolated_branch({"graph": workflow.graph}) is True
+
+
+def test_an_unknown_working_branch_mode_is_rejected() -> None:
+    from ting.domain.exceptions import WorkflowDocumentError
+    from ting.domain.workflow_snapshot import workflow_uses_isolated_branch
+
+    assert workflow_uses_isolated_branch({"graph": {}}) is False
+    with pytest.raises(WorkflowDocumentError, match="workingBranch 'shared'"):
+        workflow_uses_isolated_branch({"graph": {"workingBranch": "shared"}})

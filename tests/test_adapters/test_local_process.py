@@ -16,8 +16,8 @@ from uuid import uuid4
 import pytest
 import yaml
 
-import volundr.adapters.outbound.local_process as local_process_mod
 from niuu.mesh.ipc import skuld_mesh_addresses
+from volundr.adapters.outbound import local_process as local_process_mod
 from volundr.adapters.outbound.local_process import (
     DEFAULT_CLAUDE_BINARY,
     DEFAULT_MAX_CONCURRENT,
@@ -219,6 +219,36 @@ class TestSkuldEnv:
         assert env["SKULD__APPROVAL_POLICY"] == "untrusted"
         assert env["SKULD__SANDBOX"] == "workspace-write"
         assert env["SKULD__AGENT_TEAMS"] == "true"
+
+    def test_build_env_maps_claude_permission_mode_override(self) -> None:
+        """A definition can override the node's claude_permission_mode for its sessions."""
+        spec = SessionSpec(
+            values={
+                "broker": {
+                    "cliType": "claude",
+                    "transport": "tmux-interactive",
+                    "skipPermissions": True,
+                    "claudePermissionMode": "auto",
+                }
+            },
+            pod_spec=PodSpecAdditions(),
+        )
+
+        env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
+
+        assert env["SKULD__CLAUDE_PERMISSION_MODE"] == "auto"
+
+    def test_build_env_leaves_claude_permission_mode_to_the_node(self, monkeypatch) -> None:
+        """Without an override the broker reads the node config file's setting."""
+        monkeypatch.delenv("SKULD__CLAUDE_PERMISSION_MODE", raising=False)
+        spec = SessionSpec(
+            values={"broker": {"cliType": "claude", "skipPermissions": True}},
+            pod_spec=PodSpecAdditions(),
+        )
+
+        env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
+
+        assert "SKULD__CLAUDE_PERMISSION_MODE" not in env
 
     def test_build_env_includes_telegram_runtime_channel(self) -> None:
         """Broker telegram values are mapped to Skuld env vars."""
@@ -1093,6 +1123,35 @@ class TestProcessSpawning:
             pid = await manager._spawn_skuld(git_session, default_spec, workspace, 9100)
 
         assert pid == 42
+
+    async def test_spawn_skuld_points_the_broker_at_the_real_home(
+        self,
+        manager: LocalProcessPodManager,
+        git_session: Session,
+        default_spec: SessionSpec,
+        tmp_workspaces: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Local brokers get HOME as their session home and a per-session staging dir."""
+        workspace = tmp_workspaces / str(git_session.id)
+        workspace.mkdir(parents=True)
+        monkeypatch.setenv("HOME", "/home/local-user")
+
+        with (
+            patch.object(manager, "_resolve_claude_binary", return_value="/usr/bin/fake-claude"),
+            patch(
+                "asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=MagicMock(pid=7),
+            ) as spawn,
+        ):
+            await manager._spawn_skuld(git_session, default_spec, workspace, 9100)
+
+        env = spawn.call_args.kwargs["env"]
+        assert env["SKULD__HOME_DIR"] == "/home/local-user"
+        assert env["SKULD__PRESENTED_FILES_DIR"] == str(
+            tmp_workspaces / ".forge-presented" / str(git_session.id)
+        )
 
     async def test_spawn_sets_sdk_url_arg(
         self,

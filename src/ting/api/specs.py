@@ -504,8 +504,10 @@ def _build_spec_prompt(body: SpecCampaignCreateBody, *, repos: list[str]) -> str
         body.prompt.strip(),
         "",
         "## Specification Request",
-        "- Produce the PRD, SRD, SDD, and implementation breakdown using the "
-        "Specification Stack workflow.",
+        (
+            "- Produce the PRD, SRD, SDD, and implementation breakdown using the "
+            "Specification Stack workflow."
+        ),
         "- Pause at each review gate and wait for Ting feedback before continuing.",
     ]
     campaign_name = _campaign_name(body)

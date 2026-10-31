@@ -13,6 +13,7 @@ envoy:
       - /api/v1/tokens/workload/exchange
       - /api/v1/tokens/workload/jwks
       - /health
+      - /.well-known/agent-card.json
   authorization:
     enabled: true
 

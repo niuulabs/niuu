@@ -66,6 +66,44 @@ class ProviderConfig(BaseModel):
             "routing strategy to prefer cheaper providers. Lower is cheaper."
         ),
     )
+    adapter: str = Field(
+        default="",
+        description=(
+            "Fully-qualified class path of the provider adapter, e.g. "
+            "'bifrost.adapters.chatgpt_subscription.ChatGPTSubscriptionAdapter'. "
+            "When empty the adapter is chosen from the provider name (anthropic, "
+            "openai, ollama, otherwise OpenAI-compatible)."
+        ),
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Constructor keyword arguments passed to the adapter class. Only valid "
+            "together with 'adapter'; base_url and timeout configured on the "
+            "provider are passed as well."
+        ),
+    )
+    passthrough: bool = Field(
+        default=False,
+        description=(
+            "Serve this provider in its native protocol. A caller that speaks the "
+            "protocol the adapter does natively (OpenAI Responses for the ChatGPT "
+            "subscription adapter, Chat Completions for OpenAI-compatible servers) has "
+            "its request forwarded verbatim apart from the model name, instead of being "
+            "translated to the Anthropic format and back. Callers on other protocols keep "
+            "the canonical translation. The adapter must implement "
+            "bifrost.ports.native.NativePassthroughPort, or startup fails."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _kwargs_need_adapter(self) -> ProviderConfig:
+        if self.kwargs and not self.adapter:
+            raise ValueError(
+                "provider 'kwargs' are constructor arguments for a dynamic adapter: "
+                "set 'adapter' to the adapter's class path, or remove 'kwargs'"
+            )
+        return self
 
     @property
     def api_key(self) -> str:
@@ -1029,6 +1067,20 @@ class BifrostConfig(BaseModel):
     )
     host: str = Field(default="0.0.0.0", description="Host to bind the gateway server.")
     port: int = Field(default=8088, description="Port to bind the gateway server.")
+    shutdown_grace_seconds: int = Field(
+        default=300,
+        gt=0,
+        description=(
+            "On SIGTERM the server stops accepting connections and lets in-flight "
+            "requests, streamed model answers included, finish for up to this many "
+            "seconds; whatever is still open then is cancelled. Bounded by the longest "
+            "model call worth waiting for: the Envoy sidecar's upstreamTimeout (300s) "
+            "ends any request before that, so waiting longer cannot save one. The "
+            "pod's terminationGracePeriodSeconds must exceed it (the Helm chart "
+            "enforces this); a smaller grace period means the kubelet kills the "
+            "process mid-stream instead."
+        ),
+    )
 
     # ── Authentication ───────────────────────────────────────────────────────
     auth_mode: AuthMode = Field(

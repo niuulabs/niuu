@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { useState } from 'react';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { useState, useSyncExternalStore } from 'react';
+import { act, render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryHistory, createRoute } from '@tanstack/react-router';
 import {
@@ -54,6 +54,36 @@ const pluginWithTabs = definePlugin({
   render: () => <div data-testid="tabbed-content">tabbed-rendered</div>,
   subnav: () => <div data-testid="tabbed-subnav">subnav-content</div>,
   footer: () => <span data-testid="tabbed-footer-chip">api ● connected</span>,
+});
+
+// A live count source outside React, like a query cache the badge hook reads.
+const liveCount = {
+  value: 2,
+  listeners: new Set<() => void>(),
+  set(next: number) {
+    this.value = next;
+    for (const listener of this.listeners) listener();
+  },
+  subscribe(listener: () => void) {
+    liveCount.listeners.add(listener);
+    return () => liveCount.listeners.delete(listener);
+  },
+};
+
+function useLiveCount() {
+  return useSyncExternalStore(liveCount.subscribe, () => liveCount.value);
+}
+
+const pluginWithLiveCount = definePlugin({
+  id: 'live',
+  rune: 'ᛚ',
+  title: 'Live',
+  subtitle: 'live tab counts',
+  tabs: [
+    { id: 'inbox', label: 'Inbox', count: 99, useCount: useLiveCount },
+    { id: 'other', label: 'Other' },
+  ],
+  render: () => <div data-testid="live-content">live-rendered</div>,
 });
 
 const pluginWithCustomTabPath = definePlugin({
@@ -274,7 +304,7 @@ describe('Shell', () => {
 
     expect(screen.queryByText('secondary description')).not.toBeInTheDocument();
     expect(screen.queryByTestId('ui-mode-switch')).not.toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: 'Color theme' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Color theme' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Open command palette' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Disconnect' })).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Open application menu' })).not.toBeInTheDocument();
@@ -339,6 +369,21 @@ describe('Shell', () => {
     const badge = screen.getByTestId('tab-count-one');
     expect(badge).toBeInTheDocument();
     expect(badge.textContent).toBe('4');
+  });
+
+  it('renders a live tab count from the tab hook and follows its updates', async () => {
+    liveCount.value = 2;
+    wrap(<Shell plugins={[pluginWithLiveCount]} _testHistory={memHistory('/live')} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('live-content')).toBeInTheDocument();
+    });
+    // The hook wins over the static count.
+    expect(screen.getByTestId('tab-count-inbox').textContent).toBe('2');
+    act(() => liveCount.set(7));
+    expect(screen.getByTestId('tab-count-inbox').textContent).toBe('7');
+    act(() => liveCount.set(0));
+    expect(screen.queryByTestId('tab-count-inbox')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('tab-count-other')).not.toBeInTheDocument();
   });
 
   it('marks a plugin active when the route matches a custom tab path', async () => {
@@ -518,14 +563,15 @@ describe('Shell', () => {
     expect(screen.getByTestId('rail-item-alpha')).toBeInTheDocument();
   });
 
-  it('switches the color theme from the topbar select', async () => {
+  it('switches the color theme from the topbar button', async () => {
     wrap(<Shell plugins={[pluginA]} _testHistory={memHistory('/alpha')} />);
     await waitFor(() => {
       expect(screen.getByTestId('alpha-content')).toBeInTheDocument();
     });
 
-    const select = screen.getByRole('combobox', { name: 'Color theme' });
-    fireEvent.change(select, { target: { value: 'amber' } });
+    const select = screen.getByRole('button', { name: 'Color theme' });
+    fireEvent.click(select);
+    fireEvent.click(screen.getByRole('button', { name: 'Amber', exact: true }));
 
     await waitFor(() => {
       expect(document.querySelector('.niuu-shell')).toHaveAttribute('data-theme', 'amber');

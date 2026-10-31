@@ -65,6 +65,9 @@ INCLUDE_PACKAGE_DATA = [
     "cli",
     "rich",
     "textual",
+    # The embedded TUF root.json files sigstore bootstraps its trust root from
+    # (image provenance verification).
+    "sigstore",
 ]
 
 # Data directories mapped into the binary
@@ -82,7 +85,8 @@ DATA_DIR_MAPPINGS = [
 # Data file globs mapped into the binary. Use file globs for migrations so
 # Ting's subdirectory is not recursively copied into Volundr's migration path.
 DATA_FILE_MAPPINGS = [
-    (REPO_ROOT / "migrations" / "*.sql", "cli/migrations/volundr/"),
+    (REPO_ROOT / "migrations" / "*.sql", "cli/migrations/"),
+    (REPO_ROOT / "migrations" / "lineage-aliases.json", "cli/migrations/"),
     (REPO_ROOT / "migrations" / "ting" / "*.sql", "cli/migrations/ting/"),
 ]
 

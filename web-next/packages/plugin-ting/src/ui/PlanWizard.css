@@ -228,6 +228,46 @@
   color: var(--color-text-primary);
 }
 
+.ting-plan-ticket-check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-color: color-mix(in srgb, var(--status-amber) 45%, var(--color-border));
+}
+
+.ting-plan-ticket-check > div {
+  flex: 1;
+  min-width: 220px;
+}
+
+.ting-plan-ticket-check h3 {
+  margin: 0 0 4px;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ting-plan-ticket-check p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.ting-plan-ticket-check p[role='alert'] {
+  color: var(--color-critical);
+}
+
+.ting-plan-run-flags {
+  grid-column: 1 / -1;
+  margin: 6px 0 0;
+  padding: 0 0 0 36px;
+  list-style: none;
+  color: var(--status-amber);
+  font-size: 12px;
+}
+
 .ting-plan-quote {
   border-radius: 12px;
   border: 1px solid var(--color-border);

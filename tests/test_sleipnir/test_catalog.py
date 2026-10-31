@@ -529,3 +529,37 @@ async def test_integration_github_pr_opened_via_bus():
     assert received[0].event_type == registry.GITHUB_PR_OPENED
     assert received[0].payload["author"] == "frank"
     assert received[0].correlation_id == "delivery-001"
+
+
+def test_volundr_session_notification_payload_and_severity_urgency():
+    from sleipnir.domain.catalog import notification_urgency, volundr_session_notification
+
+    notification = {
+        "id": "n-1",
+        "seq": 7,
+        "owner_id": "user-abc",
+        "kind": "decision",
+        "severity": "critical",
+        "source": "agent",
+        "title": "Pick a database",
+        "session_id": "vsess-9",
+        "session_name": "fix-auth",
+        "read": False,  # unknown keys are dropped from the typed payload
+    }
+    evt = volundr_session_notification(notification=notification, source="volundr")
+    assert evt.event_type == registry.VOLUNDR_SESSION_NOTIFICATION
+    assert evt.urgency == notification_urgency("critical") > notification_urgency("warning")
+    assert evt.payload["owner_id"] == "user-abc" and "read" not in evt.payload
+    assert evt.correlation_id == "vsess-9"
+    assert "fix-auth" in evt.summary and "Pick a database" in evt.summary
+    assert notification_urgency("unknown") == notification_urgency("info")
+    unbound = volundr_session_notification(
+        notification={
+            **notification,
+            "session_id": None,
+            "session_name": None,
+            "correlation_id": "corr",
+        },
+        source="volundr",
+    )
+    assert unbound.correlation_id == "corr" and "user-abc" in unbound.summary

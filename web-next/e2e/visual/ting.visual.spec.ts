@@ -22,7 +22,7 @@ test('ting dashboard matches web2', async ({ page }) => {
 test('ting sagas list matches web2', async ({ page }) => {
   await page.goto('/ting/sagas');
   await page.waitForLoadState('networkidle');
-  await page.waitForSelector('text=Sagas', { timeout: 10_000 });
+  await page.waitForSelector('text=Projects', { timeout: 10_000 });
   await expect(page).toHaveScreenshot('ting-sagas-list.png');
 });
 

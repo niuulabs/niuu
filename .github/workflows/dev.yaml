@@ -1,14 +1,32 @@
 # Runs on every push to dev:
+# 0. resolve: if a PR already built and tested this exact tree (ci.yaml's
+#    ci-gate tagged every image pr-tested-<tree>), `promote` re-tags those
+#    digests dev-<sha> and :dev, and steps 1-3 are skipped. Otherwise:
 # 1. Full test suite (lint, unit tests, integration tests, e2e, web-next tests, helm lint)
-# 2. Builds all container images with "dev" + "dev-<sha>" tags
-# 3. Determines next version from conventional commits and creates a v*-dev.N prerelease tag
-# 4. Packages Helm charts with the dev version
+# 2. In parallel with 1, builds every container image for amd64 and arm64 and
+#    pushes only the per-platform <sha>-<arch> tags
+# 3. Once 1 and 2 pass, publishes the multi-arch dev-<sha> and dev manifests
+#    and attaches signed GitHub build provenance to the dev-<sha> manifest list
+# 4. Determines next version from conventional commits and creates a v*-dev.N prerelease tag
+# 5. Packages Helm charts with the dev version
 #
-# Steps 2-4 publish, so they are gated on step 1: a failed or cancelled test
-# job means no :dev images, no v*-dev.N tag and no charts. The gates use
-# `!failure() && !cancelled()` rather than the implicit success() so that a
-# test job skipped by a future path filter does not block publishing, and so
-# that a skip does not cascade transitively into build-charts.
+# Steps 3-5 publish, so they are gated on step 1: a failed or cancelled test
+# job means no dev-<sha> or :dev manifest, no v*-dev.N tag and no charts. The
+# per-platform <sha>-<arch> images of a red commit do exist; nothing deploys
+# them (deploys pin dev-<sha>), and cleanup-containers.yaml does not collect
+# them. The gates use `!failure() && !cancelled()` rather than the implicit
+# success() so that a test job skipped by a future path filter does not block
+# publishing, and so that a skip does not cascade transitively into
+# build-charts.
+#
+# The Grype scans start on the per-platform images as soon as they are built
+# (or promoted) and do not gate publishing (they never did).
+#
+# Promotion is all or nothing: every image needs a pr-tested-<tree> index
+# that lists linux/amd64 and linux/arm64 and is under 48 hours old, or the
+# run rebuilds. Fork PRs never tag, so their merges rebuild; so does any push
+# whose tree no PR tested. Set the repository variable DEV_PROMOTION=off to
+# always rebuild.
 #
 # CLI/ravn binaries are release-only (release.yaml) — too slow for dev.
 #
@@ -32,11 +50,110 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # Resolve — can this push reuse the images a PR built and tested from the
+  # same tree? Never fails: any error means promote=false, and the run
+  # rebuilds and retests as before.
+  # ---------------------------------------------------------------------------
+  resolve:
+    name: Resolve PR-tested images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      promote: ${{ steps.check.outputs.promote || 'false' }}
+      images: ${{ steps.check.outputs.images }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up crane
+        id: crane
+        if: vars.DEV_PROMOTION != 'off'
+        continue-on-error: true
+        uses: ./.github/actions/setup-crane
+
+      - name: Log in to Container Registry
+        id: login
+        if: steps.crane.outcome == 'success'
+        continue-on-error: true
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Look up pr-tested-<tree> for every image
+        id: check
+        if: steps.login.outcome == 'success'
+        continue-on-error: true
+        env:
+          IMAGE_BASE: ${{ env.REGISTRY }}/${{ github.repository_owner }}
+          CONTAINERS: '["agent","skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
+          MAX_AGE_HOURS: "48"
+        run: |
+          set -euo pipefail
+
+          skip() {
+            echo "::notice title=No promotion::$1; building and testing this commit."
+            echo "promote=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          TREE="$(git rev-parse 'HEAD^{tree}')"
+          TAG="pr-tested-${TREE}"
+          echo "Tree ${TREE}"
+          now="$(date -u +%s)"
+          images='{}'
+
+          for container in $(echo "${CONTAINERS}" | jq -r '.[]'); do
+            IMAGE="${IMAGE_BASE}/${container}"
+            DIGEST="$(crane digest "${IMAGE}:${TAG}" 2>/dev/null)" \
+              || skip "${IMAGE}:${TAG} does not exist"
+            manifest="$(crane manifest "${IMAGE}@${DIGEST}")"
+            child() {
+              jq -r --arg arch "$1" '[.manifests[]? | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest]
+                | if length == 1 then .[0] else "" end' <<<"${manifest}"
+            }
+            AMD64="$(child amd64)"
+            ARM64="$(child arm64)"
+            [ -n "${AMD64}" ] && [ -n "${ARM64}" ] \
+              || skip "${IMAGE}@${DIGEST} does not list exactly one linux/amd64 and one linux/arm64 image"
+
+            # Age of the newest layer. OS_PACKAGES_REFRESH changes every UTC
+            # day, so it is never older than the build's day.
+            for ref in "${AMD64}" "${ARM64}"; do
+              created="$(crane config "${IMAGE}@${ref}" | jq -r '.created')"
+              age_hours=$(( (now - $(date -u -d "${created}" +%s)) / 3600 ))
+              [ "${age_hours}" -lt "${MAX_AGE_HOURS}" ] \
+                || skip "${IMAGE}@${ref} was created ${created}, ${age_hours} h ago"
+            done
+
+            echo "${IMAGE}: ${TAG} = ${DIGEST} (amd64 ${AMD64}, arm64 ${ARM64})"
+            images="$(jq -c --arg c "${container}" --arg i "${DIGEST}" --arg a "${AMD64}" --arg r "${ARM64}" \
+              '. + {($c): {index: $i, amd64: $a, arm64: $r}}' <<<"${images}")"
+          done
+
+          echo "::notice title=Promotion::Every image was built and tested as ${TAG}; promoting instead of rebuilding."
+          {
+            echo "promote=true"
+            echo "images=${images}"
+          } >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
   # Python — lint + unit tests. Delegated to reusable workflow.
   # Includes volundr, ting, AND ravn — previously ravn was missing here.
   # ---------------------------------------------------------------------------
   python:
     name: Python
+    needs: resolve
+    if: ${{ !cancelled() && needs.resolve.outputs.promote != 'true' }}
     uses: ./.github/workflows/reusable-python-lint-test.yaml
     secrets: inherit
 
@@ -45,6 +162,8 @@ jobs:
   # ---------------------------------------------------------------------------
   python-integration-test-volundr:
     name: "Python: Integration Test Volundr"
+    needs: resolve
+    if: ${{ !cancelled() && needs.resolve.outputs.promote != 'true' }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -61,7 +180,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -83,6 +202,8 @@ jobs:
 
   python-integration-test-ting:
     name: "Python: Integration Test Ting"
+    needs: resolve
+    if: ${{ !cancelled() && needs.resolve.outputs.promote != 'true' }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -99,7 +220,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -124,6 +245,8 @@ jobs:
   # ---------------------------------------------------------------------------
   web-next:
     name: web-next
+    needs: resolve
+    if: ${{ !cancelled() && needs.resolve.outputs.promote != 'true' }}
     uses: ./.github/workflows/reusable-web-next-lint-test.yaml
     secrets: inherit
 
@@ -132,33 +255,36 @@ jobs:
   # ---------------------------------------------------------------------------
   helm-lint:
     name: Helm Lint
+    needs: resolve
+    if: ${{ !cancelled() && needs.resolve.outputs.promote != 'true' }}
     uses: ./.github/workflows/reusable-helm-lint.yaml
 
   # ---------------------------------------------------------------------------
-  # Containers — build multi-arch (amd64 + arm64) for the published containers.
-  # Delegated to reusable workflow. Pushes :dev, so only after every test job.
+  # Containers — build amd64 + arm64 for the published containers, in
+  # parallel with the tests. Pushes only <sha>-<arch>; `publish` below creates
+  # the dev-<sha> and :dev manifests once the tests pass as well.
   # ---------------------------------------------------------------------------
   containers:
     name: Containers
-    needs:
-      - python
-      - python-integration-test-volundr
-      - python-integration-test-ting
-      - web-next
-      - helm-lint
-    if: ${{ !failure() && !cancelled() }}
+    needs: resolve
+    if: ${{ !cancelled() && needs.resolve.outputs.promote != 'true' }}
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
       containers: '["agent","skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
       platforms: '["amd64","arm64"]'
       tag-prefix: ${{ github.sha }}
       manifest-tags: "dev dev-${{ github.sha }}"
+      publish-manifests: false
       cache-write: true
-      build-args: |
-        APP_VERSION=dev-${{ github.sha }}
+      # No APP_VERSION: nothing reads the VITE_APP_VERSION it sets, and a
+      # per-commit value made the web bundle layer in this cache unusable for
+      # every PR build (ci.yaml builds with the default), so each one rebuilt
+      # it (~100 s on niuu).
       labels: |
         org.opencontainers.image.title=niuu
         org.opencontainers.image.licenses=Apache-2.0
@@ -166,12 +292,16 @@ jobs:
         org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
   # ---------------------------------------------------------------------------
-  # Security — container vulnerability scanning. Delegated to reusable workflow.
+  # Security — container vulnerability scanning on <sha>-amd64, the platform
+  # the :dev manifest resolved to on the scanner before. It is this commit's
+  # own tag, never the moving :dev: built by `containers`, or set by
+  # `promote` on the PR-tested digest. Starts as soon as either finishes;
+  # nothing waits on it.
   # ---------------------------------------------------------------------------
   scan:
     name: Scan
-    needs: containers
-    if: ${{ !failure() && !cancelled() }}
+    needs: [containers, promote]
+    if: ${{ !cancelled() && (needs.containers.result == 'success' || needs.promote.result == 'success') }}
     permissions:
       contents: read
       packages: read
@@ -179,12 +309,236 @@ jobs:
     uses: ./.github/workflows/reusable-container-scan.yaml
     with:
       containers: '["agent","skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
-      tag: dev
+      tag: ${{ github.sha }}-amd64
 
   # ---------------------------------------------------------------------------
-  # Version tagging — prerelease dev tags. Waits for containers as well as the
-  # tests: the charts published under this tag reference dev-<sha> images, so a
-  # tag must never exist for a commit whose images failed to build.
+  # Publish the multi-arch dev-<sha> and :dev manifests: only once every test
+  # job and every build passed. Deploys pin dev-<sha>@sha256:<index digest>,
+  # so the index must list both platforms. Queued (never cancelled) so two
+  # overlapping runs cannot interleave their :dev writes.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish dev manifests
+    needs:
+      - resolve
+      - python
+      - python-integration-test-volundr
+      - python-integration-test-ting
+      - web-next
+      - helm-lint
+      - containers
+    if: ${{ !failure() && !cancelled() && needs.resolve.outputs.promote != 'true' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: dev-publish-images
+      cancel-in-progress: false
+    permissions:
+      packages: write
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push dev-<sha> and dev manifests
+        env:
+          IMAGE_BASE: ${{ env.REGISTRY }}/${{ github.repository_owner }}
+          CONTAINERS: '["agent","skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          publish() {
+            local target="$1"
+            shift
+            local attempt
+            for attempt in 1 2 3 4 5; do
+              docker manifest rm "${target}" >/dev/null 2>&1 || true
+              if docker manifest create "${target}" "$@" && docker manifest push "${target}"; then
+                return 0
+              fi
+              if [ "${attempt}" -eq 5 ]; then
+                echo "Manifest publish failed after ${attempt} attempts: ${target}" >&2
+                return 1
+              fi
+              echo "Manifest publish attempt ${attempt}/5 failed for ${target}; retrying in $((attempt * 5))s" >&2
+              sleep $((attempt * 5))
+            done
+          }
+
+          for container in $(echo "${CONTAINERS}" | jq -r '.[]'); do
+            IMAGE="${IMAGE_BASE}/${container}"
+            SOURCES=("${IMAGE}:${SHA}-amd64" "${IMAGE}:${SHA}-arm64")
+            # dev-<sha> first, checked against the registry, then :dev: :dev
+            # never points at an index without an immutable tag of its own.
+            echo "::group::manifest ${IMAGE}:dev-${SHA}"
+            publish "${IMAGE}:dev-${SHA}" "${SOURCES[@]}"
+            platforms="$(docker buildx imagetools inspect --raw "${IMAGE}:dev-${SHA}" \
+              | jq -r '[.manifests[].platform | "\(.os)/\(.architecture)"] | sort | join(",")')"
+            if [ "${platforms}" != "linux/amd64,linux/arm64" ]; then
+              echo "::error title=dev manifest::${IMAGE}:dev-${SHA} lists ${platforms}, expected linux/amd64,linux/arm64"
+              exit 1
+            fi
+            echo "::endgroup::"
+            echo "::group::manifest ${IMAGE}:dev"
+            publish "${IMAGE}:dev" "${SOURCES[@]}"
+            echo "::endgroup::"
+          done
+
+  # ---------------------------------------------------------------------------
+  # Attest — signed GitHub build provenance for the dev-<sha> manifest list
+  # `publish` just created, one job per image (the attest action takes a single
+  # subject). A rebuilt run is the only one that makes a new manifest list; a
+  # promoted run re-tags digests a PR run already attested (the attestation is
+  # bound to the digest, not the tag), so this job is skipped there. This job's
+  # workflow is dev.yaml, so dev.yaml is one of the signing workflows the
+  # platform pins (`git.provenance.kwargs.workflow_paths`).
+  #
+  # `tag` waits for it: a dev-<sha> the platform cannot verify does not get a
+  # v*-dev.N tag or charts.
+  # ---------------------------------------------------------------------------
+  attest:
+    name: "Attest ${{ matrix.container }}"
+    needs: publish
+    if: ${{ !failure() && !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        container: [agent, skuld, openshell, devrunner, niuu-web, niuu, gbrain]
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/attest-container-image
+          sparse-checkout-cone-mode: false
+
+      - name: Attest build provenance
+        uses: ./.github/actions/attest-container-image
+        with:
+          registry: ${{ env.REGISTRY }}
+          image: ${{ github.repository_owner }}/${{ matrix.container }}
+          tag: dev-${{ github.sha }}
+          username: ${{ github.actor }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # Promote — re-tag the digests `resolve` found, without rebuilding: the
+  # index dev-<sha> (checked to resolve to the tested digest) and its two
+  # children <sha>-amd64 / <sha>-arm64, then :dev once every image has its
+  # dev-<sha>. Shares publish's queue, as both move :dev.
+  # ---------------------------------------------------------------------------
+  promote:
+    name: Promote PR-tested images
+    needs: resolve
+    if: needs.resolve.outputs.promote == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: dev-publish-images
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up crane
+        uses: ./.github/actions/setup-crane
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag dev-<sha>, <sha>-<arch> and dev
+        env:
+          IMAGE_BASE: ${{ env.REGISTRY }}/${{ github.repository_owner }}
+          CONTAINERS: '["agent","skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
+          IMAGES: ${{ needs.resolve.outputs.images }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          field() { jq -er --arg c "$1" --arg f "$2" '.[$c][$f]' <<<"${IMAGES}"; }
+
+          for container in $(echo "${CONTAINERS}" | jq -r '.[]'); do
+            IMAGE="${IMAGE_BASE}/${container}"
+            DIGEST="$(field "${container}" index)"
+            crane tag "${IMAGE}@$(field "${container}" amd64)" "${SHA}-amd64"
+            crane tag "${IMAGE}@$(field "${container}" arm64)" "${SHA}-arm64"
+            crane tag "${IMAGE}@${DIGEST}" "dev-${SHA}"
+            got="$(crane digest "${IMAGE}:dev-${SHA}")"
+            if [ "${got}" != "${DIGEST}" ]; then
+              echo "::error title=promote::${IMAGE}:dev-${SHA} resolves to ${got}, expected the tested ${DIGEST}"
+              exit 1
+            fi
+            echo "${IMAGE}:dev-${SHA} = ${DIGEST}"
+          done
+
+          for container in $(echo "${CONTAINERS}" | jq -r '.[]'); do
+            crane tag "${IMAGE_BASE}/${container}@$(field "${container}" index)" dev
+          done
+
+      # A promoted push builds nothing, so it would leave the registry cache
+      # every build reads (buildcache-<arch>) at the last tree dev built.
+      # ci.yaml's ci-gate tagged the tested PR's cache of this tree
+      # pr-tested-<tree>-buildcache-<arch>; point the cache there. Best
+      # effort: a cache only ever yields hits for matching layers.
+      - name: Point buildcache-<arch> at the tested build's cache
+        continue-on-error: true
+        env:
+          IMAGE_BASE: ${{ env.REGISTRY }}/${{ github.repository_owner }}
+          CONTAINERS: '["agent","skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
+        run: |
+          set -euo pipefail
+          TREE="$(git rev-parse 'HEAD^{tree}')"
+          for container in $(echo "${CONTAINERS}" | jq -r '.[]'); do
+            for arch in amd64 arm64; do
+              if crane tag "${IMAGE_BASE}/${container}:pr-tested-${TREE}-buildcache-${arch}" "buildcache-${arch}"; then
+                echo "${IMAGE_BASE}/${container}:buildcache-${arch} = pr-tested-${TREE}-buildcache-${arch}"
+              else
+                echo "::warning title=buildcache::${IMAGE_BASE}/${container}:pr-tested-${TREE}-buildcache-${arch} not found; buildcache-${arch} stays"
+              fi
+            done
+          done
+
+  # ---------------------------------------------------------------------------
+  # Version tagging — prerelease dev tags. Waits for the dev-<sha> manifests
+  # (published or promoted) as well as the tests: the charts published under this tag reference dev-<sha>
+  # images, so a tag must never exist for a commit whose images were not
+  # published.
+  #
+  # tag and build-charts share the dev-publish queue: the -dev.N count is read
+  # from the existing tags, so two runs counting at once would pick the same N.
+  # The group is fixed (not per-sha) and never cancels a running job. GitHub
+  # keeps only one pending job per group, so if three runs reach it at once the
+  # middle one's pending job is cancelled and that commit gets no dev tag; the
+  # next commit's tag covers it.
   # ---------------------------------------------------------------------------
   tag:
     name: Determine Version & Tag
@@ -195,8 +549,14 @@ jobs:
       - web-next
       - helm-lint
       - containers
-    if: ${{ !failure() && !cancelled() }}
+      - publish
+      - attest
+      - promote
+    if: ${{ !failure() && !cancelled() && (needs.publish.result == 'success' || needs.promote.result == 'success') }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: dev-publish
+      cancel-in-progress: false
     outputs:
       version: ${{ steps.version.outputs.new_version }}
       should_release: ${{ steps.version.outputs.should_release }}
@@ -205,7 +565,7 @@ jobs:
     steps:
       - name: Generate GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -283,9 +643,12 @@ jobs:
   # ---------------------------------------------------------------------------
   build-charts:
     name: Build Helm Charts
-    needs: [tag]
+    needs: [tag, promote]
     if: ${{ !failure() && !cancelled() && needs.tag.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: dev-publish
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write

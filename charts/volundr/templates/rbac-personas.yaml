@@ -9,8 +9,7 @@ metadata:
   name: {{ include "volundr.fullname" . }}-personas
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "volundr.labels" . | nindent 4 }}
-    app.kubernetes.io/component: persona-registry
+    {{- include "volundr.componentLabels" (dict "context" . "component" "persona-registry") | nindent 4 }}
 rules:
   - apiGroups: [""]
     resources: ["configmaps"]
@@ -28,8 +27,7 @@ metadata:
   name: {{ include "volundr.fullname" . }}-personas
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "volundr.labels" . | nindent 4 }}
-    app.kubernetes.io/component: persona-registry
+    {{- include "volundr.componentLabels" (dict "context" . "component" "persona-registry") | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role

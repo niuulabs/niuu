@@ -33,6 +33,25 @@ describe('Roster', () => {
     expect(eir).toHaveTextContent('degraded');
   });
 
+  it('shows when each resident last dreamt, and a failed dream as failed', () => {
+    renderRoster();
+
+    const sigrunDream = screen.getByTestId('roster-last-dream-valkyrie-valhalla-sigrun');
+    expect(sigrunDream).toHaveTextContent(/^last dream \d+[smhd] ago$/);
+    expect(sigrunDream).toHaveAttribute('title', '2026-06-03T03:00:00Z');
+
+    const eirDream = screen.getByTestId('roster-last-dream-valkyrie-printer-eir');
+    expect(eirDream).toHaveTextContent(/^dream failed \d+[smhd] ago$/);
+    expect(eirDream).toHaveClass('niuu:text-critical');
+    expect(eirDream.getAttribute('title')).toContain('MimirUnavailable');
+
+    // Runa only has a configured lastDreamAt, Saga has never reported one.
+    expect(screen.getByTestId('roster-last-dream-valkyrie-valhalla-runa')).toHaveTextContent(
+      'last dream',
+    );
+    expect(screen.queryByTestId('roster-last-dream-valkyrie-host-email')).not.toBeInTheDocument();
+  });
+
   it('regroups by flock and by environment via the group-mode switcher', async () => {
     const user = userEvent.setup();
     renderRoster();
@@ -55,14 +74,14 @@ describe('Roster', () => {
     const user = userEvent.setup();
     renderRoster();
 
-    await user.type(screen.getByLabelText('Filter valkyries'), 'saga');
+    await user.type(screen.getByLabelText('Filter residents'), 'saga');
     expect(screen.getByTestId('roster-item-valkyrie-host-email')).toBeInTheDocument();
     expect(screen.queryByTestId('roster-item-valkyrie-valhalla-sigrun')).not.toBeInTheDocument();
     expect(screen.queryByTestId('roster-group-kubernetes')).not.toBeInTheDocument();
 
-    await user.clear(screen.getByLabelText('Filter valkyries'));
-    await user.type(screen.getByLabelText('Filter valkyries'), 'no-such-valkyrie');
-    expect(screen.getByTestId('roster-empty')).toHaveTextContent('No valkyries match');
+    await user.clear(screen.getByLabelText('Filter residents'));
+    await user.type(screen.getByLabelText('Filter residents'), 'no-such-valkyrie');
+    expect(screen.getByTestId('roster-empty')).toHaveTextContent('No residents match');
   });
 
   it('collapses and expands a group', async () => {

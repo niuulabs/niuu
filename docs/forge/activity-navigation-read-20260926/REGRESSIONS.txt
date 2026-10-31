@@ -1,0 +1,20 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/thor/repos/worktrees/niuu-activity-navigation-read-20260926
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.12.1, respx-0.23.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 243 items
+
+tests/test_skuld/test_live_steering_routing.py ..............            [  5%]
+tests/test_skuld/test_review_pipeline_boundaries.py .................... [ 13%]
+........................................................................ [ 43%]
+.............................................                            [ 62%]
+tests/test_skuld/test_steering_timeline.py ...                           [ 63%]
+tests/test_session_archive.py ..............................             [ 75%]
+tests/test_domain/test_transcript_rebuild.py ...............             [ 81%]
+tests/test_adapters/test_rest_forge_mcp.py ............................. [ 93%]
+.......                                                                  [ 96%]
+tests/test_adapters/test_rest_session_log_notifications.py ........      [100%]
+
+============================= 243 passed in 20.34s =============================

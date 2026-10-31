@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 
 from niuu.ports.credentials import CredentialStorePort
+from volundr.adapters.outbound.openshell_contract import check_network_endpoint_modes
 from volundr.adapters.outbound.ssh_vm_runtime import (
     _LAUNCH,
     _PREPARE,
@@ -31,6 +32,15 @@ _OPEN_SHELL_HOME = "/sandbox/home"
 _OPEN_SHELL_WORKSPACE = "/sandbox/workspace"
 _OPEN_SHELL_CODEX_HOME = f"{_OPEN_SHELL_HOME}/.codex"
 _OPEN_SHELL_CLAUDE_HOME = f"{_OPEN_SHELL_HOME}/.claude"
+#: The OpenShell release this runtime installs on a guest, and the SHA-256 of
+#: that release's install.sh (raw.githubusercontent.com/NVIDIA/OpenShell/<tag>).
+DEFAULT_OPENSHELL_VERSION = "v0.1.6-pre.5"
+DEFAULT_OPENSHELL_INSTALL_SHA256 = (
+    "04c1a437d4a4fc11930d75a336fc4f52bf0c95251e8469c306e407e203769ae7"
+)
+#: ``openshell sandbox list --page-size`` while confirming a deletion; the
+#: gateway coerces anything above 1000 down to 1000.
+DEFAULT_SANDBOX_INVENTORY_PAGE_SIZE = 1000
 
 
 def _credential_mappings(values: dict[str, Any]) -> list[dict[str, Any]]:
@@ -51,6 +61,9 @@ def _native_provider_target(env_name: str, configured: object) -> dict[str, Any]
             raise ValueError("OpenShell credential provider requires endpoints")
         if not isinstance(binaries, list) or not binaries:
             raise ValueError("OpenShell credential provider requires binaries")
+        for endpoint in endpoints:
+            if isinstance(endpoint, dict):
+                check_network_endpoint_modes(endpoint)
         return {
             "auth_style": str(
                 configured.get("authStyle") or configured.get("auth_style") or "bearer"
@@ -113,7 +126,6 @@ def _native_provider_target(env_name: str, configured: object) -> dict[str, Any]
                 "host": host,
                 "port": 443,
                 "protocol": "rest",
-                "tls": "terminate",
                 "enforcement": "enforce",
                 "access": "full",
             }
@@ -210,9 +222,25 @@ def _policy_with_native_providers(configured_policy: str, specs: list[dict[str, 
     return yaml.safe_dump(policy, sort_keys=False)
 
 
-_INSTALL_OPENSHELL = r"""
-import base64, os, pathlib, re, shutil, subprocess, sys, time
+_OPENSHELL_VERSION_CHECK = r"""
+def installed_openshell_version():
+    if shutil.which('openshell') is None:
+        return ''
+    banner=subprocess.run(['openshell','--version'],capture_output=True,text=True).stdout
+    match=re.search(r'v?(\d+\.\d+\.\d+(?:[-+~][A-Za-z0-9.+~-]+)?)',
+                    (banner.splitlines() or [''])[0])
+    return match.group(1).replace('~','-') if match else ''
+pinned_version=sys.argv[1]
+wanted_version=pinned_version.lstrip('v')
+"""
 
+_INSTALL_OPENSHELL = (
+    r"""
+import base64, hashlib, os, pathlib, re, shutil, subprocess, sys, time
+"""
+    + _OPENSHELL_VERSION_CHECK
+    + r"""
+install_sha256=sys.argv[2]
 stage='host-install'
 def report_stage(exc_type,exc_value,traceback):
     print('NIIU_OPEN_SHELL_STAGE:'+stage,file=sys.stderr)
@@ -244,19 +272,31 @@ if not gateway_ports.exists() or gateway_ports.read_text()!=gateway_ports_text:
     temporary.unlink(missing_ok=True)
     run('sudo','-n','sshd','-t')
     run('sudo','-n','systemctl','restart','ssh')
-if shutil.which('openshell') is None:
+if installed_openshell_version() != wanted_version or shutil.which('openshell-gateway') is None:
     installer=pathlib.Path('/tmp/niuu-openshell-install.sh')
-    run('curl','-LsSf','https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh',
+    run('curl','-LsSf',
+        f'https://raw.githubusercontent.com/NVIDIA/OpenShell/{pinned_version}/install.sh',
         '-o',str(installer))
+    digest=hashlib.sha256(installer.read_bytes()).hexdigest()
+    if digest!=install_sha256:
+        installer.unlink(missing_ok=True)
+        raise RuntimeError(f'OpenShell {pinned_version} install.sh has sha256 {digest}, '
+                           f'not the pinned {install_sha256}; set openshell_install_sha256')
     # The package installer starts the gateway immediately using its auto-detected
     # driver.  On an unconfigured VM that service start can fail before Niuu has
     # written the requested driver configuration below, even though installation
     # itself completed successfully.  Validate the installed artifacts instead;
     # the configured gateway readiness check remains the final success condition.
-    subprocess.run(['sh',str(installer)],check=False,stdout=subprocess.DEVNULL)
+    subprocess.run(['sh',str(installer)],check=False,stdout=subprocess.DEVNULL,
+                   env={**os.environ,'OPENSHELL_VERSION':pinned_version})
+    installer.unlink(missing_ok=True)
     missing=[name for name in ('openshell','openshell-gateway') if shutil.which(name) is None]
     if missing:
         raise RuntimeError('OpenShell installer did not install: '+', '.join(missing))
+    installed=installed_openshell_version()
+    if installed != wanted_version:
+        raise RuntimeError(f'OpenShell installer left {installed or "an unknown version"}; '
+                           f'Niuu requires {pinned_version}')
 # OpenShell gives its Podman sandbox explicit CPU limits.  Some guest images
 # restrict user@.service to the memory/pids controllers, which makes rootless
 # crun reject that sandbox even though ordinary Podman containers work.  This
@@ -293,17 +333,23 @@ if 'cpu' not in controllers:
 stage='gateway-config'
 config=pathlib.Path.home()/'.config/openshell/gateway.toml'
 config.parent.mkdir(parents=True,exist_ok=True)
+# The sandbox mounts the guest's workspace and home as host binds through its
+# driver config; OpenShell cannot label host paths, so admission is off here.
 desired=f'''[openshell]
-version = 1
+version = 2
 
 [openshell.gateway]
 bind_address = "0.0.0.0:17670"
-compute_drivers = ["podman"]
+compute_driver = "podman"
 
 [openshell.drivers.podman]
 socket_path = "/run/user/{os.getuid()}/podman/podman.sock"
 grpc_endpoint = "https://host.containers.internal:17670"
 enable_bind_mounts = true
+allow_driver_config = true
+
+[openshell.drivers.podman.resource_admission]
+enabled = false
 '''
 if not config.exists() or config.read_text()!=desired:
     temporary=config.with_name(config.name+'.niuu-tmp')
@@ -339,13 +385,21 @@ for _ in range(30):
 else:
     raise RuntimeError('OpenShell gateway did not become ready')
 """
+)
 
-_VERIFY_OPENSHELL = r"""
-import os, pathlib, shutil, subprocess
-
+_VERIFY_OPENSHELL = (
+    r"""
+import os, pathlib, re, shutil, subprocess, sys
+"""
+    + _OPENSHELL_VERSION_CHECK
+    + r"""
 for command in ('openshell','openshell-gateway','podman'):
     if shutil.which(command) is None:
         raise RuntimeError('Prepared OpenShell host is missing required software')
+installed=installed_openshell_version()
+if installed != wanted_version:
+    raise RuntimeError(f'Prepared OpenShell host runs {installed or "an unknown version"}; '
+                       f'Niuu requires {pinned_version} (set openshell_version to match)')
 version=subprocess.check_output(['podman','version','--format','{{.Client.Version}}'],text=True).strip()
 if int(version.split('.',1)[0]) < 5:
     raise RuntimeError('Prepared OpenShell host requires Podman 5 or newer')
@@ -355,6 +409,7 @@ if not socket.exists():
 subprocess.run(['openshell','status'],check=True,stdout=subprocess.DEVNULL,
                stderr=subprocess.DEVNULL)
 """
+)
 
 _CONFIGURE_PROVIDERS = r"""
 import json, os, pathlib, subprocess, sys
@@ -541,31 +596,35 @@ def bounded_run(argv,**kwargs):
         raise subprocess.TimeoutExpired(argv,0)
     return subprocess.run(argv,timeout=min(command_timeout,remaining),**kwargs)
 def sandbox_absent(name):
-    INVENTORY_LIMIT=1000
-    INVENTORY_MAX_PAGES=100
-    offset=0
-    for _ in range(INVENTORY_MAX_PAGES):
+    # Pages are bounded by the deletion deadline (bounded_run), not a count.
+    page_token=''
+    seen_tokens=set()
+    while True:
+        token_args=['--page-token',page_token] if page_token else []
         inventory=bounded_run(
-            ['openshell','sandbox','list','--limit',str(INVENTORY_LIMIT),
-             '--offset',str(offset),
-             '--output','json'],capture_output=True,text=True)
+            ['openshell','sandbox','list','--page-size',str(inventory_page_size),
+             *token_args,'--output','json'],capture_output=True,text=True)
         if inventory.returncode != 0:
             return None,classify_failure(inventory.stderr)
         try:
-            entries=json.loads(inventory.stdout)
+            page=json.loads(inventory.stdout)
         except (TypeError,json.JSONDecodeError):
             return None,'invalid-inventory'
-        if not isinstance(entries,list) or any(
+        entries=page.get('sandboxes') if isinstance(page,dict) else None
+        next_token=page.get('next_page_token') if isinstance(page,dict) else None
+        if not isinstance(entries,list) or not isinstance(next_token,str) or any(
             not isinstance(item,dict) or not isinstance(item.get('name'),str)
             or not item['name'] for item in entries
         ):
             return None,'invalid-inventory'
         if any(item.get('name') == name for item in entries):
             return False,None
-        if len(entries) < INVENTORY_LIMIT:
+        if not next_token:
             return True,None
-        offset+=len(entries)
-    return None,'invalid-inventory'
+        if next_token in seen_tokens:
+            return None,'invalid-inventory'
+        seen_tokens.add(next_token)
+        page_token=next_token
 allocation=sys.argv[1]
 name=sys.argv[2]
 unit=sys.argv[4]
@@ -583,6 +642,7 @@ subprocess.run(['systemctl','--user','stop',unit],stdout=subprocess.DEVNULL,
                stderr=subprocess.DEVNULL)
 stage='sandbox-delete'
 timeout,poll_interval,command_timeout=map(float,sys.argv[6:9])
+inventory_page_size=int(sys.argv[9])
 deadline=time.monotonic()+timeout
 delete_exit='timeout'
 delete_reason='deadline-exceeded'
@@ -651,6 +711,9 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
         sandbox_delete_timeout_seconds: float = 120,
         sandbox_delete_poll_interval_seconds: float = 2,
         sandbox_delete_command_timeout_seconds: float = 30,
+        sandbox_inventory_page_size: int = DEFAULT_SANDBOX_INVENTORY_PAGE_SIZE,
+        openshell_version: str = DEFAULT_OPENSHELL_VERSION,
+        openshell_install_sha256: str = DEFAULT_OPENSHELL_INSTALL_SHA256,
         sandbox_uid: int = 998,
         sandbox_gid: int = 998,
         sandbox_command: list[str] | tuple[str, ...] = (
@@ -669,6 +732,16 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
         if any(not math.isfinite(value) or value <= 0 for value in deletion_timing):
             raise ValueError("OpenShell deletion timing must be finite and positive")
         self._sandbox_delete_timing = deletion_timing
+        if sandbox_inventory_page_size < 1:
+            raise ValueError("sandbox_inventory_page_size must be positive")
+        self._sandbox_inventory_page_size = sandbox_inventory_page_size
+        if not openshell_version or not openshell_install_sha256:
+            raise ValueError(
+                "Pin the guest's OpenShell: set openshell_version and "
+                "openshell_install_sha256 (the SHA-256 of that release's install.sh)"
+            )
+        self._openshell_version = openshell_version
+        self._openshell_install_sha256 = openshell_install_sha256
         self._sandbox_platform_url = sandbox_platform_url.rstrip("/")
         self._policy = policy
         self._sandbox_uid = sandbox_uid
@@ -743,7 +816,7 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
         await self._execute_remote(
             lease,
             bootstrap,
-            self._user_python(program),
+            self._user_python(program, self._openshell_version, self._openshell_install_sha256),
             safe_error_prefix=_OPEN_SHELL_ERROR_PREFIX,
             safe_detail_prefix=_OPEN_SHELL_DETAIL_PREFIX,
         )
@@ -903,6 +976,7 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
                 self._workload_unit(lease),
                 json.dumps(providers),
                 *(str(value) for value in self._sandbox_delete_timing),
+                str(self._sandbox_inventory_page_size),
             ),
             expected_exit_codes=(0, 42),
             safe_error_prefix=_OPEN_SHELL_ERROR_PREFIX,

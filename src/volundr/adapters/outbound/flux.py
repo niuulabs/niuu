@@ -5,8 +5,13 @@ reconciles into running session pods. Selected via the dynamic
 adapter pattern in config YAML.
 """
 
+import base64
 import copy
+import json
 import logging
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -17,13 +22,20 @@ from niuu.adapters.flux import (
     FluxHelmReleases,
     create_flux_api_client,
 )
+from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
+from volundr.adapters.outbound.k8s_storage_adapter import build_pvc_manifest
+from volundr.adapters.outbound.local_resident_storage import LOG_LEVELS, resident_log_level
 from volundr.adapters.outbound.resident_container_spec import (
     resident_flock_labels,
     resident_flock_profile_configured,
     resident_mesh_pod_metadata,
+    resident_openclaw_shim_enabled,
 )
 from volundr.domain.models import (
+    LABEL_MANAGED_BY,
+    LABEL_PVC_TYPE,
+    CredentialMapping,
     ResidentBackend,
     ResidentCondition,
     ResidentConditionStatus,
@@ -31,6 +43,8 @@ from volundr.domain.models import (
     ResidentDesiredState,
     ResidentEndpoint,
     ResidentEngine,
+    ResidentLogEntry,
+    ResidentLogPage,
     ResidentObservedState,
     ResidentRuntime,
     Session,
@@ -39,13 +53,73 @@ from volundr.domain.models import (
     _deep_merge,
 )
 from volundr.domain.ports import (
+    CredentialStorePort,
+    IntegrationRepository,
     PodManager,
     PodStartResult,
+    ResidentLogsUnavailableError,
+    ResidentOpenClawShimHost,
+    ResidentOpenClawTokens,
     ResidentRuntimeController,
+    ResidentRuntimeLogReader,
     ResidentRuntimeObservation,
+    SecretInjectionPort,
 )
 
 logger = logging.getLogger(__name__)
+
+LABEL_RESIDENT_ID = "niuu.world/resident-id"
+# Deliberately not volundr/owner: the resident pod does not carry that label
+# (Valhalla's session podAffinity co-locates a user's skuld pods by it), so an
+# owner-labelled claim would fail the PVC isolation policy (charts/volundr
+# kyverno-pvc-isolation.yaml).
+LABEL_RESIDENT_OWNER_ID = "niuu.world/owner-id"
+LABEL_RESIDENT_TENANT_ID = "niuu.world/tenant-id"
+# A resident's own volumes, keyed by the profile's deployment.volumes block.
+RESIDENT_VOLUME_KINDS = ("home", "workspace")
+RESIDENT_VOLUME_SETTINGS = frozenset({"storageClass", "size", "accessMode"})
+_HTTP_FORBIDDEN = 403
+_HTTP_NOT_FOUND = 404
+_HTTP_CONFLICT = 409
+#: Key of a Ravn resident's own OpenClaw shim token Secret (resident.openclaw.tokenSecret).
+RESIDENT_OPENCLAW_TOKEN_KEY = "token"
+#: Protocol a resident's voice channel speaks (ravn.adapters.channels.voice): the
+#: agent-service wire of realtime voice clients, served under /voice/ on the resident's route.
+RESIDENT_VOICE_PROTOCOL = "agent-service-voice-v1"
+#: The resident pod container its declared credentials are rendered into: the Ravn
+#: daemon, which holds the persona, its tools and the voice channel.
+RESIDENT_CREDENTIAL_CONTAINERS = "ravn"
+#: Where the OpenBao agent renders injected files in the pod (its shared secret volume).
+RESIDENT_SECRET_ROOT = "/run/secrets/"
+#: The platform version (chart and images) Völundr last rendered into a resident's release.
+ANNOTATION_PLATFORM_VERSION = "niuu.world/platform-version"
+#: The version that release replaced. A Völundr that still renders it (the old replica
+#: while Völundr itself rolls out) must not move the resident back to it.
+ANNOTATION_REPLACED_PLATFORM_VERSION = "niuu.world/replaced-platform-version"
+#: Which of the owner's credentials each integration a resident declares was bound to
+#: when it was deployed (``{slug: credential name}``). Every later render reuses it:
+#: following the platform, restart and resume run without the owner's login, which
+#: reading the owner's connections needs.
+ANNOTATION_RESIDENT_INTEGRATIONS = "niuu.world/resident-integrations"
+
+
+@dataclass(frozen=True)
+class RenderedResident:
+    """A resident's release values and the integration credentials they were bound to."""
+
+    values: dict[str, Any]
+    integrations: dict[str, str]
+
+
+@dataclass(frozen=True)
+class ResidentVolumeClaim:
+    """One PVC this controller creates and deletes for a single resident."""
+
+    kind: str
+    name: str
+    size: str
+    storage_class: str
+    access_mode: str
 
 
 class FluxPodManager(
@@ -53,6 +127,8 @@ class FluxPodManager(
     BrokeredCredentialPodManager,
     PodManager,
     ResidentRuntimeController,
+    ResidentRuntimeLogReader,
+    ResidentOpenClawShimHost,
 ):
     """Flux-native implementation of PodManager.
 
@@ -85,6 +161,10 @@ class FluxPodManager(
         resident_platform_base_url: str = "",
         resident_triggers_enabled: bool = False,
         resident_budget_enabled: bool = False,
+        resident_home_size: str = "1Gi",
+        resident_workspace_size: str = "2Gi",
+        resident_storage_class: str = "",
+        resident_access_mode: str = "ReadWriteOnce",
         **_extra: object,
     ):
         self._namespace = namespace
@@ -112,6 +192,30 @@ class FluxPodManager(
         self._resident_platform_base_url = resident_platform_base_url
         self._resident_triggers_enabled = resident_triggers_enabled
         self._resident_budget_enabled = resident_budget_enabled
+        # Where each Ravn resident's own OpenClaw shim token is kept, handed over by
+        # the Ravn session controller (set_resident_openclaw_tokens). None: no Ravn
+        # sessions on this backend.
+        self._resident_openclaw_tokens: ResidentOpenClawTokens | None = None
+        # The owner's credentials a profile declares for its residents (deployment.credentials),
+        # injected through the same OpenBao agent as session credentials.
+        self._secret_injection: SecretInjectionPort | None = None
+        self._integrations: IntegrationRepository | None = None
+        self._credential_store: CredentialStorePort | None = None
+        # Defaults for each resident's own home and workspace PVCs; a profile
+        # overrides them per volume in deployment.volumes.<home|workspace>.
+        # An empty storage class means the cluster's default class.
+        self._resident_volume_defaults = {
+            "home": {
+                "size": resident_home_size,
+                "storageClass": resident_storage_class,
+                "accessMode": resident_access_mode,
+            },
+            "workspace": {
+                "size": resident_workspace_size,
+                "storageClass": resident_storage_class,
+                "accessMode": resident_access_mode,
+            },
+        }
         if not resident_platform_base_url and (
             resident_triggers_enabled or resident_budget_enabled
         ):
@@ -134,6 +238,10 @@ class FluxPodManager(
         )
         self._api_client = None
         self._realm_repository = None
+        # Residents whose move to a platform version failed in this Völundr:
+        # resident id -> (target version, reason). Not retried until the target
+        # changes, an explicit restart or resume, or Völundr restarts.
+        self._failed_platform_upgrades: dict[str, tuple[str, str]] = {}
 
     def set_realm_repository(self, repository) -> None:
         """Enable resolving a resident's realm slug for its Helm values.
@@ -172,6 +280,13 @@ class FluxPodManager(
         from kubernetes_asyncio import client
 
         return client.CustomObjectsApi(self._api_client)
+
+    async def _get_core_api(self):
+        """CoreV1Api on the same client, for a resident's own PVCs."""
+        await self._get_api()
+        from kubernetes_asyncio import client
+
+        return client.CoreV1Api(self._api_client)
 
     def _release_name(self, session: Session) -> str:
         return f"skuld-{session.id}"
@@ -296,6 +411,56 @@ class FluxPodManager(
             return SessionStatus.STOPPED
 
         return self._map_status(obj)
+
+    async def status_detail(self, session: Session) -> str | None:
+        """Say why a session's pods are not running, from the cluster's own record.
+
+        A failed install used to surface as "infrastructure reported failure":
+        Flux uninstalls the release and its pods, taking the reason with them.
+        Pod Warning events outlive the pods, so they still say what happened
+        (e.g. FailedScheduling: Insufficient memory). A Ready release has no
+        detail to report.
+        """
+        release_name = self._release_name(session)
+        obj = await self._get_helmrelease(release_name)
+        conditions = (obj or {}).get("status", {}).get("conditions", [])
+        ready = next((c for c in conditions if c.get("type") == "Ready"), None)
+        if ready is not None and ready.get("status") == "True":
+            return None
+
+        parts: list[str] = []
+        warning = await self._latest_pod_warning(release_name)
+        if warning:
+            parts.append(warning)
+        if ready is not None and ready.get("message"):
+            parts.append(f"HelmRelease {ready.get('reason') or 'NotReady'}: {ready['message']}")
+        return "; ".join(parts) or None
+
+    async def _latest_pod_warning(self, release_name: str) -> str | None:
+        core = await self._get_core_api()
+        try:
+            events = await core.list_namespaced_event(
+                self._namespace,
+                field_selector="type=Warning,involvedObject.kind=Pod",
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) != 403:
+                raise
+            raise RuntimeError(
+                f"Völundr may not list events in namespace {self._namespace!r}, which it "
+                "reads to say why a session did not start; grant events get/list there "
+                "(the volundr chart's Role, or its ClusterRole with rbac.clusterWide)"
+            ) from exc
+        prefix = f"{release_name}-"
+        mine = [
+            event
+            for event in events.items or []
+            if (event.involved_object.name or "").startswith(prefix)
+        ]
+        if not mine:
+            return None
+        latest = max(mine, key=_event_time)
+        return f"pod {latest.involved_object.name}: {latest.reason}: {latest.message}"
 
     @staticmethod
     def _map_status(obj: dict) -> SessionStatus:
@@ -429,14 +594,469 @@ class FluxPodManager(
             "workloadSelector": f"app.kubernetes.io/instance={release_name}",
         }
 
-    def _endpoints(self, runtime: ResidentRuntime) -> list[ResidentEndpoint]:
-        return [
+    def _endpoints(
+        self, runtime: ResidentRuntime, *, voice: bool = False
+    ) -> list[ResidentEndpoint]:
+        endpoints = [
             ResidentEndpoint(
                 kind="chat",
                 protocol="skuld-v1",
                 url=self._chat_endpoint(str(runtime.id), str(runtime.id)),
             )
         ]
+        if voice:
+            endpoints.append(
+                ResidentEndpoint(
+                    kind="voice",
+                    protocol=RESIDENT_VOICE_PROTOCOL,
+                    url=self._voice_endpoint(runtime),
+                )
+            )
+        return endpoints
+
+    def _voice_endpoint(self, runtime: ResidentRuntime) -> str:
+        if self._gateway_domain:
+            return f"https://{self._gateway_domain}/s/{runtime.id}/voice"
+        return f"{self._code_scheme}://{self._session_host(str(runtime.id))}/voice"
+
+    @staticmethod
+    def _values_enable_voice(values: Any) -> bool:
+        """Whether rendered chart values turn the resident's voice channel on."""
+        resident = values.get("resident") if isinstance(values, dict) else None
+        voice = resident.get("voice") if isinstance(resident, dict) else None
+        return isinstance(voice, dict) and voice.get("enabled") is True
+
+    @staticmethod
+    def _resident_claim_name(runtime: ResidentRuntime, kind: str) -> str:
+        return f"resident-{runtime.id}-{kind}"
+
+    def _resident_claims(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> list[ResidentVolumeClaim]:
+        """The PVCs this resident owns: its own home and its own workspace.
+
+        A profile that names its own ``existingClaim`` (or turns the volume
+        off, or uses ``persistence.emptyDir``) keeps that choice, and no PVC
+        is created for that volume.
+        """
+        values = profile.deployment.get("values") or {}
+        if not isinstance(values, dict):
+            raise ValueError(f"Resident profile {profile.id} deployment.values must be an object")
+        volumes = profile.deployment.get("volumes") or {}
+        if not isinstance(volumes, dict):
+            raise ValueError(f"Resident profile {profile.id} deployment.volumes must be an object")
+        unknown = set(volumes) - set(RESIDENT_VOLUME_KINDS)
+        if unknown:
+            raise ValueError(
+                f"Resident profile {profile.id} deployment.volumes has unknown "
+                f"volumes {sorted(unknown)}; expected {list(RESIDENT_VOLUME_KINDS)}"
+            )
+
+        claims: list[ResidentVolumeClaim] = []
+        if self._resident_owns_volume(values.get("homeVolume"), profile, "homeVolume"):
+            claims.append(self._resident_claim(runtime, profile, "home", volumes.get("home")))
+        if self._resident_owns_volume(values.get("persistence"), profile, "persistence"):
+            claims.append(
+                self._resident_claim(runtime, profile, "workspace", volumes.get("workspace"))
+            )
+        return claims
+
+    @staticmethod
+    def _resident_owns_volume(
+        configured: object,
+        profile: ResidentDeploymentProfile,
+        key: str,
+    ) -> bool:
+        if configured is None:
+            return True
+        if not isinstance(configured, dict):
+            raise ValueError(
+                f"Resident profile {profile.id} deployment.values.{key} must be an object"
+            )
+        if configured.get("enabled") is False:
+            return False
+        if configured.get("emptyDir"):
+            return False
+        return not configured.get("existingClaim")
+
+    def _resident_claim(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+        kind: str,
+        configured: object,
+    ) -> ResidentVolumeClaim:
+        configured = configured or {}
+        if not isinstance(configured, dict):
+            raise ValueError(
+                f"Resident profile {profile.id} deployment.volumes.{kind} must be an object"
+            )
+        unknown = set(configured) - RESIDENT_VOLUME_SETTINGS
+        if unknown:
+            raise ValueError(
+                f"Resident profile {profile.id} deployment.volumes.{kind} has unknown "
+                f"settings {sorted(unknown)}; expected {sorted(RESIDENT_VOLUME_SETTINGS)}"
+            )
+        settings = {**self._resident_volume_defaults[kind], **configured}
+        for setting in ("size", "accessMode"):
+            if not str(settings[setting] or ""):
+                raise ValueError(
+                    f"Resident profile {profile.id} deployment.volumes.{kind}.{setting} "
+                    "must not be empty"
+                )
+        return ResidentVolumeClaim(
+            kind=kind,
+            name=self._resident_claim_name(runtime, kind),
+            size=str(settings["size"]),
+            storage_class=str(settings["storageClass"] or ""),
+            access_mode=str(settings["accessMode"]),
+        )
+
+    @staticmethod
+    def _resident_claim_values(claims: list[ResidentVolumeClaim]) -> dict[str, Any]:
+        values: dict[str, Any] = {}
+        for claim in claims:
+            key = "homeVolume" if claim.kind == "home" else "persistence"
+            values[key] = {"enabled": True, "existingClaim": claim.name}
+        return values
+
+    async def _ensure_resident_claims(
+        self,
+        runtime: ResidentRuntime,
+        claims: list[ResidentVolumeClaim],
+    ) -> None:
+        """Create the resident's PVCs; an existing one must already be its own."""
+        if not claims:
+            return
+        api = await self._get_core_api()
+        for claim in claims:
+            manifest = build_pvc_manifest(
+                name=claim.name,
+                namespace=self._namespace,
+                storage=claim.size,
+                storage_class=claim.storage_class or None,
+                access_mode=claim.access_mode,
+                labels={
+                    LABEL_MANAGED_BY: self._managed_by,
+                    # Not "home"/"workspace": those are the user home and
+                    # session workspaces K8sStorageAdapter lists and manages.
+                    LABEL_PVC_TYPE: f"resident-{claim.kind}",
+                    LABEL_RESIDENT_ID: str(runtime.id),
+                    LABEL_RESIDENT_OWNER_ID: runtime.owner_id,
+                    LABEL_RESIDENT_TENANT_ID: runtime.tenant_id,
+                },
+            )
+            try:
+                await api.create_namespaced_persistent_volume_claim(
+                    namespace=self._namespace,
+                    body=manifest,
+                )
+                logger.info(
+                    "Created resident %s PVC %s in namespace %s",
+                    claim.kind,
+                    claim.name,
+                    self._namespace,
+                )
+                continue
+            except Exception as exc:
+                if getattr(exc, "status", None) != _HTTP_CONFLICT:
+                    raise
+            existing = await api.read_namespaced_persistent_volume_claim(
+                name=claim.name,
+                namespace=self._namespace,
+            )
+            labels = existing.metadata.labels or {}
+            managed = labels.get(LABEL_MANAGED_BY) == self._managed_by
+            owned = labels.get(LABEL_RESIDENT_ID) == str(runtime.id)
+            if not (managed and owned):
+                raise ValueError(
+                    f"PVC {self._namespace}/{claim.name} exists but is not resident "
+                    f"{runtime.id}'s own volume; delete or rename it before deploying"
+                )
+
+    async def _delete_resident_claims(self, runtime: ResidentRuntime) -> None:
+        api = await self._get_core_api()
+        for kind in RESIDENT_VOLUME_KINDS:
+            name = self._resident_claim_name(runtime, kind)
+            try:
+                await api.delete_namespaced_persistent_volume_claim(
+                    name=name,
+                    namespace=self._namespace,
+                )
+                logger.info("Deleted resident %s PVC %s", kind, name)
+            except Exception as exc:
+                if getattr(exc, "status", None) != _HTTP_NOT_FOUND:
+                    raise
+                logger.debug("Resident %s PVC %s is already absent", kind, name)
+
+    def set_resident_credentials(
+        self,
+        *,
+        secret_injection: SecretInjectionPort,
+        integrations: IntegrationRepository,
+        credential_store: CredentialStorePort,
+    ) -> None:
+        """Wire what a resident's declared credentials are resolved and injected with."""
+        self._secret_injection = secret_injection
+        self._integrations = integrations
+        self._credential_store = credential_store
+
+    async def _resident_credential_annotations(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+        bound: Mapping[str, str],
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Inject the owner's credentials a profile declares, bound to the resident's own SA.
+
+        ``deployment.credentials`` lists ``{integration: <slug>}`` (the owner's one enabled
+        connection of that integration) or ``{credential: <name>}``, each with ``files``
+        mapping a path under /run/secrets/ to a credential field. They render into the
+        ravn container. Declared but impossible is fatal.
+
+        An integration already in ``bound`` keeps that credential; any other is read
+        from the owner's connections. Returns the annotations and every integration's
+        credential, for the release to record (``ANNOTATION_RESIDENT_INTEGRATIONS``).
+        """
+        declared = profile.deployment.get("credentials") or []
+        if not declared:
+            return {}, {}
+        if not isinstance(declared, list):
+            raise ValueError(f"Resident profile {profile.id} deployment.credentials must be a list")
+        injection = self._secret_injection
+        if injection is None or not injection.supports_workloads:
+            raise ValueError(
+                f"Resident profile {profile.id} declares credentials, but this Völundr has no "
+                "secret injection that serves residents: configure the OpenBao injection adapter"
+            )
+        service_account = self._resident_service_account_values(runtime).get("serviceAccountName")
+        if not service_account:
+            raise ValueError(
+                f"Resident profile {profile.id} declares credentials, which bind to the "
+                "resident's own service account: set the resident platform base URL"
+            )
+        mappings = [
+            await self._resident_credential_mapping(runtime, profile, item, bound)
+            for item in declared
+        ]
+        integrations = {
+            str(item["integration"]): mapping.credential_name
+            for item, mapping in zip(declared, mappings, strict=True)
+            if item.get("integration")
+        }
+        additions = await injection.workload_pod_spec_additions(
+            runtime.owner_id,
+            mappings,
+            workload_id=str(runtime.id),
+            service_account_name=str(service_account),
+            inject_containers=RESIDENT_CREDENTIAL_CONTAINERS,
+            tenant_id=runtime.tenant_id,
+        )
+        return dict(additions.annotations), integrations
+
+    async def _resident_credential_mapping(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+        item: Any,
+        bound: Mapping[str, str],
+    ) -> CredentialMapping:
+        where = f"Resident profile {profile.id} deployment.credentials"
+        if not isinstance(item, dict):
+            raise ValueError(f"{where} entries must be objects")
+        integration = str(item.get("integration") or "")
+        credential = str(item.get("credential") or "")
+        if bool(integration) == bool(credential):
+            raise ValueError(f"{where} entries name exactly one of integration or credential")
+        files = item.get("files")
+        if not isinstance(files, dict) or not files:
+            raise ValueError(f"{where} entries map files: {{path: field}}")
+        for path, field in files.items():
+            if not str(path).startswith(RESIDENT_SECRET_ROOT) or not field:
+                raise ValueError(
+                    f"{where} files must map a path under {RESIDENT_SECRET_ROOT} to a field"
+                )
+        if integration:
+            credential = bound.get(integration) or await self._owner_integration_credential(
+                runtime, where, integration
+            )
+        if self._credential_store is None:
+            raise ValueError(f"{where} needs a credential store to check the owner's credentials")
+        stored = await self._credential_store.get("user", runtime.owner_id, credential)
+        if stored is None:
+            raise ValueError(f"{where}: the owner has no credential {credential!r}")
+        missing = sorted({str(field) for field in files.values()} - set(stored.keys))
+        if missing:
+            raise ValueError(f"{where}: credential {credential!r} has no field(s) {missing}")
+        return CredentialMapping(
+            credential_name=credential,
+            file_mappings={str(path): str(field) for path, field in files.items()},
+        )
+
+    async def _owner_integration_credential(
+        self, runtime: ResidentRuntime, where: str, slug: str
+    ) -> str:
+        if self._integrations is None:
+            raise ValueError(f"{where} names integration {slug!r} but no integrations are wired")
+        connections = [
+            connection
+            for connection in await self._integrations.list_connections(runtime.owner_id)
+            if connection.slug == slug and connection.enabled
+        ]
+        if len(connections) != 1:
+            raise ValueError(
+                f"{where} names integration {slug!r}: the owner needs exactly one enabled "
+                f"{slug} connection, and has {len(connections)}"
+            )
+        return connections[0].credential_name
+
+    def set_resident_openclaw_tokens(self, tokens: ResidentOpenClawTokens) -> None:
+        """Where each Ravn resident's own shim token is kept (RavnResidentSessionController)."""
+        self._resident_openclaw_tokens = tokens
+
+    async def resident_openclaw_token(self, runtime: ResidentRuntime) -> str:
+        """The kept token; else the one in the resident's own Secret (adopted); else new.
+
+        A resident Volundr deployed before tokens were kept per resident runs with the
+        token in resident-<id>-openclaw; adopting it keeps its sessions across the
+        upgrade without a restart.
+        """
+        tokens = self._resident_openclaw_tokens
+        if tokens is None:
+            raise RuntimeError("Ravn resident sessions are not wired on helmrelease")
+        token = await tokens.stored(runtime)
+        if token:
+            return token
+        return await tokens.ensure(runtime, adopt=await self._read_resident_openclaw_token(runtime))
+
+    async def _read_resident_openclaw_token(self, runtime: ResidentRuntime) -> str | None:
+        """The token in the resident's own shim Secret, when Volundr wrote it."""
+        api = await self._get_core_api()
+        try:
+            secret = await api.read_namespaced_secret(
+                name=self._resident_openclaw_secret_name(runtime),
+                namespace=self._namespace,
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == _HTTP_NOT_FOUND:
+                return None
+            raise
+        metadata = getattr(secret, "metadata", None)
+        labels = getattr(metadata, "labels", None) or {}
+        if not (
+            labels.get(LABEL_MANAGED_BY) == self._managed_by
+            and labels.get(LABEL_RESIDENT_ID) == str(runtime.id)
+        ):
+            return None
+        encoded = (getattr(secret, "data", None) or {}).get(RESIDENT_OPENCLAW_TOKEN_KEY)
+        if not encoded:
+            return None
+        return base64.b64decode(encoded).decode("utf-8") or None
+
+    @staticmethod
+    def _resident_openclaw_secret_name(runtime: ResidentRuntime) -> str:
+        return f"resident-{runtime.id}-openclaw"
+
+    def _resident_openclaw_enabled(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> bool:
+        values = profile.deployment.get("values") or {}
+        return resident_openclaw_shim_enabled(
+            runtime,
+            values if isinstance(values, dict) else {},
+            tokens_provisioned=self._resident_openclaw_tokens is not None,
+        )
+
+    def resident_openclaw_target(
+        self,
+        runtime: ResidentRuntime,
+        port: int,
+    ) -> SessionProxyTarget | None:
+        """The shim's port on the resident's own Service (charts/skuld service.yaml)."""
+        namespace = str(runtime.backend_ref.get("namespace") or "")
+        release = str(runtime.backend_ref.get("name") or "")
+        if not namespace or not release:
+            return None
+        host = f"{release}-skuld.{namespace}.svc.cluster.local"
+        return SessionProxyTarget(
+            service_url=f"http://{host}:{port}/",
+            connect_host=host,
+            connect_port=port,
+        )
+
+    async def _ensure_resident_openclaw_secret(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> None:
+        """Write the resident's own shim token into its own Secret, for its pod."""
+        if not self._resident_openclaw_enabled(runtime, profile):
+            return
+        name = self._resident_openclaw_secret_name(runtime)
+        token = {RESIDENT_OPENCLAW_TOKEN_KEY: await self.resident_openclaw_token(runtime)}
+        api = await self._get_core_api()
+        try:
+            await api.create_namespaced_secret(
+                namespace=self._namespace,
+                body={
+                    "apiVersion": "v1",
+                    "kind": "Secret",
+                    "type": "Opaque",
+                    "metadata": {
+                        "name": name,
+                        "namespace": self._namespace,
+                        "labels": {
+                            LABEL_MANAGED_BY: self._managed_by,
+                            LABEL_RESIDENT_ID: str(runtime.id),
+                            LABEL_RESIDENT_OWNER_ID: runtime.owner_id,
+                            LABEL_RESIDENT_TENANT_ID: runtime.tenant_id,
+                        },
+                    },
+                    "stringData": token,
+                },
+            )
+            logger.info("Created resident shim token Secret %s/%s", self._namespace, name)
+            return
+        except Exception as exc:
+            if getattr(exc, "status", None) != _HTTP_CONFLICT:
+                raise
+        existing = await api.read_namespaced_secret(name=name, namespace=self._namespace)
+        labels = existing.metadata.labels or {}
+        if not (
+            labels.get(LABEL_MANAGED_BY) == self._managed_by
+            and labels.get(LABEL_RESIDENT_ID) == str(runtime.id)
+        ):
+            raise ValueError(
+                f"Secret {self._namespace}/{name} exists but is not resident "
+                f"{runtime.id}'s own shim token; delete or rename it before deploying"
+            )
+        # Keep it in step with the token Volundr keeps for the resident.
+        await api.patch_namespaced_secret(
+            name=name,
+            namespace=self._namespace,
+            body={"stringData": token},
+        )
+
+    async def _delete_resident_openclaw_secret(self, runtime: ResidentRuntime) -> None:
+        tokens = self._resident_openclaw_tokens
+        if tokens is None:
+            # Without Ravn sessions Volundr writes no such Secret (and holds no Role for it).
+            return
+        if runtime.engine is ResidentEngine.RAVN:
+            await tokens.forget(runtime)
+        name = self._resident_openclaw_secret_name(runtime)
+        api = await self._get_core_api()
+        try:
+            await api.delete_namespaced_secret(name=name, namespace=self._namespace)
+            logger.info("Deleted resident shim token Secret %s", name)
+        except Exception as exc:
+            if getattr(exc, "status", None) != _HTTP_NOT_FOUND:
+                raise
+            logger.debug("Resident shim token Secret %s is already absent", name)
 
     def _resident_values(
         self,
@@ -447,7 +1067,7 @@ class FluxPodManager(
         configured_values = profile.deployment.get("values") or {}
         if not isinstance(configured_values, dict):
             raise ValueError(f"Resident profile {profile.id} deployment.values must be an object")
-        values = copy.deepcopy(configured_values)
+        values = self._with_cluster_volundr_api_url(configured_values)
         configured_resident = values.get("resident")
         configured_persona = ""
         if isinstance(configured_resident, dict):
@@ -490,6 +1110,17 @@ class FluxPodManager(
             }
         if realm_slug:
             resident_values["realm"] = {"slug": realm_slug}
+        if self._resident_openclaw_enabled(runtime, profile):
+            resident_values["openclaw"] = {
+                "enabled": True,
+                "tokenSecret": {
+                    "name": self._resident_openclaw_secret_name(runtime),
+                    "key": RESIDENT_OPENCLAW_TOKEN_KEY,
+                },
+            }
+        else:
+            # Explicit either way: the chart's own default must not decide.
+            resident_values["openclaw"] = {"enabled": False}
 
         flock_labels = resident_flock_labels(runtime, prefix="niuu.world")
         mesh_labels, mesh_annotations = resident_mesh_pod_metadata(runtime)
@@ -502,7 +1133,13 @@ class FluxPodManager(
                 "ownerId": runtime.owner_id,
             },
             "resident": resident_values,
+            # A resident is a resident runtime, not a Forge session: no
+            # Forge session event log or activity exists for its id. Its
+            # main-room history is skuld's own conversation file on its
+            # workspace; usage goes to /resident-runtimes/<id>/usage.
+            "broker": {"eventLogEnabled": False, "activityReportingEnabled": False},
             **self._resident_service_account_values(runtime),
+            **self._resident_claim_values(self._resident_claims(runtime, profile)),
             "podLabels": {
                 "niuu.world/managed": "true",
                 "niuu.world/resident-id": str(runtime.id),
@@ -526,8 +1163,32 @@ class FluxPodManager(
             runtime_values["session"]["model"] = runtime.model
         _deep_merge(values, runtime_values)
         values = self._with_brokered_credential_values(values)
-        _inject_workload_exchange_env(values)
+        _inject_workload_exchange_env(
+            values,
+            exchange_url=_resident_platform_exchange_url(values),
+        )
         _inject_codex_auth_env(values)
+        return values
+
+    def _with_cluster_volundr_api_url(self, configured_values: dict[str, Any]) -> dict[str, Any]:
+        """Profile values on top of this cluster's own Völundr API URL.
+
+        A resident's cluster-local calls (its Forge event log, activity and
+        usage reports, the Codex credential broker) belong to the Völundr that
+        runs it, exactly as a session pod's do, so it gets the same
+        ``volundr.apiUrl`` session pods get from ``session_defaults``. The
+        platform (``resident.platform``) stays the target for platform APIs and
+        the workload-token exchange. A profile that sets its own
+        ``volundr.apiUrl`` keeps it.
+        """
+        session_volundr = self._session_defaults.get("volundr")
+        cluster_api_url = ""
+        if isinstance(session_volundr, dict):
+            cluster_api_url = str(session_volundr.get("apiUrl") or "")
+        if not cluster_api_url:
+            return copy.deepcopy(configured_values)
+        values: dict[str, Any] = {"volundr": {"apiUrl": cluster_api_url}}
+        _deep_merge(values, copy.deepcopy(configured_values))
         return values
 
     async def deploy(
@@ -536,27 +1197,26 @@ class FluxPodManager(
         profile: ResidentDeploymentProfile,
     ) -> ResidentRuntimeObservation:
         release_name = self._resident_release_name(runtime)
-        realm_slug = await self._resolve_realm_slug(runtime)
+        rendered = await self._render_resident_values(runtime, profile)
+        values = rendered.values
+        version = self._platform_version(values)
+        await self._ensure_resident_claims(runtime, self._resident_claims(runtime, profile))
+        await self._ensure_resident_openclaw_secret(runtime, profile)
         await self._apply_helmrelease(
             release_name,
-            self._resident_values(runtime, profile, realm_slug),
-            labels={
-                "niuu.world/kind": "resident",
-                "niuu.world/resident-id": str(runtime.id),
-                "niuu.world/backend": runtime.backend.value,
-                **resident_flock_labels(runtime, prefix="niuu.world"),
-            },
+            values,
+            labels=self._resident_release_labels(runtime),
             annotations={
-                "niuu.world/owner-id": runtime.owner_id,
-                "niuu.world/tenant-id": runtime.tenant_id,
-                "niuu.world/profile-id": runtime.profile_id,
-                **resident_flock_labels(runtime, prefix="niuu.world"),
+                **self._resident_release_annotations(runtime),
+                ANNOTATION_PLATFORM_VERSION: version,
+                **_integrations_annotation(rendered.integrations),
             },
         )
+        self._failed_platform_upgrades.pop(str(runtime.id), None)
         return ResidentRuntimeObservation(
             observed_state=ResidentObservedState.DEPLOYING,
-            backend_ref=self._backend_ref(runtime),
-            endpoints=self._endpoints(runtime),
+            backend_ref={**self._backend_ref(runtime), "platformVersion": version},
+            endpoints=self._endpoints(runtime, voice=self._values_enable_voice(values)),
             conditions=[
                 ResidentCondition(
                     type="BackendReady",
@@ -577,13 +1237,220 @@ class FluxPodManager(
         if helmrelease is None:
             return await self.deploy(runtime, profile)
 
+        upgrade_failure: ResidentCondition | None = None
+        if runtime.desired_state is ResidentDesiredState.RUNNING:
+            # A suspended resident is not woken for this: resume renders it anew.
+            helmrelease, upgrade_failure = await self._follow_platform(
+                runtime, profile, helmrelease
+            )
+
         desired_replicas = 0 if runtime.desired_state is ResidentDesiredState.SUSPENDED else 1
         values = (helmrelease.get("spec") or {}).get("values") or {}
         if values.get("replicaCount", 1) != desired_replicas:
             await self._set_replica_count(runtime, desired_replicas)
 
         deployment = await self._get_resident_deployment(release_name)
-        return self._resident_observation(runtime, helmrelease, deployment)
+        observation = self._resident_observation(runtime, helmrelease, deployment)
+        if upgrade_failure is None:
+            return observation
+        return replace(
+            observation,
+            observed_state=ResidentObservedState.FAILED,
+            conditions=[upgrade_failure, *observation.conditions],
+        )
+
+    async def _follow_platform(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+        helmrelease: dict[str, Any],
+    ) -> tuple[dict[str, Any], ResidentCondition | None]:
+        """Move a running resident's release to the version this Völundr renders, once.
+
+        The version is the chart and the images the profile renders now, compared
+        with the release's own spec, so it holds across Völundr restarts and
+        replicas. The release keeps the resident's own PVCs and shim token Secret,
+        so a version change is a rolling update with its disks and channels intact.
+        A version this release was already moved to, or moved away from, is never
+        applied again: an edited release is left alone, and an older Völundr still
+        rendering the replaced version (during Völundr's own rollout) does not move
+        the resident back. A failed move marks the resident failed and is not
+        retried until the target changes or the resident is restarted.
+
+        Returns the release as it now is and the failure condition, if any.
+        """
+        runtime_id = str(runtime.id)
+        try:
+            rendered = await self._render_resident_values(
+                runtime, profile, bound_integrations=_release_integrations(helmrelease)
+            )
+        except Exception:
+            # Deploy reports a profile or realm that does not render; reconcile
+            # keeps observing the release as it runs.
+            logger.debug("Resident %s does not render; not following the platform", runtime_id)
+            return helmrelease, None
+        target = self._platform_version(rendered.values)
+        current = self._release_platform_version(helmrelease)
+        if current == target:
+            self._failed_platform_upgrades.pop(runtime_id, None)
+            return helmrelease, None
+        annotations = (helmrelease.get("metadata") or {}).get("annotations") or {}
+        if target in (
+            annotations.get(ANNOTATION_PLATFORM_VERSION),
+            annotations.get(ANNOTATION_REPLACED_PLATFORM_VERSION),
+        ):
+            return helmrelease, None
+        failed = self._failed_platform_upgrades.get(runtime_id)
+        if failed is not None and failed[0] == target:
+            return helmrelease, self._upgrade_failed_condition(failed[1])
+
+        logger.info("Upgrading resident %s from %s to %s", runtime.name, current, target)
+        try:
+            upgraded = await self._roll_resident_release(runtime, profile, helmrelease, rendered)
+        except Exception as exc:
+            if getattr(exc, "status", None) == _HTTP_CONFLICT:
+                # Another Völundr replica moved it first; the next pass observes that.
+                logger.info("Resident %s was upgraded concurrently", runtime.name)
+                return helmrelease, None
+            reason = (
+                f"Upgrading resident {runtime.name} from {current} to {target} failed: {exc}. "
+                "Restart the resident to retry."
+            )
+            logger.warning(reason)
+            self._failed_platform_upgrades[runtime_id] = (target, reason)
+            return helmrelease, self._upgrade_failed_condition(reason)
+        return upgraded, None
+
+    @staticmethod
+    def _upgrade_failed_condition(message: str) -> ResidentCondition:
+        return ResidentCondition(
+            type="PlatformUpgrade",
+            status=ResidentConditionStatus.FALSE,
+            reason="UpgradeFailed",
+            message=message,
+        )
+
+    async def _render_resident_values(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+        *,
+        bound_integrations: Mapping[str, str] | None = None,
+    ) -> RenderedResident:
+        """The resident's values; ``bound_integrations`` are those its release recorded."""
+        values = self._resident_values(runtime, profile, await self._resolve_realm_slug(runtime))
+        annotations, integrations = await self._resident_credential_annotations(
+            runtime, profile, bound_integrations or {}
+        )
+        if annotations:
+            values.setdefault("podAnnotations", {}).update(annotations)
+        return RenderedResident(values=values, integrations=integrations)
+
+    def _platform_version(self, values: dict[str, Any]) -> str:
+        """The version this Völundr renders for a resident: its chart and images."""
+        return resident_platform_version(self._chart_name, self._chart_version, values)
+
+    @staticmethod
+    def _release_platform_version(helmrelease: dict[str, Any]) -> str:
+        """The version a resident's release runs, read from its spec."""
+        spec = helmrelease.get("spec") or {}
+        chart = (spec.get("chart") or {}).get("spec") or {}
+        return resident_platform_version(
+            str(chart.get("chart") or ""),
+            str(chart.get("version") or ""),
+            spec.get("values") or {},
+        )
+
+    def _resident_release_labels(self, runtime: ResidentRuntime) -> dict[str, str]:
+        return {
+            "niuu.world/kind": "resident",
+            "niuu.world/resident-id": str(runtime.id),
+            "niuu.world/backend": runtime.backend.value,
+            **resident_flock_labels(runtime, prefix="niuu.world"),
+        }
+
+    @staticmethod
+    def _resident_release_annotations(runtime: ResidentRuntime) -> dict[str, str]:
+        return {
+            "niuu.world/owner-id": runtime.owner_id,
+            "niuu.world/tenant-id": runtime.tenant_id,
+            "niuu.world/profile-id": runtime.profile_id,
+            **resident_flock_labels(runtime, prefix="niuu.world"),
+        }
+
+    async def _roll_resident_release(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+        helmrelease: dict[str, Any],
+        rendered: RenderedResident,
+    ) -> dict[str, Any]:
+        """Replace the release's chart and values with ``rendered``, keeping its metadata.
+
+        The resident keeps the storage its release mounts (its own PVCs, or the
+        claim a resident older than those runs on): the rolled pod mounts the same
+        disks, never a new empty one. Its shim token Secret is ensured first. The
+        replace carries the release's resourceVersion: a concurrent writer makes it
+        fail with a conflict rather than be overwritten.
+        """
+        values = _with_release_storage(rendered.values, helmrelease)
+        claims = [
+            claim
+            for claim in self._resident_claims(runtime, profile)
+            if claim.name in _claim_names(values)
+        ]
+        await self._ensure_resident_claims(runtime, claims)
+        await self._ensure_resident_openclaw_secret(runtime, profile)
+        release_name = self._resident_release_name(runtime)
+        current = self._release_platform_version(helmrelease)
+        target = self._platform_version(values)
+        manifest = self._build_helmrelease(
+            release_name,
+            values,
+            labels=self._resident_release_labels(runtime),
+            annotations=self._resident_release_annotations(runtime),
+        )
+        body = copy.deepcopy(helmrelease)
+        body.pop("status", None)
+        metadata = body.setdefault("metadata", {})
+        metadata["labels"] = {**(metadata.get("labels") or {}), **manifest["metadata"]["labels"]}
+        annotations = {
+            **(metadata.get("annotations") or {}),
+            **manifest["metadata"]["annotations"],
+            ANNOTATION_PLATFORM_VERSION: target,
+        }
+        annotations.pop(ANNOTATION_RESIDENT_INTEGRATIONS, None)
+        annotations.update(_integrations_annotation(rendered.integrations))
+        if current != target:
+            annotations[ANNOTATION_REPLACED_PLATFORM_VERSION] = current
+        metadata["annotations"] = annotations
+        body["spec"] = {**(body.get("spec") or {}), **manifest["spec"]}
+        replaced = await self._replace_helmrelease(release_name, body)
+        self._failed_platform_upgrades.pop(str(runtime.id), None)
+        return replaced if isinstance(replaced, dict) and replaced.get("spec") else body
+
+    async def _rerender_resident_release(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+        *,
+        pod_annotations: dict[str, str] | None = None,
+    ) -> ResidentRuntimeObservation:
+        """Render the resident anew on this Völundr's version, as restart and resume do."""
+        helmrelease = await self._get_helmrelease(self._resident_release_name(runtime))
+        if helmrelease is None:
+            return await self.deploy(runtime, profile)
+        rendered = await self._render_resident_values(
+            runtime, profile, bound_integrations=_release_integrations(helmrelease)
+        )
+        if pod_annotations:
+            rendered.values.setdefault("podAnnotations", {}).update(pod_annotations)
+        current = self._release_platform_version(helmrelease)
+        target = self._platform_version(rendered.values)
+        if current != target:
+            logger.info("Upgrading resident %s from %s to %s", runtime.name, current, target)
+        await self._roll_resident_release(runtime, profile, helmrelease, rendered)
+        return await self._observe_after_lifecycle(runtime)
 
     def _resident_observation(
         self,
@@ -592,13 +1459,15 @@ class FluxPodManager(
         deployment: dict[str, Any] | None,
     ) -> ResidentRuntimeObservation:
         backend_ref = self._backend_ref(runtime)
+        backend_ref["platformVersion"] = self._release_platform_version(helmrelease)
         deployment_name = self._deployment_name(deployment)
         if deployment_name:
             backend_ref["deploymentName"] = deployment_name
+        release_values = (helmrelease.get("spec") or {}).get("values") or {}
         return ResidentRuntimeObservation(
             observed_state=self._observed_state(runtime, helmrelease, deployment),
             backend_ref=backend_ref,
-            endpoints=self._endpoints(runtime),
+            endpoints=self._endpoints(runtime, voice=self._values_enable_voice(release_values)),
             conditions=self._normalized_conditions(helmrelease, deployment),
         )
 
@@ -607,29 +1476,117 @@ class FluxPodManager(
         runtime: ResidentRuntime,
         profile: ResidentDeploymentProfile,
     ) -> ResidentRuntimeObservation:
-        restarted_at = datetime.now(UTC).isoformat()
-        await self._patch_helmrelease(
-            self._resident_release_name(runtime),
-            {
-                "spec": {
-                    "values": {
-                        "podAnnotations": {"niuu.world/restarted-at": restarted_at},
-                    }
-                }
-            },
+        """Roll the resident's pod, rendered anew on this Völundr's version."""
+        return await self._rerender_resident_release(
+            runtime,
+            profile,
+            pod_annotations={"niuu.world/restarted-at": datetime.now(UTC).isoformat()},
         )
-        return await self._observe_after_lifecycle(runtime)
 
     async def suspend(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
         await self._set_replica_count(runtime, 0)
         return await self._observe_after_lifecycle(runtime)
 
-    async def resume(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+    async def resume(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile | None = None,
+    ) -> ResidentRuntimeObservation:
+        """Scale the resident back up; with its profile, on this Völundr's version.
+
+        A suspended resident is not upgraded while it sleeps, so resuming it is
+        where it moves to the current version: one start, on the new pod spec.
+        """
+        if profile is not None:
+            return await self._rerender_resident_release(runtime, profile)
         await self._set_replica_count(runtime, 1)
         return await self._observe_after_lifecycle(runtime)
 
     async def delete(self, runtime: ResidentRuntime) -> bool:
-        return await self._delete_helmrelease(self._resident_release_name(runtime))
+        """Delete the HelmRelease, then the resident's own PVCs and shim token Secret."""
+        existed = await self._delete_helmrelease(self._resident_release_name(runtime))
+        await self._delete_resident_claims(runtime)
+        await self._delete_resident_openclaw_secret(runtime)
+        if self._secret_injection is not None and self._secret_injection.supports_workloads:
+            await self._secret_injection.cleanup_workload(str(runtime.id))
+        return existed
+
+    async def logs(
+        self,
+        runtime: ResidentRuntime,
+        *,
+        lines: int,
+        sources: tuple[str, ...],
+        min_level: str,
+    ) -> ResidentLogPage:
+        """Tail each started container of the resident's pods; a source is a container name.
+
+        Every pod of the release is read, so a rollout shows the old and the new
+        pod side by side (``fields["pod"]`` tells them apart).
+        """
+        release_name = self._resident_release_name(runtime)
+        selector = f"app.kubernetes.io/instance={release_name}"
+        api = await self._get_core_api()
+        try:
+            pod_list = await api.list_namespaced_pod(
+                namespace=self._namespace,
+                label_selector=selector,
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == _HTTP_FORBIDDEN:
+                raise self._pod_logs_forbidden("list pods") from exc
+            raise
+        pods = list(getattr(pod_list, "items", None) or [])
+        if not pods:
+            raise ResidentLogsUnavailableError(
+                f"resident {runtime.name!r} has no pod in namespace {self._namespace} "
+                f"({selector}); it is suspended or not scheduled yet"
+            )
+
+        entries: list[ResidentLogEntry] = []
+        read_any = False
+        for pod in pods:
+            pod_name = str(pod.metadata.name)
+            for container in _started_containers(pod):
+                if sources and container not in sources:
+                    continue
+                read_any = True
+                try:
+                    payload = await api.read_namespaced_pod_log(
+                        name=pod_name,
+                        namespace=self._namespace,
+                        container=container,
+                        tail_lines=lines,
+                        timestamps=True,
+                    )
+                except Exception as exc:
+                    if getattr(exc, "status", None) == _HTTP_FORBIDDEN:
+                        raise self._pod_logs_forbidden(f"read pod {pod_name} logs") from exc
+                    raise
+                entries.extend(
+                    parse_pod_logs(
+                        str(payload or ""),
+                        pod=pod_name,
+                        container=container,
+                        min_level=min_level,
+                    )
+                )
+        if not read_any:
+            wanted = f" named {', '.join(sources)}" if sources else ""
+            raise ResidentLogsUnavailableError(
+                f"resident {runtime.name!r} has no started container{wanted} in its pods "
+                f"({', '.join(str(pod.metadata.name) for pod in pods)}); it is still starting"
+            )
+        entries.sort(key=lambda entry: entry.timestamp_ms)
+        return ResidentLogPage(entries=entries[-lines:], buffer_total=len(entries))
+
+    def _pod_logs_forbidden(self, action: str) -> PermissionError:
+        """Name the missing grant when Kubernetes refuses Völundr's service account."""
+        return PermissionError(
+            f"Kubernetes forbids Völundr's service account to {action} in namespace "
+            f"{self._namespace}: it needs get/list on pods and get on pods/log there, which "
+            f"the Völundr chart's resident-logs Role grants (charts/volundr/templates/rbac.yaml)"
+        )
 
     async def _set_replica_count(self, runtime: ResidentRuntime, replicas: int) -> None:
         await self._patch_helmrelease(
@@ -785,15 +1742,229 @@ class FluxPodManager(
         )
 
 
-def _inject_workload_exchange_env(values: dict) -> None:
-    """Propagate workload token exchange URL into all session containers."""
-    volundr_cfg = values.get("volundr")
-    if not isinstance(volundr_cfg, dict):
-        return
-    api_url = str(volundr_cfg.get("apiUrl") or "").rstrip("/")
-    if not api_url:
-        return
-    exchange_url = f"{api_url}/api/v1/tokens/workload/exchange"
+#: A level word in plain-text log formats (Skuld's "... - INFO - ...", Ravn's "... INFO ...").
+_POD_LOG_LEVEL = re.compile(r"\b(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FATAL)\b")
+_POD_LOG_LEVEL_ALIASES = {"warn": "warning", "fatal": "critical"}
+
+
+def _started_containers(pod: Any) -> list[str]:
+    """Names of the pod's containers that have run, so Kubernetes holds their logs.
+
+    A container still waiting for its first start has no log yet (Kubernetes
+    answers 400); a crash-looping one keeps its last run's.
+    """
+    spec = pod.spec
+    status = pod.status
+    statuses = [
+        *(getattr(status, "init_container_statuses", None) or []),
+        *(getattr(status, "container_statuses", None) or []),
+    ]
+    started = {
+        container_status.name
+        for container_status in statuses
+        if _container_has_run(container_status)
+    }
+    declared = [
+        *(getattr(spec, "init_containers", None) or []),
+        *(getattr(spec, "containers", None) or []),
+    ]
+    return [container.name for container in declared if container.name in started]
+
+
+def _container_has_run(container_status: Any) -> bool:
+    state = container_status.state
+    last_state = getattr(container_status, "last_state", None)
+    return bool(
+        (state is not None and (state.running is not None or state.terminated is not None))
+        or (last_state is not None and last_state.terminated is not None)
+        or (container_status.restart_count or 0) > 0
+    )
+
+
+def parse_pod_logs(
+    payload: str,
+    *,
+    pod: str,
+    container: str,
+    min_level: str,
+) -> list[ResidentLogEntry]:
+    """Parse ``kubectl logs --timestamps`` output of one container into entries.
+
+    Every line starts with the kubelet's RFC 3339 timestamp. A JSON line (Skuld's
+    and Ravn's json log format) gives its own level and message; a plain line
+    gives the level word it carries, else one inferred like the local runtimes do.
+    """
+    minimum = LOG_LEVELS.get(_POD_LOG_LEVEL_ALIASES.get(min_level.lower(), min_level.lower()), 0)
+    entries: list[ResidentLogEntry] = []
+    for line in payload.splitlines():
+        stamp, _, message = line.partition(" ")
+        try:
+            timestamp = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        message = message.rstrip()
+        if not message:
+            continue
+        level, message = _pod_log_level_and_message(message)
+        if LOG_LEVELS.get(level, 20) < minimum:
+            continue
+        entries.append(
+            ResidentLogEntry(
+                timestamp_ms=int(timestamp.timestamp() * 1000),
+                level=level,
+                source=container,
+                target=container,
+                message=message,
+                fields={"pod": pod},
+            )
+        )
+    return entries
+
+
+def _pod_log_level_and_message(message: str) -> tuple[str, str]:
+    if message.startswith("{"):
+        try:
+            payload = json.loads(message)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            raw_level = str(payload.get("level") or payload.get("levelname") or "").lower()
+            text = str(payload.get("message") or payload.get("msg") or payload.get("event") or "")
+            level = _POD_LOG_LEVEL_ALIASES.get(raw_level, raw_level)
+            if level not in LOG_LEVELS:
+                level = resident_log_level(text or message)
+            return level, text or message
+    match = _POD_LOG_LEVEL.search(message)
+    if match is not None:
+        word = match.group(1).lower()
+        return _POD_LOG_LEVEL_ALIASES.get(word, word), message
+    return resident_log_level(message), message
+
+
+def resident_platform_version(chart: str, chart_version: str, values: dict[str, Any]) -> str:
+    """A resident release's platform version: its chart and every image its values name.
+
+    Readable and deterministic, e.g. ``skuld 2.0.0-dev.264, ghcr.io/niuulabs/skuld:dev-1``;
+    an image below the top level carries its values path (``nginx ...``). Völundr's
+    rendered values and a release's stored spec give the same string for the same
+    version, so comparing the two tells whether a resident runs this Völundr's version.
+    """
+    refs = sorted(_image_refs(values, ""), key=lambda item: (item[0] != "", item[0]))
+    parts = [f"{chart} {chart_version}".strip()]
+    parts.extend(ref if not path else f"{path} {ref}" for path, ref in refs)
+    return ", ".join(part for part in parts if part)
+
+
+#: The values that name a resident's volumes: an upgrade keeps them as the release has them.
+_RESIDENT_STORAGE_VALUES = ("homeVolume", "persistence")
+
+
+def _integrations_annotation(integrations: Mapping[str, str]) -> dict[str, str]:
+    """The release annotation recording a resident's integration credentials, if any."""
+    if not integrations:
+        return {}
+    return {ANNOTATION_RESIDENT_INTEGRATIONS: json.dumps(dict(sorted(integrations.items())))}
+
+
+def _release_integrations(helmrelease: dict[str, Any]) -> dict[str, str]:
+    """The integration credentials a resident's release recorded when it was deployed."""
+    annotations = (helmrelease.get("metadata") or {}).get("annotations") or {}
+    raw = annotations.get(ANNOTATION_RESIDENT_INTEGRATIONS)
+    if not raw:
+        return {}
+    recorded = json.loads(raw)
+    if not isinstance(recorded, dict) or not all(
+        isinstance(slug, str) and isinstance(name, str) and name for slug, name in recorded.items()
+    ):
+        raise ValueError(f"{ANNOTATION_RESIDENT_INTEGRATIONS} must map integrations to credentials")
+    return recorded
+
+
+def _with_release_storage(values: dict[str, Any], helmrelease: dict[str, Any]) -> dict[str, Any]:
+    """``values`` with the volumes the running release mounts, exactly as it mounts them."""
+    current = (helmrelease.get("spec") or {}).get("values") or {}
+    kept = copy.deepcopy(values)
+    for key in _RESIDENT_STORAGE_VALUES:
+        if key in current:
+            kept[key] = copy.deepcopy(current[key])
+        else:
+            kept.pop(key, None)
+    return kept
+
+
+def _claim_names(values: dict[str, Any]) -> set[str]:
+    names = set()
+    for key in _RESIDENT_STORAGE_VALUES:
+        storage = values.get(key)
+        if isinstance(storage, dict) and storage.get("existingClaim"):
+            names.add(str(storage["existingClaim"]))
+    return names
+
+
+def _image_refs(value: Any, path: str) -> list[tuple[str, str]]:
+    refs: list[tuple[str, str]] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "image":
+                ref = _image_ref(child)
+                if ref:
+                    refs.append((path, ref))
+                continue
+            refs.extend(_image_refs(child, f"{path}.{key}" if path else str(key)))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            refs.extend(_image_refs(item, f"{path}[{index}]"))
+    return refs
+
+
+def _image_ref(image: Any) -> str:
+    if isinstance(image, str):
+        return image.strip()
+    if not isinstance(image, dict):
+        return ""
+    repository = str(image.get("repository") or "").strip()
+    if not repository:
+        return ""
+    tag = str(image.get("tag") or "").strip()
+    digest = str(image.get("digest") or "").strip()
+    ref = f"{repository}:{tag}" if tag else repository
+    return f"{ref}@{digest}" if digest else ref
+
+
+def _resident_platform_exchange_url(values: dict) -> str:
+    """The platform's workload-token exchange for a resident, or "".
+
+    Mirrors charts/skuld's skuld.residentWorkloadExchangeUrl: the explicit
+    resident.platform.workloadExchangeUrl, else the platform base URL's. A
+    resident without a platform has only its cluster's Völundr.
+    """
+    resident = values.get("resident")
+    platform = resident.get("platform") if isinstance(resident, dict) else None
+    if not isinstance(platform, dict) or not platform.get("enabled"):
+        return ""
+    explicit = str(platform.get("workloadExchangeUrl") or "").strip()
+    if explicit:
+        return explicit
+    base_url = str(platform.get("baseUrl") or "").rstrip("/")
+    if not base_url:
+        return ""
+    return f"{base_url}/api/v1/tokens/workload/exchange"
+
+
+def _inject_workload_exchange_env(values: dict, *, exchange_url: str = "") -> None:
+    """Propagate workload token exchange URL into all session containers.
+
+    ``exchange_url`` names the exchange explicitly; without it the exchange is
+    the one on ``volundr.apiUrl``.
+    """
+    if not exchange_url:
+        volundr_cfg = values.get("volundr")
+        if not isinstance(volundr_cfg, dict):
+            return
+        api_url = str(volundr_cfg.get("apiUrl") or "").rstrip("/")
+        if not api_url:
+            return
+        exchange_url = f"{api_url}/api/v1/tokens/workload/exchange"
     env_entry = {
         "name": "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL",
         "value": exchange_url,
@@ -854,3 +2025,11 @@ def _inject_codex_auth_env(values: dict) -> None:
 
 def _has_env(env: list, name: str) -> bool:
     return any(isinstance(entry, dict) and entry.get("name") == name for entry in env)
+
+
+def _event_time(event: Any) -> datetime:
+    """When a Kubernetes event last happened; events carry one of three stamps."""
+    stamp = event.last_timestamp or event.event_time or event.first_timestamp
+    if stamp is None:
+        return datetime.min.replace(tzinfo=UTC)
+    return stamp

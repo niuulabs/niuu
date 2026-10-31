@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from volundr.adapters.inbound.auth import extract_principal
+from volundr.adapters.inbound.rest_resident_a2a import with_a2a_endpoints
 from volundr.domain.models import (
     Principal,
     ResidentBackend,
@@ -39,6 +40,7 @@ from volundr.domain.services.resident_runtime import (
     ResidentRuntimeDeploymentError,
     ResidentRuntimeNotFoundError,
     ResidentRuntimeService,
+    ResidentRuntimeStateError,
     ResidentRuntimeValidationError,
 )
 
@@ -106,7 +108,7 @@ def _resident_error(exc: Exception) -> HTTPException:
         return HTTPException(status.HTTP_403_FORBIDDEN, detail=str(exc))
     if isinstance(exc, ResidentRuntimeNotFoundError):
         return HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
-    if isinstance(exc, ResidentRuntimeConflictError):
+    if isinstance(exc, (ResidentRuntimeConflictError, ResidentRuntimeStateError)):
         return HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, (ResidentProfileNotFoundError, ResidentRuntimeValidationError)):
         return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
@@ -115,8 +117,16 @@ def _resident_error(exc: Exception) -> HTTPException:
     raise exc
 
 
-def create_resident_runtimes_router(service: ResidentRuntimeService) -> APIRouter:
-    """Create target-local resident runtime routes for Ravn and Guild."""
+def create_resident_runtimes_router(
+    service: ResidentRuntimeService,
+    *,
+    a2a_public_base_url: str = "",
+) -> APIRouter:
+    """Create target-local resident runtime routes for Ravn and Guild.
+
+    With ``a2a_public_base_url`` set, every A2A-capable resident also lists its
+    Agent Card and A2A endpoint (``rest_resident_a2a``) among its endpoints.
+    """
     router = APIRouter(prefix="/api/v1/forge", tags=["Resident Runtimes"])
 
     @router.get("/resident-profiles", response_model=list[ResidentProfileResponse])
@@ -131,7 +141,10 @@ def create_resident_runtimes_router(service: ResidentRuntimeService) -> APIRoute
     async def list_resident_runtimes(
         principal: Principal = Depends(extract_principal),
     ) -> list[ResidentRuntime]:
-        return await service.list(principal)
+        return [
+            with_a2a_endpoints(runtime, a2a_public_base_url)
+            for runtime in await service.list(principal)
+        ]
 
     @router.post(
         "/resident-runtimes",
@@ -168,9 +181,10 @@ def create_resident_runtimes_router(service: ResidentRuntimeService) -> APIRoute
         principal: Principal = Depends(extract_principal),
     ) -> ResidentRuntime:
         try:
-            return await service.get(principal, runtime_id)
+            runtime = await service.get(principal, runtime_id)
         except Exception as exc:
             raise _resident_error(exc) from exc
+        return with_a2a_endpoints(runtime, a2a_public_base_url)
 
     @router.post("/resident-runtimes/{runtime_id}/restart", response_model=ResidentRuntime)
     async def restart_resident_runtime(
@@ -306,6 +320,7 @@ def create_resident_runtimes_router(service: ResidentRuntimeService) -> APIRoute
         try:
             await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         except WebSocketDisconnect:
+            # Browser disconnect ends the relay; both tasks are cleaned up below.
             pass
         finally:
             for task in tasks:
@@ -356,6 +371,7 @@ def create_resident_runtimes_router(service: ResidentRuntimeService) -> APIRoute
         try:
             await service.delete(principal, runtime_id)
         except ResidentRuntimeNotFoundError:
+            # DELETE is idempotent when the resident has already been removed.
             pass
         except Exception as exc:
             raise _resident_error(exc) from exc

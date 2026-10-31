@@ -249,6 +249,39 @@ describe('createApiClient', () => {
     );
   });
 
+  it('GET with headers returns the body and the response headers', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ items: [] }), {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Forge-Unavailable-Instances': 'horde-1',
+          },
+        }),
+      ),
+    );
+    const client = createApiClient(BASE);
+    const response = await client.getWithHeaders!<{ items: unknown[] }>('/items');
+    expect(response.data).toEqual({ items: [] });
+    expect(response.headers.get('X-Forge-Unavailable-Instances')).toBe('horde-1');
+  });
+
+  it('GET with headers reports 204 and failures like GET', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+    const client = createApiClient(BASE);
+    expect((await client.getWithHeaders!('/empty')).data).toBeUndefined();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: 'nope' }), { status: 503 })),
+    );
+    await expect(client.getWithHeaders!('/down')).rejects.toMatchObject({
+      status: 503,
+      detail: 'nope',
+    });
+  });
+
   it('POST sends body as JSON', async () => {
     const client = createApiClient(BASE);
     await client.post('/items', { name: 'x' });

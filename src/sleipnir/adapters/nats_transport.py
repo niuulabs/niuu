@@ -165,7 +165,13 @@ from sleipnir.adapters._subscriber_support import (
 from sleipnir.adapters.serialization import deserialize, serialize
 from sleipnir.domain import registry
 from sleipnir.domain.events import SleipnirEvent, match_event_type
-from sleipnir.ports.events import EventHandler, SleipnirPublisher, SleipnirSubscriber, Subscription
+from sleipnir.ports.events import (
+    EventHandler,
+    SleipnirPublisher,
+    SleipnirSubscriber,
+    StreamNotFoundError,
+    Subscription,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -646,6 +652,10 @@ _JS_ERR_CONSUMER_NAME_IN_USE = 10013
 #: each replica computes its own recovery replay start time, so they usually
 #: do).
 _JS_ERR_CONSUMER_START_TIME_UPDATE = 10012
+
+#: JetStream API error code for "stream not found" — what a consumer create
+#: answers when the stream it names is not on the server.
+_JS_ERR_STREAM_NOT_FOUND = 10059
 
 _JS_ERR_CODES_CONSUMER_ALREADY_EXISTS = (
     _JS_ERR_CONSUMER_NAME_IN_USE,
@@ -1529,17 +1539,27 @@ class NatsSubscriber(SleipnirSubscriber):
                 nats_sub=None,
                 durable=self._durable_for_subject(subject),
             )
-            nats_sub = await self._create_nats_subscription(
-                subject,
-                event_types,
-                sub,
-                # A fresh ConsumerConfig per subscription: nats-py push
-                # subscribe stamps deliver_subject onto the config object, so
-                # sharing one config makes every consumer push to the same
-                # inbox and each message fan out to every callback.
-                self._build_consumer_config(),
-                stream_name=stream_name,
-            )
+            try:
+                nats_sub = await self._create_nats_subscription(
+                    subject,
+                    event_types,
+                    sub,
+                    # A fresh ConsumerConfig per subscription: nats-py push
+                    # subscribe stamps deliver_subject onto the config object, so
+                    # sharing one config makes every consumer push to the same
+                    # inbox and each message fan out to every callback.
+                    self._build_consumer_config(),
+                    stream_name=stream_name,
+                )
+            except js_errors.NotFoundError as exc:
+                if getattr(exc, "err_code", None) != _JS_ERR_STREAM_NOT_FOUND:
+                    raise
+                raise StreamNotFoundError(
+                    f"JetStream stream {stream_name!r} does not exist"
+                    f" (jetstream_domain={self._jetstream_domain!r}, servers={self._servers});"
+                    " create it on the server, or remove it from this subscriber's"
+                    " configuration"
+                ) from exc
             watch.nats_sub = nats_sub
             sub.nats_subs.append(nats_sub)
             sub.consumer_watches.append(watch)

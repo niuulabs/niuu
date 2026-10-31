@@ -41,17 +41,21 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.claude_permission import (
+    DEFAULT_CLAUDE_PERMISSION_MODE,
+    resolve_claude_permission_mode,
+)
 from skuld.slash_commands import build_slash_command_catalog, compose_slash_command_text
 from skuld.transports.claude_env import claude_spawn_env
 from skuld.transports.mcp_config import (
     build_claude_mcp_config,
     require_connected_mcp_servers,
 )
+from skuld.transports.session_tools import SessionTools, claude_cli_args
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
 
-_DEFAULT_PERMISSION_MODE = "bypassPermissions"
 
 # StreamReader buffer for Claude stdout — single JSON events (esp. tool
 # results or large file reads) routinely exceed asyncio's default 64 KB
@@ -94,12 +98,14 @@ class PersistentSubprocessTransport(CLITransport):
         workspace_dir: str,
         model: str = "",
         skip_permissions: bool = False,
+        claude_permission_mode: str = DEFAULT_CLAUDE_PERMISSION_MODE,
         agent_teams: bool = False,
         system_prompt: str = "",
         initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
         resume_session_id: str = "",
         ask_user_question_enabled: bool = False,
+        session_tools: SessionTools | None = None,
         model_gateway_url: str = "",
         model_gateway_token: str = "",
         read_only_mcp_only: bool = False,
@@ -109,10 +115,12 @@ class PersistentSubprocessTransport(CLITransport):
         self._model_gateway_url = model_gateway_url
         self._model_gateway_token = model_gateway_token
         self.workspace_dir = workspace_dir
+        self._session_tools = session_tools
         self._model = model
         self._read_only_mcp_only = read_only_mcp_only
         self._allowed_mcp_tools = list(allowed_mcp_tools or [])
         self._skip_permissions = skip_permissions and not read_only_mcp_only
+        self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
         self._agent_teams = agent_teams and not read_only_mcp_only
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
@@ -327,17 +335,22 @@ class PersistentSubprocessTransport(CLITransport):
             # --permission-prompt-tool=stdio is set; see _handle_control_request.
             cmd.extend(["--permission-prompt-tool", "stdio"])
         elif self._skip_permissions:
-            cmd.extend(["--permission-mode", _DEFAULT_PERMISSION_MODE])
+            cmd.extend(["--permission-mode", self._claude_permission_mode])
         # ``--resume`` applies when re-spawning after a crash or when a
         # resume id was seeded for an imported session. Otherwise the first
         # spawn has no session yet — Claude assigns one in its first
         # ``system`` event, which we capture in the stdout reader.
         if self._session_id:
             cmd.extend(["--resume", self._session_id])
-        elif self._system_prompt:
-            cmd.extend(["--append-system-prompt", self._system_prompt])
-        if self._mcp_config:
-            cmd.extend(["--mcp-config", self._mcp_config])
+        cmd.extend(
+            claude_cli_args(
+                self._session_tools,
+                mcp_servers=self._raw_mcp_servers,
+                legacy_mcp_config=self._mcp_config,
+                system_prompt=self._system_prompt,
+                include_system_prompt=not self._session_id,
+            )
+        )
         return cmd
 
     async def _spawn(self) -> None:
@@ -354,6 +367,7 @@ class PersistentSubprocessTransport(CLITransport):
         _, shim_env = ensure_codex_tool_shims(
             self.workspace_dir,
             mcp_servers=self._raw_mcp_servers,
+            session_env=self._session_tools.env if self._session_tools else None,
         )
         if shim_env:
             env.update(shim_env)
@@ -534,8 +548,17 @@ class PersistentSubprocessTransport(CLITransport):
             request_id = str(kwargs.get("request_id") or "")
             answers = kwargs.get("answers")
             fut = self._pending_questions.get(request_id)
-            if fut is not None and not fut.done():
-                fut.set_result(answers if answers is not None else [])
+            if fut is None or fut.done():
+                raise ValueError("Unknown or already answered Claude question")
+            fut.set_result(answers if answers is not None else [])
+            await self._emit(
+                {
+                    "type": "ask_user_resolved",
+                    "request_id": request_id,
+                    "decision": "answered",
+                    "accepted": True,
+                }
+            )
             return
 
         if subtype == "slash_command":

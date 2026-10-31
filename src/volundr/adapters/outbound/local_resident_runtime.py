@@ -293,7 +293,11 @@ class LocalContainerResidentRuntimeController(
         container.reload()
         return self._observation_from_backend_ref(runtime, container)
 
-    async def resume(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+    async def resume(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile | None = None,
+    ) -> ResidentRuntimeObservation:
         container = await asyncio.to_thread(self._required_container, runtime)
         container.reload()
         if container.status == "paused":

@@ -399,6 +399,7 @@ export function drawZones(
   positions: Map<string, NodePosition>,
   _now: number,
   zoom: number,
+  labelColor?: string,
 ): void {
   // World units per screen pixel — keeps container headings a constant size.
   const scale = worldFontSize(1, zoom);
@@ -440,7 +441,7 @@ export function drawZones(
 
         drawStructureLabel(ctx, node, cx, cy - r * LAYOUT.CLOUD_LABEL_OFFSET, {
           font: `${worldFontSize(LABEL_PX.CLUSTER, zoom)}px "JetBrains Mono", monospace`,
-          color: rgba(OUTSIDE_COLOUR, 0.85),
+          color: labelColor ?? rgba(OUTSIDE_COLOUR, 0.85),
         });
         continue;
       }
@@ -477,13 +478,13 @@ export function drawZones(
         const baseline = hull.y1 - regionFontSize(22, zoom);
         ctx.save();
         ctx.font = `600 ${px}px "JetBrains Mono", monospace`;
-        ctx.fillStyle = rgba(C.ice, 0.5);
+        ctx.fillStyle = labelColor ?? rgba(C.ice, 0.5);
         ctx.textAlign = 'left';
         ctx.fillText(structureLabel(node).toUpperCase(), hull.x0 + inset, baseline);
         const dns = (node as unknown as Record<string, unknown>)['dns'];
         if (typeof dns === 'string' && dns && zoom > LOD.CONTAINER_DETAIL) {
           ctx.font = `${regionFontSize(LABEL_PX.CONTAINER_DETAIL, zoom)}px "JetBrains Mono", monospace`;
-          ctx.fillStyle = rgba(C.dim, 0.95);
+          ctx.fillStyle = labelColor ?? rgba(C.dim, 0.95);
           ctx.fillText(dns, hull.x0 + inset, baseline - px * 0.95);
         }
         ctx.restore();
@@ -506,7 +507,7 @@ export function drawZones(
 
         drawStructureLabel(ctx, node, cx, cy - r - 4 * scale, {
           font: `${worldFontSize(LABEL_PX.CLUSTER, zoom)}px "JetBrains Mono", monospace`,
-          color: rgba(C.ice, 0.58),
+          color: labelColor ?? rgba(C.ice, 0.58),
         });
       } else {
         const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
@@ -527,7 +528,7 @@ export function drawZones(
 
         drawStructureLabel(ctx, node, cx, cy - r - 4 * scale, {
           font: `${worldFontSize(LABEL_PX.CLUSTER, zoom)}px "JetBrains Mono", monospace`,
-          color: rgba(C.ice, 0.62),
+          color: labelColor ?? rgba(C.ice, 0.62),
         });
       }
     }
@@ -1223,6 +1224,7 @@ function drawContainerRing(
 // ── Generic nodes ─────────────────────────────────────────────────────────────
 
 export interface NodeDrawOptions {
+  labelColor?: string;
   /** Animation clock. */
   now?: number;
   /** Resolved glyph, size and hue. Defaults to the boxed dot. */
@@ -1315,7 +1317,9 @@ export function drawNode(
   const labelY = y + style.radius + worldFontSize(node.typeId === 'host' ? 15 : 19, zoom);
 
   ctx.save();
-  ctx.fillStyle = rgba(tier === 'primary' ? C.ice : C.slate, (emphasised ? 0.98 : 0.82) * alpha);
+  ctx.fillStyle =
+    options.labelColor ??
+    rgba(tier === 'primary' ? C.ice : C.slate, (emphasised ? 0.98 : 0.82) * alpha);
   ctx.font = `${emphasised ? 600 : 500} ${px}px "JetBrains Mono", monospace`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -1323,7 +1327,7 @@ export function drawNode(
 
   const detail = nodeDetailLine(node);
   if (detail && shouldDrawNodeDetail(zoom, emphasised)) {
-    ctx.fillStyle = rgba(C.dim, 0.9 * alpha);
+    ctx.fillStyle = options.labelColor ?? rgba(C.dim, 0.9 * alpha);
     ctx.font = `${worldFontSize(LABEL_PX.NODE_DETAIL, zoom)}px "JetBrains Mono", monospace`;
     ctx.fillText(detail, x, labelY + worldFontSize(13, zoom));
   }
@@ -1346,6 +1350,7 @@ export function drawMinimap(
   viewH: number,
   worldW: number,
   worldH: number,
+  palette?: { background: string; text: string },
 ): void {
   // The minimap is centred on (0,0) with ±(worldW/2, worldH/2) extent.
   const halfW = worldW / 2;
@@ -1354,7 +1359,7 @@ export function drawMinimap(
   const sy = H / worldH;
 
   ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = 'rgba(9,9,11,0.88)';
+  ctx.fillStyle = palette?.background ?? 'rgba(9,9,11,0.88)';
   ctx.fillRect(0, 0, W, H);
 
   // Realm outlines
@@ -1377,7 +1382,7 @@ export function drawMinimap(
     if (!pos) continue;
     const mx = (pos.x + halfW) * sx;
     const my = (pos.y + halfH) * sy;
-    ctx.fillStyle = rgba(C.ice, 0.6);
+    ctx.fillStyle = palette?.text ?? rgba(C.ice, 0.6);
     const r = 1.5;
     ctx.fillRect(mx - r / 2, my - r / 2, r, r);
   }
@@ -1388,13 +1393,13 @@ export function drawMinimap(
     const vh = (viewH / camZoom) * sy;
     const vx = (camX - viewW / (2 * camZoom) + halfW) * sx;
     const vy = (camY - viewH / (2 * camZoom) + halfH) * sy;
-    ctx.strokeStyle = rgba(C.ice, 0.7);
+    ctx.strokeStyle = palette?.text ?? rgba(C.ice, 0.7);
     ctx.lineWidth = 1;
     ctx.strokeRect(vx, vy, vw, vh);
   }
 
   // Caption
-  ctx.fillStyle = rgba(C.slate, 0.55);
+  ctx.fillStyle = palette?.text ?? rgba(C.slate, 0.55);
   ctx.font = '8px Inter, sans-serif';
   ctx.textAlign = 'left';
   ctx.fillText(`${topology.nodes.length} entities`, 4, H - 4);

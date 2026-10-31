@@ -390,6 +390,7 @@ async def test_f5_sdk_bypass_wins_over_enabled_ask_question(monkeypatch, tmp_pat
     transport = SDKTransport(
         workspace_dir=str(tmp_path),
         skip_permissions=True,
+        claude_permission_mode="bypassPermissions",
         ask_user_question_enabled=True,
     )
     await transport.start()
@@ -603,14 +604,12 @@ def test_flimit_tmux_transport_has_no_plan_or_accept_edits_param() -> None:
 @pytest.mark.asyncio
 async def test_flimit_skip_permissions_toggles_bypass_argv() -> None:
     """F-LIMIT (real spawn-argv): skip_permissions=True puts ``--permission-mode
-    bypassPermissions`` on the spawned claude argv; False omits it. There is no
-    other permission-mode knob — proving the binary nature on the live command."""
+    <node mode>`` (default ``auto``; ``claude_permission_mode`` on the node) on the
+    spawned claude argv; False omits it."""
     _require_tmux()
 
-    from skuld.transports.tmux_interactive import (
-        _DEFAULT_PERMISSION_MODE,
-        TmuxInteractiveTransport,
-    )
+    from skuld.claude_permission import DEFAULT_CLAUDE_PERMISSION_MODE
+    from skuld.transports.tmux_interactive import TmuxInteractiveTransport
 
     def _argv(*, skip_permissions: bool) -> list[str]:
         transport = TmuxInteractiveTransport(
@@ -629,6 +628,5 @@ async def test_flimit_skip_permissions_toggles_bypass_argv() -> None:
     off = _argv(skip_permissions=False)
 
     assert "--permission-mode" in on
-    assert _DEFAULT_PERMISSION_MODE in on
-    assert on[on.index("--permission-mode") + 1] == _DEFAULT_PERMISSION_MODE
+    assert on[on.index("--permission-mode") + 1] == DEFAULT_CLAUDE_PERMISSION_MODE
     assert "--permission-mode" not in off

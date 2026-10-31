@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ting.config import AuthConfig, Settings, WorkflowRepositoryConfig
+from ting.domain.services.notification import NotificationServiceStats
 from ting.main import create_app
 
 
@@ -67,6 +68,7 @@ def mock_subscriber():
 def mock_notification_service():
     svc = MagicMock()
     svc.running = True
+    svc.stats = NotificationServiceStats()
     return svc
 
 
@@ -156,6 +158,7 @@ class TestDetailedHealthEndpoint:
         stopped_subscriber.running = False
         stopped_notification = MagicMock()
         stopped_notification.running = False
+        stopped_notification.stats = NotificationServiceStats()
         stopped_engine = MagicMock()
         stopped_engine.running = False
 
@@ -195,6 +198,7 @@ class TestDetailedHealthEndpoint:
         """Overall status is 'degraded' when any one service is not running."""
         running = MagicMock()
         running.running = True
+        running.stats = NotificationServiceStats()
         stopped = MagicMock()
         stopped.running = False
 
@@ -221,6 +225,10 @@ class TestDetailedHealthEndpoint:
             "event_bus_subscriber_count",
             "activity_subscriber_running",
             "notification_service_running",
+            "notifications_delivered",
+            "notification_failed_deliveries",
+            "notification_failed_events",
+            "notification_last_failure",
             "review_engine_running",
         }
         assert data["status"] in {"ok", "degraded"}
@@ -239,3 +247,17 @@ class TestDetailedHealthEndpoint:
                     delattr(c.app.state, "event_bus")
                 response = c.get("/api/v1/ting/health/detailed")
         assert response.json()["event_bus_subscriber_count"] == 0
+
+
+def test_notification_failures_are_reported(client: TestClient, mock_notification_service) -> None:
+    mock_notification_service.stats = NotificationServiceStats(
+        delivered=3,
+        failed_deliveries=2,
+        failed_events=1,
+        last_failure="run.state_changed: hooks.example.com returned HTTP 500",
+    )
+    data = client.get("/api/v1/ting/health/detailed").json()
+    assert data["notifications_delivered"] == 3
+    assert data["notification_failed_deliveries"] == 2
+    assert data["notification_failed_events"] == 1
+    assert data["notification_last_failure"].endswith("returned HTTP 500")

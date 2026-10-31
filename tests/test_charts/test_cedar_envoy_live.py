@@ -207,6 +207,7 @@ async def test_real_envoy_enforces_jwt_and_cedar_before_upstream(tmp_path, chart
                     if (await client.get("/health")).status_code == 200:
                         break
                 except httpx.TransportError:
+                    # The container may not be listening yet; startup retries are bounded.
                     pass
                 await asyncio.sleep(0.1)
             else:

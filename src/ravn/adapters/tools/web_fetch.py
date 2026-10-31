@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 import httpx
 
 from ravn.adapters.tools._url_security import check_ssrf
+from ravn.cap_telemetry import record_truncation
 from ravn.domain.models import ToolResult
 from ravn.ports.tool import ToolPort
 
@@ -97,6 +98,9 @@ def truncate_to_budget(text: str, budget: int) -> str:
     """Truncate *text* to *budget* characters, appending a notice if truncated."""
     if len(text) <= budget:
         return text
+    record_truncation(
+        "tools.web.fetch.content_budget", what="a fetched page", kept=budget, total=len(text)
+    )
     notice = f"\n\n[Content truncated to {budget} characters]"
     return text[:budget] + notice
 

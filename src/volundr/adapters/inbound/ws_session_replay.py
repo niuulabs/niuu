@@ -344,6 +344,7 @@ async def _run(
         if driver in done:
             driver.result()  # re-raise a driver error (e.g. WebSocketDisconnect)
     except (WebSocketDisconnect, asyncio.CancelledError):
+        # Disconnect or cancellation terminates replay and runs socket/task cleanup.
         pass
     finally:
         for task in (receiver, driver):
@@ -352,4 +353,5 @@ async def _run(
         try:
             await ws.close()
         except RuntimeError:
+            # The peer or driver already closed this WebSocket.
             pass

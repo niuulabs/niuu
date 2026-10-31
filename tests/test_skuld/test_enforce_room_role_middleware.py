@@ -64,7 +64,7 @@ async def _call_next_ok(_request):
 
 
 def _set_room_role_source(monkeypatch, source: str) -> None:
-    import skuld.broker_api as broker_api_module
+    from skuld import broker_api as broker_api_module
 
     fake_broker = SimpleNamespace(
         _settings=SimpleNamespace(ws_auth=SimpleNamespace(room_role_source=source))
@@ -155,7 +155,7 @@ def _remote_request(*, identity_headers: dict[str, str] | None = None, **kwargs)
 
 def _set_remote_room_role_source(monkeypatch, resolver) -> None:
     """resolver: an object with an async resolve_role(...), or None (unwired)."""
-    import skuld.broker_api as broker_api_module
+    from skuld import broker_api as broker_api_module
 
     fake_broker = SimpleNamespace(
         _settings=SimpleNamespace(
@@ -278,6 +278,7 @@ class TestEnforceRoomRoleMiddlewareRemoteMode:
             _remote_request(identity_headers={"x-auth-user-id": "bob"}), _call_next_ok
         )
         assert response.status_code == 503
+        assert response.body == b'{"detail":"Room role resolution unavailable"}'
 
     async def test_sufficient_role_passes_through(self, monkeypatch):
         _set_remote_room_role_source(monkeypatch, _FakeResolver("owner"))

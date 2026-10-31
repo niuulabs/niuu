@@ -47,6 +47,10 @@ export type {
   SystemCheck,
   SystemReport,
 } from './domain/setup';
-export { providerGroupsForType } from './domain/setup';
+export { credentialProblemLabel, providerGroupsForType } from './domain/setup';
 
-export { ConnectionRecoveryProvider } from './ui/ConnectionRecoveryProvider';
+export {
+  ConnectionRecoveryDialog,
+  ConnectionRecoveryProvider,
+  type ConnectionRecoveryDialogProps,
+} from './ui/ConnectionRecoveryProvider';

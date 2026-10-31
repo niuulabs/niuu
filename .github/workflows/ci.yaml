@@ -31,9 +31,10 @@ jobs:
       container-names: ${{ steps.filter.outputs.names }}
       has_containers: ${{ steps.filter.outputs.any }}
       tier: ${{ steps.tier.outputs.level }}
+      publish: ${{ steps.registry.outputs.publish }}
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -92,13 +93,13 @@ jobs:
               web_changed = matches(r"^web-next/")
               helm_changed = matches(r"^charts/")
               container_triggers = {
-                  "agent": r"^containers/agent/|^(src/|pyproject\.toml$|uv\.lock$)",
+                  "agent": r"^containers/(agent|python-security)/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "skuld": r"^containers/skuld/|^(src/|pyproject\.toml$|uv\.lock$)",
-                  "openshell": r"^containers/openshell/|^(src/|pyproject\.toml$|uv\.lock$)",
-                  "devrunner": r"^containers/devrunner/",
+                  "openshell": r"^containers/(openshell|python-security)/|^(src/|pyproject\.toml$|uv\.lock$)",
+                  "devrunner": r"^containers/(devrunner|python-security)/",
                   "gbrain": r"^containers/gbrain/",
                   "niuu-web": r"^containers/niuu-web/|^web-next/",
-                  "niuu": r"^containers/niuu/|^tests/(container/|test_bifrost/|conftest\.py$|__init__\.py$)|^(src/|pyproject\.toml$|uv\.lock$|examples/bifrost-pi\.yaml$)",
+                  "niuu": r"^containers/(niuu|python-security)/|^tests/(container/|test_bifrost/|conftest\.py$|__init__\.py$)|^(src/|pyproject\.toml$|uv\.lock$|examples/bifrost-pi\.yaml$)",
               }
               container_names = [
                   name for name, pattern in container_triggers.items() if matches(pattern)
@@ -127,12 +128,31 @@ jobs:
           # PRs targeting dev or main run the full pipeline.
           BASE="${{ github.base_ref }}"
           if [[ "$BASE" == feat/* || "$BASE" == codex/* || "$BASE" == claude/* ]]; then
-            echo "level=light" >> $GITHUB_OUTPUT
+            echo "level=light" >> "$GITHUB_OUTPUT"
             echo "Pipeline tier: light (PR targets ${BASE})"
           else
-            echo "level=full" >> $GITHUB_OUTPUT
+            echo "level=full" >> "$GITHUB_OUTPUT"
             echo "Pipeline tier: full (PR targets ${BASE})"
           fi
+
+      # GitHub caps GITHUB_TOKEN at read-only for PRs from forks, so a fork
+      # cannot push images or charts to ghcr. Fork PRs still build every
+      # container and package every chart; the jobs that need published
+      # artifacts (manifests, chart push, Helm smoke test, Grype scan) are
+      # skipped. To get those, push the branch to this repository and open
+      # the PR from there.
+      - name: Determine registry access
+        id: registry
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          if [[ "$HEAD_REPO" == "$BASE_REPO" ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "publish=false" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Fork PR::${HEAD_REPO} cannot write to ghcr; containers and charts are built but not published, so the Helm smoke test and container scan are skipped."
 
   # ---------------------------------------------------------------------------
   # Python — lint + unit tests (all tiers). Delegated to reusable workflow.
@@ -170,7 +190,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -210,7 +230,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -254,20 +274,27 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # NATS requires --jetstream flag which GHA service containers can't pass.
-      # Start it manually with docker run instead.
+      # Start it manually with docker run instead. Pinned to the 2.14 line, which
+      # production runs (tests/integration/sleipnir/test_nats_consumer_recovery.py).
       - name: Start NATS with JetStream
         run: |
-          docker run -d --name nats -p 4222:4222 -p 8222:8222 nats:2-alpine --jetstream --http_port 8222
-          for i in $(seq 1 10); do
-            curl -sf http://localhost:8222/healthz > /dev/null 2>&1 && break || sleep 1
+          docker run -d --name nats -p 4222:4222 -p 8222:8222 nats:2.14-alpine --jetstream --http_port 8222
+          for _ in $(seq 1 10); do
+            if curl -sf http://localhost:8222/healthz > /dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
           done
+          echo "::error title=NATS not ready::JetStream did not report healthy within 10s"
+          docker logs nats
+          exit 1
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
@@ -314,7 +341,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -326,7 +353,7 @@ jobs:
           version: 9
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -412,7 +439,7 @@ jobs:
         run: npx playwright test
 
       - name: Upload consumer Playwright report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()
         with:
           name: consumer-playwright-report
@@ -430,19 +457,25 @@ jobs:
       run_lint: ${{ needs.changes.outputs.tier == 'full' && needs.changes.outputs.helm == 'true' }}
 
   # ---------------------------------------------------------------------------
-  # Helm — smoke test (kind cluster) — full tier only
+  # Helm — smoke test (kind cluster) — full tier only. Deploys the amd64
+  # images containers-smoke built (the kind node is amd64, so these are the
+  # images the multi-arch pr-<N> manifest resolved to here before), so it
+  # starts as soon as those two builds finish rather than after every image
+  # on both architectures.
   # ---------------------------------------------------------------------------
   helm-smoke-test:
     name: "Helm: Smoke Test"
-    needs: [changes, containers]
-    if: needs.changes.outputs.tier == 'full' && needs.changes.outputs.helm == 'true'
+    needs: [changes, containers-smoke]
+    if: needs.changes.outputs.tier == 'full' && needs.changes.outputs.helm == 'true' && needs.changes.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: read
+    env:
+      IMAGE_TAG: pr-${{ github.event.number }}-amd64
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -457,15 +490,50 @@ jobs:
           mv /tmp/linux-amd64/helm /usr/local/bin/helm
           helm version
 
-      - name: Create kind cluster
-        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+      # The action only installs kind and kubectl (checksummed). Creating the
+      # cluster here skips the action's wait for a Ready control plane, which
+      # the steps below overlap with image pulls, and the 15 s its post step
+      # spent deleting the cluster the discarded runner takes with it (that
+      # step now looks for the action's default cluster name, finds none).
+      - name: Install kind and kubectl
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
-          cluster_name: ci-test
+          install_only: true
+          ignore_failed_clean: true
 
-      - name: Install Postgres in cluster
+      - name: Create kind cluster
+        run: kind create cluster --name ci-test --wait 0s
+
+      # Every image the four charts deploy, rendered from the values the
+      # installs below use (without the `helm test` hook, which never runs
+      # here), is pulled into the node in parallel while the
+      # control plane comes Ready and Postgres installs. The chart installs
+      # then start their pods from images already on the node instead of
+      # pulling them one chart after another. A failed pull only warns: the
+      # kubelet pulls that image again at install.
+      - name: Pull the charts' images and install Postgres
         run: |
+          set -euo pipefail
+          images="$(
+            for chart in volundr guild ting skuld; do
+              helm template "${chart}" "charts/${chart}/" -f "charts/${chart}/ci-values.yaml" --set image.tag="${IMAGE_TAG}" --no-hooks
+            done | sed -nE 's/^[[:space:]]*image:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' | sort -u
+          )"
+          pulls="${RUNNER_TEMP}/image-pulls"
+          mkdir -p "${pulls}"
+          for image in ${images}; do
+            echo "Pulling ${image} into the node"
+            (
+              if ! docker exec ci-test-control-plane crictl pull "${image}" > "${pulls}/${image//[\/:@]/_}.log" 2>&1; then
+                cat "${pulls}/${image//[\/:@]/_}.log"
+                echo "::warning title=Image pre-pull::${image} did not pull ahead of the install; the kubelet pulls it then"
+              fi
+            ) &
+          done
+
           helm repo add bitnami https://charts.bitnami.com/bitnami
           helm repo update
+          kubectl wait --for=condition=Ready node --all --timeout=60s
           for attempt in 1 2 3; do
             if helm install pg bitnami/postgresql \
               --set auth.postgresPassword=test \
@@ -473,7 +541,7 @@ jobs:
               --set primary.persistence.enabled=false \
               --set primary.initdb.scripts."init\.sql"="CREATE DATABASE ting; CREATE DATABASE guild;" \
               --wait --timeout 120s; then
-              exit 0
+              break
             fi
             helm uninstall pg --ignore-not-found || true
             if [ "$attempt" -eq 3 ]; then
@@ -483,6 +551,9 @@ jobs:
             echo "Retrying Postgres bootstrap after transient Helm/chart fetch failure..."
             sleep 10
           done
+
+          wait
+          docker exec ci-test-control-plane crictl images
 
       - name: Create registry pull secret in kind
         run: |
@@ -497,7 +568,7 @@ jobs:
           output="$(helm install volundr charts/volundr/ \
             -f charts/volundr/ci-values.yaml \
             --set global.imagePullSecrets[0]=ghcr-pull-secret \
-            --set image.tag="pr-${{ github.event.number }}" \
+            --set image.tag="${IMAGE_TAG}" \
             --qps 50 --burst-limit 100 2>&1)" || {
             printf "%s\n" "$output"
             annotation="$(printf "%s" "$output" | tail -c 3000 | sed -z "s/%/%25/g; s/\n/%0A/g; s/\r/%0D/g")"
@@ -506,33 +577,46 @@ jobs:
           }
           printf "%s\n" "$output"
 
-      - name: Install Guild chart
+      # The same three installs, each still waited on for up to 120 s, run
+      # side by side instead of one after another.
+      - name: Install Guild, Ting and Skuld charts
         run: |
-          helm install guild charts/guild/ \
-            -f charts/guild/ci-values.yaml \
-            --set global.imagePullSecrets[0]=ghcr-pull-secret \
-            --set image.tag="pr-${{ github.event.number }}" \
-            --wait --timeout 120s
+          set -uo pipefail
+          logs="${RUNNER_TEMP}/helm-install"
+          mkdir -p "${logs}"
+          declare -A pids
+          for chart in guild ting skuld; do
+            helm install "${chart}" "charts/${chart}/" \
+              -f "charts/${chart}/ci-values.yaml" \
+              --set 'global.imagePullSecrets[0]=ghcr-pull-secret' \
+              --set image.tag="${IMAGE_TAG}" \
+              --wait --timeout 120s > "${logs}/${chart}.log" 2>&1 &
+            pids[${chart}]=$!
+          done
+          failed=0
+          for chart in guild ting skuld; do
+            if wait "${pids[${chart}]}"; then
+              result=deployed
+            else
+              result=failed
+              failed=1
+            fi
+            echo "::group::helm install ${chart}: ${result}"
+            cat "${logs}/${chart}.log"
+            echo "::endgroup::"
+            if [ "${result}" = failed ]; then
+              annotation="$(tail -c 3000 "${logs}/${chart}.log" | sed -z "s/%/%25/g; s/\n/%0A/g; s/\r/%0D/g")"
+              echo "::error title=${chart} Helm install failure::${annotation}"
+            fi
+          done
+          exit "${failed}"
 
-      - name: Install Ting chart
-        run: |
-          helm install ting charts/ting/ \
-            -f charts/ting/ci-values.yaml \
-            --set global.imagePullSecrets[0]=ghcr-pull-secret \
-            --set image.tag="pr-${{ github.event.number }}" \
-            --wait --timeout 120s
-
-      - name: Install Skuld chart
-        run: |
-          helm install skuld charts/skuld/ \
-            -f charts/skuld/ci-values.yaml \
-            --set global.imagePullSecrets[0]=ghcr-pull-secret \
-            --set image.tag="pr-${{ github.event.number }}" \
-            --wait --timeout 120s
-
+      # Volundr's install does not wait, and the three installs above now run
+      # in parallel rather than taking about 90 s in turn, so its readiness
+      # wait gets that time back (150 s, as before counted from its install).
       - name: Verify Volundr pods are ready
         run: |
-          output="$(kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=volundr --timeout=60s 2>&1)" || {
+          output="$(kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=volundr --timeout=150s 2>&1)" || {
             previous_logs="$(kubectl logs -l app.kubernetes.io/name=volundr --all-containers=true --previous --tail=80 2>&1 || true)"
             printf "%s\n" "$previous_logs"
             previous_annotation="$(printf "%s" "$previous_logs" | tail -c 3500 | sed -z "s/%/%25/g; s/\n/%0A/g; s/\r/%0D/g")"
@@ -560,29 +644,33 @@ jobs:
       - name: Verify Skuld pods are ready
         run: kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=skuld --timeout=60s
 
-      - name: Health check Volundr
+      # Polls for the port-forward instead of sleeping 3 s per service. Only
+      # "could not connect" (curl exit 7) is retried; any HTTP error fails.
+      - name: Health check Volundr, Guild and Ting
         run: |
-          kubectl port-forward svc/volundr 8080:80 &
-          PF_PID=$!
-          sleep 3
-          curl -sf http://localhost:8080/health
-          kill $PF_PID || true
-
-      - name: Health check Guild
-        run: |
-          kubectl port-forward svc/guild 8084:80 &
-          PF_PID=$!
-          sleep 3
-          curl -sf http://localhost:8084/health
-          kill $PF_PID || true
-
-      - name: Health check Ting
-        run: |
-          kubectl port-forward svc/ting 8081:80 &
-          PF_PID=$!
-          sleep 3
-          curl -sf http://localhost:8081/health
-          kill $PF_PID || true
+          set -uo pipefail
+          health_check() {
+            local service="$1" port="$2" rc=7
+            kubectl port-forward "svc/${service}" "${port}:80" &
+            local pf_pid=$!
+            for _ in $(seq 1 100); do
+              rc=0
+              curl -sf "http://localhost:${port}/health" || rc=$?
+              [ "${rc}" -eq 7 ] || break
+              sleep 0.1
+            done
+            kill "${pf_pid}" || true
+            echo
+            if [ "${rc}" -ne 0 ]; then
+              echo "::error title=${service} health check::curl exited ${rc} for /health"
+              return 1
+            fi
+          }
+          failed=0
+          health_check volundr 8080 || failed=1
+          health_check guild 8084 || failed=1
+          health_check ting 8081 || failed=1
+          exit "${failed}"
 
       - name: Verify Kubernetes resources
         run: |
@@ -612,26 +700,102 @@ jobs:
           kubectl get events --sort-by=.lastTimestamp | tail -30 || true
 
   # ---------------------------------------------------------------------------
-  # Containers — full tier only. PR builds are amd64-only to keep the
-  # critical path short; arm64 is built on push-to-dev/main (see dev.yaml).
+  # Containers — full tier only. Built for amd64 and arm64 with dev's labels,
+  # from the PR's test-merge commit, so that dev.yaml can promote the exact
+  # images this PR tested when the merged tree is the tested tree (ci-gate
+  # tags them pr-tested-<tree>). APP_VERSION stays at its default: nothing
+  # reads the VITE_APP_VERSION it sets.
+  #
+  # GitHub has no job priority and a free plan runs 20 jobs at a time across
+  # every workflow (arm64 runners included), so the order comes from the
+  # dependency graph, in three calls:
+  #   1. containers-smoke: the amd64 images the Helm smoke test deploys (niuu,
+  #      skuld), which it waits for alone.
+  #   2. containers-amd64: the other five amd64 images, which the scans wait
+  #      for as well.
+  #   Neither has `needs`, so both are queued at t=0 with `changes`, ahead of
+  #   the ~25 test jobs `changes` releases. Their `if` and `push` restate the
+  #   full-tier and same-repository checks `changes` makes (keep them in
+  #   step); a full-tier PR always builds all seven images.
+  #   3. containers-arm64: all seven arm64 images once the amd64 builds are
+  #      done, so they take runners after the critical path has its own; it
+  #      then publishes the multi-arch pr-<N> and pr-<N>-<sha> manifests from
+  #      both platforms' tags, which ci-gate's pr-tested-<tree> tagging needs.
+  # All three read and write the pr-<N> registry cache scope per platform.
   # ---------------------------------------------------------------------------
-  containers:
-    name: Containers
-    needs: changes
+  containers-smoke:
+    name: Containers (smoke-test images)
+    if: >-
+      !startsWith(github.base_ref, 'feat/') && !startsWith(github.base_ref, 'codex/')
+      && !startsWith(github.base_ref, 'claude/')
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/reusable-container-build.yaml
+    with:
+      containers: '["niuu","skuld"]'
+      platforms: '["amd64"]'
+      publish-manifests: false
+      push: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+      cache-scope: pr-${{ github.event.number }}
+      tag-prefix: pr-${{ github.event.number }}
+      manifest-tags: ""
+      labels: |
+        org.opencontainers.image.title=niuu
+        org.opencontainers.image.licenses=Apache-2.0
+        org.opencontainers.image.vendor=Niuu Labs
+        org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+  containers-amd64:
+    name: Containers (amd64)
+    if: >-
+      !startsWith(github.base_ref, 'feat/') && !startsWith(github.base_ref, 'codex/')
+      && !startsWith(github.base_ref, 'claude/')
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/reusable-container-build.yaml
+    with:
+      containers: '["agent","openshell","devrunner","niuu-web","gbrain"]'
+      platforms: '["amd64"]'
+      publish-manifests: false
+      push: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+      cache-scope: pr-${{ github.event.number }}
+      tag-prefix: pr-${{ github.event.number }}
+      manifest-tags: ""
+      labels: |
+        org.opencontainers.image.title=niuu
+        org.opencontainers.image.licenses=Apache-2.0
+        org.opencontainers.image.vendor=Niuu Labs
+        org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+  containers-arm64:
+    name: Containers (arm64)
+    needs: [changes, containers-smoke, containers-amd64]
     if: needs.changes.outputs.tier == 'full' && needs.changes.outputs.has_containers == 'true'
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
       containers: ${{ needs.changes.outputs.container-names }}
-      platforms: '["amd64"]'
+      platforms: '["arm64"]'
+      manifest-platforms: '["amd64","arm64"]'
+      push: ${{ needs.changes.outputs.publish == 'true' }}
       cache-scope: pr-${{ github.event.number }}
       tag-prefix: pr-${{ github.event.number }}
       manifest-tags: "pr-${{ github.event.number }} pr-${{ github.event.number }}-${{ github.sha }}"
       labels: |
-        dev.volundr.pr=${{ github.event.number }}
-        dev.volundr.ephemeral=true
+        org.opencontainers.image.title=niuu
+        org.opencontainers.image.licenses=Apache-2.0
+        org.opencontainers.image.vendor=Niuu Labs
+        org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
   # ---------------------------------------------------------------------------
   # Helm charts — PR versions — full tier only
@@ -646,7 +810,7 @@ jobs:
       packages: write
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -684,6 +848,7 @@ jobs:
           helm package charts/niuu -d .helm-packages/
 
       - name: Log in to Container Registry
+        if: needs.changes.outputs.publish == 'true'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
@@ -691,6 +856,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push Helm charts to OCI registry
+        if: needs.changes.outputs.publish == 'true'
         run: |
           helm push .helm-packages/agent-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/bifrost-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
@@ -703,12 +869,14 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Security — container vulnerability scanning — full tier only.
-  # Delegated to reusable workflow.
+  # Delegated to reusable workflow. Scans pr-<N>-amd64, the image the
+  # pr-<N> manifest resolved to on the amd64 scanner before (dev.yaml scans
+  # <sha>-amd64 the same way), so it starts once the amd64 builds finish.
   # ---------------------------------------------------------------------------
   scan:
     name: Scan
-    needs: [changes, containers]
-    if: needs.changes.outputs.tier == 'full' && needs.changes.outputs.has_containers == 'true'
+    needs: [changes, containers-smoke, containers-amd64]
+    if: needs.changes.outputs.tier == 'full' && needs.changes.outputs.has_containers == 'true' && needs.changes.outputs.publish == 'true'
     permissions:
       contents: read
       packages: read
@@ -716,7 +884,7 @@ jobs:
     uses: ./.github/workflows/reusable-container-scan.yaml
     with:
       containers: ${{ needs.changes.outputs.container-names }}
-      tag: pr-${{ github.event.number }}
+      tag: pr-${{ github.event.number }}-amd64
 
   # ---------------------------------------------------------------------------
   # Security (always runs)
@@ -726,7 +894,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -735,11 +903,199 @@ jobs:
       - name: Dependency review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v4
         with:
-          # npm 11.13.0 is the current pinned bootstrap version and still bundles
-          # this advisory through its internal socks -> ip-address dependency chain.
+          # GHSA-v2v4-37r5-5v8g, GHSA-rxp7-6hxx-x8q5: the pinned bootstrap npm
+          # (11.21.1) bundles ip-address 10.7.2 through its internal socks chain,
+          # which no lockfile or override reaches. The images replace that copy
+          # with the locked 10.7.4 at build time (containers/node/npm-bootstrap/
+          # replace-nested.sh, which fails the build if the swap goes stale).
           # GHSA-rrmf-rvhw-rf47: low-severity torch.jit.script memory corruption with
           # NO patched release (<= 2.12.0 covers every published torch); torch arrives
           # via the optional mimir embeddings extra and jit.script is never invoked on
           # untrusted input (inference only). Remove once upstream ships a fix.
           # Keep dependency review strict elsewhere while allowing these upstream-only cases.
-          allow-ghsas: GHSA-v2v4-37r5-5v8g, GHSA-rrmf-rvhw-rf47
+          allow-ghsas: GHSA-v2v4-37r5-5v8g, GHSA-rxp7-6hxx-x8q5, GHSA-rrmf-rvhw-rf47
+
+  # ---------------------------------------------------------------------------
+  # CI gate — the one check a ruleset on dev requires. Runs even when an
+  # upstream job failed or was cancelled (a skipped required check counts as
+  # passing), and passes only when every job the tier and the change set
+  # called for succeeded. A job may be skipped only when `changes` said it
+  # should not run: a light-tier PR skips containers, scan, the smoke test and
+  # the charts; a fork PR skips scan and the smoke test; the path filter
+  # skips the Python and web-next jobs on light-tier PRs that do not touch
+  # them. `changes` itself must succeed, or every skip would look legitimate.
+  #
+  # When the gate is green on a full-tier PR that could publish, it also tags
+  # each image's exact pr-<N>-<sha> index pr-tested-<tree>, the tree of the
+  # test-merge commit. dev.yaml promotes those digests instead of rebuilding
+  # when a push to dev lands that same tree. Tagging is best effort: if it
+  # fails, the gate stays green and dev simply rebuilds.
+  # ---------------------------------------------------------------------------
+  ci-gate:
+    name: ci-gate
+    needs:
+      - changes
+      - python
+      - python-integration-test-volundr
+      - python-integration-test-ting
+      - python-integration-test-sleipnir
+      - web-next
+      - web-next-consumer-e2e
+      - helm-lint
+      - helm-smoke-test
+      - containers-smoke
+      - containers-amd64
+      - containers-arm64
+      - build-charts
+      - scan
+      - dependency-review
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
+      - name: Check every required job
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          PYTHON: ${{ needs.changes.outputs.python }}
+          WEB_NEXT: ${{ needs.changes.outputs.web_next }}
+          HELM: ${{ needs.changes.outputs.helm }}
+          HAS_CONTAINERS: ${{ needs.changes.outputs.has_containers }}
+          TIER: ${{ needs.changes.outputs.tier }}
+          PUBLISH: ${{ needs.changes.outputs.publish }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+
+          needs = json.loads(os.environ["NEEDS"])
+          on = lambda name: os.environ.get(name) == "true"
+          full = os.environ.get("TIER") == "full"
+          publish = on("PUBLISH")
+
+          # Mirrors each job's `if:` above. Keep the two in step: a job
+          # missing here fails the gate rather than passing unchecked.
+          expected = {
+              "changes": True,
+              "python": on("PYTHON"),
+              "python-integration-test-volundr": on("PYTHON"),
+              "python-integration-test-ting": on("PYTHON"),
+              "python-integration-test-sleipnir": on("PYTHON"),
+              "web-next": on("WEB_NEXT"),
+              "web-next-consumer-e2e": on("WEB_NEXT"),
+              "helm-lint": True,
+              "helm-smoke-test": full and on("HELM") and publish,
+              # The two amd64 calls check the tier themselves; a full-tier PR
+              # always has containers.
+              "containers-smoke": full,
+              "containers-amd64": full,
+              "containers-arm64": full and on("HAS_CONTAINERS"),
+              "build-charts": full and on("HELM"),
+              "scan": full and on("HAS_CONTAINERS") and publish,
+              "dependency-review": True,
+          }
+
+          failed = []
+          for job, info in sorted(needs.items()):
+              result = info["result"]
+              if job not in expected:
+                  failed.append(f"{job}: {result} (not listed in the gate)")
+              elif expected[job] and result != "success":
+                  failed.append(f"{job}: {result} (required)")
+              elif not expected[job] and result not in ("skipped", "success"):
+                  failed.append(f"{job}: {result}")
+              else:
+                  state = "required" if expected[job] else "not required"
+                  print(f"ok  {job}: {result} ({state})")
+
+          if failed:
+              for line in failed:
+                  print(f"::error title=ci-gate::{line}")
+              raise SystemExit(1)
+          print("All required jobs passed.")
+          PY
+
+      - name: Check out the tested merge commit
+        if: needs.changes.outputs.tier == 'full' && needs.changes.outputs.publish == 'true' && needs.changes.outputs.has_containers == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up crane
+        id: crane
+        if: needs.changes.outputs.tier == 'full' && needs.changes.outputs.publish == 'true' && needs.changes.outputs.has_containers == 'true'
+        continue-on-error: true
+        uses: ./.github/actions/setup-crane
+
+      - name: Log in to Container Registry
+        id: login
+        if: steps.crane.outcome == 'success'
+        continue-on-error: true
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag the tested images pr-tested-<tree>
+        id: tested
+        if: steps.login.outcome == 'success'
+        continue-on-error: true
+        env:
+          IMAGE_BASE: ghcr.io/${{ github.repository_owner }}
+          CONTAINERS: ${{ needs.changes.outputs.container-names }}
+          TESTED_TAG: pr-${{ github.event.number }}-${{ github.sha }}
+          MERGE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # github.sha is the test-merge commit every job above built and tested.
+          [ "$(git rev-parse HEAD)" = "${MERGE_SHA}" ]
+          TREE="$(git rev-parse "${MERGE_SHA}^{tree}")"
+          echo "Tested tree: ${TREE}"
+          for container in $(echo "${CONTAINERS}" | jq -r '.[]'); do
+            IMAGE="${IMAGE_BASE}/${container}"
+            # The exact per-commit tag, never the moving pr-<N>.
+            DIGEST="$(crane digest "${IMAGE}:${TESTED_TAG}")"
+            platforms="$(crane manifest "${IMAGE}@${DIGEST}" \
+              | jq -r '[.manifests[]?.platform | select(.os == "linux") | .architecture] | sort | unique | join(",")')"
+            if [ "${platforms}" != "amd64,arm64" ]; then
+              echo "::warning title=pr-tested::${IMAGE}:${TESTED_TAG} lists '${platforms}', not amd64 and arm64; not tagging, dev will rebuild"
+              exit 1
+            fi
+            crane tag "${IMAGE}@${DIGEST}" "pr-tested-${TREE}"
+            echo "${IMAGE}@${DIGEST} -> pr-tested-${TREE}"
+          done
+
+      # dev.yaml's promote skips the build, so dev's own registry cache
+      # (buildcache-<arch>) would keep the last tree dev built rather than the
+      # one it now runs. Promote points it at this PR's cache of the tested
+      # tree instead, found under this tag. Best effort: a missing cache only
+      # costs the next builds their cache hits.
+      - name: Tag the tested build caches pr-tested-<tree>-buildcache-<arch>
+        if: steps.tested.outcome == 'success'
+        continue-on-error: true
+        env:
+          IMAGE_BASE: ghcr.io/${{ github.repository_owner }}
+          CONTAINERS: ${{ needs.changes.outputs.container-names }}
+          CACHE_SCOPE: pr-${{ github.event.number }}
+          MERGE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          TREE="$(git rev-parse "${MERGE_SHA}^{tree}")"
+          for container in $(echo "${CONTAINERS}" | jq -r '.[]'); do
+            IMAGE="${IMAGE_BASE}/${container}"
+            for arch in amd64 arm64; do
+              if crane tag "${IMAGE}:${CACHE_SCOPE}-buildcache-${arch}" "pr-tested-${TREE}-buildcache-${arch}"; then
+                echo "${IMAGE}:${CACHE_SCOPE}-buildcache-${arch} -> pr-tested-${TREE}-buildcache-${arch}"
+              else
+                echo "::warning title=pr-tested cache::${IMAGE}:${CACHE_SCOPE}-buildcache-${arch} not tagged"
+              fi
+            done
+          done

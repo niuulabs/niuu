@@ -35,6 +35,7 @@ _PORTABLE_DEFINITION_FIELDS = frozenset(
         "fan_in",
         "stop_on_outcome",
         "delivery_workspace_actions",
+        "voice",
     }
 )
 
@@ -408,10 +409,33 @@ def _validate_definition(persona_id: str, definition: Mapping[str, Any]) -> None
     _validate_event_contract(definition.get("produces"), produces=True)
     _validate_event_contract(definition.get("consumes"), produces=False)
     _validate_fan_in(definition.get("fan_in"))
+    _validate_voice(definition.get("voice"))
     try:
         json.dumps(definition, allow_nan=False, ensure_ascii=False, sort_keys=True)
     except (TypeError, ValueError, RecursionError) as exc:
         raise PersonaDocumentError("Portable persona definition must be JSON-serializable") from exc
+
+
+def _validate_voice(raw: Any) -> None:
+    if raw is None:
+        return
+    if not isinstance(raw, Mapping):
+        raise PersonaDocumentError("Persona voice must be a mapping")
+    unknown = set(raw) - {"voices", "style", "tools", "grok"}
+    if unknown:
+        raise PersonaDocumentError(
+            f"Persona voice has unsupported field(s): {', '.join(sorted(unknown))}"
+        )
+    voices = raw.get("voices")
+    if not isinstance(voices, Mapping) or not voices:
+        raise PersonaDocumentError("Persona voice.voices must map a provider to a voice name")
+    if not all(isinstance(k, str) and k and isinstance(v, str) and v for k, v in voices.items()):
+        raise PersonaDocumentError("Persona voice.voices must map non-empty strings")
+    _validate_optional_string(raw, "style")
+    _validate_string_list(raw, "tools")
+    grok = raw.get("grok")
+    if grok is not None and not isinstance(grok, Mapping):
+        raise PersonaDocumentError("Persona voice.grok must be a mapping")
 
 
 def _validate_bundle_path(path: str) -> None:

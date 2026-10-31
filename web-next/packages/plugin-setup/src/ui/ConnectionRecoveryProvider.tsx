@@ -9,7 +9,13 @@ import {
 } from './hooks';
 import { SignInCard } from './SignInCard';
 import { IntegrationCard } from './IntegrationCard';
-import { connectionNeedsSignIn, signInOffered, isConnectableFromWizard } from '../domain/setup';
+import {
+  connectionNeedsSignIn,
+  credentialExpiryLabel,
+  credentialProblemLabel,
+  signInOffered,
+  isConnectableFromWizard,
+} from '../domain/setup';
 
 export function ConnectionRecoveryProvider({ children }: { children: ReactNode }) {
   const service = useOptionalSetupService();
@@ -23,16 +29,38 @@ export function ConnectionRecoveryProvider({ children }: { children: ReactNode }
   );
 }
 
-function ConnectionRecoveryDialog({ onClose }: { onClose: () => void }) {
+export interface ConnectionRecoveryDialogProps {
+  onClose: () => void;
+  /** The account to reconnect, preselected; the person can still pick another. */
+  initialConnectionId?: string;
+  /** Where the dialog opens from; only the surrounding copy differs. */
+  context?: 'chat' | 'settings';
+}
+
+/**
+ * Sign an existing account in again, or replace its key. The connection keeps
+ * its id and credential name, so every session and rule that uses it keeps
+ * working. Needs the setup service.
+ */
+export function ConnectionRecoveryDialog({
+  onClose,
+  initialConnectionId = '',
+  context = 'chat',
+}: ConnectionRecoveryDialogProps) {
   const service = useOptionalSetupService()!;
+  const fromChat = context === 'chat';
   const catalog = useCatalog();
   const connections = useIntegrations();
   const connect = useConnectIntegration();
   const test = useTestIntegration();
   const [useKey, setUseKey] = useState(false);
-  const [selectedId, setSelectedId] = useState('');
+  const [selectedId, setSelectedId] = useState(initialConnectionId);
   const [saved, setSaved] = useState(false);
   const selected = connections.data?.find((item) => item.id === selectedId);
+  const problem = selected
+    ? (credentialProblemLabel(selected) ??
+      (connectionNeedsSignIn(selected) ? credentialExpiryLabel(selected) : null))
+    : null;
   const entry = catalog.data?.find((item) => item.slug === selected?.slug);
   const label = (item: NonNullable<typeof connections.data>[number]) =>
     String(
@@ -50,8 +78,9 @@ function ConnectionRecoveryDialog({ onClose }: { onClose: () => void }) {
       <DialogContent title="Reconnect an account" className="setup-dialog">
         <div className="setup-col">
           <p className="setup-note">
-            Your connected accounts across Niuu. Choose the account that needs attention; your
-            conversation stays open.
+            {fromChat
+              ? 'Your connected accounts across Niuu. Choose the account that needs attention; your conversation stays open.'
+              : 'Sign this account in again. It keeps its name, so the sessions and rules that use it keep working.'}
           </p>
           {catalog.isLoading || connections.isLoading ? (
             <p role="status">Loading accounts…</p>
@@ -99,6 +128,11 @@ function ConnectionRecoveryDialog({ onClose }: { onClose: () => void }) {
               ))}
             </select>
           </label>
+          {problem && !saved ? (
+            <p className="setup-note setup-note--warn" data-testid="setup-recovery-problem">
+              {problem}
+            </p>
+          ) : null}
           {selected && entry && signInOffered(entry) && isConnectableFromWizard(entry) ? (
             <div className="setup-form__actions">
               <button
@@ -166,11 +200,12 @@ function ConnectionRecoveryDialog({ onClose }: { onClose: () => void }) {
           {saved ? <p role="status">Account updated.</p> : null}
           {test.error ? <p role="alert">Could not test the connection.</p> : null}
           <p className="setup-note">
-            After sign-in, return to chat and retry. If the runtime still reports an authentication
-            error, stop and start this session to load the updated credentials.
+            {fromChat
+              ? 'After sign-in, return to chat and retry. If the runtime still reports an authentication error, stop and start this session to load the updated credentials.'
+              : 'A session that is already running loads the updated credentials when it next starts.'}
           </p>
           <button type="button" className="setup-btn" onClick={onClose}>
-            Return to chat
+            {fromChat ? 'Return to chat' : 'Done'}
           </button>
         </div>
       </DialogContent>

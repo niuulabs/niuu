@@ -8,8 +8,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import UUID
 
+import httpx
 import pytest
 from aiohttp import web
 
@@ -20,6 +22,7 @@ from volundr.adapters.outbound.hermes_gateway import (
     HERMES_CREDENTIAL_NAME,
     HERMES_LEGACY_CREDENTIAL_NAME,
     VOLUNDR_DELETED_END_REASON,
+    HermesChatConnection,
     HermesGatewayError,
     HermesResidentSessionController,
     _session_uuid,
@@ -498,6 +501,47 @@ async def test_interrupt_uses_run_stop_api_and_steer_is_not_advertised() -> None
         await chat.send({"type": "interrupt"})
         result = await chat.receive()
         assert result == {"type": "result", "result": "", "interrupted": True}
-        with pytest.raises(HermesGatewayError, match="does not support steering"):
-            await chat.send({"type": "steer", "content": "Change direction"})
+        await chat.send({"type": "steer", "content": "Change direction"})
+        assert await chat.receive() == {
+            "type": "error",
+            "error": "Hermes API server does not support steering active runs",
+            "command": "steer",
+        }
         await chat.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_surfaces_event_stream_transport_failure() -> None:
+    async def broken_stream(_run_id):
+        yield {"event": "heartbeat"}
+        raise httpx.ReadError("event stream lost")
+
+    api = AsyncMock()
+    api.stream_run = broken_stream
+    chat = HermesChatConnection(api, "session", [], "model")
+    await chat.receive()  # capabilities
+    await chat.receive()  # history
+    chat._active_run_id = "run"
+    await chat._consume_run("run")
+    assert await chat.receive() == {"type": "error", "error": "event stream lost"}
+    api.request.assert_not_awaited()
+    assert chat._active_run_id is None
+
+
+@pytest.mark.asyncio
+async def test_chat_answers_unsupported_commands_and_stays_open() -> None:
+    """Lexi sends optional control frames on connect; one must not end the chat."""
+    api = AsyncMock()
+    chat = HermesChatConnection(api, "session", [], "model")
+    await chat.receive()  # capabilities
+    await chat.receive()  # history
+
+    await chat.send({"type": "set_internal_visibility", "visible": False})
+
+    assert await chat.receive() == {
+        "type": "error",
+        "error": "Unsupported shared chat command: set_internal_visibility",
+        "command": "set_internal_visibility",
+    }
+    api.request.assert_not_awaited()
+    await chat.close()

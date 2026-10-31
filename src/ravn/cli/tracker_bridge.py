@@ -42,7 +42,7 @@ async def _client() -> httpx.AsyncClient:
     return await platform_client(
         base_url=base_url,
         timeout=platform.timeout,
-        pat_token=platform.pat_token,
+        access_token=platform.access_token,
         workload_token_file=(
             platform.workload_token_file
             if "workload_token_file" in platform.model_fields_set

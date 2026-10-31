@@ -780,7 +780,7 @@ describe('ResearchCampaignPage', () => {
       expect(screen.getByText('Local model serving on the homelab')).toBeInTheDocument(),
     );
     expect(screen.getAllByText(/Final synthesis/i).length).toBeGreaterThan(0);
-    expect(screen.getByRole('button', { name: /open in Mímir/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /open in Memory/i })).toBeInTheDocument();
     expect(screen.getByText(/Evidence/i)).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: /\[s1\]/i }).length).toBeGreaterThan(0);
 
@@ -824,7 +824,7 @@ describe('ResearchCampaignPage', () => {
       ).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getAllByRole('button', { name: /open in Mímir/i })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: /open in Memory/i })[0]!);
     expect(mockNavigate).toHaveBeenCalledWith({ to: '/mimir' });
 
     openSpy.mockRestore();
@@ -931,11 +931,11 @@ describe('ResearchCampaignPage', () => {
         screen.getByRole('heading', { level: 1, name: 'Replacing Skuld with a managed pub/sub?' }),
       ).toBeInTheDocument(),
     );
-    expect(screen.getByRole('button', { name: /Publish to Mímir/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Publish to Memory/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Send back for revision/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Annotated/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Publish to Mímir/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Publish to Memory/i }));
     await waitFor(() =>
       expect(
         screen.getByText(/research\/campaigns\/skuld-fanout-options\/manifest\.md/i),
@@ -943,7 +943,7 @@ describe('ResearchCampaignPage', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: /Send back for revision/i }));
-    await waitFor(() => expect(screen.getByText(/Open in Völundr/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Open in Sessions/i)).toBeInTheDocument());
     expect(screen.getByText(/Delete campaign/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Open manifest/i }));
@@ -986,7 +986,7 @@ describe('ResearchCampaignPage', () => {
     await waitFor(() => expect(screen.getByText(/Activity/i)).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /Resume after fix/i }));
-    await waitFor(() => expect(screen.getByText(/Open in Völundr/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Open in Sessions/i)).toBeInTheDocument());
   });
 
   it('renders the failed state and can pivot between logs and run details', async () => {
@@ -1016,7 +1016,7 @@ describe('ResearchCampaignPage', () => {
     expect(screen.getByText(/valhalla/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Retry from stage/i }));
-    await waitFor(() => expect(screen.getByText(/Open in Völundr/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Open in Sessions/i)).toBeInTheDocument());
   });
 
   it('deletes a campaign after confirmation and routes back to the index', async () => {
@@ -1207,9 +1207,9 @@ describe('ResearchCampaignPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Operator ▸/i }));
     fireEvent.click(screen.getByRole('button', { name: /^Actions$/i }));
-    await waitFor(() => expect(screen.getByText(/Open in Völundr/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Open in Sessions/i)).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: /Open in Völundr/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Open in Sessions/i }));
     expect(assign).toHaveBeenCalledWith(
       `/volundr/sessions/${encodeURIComponent(runningCampaign.sessionId)}`,
     );
@@ -1241,7 +1241,7 @@ describe('ResearchCampaignPage', () => {
     );
     expect(screen.queryByRole('button', { name: /open external/i })).toBeNull();
 
-    fireEvent.click(screen.getAllByRole('button', { name: /open in Mímir/i })[1]!);
+    fireEvent.click(screen.getAllByRole('button', { name: /open in Memory/i })[1]!);
     expect(mockNavigate).toHaveBeenCalledWith({ to: '/mimir' });
   });
 

@@ -16,13 +16,31 @@ from pydantic import BaseModel, Field
 from mimir.connections import resolve_mimir_workload
 from niuu.domain.mimir import MimirPage, MimirPageMeta
 from niuu.domain.models import Principal
+from niuu.domain.services.token_scope import scoped_credential_claims
+from niuu.ports.http_auth import HttpAuthPort
 from niuu.ports.mimir import MimirPort
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.dispatch import resolve_volundr_factory
+from ting.api.workflow_execution_launch import (
+    durable_parent_node_id,
+    launch_reserved_parent,
+    new_parent_execution,
+    parent_launch_body,
+)
+from ting.api.workflow_executions import resolve_optional_workflow_execution_repo
 from ting.api.workflows import (
     WorkflowLaunchBody,
+    WorkflowLaunchExecution,
     launch_workflow_execution,
     resolve_workflow_repo,
+)
+from ting.domain.campaign_stages import (
+    FAILURE_ERROR_KEY,
+    FAILURE_STAGE_KEY,
+    WorkflowStage,
+    record_runtime_failure,
+    render_stage_state,
+    workflow_stages,
 )
 from ting.domain.models import (
     CampaignStageState,
@@ -31,18 +49,29 @@ from ting.domain.models import (
     WorkflowDefinition,
 )
 from ting.domain.utils import _session_name, _slugify
+from ting.domain.workflow_execution import (
+    CHILDREN_JOINED_SUSPENSION_REASON,
+    ExecutionConflictError,
+    ExecutionState,
+    WorkflowExecution,
+)
 from ting.domain.workflow_snapshot import (
+    build_workflow_snapshot,
     workflow_artifact_paths_from_snapshot,
     workflow_mimir_from_snapshot,
 )
 from ting.ports.event_bus import TingEvent
 from ting.ports.volundr import VolundrFactory
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
+from ting.ports.workflow_execution import WorkflowExecutionRepository
 from ting.ports.workflow_repository import WorkflowRepository
 
 _DEFAULT_RESEARCH_WORKFLOW_NAME = "Research Campaign"
 _RESEARCH_SURFACE = "ting.research"
 _A2A_SURFACE = "a2a"
+#: Campaign metadata key linking a campaign to the durable execution that
+#: coordinates its subworkflow fan-out (``/workflow-executions/{id}``).
+_WORKFLOW_EXECUTION_ID_KEY = "workflow_execution_id"
 # How a workflow declares it is research work. The graph is the authority on
 # kind; metadata.surface only records where a launch came from.
 _RESEARCH_TAG = "research"
@@ -247,6 +276,9 @@ def create_research_router() -> APIRouter:
         workflow_repo: WorkflowRepository = Depends(resolve_workflow_repo),
         campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
+        execution_repo: WorkflowExecutionRepository | None = Depends(
+            resolve_optional_workflow_execution_repo
+        ),
     ) -> ResearchCampaignResponse:
         workflow = await _resolve_research_workflow(
             repo=workflow_repo,
@@ -257,32 +289,58 @@ def create_research_router() -> APIRouter:
         initiative_prompt = _build_campaign_prompt(body)
         campaign_name = _campaign_name(body)
         session_name = _session_name(campaign_name) or "research-campaign"
-        launch = WorkflowLaunchBody(
-            prompt=initiative_prompt,
-            sessionName=session_name,
-            repo=body.repo,
-            branch=body.branch,
-            connectionId=body.connection_id,
-            model=body.model,
-            definition=body.definition,
-            workflowVersion=workflow.version,
-            gateAutoForwardAfter=body.gate_auto_forward_after,
-        )
-        execution = await launch_workflow_execution(
+        campaign_id = uuid4()
+        try:
+            workflow_snapshot = build_workflow_snapshot(
+                workflow, persona_source=getattr(request.app.state, "persona_source", None)
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        workflow_execution_id: str | None = None
+        durable = await _durable_research_launch(
             request=request,
+            body=body,
             workflow=workflow,
-            launch=launch,
-            volundr_factory=volundr_factory,
+            workflow_snapshot=workflow_snapshot,
+            campaign_id=campaign_id,
+            campaign_name=campaign_name,
+            session_name=session_name,
+            prompt=initiative_prompt,
             principal=principal,
             bearer_token=bearer_token,
+            execution_repo=execution_repo,
+            volundr_factory=volundr_factory,
         )
+        if durable is not None:
+            execution, workflow_execution_id = durable
+        else:
+            launch = WorkflowLaunchBody(
+                prompt=initiative_prompt,
+                sessionName=session_name,
+                repo=body.repo,
+                branch=body.branch,
+                connectionId=body.connection_id,
+                model=body.model,
+                definition=body.definition,
+                workflowVersion=workflow.version,
+                gateAutoForwardAfter=body.gate_auto_forward_after,
+            )
+            execution = await launch_workflow_execution(
+                request=request,
+                workflow=workflow,
+                launch=launch,
+                volundr_factory=volundr_factory,
+                principal=principal,
+                bearer_token=bearer_token,
+                pinned_workflow_snapshot=workflow_snapshot,
+            )
 
         slug = await _reserve_slug(campaign_repo, execution.slug)
         now = datetime.now(UTC)
         stage_state = _initial_stage_state(execution.workflow_snapshot, now)
         campaign = WorkflowCampaign(
             tenant_id=principal.tenant_id,
-            id=uuid4(),
+            id=campaign_id,
             slug=slug,
             name=campaign_name,
             owner_id=principal.user_id,
@@ -308,6 +366,11 @@ def create_research_router() -> APIRouter:
                 "branch": body.branch,
                 "connection_id": body.connection_id,
                 "cluster_name": execution.session.cluster_name,
+                **(
+                    {_WORKFLOW_EXECUTION_ID_KEY: workflow_execution_id}
+                    if workflow_execution_id
+                    else {}
+                ),
             },
             created_at=now,
             updated_at=now,
@@ -326,6 +389,9 @@ def create_research_router() -> APIRouter:
         principal: Principal = Depends(extract_principal),
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
+        execution_repo: WorkflowExecutionRepository | None = Depends(
+            resolve_optional_workflow_execution_repo
+        ),
     ) -> ResearchCampaignDetailResponse:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
         if campaign is None or not _is_research_campaign(campaign):
@@ -365,6 +431,9 @@ def create_research_router() -> APIRouter:
                 artifacts,
                 refreshed.status,
                 refreshed.stage_state,
+                slug=_artifact_slug(refreshed),
+                execution=await _campaign_execution(refreshed, execution_repo, principal),
+                metadata=refreshed.metadata,
             )
             if stage_state != refreshed.stage_state or (
                 stage_state and stage_state[0].stage_id != refreshed.active_stage_id
@@ -499,7 +568,10 @@ def create_research_router() -> APIRouter:
         if not _campaign_owns_path(campaign, path):
             raise HTTPException(status_code=404, detail="Artifact not found")
         adapter = _campaign_knowledge(
-            campaign, request.app.state.settings, bearer_token=extract_bearer_token(request)
+            campaign,
+            request.app.state.settings,
+            bearer_token=extract_bearer_token(request),
+            service_auth=getattr(request.app.state, "mimir_service_auth", None),
         )
         if adapter is None:
             raise HTTPException(
@@ -524,6 +596,115 @@ def create_research_router() -> APIRouter:
         )
 
     return router
+
+
+async def _durable_research_launch(
+    *,
+    request: Request,
+    body: ResearchCampaignCreateBody,
+    workflow: WorkflowDefinition,
+    workflow_snapshot: dict[str, Any],
+    campaign_id: UUID,
+    campaign_name: str,
+    session_name: str,
+    prompt: str,
+    principal: Principal,
+    bearer_token: str | None,
+    execution_repo: WorkflowExecutionRepository | None,
+    volundr_factory: VolundrFactory,
+) -> tuple[WorkflowLaunchExecution, str] | None:
+    """Launch a research workflow that fans out as a durable parent execution.
+
+    Returns ``None`` when the workflow needs no durable execution, so the
+    caller keeps the plain launch. Otherwise reserves a ``WorkflowExecution``
+    and spawns the parent through the same trusted path
+    ``POST /workflow-executions`` uses — without it the coordinator persona's
+    ``workflow_execution_*`` tools have no owner-bound runtime context and its
+    Ravn crashes the moment the frame stage hands over.
+
+    The parent keeps the campaign's own session name, so the launch slug —
+    and with it the ``research/campaigns/<slug>/`` Mímir prefix the workflow
+    writes to and the campaign slug callers address — is unchanged.
+    """
+    parent_node_id = durable_parent_node_id(workflow, workflow_snapshot)
+    if parent_node_id is None:
+        return None
+    if execution_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "This research workflow fans out through durable workflow executions, "
+                "which are not enabled here (Ting workflow_execution.enabled)"
+            ),
+        )
+    execution = new_parent_execution(
+        request=request,
+        principal=principal,
+        workflow=workflow,
+        execution_id=uuid4(),
+        workflow_snapshot=workflow_snapshot,
+        parent_node_id=parent_node_id,
+        prompt=prompt,
+        name=campaign_name,
+        # One execution per campaign: the campaign id is fresh per request, so
+        # this key never replays an earlier launch.
+        launch_key=f"{_RESEARCH_SURFACE}:{campaign_id}",
+        launch_request=body.model_dump(mode="json", by_alias=True),
+    )
+    try:
+        reserved, _ = await execution_repo.reserve_parent_launch(execution)
+    except ExecutionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    launch = parent_launch_body(
+        reserved,
+        request=request,
+        prompt=prompt,
+        session_name=session_name,
+        model=body.model,
+        connection_id=body.connection_id,
+        repo=body.repo,
+        branch=body.branch,
+        definition=body.definition,
+        workflow_version=workflow.version,
+        gate_auto_forward_after=body.gate_auto_forward_after,
+    )
+    launched, _ = await launch_reserved_parent(
+        request=request,
+        workflow=workflow,
+        reserved=reserved,
+        launch=launch,
+        execution_repo=execution_repo,
+        volundr_factory=volundr_factory,
+        principal=principal,
+        bearer_token=bearer_token,
+    )
+    return launched, str(reserved.id)
+
+
+async def _campaign_execution(
+    campaign: WorkflowCampaign,
+    execution_repo: WorkflowExecutionRepository | None,
+    principal: Principal,
+) -> WorkflowExecution | None:
+    """The durable execution coordinating a campaign's fan-out, when it has one."""
+    raw_id = str(campaign.metadata.get(_WORKFLOW_EXECUTION_ID_KEY) or "").strip()
+    if execution_repo is None or not raw_id:
+        return None
+    try:
+        return await execution_repo.get(
+            UUID(raw_id),
+            owner_id=principal.user_id,
+            tenant_id=principal.tenant_id,
+        )
+    except Exception:
+        # Stage evidence only; the campaign detail must not fail without it.
+        logger.warning(
+            "Could not read workflow execution %s for research campaign %s",
+            raw_id,
+            campaign.slug,
+            exc_info=True,
+        )
+        return None
 
 
 async def _resolve_research_workflow(
@@ -674,13 +855,13 @@ def _build_campaign_prompt(body: ResearchCampaignCreateBody) -> str:
 
 
 def _initial_stage_state(snapshot: dict[str, Any], now: datetime) -> list[CampaignStageState]:
-    stages = _workflow_stages(snapshot)
+    stages = workflow_stages(snapshot)
     result: list[CampaignStageState] = []
     for index, stage in enumerate(stages):
         result.append(
             CampaignStageState(
-                stage_id=stage["id"],
-                label=stage["label"],
+                stage_id=stage.id,
+                label=stage.label,
                 status="active" if index == 0 else "pending",
                 started_at=now if index == 0 else None,
             )
@@ -714,9 +895,28 @@ async def _refresh_campaign_runtime(
         return campaign
     if session is None:
         return campaign
-    next_status = _campaign_status_from_session(session.status, fallback=campaign.status)
-    next_completed_at = campaign.completed_at
     now = datetime.now(UTC)
+    metadata = campaign.metadata
+    stage_state = campaign.stage_state
+    active_stage_id = campaign.active_stage_id
+    activity_state = str(getattr(session, "activity_state", "") or "").strip().lower()
+    if activity_state == "error" and campaign.status not in _TERMINAL_CAMPAIGN_STATUSES:
+        # A stage's runtime failed (Skuld reports a peer error as activity
+        # state "error") while the pod itself keeps running. The session
+        # status alone would keep this campaign "running" forever.
+        next_status = WorkflowCampaignStatus.FAILED
+        metadata, stage_state, active_stage_id = record_runtime_failure(
+            campaign, getattr(session, "activity_metadata", {}) or {}, now=now
+        )
+    elif campaign.status in _TERMINAL_CAMPAIGN_STATUSES:
+        # A finished or failed campaign keeps its outcome while its pod winds
+        # down or lingers: a still-"running" session is not new progress, and
+        # the "stopped" session a failed campaign's cleanup leaves behind is
+        # not a completion.
+        next_status = campaign.status
+    else:
+        next_status = _campaign_status_from_session(session.status, fallback=campaign.status)
+    next_completed_at = campaign.completed_at
     if next_status == WorkflowCampaignStatus.COMPLETED and campaign.completed_at is None:
         next_completed_at = now
     if next_status == campaign.status and session.name == campaign.session_name:
@@ -726,6 +926,9 @@ async def _refresh_campaign_runtime(
             **campaign.__dict__,
             "session_name": session.name,
             "status": next_status,
+            "metadata": metadata,
+            "stage_state": stage_state,
+            "active_stage_id": active_stage_id,
             "updated_at": now,
             "last_activity_at": now,
             "completed_at": next_completed_at,
@@ -739,6 +942,11 @@ async def _refresh_campaign_runtime(
         event_name = "workflow.campaign.failed"
     await _emit_campaign_event(request, event_name, saved)
     return saved
+
+
+_TERMINAL_CAMPAIGN_STATUSES = frozenset(
+    {WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED}
+)
 
 
 async def _resolve_campaign_volundr_adapter(
@@ -1057,19 +1265,79 @@ def _title_from_path(path: str) -> str:
 
 
 def _workflow_stages(snapshot: dict[str, Any]) -> list[dict[str, str]]:
-    graph = snapshot.get("graph") if isinstance(snapshot, dict) else None
-    nodes = graph.get("nodes") if isinstance(graph, dict) else []
-    stages: list[dict[str, str]] = []
-    for node in nodes or []:
-        if not isinstance(node, dict) or node.get("kind") != "stage":
+    """Stage ids and labels in graph order (spec campaigns derive by stage id)."""
+    return [{"id": stage.id, "label": stage.label} for stage in workflow_stages(snapshot)]
+
+
+#: Artifact kinds each kind of research stage writes, keyed by a fragment of
+#: the stage's stable identifiers (node id, persona ids, produced events) or —
+#: only as a fallback — of its display label. Order matters twice: a stage
+#: takes the first rule it matches, and a kind is credited to the first stage
+#: (in graph order) that claims it, so an analysis stage's ``analysis.md`` is
+#: never read as proof that a later synthesis stage finished.
+_STAGE_ARTIFACT_RULES: tuple[tuple[tuple[str, ...], frozenset[str]], ...] = (
+    (("frame",), frozenset({"brief", "plan"})),
+    (("analy",), frozenset({"analysis", "sources"})),
+    (("explor", "evidence"), frozenset({"note", "sources"})),
+    (("challeng", "critique", "skeptic"), frozenset({"critique"})),
+    (("synth",), frozenset({"analysis", "final"})),
+    (("curat",), frozenset({"learnings", "followups"})),
+    (("publish",), frozenset({"manifest"})),
+)
+
+
+def _artifact_rule(texts: tuple[str, ...]) -> frozenset[str] | None:
+    lowered = [text.lower() for text in texts if text]
+    for fragments, kinds in _STAGE_ARTIFACT_RULES:
+        if any(fragment in text for fragment in fragments for text in lowered):
+            return kinds
+    return None
+
+
+def _stage_artifact_claims(stages: list[WorkflowStage]) -> dict[str, frozenset[str]]:
+    """Credit each artifact kind to exactly one stage.
+
+    Stages that declare their own evidence (artifact paths, a dispatched
+    subworkflow) claim no kinds. The rest match on stable identifiers first;
+    a stage none of whose identifiers match falls back to its label.
+    """
+    claimed: set[str] = set()
+    claims: dict[str, frozenset[str]] = {}
+    unmatched: list[WorkflowStage] = []
+    for stage in stages:
+        if stage.artifact_paths or stage.dispatches_subworkflows:
             continue
-        stages.append(
-            {
-                "id": str(node.get("id") or ""),
-                "label": str(node.get("label") or node.get("id") or "Stage"),
-            }
-        )
-    return stages
+        kinds = _artifact_rule(stage.tokens)
+        if kinds is None:
+            unmatched.append(stage)
+            continue
+        claims[stage.id] = kinds - claimed
+        claimed |= kinds
+    for stage in unmatched:
+        kinds = _artifact_rule((stage.label,))
+        if kinds is None:
+            continue
+        claims[stage.id] = kinds - claimed
+        claimed |= kinds
+    return claims
+
+
+def _subworkflow_joined(
+    stage: WorkflowStage,
+    execution: WorkflowExecution | None,
+) -> bool:
+    """True once the durable fan-out a stage dispatched has joined.
+
+    The parent execution records the join as it resumes the parent session
+    with the subworkflow's joined event (``research.threads.joined`` for the
+    research graphs); a completed execution has necessarily joined too.
+    """
+    if execution is None or execution.parent_node_id not in stage.dispatches_subworkflows:
+        return False
+    return (
+        execution.suspension_reason == CHILDREN_JOINED_SUSPENSION_REASON
+        or execution.state == ExecutionState.COMPLETED
+    )
 
 
 def _derive_stage_state(
@@ -1077,91 +1345,51 @@ def _derive_stage_state(
     artifacts: list[CampaignArtifactResponse],
     status: WorkflowCampaignStatus,
     previous: list[CampaignStageState],
+    *,
+    slug: str = "",
+    execution: WorkflowExecution | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> list[CampaignStageState]:
-    stages = _workflow_stages(snapshot)
-    previous_map = {stage.stage_id: stage for stage in previous}
+    """Derive stage progress from the evidence each stage leaves behind.
+
+    Per stage, strongest evidence first:
+
+    1. ``artifactPaths`` declared on the stage node — all must exist;
+    2. a stage that dispatches a subworkflow — its children have joined;
+    3. the artifact kinds the stage is credited with (see
+       :func:`_stage_artifact_claims`) — any one exists.
+
+    A stage that finished proves its upstream stages finished (closed in
+    :func:`render_stage_state`), and a failed campaign marks the stage the
+    runtime attributed the failure to.
+    """
+    stages = workflow_stages(snapshot)
     available_kinds = {artifact.kind for artifact in artifacts if artifact.kind}
-    now = datetime.now(UTC)
-    derived: list[CampaignStageState] = []
-    first_incomplete: int | None = None
-
-    for index, stage in enumerate(stages):
-        requirement_met = _stage_requirement_met(stage["label"], available_kinds, status)
-        prior = previous_map.get(stage["id"])
-        if requirement_met:
-            derived.append(
-                CampaignStageState(
-                    stage_id=stage["id"],
-                    label=stage["label"],
-                    status="complete",
-                    started_at=prior.started_at if prior else None,
-                    completed_at=(prior.completed_at if prior and prior.completed_at else now),
-                    reason=prior.reason if prior else None,
-                )
-            )
-            continue
-        if first_incomplete is None:
-            first_incomplete = index
-        derived.append(
-            CampaignStageState(
-                stage_id=stage["id"],
-                label=stage["label"],
-                status="pending",
-                started_at=prior.started_at if prior else None,
-                completed_at=prior.completed_at if prior else None,
-                reason=prior.reason if prior else None,
-            )
-        )
-
-    if first_incomplete is not None:
-        current = derived[first_incomplete]
-        current_status = "active"
-        if status == WorkflowCampaignStatus.BLOCKED:
-            current_status = "blocked"
-        elif status == WorkflowCampaignStatus.FAILED:
-            current_status = "failed"
-        derived[first_incomplete] = CampaignStageState(
-            stage_id=current.stage_id,
-            label=current.label,
-            status=current_status,
-            started_at=current.started_at or now,
-            completed_at=current.completed_at,
-            reason=current.reason,
-        )
-    elif derived and status == WorkflowCampaignStatus.COMPLETED:
-        last = derived[-1]
-        derived[-1] = CampaignStageState(
-            stage_id=last.stage_id,
-            label=last.label,
-            status="complete",
-            started_at=last.started_at,
-            completed_at=last.completed_at or now,
-            reason=last.reason,
-        )
-    return derived
-
-
-def _stage_requirement_met(
-    label: str,
-    kinds: set[str | None],
-    status: WorkflowCampaignStatus,
-) -> bool:
-    lowered = label.lower()
-    if "frame" in lowered:
-        return "brief" in kinds or "plan" in kinds
-    if "explore" in lowered or "evidence" in lowered:
-        return "note" in kinds or "sources" in kinds
-    if "challenge" in lowered or "critique" in lowered:
-        return "critique" in kinds
-    if "synth" in lowered:
-        return "analysis" in kinds or "final" in kinds
-    if "curate" in lowered:
-        return "learnings" in kinds or "followups" in kinds
-    if "publish" in lowered:
-        return "manifest" in kinds
-    if "complete" in lowered:
-        return status == WorkflowCampaignStatus.COMPLETED
-    return False
+    available_paths = {artifact.path for artifact in artifacts}
+    claims = _stage_artifact_claims(stages)
+    completed: set[str] = set()
+    for stage in stages:
+        if stage.artifact_paths:
+            required = {path.replace("{slug}", slug) for path in stage.artifact_paths}
+            met = bool(slug) and required <= available_paths
+        elif stage.dispatches_subworkflows:
+            met = _subworkflow_joined(stage, execution)
+        else:
+            met = bool(claims.get(stage.id, frozenset()) & available_kinds)
+            if not met and status == WorkflowCampaignStatus.COMPLETED:
+                met = "complete" in stage.label.lower()
+        if met:
+            completed.add(stage.id)
+    campaign_metadata = metadata or {}
+    return render_stage_state(
+        stages,
+        completed,
+        status=status,
+        previous=previous,
+        now=datetime.now(UTC),
+        failed_stage_id=str(campaign_metadata.get(FAILURE_STAGE_KEY) or "") or None,
+        failure_reason=str(campaign_metadata.get(FAILURE_ERROR_KEY) or "") or None,
+    )
 
 
 def _active_stage_id(stage_state: list[CampaignStageState]) -> str | None:
@@ -1172,14 +1400,41 @@ def _active_stage_id(stage_state: list[CampaignStageState]) -> str | None:
 
 
 def _campaign_knowledge(
-    campaign: WorkflowCampaign, settings: Any, *, bearer_token: str | None = None
+    campaign: WorkflowCampaign,
+    settings: Any,
+    *,
+    bearer_token: str | None = None,
+    service_auth: HttpAuthPort | None = None,
 ) -> MimirPort | None:
+    """Open the campaign's memory well as the caller.
+
+    A scoped workload credential is never forwarded downstream. When the caller
+    holds one, ``service_auth`` — Ting's own Mimir credential — reads instead;
+    the caller has already been authorized for this campaign and its paths.
+    """
+    if bearer_token and scoped_credential_claims(bearer_token) is not None:
+        bearer_token = _service_mimir_token(service_auth)
     return resolve_mimir_workload(
         workflow_mimir_from_snapshot(campaign.workflow_snapshot),
         hosted_url=settings.dispatch.flock.mimir_hosted_url,
         registry_path=settings.dispatch.flock.mimir_registry_path,
         bearer_token=bearer_token,
     )
+
+
+def _service_mimir_token(service_auth: HttpAuthPort | None) -> str:
+    header = service_auth.headers().get("Authorization", "") if service_auth else ""
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "A scoped credential cannot read campaign artifacts: Ting has no Mimir "
+                "credential of its own. Set dispatch.flock.mimir_service_auth (workload "
+                "identity with audience mimir)."
+            ),
+        )
+    return token.strip()
 
 
 def _campaign_owns_path(campaign: WorkflowCampaign, path: str) -> bool:

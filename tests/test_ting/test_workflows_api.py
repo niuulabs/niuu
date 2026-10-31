@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 import jwt
@@ -1503,6 +1504,163 @@ class TestWorkflowCatalogAPI:
         assert campaign.workflow_version == "1.0.0"
         assert campaign.workflow_snapshot["workflow_revision"].startswith("sha256:")
         assert campaign.metadata["surface"] == "ting.workflow-launch"
+        assert "actor_id" not in campaign.metadata
+
+    def _launch_infra_change(self, body: dict) -> tuple[Any, RecordingVolundrPort]:
+        from ting.system_workflows import load_system_workflows
+
+        workflow = next(w for w in load_system_workflows() if w.name == "Infra Change Flow")
+        adapter = RecordingVolundrPort()
+        client = _make_client(
+            InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([adapter]),
+            campaign_repo=RecordingCampaignRepository(),
+        )
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={
+                "prompt": "Pin the Sigrun resident to the dev build.",
+                "sessionName": "niu-1114-sigrun",
+                "repo": "https://github.com/jve/infrastructure",
+                **body,
+            },
+        )
+        return response, adapter
+
+    def test_isolated_workflow_never_works_on_its_target_branch(self) -> None:
+        """A push to an infra repo's target branch is a deploy; only the gated merge may make it."""
+        response, adapter = self._launch_infra_change({"base_branch": "main"})
+
+        assert response.status_code == 201, response.text
+        spawn = adapter.requests[0]
+        assert spawn.branch == "workflow/niu-1114-sigrun"
+        assert spawn.base_branch == "main"
+        assert "Work and commit only on `workflow/niu-1114-sigrun`, cut from `main`" in (
+            spawn.initial_prompt
+        )
+        assert "Never commit to or push `main`" in spawn.initial_prompt
+
+    def test_isolated_workflow_also_takes_the_target_from_branch(self) -> None:
+        response, adapter = self._launch_infra_change({"branch": "main"})
+
+        assert response.status_code == 201, response.text
+        assert adapter.requests[0].branch == "workflow/niu-1114-sigrun"
+        assert adapter.requests[0].base_branch == "main"
+
+    def test_isolated_workflow_without_a_target_branch_is_refused(self) -> None:
+        response, adapter = self._launch_infra_change({})
+
+        assert response.status_code == 422
+        assert "name the target branch" in response.json()["detail"]
+        assert adapter.requests == []
+
+    def test_base_branch_is_honoured_for_an_ordinary_workflow(self) -> None:
+        workflow = _make_research_workflow()
+        adapter = RecordingVolundrPort()
+        client = _make_client(
+            InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([adapter]),
+            campaign_repo=RecordingCampaignRepository(),
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "Research it.", "sessionName": "research", "base_branch": "regin"},
+        )
+
+        assert response.status_code == 201, response.text
+        assert adapter.requests[0].branch == "regin"
+        assert adapter.requests[0].base_branch == "regin"
+        assert "## Branch" not in adapter.requests[0].initial_prompt
+
+    def test_launch_by_a_resident_records_it_as_the_campaign_actor(self) -> None:
+        """A resident's exchanged token launches as its owner and names itself (act.sub)."""
+        import jwt
+
+        workflow = _make_research_workflow()
+        campaign_repo = RecordingCampaignRepository()
+        client = _make_client(
+            InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([RecordingVolundrPort()]),
+            campaign_repo=campaign_repo,
+        )
+        token = jwt.encode(
+            {"sub": "user-1", "act": {"sub": "system:serviceaccount:skuld:resident-ravn"}},
+            "test-only-hmac-key-at-least-32-bytes-long",
+            algorithm="HS256",
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers={**_headers(roles="ting:admin"), "Authorization": f"Bearer {token}"},
+            json={"prompt": "Research the question.", "sessionName": "resident-launch"},
+        )
+
+        assert response.status_code == 201, response.text
+        [campaign] = campaign_repo.items.values()
+        assert campaign.owner_id == "user-1"
+        assert campaign.metadata["actor_id"] == "system:serviceaccount:skuld:resident-ravn"
+
+    def _launch_claude_workflow_executor(self, settings: Settings) -> dict:
+        workflow = _make_research_workflow()
+        graph = json.loads(json.dumps(workflow.graph))
+        graph["nodes"][2]["stageMembers"][0]["model"] = "claude-sonnet-4-6"
+        workflow = replace(workflow, graph=graph)
+        adapter = RecordingVolundrPort()
+        client = _make_client(
+            InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([adapter]),
+            settings=settings,
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={
+                "prompt": "Frame the question.",
+                "repo": "https://github.com/niuulabs/volundr.git",
+                "branch": "feat/research",
+                "model": "claude-sonnet-4-6",
+            },
+        )
+
+        assert response.status_code == 201, response.text
+        [spawn] = adapter.requests
+        [persona] = spawn.workload_config["personas"]
+        return persona["executor"]["kwargs"]
+
+    def test_launch_gives_claude_personas_the_configured_turn_timeout(self) -> None:
+        settings = Settings(
+            auth=AuthConfig(allow_anonymous_dev=False),
+            dispatch={"workflow_cli_turn_timeout_seconds": 900},
+        )
+
+        assert self._launch_claude_workflow_executor(settings) == {
+            "transport_adapter": "skuld.transports.sdk.SDKTransport",
+            "transport_kwargs": {"turn_timeout_s": 900.0},
+        }
+
+    def test_launch_passes_a_zero_turn_timeout_through_unchanged(self) -> None:
+        """0 turns the limit off; it must not be replaced by the default."""
+        settings = Settings(
+            auth=AuthConfig(allow_anonymous_dev=False),
+            dispatch={"workflow_cli_turn_timeout_seconds": 0},
+        )
+
+        assert self._launch_claude_workflow_executor(settings) == {
+            "transport_adapter": "skuld.transports.sdk.SDKTransport",
+            "transport_kwargs": {"turn_timeout_s": 0.0},
+        }
+
+    def test_launch_gives_claude_personas_the_default_turn_timeout(self) -> None:
+        settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
+
+        assert self._launch_claude_workflow_executor(settings) == {
+            "transport_adapter": "skuld.transports.sdk.SDKTransport",
+            "transport_kwargs": {"turn_timeout_s": 120.0},
+        }
 
     def test_launch_historical_version_uses_its_graph_and_dependency_closure(self) -> None:
         old = _make_research_workflow()

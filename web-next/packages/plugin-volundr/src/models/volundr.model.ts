@@ -218,6 +218,15 @@ export interface VolundrSession {
   tenantId?: string;
   instanceId?: string;
   instanceName?: string;
+  /** The caller's inbox state for the session's latest final reply, when reported. */
+  readState?: SessionInboxReadState;
+}
+
+export interface SessionInboxReadState {
+  isUnread: boolean;
+  latestOutputSeq: number;
+  readThroughSeq: number;
+  revision: number;
 }
 
 // ---------------------------------------------------------------------------

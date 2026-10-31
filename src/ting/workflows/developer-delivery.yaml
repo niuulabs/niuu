@@ -2,7 +2,7 @@ schema_version: 2
 id: ca01b422-7ab7-4614-901b-8784ef65c76e
 name: Developer Delivery
 description: Plan, delegate, verify, integrate, publish, and merge one repository change using durable child workflows and typed evidence.
-version: 1.0.0
+version: 1.0.1
 persona_dependencies:
   developer-coordinator:
     id: developer-coordinator
@@ -37,18 +37,18 @@ persona_dependencies:
 workflow_dependencies:
   workstream:
     id: 98133eab-cd89-44d1-b32d-26c82f99dddc
-    revision: sha256:102f10a88e502a59dcb3c9a21efffc61a9c302238ebc5197387d16f602adaa7f
-    digest: sha256:102f10a88e502a59dcb3c9a21efffc61a9c302238ebc5197387d16f602adaa7f
+    revision: sha256:cc23857ec141780c5bc931bc491a05c60dfccc76bb5c8d58b16bdeb635bcbb4a
+    digest: sha256:cc23857ec141780c5bc931bc491a05c60dfccc76bb5c8d58b16bdeb635bcbb4a
     path: workflows/developer-workstream.yaml
   planning:
     id: 195d5026-7adb-4ce7-97ee-fb1e18ea4c3a
-    revision: sha256:db7c22baab671ccf5dec3195ecaf7a2d939c71b13f4bd31a2faf1cd053cc5b41
-    digest: sha256:db7c22baab671ccf5dec3195ecaf7a2d939c71b13f4bd31a2faf1cd053cc5b41
+    revision: sha256:76bdb4abce6d4155d286fec87334d18db26348c25ffe73a1a4732494fddec2a1
+    digest: sha256:76bdb4abce6d4155d286fec87334d18db26348c25ffe73a1a4732494fddec2a1
     path: workflows/developer-planning.yaml
   integration:
     id: f776d181-ed63-4e3a-b5c4-7b128e4d2094
-    revision: sha256:16d1685c09cc93e247d69cc1a0b875bc81f747f30b50c5fa61d3d1c4cbf83f75
-    digest: sha256:16d1685c09cc93e247d69cc1a0b875bc81f747f30b50c5fa61d3d1c4cbf83f75
+    revision: sha256:b7635fefbbaaa3adc9fe20fb72a9d48d393ec9535b46ac48c75da6567bfc8fe5
+    digest: sha256:b7635fefbbaaa3adc9fe20fb72a9d48d393ec9535b46ac48c75da6567bfc8fe5
     path: workflows/developer-integration.yaml
 graph:
   executionContract: developer-delivery/v1
@@ -78,7 +78,7 @@ graph:
       joinMode: any
       stageMembers:
         - personaId: developer-coordinator
-          model: gpt-5.5
+          model: gpt-5.6-terra
           budget: 36
           consumesEventTypes: [developer.plan.approved, developer.children.blocked]
     - id: delivery-workstreams
@@ -184,7 +184,7 @@ graph:
       joinMode: all
       stageMembers:
         - personaId: developer-coordinator
-          model: gpt-5.5
+          model: gpt-5.6-terra
           budget: 24
           consumesEventTypes: [developer.children.verified]
     - id: delivery-integration-verification
@@ -201,7 +201,7 @@ graph:
       joinMode: any
       stageMembers:
         - personaId: developer-coordinator
-          model: gpt-5.5
+          model: gpt-5.6-terra
           budget: 28
           consumesEventTypes: [developer.integration.approved, developer.delivery.observed]
     - id: delivery-publication-wait
@@ -220,7 +220,7 @@ graph:
       joinMode: any
       stageMembers:
         - personaId: developer-coordinator
-          model: gpt-5.5
+          model: gpt-5.6-terra
           budget: 28
           consumesEventTypes: [delivery.repair.required, developer.workstream.repair_requested]
     - id: delivery-complete

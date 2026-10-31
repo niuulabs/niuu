@@ -180,6 +180,10 @@ storage:
     size: 1Gi
     # -- Mount path inside session pods
     mountPath: /volundr/home
+    # -- Workload types that never mount the user's home (e.g. ravn_flock
+    # workflow sessions). With a ReadWriteOnce home, every pod that mounts it
+    # must share one node; leaving workflows out lets them schedule anywhere.
+    excludeWorkloadTypes: []
 
 # Tool-result image preview cache (config.preview_cache_dir). The root
 # filesystem is read-only, so this needs a writable mount; previews are
@@ -190,6 +194,12 @@ previewCache:
   mountPath: /volundr/preview-cache
   # -- Size limit for the preview cache emptyDir volume (leave empty/"" for no limit)
   sizeLimit: 1Gi
+
+scratch:
+  # -- Size limit for the /tmp emptyDir (the root filesystem is read-only). It holds
+  # temporary files such as a resident workspace migration's archive and read-back
+  # spools (two copies of a workspace of up to 1Gi). Leave empty/"" for no limit.
+  sizeLimit: 4Gi
 
 # Database configuration
 database:
@@ -290,6 +300,12 @@ database:
 #       spiffe_subject_prefix: "spiffe://niuu.world/openshell/sandbox/"
 #       spiffe_ca_cert_path: "/etc/spire/ca.crt"
 #       service_port: 9200
+#       # Labels Völundr puts on residents' workspace claims so the gateway's
+#       # resource admission lets sandboxes mount them; match the gateway's
+#       # required_labels (these are OpenShell's defaults).
+#       sandbox_attachable_labels:
+#         openshell.ai/sandbox-attachable: "true"
+#         openshell.ai/sandbox-attachable-workspace: "default"
 #     secretKwargs:
 #       - kwarg: "client_secret"
 #         secretName: "openshell-volundr-agent-oidc"
@@ -301,6 +317,9 @@ provisioning:
   timeoutSeconds: 300.0
   # -- Initial delay before starting readiness polls in seconds
   initialDelaySeconds: 5.0
+
+# -- Seconds between realm-detail SSE state checks and idle keepalive comments
+realmDetailStreamIntervalSeconds: 15.0
 
 bifrost:
   # -- Base URL for the co-hosted Bifrost API Volundr reads models from
@@ -369,6 +388,34 @@ podManager:
     # anything — this flag alone only reaches into the rendered resident
     # config, it is not itself the adapter selection.
     resident_budget_enabled: false
+    # -- Every Flux-deployed resident gets its own home and workspace PVCs
+    # (resident-<id>-home, resident-<id>-workspace in `namespace`), created on
+    # deploy and deleted with the resident. These are the defaults; a profile
+    # overrides them per volume in deployment.volumes.<home|workspace>
+    # ({storageClass, size, accessMode}). A profile that sets its own
+    # homeVolume/persistence existingClaim keeps that claim instead.
+    #
+    # OpenShell residents (OpenShellGatewayPodManager) get their own workspace
+    # PVC the same way: resident-<id>-workspace, mounted at the sandbox workspace
+    # (/sandbox/workspace), sized by resident_workspace_size / storage class /
+    # access mode below and deployment.volumes.workspace per profile. It is
+    # created in resident_workspace_namespace, the namespace where the OpenShell
+    # gateway runs sandboxes; unset, the chart uses storageAdapter.kwargs.namespace
+    # (where OpenShell sessions' claims already live). Set it to "" to keep
+    # OpenShell residents' workspaces in their sandboxes only. A resident whose
+    # sandbox predates its claim has its workspace (and a Ravn's ~/.ravn) copied
+    # onto it once, verified, before its old sandbox is removed.
+    # resident_workspace_namespace: "openshell-sandboxes"
+    resident_home_size: "1Gi"
+    resident_workspace_size: "2Gi"
+    # -- Empty means the cluster's default StorageClass
+    resident_storage_class: ""
+    resident_access_mode: "ReadWriteOnce"
+    # -- OpenShell: the largest workspace the one-time copy onto a resident's new
+    # claim moves (Kubernetes quantity). A larger one is not migrated: the
+    # resident keeps running on its old sandbox with a WorkspaceMigration /
+    # WorkspaceTooLarge condition.
+    resident_workspace_migration_max_size: "1Gi"
   # -- Secret kwargs from K8s Secrets, merged into kwargs at runtime
   # Each entry: { kwarg: "name", secretName: "k8s-secret", secretKey: "key" }
   secretKwargs: []
@@ -436,9 +483,33 @@ residentRuntimeSessionControllers: []
 #   optional: false
 #   kwargs: {}
 #   secretKwargs: []
+# Ravn residents' sessions need no entry here: ravnResidentSessions below wires them
+# on every backend that hosts the shim. An explicit entry replaces that default on
+# its backend; it takes no secret (gateway_token is ignored, with a warning).
+# - adapter: volundr.adapters.outbound.ravn_gateway.RavnResidentSessionController
+#   runtimeBackend: helmrelease
+
+# Ravn residents' sessions ("channels"), on by default: Volundr drives them through
+# each Ravn resident's OpenClaw shim on every resident backend that hosts it (Flux,
+# OpenShell). Each Ravn resident's shim token is its own: generated once (or adopted
+# from the running resident) and kept in Volundr's credential store per resident,
+# like the Hermes residents' API keys; no cluster-wide secret. Profiles get
+# session.list/create/delete wherever this is wired; a profile's
+# deployment.values.resident.openclaw.enabled: false switches one off.
+ravnResidentSessions:
+  # -- Wire Ravn residents' sessions by default
+  enabled: true
 
 # -- Seconds between resident HelmRelease/Deployment reconciliation passes
 residentRuntimeReconciliationIntervalSeconds: 10.0
+
+# -- Public origin under which residents answer A2A
+# (/api/v1/forge/resident-runtimes/{id}/a2a, Agent Card at .../a2a/.well-known/agent-card.json),
+# usually the Guild that proxies this target. Empty publishes no resident Agent Cards.
+residentA2APublicBaseUrl: ""
+
+# -- Seconds an A2A SendMessage waits for a resident's reply before returning the task WORKING
+residentA2AReplyTimeoutSeconds: 45
 
 # Sleipnir is the transport for cross-runtime flock RPC and platform events.
 sleipnir:
@@ -446,6 +517,103 @@ sleipnir:
   adapter: sleipnir.adapters.in_process.InProcessBus
   kwargs: {}
   secretKwargs: []
+
+# Forge session notifications: the feed, automatic reply_ready notifications, the
+# delivery outbox dispatcher and external sinks. Rendered verbatim as config.yaml's
+# `notifications:` section (snake_case keys; see NotificationsConfig). Empty keeps the
+# defaults: feed on, reply_ready off, dispatcher on (idle until an owner rule selects a
+# sink), no configured sinks. Telegram rules deliver through the owner's Telegram
+# integration and need no entry here. Sink secrets come from env vars named in
+# `secret_kwargs_env`; mount them with `extraEnv` (secretKeyRef). Example:
+#   notifications:
+#     public_web_url: https://forge.example.com     # deep links in messages
+#     reply_ready: {body_chars: 400}
+#     dispatcher:
+#       max_attempts: 8
+#       default_rate_limit: {max_count: 60, window_seconds: 3600}
+#     sinks:
+#       - name: ops-webhook
+#         label: Ops webhook
+#         adapter: niuu.adapters.notifications.webhook.WebhookNotificationSink
+#         url: https://hooks.example.com/forge
+#         secret_kwargs_env: {secret: FORGE_OPS_WEBHOOK_SECRET}
+#   extraEnv:
+#     - name: FORGE_OPS_WEBHOOK_SECRET
+#       valueFrom: {secretKeyRef: {name: forge-notification-sinks, key: ops-webhook-secret}}
+#
+# Resident questions (notifications.odin_review_relay, off by default): Forge follows the
+# ODIN review queue that niuu-ravn serves and records one notification per pending
+# `answer_operator_question` item for each owner in `owner_ids`, which the owner's
+# "Needs-input pushes" rule (`push.enabled`) delivers to their phone with the Reply
+# category. Questions already waiting when an owner is first followed reach the feed
+# without a push; one digest push says how many wait. Enabled but unable to run
+# (no owner_ids, unreadable source config) stops Forge at startup. It reads niuu-ravn
+# with the credential `source.kwargs.auth_adapter` supplies; for a Forge in the cluster
+# that is the workload-identity exchange of a projected ServiceAccount token
+# (mount it with extraVolumes/extraVolumeMounts, and give the exchange a mapping for
+# Forge's ServiceAccount under workloadIdentity.mappings). Example:
+#   notifications:
+#     odin_review_relay:
+#       enabled: true
+#       owner_ids: ["<the owner's Forge user id>"]
+#       poll_interval_seconds: 30
+#       source:
+#         kwargs:
+#           base_url: https://yggdrasil.niuu.world
+#           auth_adapter: niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter
+#           auth_kwargs:
+#             exchange_url: https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange
+#             token_file: /var/run/secrets/niuu-workload/token
+#             audiences: [niuu-ravn]
+notifications: {}
+
+# Push to the devices owners register (POST /api/v1/forge/devices), and the
+# needs-input push. `adapter` + `kwargs` build the channel push sinks deliver through
+# (the default only logs). With `enabled`, every session that needs its owner is
+# pushed through the notification outbox: each owner who registers a device gets a
+# "Needs-input pushes" rule targeting the `attentionSink` sink, which the chart adds
+# to notifications.sinks (a PushNotificationSink) unless one by that name is already
+# configured there. Needs notifications enabled (the default). Example (APNs):
+#   push:
+#     enabled: true
+#     adapter: volundr.adapters.outbound.push_channels.ApnsNotificationChannel
+#     kwargs: {team_id: ABCDE12345, key_id: KEY1234567, bundle_id: com.niuu.forge}
+#     secretKwargs:
+#       - {kwarg: private_key, secretName: forge-apns, secretKey: private-key.p8}
+push:
+  # -- Push every session that needs its owner, through the notification outbox
+  enabled: false
+  # -- The notifications sink the per-owner "Needs-input pushes" rule targets
+  attentionSink: push
+  # -- Fully-qualified NotificationChannel class path
+  adapter: volundr.adapters.outbound.push_channels.LoggingNotificationChannel
+  # -- Channel constructor kwargs (e.g. bundle_id)
+  kwargs: {}
+  # -- Where registered devices live: auto (postgres in mini mode, else integrations),
+  # integrations (messaging connections, tokens in the credential store) or postgres
+  deviceRegistry: auto
+  # -- Secret kwargs from K8s Secrets, each { kwarg, secretName, secretKey }
+  secretKwargs: []
+  # The push sink the chart adds for `attentionSink` when `enabled`
+  sink:
+    # -- Label shown when owners pick a sink for a rule
+    label: Forge app push
+    # -- Longest push body (APNs caps the whole payload at 4 KB)
+    maxBodyChars: 280
+
+# Forge MCP session credentials and the Forge-hosted MCP endpoint. Rendered verbatim
+# as config.yaml's `forge_mcp:` section (snake_case keys; see ForgeMcpConfig). Empty
+# keeps the defaults (no default grants, HTTP endpoint on with no browser origins),
+# except session_tokens.enabled: unless set here it is true only when
+# workloadIdentity is enabled with signingKey.existingSecret, because the read-only
+# root filesystem rules out the local key file and Volundr refuses to start with
+# session credentials enabled but no usable key. Session credentials are delivered
+# only by the local process pod manager today. See docs/operator/forge-mcp.md. Example:
+#   forgeMcp:
+#     default_grants: []
+#     session_tokens: {ttl_seconds: 604800}
+#     http: {allowed_origins: ["https://forge.example.com"]}
+forgeMcp: {}
 
 # Chronicle configuration
 chronicle:
@@ -544,6 +712,22 @@ git:
     #       - platform
     #       - infra
     instances: []
+  # Image build provenance (volundr_git verify_image_provenance): the platform
+  # fetches a repository's GitHub build attestations and verifies them with
+  # Sigstore, so residents never reach GitHub's attestation storage themselves.
+  provenance:
+    # -- Verify image provenance. Needs the `provenance` extra in the image (the
+    # niuu image has it) and egress to tuf-repo-cdn.sigstore.dev for the trust
+    # root; false answers the endpoint with 503.
+    enabled: true
+    # -- Seconds allowed to download an attestation bundle from the Git host's
+    # storage; a slower download fails the request with a 502.
+    bundleFetchTimeoutSeconds: 30
+    # -- Verifier constructor kwargs (`issuer`, `workflow_paths`, optional
+    # `trusted_root_file`). Empty keeps the defaults (GitHub Actions issuer;
+    # reusable-container-build.yaml and dev.yaml as the signing workflows).
+    # Setting any key replaces ALL defaults, so restate `issuer` and `workflow_paths`.
+    kwargs: {}
   # Git workflow configuration (PR-based development)
   workflow:
     # -- Auto-create branches for new sessions
@@ -713,6 +897,21 @@ envoy:
         prefix: true
         methods: [GET]
 
+# The Guild this Forge belongs to, and this Forge's entry in that Guild's instance
+# registry (the Guild's niuu.instances seed or GET /api/v1/niuu/targets/volundr).
+# Served at GET /api/v1/forge/guild and stamped on every notification, so a client
+# that talks to this node directly can find the Guild feed and its own place in
+# it. Empty url: this Forge belongs to no Guild (the route answers 404).
+guild:
+  # -- Public origin of the Guild, e.g. https://yggdrasil.niuu.world
+  url: ""
+  # -- This Forge's instance id in that Guild (required with url)
+  instanceId: ""
+  # -- This Forge's instance name in that Guild (required with url)
+  instanceName: ""
+  # -- This Forge's instance slug in that Guild (required with url)
+  instanceSlug: ""
+
 workloadIdentity:
   enabled: false
   issuer: ""
@@ -788,6 +987,10 @@ workloadIdentity:
     enabled: false
     name: "ravn-resident"
     verifier: "kubernetes"
+    # -- Issuer of the resident pods' ServiceAccount tokens (the verifier's
+    # cluster), e.g. "https://kubernetes.default.svc". Required when enabled:
+    # a mapping without an issuer admits no one.
+    issuer: ""
     # -- Namespace resident pods run in — must match whatever namespace the
     # ResidentRuntimeController (flux.py) deploys resident HelmReleases into.
     namespace: ""
@@ -1022,6 +1225,16 @@ ravnFlockImage: ""
 #         base_url: https://vllm.example.internal
 ravnFlockLlmConfig: {}
 
+# -- Per session definition, LLM settings merged over ravnFlockLlmConfig for
+# flocks launched on that definition. Under OpenShell a flock's Ravns run on
+# the session definition's CLI runtime (Codex for skuldCodex, Claude Code for
+# skuldClaude), so a flock launch fails when the resolved model is one that
+# runtime does not serve.
+#   ravnFlockLlmConfigByDefinition:
+#     skuldCodex:
+#       model: gpt-5.6-terra
+ravnFlockLlmConfigByDefinition: {}
+
 sessionContributors:
   - adapter: "volundr.adapters.outbound.contributors.core.CoreSessionContributor"
     kwargs:
@@ -1152,6 +1365,7 @@ config:
   #   enabled: true
   #   trace_endpoint: "http://otel-collector.observability:4317"
   #   metric_endpoint: "http://otel-collector.observability:4318/v1/metrics"
+  #   log_endpoint: "http://otel-collector.observability:4318/v1/logs"
   observability: {}
   # -- Host to bind to
   host: "0.0.0.0"
@@ -1865,6 +2079,9 @@ webNext:
       login:
         enabled: true
         order: 0
+      # -- Hidden for now; a plugin left out of this list is enabled
+      realms:
+        enabled: false
       credentials:
         enabled: true
         order: 1
@@ -2035,10 +2252,26 @@ networkPolicy:
   # -- Extra egress rules
   extraEgress: []
 
-# Deployment strategy
-# Use Recreate to avoid PVC mount conflicts during upgrades (ReadWriteOnce volumes)
+# Deployment strategy. Rolling: the new pod is ready before the old one stops,
+# so a rollout never takes the API down. (Recreate stopped Völundr first and
+# every request during the restart got a 503 — a resident's delivery launch
+# failed this way.) A ReadWriteOnce sessions volume attaches to one node but
+# can be shared by pods on it; rollout.colocate keeps the surge pod there.
 strategy:
-  type: Recreate
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+rollout:
+  # -- Schedule a rolling update's new pod on the node already running Völundr,
+  # so a ReadWriteOnce sessions volume can mount on both during the overlap. If
+  # that node has no room the rollout waits, with the old pod still serving.
+  colocate: true
+  # -- Seconds a terminating pod keeps serving while its endpoints are removed,
+  # so in-flight and just-routed requests finish. Must stay below
+  # terminationGracePeriodSeconds.
+  drainSeconds: 10
 
 # -- Node selector
 nodeSelector: {}

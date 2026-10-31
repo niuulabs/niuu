@@ -111,7 +111,7 @@ def test_pat_token_forwarded_to_the_http_client(monkeypatch) -> None:
         gateway={
             "platform": {
                 "base_url": "http://platform.local:8080",
-                "pat_token": "shh-secret",
+                "access_token": "shh-secret",
             }
         },
     )

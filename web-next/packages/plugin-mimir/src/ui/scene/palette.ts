@@ -15,6 +15,7 @@ export type ProofBucket = 'high' | 'medium' | 'low' | 'none';
 export type AgeBucket = AgeBucketId;
 
 export interface MemoryPalette {
+  background: string;
   kind: Record<KindGroup, string>;
   proof: Record<ProofBucket, string>;
   age: Record<AgeBucket, string>;
@@ -51,6 +52,7 @@ const DISPUTE_VAR = '--color-memory-dispute';
 
 /** Every custom property the palette reads, for installing them in tests and for the error below. */
 export const MEMORY_PALETTE_VARS: readonly string[] = [
+  '--color-memory-background',
   ...Object.values(KIND_VARS),
   ...Object.values(PROOF_VARS),
   ...Object.values(AGE_VARS),
@@ -80,6 +82,7 @@ export function memoryPalette(el: HTMLElement): MemoryPalette {
     return value;
   };
   const palette: MemoryPalette = {
+    background: read('--color-memory-background'),
     kind: mapRecord(KIND_VARS, read),
     proof: mapRecord(PROOF_VARS, read),
     age: mapRecord(AGE_VARS, read),

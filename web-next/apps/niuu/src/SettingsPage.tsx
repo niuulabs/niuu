@@ -3,8 +3,12 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { useParams, useRouter } from '@tanstack/react-router';
 import { createApiClient } from '@niuulabs/query';
 import { cn } from '@niuulabs/ui';
+import { useOptionalService } from '@niuulabs/plugin-sdk';
 import {
   AddProviderDialog,
+  ConnectionRecoveryDialog,
+  SETUP_SERVICE_KEY,
+  credentialProblemLabel,
   providerGroupsForType,
   type CatalogEntry,
   type ConnectIntegrationInput,
@@ -441,6 +445,61 @@ function normalizeIntegrationRecord(integration: IntegrationConnectionRecord) {
   };
 }
 
+type IntegrationRecord = ReturnType<typeof normalizeIntegrationRecord>;
+
+/** Credential states in which the account works. */
+const READY_CREDENTIAL_STATUSES = new Set(['active', 'configured', 'valid']);
+/** Credential states only a new sign-in (or a new key) fixes. */
+const RECONNECT_CREDENTIAL_STATUSES = new Set(['auth_required', 'enrolling', 'missing']);
+
+interface CredentialHealth {
+  tone: 'success' | 'error' | 'neutral';
+  needsReconnect: boolean;
+  /** One line for the account, e.g. "Connected as codex-work". */
+  label: string;
+  /** Why it needs attention, when the platform said so. */
+  reason: string | null;
+}
+
+/** What Settings tells the person about one connection's credential. */
+function credentialHealth(integration: IntegrationRecord): CredentialHealth {
+  const name = integration.credentialName || integration.slug || 'This account';
+  const status = integration.credentialStatus;
+  if (READY_CREDENTIAL_STATUSES.has(status)) {
+    return { tone: 'success', needsReconnect: false, label: `Connected as ${name}`, reason: null };
+  }
+  if (!RECONNECT_CREDENTIAL_STATUSES.has(status)) {
+    return {
+      tone: 'neutral',
+      needsReconnect: false,
+      label: `Connected as ${name} · credential ${status.replace(/_/g, ' ')}`,
+      reason: null,
+    };
+  }
+  const expiresAt = integration.credentialExpiresAt
+    ? Date.parse(integration.credentialExpiresAt)
+    : Number.NaN;
+  const reason =
+    credentialProblemLabel({
+      ...integration,
+      slug: integration.slug ?? '',
+      credentialExpiresAt: integration.credentialExpiresAt ?? null,
+    }) ??
+    (!Number.isNaN(expiresAt) && expiresAt <= Date.now()
+      ? `Its sign-in expired ${formatTimestamp(integration.credentialExpiresAt)}.`
+      : status === 'missing'
+        ? 'Its stored credential is missing.'
+        : status === 'enrolling'
+          ? 'A sign-in was started but has not finished.'
+          : 'Its sign-in expired or was revoked.');
+  return {
+    tone: 'error',
+    needsReconnect: true,
+    label: `${name} needs reconnecting`,
+    reason,
+  };
+}
+
 function formatIntegrationType(value: string): string {
   return value.replace(/_/g, ' ');
 }
@@ -751,8 +810,8 @@ function TokensResourceCard({
             onChange={(event) => setScope(event.target.value)}
           >
             <option value="">Choose a permission</option>
-            <option value="forge:session:create">Create Forge sessions</option>
-            <option value="ting:workflow:launch">Launch Ting workflows</option>
+            <option value="forge:session:create">Create sessions</option>
+            <option value="ting:workflow:launch">Launch workflows</option>
             <option value="observatory:topology:push">Publish Observatory topology</option>
           </select>
         </label>
@@ -1168,6 +1227,10 @@ function IntegrationsResourceCard({
   const [codeSubmitted, setCodeSubmitted] = useState(false);
   const [lastTestStatus, setLastTestStatus] = useState<Record<string, string>>({});
   const [providerDialogGroup, setProviderDialogGroup] = useState<ProviderGroup | null>(null);
+  /** The existing connection being signed in again, through the shared recovery dialog. */
+  const [reconnectConnectionId, setReconnectConnectionId] = useState<string | null>(null);
+  // The recovery dialog signs in through the setup service; without one there is no Reconnect.
+  const canReconnect = Boolean(useOptionalService(SETUP_SERVICE_KEY));
 
   const catalogQuery = useQuery({
     queryKey: ['settings-resource', providerId, resource.id, 'integration-catalog'],
@@ -1180,7 +1243,10 @@ function IntegrationsResourceCard({
       const rows = await client.get<IntegrationConnectionRecord[]>(resource.listPath);
       return rows.map(normalizeIntegrationRecord);
     },
-    refetchInterval: providerDialogGroup ? CREDENTIAL_ENROLLMENT_STATUS_INTERVAL_MS : false,
+    refetchInterval:
+      providerDialogGroup || reconnectConnectionId
+        ? CREDENTIAL_ENROLLMENT_STATUS_INTERVAL_MS
+        : false,
   });
 
   const credentialsQuery = useQuery({
@@ -1217,9 +1283,10 @@ function IntegrationsResourceCard({
         group.signInEntry?.slug === selectedCatalogId,
     ) ?? null;
 
-  const selectedConnection =
-    integrationsQuery.data?.find((integration) => (integration.slug ?? '') === selectedCatalogId) ??
-    null;
+  const selectedConnections = (integrationsQuery.data ?? []).filter(
+    (integration) => (integration.slug ?? '') === selectedCatalogId,
+  );
+  const selectedConnection = selectedConnections[0] ?? null;
   const selectedEnrollmentSpec = enrollmentSpec(selectedEntry);
   const loginLabel = selectedEnrollmentSpec?.method === 'claude_setup' ? 'Claude Code' : 'Codex';
 
@@ -1506,7 +1573,13 @@ function IntegrationsResourceCard({
       <div className="settings-resource__list settings-resource__list--catalog">
         {(catalogQuery.data ?? []).map((entry) => {
           const key = entry.slug ?? entry.id;
-          const connected = integrationsQuery.data?.some((integration) => integration.slug === key);
+          const entryConnections = (integrationsQuery.data ?? []).filter(
+            (integration) => integration.slug === key,
+          );
+          const connected = entryConnections.length > 0;
+          const needsReconnect = entryConnections.some(
+            (integration) => credentialHealth(integration).needsReconnect,
+          );
           return (
             <button
               key={key}
@@ -1544,7 +1617,7 @@ function IntegrationsResourceCard({
                 {formatIntegrationType(
                   entry.integrationType ?? entry.integration_type ?? 'integration',
                 )}
-                {connected ? ' · connected' : ''}
+                {needsReconnect ? ' · reconnect required' : connected ? ' · connected' : ''}
               </span>
             </button>
           );
@@ -1589,11 +1662,41 @@ function IntegrationsResourceCard({
 
           {selectedUsesProviderDialog && selectedProviderGroup ? (
             <div className="settings-resource__actions settings-resource__actions--login">
-              {selectedConnection ? (
-                <span className="settings-shell__status settings-shell__status--success">
-                  Connected as {selectedConnection.credentialName}
-                </span>
-              ) : null}
+              {selectedConnections.map((connection) => {
+                const health = credentialHealth(connection);
+                return (
+                  <div
+                    key={connection.id}
+                    className="settings-resource__account"
+                    data-testid={`settings-account-${connection.id}`}
+                  >
+                    <span
+                      className={cn(
+                        'settings-shell__status',
+                        health.tone === 'success' && 'settings-shell__status--success',
+                        health.tone === 'error' && 'settings-shell__status--error',
+                      )}
+                    >
+                      {health.label}
+                    </span>
+                    {health.reason ? (
+                      <span className="settings-resource__copy">{health.reason}</span>
+                    ) : null}
+                    {canReconnect ? (
+                      <button
+                        type="button"
+                        className={cn(
+                          'settings-shell__save-button',
+                          !health.needsReconnect && 'settings-shell__save-button--secondary',
+                        )}
+                        onClick={() => setReconnectConnectionId(connection.id)}
+                      >
+                        Reconnect {connection.credentialName}
+                      </button>
+                    ) : null}
+                  </div>
+                );
+              })}
               <p className="settings-resource__copy">
                 Choose provider sign-in or a token, then configure the account and its access scope.
               </p>
@@ -1939,66 +2042,97 @@ function IntegrationsResourceCard({
         />
       ) : null}
 
+      {reconnectConnectionId && canReconnect ? (
+        <ConnectionRecoveryDialog
+          context="settings"
+          initialConnectionId={reconnectConnectionId}
+          onClose={() => {
+            setReconnectConnectionId(null);
+            void queryClient.invalidateQueries({
+              queryKey: ['settings-resource', providerId, resource.id, 'integrations'],
+            });
+          }}
+        />
+      ) : null}
+
       <div className="settings-resource__list">
         {integrationsQuery.isLoading ? (
           <div className="settings-resource__empty">Loading integrations…</div>
         ) : integrationsQuery.isError ? (
           <div className="settings-resource__empty">Could not load integrations.</div>
         ) : integrationsQuery.data && integrationsQuery.data.length > 0 ? (
-          integrationsQuery.data.map((integration) => (
-            <div key={integration.id} className="settings-resource__row">
-              <div className="settings-resource__row-main">
-                <div className="settings-resource__row-title">
-                  {integration.integrationType === 'mcp'
-                    ? String(integration.config.name || integration.config.mcp_url || 'MCP server')
-                    : (integration.slug ?? integration.integrationType).replace(/_/g, ' ')}
-                </div>
-                <div className="settings-resource__row-meta">
-                  {formatIntegrationType(integration.integrationType)} ·{' '}
-                  {integration.integrationType === 'mcp'
-                    ? String(integration.config.mcp_url ?? '')
-                    : integration.credentialName}{' '}
-                  · {integration.enabled ? 'enabled' : 'disabled'} ·{' '}
-                  {integration.credentialStatus.replace(/_/g, ' ')}
-                </div>
-                {lastTestStatus[integration.id] ? (
-                  <div className="settings-resource__row-note">
-                    {lastTestStatus[integration.id]}
+          integrationsQuery.data.map((integration) => {
+            const title =
+              integration.integrationType === 'mcp'
+                ? String(integration.config.name || integration.config.mcp_url || 'MCP server')
+                : (integration.slug ?? integration.integrationType).replace(/_/g, ' ');
+            const health = credentialHealth(integration);
+            return (
+              <div key={integration.id} className="settings-resource__row">
+                <div className="settings-resource__row-main">
+                  <div className="settings-resource__row-title">{title}</div>
+                  <div className="settings-resource__row-meta">
+                    {formatIntegrationType(integration.integrationType)} ·{' '}
+                    {integration.integrationType === 'mcp'
+                      ? String(integration.config.mcp_url ?? '')
+                      : integration.credentialName}{' '}
+                    · {integration.enabled ? 'enabled' : 'disabled'} ·{' '}
+                    {integration.credentialStatus.replace(/_/g, ' ')}
                   </div>
-                ) : null}
+                  {health.needsReconnect ? (
+                    <div className="settings-resource__row-note settings-resource__row-note--error">
+                      Reconnect required. {health.reason}
+                    </div>
+                  ) : null}
+                  {lastTestStatus[integration.id] ? (
+                    <div className="settings-resource__row-note">
+                      {lastTestStatus[integration.id]}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="settings-resource__row-actions">
+                  {health.needsReconnect && canReconnect ? (
+                    <button
+                      type="button"
+                      className="settings-resource__row-action"
+                      aria-label={`Reconnect ${title}`}
+                      onClick={() => setReconnectConnectionId(integration.id)}
+                    >
+                      Reconnect
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="settings-resource__row-action"
+                    disabled={testMutation.isPending}
+                    onClick={() => {
+                      testMutation.mutate(integration.id);
+                    }}
+                  >
+                    Test
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-resource__row-action"
+                    disabled={deleteMutation.isPending}
+                    onClick={() => {
+                      deleteMutation.mutate({
+                        id: integration.id,
+                        slug: integration.slug,
+                        oauth: isOauthIntegration(
+                          (catalogQuery.data ?? []).find(
+                            (entry) => (entry.slug ?? entry.id) === integration.slug,
+                          ) ?? null,
+                        ),
+                      });
+                    }}
+                  >
+                    Disconnect
+                  </button>
+                </div>
               </div>
-              <div className="settings-resource__row-actions">
-                <button
-                  type="button"
-                  className="settings-resource__row-action"
-                  disabled={testMutation.isPending}
-                  onClick={() => {
-                    testMutation.mutate(integration.id);
-                  }}
-                >
-                  Test
-                </button>
-                <button
-                  type="button"
-                  className="settings-resource__row-action"
-                  disabled={deleteMutation.isPending}
-                  onClick={() => {
-                    deleteMutation.mutate({
-                      id: integration.id,
-                      slug: integration.slug,
-                      oauth: isOauthIntegration(
-                        (catalogQuery.data ?? []).find(
-                          (entry) => (entry.slug ?? entry.id) === integration.slug,
-                        ) ?? null,
-                      ),
-                    });
-                  }}
-                >
-                  Disconnect
-                </button>
-              </div>
-            </div>
-          ))
+            );
+          })
         ) : (
           <div className="settings-resource__empty">No integrations connected yet.</div>
         )}
@@ -2568,8 +2702,8 @@ export function SettingsPage() {
 
       return {
         provider,
-        title: schema?.title ?? provider.title,
-        subtitle: schema?.subtitle ?? provider.subtitle,
+        title: provider.title,
+        subtitle: provider.subtitle,
         sections: normalizeSections(schema),
         status,
         scopeLabel: schema?.scope ?? provider.scope,

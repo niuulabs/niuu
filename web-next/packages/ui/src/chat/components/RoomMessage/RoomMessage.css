@@ -68,3 +68,8 @@
   width: 12px;
   height: 12px;
 }
+
+/* Participant dots retain identity colors; names need contrast on Light surfaces. */
+[data-theme='light'] .niuu-chat-room-persona-name {
+  color: var(--color-text-primary);
+}

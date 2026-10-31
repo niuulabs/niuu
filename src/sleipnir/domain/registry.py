@@ -219,6 +219,11 @@ VOLUNDR_SESSION_ERROR: str = "volundr.session.error"
 #: notification fan-out subscribes to so the user is alerted they need to act.
 VOLUNDR_SESSION_NEEDS_INPUT: str = "volundr.session.needs_input"
 
+#: Forge recorded a new session notification (an agent milestone/decision/error,
+#: a reply_ready, an attention request or an operator submit). The payload is the
+#: owner-scoped notification; urgency follows its severity.
+VOLUNDR_SESSION_NOTIFICATION: str = "volundr.session.notification"
+
 #: Aggregate stats were updated.
 VOLUNDR_STATS_UPDATED: str = "volundr.stats.updated"
 

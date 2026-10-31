@@ -1,3 +1,5 @@
+> **Lightweight projects (2026-09-26):** [LIGHTWEIGHT-PROJECTS.md](LIGHTWEIGHT-PROJECTS.md) supersedes this contract where they differ: a project is a named grouping created from a name, its Git repository is optional and replaceable, and sessions attach, move and detach with a role and coordinator. Every request below is still accepted.
+
 # Forge Projects: implementation contract
 
 This document supersedes the design snapshot where it assumed one current coordinator or a Ting dependency. The project owner's accepted direction on 2026-09-11 is a durable Git meta-repository with any number of coordinator sessions. Coordination is an agent skill using Forge's public REST API and its thin CLI.

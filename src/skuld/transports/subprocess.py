@@ -17,17 +17,21 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.claude_permission import (
+    DEFAULT_CLAUDE_PERMISSION_MODE,
+    resolve_claude_permission_mode,
+)
 from skuld.slash_commands import build_slash_command_catalog, compose_slash_command_text
 from skuld.transports.claude_env import claude_spawn_env
 from skuld.transports.mcp_config import (
     build_claude_mcp_config,
     require_connected_mcp_servers,
 )
+from skuld.transports.session_tools import SessionTools, claude_cli_args
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
 
-_DEFAULT_PERMISSION_MODE = "bypassPermissions"
 _MAX_RETRIES = 5
 _RETRY_BASE_DELAY_MS = 1000
 _TRANSPORT_ERROR_DELAY_MS = 2000
@@ -60,19 +64,23 @@ class SubprocessTransport(CLITransport):
         workspace_dir: str,
         model: str = "",
         skip_permissions: bool = False,
+        claude_permission_mode: str = DEFAULT_CLAUDE_PERMISSION_MODE,
         agent_teams: bool = False,
         system_prompt: str = "",
         initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
+        session_tools: SessionTools | None = None,
         read_only_mcp_only: bool = False,
         allowed_mcp_tools: list[str] | None = None,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
+        self._session_tools = session_tools
         self._model = model
         self._read_only_mcp_only = read_only_mcp_only
         self._allowed_mcp_tools = list(allowed_mcp_tools or [])
         self._skip_permissions = skip_permissions and not read_only_mcp_only
+        self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
         self._agent_teams = agent_teams and not read_only_mcp_only
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
@@ -174,13 +182,18 @@ class SubprocessTransport(CLITransport):
             if self._allowed_mcp_tools:
                 cmd.extend(["--allowedTools", ",".join(self._allowed_mcp_tools)])
         elif self._skip_permissions:
-            cmd.extend(["--permission-mode", _DEFAULT_PERMISSION_MODE])
+            cmd.extend(["--permission-mode", self._claude_permission_mode])
         if self._session_id:
             cmd.extend(["--resume", self._session_id])
-        elif self._system_prompt:
-            cmd.extend(["--append-system-prompt", self._system_prompt])
-        if self._mcp_config:
-            cmd.extend(["--mcp-config", self._mcp_config])
+        cmd.extend(
+            claude_cli_args(
+                self._session_tools,
+                mcp_servers=self._raw_mcp_servers,
+                legacy_mcp_config=self._mcp_config,
+                system_prompt=self._system_prompt,
+                include_system_prompt=not self._session_id,
+            )
+        )
 
         logger.info("Running Claude CLI (session=%s)", self._session_id)
         logger.debug("Claude CLI command: %s", " ".join(cmd))
@@ -191,6 +204,7 @@ class SubprocessTransport(CLITransport):
         _, shim_env = ensure_codex_tool_shims(
             self.workspace_dir,
             mcp_servers=self._raw_mcp_servers,
+            session_env=self._session_tools.env if self._session_tools else None,
         )
         if shim_env:
             env.update(shim_env)

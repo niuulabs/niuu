@@ -21,7 +21,7 @@ import signal
 import tempfile
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -34,12 +34,17 @@ from niuu.build_info import build_info
 from niuu.domain.reasoning import MODEL_EFFORTS, validate_effort
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.agent_usage import AgentUsageTracker
+from skuld.claude_permission import (
+    DEFAULT_CLAUDE_PERMISSION_MODE,
+    resolve_claude_permission_mode,
+)
 from skuld.control_errors import ControlRecoveryError
 from skuld.delivery_errors import DeliveryNotAcceptedError
+from skuld.session_runtime import write_private_file
 from skuld.transports.claude_env import claude_spawn_env
 from skuld.transports.claude_text_order import preceding_tool_text
-from skuld.transports.mcp_config import build_claude_mcp_config
-from skuld.transports.subprocess import _DEFAULT_PERMISSION_MODE
+from skuld.transports.mcp_config import build_claude_mcp_config, build_claude_mcp_payload
+from skuld.transports.session_tools import PRESENT_FILE_INSTRUCTION, SessionTools
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
@@ -55,12 +60,9 @@ at its next supported boundary. Follow the applicable session and repository ins
 objectives, planning, delegation and progress reporting; the transport does not prescribe a \
 workflow."""
 
-_PRESENT_FILE_INSTRUCTION = """\
-FILE DELIVERY: when you produce a file the user should SEE or open (a report, image, PDF, diagram, \
-screenshot, chart, or build artifact), run `present-file <path> [--caption "…"] [--title "…"]`. It \
-surfaces the file in the user's app as a tappable card that opens in the file preview, and accepts \
-ANY path, including scratch files outside the workspace (e.g. /tmp). Use it for finished \
-deliverables the user would want to open — not for routine tool output or intermediate files."""
+# Default capability text for a transport built without broker SessionTools (harnesses).
+_PRESENT_FILE_INSTRUCTION = PRESENT_FILE_INSTRUCTION
+_HOOK_SETTINGS_FILE = "claude-hooks.settings.json"
 
 _BUILT_IN_SLASH_COMMANDS = [
     {"name": "/agents", "description": "Manage agent teams and subagents"},
@@ -107,6 +109,10 @@ _KEY_ALIASES = {
     "pageup": "PageUp",
     "pagedown": "PageDown",
 }
+
+# Claude modes that render no gate of their own for AskUserQuestion: its
+# PermissionRequest hook still fires, but only the question menu is on screen.
+_NO_GATE_PERMISSION_MODES = frozenset({"auto", "bypassPermissions"})
 
 _CLAUDE_HOOK_EVENTS = [
     "SessionStart",
@@ -231,6 +237,7 @@ class TmuxInteractiveTransport(CLITransport):
         model: str = "",
         session_id: str = "",
         skip_permissions: bool = False,
+        claude_permission_mode: str = DEFAULT_CLAUDE_PERMISSION_MODE,
         agent_teams: bool = False,
         system_prompt: str = "",
         initial_prompt: str = "",
@@ -250,9 +257,14 @@ class TmuxInteractiveTransport(CLITransport):
         native_text_poll_s: float = 0.005,
         reasoning_effort: str = "",
         effort_control_timeout_s: float = 15.0,
+        session_tools: SessionTools | None = None,
+        workspace_trust_stable_s: float = 0.5,
+        workspace_trust_settle_s: float = 1.0,
+        workspace_trust_max_attempts: int = 3,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
+        self._session_tools = session_tools
         self._model = model
         self._model_gateway_url = model_gateway_url
         self._model_gateway_token = model_gateway_token
@@ -264,6 +276,7 @@ class TmuxInteractiveTransport(CLITransport):
         self._effort_control_timeout = effort_control_timeout_s
         self._forge_session_id = session_id or "skuld-interactive"
         self._skip_permissions = skip_permissions
+        self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
         self._agent_teams = agent_teams
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
@@ -297,7 +310,13 @@ class TmuxInteractiveTransport(CLITransport):
             Path(self.workspace_dir) / ".skuld" / "tmux-interactive" / self._session_name
         )
         self._pane_log_dir = self._runtime_dir / "panes"
-        self._hook_settings_path = self._runtime_dir / "claude-hooks.settings.json"
+        # With broker SessionTools the hook settings carry the loopback secret, so they
+        # live (0600) in the broker-owned runtime dir, never in the workspace.
+        self._hook_settings_path = (
+            session_tools.runtime_dir / _HOOK_SETTINGS_FILE
+            if session_tools is not None
+            else self._runtime_dir / _HOOK_SETTINGS_FILE
+        )
 
         self._turn_idle_timeout_s = self._float_env(
             "SKULD__TMUX_TURN_IDLE_TIMEOUT_SECONDS", turn_idle_timeout_s, 3.0
@@ -326,6 +345,16 @@ class TmuxInteractiveTransport(CLITransport):
         )
         if question_transcript_max_bytes < 1 or question_result_history_limit < 1:
             raise ValueError("Native question transcript and receipt bounds must be positive")
+        if workspace_trust_stable_s < 0 or workspace_trust_settle_s < 0:
+            raise ValueError("Workspace trust stability and settle intervals must be >= 0")
+        if workspace_trust_max_attempts < 1:
+            raise ValueError("Workspace trust needs at least one attempt per key")
+        # Claude redraws the trust menu while it negotiates the terminal, so a key can be
+        # swallowed by a transient render. Act only on a menu that has been stable, let
+        # each key settle, and retry (bounded) when the menu is still there afterwards.
+        self._workspace_trust_stable_s = workspace_trust_stable_s
+        self._workspace_trust_settle_s = workspace_trust_settle_s
+        self._workspace_trust_max_attempts = workspace_trust_max_attempts
         self._question_transcript_max_bytes = question_transcript_max_bytes
         if native_text_wait_s <= 0 or native_text_poll_s <= 0:
             raise ValueError("Native text wait and poll intervals must be positive")
@@ -406,13 +435,15 @@ class TmuxInteractiveTransport(CLITransport):
 
         self._alive = False
         self._startup_ready = False
-        self._workspace_trust_navigation_sent = False
-        self._workspace_trust_submitted = False
+        self._reset_workspace_trust_state()
         self._initial_prompt_sent = False
         self._lifecycle_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
         # In-flight post-Enter submit-confirm loops (fire-and-forget; cancelled on stop()).
         self._confirm_submit_tasks: set[asyncio.Task[None]] = set()
+        # Re-read a permission gate's live menu once it draws (e.g. Workflow's own
+        # "Yes, run it / View raw script / No") so its real rows become answerable.
+        self._permission_refinements: set[asyncio.Task[None]] = set()
         # Assistant texts already emitted via MessageDisplay this turn (re-display dedup +
         # the Stop-hook final-message twin guard) + per-message flush accumulators.
         self._turn_displayed_texts: list[str] = []
@@ -469,6 +500,11 @@ class TmuxInteractiveTransport(CLITransport):
         self._answer_lock = asyncio.Lock()
         self._question_result_emit_lock = asyncio.Lock()
         self._question_result_ids: deque[str] = deque(maxlen=question_result_history_limit)
+        # Claude's PermissionRequest hook carries no tool_use_id. PreToolUse (which runs
+        # first) does, so remember the main pane's recent tool ids by (tool, input) and
+        # bind a permission card to its tool; PostToolUse then closes it immediately.
+        self._main_tool_ids: OrderedDict[str, tuple[str, str]] = OrderedDict()
+        self._main_tool_id_limit = question_result_history_limit
         self._tty_question_seq = 0
         self._last_result: dict | None = None
         self._slash_commands_cache = self._normalize_slash_command_items(
@@ -570,11 +606,47 @@ class TmuxInteractiveTransport(CLITransport):
     def _workspace_trust_pending(text: str) -> bool:
         return "Yes, I trust this folder" in text and "Accessing workspace:" in text
 
+    def _reset_workspace_trust_state(self) -> None:
+        """Per tmux process: key budgets, last key time and the menu stability window."""
+        self._workspace_trust_navigations = 0
+        self._workspace_trust_submissions = 0
+        self._workspace_trust_last_key_at: float | None = None
+        self._workspace_trust_screen: str | None = None
+        self._workspace_trust_screen_since = 0.0
+
+    def _workspace_trust_menu_settled(self, text: str) -> bool:
+        """True once this exact menu frame has held for the stability window and the
+        previous trust key (if any) has had its settle interval.
+
+        Two identical consecutive captures are always required, so a transient frame —
+        e.g. a highlight Claude is about to reset while it negotiates the terminal —
+        never triggers a key.
+        """
+        now = time.monotonic()
+        if text != self._workspace_trust_screen:
+            self._workspace_trust_screen = text
+            self._workspace_trust_screen_since = now
+            return False
+        if now - self._workspace_trust_screen_since < self._workspace_trust_stable_s:
+            return False
+        last_key = self._workspace_trust_last_key_at
+        return last_key is None or now - last_key >= self._workspace_trust_settle_s
+
+    async def _send_workspace_trust_key(self, key: str, *, pane_id: str) -> None:
+        # Record before sending: an uncertain tmux failure counts against the budget and
+        # the settle interval, so a replay only follows a fresh, stable observation.
+        self._workspace_trust_last_key_at = time.monotonic()
+        self._workspace_trust_screen = None
+        await self._send_key(key, pane_id=pane_id)
+
     async def _confirm_workspace_trust(self, text: str, *, pane_id: str) -> None:
         """Answer only the launch workspace's trust menu, one observed step at a time.
 
-        Callers hold the input lock. Wait for the highlight to move to Yes before
-        pressing Enter; never replay either key if tmux captures the old frame.
+        Callers hold the input lock. Enter is pressed ONLY while the highlight is
+        observed on "Yes, I trust this folder" for the configured workspace. Every key
+        waits for a stable menu and for the previous key to settle; a menu still shown
+        after that means the key was dropped (Claude redrew the dialog), so navigation
+        and confirmation are retried, each up to ``workspace_trust_max_attempts``.
         """
         rows = self._normalize_terminal_rows(text)
         workspace = re.search(r"(?m)^\s*Accessing workspace:\s*\n\s*(/[^\n]+)", text)
@@ -594,18 +666,40 @@ class TmuxInteractiveTransport(CLITransport):
         ):
             return
         selected = [index for index, choice in enumerate(choices) if choice[1]]
-        if len(selected) != 1 or self._workspace_trust_submitted:
+        if len(selected) != 1 or not self._workspace_trust_menu_settled(text):
             return
         yes_index = next(i for i, choice in enumerate(choices) if choice[2].startswith("Yes,"))
+        limit = self._workspace_trust_max_attempts
         if selected[0] == yes_index:
-            # Mark before sending: an uncertain tmux failure must not replay Enter.
-            self._workspace_trust_submitted = True
-            await self._send_key("Enter", pane_id=pane_id)
-            logger.info("Submitted Claude workspace trust confirmation for %s", displayed_path)
+            if self._workspace_trust_submissions >= limit:
+                raise DeliveryNotAcceptedError(
+                    f"Workspace trust was not accepted after {limit} confirmations; "
+                    "confirm it in the terminal"
+                )
+            self._workspace_trust_submissions += 1
+            await self._send_workspace_trust_key("Enter", pane_id=pane_id)
+            log = logger.info if self._workspace_trust_submissions == 1 else logger.warning
+            log(
+                "Submitted Claude workspace trust confirmation %d/%d for %s",
+                self._workspace_trust_submissions,
+                limit,
+                displayed_path,
+            )
             return
-        if not self._workspace_trust_navigation_sent:
-            self._workspace_trust_navigation_sent = True
-            await self._send_key("Down" if yes_index > selected[0] else "Up", pane_id=pane_id)
+        if self._workspace_trust_navigations >= limit:
+            raise DeliveryNotAcceptedError(
+                f"Workspace trust selection did not move to Yes after {limit} attempts; "
+                "confirm it in the terminal"
+            )
+        self._workspace_trust_navigations += 1
+        key = "Down" if yes_index > selected[0] else "Up"
+        await self._send_workspace_trust_key(key, pane_id=pane_id)
+        if self._workspace_trust_navigations > 1 or self._workspace_trust_submissions:
+            logger.warning(
+                "Claude workspace trust menu was redrawn on No; re-selecting Yes (%d/%d)",
+                self._workspace_trust_navigations,
+                limit,
+            )
 
     async def _wait_for_repl_ready(self, *, allow_pending_question: bool = False) -> bool:
         """Monitor startup, confirm workspace trust, then wait for the input prompt.
@@ -655,8 +749,7 @@ class TmuxInteractiveTransport(CLITransport):
             if not await self._has_session():
                 await self._create_session()
                 self._startup_ready = False
-                self._workspace_trust_navigation_sent = False
-                self._workspace_trust_submitted = False
+                self._reset_workspace_trust_state()
                 await self._apply_tmux_options()
             self._alive = True
             await self._refresh_panes(emit_events=True)
@@ -688,6 +781,9 @@ class TmuxInteractiveTransport(CLITransport):
             for task in list(self._confirm_submit_tasks):
                 task.cancel()
             self._confirm_submit_tasks.clear()
+            for task in list(self._permission_refinements):
+                task.cancel()
+            self._permission_refinements.clear()
             for task in list(self._tail_tasks.values()):
                 task.cancel()
             for task in list(self._frame_tasks.values()):
@@ -965,19 +1061,22 @@ class TmuxInteractiveTransport(CLITransport):
         text = _PASTED_CONTENT_WRAPPER_RE.sub("", text)
         return " ".join(text.split())
 
-    def _match_prompt_correlation(self, prompt: str) -> tuple[str | None, str | None]:
+    def _match_prompt_correlation(self, prompt: str) -> tuple[bool, str | None, str | None]:
         """Pop the delivered-message correlation whose text matches this submitted
-        prompt and return its (msg_id, request_id). Returns (None, None) without
-        consuming anything when there's no match (a prompt we didn't originate, e.g.
-        a slash command typed directly in the pane), so ids are never mis-attributed."""
+        prompt and return (matched, msg_id, request_id). Returns (False, None, None)
+        without consuming anything when there's no match (a prompt we didn't originate,
+        e.g. a slash command typed directly in the pane), so ids are never mis-attributed.
+
+        ``matched`` is separate from the ids: the session's initial prompt is delivered
+        without a msg_id/request_id, yet it still proves the main pane's native id."""
         target = self._normalize_prompt(prompt)
         if not target:
-            return None, None
+            return False, None, None
         for i, (msg_id, request_id, norm) in enumerate(self._pending_prompt_correlations):
             if norm == target:
                 del self._pending_prompt_correlations[i]
-                return msg_id, request_id
-        return None, None
+                return True, msg_id, request_id
+        return False, None, None
 
     def _begin_turn(self) -> None:
         """Start tracking a new turn so its output streams and completion fires.
@@ -1192,12 +1291,12 @@ class TmuxInteractiveTransport(CLITransport):
             prompt_str = prompt if isinstance(prompt, str) else ""
             # Claude just took a user prompt into its flow. Correlate it back to the
             # message we pasted so the client can flip THAT steering bubble to active.
-            msg_id, request_id = self._match_prompt_correlation(prompt_str)
+            matched, msg_id, request_id = self._match_prompt_correlation(prompt_str)
             # NATIVE-ID CAPTURE: a prompt that correlates to something WE pasted is provably
             # the MAIN pane's conversation (teammate/subagent claude processes share this hook
             # endpoint and POST their OWN session ids — blind capture would wire a restart to
             # resume a subagent's conversation). Uncorrelated prompts are ignored.
-            if msg_id or request_id:
+            if matched:
                 native = payload.get("session_id")
                 if isinstance(native, str) and native.strip():
                     self._claude_native_session_id = native.strip()
@@ -1500,6 +1599,12 @@ class TmuxInteractiveTransport(CLITransport):
         # parses) so a remote client can answer; the tool_use is still emitted below for history.
         if tool_name == "AskUserQuestion" and isinstance(tool_input, dict):
             await self._surface_tty_ask_user_question(tool_input, payload=payload)
+        if payload.get("tool_use_id") and not self._is_child_hook(payload):
+            key = self._tool_key(tool_name, tool_input)
+            self._main_tool_ids[key] = (tool_use_id, self._coerce_str(payload.get("session_id")))
+            self._main_tool_ids.move_to_end(key)
+            while len(self._main_tool_ids) > self._main_tool_id_limit:
+                self._main_tool_ids.popitem(last=False)
         # Parent attribution: a NON-Task tool firing while a Task subagent is in flight belongs
         # to that subagent (stack top). The Task tool's OWN tool_use is a main-agent action ->
         # parent stays None. Computed BEFORE the Task push below so a Task never self-references.
@@ -1553,16 +1658,40 @@ class TmuxInteractiveTransport(CLITransport):
         tool_use_id = self._coerce_str(payload.get("tool_use_id"))
         if not tool_use_id:
             return
-        question = next(
+        matched = next(
             (
-                pending
-                for pending in self._pending_tty_prompts.values()
+                (request_id, pending)
+                for request_id, pending in self._pending_tty_prompts.items()
                 if pending.get("native_tool_use_id") == tool_use_id
                 and pending.get("native_session_id") == payload.get("session_id")
             ),
             None,
         )
+        if (
+            matched is None
+            and self._coerce_str(payload.get("tool_name")) == "AskUserQuestion"
+            and not self._is_child_hook(payload)
+        ):
+            # A question surfaced without native identity (e.g. an older broker's
+            # session) still finishes with the same questions; close its card now.
+            asked = (payload.get("tool_input") or {}).get("questions")
+            orphan = next(
+                (
+                    (rid, pending)
+                    for rid, pending in self._pending_tty_prompts.items()
+                    if pending.get("kind") == "question"
+                    and not pending.get("native_tool_use_id")
+                    and asked
+                    and pending.get("questions") == asked
+                ),
+                None,
+            )
+            if orphan is not None and not orphan[1].get("answer_in_flight"):
+                await self._resolve_tty_answer(orphan[0], "completed_elsewhere", accepted=False)
+        request_id, question = matched if matched else (None, None)
         if tool_use_id in self._question_result_ids:
+            if question is not None and not question.get("answer_in_flight"):
+                await self._resolve_tty_answer(request_id, "completed_elsewhere", accepted=False)
             return
         # Parent attribution: compute BEFORE popping so the Task's OWN result carries parent=None
         # (a main-agent action) while a child result nests under the stack top.
@@ -1582,6 +1711,7 @@ class TmuxInteractiveTransport(CLITransport):
             try:
                 self._active_subagent_stack.remove(tool_use_id)
             except ValueError:
+                # The task may have completed before it entered the active stack.
                 pass
         result = payload.get("tool_response")
         if result is None:
@@ -1607,7 +1737,7 @@ class TmuxInteractiveTransport(CLITransport):
                 "transcript_path": payload.get("transcript_path"),
             },
         }
-        if question is not None:
+        if question is not None and question.get("kind") == "question":
             response = payload.get("tool_response")
             question["native_result"] = {
                 "is_error": is_error,
@@ -1615,8 +1745,15 @@ class TmuxInteractiveTransport(CLITransport):
                 "frame": frame,
             }
             await self._emit_question_result_once(tool_use_id, frame)
+            # Answers entered in Claude's terminal or another client also finish
+            # the native tool. Retire its card immediately, not at turn end.
+            # An in-flight UI answer still needs exact answer-consumption proof.
+            if not question.get("answer_in_flight"):
+                await self._resolve_tty_answer(request_id, "completed_elsewhere", accepted=False)
             return
         await self._emit(frame)
+        if question is not None and not question.get("answer_in_flight"):
+            await self._resolve_tty_answer(request_id, "completed_elsewhere", accepted=False)
 
     async def _emit_permission_request_from_hook(self, payload: dict[str, Any]) -> None:
         tool_input = payload.get("tool_input")
@@ -1840,11 +1977,14 @@ class TmuxInteractiveTransport(CLITransport):
         """
         tool_name = self._coerce_str(payload.get("tool_name")) or "this action"
         tool_input = payload.get("tool_input")
-        # In bypass mode AskUserQuestion still fires PermissionRequest for the
-        # question itself. PreToolUse already surfaced that exact question. Keep
-        # the advisory hook event, but do not invent a second authorization gate.
+        # In bypass and auto mode AskUserQuestion still fires PermissionRequest for
+        # the question itself, but Claude renders no gate: only the question menu.
+        # PreToolUse already surfaced that exact question. Keep the advisory hook
+        # event, but do not invent a second authorization gate. Claude reports its
+        # live mode in the hook payload (the runner may set it in user settings, and
+        # a user can switch modes mid-session); Skuld's own flag is the fallback.
         if (
-            self._skip_permissions
+            self._permission_mode_has_no_gate(payload)
             and tool_name == "AskUserQuestion"
             and isinstance(tool_input, dict)
             and tool_input.get("questions")
@@ -1869,12 +2009,103 @@ class TmuxInteractiveTransport(CLITransport):
             "multiSelect": False,
         }
         self._cancel_submit_confirmations()
+        native_tool_use_id = self._coerce_str(payload.get("tool_use_id"))
+        native_session_id = self._coerce_str(payload.get("session_id"))
+        if not native_tool_use_id and not self._is_child_hook(payload):
+            bound = self._main_tool_ids.pop(self._tool_key(tool_name, tool_input), None)
+            if bound and (not native_session_id or bound[1] == native_session_id):
+                native_tool_use_id, native_session_id = bound
         self._pending_tty_prompts[request_id] = {
             "kind": "permission",
             "tool_name": tool_name,
             "questions": [question],
+            # Permissions may be settled locally (including bypass mode). Bind
+            # their cleanup to the exact tool and native session, never its name.
+            "native_tool_use_id": native_tool_use_id,
+            "native_session_id": native_session_id,
         }
         await self._emit_ask_user_question(request_id, [question])
+        task = asyncio.create_task(
+            self._refine_permission_options(request_id),
+            name=f"tmux-permission-menu-{self._session_name}",
+        )
+        self._permission_refinements.add(task)
+        task.add_done_callback(self._permission_refinements.discard)
+
+    async def _refine_permission_options(self, request_id: str) -> None:
+        """Replace the generic Allow/Deny card with a custom gate's real menu rows.
+
+        Most gates render Claude's standard permission menu, which the generic card
+        already maps. Some tools draw their own confirmation (Workflow: "Yes, run it /
+        View raw script / No"); without its real labels no client could answer it.
+        """
+        rows = await self._capture_menu_rows_wait()
+        pending = self._pending_tty_prompts.get(request_id)
+        if (
+            not rows
+            or pending is None
+            or pending.get("kind") != "permission"
+            or pending.get("answer_in_flight")
+            or pending.get("answer_uncertain")
+            or self._rows_show_pending_question(request_id, rows)
+            or not self._custom_confirmation(rows)
+        ):
+            return
+        labels = [label for _, label in rows]
+        question = {**pending["questions"][0], "options": [{"label": label} for label in labels]}
+        pending["questions"] = [question]
+        pending["live_labels"] = labels
+        await self._emit_ask_user_question(request_id, pending["questions"])
+
+    @classmethod
+    def _custom_confirmation(cls, rows: list[tuple[int, str]]) -> bool:
+        """A yes/no-style menu that is not Claude's standard permission menu."""
+        if cls._permission_menu_digit("allow", rows) is not None:
+            return False
+        labels = [label.strip().casefold() for _, label in rows]
+        return (
+            len(set(labels)) == len(labels)
+            and any(re.match(r"(yes|allow)\b", label) for label in labels)
+            and any(re.match(r"(no|deny)\b", label) for label in labels)
+        )
+
+    @classmethod
+    def _custom_confirmation_digit(cls, chosen: str, rows: list[tuple[int, str]]) -> int | None:
+        """Map only the generic Deny onto a custom menu's unique "No" row.
+
+        A generic Allow never maps: a custom affirmative row can carry a broader scope
+        ("Yes, allow for this session"), so the client must choose the live label.
+        """
+        if chosen != "deny" or not cls._custom_confirmation(rows):
+            return None
+        matches = [d for d, label in rows if re.match(r"(no|deny)\b", label.strip().casefold())]
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _tool_key(tool_name: str, tool_input: object) -> str:
+        return tool_name + "\0" + json.dumps(tool_input, sort_keys=True, default=str)
+
+    def _permission_mode_has_no_gate(self, payload: dict[str, Any]) -> bool:
+        mode = self._coerce_str(payload.get("permission_mode"))
+        if mode:
+            return mode in _NO_GATE_PERMISSION_MODES
+        return self._skip_permissions
+
+    def _rows_show_pending_question(self, request_id: str, rows: list[tuple[int, str]]) -> bool:
+        """Whether the live menu is another pending question rather than this permission."""
+        live = {label.strip().casefold() for _, label in rows}
+        for other_id, pending in self._pending_tty_prompts.items():
+            if other_id == request_id or pending.get("kind") != "question":
+                continue
+            for question in pending.get("questions") or []:
+                labels = {
+                    option["label"].strip().casefold()
+                    for option in (question.get("options") or [])
+                    if isinstance(option, dict) and isinstance(option.get("label"), str)
+                }
+                if labels and labels <= live:
+                    return True
+        return False
 
     async def _surface_tty_ask_user_question(
         self, tool_input: dict[str, Any], *, payload: dict[str, Any] | None = None
@@ -2060,18 +2291,30 @@ class TmuxInteractiveTransport(CLITransport):
                 "type": "ask_user_question",
                 "event_type": "ask_user_question",
                 "request_id": request_id,
-                "tool_use_id": request_id,
+                "tool_use_id": self._pending_tty_prompts[request_id].get("native_tool_use_id")
+                or request_id,
                 "questions": questions,
                 "metadata": {
                     "source": "tmux_tty_bridge",
                     "control_kind": self._pending_tty_prompts[request_id]["kind"],
+                    "requires_all_answers": True,
                     **(
                         {"answerable": False, "recovery_required": True}
-                        if self._pending_tty_prompts[request_id].get("answer_uncertain")
+                        if self._tty_prompt_unanswerable(self._pending_tty_prompts[request_id])
                         else {}
                     ),
                 },
             }
+        )
+
+    @staticmethod
+    def _tty_prompt_unanswerable(pending: dict[str, Any]) -> bool:
+        """A card no client can answer: uncertain delivery, or a question without the
+        native identity its answer proof needs (answer it in the terminal instead)."""
+        if pending.get("answer_uncertain"):
+            return True
+        return pending.get("kind") == "question" and not (
+            pending.get("native_tool_use_id") and pending.get("native_session_id")
         )
 
     @staticmethod
@@ -2112,7 +2355,9 @@ class TmuxInteractiveTransport(CLITransport):
         if kind == "permission":
             chosen = self._first_answer_text(answers)
             low = chosen.strip().casefold()
-            if low not in {"allow", "allow & don't ask again", "deny"}:
+            live = {label.strip().casefold(): label for label in pending.get("live_labels") or ()}
+            standard = low in {"allow", "allow & don't ask again", "deny"}
+            if not standard and low not in live:
                 raise ValueError("The requested answer is not a declared Claude permission option")
             # Claimed for the rest of this branch (see the question-path comment below):
             # `_capture_menu_rows_wait` is a bounded poll with real `await`s, and a
@@ -2125,12 +2370,26 @@ class TmuxInteractiveTransport(CLITransport):
                     raise ValueError(
                         "The native Claude permission prompt ended while its menu was rendering"
                     )
-                digit = self._permission_menu_digit(low, rows)
+                if self._rows_show_pending_question(request_id, rows):
+                    raise ValueError(
+                        "The live Claude menu is a pending question, not this permission; "
+                        "no keys were sent. Answer the question instead"
+                    )
+                standard_menu = self._permission_menu_digit(low, rows) if standard else None
+                if standard_menu is not None:
+                    digit = standard_menu
+                elif standard:
+                    digit = self._custom_confirmation_digit(low, rows)
+                else:
+                    digit = next((d for d, label in rows if label.strip().casefold() == low), None)
                 if digit is None:
                     raise ValueError("The requested answer does not match the live Claude menu")
                 pending["answer_uncertain"] = True
-                await self._send_key("Escape" if low == "deny" else str(digit), pane_id=pane_id)
-                await self._resolve_tty_answer(request_id, "deny" if low == "deny" else chosen)
+                # Claude's standard menu declines with Escape; a custom menu uses its own row.
+                escape = low == "deny" and standard_menu is not None
+                await self._send_key("Escape" if escape else str(digit), pane_id=pane_id)
+                decision = "deny" if low == "deny" else (live.get(low) or chosen)
+                await self._resolve_tty_answer(request_id, decision)
             finally:
                 pending.pop("answer_in_flight", None)
             return
@@ -2475,19 +2734,45 @@ class TmuxInteractiveTransport(CLITransport):
             return False
         if TmuxInteractiveTransport._menu_rows(screen) != [(1, "Submit answers"), (2, "Cancel")]:
             return False
-        observed: dict[str, str] = {}
-        question = None
-        for line in screen.splitlines():
-            value = line.strip()
+        # The review wraps both question and answer text, and newer Claude
+        # versions add a left gutter to the focused question. Reconstruct only
+        # this bounded review section; native tool-result proof remains exact.
+        body = screen.split("Review your answers", 1)[1].split("Ready to submit your answers?", 1)[
+            0
+        ]
+        entries: list[tuple[list[str], list[str]]] = []
+        question: list[str] | None = None
+        answer: list[str] | None = None
+        for line in body.splitlines():
+            value = re.sub(r"^\s*│ ?", "", line).strip()
+            if not value:
+                continue
             if value.startswith("● "):
-                question = value[2:]
+                question, answer = [value[2:]], []
+                entries.append((question, answer))
             elif value.startswith("→ ") and question is not None:
-                if question in observed:
+                if answer:
                     return False
-                observed[question] = value[2:]
-                question = None
-        return set(observed) == {p["text"] for p in plans} and all(
-            TmuxInteractiveTransport._question_answer_matches(observed[p["text"]], p) for p in plans
+                answer.append(value[2:])
+            elif question is not None:
+                (answer if answer else question).append(value)
+            else:
+                return False
+
+        def normalize(text: str) -> str:
+            return " ".join(text.split())
+
+        observed = {normalize(" ".join(q)): normalize(" ".join(a)) for q, a in entries if a}
+        return (
+            len(observed) == len(entries) == len(plans)
+            and set(observed) == {normalize(p["text"]) for p in plans}
+            and all(
+                TmuxInteractiveTransport._question_answer_matches(
+                    observed[normalize(p["text"])],
+                    {**p, "values": [normalize(value) for value in p["values"]]},
+                )
+                for p in plans
+            )
         )
 
     async def _drive_question_page(self, plan: dict[str, Any], *, pane_id: str | None) -> None:
@@ -2863,7 +3148,7 @@ class TmuxInteractiveTransport(CLITransport):
             # (start() never resurrects an old tmux, so there is no stale-port baking).
             cmd.extend(["--resume", self._resume_session_id])
         if self._skip_permissions:
-            cmd.extend(["--permission-mode", _DEFAULT_PERMISSION_MODE])
+            cmd.extend(["--permission-mode", self._claude_permission_mode])
         if self._remote_control:
             rc_name = self._remote_control_name()
             cmd.extend(["--remote-control", rc_name])
@@ -2877,19 +3162,35 @@ class TmuxInteractiveTransport(CLITransport):
         appended_system_prompt = self._composed_system_prompt()
         if appended_system_prompt:
             cmd.extend(["--append-system-prompt", appended_system_prompt])
-        if self._mcp_config:
-            cmd.extend(["--mcp-config", self._mcp_config])
+        mcp_config = self._mcp_config_argument()
+        if mcp_config:
+            cmd.extend(["--mcp-config", mcp_config])
+        for plugin_dir in self._session_tools.claude_plugin_dirs if self._session_tools else ():
+            cmd.extend(["--plugin-dir", str(plugin_dir)])
         if self._agent_teams:
             cmd.extend(["--teammate-mode", "tmux"])
         return cmd
+
+    def _mcp_config_argument(self) -> str | None:
+        """A 0600 config file path with SessionTools; inline JSON otherwise (legacy)."""
+        if self._session_tools is None:
+            return self._mcp_config
+        path = self._session_tools.write_claude_mcp_config(
+            build_claude_mcp_payload(self._raw_mcp_servers)
+        )
+        return str(path) if path else None
 
     def _composed_system_prompt(self) -> str:
         """Append capability help and session-supplied instructions, not workflow policy."""
         parts: list[str] = []
         if self._steering_instructions_enabled:
             parts.append(_STEERING_INPUT_INSTRUCTION)
-        # Always advertise the present-file capability so any Forge agent can hand the user a file.
-        parts.append(_PRESENT_FILE_INSTRUCTION)
+        # Always advertise the session capabilities (present-file, and the Forge notify MCP
+        # when the broker injected it) so any Forge agent can hand the user a file or ping them.
+        if self._session_tools is not None:
+            parts.append(self._session_tools.instructions)
+        else:
+            parts.append(_PRESENT_FILE_INSTRUCTION)
         if self._system_prompt:
             parts.append(self._system_prompt)
         return "\n\n".join(parts)
@@ -2910,19 +3211,20 @@ class TmuxInteractiveTransport(CLITransport):
             events = list(_CLAUDE_HOOK_EVENTS)
             if self._message_display_hook_enabled:
                 events.extend(_OPTIONAL_HIGH_VOLUME_HOOK_EVENTS)
-            hook = {
+            hook: dict[str, Any] = {
                 "type": "http",
                 "url": f"http://127.0.0.1:{self._sdk_port}/api/claude/hooks",
                 "timeout": 5,
             }
+            if self._session_tools is not None and self._session_tools.loopback_authorization:
+                # Claude HTTP hooks send literal headers; the broker requires its secret.
+                hook["headers"] = {"Authorization": self._session_tools.loopback_authorization}
             settings["hooks"] = {event: [{"matcher": "", "hooks": [hook]}] for event in events}
         if not settings:
             return
+        content = json.dumps(settings, indent=2, sort_keys=True) + "\n"
         self._hook_settings_path.parent.mkdir(parents=True, exist_ok=True)
-        self._hook_settings_path.write_text(
-            json.dumps(settings, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        write_private_file(self._hook_settings_path, content)
 
     def _spawn_env(self) -> dict[str, str]:
         env = claude_spawn_env(
@@ -2935,12 +3237,9 @@ class TmuxInteractiveTransport(CLITransport):
         _, shim_env = ensure_codex_tool_shims(
             self.workspace_dir,
             mcp_servers=self._raw_mcp_servers,
+            session_env=self._session_tools.env if self._session_tools else None,
         )
         env.update(shim_env)
-        # The present-file shim POSTs here (broker app == sdk_port). Set for every engine so the
-        # `present-file` command works in both claude and codex tmux sessions.
-        if self._sdk_port:
-            env["FORGE_PRESENT_FILE_URL"] = f"http://127.0.0.1:{self._sdk_port}/api/present-file"
         return env
 
     @staticmethod
@@ -3339,11 +3638,24 @@ class TmuxInteractiveTransport(CLITransport):
             await self._emit_synthetic_delta(delta)
 
     async def _watch_turn_completion(self, done: asyncio.Event) -> None:
+        # Time a human spends on a pending question or permission is not turn time: the
+        # native CLI is blocked on its menu, and ending the turn would drop the only
+        # answerable record of that menu (and report the session idle) while it waits.
+        waited = 0.0
+        waiting_since: float | None = None
         try:
             while not done.is_set():
                 now = time.monotonic()
+                if self._pending_tty_prompts:
+                    if waiting_since is None:
+                        waiting_since = now
+                    await asyncio.sleep(0.2)
+                    continue
+                if waiting_since is not None:
+                    waited += now - waiting_since
+                    waiting_since = None
                 if self._hook_events_enabled:
-                    if now - self._turn_started_at >= self._turn_max_seconds:
+                    if now - self._turn_started_at - waited >= self._turn_max_seconds:
                         await self._finish_hook_turn(
                             content="",
                             reason="timeout",
@@ -3359,7 +3671,7 @@ class TmuxInteractiveTransport(CLITransport):
                 elif now - self._turn_started_at >= self._turn_no_output_timeout_s:
                     await self._finish_synthetic_turn(reason="no_terminal_output")
                     return
-                if now - self._turn_started_at >= self._turn_max_seconds:
+                if now - self._turn_started_at - waited >= self._turn_max_seconds:
                     await self._finish_synthetic_turn(reason="timeout", is_error=True)
                     return
                 await asyncio.sleep(0.2)

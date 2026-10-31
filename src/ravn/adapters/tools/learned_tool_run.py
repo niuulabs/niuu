@@ -32,12 +32,14 @@ from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
     LearnedToolInfrastructureError,
     LearnedToolResolver,
+    LearnedToolUnloadableError,
     learned_tool_venvs_dir,
 )
 from ravn.valkyrie_evolution.resident_learning import (
     DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES,
     EVOLUTION_ROLLED_BACK_EVENT,
 )
+from ravn.valkyrie_evolution.tool_curation import ROLLED_BACK
 from ravn.valkyrie_evolution.tool_runtime import remove_tool_venv
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher
@@ -214,6 +216,20 @@ class LearnedToolRunTool(ToolPort):
 
             try:
                 tool = self._resolver.load(name, host_call=self._host_call(name))
+            except LearnedToolUnloadableError as exc:
+                # Installed, but this resident cannot load it. Not a missing
+                # tool to rediscover through capability_list (which does not
+                # offer it): it needs the repair that rebuilds it.
+                span.set_attribute("ravn.learned_tool.outcome", "unloadable")
+                return ToolResult(
+                    tool_call_id="",
+                    content=(
+                        f"{exc} — {name!r} is installed but cannot be run on this resident. "
+                        "Call build_tool for the same capability with replace=true to rebuild "
+                        "it so it loads here."
+                    ),
+                    is_error=True,
+                )
             except LearnedToolError as exc:
                 span.set_attribute("ravn.learned_tool.outcome", "unavailable")
                 return ToolResult(
@@ -344,7 +360,7 @@ class LearnedToolRunTool(ToolPort):
         peers learn the capability is gone; when wired with tools_dir, the
         tool's dedicated dependency venv is reclaimed.
         """
-        await skill_manager.archive(name)
+        await skill_manager.archive(name, reason=ROLLED_BACK, detail=result.content)
         if self._tools_dir is not None:
             remove_tool_venv(
                 venvs_dir=learned_tool_venvs_dir(self._tools_dir.parent),

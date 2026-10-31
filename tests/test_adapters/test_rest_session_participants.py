@@ -322,14 +322,16 @@ def test_revoke_denied_is_403(participants_api):
     client, service, session_service, path = participants_api
     session_service.get_session.return_value = object()
     service.revoke.side_effect = SessionAccessDeniedError(uuid4(), "outsider")
-    assert client.delete(path + "/invitee").status_code == 403
+    response = client.delete(path + "/invitee")
+    assert response.status_code == 403
 
 
 def test_revoke_of_nonexistent_grant_is_404(participants_api):
     client, service, session_service, path = participants_api
     session_service.get_session.return_value = object()
     service.revoke.side_effect = ParticipantNotFoundError("no grant")
-    assert client.delete(path + "/nobody").status_code == 404
+    response = client.delete(path + "/nobody")
+    assert response.status_code == 404
 
 
 def test_list_returns_every_grant(participants_api):

@@ -163,7 +163,9 @@ export function useCreateRealm() {
 
       await step('memory', async () => {
         if (!mimir.mounts.deployInstance) {
-          throw new Error('This Mímir has no deployment target; set one in Mímir › Registry.');
+          throw new Error(
+            'This memory instance has no deployment target; set one in Memory › Library.',
+          );
         }
         await mimir.mounts.deployInstance({
           name: deploymentNameFor(draft.slug),
@@ -277,7 +279,7 @@ export function useCreateRealm() {
           await new Promise((resolve) => setTimeout(resolve, MOUNT_DISCOVERY_INTERVAL_MS));
         }
         throw new Error(
-          `Realm memory ${mountName} did not appear within 60 s; the deployment is still starting. Check Mímir › Registry and write the charter from Settings once it is up.`,
+          `Realm memory ${mountName} did not appear within 60 s; the deployment is still starting. Check Memory › Library and write the charter from Settings once it is up.`,
         );
       });
 

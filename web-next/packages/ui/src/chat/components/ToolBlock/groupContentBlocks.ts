@@ -1,3 +1,4 @@
+import { FORGE_NOTIFICATION_TOOL_NAME } from '@niuulabs/domain';
 import { toolImages, type ToolImage } from '../../toolImages';
 export interface ToolUseBlock {
   type: 'tool_use';
@@ -126,8 +127,8 @@ export function groupContentBlocks(blocks: ContentBlock[], hierarchical = false)
       if (blk.type !== 'tool_use') break;
       if (images.get((blk as ToolUseBlock).id)?.length) break;
       if (!hierarchical && (blk as ToolUseBlock).name !== toolName) break;
-      if (j !== i && isPresentedFileTool((blk as ToolUseBlock).name)) break;
-      if (j !== i && isPresentedFileTool(toolName)) break;
+      if (j !== i && isStandaloneCardTool((blk as ToolUseBlock).name)) break;
+      if (j !== i && isStandaloneCardTool(toolName)) break;
       const tb = blk as ToolUseBlock;
       group.push({ block: tb, result: resultMap.get(tb.id) });
       j++;
@@ -147,4 +148,14 @@ export function groupContentBlocks(blocks: ContentBlock[], hierarchical = false)
 
 export function isPresentedFileTool(name: string): boolean {
   return ['present_file', 'senduserfile'].includes(name.toLowerCase());
+}
+
+/** The broker's inline notification part (contract §1), rendered as a card. */
+export function isNotificationCardTool(name: string): boolean {
+  return name === FORGE_NOTIFICATION_TOOL_NAME;
+}
+
+/** Tool parts that render as their own card and never join a tool group. */
+export function isStandaloneCardTool(name: string): boolean {
+  return isPresentedFileTool(name) || isNotificationCardTool(name);
 }

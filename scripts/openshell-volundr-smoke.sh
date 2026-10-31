@@ -63,7 +63,7 @@ trap cleanup EXIT
 
 if ! command -v openshell >/dev/null 2>&1; then
   echo "openshell is not on PATH. Install it first, then rerun this smoke." >&2
-  echo "Official quickstart: curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh" >&2
+  echo "Install the release Niuu pins: curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v0.1.6-pre.5/install.sh | OPENSHELL_VERSION=v0.1.6-pre.5 sh" >&2
   exit 1
 fi
 

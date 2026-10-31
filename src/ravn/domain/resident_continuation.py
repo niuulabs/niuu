@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol
 
-from ravn.domain.models import TokenUsage, TurnResult
+from ravn.domain.models import TokenUsage
 
 
 class ContinuationDecisionKind(StrEnum):
@@ -87,16 +87,6 @@ class ResidentMemoryEntry:
 
 
 @dataclass(frozen=True)
-class ResidentBudgetLimits:
-    """Generic budget caps for one resident continuation run."""
-
-    max_turns: int = 3
-    max_wall_clock_seconds: float = 900.0
-    max_tokens: int = 0
-    max_cost_usd: float = 0.0
-
-
-@dataclass(frozen=True)
 class ResidentBudgetSnapshot:
     """Budget state at a decision point."""
 
@@ -110,12 +100,6 @@ class ResidentBudgetSnapshot:
     @property
     def total_tokens(self) -> int:
         return self.usage.total_tokens
-
-
-@dataclass(frozen=True)
-class ResidentBudgetDecision:
-    allowed: bool
-    reason: str
 
 
 @dataclass(frozen=True)
@@ -376,8 +360,17 @@ class ResidentMemoryPort(Protocol):
     async def read_operator_needed(self, case_id: str = "") -> ResidentMemoryEntry | None:
         """Return the latest pending operator question when one exists."""
 
+    async def read_closed_operator_question(self, case_id: str) -> ResidentMemoryEntry | None:
+        """Return the case's operator question when it exists but is no longer pending.
+
+        Its ``status`` metadata says how it closed: ``answered`` or ``withdrawn``.
+        """
+
     async def write_operator_answer(self, answer: str, *, case_id: str = "") -> str:
         """Persist the latest operator answer and mark the pending question answered."""
+
+    async def withdraw_operator_needed(self, case_id: str, *, reason: str, turn_ref: str) -> str:
+        """Close a pending operator question the resident judged no longer needs an answer."""
 
     async def read_operator_answer(self, case_id: str = "") -> ResidentMemoryEntry | None:
         """Return the latest operator answer when one exists."""
@@ -402,19 +395,6 @@ class ResidentPolicyPort(Protocol):
         context: ResidentContinuationContext,
     ) -> ResidentPolicyDecision:
         """Assess whether an action may proceed."""
-
-
-class ResidentBudgetPort(Protocol):
-    """Budget boundary for continuation decisions."""
-
-    def snapshot(self) -> ResidentBudgetSnapshot:
-        """Return current budget usage."""
-
-    def can_continue(self) -> ResidentBudgetDecision:
-        """Return whether another turn may be started."""
-
-    def record_turn(self, result: TurnResult) -> ResidentBudgetSnapshot:
-        """Record model usage for a completed turn."""
 
 
 def selected_action_from_outcome(fields: dict[str, Any]) -> ResidentActionCandidate | None:

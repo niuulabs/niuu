@@ -5,9 +5,24 @@ from types import SimpleNamespace
 
 import pytest
 
-from ravn.adapters.tools.kubernetes import KubernetesInspectTool
+from ravn.adapters.tools.kubernetes import KubernetesClients, KubernetesInspectTool
+from ravn.cap_telemetry import cap_hit_counts
 from ravn.cli.commands import _filter_tools, _groups_for_persona
 from ravn.config import Settings
+
+
+class RawLogResponse:
+    """What kubernetes_asyncio returns for _preload_content=False."""
+
+    def __init__(self, body: str) -> None:
+        self._body = body
+        self.released = False
+
+    async def text(self) -> str:
+        return self._body
+
+    def release(self) -> None:
+        self.released = True
 
 
 class FakeCoreV1:
@@ -81,7 +96,8 @@ class FakeCoreV1:
         )
 
     async def read_namespaced_pod_log(self, name: str, namespace: str, **kwargs):
-        return f"{namespace}/{name} tail={kwargs['tail_lines']}"
+        assert kwargs.pop("_preload_content") is False  # a JSON log comes back as str(dict)
+        return RawLogResponse(f"{namespace}/{name} tail={kwargs['tail_lines']}")
 
     async def read_node(self, name: str):
         return SimpleNamespace(
@@ -163,6 +179,228 @@ async def test_kubernetes_inspect_events_and_logs_are_read_only() -> None:
     assert core.event_selector == "involvedObject.name=checkout-abc,involvedObject.kind=Pod"
     assert json.loads(events.content)["events"][0]["reason"] == "BackOff"
     assert json.loads(logs.content)["tail_lines"] == 50
+    assert json.loads(logs.content)["logs"] == "shop/checkout-abc tail=50"
+
+
+_TELEPORT_KUBECONFIG = """
+apiVersion: v1
+kind: Config
+current-context: teleport.niuu.world-valhalla
+contexts:
+  - name: teleport.niuu.world-valhalla
+    context: {cluster: teleport.niuu.world, user: bot}
+  - name: teleport.niuu.world-ymir
+    context: {cluster: teleport.niuu.world, user: bot}
+clusters:
+  - name: teleport.niuu.world
+    cluster: {server: https://teleport.niuu.world:443}
+users:
+  - name: bot
+    user: {token: unused}
+"""
+
+
+class _RolledOutApps:
+    def __init__(self, cluster: str) -> None:
+        self.cluster = cluster
+
+    async def read_namespaced_deployment(self, name: str, namespace: str):
+        return SimpleNamespace(
+            metadata=SimpleNamespace(name=name, namespace=namespace, uid="d", generation=7),
+            spec=SimpleNamespace(
+                replicas=1,
+                template=SimpleNamespace(
+                    spec=SimpleNamespace(
+                        containers=[SimpleNamespace(name="ravn", image=f"niuu:dev-{self.cluster}")]
+                    )
+                ),
+            ),
+            status=SimpleNamespace(
+                replicas=1, ready_replicas=1, updated_replicas=1, observed_generation=7
+            ),
+        )
+
+
+class _ConfigCore:
+    async def read_namespaced_config_map(self, name: str, namespace: str):
+        return SimpleNamespace(
+            metadata=SimpleNamespace(name=name, namespace=namespace, uid="cm"),
+            data={"config.yaml": "x" * 50, "small": "ok"},
+        )
+
+
+def _multi_cluster_tool(tmp_path, built: list[str]) -> KubernetesInspectTool:
+    kubeconfig = tmp_path / "kubeconfig.yaml"
+    kubeconfig.write_text(_TELEPORT_KUBECONFIG, encoding="utf-8")
+
+    async def factory(path: str, context: str) -> KubernetesClients:
+        assert path == str(kubeconfig)
+        built.append(context)
+        cluster = context.rsplit("-", 1)[-1]
+        return KubernetesClients(
+            core_v1=_ConfigCore(), apps_v1=_RolledOutApps(cluster), batch_v1=FakeBatchV1()
+        )
+
+    return KubernetesInspectTool(
+        in_cluster=False,
+        kubeconfig_path=str(kubeconfig),
+        max_configmap_value_chars=10,
+        client_factory=factory,
+    )
+
+
+@pytest.mark.asyncio
+async def test_clusters_lists_every_context_in_the_kubeconfig(tmp_path) -> None:
+    tool = _multi_cluster_tool(tmp_path, [])
+
+    result = await tool.execute({"action": "clusters"})
+
+    assert json.loads(result.content)["clusters"] == [
+        "teleport.niuu.world-valhalla",
+        "teleport.niuu.world-ymir",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_named_cluster_reads_that_cluster_with_a_client_per_call(tmp_path) -> None:
+    built: list[str] = []
+    tool = _multi_cluster_tool(tmp_path, built)
+    request = {"action": "workload", "namespace": "nats", "name": "regin", "cluster": "ymir"}
+
+    first = json.loads((await tool.execute(request)).content)
+    await tool.execute(request)
+
+    workload = first["workload"]
+    assert workload["images"] == {"ravn": "niuu:dev-ymir"}
+    assert workload["generation"] == workload["observed_generation"] == 7
+    assert workload["updated_replicas"] == 1
+    # A client is opened and closed per call: the tool is rebuilt per task and
+    # has no shutdown hook, so a cached client would never be closed.
+    assert built == ["teleport.niuu.world-ymir"] * 2
+
+
+@pytest.mark.asyncio
+async def test_a_multi_cluster_kubeconfig_never_guesses_the_cluster(tmp_path) -> None:
+    tool = _multi_cluster_tool(tmp_path, [])
+
+    missing = await tool.execute({"action": "workload", "namespace": "nats", "name": "regin"})
+    unknown = await tool.execute(
+        {"action": "workload", "namespace": "nats", "name": "regin", "cluster": "asgard"}
+    )
+
+    assert missing.is_error and "cluster is required" in missing.content
+    assert unknown.is_error and "unknown cluster 'asgard'" in unknown.content
+    assert "teleport.niuu.world-valhalla" in unknown.content
+
+
+@pytest.mark.asyncio
+async def test_configmap_values_are_capped(tmp_path) -> None:
+    tool = _multi_cluster_tool(tmp_path, [])
+
+    result = await tool.execute(
+        {"action": "configmap", "namespace": "nats", "name": "regin-config", "cluster": "valhalla"}
+    )
+
+    payload = json.loads(result.content)
+    assert payload["data"] == {"config.yaml": "x" * 10, "small": "ok"}
+    assert payload["truncated_keys"] == ["config.yaml"]
+    assert cap_hit_counts() == {"tools.kubernetes.max_configmap_value_chars": 1}
+
+
+@pytest.mark.asyncio
+async def test_an_in_cluster_resident_cannot_name_another_cluster() -> None:
+    tool = KubernetesInspectTool(core_v1=FakeCoreV1(), apps_v1=FakeAppsV1(), batch_v1=FakeBatchV1())
+
+    result = await tool.execute(
+        {"action": "workload", "namespace": "shop", "name": "checkout", "cluster": "ymir"}
+    )
+
+    assert result.is_error and "only its own cluster" in result.content
+
+
+class _PodsCore:
+    def __init__(self) -> None:
+        self.selectors: list[str] = []
+
+    async def list_namespaced_pod(self, namespace: str, label_selector: str = ""):
+        self.selectors.append(label_selector)
+
+        def pod(name: str, ready: bool) -> SimpleNamespace:
+            return SimpleNamespace(
+                metadata=SimpleNamespace(
+                    name=name,
+                    owner_references=[SimpleNamespace(kind="ReplicaSet", name=f"{name[:-6]}")],
+                ),
+                spec=SimpleNamespace(node_name="node-a"),
+                status=SimpleNamespace(
+                    phase="Running",
+                    start_time=None,
+                    container_statuses=[
+                        SimpleNamespace(name="ravn", ready=ready, restart_count=1),
+                        SimpleNamespace(name="tbot", ready=True, restart_count=0),
+                    ],
+                ),
+            )
+
+        return SimpleNamespace(
+            items=[
+                pod("valkyrie-ymir-k8s-7b864d-abcde", True),
+                pod("valkyrie-ymir-k8s-7b864d-fghij", False),
+                pod("nats-0", True),
+            ]
+        )
+
+
+@pytest.mark.asyncio
+async def test_pods_lists_a_namespace_so_a_changing_pod_name_can_be_found(tmp_path) -> None:
+    built: list[str] = []
+    core = _PodsCore()
+    kubeconfig = tmp_path / "kubeconfig.yaml"
+    kubeconfig.write_text(_TELEPORT_KUBECONFIG, encoding="utf-8")
+
+    async def factory(path: str, context: str) -> KubernetesClients:
+        built.append(context)
+        return KubernetesClients(core_v1=core, apps_v1=None, batch_v1=None)
+
+    tool = KubernetesInspectTool(
+        in_cluster=False, kubeconfig_path=str(kubeconfig), max_list_items=1, client_factory=factory
+    )
+
+    result = await tool.execute(
+        {
+            "action": "pods",
+            "cluster": "ymir",
+            "namespace": "nats",
+            "label_selector": "app.kubernetes.io/name=valkyrie",
+            "name_prefix": "valkyrie-ymir-k8s",
+        }
+    )
+
+    payload = json.loads(result.content)
+    assert core.selectors == ["app.kubernetes.io/name=valkyrie"]
+    assert payload["total"] == 2
+    assert payload["truncated"] is True
+    assert cap_hit_counts() == {"tools.kubernetes.max_list_items": 1}
+    assert payload["pods"] == [
+        {
+            "name": "valkyrie-ymir-k8s-7b864d-abcde",
+            "phase": "Running",
+            "ready": "2/2",
+            "restarts": 1,
+            "node_name": "node-a",
+            "started_at": "",
+            "owner": "ReplicaSet/valkyrie-ymir-k8s-7b864d",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pods_needs_a_namespace() -> None:
+    tool = KubernetesInspectTool(core_v1=_PodsCore(), apps_v1=FakeAppsV1(), batch_v1=FakeBatchV1())
+
+    result = await tool.execute({"action": "pods"})
+
+    assert result.is_error and "namespace is required" in result.content
 
 
 def test_k8s_persona_can_request_kubernetes_inspect_tool() -> None:
@@ -216,3 +454,77 @@ def test_k8s_valkyrie_persona_has_no_shell() -> None:
     assert "terminal" not in surviving
     # The replacements have to still be there, or this just removes capability.
     assert {"kubernetes_inspect", "build_tool", "read_file"} <= surviving
+
+
+#: What a container that logs JSON writes, one object per line.
+_JSON_LOG_LINE = '{"level": "info", "msg": "ready", "ok": true, "trace": null}\n'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        # One JSON line: the whole body parses as JSON, which is what the
+        # client used to turn into str(dict).
+        _JSON_LOG_LINE,
+        _JSON_LOG_LINE + '{"level": "warn", "msg": "slow", "ms": 912}\n',
+        "plain text\n" + _JSON_LOG_LINE,
+    ],
+)
+async def test_pod_logs_returns_json_log_lines_as_written(body: str) -> None:
+    """Through the real kubernetes_asyncio client against a local API server."""
+    client = pytest.importorskip("kubernetes_asyncio.client")
+    from aiohttp import web
+
+    requests: list[dict[str, str]] = []
+
+    async def pod_log(request: web.Request) -> web.Response:
+        requests.append(dict(request.query))
+        return web.Response(text=body, content_type="text/plain")
+
+    app = web.Application()
+    app.router.add_get("/api/v1/namespaces/{namespace}/pods/{name}/log", pod_log)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]  # noqa: SLF001
+    configuration = client.Configuration(host=f"http://127.0.0.1:{port}")
+    api_client = client.ApiClient(configuration)
+    try:
+        core = client.CoreV1Api(api_client)
+        tool = KubernetesInspectTool(
+            core_v1=core, apps_v1=FakeAppsV1(), batch_v1=FakeBatchV1(), max_log_lines=50
+        )
+
+        result = await tool.execute(
+            {"action": "pod_logs", "namespace": "nats", "name": "regin-0", "container": "ravn"}
+        )
+    finally:
+        await api_client.close()
+        await runner.cleanup()
+
+    assert not result.is_error
+    logs = json.loads(result.content)["logs"]
+    assert logs == body
+    assert json.loads(logs.splitlines()[-1])["msg"] in {"ready", "slow"}
+    assert requests == [{"tailLines": "50", "container": "ravn"}]
+
+
+@pytest.mark.asyncio
+async def test_read_pod_log_releases_the_response_when_reading_fails() -> None:
+    from ravn.adapters.kubernetes_pod_logs import read_pod_log
+
+    class _BrokenResponse(RawLogResponse):
+        async def text(self) -> str:
+            raise ConnectionResetError("stream cut")
+
+    response = _BrokenResponse("")
+
+    class _Core:
+        async def read_namespaced_pod_log(self, name, namespace, **kwargs):
+            return response
+
+    with pytest.raises(ConnectionResetError):
+        await read_pod_log(_Core(), "regin-0", "nats")
+    assert response.released

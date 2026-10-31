@@ -1,4 +1,4 @@
-FROM ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78 AS builder
+FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944 AS builder
 
 ARG TARGETARCH
 
@@ -16,10 +16,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install uv from a pinned release archive and resolve from the committed lockfile.
 RUN set -eux; \
-    UV_VERSION="0.12.13"; \
+    UV_VERSION="0.13.5"; \
     case "${TARGETARCH}" in \
-      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="745765a3b6e360ad76743599ae5c42e9278c7edf8bbff9fc76d05bf2623a04dd" ;; \
-      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="2eaa5d94f5db7b3a1a092156b9420459e42ab0217d917fe74a876309cef9b5e9" ;; \
+      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f" ;; \
+      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="4bb69cf95ed13f23713bb7bc09f241896ea0c75b7c557e615a20604b82f9c403" ;; \
       *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_ARCHIVE}" -o "/tmp/${UV_ARCHIVE}"; \
@@ -36,13 +36,18 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 # --extra dsh bundles the DeepSeek Harness runtime (single-file exe, exact-pinned)
 # for DshJsonRpcTransport; the binary needs no Node at runtime.
-RUN uv sync --frozen --no-dev --no-editable --no-install-project --extra otel --extra dsh
+# --extra nats: a resident's ravn sidecar runs this image, and a resident profile
+# whose mesh uses NATS (Valhalla's ravn-helm) cannot start without nats-py.
+RUN uv sync --frozen --no-dev --no-editable --no-install-project --extra otel --extra dsh --extra nats
 
 # ---------------------------------------------------------------------------
 # Project wheel — the only part of the Python install a source edit changes
 # ---------------------------------------------------------------------------
 FROM builder AS project
 COPY src/ /app/src/
+# migrations/ is force-included into the wheel as cli/migrations (see
+# pyproject.toml); the build fails without it.
+COPY migrations/ /app/migrations/
 # vendor/envoy_authz_protos/ provides the envoy.service.auth.v3 ext_authz
 # bindings identity/authz_main.py needs (see its README); vendored instead of
 # depending on xds-protos, which bundled a copy of opentelemetry/proto/** that
@@ -51,9 +56,39 @@ COPY vendor/ /app/vendor/
 RUN uv build --wheel --out-dir /dist
 
 # ---------------------------------------------------------------------------
+# gh v2.102.0 (the latest release) is built with Go 1.27.1 and golang.org/x/net
+# v0.58.0 (GO-2026-6603/6604/6611/6612). Build the same release with Go 1.27.3 and
+# the patched module; return to GitHub's apt package once a release ships them.
+# ---------------------------------------------------------------------------
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS gh-build
+ARG TARGETARCH
+WORKDIR /src
+RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.102.0.tar.gz -O /tmp/gh.tar.gz \
+    && echo "08bf0ef8b4409893889175e0f5279d30d6edd96465816042c0d7c72eac598158  /tmp/gh.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/gh.tar.gz --strip-components=1 \
+    && go get golang.org/x/net@v0.60.0 \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath \
+        -ldflags '-s -w -X github.com/cli/cli/v2/internal/build.Version=2.102.0-niuu.1 -X github.com/cli/cli/v2/internal/build.Date=2026-09-30' \
+        -o /out/gh ./cmd/gh
+
+# ---------------------------------------------------------------------------
+# glab v1.124.0 (the latest release) ships binaries built with Go 1.27.2
+# (GO-2026-6809). Build the same release with Go 1.27.3; the module proxy
+# download is verified against sum.golang.org. Return to the release .deb once
+# one is built with a patched Go.
+# ---------------------------------------------------------------------------
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS glab-build
+ARG TARGETARCH
+ARG GLAB_VERSION=1.124.0
+RUN cd "$(go mod download -json gitlab.com/gitlab-org/cli@v${GLAB_VERSION} | sed -n 's/.*"Dir": "\(.*\)".*/\1/p')" \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath \
+        -ldflags "-s -w -X main.version=${GLAB_VERSION}-niuu.1" \
+        -o /out/glab ./cmd/glab
+
+# ---------------------------------------------------------------------------
 # Runtime — Node.js stays (needed for claude-code/codex CLI at runtime)
 # ---------------------------------------------------------------------------
-FROM ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78
+FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
 
 
 LABEL org.opencontainers.image.title="skuld"
@@ -78,7 +113,9 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 ARG OS_PACKAGES_REFRESH=
 # Install runtime dependencies. The upgrade picks up base-image security
 # fixes (glibc, gnupg) published after the pinned digest was cut.
+# bubblewrap: Codex looks for bwrap on PATH at startup for its Linux sandbox.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+    bubblewrap \
     curl \
     ca-certificates \
     git \
@@ -92,6 +129,10 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
+# The Ubuntu rock ships Pebble as its service manager. Skuld runs its own
+# entrypoint and never starts it, so drop the unused binary and its Go CVEs.
+RUN rm -f /usr/bin/pebble
+
 # Install Node.js 24 LTS (pinned keyring + apt source instead of curl|bash)
 RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     -o /usr/share/keyrings/nodesource.asc \
@@ -100,31 +141,25 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     && apt-get update && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# GitHub CLI (gh) from GitHub's apt repository: sessions open and inspect PRs with it.
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-    -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && chmod 0644 /usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-    > /etc/apt/sources.list.d/github-cli.list \
-    && apt-get update && apt-get install -y --no-install-recommends gh \
-    && rm -rf /var/lib/apt/lists/* \
-    && gh --version
+# GitHub CLI (gh): sessions open and inspect PRs with it.
+COPY --from=gh-build /out/gh /usr/local/bin/gh
+RUN gh --version
 
-# GitLab CLI (glab), pinned release .deb per architecture: the GitLab counterpart of gh.
+# GitLab CLI (glab): the GitLab counterpart of gh. /usr/bin is the path the
+# release .deb used and the OpenShell egress policies name.
+COPY --from=glab-build /out/glab /usr/bin/glab
+RUN glab --version
+
 # ARG values do not cross stages; TARGETARCH must be declared again here.
 ARG TARGETARCH
-ARG GLAB_VERSION=1.117.0
-RUN curl -fsSL -o /tmp/glab.deb \
-    "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/packages/generic/glab/${GLAB_VERSION}/glab_${GLAB_VERSION}_linux_${TARGETARCH}.deb" \
-    && dpkg -i /tmp/glab.deb && rm -f /tmp/glab.deb \
-    && glab --version
 
 # Upgrade npm and install the CLI tools from checked-in lockfiles.
-COPY containers/node/npm-bootstrap/package.json containers/node/npm-bootstrap/package-lock.json /opt/npm-bootstrap/
+COPY containers/node/npm-bootstrap/package.json containers/node/npm-bootstrap/package-lock.json containers/node/npm-bootstrap/replace-nested.sh /opt/npm-bootstrap/
 COPY containers/skuld/npm-tools/package.json containers/skuld/npm-tools/package-lock.json /opt/skuld-tools/
 RUN cd /opt/npm-bootstrap \
     && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
     && rm -rf /tmp/npm-cache /tmp/grok-install \
+    && sh /opt/npm-bootstrap/replace-nested.sh /opt/npm-bootstrap node_modules/npm/node_modules brace-expansion ip-address undici \
     && rm -rf /usr/lib/node_modules/npm \
     && ln -s /opt/npm-bootstrap/node_modules/npm /usr/lib/node_modules/npm \
     && ln -sf /usr/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
@@ -132,6 +167,7 @@ RUN cd /opt/npm-bootstrap \
     && cd /opt/skuld-tools \
     && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
     && rm -rf /tmp/npm-cache /tmp/grok-install \
+    && sh /opt/npm-bootstrap/replace-nested.sh /opt/skuld-tools node_modules/@earendil-works/pi-coding-agent/node_modules undici \
     && ln -sf /opt/skuld-tools/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -sf /opt/skuld-tools/node_modules/.bin/codex /usr/local/bin/codex \
     && ln -sf /opt/skuld-tools/node_modules/.bin/opencode /usr/local/bin/opencode \
@@ -175,7 +211,8 @@ RUN --network=none --mount=type=bind,from=project,source=/dist,target=/tmp/dist 
     uv pip install --python /opt/venv/bin/python --no-deps --no-cache --offline /tmp/dist/*.whl
 
 # Fail the image build if an advertised CLI is missing or cannot execute.
-RUN claude --version && codex --version && opencode --version && grok --version && pi --version && muse --version
+RUN claude --version && codex --version && opencode --version && grok --version && pi --version && muse --version \
+    && bwrap --version
 
 # Switch to non-root user
 USER skuld

@@ -15,8 +15,8 @@ from uuid import UUID, uuid4
 import pytest
 import yaml
 
-import volundr.adapters.outbound.docker_container as dc
 from niuu.ports.session_proxy import SessionProxyTarget
+from volundr.adapters.outbound import docker_container as dc
 from volundr.adapters.outbound.docker_container import (
     MANAGED_BY,
     DockerContainerPodManager,
@@ -1078,7 +1078,6 @@ class TestHelpers:
         assert captured["base_url"] == "unix:///tmp/docker.sock"
 
     def test_terminate_unknown_pid_is_noop(self, manager: DockerContainerPodManager) -> None:
-        import asyncio
 
         asyncio.run(manager._terminate_process(424242))
 

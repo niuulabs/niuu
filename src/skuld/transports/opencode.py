@@ -12,7 +12,6 @@ for turn completion.
 import asyncio
 import json
 import logging
-import os
 from contextlib import suppress
 
 import httpx
@@ -28,6 +27,7 @@ from niuu.adapters.cli.runtime import (
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.transports.codex import _map_codex_tool
+from skuld.transports.session_env import session_process_env
 
 logger = logging.getLogger("skuld.transport")
 
@@ -125,7 +125,7 @@ class OpenCodeHttpTransport(CLITransport):
             "127.0.0.1",
         ]
 
-        env = dict(os.environ)
+        env = session_process_env()
         if self._skip_permissions:
             env["OPENCODE_AUTO_APPROVE"] = "1"
 

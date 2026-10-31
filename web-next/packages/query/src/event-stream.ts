@@ -19,6 +19,11 @@ export interface EventStreamOptions {
   onEvent?: (frame: { event?: string; data: string }) => void;
   /** Called when a connection attempt fails. The stream will auto-retry. */
   onError?: (err: unknown) => void;
+  /**
+   * Called each time the server accepts a connection, including every reconnect.
+   * Consumers that need gap-free state re-read what they may have missed here.
+   */
+  onOpen?: () => void;
   /** Max retry delay (ms) for exponential backoff. Defaults to 30_000. */
   maxRetryMs?: number;
 }
@@ -28,7 +33,7 @@ export interface EventStreamHandle {
 }
 
 export function openEventStream(url: string, options: EventStreamOptions): EventStreamHandle {
-  const { onMessage, onEvent, onError, maxRetryMs = 30_000 } = options;
+  const { onMessage, onEvent, onError, onOpen, maxRetryMs = 30_000 } = options;
   let closed = false;
   let controller: AbortController | null = null;
   let retryMs = 1_000;
@@ -37,7 +42,7 @@ export function openEventStream(url: string, options: EventStreamOptions): Event
     while (!closed) {
       controller = new AbortController();
       try {
-        await pump(url, onMessage, onEvent, controller.signal);
+        await pump(url, onMessage, onEvent, onOpen, controller.signal);
         // Clean end: server closed the stream. Retry from the base backoff.
         retryMs = 1_000;
       } catch (err) {
@@ -64,6 +69,7 @@ async function pump(
   url: string,
   onMessage: (raw: string) => void,
   onEvent: ((frame: { event?: string; data: string }) => void) | undefined,
+  onOpen: (() => void) | undefined,
   signal: AbortSignal,
 ): Promise<void> {
   const headers = getAuthHeaders({ Accept: 'text/event-stream' });
@@ -72,6 +78,7 @@ async function pump(
   if (!res.ok || !res.body) {
     throw new Error(`SSE connect failed: ${res.status} ${res.statusText}`);
   }
+  onOpen?.();
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();

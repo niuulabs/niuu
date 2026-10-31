@@ -125,11 +125,17 @@ export function useStartEnrollment() {
       slug,
       credentialName,
       oauthApp,
+      connectionId,
     }: {
       slug: string;
       credentialName: string;
       oauthApp?: string;
-    }) => service.startEnrollment(slug, credentialName, oauthApp),
+      /** The existing connection a reconnect refreshes in place. */
+      connectionId?: string;
+    }) =>
+      connectionId
+        ? service.startEnrollment(slug, credentialName, oauthApp, connectionId)
+        : service.startEnrollment(slug, credentialName, oauthApp),
     onSuccess: (enrollment) => client.setQueryData(setupKeys.enrollment(enrollment.id), enrollment),
   });
 }

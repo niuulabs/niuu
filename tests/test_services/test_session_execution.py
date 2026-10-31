@@ -193,8 +193,10 @@ async def test_catalog_default_does_not_retrofit_active_legacy_allocation():
     await start_without_polling(service, session)
     selected = resolver.resolve_execution.call_args.args[0]
     assert "execution_profile" not in selected.workload_config
-    assert "_compute_execution" not in (await repository.get(session.id)).workload_config
-    catalog.get_default.assert_not_called()
+    stored = (await repository.get(session.id)).workload_config
+    assert "_compute_execution" not in stored
+    # The default spec may still be read for its Forge MCP grants, never its execution.
+    assert "execution_profile" not in stored
 
 
 @pytest.mark.parametrize("stop_result", [False, RuntimeError("archive failed")])

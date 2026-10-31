@@ -125,6 +125,49 @@ def list_projects(ctx: typer.Context):
     output(ctx.obj.request("GET", "/projects"))
 
 
+@projects.command("create")
+def create_project(
+    ctx: typer.Context,
+    name: str,
+    brief: str = typer.Option("", help="Project brief injected into every project launch."),
+    description: str = "",
+    project_id: UUID | None = typer.Option(None, "--id", help="Save one to retry safely."),
+):
+    """Create a project from a name. A repository can be attached later with `update`."""
+    data: dict = {"name": name, "brief": brief, "description": description}
+    if project_id:
+        data["id"] = str(project_id)
+    output(ctx.obj.request("POST", "/projects", data))
+
+
+@projects.command("update")
+def update_project(
+    ctx: typer.Context,
+    project_id: UUID,
+    revision: int = typer.Option(..., help="The project's current revision."),
+    name: str | None = None,
+    description: str | None = None,
+    brief: str | None = None,
+    repo_url: str | None = typer.Option(None, help="Attach or replace; '' detaches."),
+    checkout: str | None = typer.Option(None, help="Absolute Git checkout on this host."),
+    status: str | None = typer.Option(None, help="active or archived"),
+):
+    """Rename, edit the brief, archive/restore, or attach/detach the optional repository."""
+    changes = {
+        key: value
+        for key, value in {
+            "name": name,
+            "description": description,
+            "brief": brief,
+            "repo_url": repo_url,
+            "workspace_path": checkout,
+            "status": status,
+        }.items()
+        if value is not None
+    }
+    output(ctx.obj.request("PATCH", f"/projects/{project_id}", {**changes, "revision": revision}))
+
+
 @projects.command("register")
 def register(ctx: typer.Context, body: str):
     """Register a meta-repository using its stable project ID and host-local checkout."""
@@ -174,14 +217,59 @@ def export(ctx: typer.Context, project_id: UUID, after: int = 0, limit: int = 10
 
 @sessions.command("list")
 def list_sessions(
-    ctx: typer.Context, project: UUID | None = None, role: str | None = None, archived: bool = False
+    ctx: typer.Context,
+    project: UUID | None = None,
+    role: str | None = None,
+    parent: UUID | None = typer.Option(None, help="Only workers of this session."),
+    archived: bool = False,
 ):
     params = {"include_archived": str(archived).lower()}
     if project:
         params["project_id"] = str(project)
     if role:
         params["role"] = role
+    if parent:
+        params["parent_session_id"] = str(parent)
     output(ctx.obj.request("GET", "/sessions", params=params))
+
+
+@sessions.command("attach")
+def attach(
+    ctx: typer.Context,
+    session_id: UUID,
+    project: UUID | None = typer.Option(None, help="Project to join or move to."),
+    role: str | None = typer.Option(None, help="coordinator, worker, or another role."),
+    parent: str | None = typer.Option(
+        None, help="Coordinator as INSTANCE:SESSION_ID, or 'none' to clear it."
+    ),
+    detach: bool = typer.Option(False, help="Remove the session from its project."),
+):
+    """Attach an existing session to a project, set its role or coordinator, or detach it.
+
+    With only --parent, the session joins that coordinator's project.
+    """
+    if detach and (project or role or parent):
+        raise typer.BadParameter("--detach cannot be combined with other membership options")
+    if not detach and not (project or role or parent):
+        raise typer.BadParameter("Name a --project, --role or --parent, or pass --detach")
+    current = ctx.obj.request("GET", f"/sessions/{session_id}/project")
+    data: dict = {"expected_revision": current.get("revision", 0)}
+    existing = current.get("coordination") or {}
+    target = None if detach else project or existing.get("project_id")
+    if not detach and target is None and parent in (None, "none"):
+        raise typer.BadParameter("This session has no project; name --project or --parent")
+    data["project_id"] = str(target) if target else None
+    if role:
+        data["role"] = role
+    if parent:
+        if parent == "none":
+            data["parent"] = None
+        else:
+            instance, _, parent_id = parent.partition(":")
+            if not instance or not parent_id:
+                raise typer.BadParameter("Use --parent INSTANCE:SESSION_ID")
+            data["parent"] = {"instance_id": instance, "session_id": str(UUID(parent_id))}
+    output(ctx.obj.request("PUT", f"/sessions/{session_id}/project", data))
 
 
 @sessions.command("create")

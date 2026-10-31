@@ -54,10 +54,7 @@ from ting.ports.workflow_execution import (
 logger = logging.getLogger(__name__)
 
 
-class ExpansionValidator[
-    ExecutionT: WorkflowExecution,
-    ProposalT: WorkflowChildProposal,
-](Protocol):
+class ExpansionValidator[ExecutionT: WorkflowExecution, ProposalT: WorkflowChildProposal](Protocol):
     def __call__(
         self,
         execution: ExecutionT,
@@ -68,11 +65,12 @@ class ExpansionValidator[
     ) -> tuple[ProposalT, ...]: ...
 
 
+# No trailing comma: CodeQL's Python extractor cannot parse one in a type-parameter list.
 class ChildFactory[
     ExecutionT: WorkflowExecution,
     ProposalT: WorkflowChildProposal,
-    ChildT: WorkflowChildExecution,
-](Protocol):
+    ChildT: WorkflowChildExecution
+](Protocol):  # fmt: skip
     def __call__(
         self,
         execution: ExecutionT,
@@ -91,11 +89,12 @@ class ChildRetryReset[ChildT: WorkflowChildExecution](Protocol):
     def __call__(self, child: ChildT) -> ChildT: ...
 
 
+# No trailing comma: CodeQL's Python extractor cannot parse one in a type-parameter list.
 class WorkflowExecutionLifecycle[
     ExecutionT: WorkflowExecution,
     ProposalT: WorkflowChildProposal,
-    ChildT: WorkflowChildExecution,
-]:
+    ChildT: WorkflowChildExecution
+]:  # fmt: skip
     """Reserve validated child DAGs without knowing their domain contract."""
 
     def __init__(
@@ -191,11 +190,12 @@ def default_child_retry_reset[ChildT: WorkflowChildExecution](child: ChildT) -> 
     return child
 
 
+# No trailing comma: CodeQL's Python extractor cannot parse one in a type-parameter list.
 class WorkflowExecutionService[
     ExecutionT: WorkflowExecution,
     ProposalT: WorkflowChildProposal,
-    ChildT: WorkflowChildExecution,
-]:
+    ChildT: WorkflowChildExecution
+]:  # fmt: skip
     """Progress the ledger through a child-task gateway without embedding
     judgment about what a child produces or how its result is verified."""
 

@@ -22,6 +22,7 @@ from niuu.ports.cli import CLITransport
 from niuu.utils import import_class
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.events import RavnEvent
+from ravn.domain.harness_telemetry import HarnessStepTelemetryRecord
 from ravn.domain.models import (
     Episode,
     Message,
@@ -32,7 +33,9 @@ from ravn.domain.models import (
     ToolResult,
     TurnResult,
 )
+from ravn.domain.notification_channel import current_notification_channel
 from ravn.domain.permission_mode import PermissionMode, parse_permission_mode
+from ravn.harness_telemetry import emit_harness_step
 from ravn.ports.channel import ChannelPort
 from ravn.ports.checkpoint import CheckpointPort
 from ravn.ports.executor import ExecutionAgentPort, ExecutorPort
@@ -41,6 +44,20 @@ from ravn.tool_observability import tool_argument_attributes
 logger = logging.getLogger(__name__)
 
 _RAVN_TOOLS_MCP_ALLOW_RULE = "mcp__ravn-tools__*"
+# Runtime bootstrap the ravn-tools process needs and Codex does not pass to MCP
+# servers on its own. Without the exchange URL, a builder's mimir_write to the
+# shared Mímir failed with "no exchange_url is set", and the publisher reported
+# the capability blocked.
+_RAVN_TOOLS_BOOTSTRAP_ENV = (
+    "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE",
+    "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL",
+)
+# The platform bearer, when the runtime supplies one by env (an OpenShell flock
+# persona exports the token its sandbox mediates). Passed through by name, never
+# by value: a value would land in the Codex command line, and off-cluster this
+# is a PAT. Without it the server's platform tools fell back to the projected
+# token file, which an OpenShell sandbox does not have.
+_RAVN_TOOLS_SECRET_ENV = ("RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN",)
 
 
 @dataclass(frozen=True)
@@ -64,6 +81,46 @@ def _supports_read_only_mcp_boundary(cls: type[CLITransport]) -> bool:
         return False
     parameters = inspect.signature(cls).parameters
     return {"read_only_mcp_only", "allowed_mcp_tools"}.issubset(parameters)
+
+
+def _model_gateway_transport_kwargs(
+    cls: type[CLITransport],
+    *,
+    url: str,
+    token: str,
+    persona: str,
+    model: str,
+) -> dict[str, str]:
+    """Return the kwargs that point *cls* at the session's model gateway, or raise.
+
+    A persona bound to the gateway has no other route to its model: without the
+    gateway its CLI would call the vendor's own API with a model that vendor
+    does not serve.
+    """
+    subject = (
+        f"Persona {persona!r} (model {model!r}) must reach its model through the model gateway"
+    )
+    if not url.strip():
+        raise ValueError(
+            f"{subject}, but this runtime has no gateway URL (SKULD__MODEL_GATEWAY__URL, "
+            "read as runtime_executor.model_gateway_url). A Docker-mode session receives "
+            "it, with SKULD__MODEL_GATEWAY__TOKEN, from the Model server integration; a "
+            "runtime that does not receive it cannot run this persona, so give the "
+            "persona a cloud model there."
+        )
+    if not token.strip():
+        raise ValueError(
+            f"{subject} at {url.strip()!r}, but the gateway token is blank; the CLI "
+            "would present no credential, or the host's own login, to the gateway. "
+            "Set SKULD__MODEL_GATEWAY__TOKEN (runtime_executor.model_gateway_token)."
+        )
+    if not {"model_gateway_url", "model_gateway_token"}.issubset(inspect.signature(cls).parameters):
+        raise ValueError(
+            f"{subject}, but CLI transport {cls.__module__}.{cls.__name__} cannot be "
+            "routed through one; select a transport that accepts model_gateway_url "
+            "and model_gateway_token"
+        )
+    return {"model_gateway_url": url.strip(), "model_gateway_token": token}
 
 
 def _sum_model_usage(raw: dict | None) -> TokenUsage:
@@ -97,6 +154,43 @@ def _sum_model_usage(raw: dict | None) -> TokenUsage:
         cache_write_tokens=cache_write_tokens,
         thinking_tokens=thinking_tokens,
     )
+
+
+def _interval_union_duration(
+    intervals: list[tuple[float, float]], *, start: float, end: float
+) -> float:
+    """Return the covered duration of intervals constrained to a turn."""
+    bounded = sorted(
+        (max(start, interval_start), min(end, interval_end))
+        for interval_start, interval_end in intervals
+        if interval_end > start and interval_start < end
+    )
+    if not bounded:
+        return 0.0
+
+    total = 0.0
+    current_start, current_end = bounded[0]
+    for interval_start, interval_end in bounded[1:]:
+        if interval_start <= current_end:
+            current_end = max(current_end, interval_end)
+            continue
+        total += current_end - current_start
+        current_start, current_end = interval_start, interval_end
+    return total + current_end - current_start
+
+
+def _llm_error_category(exc: BaseException) -> str:
+    """Classify a terminal provider exception without exporting its content."""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, asyncio.CancelledError):
+            return "aborted"
+        if isinstance(current, TimeoutError) or "timeout" in type(current).__name__.lower():
+            return "timeout"
+        current = current.__cause__ or current.__context__
+    return "provider_error"
 
 
 def _is_ting_workflow_tool(tool_name: str) -> bool:
@@ -201,8 +295,16 @@ class CliTransportAgent(ExecutionAgentPort):
         self._interrupt_reason: InterruptReason | None = None
         self._current_tool_names: dict[str, str] = {}
         self._tool_started_at: dict[str, float] = {}
+        self._tool_intervals: list[tuple[float, float]] = []
         self._turn_tool_calls: list[ToolCall] = []
         self._turn_tool_results: list[ToolResult] = []
+        self._turn_tool_wall_time_ms = 0.0
+        self._turn_ttft_ms: float | None = None
+        self._turn_started_at: float | None = None
+        self._turn_finished_at: float | None = None
+        self._turn_duration_ms: float | None = None
+        self._turn_context_message_count = 0
+        self._turn_result_payload: dict[str, Any] = {}
 
     @property
     def session(self) -> Session:
@@ -300,7 +402,20 @@ class CliTransportAgent(ExecutionAgentPort):
             )
             try:
                 result = await self._run_turn_observed(user_input)
-            except Exception:
+            except asyncio.CancelledError as exc:
+                self._emit_cli_terminal_harness_step(stop_reason="aborted", error=exc)
+                telemetry.count(
+                    "ravn.agent.llm.calls",
+                    attributes={**metric_attributes, "error.type": "aborted"},
+                )
+                telemetry.duration(
+                    "gen_ai.client.operation.duration",
+                    monotonic() - started,
+                    attributes={**metric_attributes, "error.type": "aborted"},
+                )
+                raise
+            except Exception as exc:
+                self._emit_cli_terminal_harness_step(stop_reason="provider_error", error=exc)
                 telemetry.count(
                     "ravn.agent.llm.calls",
                     attributes={**metric_attributes, "error.type": "exception"},
@@ -361,6 +476,7 @@ class CliTransportAgent(ExecutionAgentPort):
                 attributes=metric_attributes,
                 description="Duration of a generative AI CLI transport operation.",
             )
+            self._emit_cli_harness_step(result)
             for token_type, value in (
                 ("input", result.usage.input_tokens),
                 ("output", result.usage.output_tokens),
@@ -377,21 +493,32 @@ class CliTransportAgent(ExecutionAgentPort):
     async def _run_turn_observed(self, user_input: str) -> TurnResult:
         """Execute one CLI turn inside the caller-owned telemetry span."""
 
+        self._reset_turn_telemetry()
         await self._ensure_transport()
         assert self._transport is not None
         assert self._turn_runner is not None
 
         correlation_id = str(self._session.id)
-        self._current_tool_names.clear()
-        self._tool_started_at.clear()
-        self._turn_tool_calls = []
-        self._turn_tool_results = []
         self._session.add_message(Message(role="user", content=user_input))
+        self._turn_context_message_count = len(self._session.messages)
 
         prompt = self._build_prompt(user_input)
-        response_text = await self._turn_runner.run_prompt(prompt, request_id=correlation_id)
+        self._turn_started_at = monotonic()
+        try:
+            response_text = await self._turn_runner.run_prompt(prompt, request_id=correlation_id)
+        finally:
+            result_payload = self._transport.last_result
+            if isinstance(result_payload, dict):
+                observed_usage = self._turn_result_payload.get("modelUsage")
+                if isinstance(observed_usage, dict) and not isinstance(
+                    result_payload.get("modelUsage"), dict
+                ):
+                    result_payload = {**result_payload, "modelUsage": observed_usage}
+                self._turn_result_payload = result_payload
+            self._turn_finished_at = monotonic()
+            self._turn_duration_ms = (self._turn_finished_at - self._turn_started_at) * 1_000
 
-        result_payload = self._transport.last_result or {}
+        result_payload = self._turn_result_payload
         self._raise_if_transport_failed(result_payload)
 
         usage = _sum_model_usage(result_payload)
@@ -423,6 +550,140 @@ class CliTransportAgent(ExecutionAgentPort):
                 tool_results=tool_results,
             ),
         )
+
+    def _emit_cli_harness_step(self, result: TurnResult) -> None:
+        """Emit the same content-safe schema used by the native harness."""
+        payload = self._turn_result_payload
+        raw_stop_reason = payload.get("stop_reason") or payload.get("subtype")
+        stop_reason = str(raw_stop_reason) if raw_stop_reason else None
+        usage_available = isinstance(payload.get("modelUsage"), dict)
+        unavailable = {
+            "provider_call.id": "cli_transport_does_not_expose_provider_request_id",
+            "context.section_estimates": "cli_transport_does_not_expose_prompt_sections",
+            "compaction.applied": "cli_transport_does_not_expose_compaction",
+            "compaction.passes": "cli_transport_does_not_expose_compaction",
+            "compaction.messages_removed": "cli_transport_does_not_expose_compaction",
+        }
+        if self._turn_ttft_ms is None:
+            unavailable["timing.ttft_ms"] = "no_streamed_text_token"
+        if self._turn_duration_ms is None:
+            unavailable["timing.provider_duration_ms"] = "cli_transport_turn_duration_not_observed"
+        if not usage_available:
+            unavailable["usage"] = "cli_transport_did_not_report_model_usage"
+        if stop_reason is None:
+            unavailable["stop_reason"] = "cli_transport_did_not_report_stop_reason"
+        record = HarnessStepTelemetryRecord(
+            step_id=f"{self._session.id}:{self._session.turn_count}:0",
+            session_id=str(self._session.id),
+            task_id=self._task_id,
+            turn=self._session.turn_count,
+            attempt=0,
+            phase="model_turn",
+            harness_type="cli-backed",
+            model=self._model,
+            provider=self._transport_binding.cls.__name__,
+            provider_call_id=None,
+            context_section_estimates=None,
+            context_message_count=self._turn_context_message_count,
+            context_tool_schema_count=len(self._tools),
+            compaction_applied=None,
+            compaction_passes=None,
+            compaction_messages_removed=None,
+            provider_duration_ms=self._provider_duration_ms(),
+            ttft_ms=self._turn_ttft_ms,
+            tool_wall_time_ms=self._turn_tool_wall_time_ms,
+            tool_call_count=len(result.tool_calls),
+            usage=result.usage if usage_available else None,
+            stop_reason=stop_reason,
+            llm_error_category=None,
+            retry_index=0,
+            recovery_state="none",
+            unavailable=unavailable,
+        )
+        emit_harness_step(record)
+
+    def _emit_cli_terminal_harness_step(self, *, stop_reason: str, error: BaseException) -> None:
+        """Emit a content-safe record before a failed CLI turn propagates."""
+        unavailable = {
+            "provider_call.id": "cli_transport_does_not_expose_provider_request_id",
+            "context.section_estimates": "cli_transport_does_not_expose_prompt_sections",
+            "compaction.applied": "cli_transport_does_not_expose_compaction",
+            "compaction.passes": "cli_transport_does_not_expose_compaction",
+            "compaction.messages_removed": "cli_transport_does_not_expose_compaction",
+            "timing.tool_wall_time_ms": "provider_call_terminated_before_tool_completion",
+        }
+        if self._turn_ttft_ms is None:
+            unavailable["timing.ttft_ms"] = "provider_call_terminated_before_text"
+        if self._turn_tool_results:
+            unavailable.pop("timing.tool_wall_time_ms")
+        if not isinstance(self._turn_result_payload.get("modelUsage"), dict):
+            unavailable["usage"] = "provider_call_did_not_complete"
+        if self._turn_duration_ms is None:
+            unavailable["timing.provider_duration_ms"] = "cli_transport_turn_duration_not_observed"
+        record = HarnessStepTelemetryRecord(
+            step_id=f"{self._session.id}:{self._session.turn_count}:0",
+            session_id=str(self._session.id),
+            task_id=self._task_id,
+            turn=self._session.turn_count,
+            attempt=0,
+            phase="model_turn",
+            harness_type="cli-backed",
+            model=self._model,
+            provider=self._transport_binding.cls.__name__,
+            provider_call_id=None,
+            context_section_estimates=None,
+            context_message_count=self._turn_context_message_count,
+            context_tool_schema_count=len(self._tools),
+            compaction_applied=None,
+            compaction_passes=None,
+            compaction_messages_removed=None,
+            provider_duration_ms=self._provider_duration_ms(),
+            ttft_ms=self._turn_ttft_ms,
+            tool_wall_time_ms=(self._turn_tool_wall_time_ms if self._turn_tool_results else None),
+            tool_call_count=len(self._turn_tool_calls),
+            usage=(
+                _sum_model_usage(self._turn_result_payload)
+                if isinstance(self._turn_result_payload.get("modelUsage"), dict)
+                else None
+            ),
+            stop_reason=stop_reason,
+            llm_error_category=_llm_error_category(error),
+            retry_index=0,
+            recovery_state=stop_reason,
+            unavailable=unavailable,
+        )
+        emit_harness_step(record)
+
+    def _provider_duration_ms(self) -> float | None:
+        """Return CLI provider time after subtracting the union of tool intervals."""
+        if self._turn_started_at is None or self._turn_finished_at is None:
+            return None
+
+        intervals = [*self._tool_intervals]
+        intervals.extend(
+            (started_at, self._turn_finished_at) for started_at in self._tool_started_at.values()
+        )
+        tool_duration = _interval_union_duration(
+            intervals,
+            start=self._turn_started_at,
+            end=self._turn_finished_at,
+        )
+        return max(0.0, (self._turn_finished_at - self._turn_started_at - tool_duration) * 1_000)
+
+    def _reset_turn_telemetry(self) -> None:
+        """Clear telemetry that is scoped to one external runtime turn."""
+        self._current_tool_names.clear()
+        self._tool_started_at.clear()
+        self._tool_intervals = []
+        self._turn_tool_calls = []
+        self._turn_tool_results = []
+        self._turn_tool_wall_time_ms = 0.0
+        self._turn_ttft_ms = None
+        self._turn_started_at = None
+        self._turn_finished_at = None
+        self._turn_duration_ms = None
+        self._turn_context_message_count = 0
+        self._turn_result_payload = {}
 
     async def _ensure_transport(self) -> None:
         if self._transport is not None:
@@ -487,6 +748,9 @@ class CliTransportAgent(ExecutionAgentPort):
             raise RuntimeError(str(message))
 
     async def _handle_transport_event(self, data: dict) -> None:
+        if isinstance(data.get("modelUsage"), dict):
+            self._turn_result_payload = data
+
         correlation_id = str(self._session.id)
         event_type = str(data.get("type", ""))
 
@@ -527,6 +791,7 @@ class CliTransportAgent(ExecutionAgentPort):
 
         text = delta.get("text")
         if isinstance(text, str) and text:
+            self._record_first_output()
             await self._channel.emit(
                 RavnEvent.thought(
                     source=self._source_id,
@@ -557,6 +822,7 @@ class CliTransportAgent(ExecutionAgentPort):
 
         content = message.get("content", data.get("content", ""))
         if isinstance(content, str) and content:
+            self._record_first_output()
             await self._channel.emit(
                 RavnEvent.thought(
                     source=self._source_id,
@@ -646,6 +912,7 @@ class CliTransportAgent(ExecutionAgentPort):
         if block_type == "text":
             text = block.get("text")
             if isinstance(text, str) and text:
+                self._record_first_output()
                 await self._channel.emit(
                     RavnEvent.thought(
                         source=self._source_id,
@@ -693,6 +960,11 @@ class CliTransportAgent(ExecutionAgentPort):
             )
         )
 
+    def _record_first_output(self) -> None:
+        if self._turn_ttft_ms is not None or self._turn_started_at is None:
+            return
+        self._turn_ttft_ms = (monotonic() - self._turn_started_at) * 1_000
+
     def _record_tool_metric(self, tool_use_id: str, tool_name: str, *, is_error: bool) -> None:
         telemetry = get_observability()
         metric_name = self._metric_tool_name(tool_name)
@@ -714,9 +986,13 @@ class CliTransportAgent(ExecutionAgentPort):
         telemetry.count("ravn.agent.tool.calls", attributes=attributes)
         started = self._tool_started_at.pop(tool_use_id, None)
         if started is not None:
+            completed = monotonic()
+            duration = completed - started
+            self._tool_intervals.append((started, completed))
+            self._turn_tool_wall_time_ms += duration * 1_000
             telemetry.duration(
                 "ravn.agent.tool.duration",
-                monotonic() - started,
+                duration,
                 attributes=attributes,
                 description="Duration of a resident tool execution.",
             )
@@ -737,9 +1013,17 @@ class CliTransportExecutor(ExecutorPort):
         transport_adapter: str = "skuld.transports.subprocess.SubprocessTransport",
         transport_kwargs: dict[str, Any] | None = None,
         ravn_tool_mcp_timeout_seconds: float = 3600.0,
+        model_gateway: bool = False,
+        model_gateway_url: str = "",
+        model_gateway_token: str = "",
     ) -> None:
         self._transport_adapter = transport_adapter
         self._transport_kwargs = dict(transport_kwargs or {})
+        # Set per persona by the workflow that bound it; the URL and token are
+        # the session's gateway and are used only when this persona asks.
+        self._model_gateway = model_gateway
+        self._model_gateway_url = model_gateway_url
+        self._model_gateway_token = model_gateway_token
         self._ravn_tool_mcp_timeout_seconds = max(
             1.0,
             float(ravn_tool_mcp_timeout_seconds),
@@ -778,8 +1062,19 @@ class CliTransportExecutor(ExecutorPort):
                 conversation_id=str(session.id),
                 task_id=task_id,
                 trace_carrier=get_observability().inject(),
+                notification_channel=current_notification_channel.get() or "",
             )
         transport_kwargs.update(self._transport_kwargs)
+        if self._model_gateway:
+            transport_kwargs.update(
+                _model_gateway_transport_kwargs(
+                    self._binding.cls,
+                    url=self._model_gateway_url,
+                    token=self._model_gateway_token,
+                    persona=str(kwargs.get("persona", "")),
+                    model=str(kwargs.get("model", "")),
+                )
+            )
         if read_only:
             # The generated server is the complete filtered ToolPort registry
             # for this persona.  Rebuild it after transport overrides so an
@@ -792,6 +1087,7 @@ class CliTransportExecutor(ExecutorPort):
                 conversation_id=str(session.id),
                 task_id=task_id,
                 trace_carrier=get_observability().inject(),
+                notification_channel=current_notification_channel.get() or "",
             )
         if read_only and _delegates_permission_config_to_cli(self._binding.cls):
             # An explicit persona boundary must win over workload-level Codex
@@ -857,6 +1153,7 @@ def _with_ravn_tool_mcp_server(
     conversation_id: str = "",
     task_id: str = "",
     trace_carrier: dict[str, str] | None = None,
+    notification_channel: str = "",
 ) -> list[dict[str, Any]]:
     if not tools or any(str(server.get("name") or "") == "ravn-tools" for server in mcp_servers):
         return mcp_servers
@@ -871,6 +1168,10 @@ def _with_ravn_tool_mcp_server(
         env["RAVN_CONFIG"] = config_path
     if pythonpath := os.environ.get("PYTHONPATH"):
         env["PYTHONPATH"] = pythonpath
+    for name in _RAVN_TOOLS_BOOTSTRAP_ENV:
+        if value := os.environ.get(name):
+            env[name] = value
+    env_vars = [name for name in _RAVN_TOOLS_SECRET_ENV if os.environ.get(name)]
 
     args = ["-m", "ravn", "tool-mcp"]
     if config_path:
@@ -886,6 +1187,9 @@ def _with_ravn_tool_mcp_server(
         args.extend(["--traceparent", traceparent])
     if tracestate := trace_carrier.get("tracestate"):
         args.extend(["--tracestate", tracestate])
+    if notification_channel:
+        # The server's notify tool names the channel this turn runs in.
+        args.extend(["--notification-channel", notification_channel])
 
     return [
         *mcp_servers,
@@ -895,6 +1199,7 @@ def _with_ravn_tool_mcp_server(
             "command": sys.executable,
             "args": args,
             "env": env,
+            **({"env_vars": env_vars} if env_vars else {}),
             # This server exposes the exact ToolPort registry supplied by the
             # persona.  Continuing without it would run a different, less
             # capable agent than the configured workflow requested.

@@ -1,9 +1,30 @@
 # Reusable: build multi-arch container images and publish manifest tags.
 #
-# Splits into two jobs:
+# Splits into three jobs:
 #   1. build   — per (container × platform), pushes <image>:<tag-prefix>-<platform>
 #   2. manifest — one job; for each container creates multi-arch manifests
-#      pointing at the per-platform tags for every entry in `manifest-tags`.
+#      pointing at the per-platform tags for every entry in `manifest-tags`
+#      (the platforms in `manifest-platforms`, by default `platforms`).
+#      Skipped when `publish-manifests` is false: dev.yaml builds in parallel
+#      with its tests and publishes the dev manifests itself once both pass.
+#   3. attest  — per container, signed GitHub build provenance for the manifest
+#      list digest the first `manifest-tags` entry resolves to (see below).
+#      Runs whenever manifests are published.
+#
+# Provenance: buildx's own in-manifest provenance stays off (`provenance:
+# false` on build-push-action); the attestation is GitHub's, made by
+# actions/attest-build-provenance and stored in GitHub's attestation API, which
+# is what the platform's `volundr_git verify_image_provenance` reads. Its
+# signing identity is this file's `attest` job: the OIDC `job_workflow_ref` of a
+# job in a reusable workflow is the reusable workflow, whichever workflow called
+# it. The platform pins that path (`git.provenance.kwargs.workflow_paths`, default
+# in `niuu.config.DEFAULT_PROVENANCE_WORKFLOW_PATHS`); renaming or moving this
+# file means changing both in the same change.
+#
+# Every caller must grant `id-token: write` and `attestations: write` (and
+# `packages: write`), even when it publishes no manifests: a caller caps a
+# reusable workflow's permissions when the workflow is loaded, not when a job
+# runs, so a call missing them fails to start.
 #
 # The tag scheme (prefix + manifest list) is deliberately caller-controlled —
 # PR/feature/dev callers all need different tagging.
@@ -28,6 +49,21 @@ on:
         description: Space-separated list of manifest tags to create from the per-platform images.
         type: string
         required: true
+      manifest-platforms:
+        description: >-
+          JSON array of the platforms each manifest lists, when it differs from
+          `platforms`: a caller that builds the platforms in separate calls
+          publishes the manifests from the last one, naming every platform.
+          Empty means `platforms`.
+        type: string
+        default: ""
+      publish-manifests:
+        description: >-
+          Create the `manifest-tags` manifests after the builds. False pushes
+          only the per-platform `<tag-prefix>-<platform>` images and leaves the
+          manifests to the caller (manifest-tags is then ignored).
+        type: boolean
+        default: true
       build-args:
         description: Newline-separated build args to pass to docker/build-push-action.
         type: string
@@ -40,6 +76,13 @@ on:
         description: Container registry.
         type: string
         default: ghcr.io
+      push:
+        description: >-
+          Push per-platform images, write the registry cache, and publish
+          manifests. False only builds the images: PRs from forks get a
+          read-only GITHUB_TOKEN and cannot write to the registry.
+        type: boolean
+        default: true
       cache-write:
         description: >-
           Export the BuildKit layer cache to <image>:buildcache-<platform>.
@@ -77,14 +120,18 @@ jobs:
         platform: ${{ fromJson(inputs.platforms) }}
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # GitHub-hosted runners are discarded after the job, so removing the
+      # builder at the end only delays the job (about 17 s per build).
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          cleanup: false
 
       - name: Log in to Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -98,11 +145,11 @@ jobs:
         run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ./containers/${{ matrix.container }}/Dockerfile
-          push: true
+          push: ${{ inputs.push }}
           tags: ${{ inputs.registry }}/${{ github.repository_owner }}/${{ matrix.container }}:${{ inputs.tag-prefix }}-${{ matrix.platform }}
           build-args: |
             ${{ inputs.build-args }}
@@ -118,9 +165,9 @@ jobs:
             ${{ inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:pr-shared-buildcache-{3}', inputs.registry, github.repository_owner, matrix.container, matrix.platform) || '' }}
             ${{ inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:{3}-buildcache-{4}', inputs.registry, github.repository_owner, matrix.container, inputs.cache-scope, matrix.platform) || '' }}
           cache-to: |
-            ${{ inputs.cache-write && format('type=registry,ref={0}/{1}/{2}:buildcache-{3},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, matrix.platform) || '' }}
-            ${{ inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:{3}-buildcache-{4},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, inputs.cache-scope, matrix.platform) || '' }}
-            ${{ inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:pr-shared-buildcache-{3},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, matrix.platform) || '' }}
+            ${{ inputs.push && inputs.cache-write && format('type=registry,ref={0}/{1}/{2}:buildcache-{3},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, matrix.platform) || '' }}
+            ${{ inputs.push && inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:{3}-buildcache-{4},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, inputs.cache-scope, matrix.platform) || '' }}
+            ${{ inputs.push && inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:pr-shared-buildcache-{3},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, matrix.platform) || '' }}
           platforms: linux/${{ matrix.platform }}
           provenance: false
 
@@ -129,12 +176,13 @@ jobs:
   manifest:
     name: "Manifests"
     needs: build
+    if: inputs.push && inputs.publish-manifests
     runs-on: ubuntu-latest
     permissions:
       packages: write
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -150,7 +198,7 @@ jobs:
           IMAGE_BASE: ${{ inputs.registry }}/${{ github.repository_owner }}
           CONTAINERS: ${{ inputs.containers }}
           TAG_PREFIX: ${{ inputs.tag-prefix }}
-          PLATFORMS: ${{ inputs.platforms }}
+          PLATFORMS: ${{ inputs.manifest-platforms != '' && inputs.manifest-platforms || inputs.platforms }}
           MANIFEST_TAGS: ${{ inputs.manifest-tags }}
         run: |
           set -euo pipefail
@@ -196,3 +244,58 @@ jobs:
               echo "::endgroup::"
             done
           done
+
+  # One job per container: the attest action takes a single subject, and
+  # push-to-registry needs the fully-qualified image name of that subject. The
+  # jobs only read a digest and sign it, so they are short and run in parallel.
+  # A failed attestation fails the run: an image the platform cannot verify is
+  # not a published image.
+  attest:
+    name: "Attest ${{ matrix.container }}"
+    needs: manifest
+    if: inputs.push && inputs.publish-manifests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        container: ${{ fromJson(inputs.containers) }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/attest-container-image
+          sparse-checkout-cone-mode: false
+
+      # Every `manifest-tags` entry points at the same manifest list, so the
+      # first one names the digest to attest.
+      - name: Pick the manifest tag
+        id: tag
+        env:
+          MANIFEST_TAGS: ${{ inputs.manifest-tags }}
+        run: |
+          set -euo pipefail
+          read -r first _ <<< "${MANIFEST_TAGS}"
+          if [ -z "${first:-}" ]; then
+            echo "::error title=attest::manifest-tags is empty but publish-manifests is true"
+            exit 1
+          fi
+          echo "value=${first}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        uses: ./.github/actions/attest-container-image
+        with:
+          registry: ${{ inputs.registry }}
+          image: ${{ github.repository_owner }}/${{ matrix.container }}
+          tag: ${{ steps.tag.outputs.value }}
+          username: ${{ github.actor }}
+          token: ${{ secrets.GITHUB_TOKEN }}

@@ -23,6 +23,7 @@ from niuu.domain.models import SecretType
 from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.models import (
+    ResidentBackend,
     ResidentEngine,
     ResidentRuntime,
     ResidentSession,
@@ -31,6 +32,7 @@ from volundr.domain.models import (
 from volundr.domain.ports import (
     ResidentChatConnection,
     ResidentSessionController,
+    unsupported_chat_command_frame,
 )
 
 _CREDENTIAL_NAME = "openclaw-gateway"
@@ -62,8 +64,8 @@ def _b64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
 
 
-def _new_machine_credential() -> dict[str, str]:
-    private_key = Ed25519PrivateKey.generate()
+def _new_machine_credential(private_key: Ed25519PrivateKey | None = None) -> dict[str, str]:
+    private_key = private_key or Ed25519PrivateKey.generate()
     public_raw = private_key.public_key().public_bytes(
         serialization.Encoding.Raw,
         serialization.PublicFormat.Raw,
@@ -303,7 +305,10 @@ def _history_messages(payload: Any) -> list[dict[str, Any]]:
     return [message for message in messages if isinstance(message, dict)]
 
 
-def _history_turns(payload: Any) -> list[dict[str, Any]]:
+def _history_turns(
+    payload: Any,
+    participant: dict[str, Any] = _PARTICIPANT,
+) -> list[dict[str, Any]]:
     turns: list[dict[str, Any]] = []
     for index, message in enumerate(_history_messages(payload)):
         if message.get("role") not in {"user", "assistant"}:
@@ -318,7 +323,7 @@ def _history_turns(payload: Any) -> list[dict[str, Any]]:
                 "role": message["role"],
                 "content": _message_text(message),
                 "created_at": created_at.isoformat(),
-                **({"participant_meta": _PARTICIPANT} if message["role"] == "assistant" else {}),
+                **({"participant_meta": participant} if message["role"] == "assistant" else {}),
             }
         )
     return turns
@@ -336,10 +341,12 @@ class OpenClawChatConnection(ResidentChatConnection):
         *,
         retry_history_timeout_seconds: float = _RETRY_HISTORY_TIMEOUT_SECONDS,
         retry_history_poll_interval_seconds: float = _RETRY_HISTORY_POLL_INTERVAL_SECONDS,
+        participant: dict[str, Any] | None = None,
     ) -> None:
         self._gateway = gateway
         self._session_key = session_key
         self._model = model
+        self._participant = participant or _PARTICIPANT
         self._initial: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._initial.put_nowait(
             {
@@ -349,7 +356,12 @@ class OpenClawChatConnection(ResidentChatConnection):
                 "set_thinking_tokens": False,
             }
         )
-        self._initial.put_nowait({"type": "conversation_history", "turns": _history_turns(history)})
+        self._initial.put_nowait(
+            {
+                "type": "conversation_history",
+                "turns": _history_turns(history, self._participant),
+            }
+        )
         self._active_runs: set[str] = set()
         self._run_text: dict[str, str] = {}
         self._history_message_count = len(_history_messages(history))
@@ -409,6 +421,10 @@ class OpenClawChatConnection(ResidentChatConnection):
                     previous = self._run_text.get(run_id, "")
                     delta = text[len(previous) :] if text.startswith(previous) else text
                     self._run_text[run_id] = text
+                    if not delta:
+                        # Deltas are cumulative snapshots: one that repeats what was
+                        # already streamed (or carries no text yet) adds nothing.
+                        continue
                     if run_id not in self._active_runs:
                         self._active_runs.add(run_id)
                         self._initial.put_nowait(
@@ -423,7 +439,7 @@ class OpenClawChatConnection(ResidentChatConnection):
                         return {
                             "type": "assistant",
                             "message": {"role": "assistant", "model": self._model, "content": []},
-                            "participant": _PARTICIPANT,
+                            "participant": self._participant,
                         }
                     return {
                         "type": "content_block_delta",
@@ -444,10 +460,20 @@ class OpenClawChatConnection(ResidentChatConnection):
                         return {
                             "type": "assistant",
                             "message": {"role": "assistant", "model": self._model, "content": []},
-                            "participant": _PARTICIPANT,
+                            "participant": self._participant,
                         }
                     self._active_runs.discard(run_id)
-                    self._run_text.pop(run_id, None)
+                    previous = self._run_text.pop(run_id, "")
+                    # The final message is the whole answer. Only text past what was
+                    # streamed is new; the rest was already sent and must not repeat.
+                    text = _message_text(payload.get("message"))
+                    tail = text[len(previous) :] if text.startswith(previous) else ""
+                    if tail:
+                        self._initial.put_nowait({"type": "result", "result": ""})
+                        return {
+                            "type": "content_block_delta",
+                            "delta": {"type": "text_delta", "text": tail},
+                        }
                     return {"type": "result", "result": ""}
                 if state in {"error", "aborted"}:
                     if state == "error" and str(payload.get("errorMessage") or "").strip() == (
@@ -466,7 +492,7 @@ class OpenClawChatConnection(ResidentChatConnection):
                         return {
                             "type": "assistant",
                             "message": {"role": "assistant", "model": self._model, "content": []},
-                            "participant": _PARTICIPANT,
+                            "participant": self._participant,
                         }
                     self._active_runs.discard(run_id)
                     self._run_text.pop(run_id, None)
@@ -481,7 +507,9 @@ class OpenClawChatConnection(ResidentChatConnection):
             await self._gateway.request("chat.abort", {"sessionKey": self._session_key})
             return
         if frame_type != "user":
-            raise OpenClawGatewayError(f"Unsupported shared chat command: {frame_type}")
+            # Answered, not raised: an optional control frame must not end the chat.
+            self._initial.put_nowait(unsupported_chat_command_frame(frame_type))
+            return
         content = frame.get("content")
         attachments: list[dict[str, str]] = []
         if isinstance(content, list):
@@ -554,11 +582,44 @@ class OpenClawResidentSessionController(ResidentSessionController):
     def engine(self) -> ResidentEngine:
         return ResidentEngine.OPENCLAW
 
+    @property
+    def runtime_backend(self) -> ResidentBackend | None:
+        return getattr(self._runtime, "backend", None)
+
+    # Engine hooks. Another engine that speaks this Gateway protocol (Ravn's OpenClaw
+    # shim) reuses the whole lifecycle and chat bridge by overriding only these.
+
+    def _proxy_target(self, runtime: ResidentRuntime) -> SessionProxyTarget | None:
+        return self._runtime.resident_proxy_target(runtime)
+
+    async def _machine_credentials(self, runtime: ResidentRuntime) -> dict[str, str]:
+        return await ensure_openclaw_machine_credential(self._credentials, runtime)
+
+    async def _remember_device_token(
+        self,
+        runtime: ResidentRuntime,
+        credentials: dict[str, str],
+    ) -> None:
+        await self._credentials.store(
+            "resident",
+            str(runtime.id),
+            _CREDENTIAL_NAME,
+            SecretType.API_KEY,
+            credentials,
+            metadata={"purpose": "openclaw-gateway-device"},
+        )
+
+    def _participant(self, runtime: ResidentRuntime) -> dict[str, Any]:
+        return _PARTICIPANT
+
+    async def _prepare_chat(self, connection: _GatewayConnection, session_key: str) -> None:
+        """Run before the chat history read; the native Gateway needs nothing."""
+
     async def _connect(self, runtime: ResidentRuntime) -> _GatewayConnection:
-        target = self._runtime.resident_proxy_target(runtime)
+        target = self._proxy_target(runtime)
         if target is None:
             raise OpenClawGatewayError("OpenClaw resident has no Gateway service route")
-        credentials = await ensure_openclaw_machine_credential(self._credentials, runtime)
+        credentials = await self._machine_credentials(runtime)
         try:
             connection, device_token = await _GatewayConnection.connect(target, credentials)
         except OpenClawGatewayError as exc:
@@ -574,14 +635,9 @@ class OpenClawResidentSessionController(ResidentSessionController):
             )
             connection, device_token = await _GatewayConnection.connect(target, credentials)
         if device_token and device_token != credentials.get("device_token"):
-            credentials = {**credentials, "device_token": device_token}
-            await self._credentials.store(
-                "resident",
-                str(runtime.id),
-                _CREDENTIAL_NAME,
-                SecretType.API_KEY,
-                credentials,
-                metadata={"purpose": "openclaw-gateway-device"},
+            await self._remember_device_token(
+                runtime,
+                {**credentials, "device_token": device_token},
             )
         return connection
 
@@ -688,6 +744,7 @@ class OpenClawResidentSessionController(ResidentSessionController):
         connection = await self._connect(runtime)
         key = _session_key(session_id)
         try:
+            await self._prepare_chat(connection, key)
             history = await connection.request("chat.history", {"sessionKey": key, "limit": 1000})
         except Exception:
             await connection.close()
@@ -699,4 +756,5 @@ class OpenClawResidentSessionController(ResidentSessionController):
             runtime.model,
             retry_history_timeout_seconds=self._retry_history_timeout_seconds,
             retry_history_poll_interval_seconds=self._retry_history_poll_interval_seconds,
+            participant=self._participant(runtime),
         )

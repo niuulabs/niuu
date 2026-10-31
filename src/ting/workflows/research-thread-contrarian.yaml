@@ -2,7 +2,7 @@ schema_version: 2
 id: 5777251e-7ff1-47f7-b182-d040ed9a7a2f
 name: Research Thread — Contrarian
 description: Run the contrarian explorer over the framed research question and produce a structured finding for the parent research campaign.
-version: 1.0.0
+version: 1.0.2
 persona_dependencies:
   research-explorer-contrarian:
     id: research-explorer-contrarian
@@ -42,7 +42,7 @@ graph:
       bindingMode: registry
       registryEntryId: mimir-yggdrasil
       url: https://mimir.yggdrasil.niuu.world/api/v1
-      authRef: integration:volundr
+      authRef: workload:mimir
       role: shared
       categories: [research, memory, sources]
       position: {x: 320, y: 480}
@@ -53,7 +53,7 @@ graph:
       joinMode: any
       stageMembers:
         - personaId: research-explorer-contrarian
-          model: gpt-5.5
+          model: gpt-5.6-terra
           budget: 18
           consumesEventTypes: [research.framed]
     - id: thread-complete

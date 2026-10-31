@@ -330,7 +330,9 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
         );
   const system = options.system ?? MOCK_SYSTEM;
   const connections: IntegrationConnection[] = [];
-  const enrollments = new Map<string, Enrollment & { polls: number }>();
+  /** `reconnects` is the existing connection a sign-in refreshes, when it names one. */
+  type EnrollmentRow = Enrollment & { polls: number; reconnects: string };
+  const enrollments = new Map<string, EnrollmentRow>();
   const enrollmentPolls = options.enrollmentPolls ?? 2;
   const stackAvailable = options.stackAvailable ?? true;
   const applyPolls = options.applyPolls ?? 2;
@@ -441,9 +443,33 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
     return connection;
   };
 
-  const publicEnrollment = (row: Enrollment & { polls: number }): Enrollment => {
-    const { polls, ...rest } = row;
+  /**
+   * A sign-in for an account that already exists refreshes that connection in
+   * place, as the backend does: same id, same credential name.
+   */
+  const signInConnection = (
+    entry: CatalogEntry,
+    credentialName: string,
+    config: Record<string, unknown>,
+    connectionId = '',
+  ): IntegrationConnection => {
+    const existing = connections.find((candidate) =>
+      connectionId
+        ? candidate.id === connectionId
+        : candidate.slug === entry.slug && candidate.credentialName === credentialName,
+    );
+    if (!existing) return addConnection(entry, credentialName, config);
+    existing.config = { ...existing.config, ...config };
+    existing.credentialStatus = 'valid';
+    existing.credentialExpiresAt = null;
+    existing.credentialErrorCode = null;
+    return existing;
+  };
+
+  const publicEnrollment = (row: EnrollmentRow): Enrollment => {
+    const { polls, reconnects, ...rest } = row;
     void polls;
+    void reconnects;
     return rest;
   };
 
@@ -538,6 +564,9 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
       await wait();
       const entry = catalog.find((candidate) => candidate.slug === input.slug);
       if (!entry) throw new Error(`Unknown integration ${input.slug}`);
+      if (input.connectionId) {
+        return signInConnection(entry, input.credentialName, input.config, input.connectionId);
+      }
       return addConnection(entry, input.credentialName, input.config);
     },
     async testIntegration(connectionId): Promise<IntegrationTestResult> {
@@ -576,10 +605,10 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
           `No OAuth application '${oauthApp || 'default'}' is registered for ${slug}`,
         );
       }
-      addConnection(entry, credentialName, config);
+      signInConnection(entry, credentialName, config);
       return { url: `https://auth.example.test/${slug}` };
     },
-    async startEnrollment(slug, credentialName, oauthApp = '') {
+    async startEnrollment(slug, credentialName, oauthApp = '', connectionId = '') {
       await wait();
       const entry = catalog.find((candidate) => candidate.slug === slug);
       if (!entry) throw new Error(`Unknown integration ${slug}`);
@@ -605,9 +634,9 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
       if (existing) return publicEnrollment(existing);
       sequence += 1;
       const isBrowser = entry.credentialEnrollment.method === 'claude_setup';
-      const row: Enrollment & { polls: number } = {
+      const row: EnrollmentRow = {
         id: `enroll-${sequence}`,
-        connectionId: `pending-${sequence}`,
+        connectionId: connectionId || `pending-${sequence}`,
         providerSlug: slug,
         credentialName,
         state: 'pending',
@@ -617,6 +646,7 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
         errorCode: '',
         inputRequired: isBrowser,
         polls: 0,
+        reconnects: connectionId,
       };
       enrollments.set(row.id, row);
       return publicEnrollment(row);
@@ -635,7 +665,7 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
         row.polls += 1;
         if (row.polls >= enrollmentPolls) {
           const entry = catalog.find((candidate) => candidate.slug === row.providerSlug)!;
-          row.connectionId = addConnection(entry, row.credentialName, {}).id;
+          row.connectionId = signInConnection(entry, row.credentialName, {}, row.reconnects).id;
           row.state = 'complete';
         }
       }
@@ -758,7 +788,7 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
       if (row.state !== 'awaiting_user') throw new Error('Login worker is not running');
       if (!code.trim()) throw new Error('Authorization code is required');
       const entry = catalog.find((candidate) => candidate.slug === row.providerSlug)!;
-      row.connectionId = addConnection(entry, row.credentialName, {}).id;
+      row.connectionId = signInConnection(entry, row.credentialName, {}, row.reconnects).id;
       row.state = 'complete';
       return publicEnrollment(row);
     },

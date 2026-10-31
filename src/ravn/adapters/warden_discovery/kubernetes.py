@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,8 +21,6 @@ from ravn.warden.models import (
 )
 
 __all__ = ["KubernetesWardenDiscoveryAdapter", "_objectify"]
-
-logger = logging.getLogger(__name__)
 
 
 class KubernetesWardenDiscoveryAdapter(KubernetesDeploymentDiscovery):

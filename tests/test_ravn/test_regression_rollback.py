@@ -107,6 +107,10 @@ async def test_regressing_tool_is_rolled_back_after_threshold(tmp_path) -> None:
     follow_up = await peer.execute_selected_capability(_signal(99), skill_name=SKILL_NAME)
     assert follow_up["decision"] != "adopted_learning_failed"
 
+    record = peer._skills.lifecycle_metadata(SKILL_NAME)  # noqa: SLF001
+    assert record["archived_reason"] == "rolled_back"
+    assert record["archived_detail"]
+
     rollbacks = await recorder.of_type("valkyrie.evolution.rolled_back")
     assert len(rollbacks) == 1
     assert rollbacks[0].payload["command_action"] == "auto_rollback_regression"

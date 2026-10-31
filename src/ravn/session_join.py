@@ -30,6 +30,7 @@ import httpx
 
 from ravn.adapters.channels.skuld_channel import AuthTokenProvider, SkuldChannel
 from ravn.domain.events import RavnEvent, RavnEventType
+from ravn.domain.exceptions import ConfigurationError
 from ravn.ports.channel import ChannelPort
 
 logger = logging.getLogger(__name__)
@@ -322,12 +323,12 @@ def _build_token_provider(settings: Any) -> AuthTokenProvider | None:
     if not platform.enabled:
         return None
 
-    if platform.pat_token:
+    if platform.access_token:
 
-        async def pat_provider() -> str:
-            return str(platform.pat_token)
+        async def access_token_provider() -> str:
+            return str(platform.access_token)
 
-        return pat_provider
+        return access_token_provider
 
     cached: dict[str, float | str] = {"token": "", "exp": 0.0}
 
@@ -358,6 +359,26 @@ def _build_token_provider(settings: Any) -> AuthTokenProvider | None:
         return token
 
     return provider
+
+
+def build_room_token_provider(settings: Any) -> AuthTokenProvider | None:
+    """Platform identity for the resident's own room connection.
+
+    A room hosted remotely (``wss://``) sits behind the platform's JWT gate,
+    so a resident configured for one with no platform identity could never
+    join it. Fail at startup instead of letting every connect attempt be
+    rejected after the process is already up. A plain in-cluster ``ws://``
+    broker needs no identity and keeps working without it.
+    """
+    broker_url = str(settings.skuld.broker_url).strip()
+    if broker_url.lower().startswith("wss://") and not settings.gateway.platform.enabled:
+        raise ConfigurationError(
+            f"skuld.broker_url {broker_url!r} is a remote wss:// room, which requires "
+            "platform identity, but gateway.platform.enabled is false. Set "
+            "gateway.platform.enabled=true (with gateway.platform.access_token or "
+            "workload identity), or point skuld.broker_url at an in-cluster ws:// broker."
+        )
+    return _build_token_provider(settings)
 
 
 def build_session_join_manager(settings: Any) -> SessionJoinManager:

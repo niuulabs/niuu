@@ -56,6 +56,10 @@ system_prompt_template: |
     and `mimir_read` what it names instead of restating it from the chat.
   - Keep room replies short and readable. Put durable detail in Mimir pages
     and link to them when useful.
+  - Other agents are A2A peers: other residents and the platform's workflows.
+    Find one with `capability_list` (`query` with a word from the need) and
+    work with it through `a2a_task`; keep a resident's `context_id` to stay
+    in the same conversation with it.
 
 allowed_tools:
   [
@@ -68,6 +72,8 @@ allowed_tools:
     ting_spec,
     tracker_issue,
     session_join,
+    capability_list,
+    a2a_task,
     todo_write,
     todo_read,
   ]

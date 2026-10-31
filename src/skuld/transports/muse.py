@@ -56,6 +56,7 @@ from skuld.transports import (
     _filter_event,
     _stop_process,
 )
+from skuld.transports.session_env import session_process_env
 
 logger = logging.getLogger("skuld.transport")
 
@@ -675,7 +676,7 @@ class MuseMSPTransport(CLITransport):
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**os.environ},  # inherits META_API_KEY / stored auth
+            env=session_process_env(),  # META_API_KEY / stored auth, no broker creds
         )
         self._process = process
         if process.stdout is None or process.stdin is None:
@@ -855,6 +856,7 @@ class MuseMSPTransport(CLITransport):
                 except Exception as exc:
                     logger.exception("Muse MSP frame handling failed: %r (%s)", exc, raw[:200])
         except asyncio.CancelledError:
+            # Cancellation stops the reader and runs host-exit cleanup in finally.
             pass
         except Exception as exc:
             logger.exception("Muse MSP reader loop error: %r", exc)

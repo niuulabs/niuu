@@ -7,7 +7,7 @@ falls back to allow-all with a default identity only when
 
 from __future__ import annotations
 
-from fastapi import HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 
 from niuu.adapters.identity_headers import parse_roles_header
 from niuu.adapters.inbound.auth_context import (
@@ -17,6 +17,9 @@ from niuu.adapters.inbound.auth_context import (
     extract_bearer_token as extract_bearer_token,
 )
 from niuu.domain.models import Principal
+
+#: Roles that may change settings shared by every org on this Ting.
+SHARED_SETTINGS_ROLES = frozenset({"admin", "ting:admin", "volundr:admin"})
 
 
 async def extract_principal(request: Request) -> Principal:
@@ -73,9 +76,24 @@ async def extract_principal(request: Request) -> Principal:
             tenant_id=settings.auth.default_tenant_id if settings else "",
             roles=["volundr:developer"],
         )
+    from identity.adapters.http_auth import presented_actor
+
     return Principal(
         user_id=user_id,
         email=request.headers.get("x-auth-email", ""),
         tenant_id=request.headers.get("x-auth-tenant", ""),
         roles=parse_roles_header(request.headers.get("x-auth-roles", "")),
+        actor=presented_actor(request),
     )
+
+
+async def require_shared_settings_admin(
+    principal: Principal = Depends(extract_principal),
+) -> Principal:
+    """Refuse a caller who may not change settings shared by every org."""
+    if SHARED_SETTINGS_ROLES.isdisjoint(role.strip() for role in principal.roles):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Changing shared Ting settings requires an admin role",
+        )
+    return principal

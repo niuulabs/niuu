@@ -22,6 +22,11 @@ def _cors_options(app) -> dict[str, object]:
 
 
 class TestCorsConfig:
+    def test_exposes_the_fleet_unavailable_header_by_default(self) -> None:
+        assert CorsConfig().expose_headers == ["X-Forge-Unavailable-Instances"]
+        assert CorsConfig(expose_headers="X-A, X-B").expose_headers == ["X-A", "X-B"]
+        assert CorsConfig(expose_headers="").expose_headers == []
+
     def test_parses_csv_and_boolean_values(self) -> None:
         cors = CorsConfig(
             allowed_origins="https://old.example.com, https://new.example.com",
@@ -113,6 +118,10 @@ class TestServiceCorsWiring:
         options = _cors_options(app)
         assert options["allow_origins"] == ["https://ui.example.com"]
         assert options["allow_credentials"] is False
+        assert options["expose_headers"] == [
+            "X-Forge-Unavailable-Instances",
+            "X-Niuu-Source-Failures",
+        ]
 
     def test_ting_uses_settings_cors(self) -> None:
         app = create_ting_app(

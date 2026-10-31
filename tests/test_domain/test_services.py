@@ -457,15 +457,13 @@ class TestSessionServiceDelete:
         assert len(pod_manager.stop_calls) == 1
         assert pod_manager.stop_calls[0].id == created.id
 
-    async def test_delete_running_succeeds_when_pod_stop_fails(
-        self, repository: Repo, failing_pod_manager: Pods
+    @pytest.mark.parametrize("status", [SessionStatus.RUNNING, SessionStatus.FAILED])
+    async def test_delete_raises_and_keeps_session_when_destroy_fails(
+        self, repository: Repo, failing_pod_manager: Pods, status: SessionStatus
     ):
-        """Deleting a running session succeeds even if pod stop fails.
-
-        This handles the case where the pod manager returns an error when
-        trying to stop pods that don't exist or have already been cleaned up.
-        """
-        service = SessionService(repository, failing_pod_manager)
+        """Compute that cannot be removed fails the delete instead of leaking."""
+        broadcaster = AsyncMock()
+        service = SessionService(repository, failing_pod_manager, broadcaster=broadcaster)
         created = await service.create_session(
             name="test",
             model="claude-3-opus",
@@ -474,62 +472,37 @@ class TestSessionServiceDelete:
                 branch="main",
             ),
         )
+        await repository.update(created.with_status(status))
+        broadcaster.reset_mock()
 
-        # Manually set to running to simulate started session
-        running = created.with_status(SessionStatus.RUNNING)
-        await repository.update(running)
+        with pytest.raises(RuntimeError, match="Pod stop failed"):
+            await service.delete_session(created.id)
 
-        # Delete should succeed even though pod_manager.stop() raises an exception
-        result = await service.delete_session(created.id)
+        assert (await repository.get(created.id)).status == status
+        assert [call.id for call in failing_pod_manager.stop_calls] == [created.id]
+        broadcaster.publish_session_deleted.assert_not_awaited()
 
-        assert result is True
+    async def test_delete_destroys_compute_instead_of_stopping_it(self, repository: Repo):
+        """A backend whose stop retains resources is asked to destroy them on delete."""
+
+        class RetainingPodManager(MockPodManager):
+            def __init__(self) -> None:
+                super().__init__()
+                self.destroy_calls: list[Session] = []
+
+            async def destroy(self, session: Session) -> bool:
+                self.destroy_calls.append(session)
+                return False
+
+        pod_manager = RetainingPodManager()
+        service = SessionService(repository, pod_manager)
+        created = await service.create_session(name="test", model="claude-3-opus")
+
+        assert await service.delete_session(created.id) is True
+
+        assert [call.id for call in pod_manager.destroy_calls] == [created.id]
+        assert pod_manager.stop_calls == []
         assert await repository.get(created.id) is None
-        assert len(failing_pod_manager.stop_calls) == 1
-
-    async def test_delete_failed_succeeds_when_infrastructure_cleanup_fails(
-        self, repository: Repo, failing_pod_manager: Pods
-    ):
-        """Deleting a failed session keeps DB cleanup resilient to K8s cleanup errors."""
-        service = SessionService(repository, failing_pod_manager)
-        created = await service.create_session(
-            name="test",
-            model="claude-3-opus",
-            source=GitSource(
-                repo="https://github.com/org/repo",
-                branch="main",
-            ),
-        )
-
-        await repository.update(created.with_status(SessionStatus.FAILED))
-
-        result = await service.delete_session(created.id)
-
-        assert result is True
-        assert await repository.get(created.id) is None
-        assert len(failing_pod_manager.stop_calls) == 1
-
-    async def test_delete_running_attempts_pod_stop_before_deletion(
-        self, repository: Repo, failing_pod_manager: Pods
-    ):
-        """Deleting a running session attempts pod stop even if it will fail."""
-        service = SessionService(repository, failing_pod_manager)
-        created = await service.create_session(
-            name="test",
-            model="claude-3-opus",
-            source=GitSource(
-                repo="https://github.com/org/repo",
-                branch="main",
-            ),
-        )
-
-        running = created.with_status(SessionStatus.RUNNING)
-        await repository.update(running)
-
-        await service.delete_session(created.id)
-
-        # Verify stop was called (even though it failed)
-        assert len(failing_pod_manager.stop_calls) == 1
-        assert failing_pod_manager.stop_calls[0].id == created.id
 
 
 class TestSessionServiceDeleteCleanup:
@@ -820,6 +793,26 @@ class TestSessionServiceStart:
         expected = SessionStatus.FAILED if launch_fails else SessionStatus.PROVISIONING
         assert stored.status == expected
         assert len(pod_manager.stop_calls) == (1 if launch_fails else 0)
+        await asyncio.gather(*service._provisioning_tasks.values())
+
+    async def test_push_devices_are_never_session_integrations(
+        self, repository, pod_manager, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        integrations = AsyncMock()
+        integrations.list_connections.return_value = [
+            SimpleNamespace(id="ai", enabled=True, slug="anthropic"),
+            SimpleNamespace(id="phone", enabled=True, slug="push-device"),
+        ]
+        service = SessionService(repository, pod_manager, integration_repo=integrations)
+        monkeypatch.setattr(service, "_poll_readiness", AsyncMock())
+        session = await service.create_session(name="no-phone", model="claude-sonnet-5")
+        await service._provision_background(
+            session, SimpleNamespace(user_id="owner"), None, None, False
+        )
+        stored = await repository.get(session.id)
+        assert stored.workload_config["integration_ids"] == ["ai"]
         await asyncio.gather(*service._provisioning_tasks.values())
 
     async def test_provisioning_timeout_reports_error_and_cleans_up(
@@ -1160,7 +1153,9 @@ class TestSessionServiceStop:
         stopped = await service.stop_session(session.id)
         assert pod_manager.stop_calls == [session]
         assert stopped.status == SessionStatus.STOPPED
-        assert stopped.error is None
+        # Stopping a failed session keeps why it failed; clearing it left a
+        # resident's unschedulable build "stopped" with nothing to read.
+        assert stopped.error == "start failed"
 
     async def test_vm_stop_leaves_storage_cleanup_to_runtime(
         self,

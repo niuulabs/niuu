@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -81,7 +81,7 @@ jobs:
             cov: "--cov=src/sleipnir"
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -89,6 +89,13 @@ jobs:
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
+
+      # Ravn runs a learned tool that declares no network reach inside its own
+      # user + network namespace, and refuses it where the host cannot create
+      # one. ubuntu-24.04 blocks unprivileged user namespaces through AppArmor;
+      # lift that so the boundary is exercised for real, not refused.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Run tests with coverage
         run: |
@@ -120,7 +127,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: always() && hashFiles('coverage.xml') != ''
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           files: coverage.xml
           flags: ${{ matrix.pkg.flag }}
@@ -141,7 +148,7 @@ jobs:
       COVERAGE_FILE: .coverage.shard-${{ matrix.shard }}
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -189,14 +196,35 @@ jobs:
           fi
           exit "$status"
 
+      # FinalizeArtifact sometimes fails with ECONNRESET. Retry once; if that
+      # fails too, the shard still reports its test result and "Python: Test
+      # Volundr" fails on the missing coverage file as an infra problem.
       - name: Upload shard coverage
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        id: upload
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: volundr-coverage-${{ matrix.shard }}
           path: .coverage.shard-${{ matrix.shard }}
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 1
+
+      - name: Wait before retrying the coverage upload
+        if: steps.upload.outcome == 'failure'
+        run: sleep 15
+
+      - name: Retry shard coverage upload
+        if: steps.upload.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: volundr-coverage-${{ matrix.shard }}
+          path: .coverage.shard-${{ matrix.shard }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 1
+          overwrite: true
 
   test-volundr:
     name: "Python: Test Volundr"
@@ -207,7 +235,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -227,11 +255,21 @@ jobs:
           extras: "--frozen --only-group dev"
 
       - name: Download shard coverage
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: volundr-coverage-*
           path: coverage-shards
           merge-multiple: true
+
+      # One file per shard (the matrix above). A missing one means its upload
+      # failed after the retry, not that its tests did.
+      - name: Require every shard's coverage file
+        run: |
+          count="$(find coverage-shards -maxdepth 1 -type f -name '.coverage.shard-*' 2>/dev/null | wc -l)"
+          if [ "$count" -ne 4 ]; then
+            echo "::error title=Coverage artifact missing::coverage artifact missing (infra), rerun (found ${count} of 4 .coverage.shard-* files)"
+            exit 1
+          fi
 
       - name: Combine coverage and enforce 85%
         run: |
@@ -241,7 +279,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: always() && hashFiles('coverage.xml') != ''
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           files: coverage.xml
           flags: backend-volundr
@@ -256,7 +294,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 

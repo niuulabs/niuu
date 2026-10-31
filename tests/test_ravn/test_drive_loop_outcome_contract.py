@@ -10,9 +10,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 from niuu.domain.outcome import OutcomeField
+from ravn.cap_telemetry import cap_hit_counts
 from ravn.domain.events import RavnEventType
 from ravn.domain.models import TokenUsage, ToolCall, ToolResult, TurnResult
-from ravn.domain.valkyrie_contracts import normalize_valkyrie_outcome
+from ravn.domain.valkyrie_contracts import (
+    RESIDENT_ESCALATION_GUIDANCE,
+    VALKYRIE_ASK_OPERATOR_REQUIRES_QUESTION,
+    VALKYRIE_ESCALATE_REQUIRES_QUESTION,
+    normalize_valkyrie_outcome,
+)
 from ravn.drive_loop import (
     _build_resident_valkyrie_schema_repair_prompt,
     _build_workflow_outcome_repair_prompt,
@@ -779,6 +785,141 @@ findings: "[{severity: high}]"
         assert validation_errors == []
 
     @pytest.mark.asyncio
+    async def test_an_escalation_without_a_question_is_repaired_with_the_remedy(self) -> None:
+        """Runa recorded 27 escalating turns that slept with an empty question and
+        reached nobody. The contract rejects that turn and the repair turn is told
+        exactly how to fix it; the decision is not converted and no question is
+        invented here."""
+        dl = _make_drive_loop()
+        produces = _valkyrie_judgment_produces()
+        produces.schema["decision"] = OutcomeField(
+            type="enum", description="decision", enum_values=["watch", "escalate"]
+        )
+        dl._persona_config = SimpleNamespace(name="k8s-valkyrie", produces=produces)
+        task = _make_agent_task(task_id="task-valkyrie-escalate")
+        unasked = _valid_valkyrie_judgment_text().replace(
+            "decision: propose_action", 'decision: escalate\nquestion: ""'
+        )
+        asked = unasked.replace('question: ""', "question: May I restart etcd member qftlj?")
+
+        _, _, errors = _resident_valkyrie_validation_result(unasked, dl._persona_config)
+        assert errors == [VALKYRIE_ESCALATE_REQUIRES_QUESTION]
+        assert "requires a non-empty 'question'" in errors[0]
+        assert "'watch' with continuation 'sleep'" in errors[0]
+
+        class RepairAgent:
+            def __init__(self) -> None:
+                self.prompts: list[str] = []
+
+            async def repair_outcome(self, prompt: str) -> TurnResult:
+                self.prompts.append(prompt)
+                return TurnResult(
+                    response=asked,
+                    tool_calls=[],
+                    tool_results=[],
+                    usage=TokenUsage(input_tokens=8, output_tokens=12),
+                )
+
+        agent = RepairAgent()
+        repair_result = await dl._maybe_repair_resident_valkyrie_outcome(
+            agent=agent, task=task, response_text=unasked
+        )
+
+        assert repair_result is not None
+        assert VALKYRIE_ESCALATE_REQUIRES_QUESTION in agent.prompts[0]
+        assert RESIDENT_ESCALATION_GUIDANCE in agent.prompts[0]
+        _, repaired, repaired_errors = _resident_valkyrie_validation_result(
+            repair_result.response, dl._persona_config
+        )
+        assert repaired_errors == []
+        assert repaired["decision"] == "escalate"
+        assert repaired["question"] == "May I restart etcd member qftlj?"
+
+    @pytest.mark.asyncio
+    async def test_ask_operator_without_a_question_is_repaired_with_the_remedy(self) -> None:
+        dl = _make_drive_loop()
+        dl._persona_config = SimpleNamespace(
+            name="k8s-valkyrie", produces=_valkyrie_judgment_produces()
+        )
+        task = _make_agent_task(task_id="task-valkyrie-ask")
+        unasked = _valid_valkyrie_judgment_text().replace(
+            "decision: propose_action",
+            "decision: propose_action\n"
+            "continuation: ask_operator\n"
+            "next_action_timing: operator_input\n"
+            "open_questions:\n  - Which scope is authorized?",
+        )
+        asked = unasked.replace(
+            "open_questions:", "question: Which scope is authorized?\nopen_questions:"
+        )
+
+        _, _, errors = _resident_valkyrie_validation_result(unasked, dl._persona_config)
+        assert errors == [VALKYRIE_ASK_OPERATOR_REQUIRES_QUESTION]
+
+        class RepairAgent:
+            def __init__(self) -> None:
+                self.prompts: list[str] = []
+
+            async def repair_outcome(self, prompt: str) -> TurnResult:
+                self.prompts.append(prompt)
+                return TurnResult(
+                    response=asked,
+                    tool_calls=[],
+                    tool_results=[],
+                    usage=TokenUsage(input_tokens=8, output_tokens=12),
+                )
+
+        agent = RepairAgent()
+        repair_result = await dl._maybe_repair_resident_valkyrie_outcome(
+            agent=agent, task=task, response_text=unasked
+        )
+
+        assert repair_result is not None
+        assert VALKYRIE_ASK_OPERATOR_REQUIRES_QUESTION in agent.prompts[0]
+        _, _, repaired_errors = _resident_valkyrie_validation_result(
+            repair_result.response, dl._persona_config
+        )
+        assert repaired_errors == []
+
+    def test_an_escalation_with_a_question_is_valid_whatever_the_continuation(self) -> None:
+        produces = _valkyrie_judgment_produces()
+        produces.schema["decision"] = OutcomeField(
+            type="enum", description="decision", enum_values=["watch", "escalate"]
+        )
+        persona = SimpleNamespace(name="k8s-valkyrie", produces=produces)
+        text = _valid_valkyrie_judgment_text().replace(
+            "decision: propose_action",
+            "decision: escalate\n"
+            "question: Is the etcd closure gate still the right thing to wait for?\n"
+            "continuation: sleep\n"
+            "next_action_timing: scheduled_time",
+        )
+
+        _, _, errors = _resident_valkyrie_validation_result(text, persona)
+
+        assert errors == []
+
+    @pytest.mark.asyncio
+    async def test_an_empty_resident_turn_is_not_repaired_into_an_outcome(self) -> None:
+        """Repairing nothing invented "No previous outcome or supporting evidence
+        was supplied", closed the case and consumed the operator's answer."""
+        dl = _make_drive_loop()
+        dl._persona_config = SimpleNamespace(
+            name="k8s-valkyrie",
+            produces=_valkyrie_judgment_produces(),
+        )
+        task = _make_agent_task(task_id="task-valkyrie-empty")
+
+        class RepairAgent:
+            async def repair_outcome(self, prompt: str) -> TurnResult:
+                raise AssertionError("an empty turn must not reach repair")
+
+        with pytest.raises(RuntimeError, match="produced no output"):
+            await dl._maybe_repair_resident_valkyrie_outcome(
+                agent=RepairAgent(), task=task, response_text="  "
+            )
+
+    @pytest.mark.asyncio
     async def test_repair_unroutable_workflow_outcome_reuses_same_agent(self) -> None:
         dl = _make_drive_loop()
         dl._persona_config = SimpleNamespace(
@@ -987,6 +1128,7 @@ findings: "[{severity: high}]"
         task.session_id = "sess-123"
         task.root_correlation_id = "root-123"
         task.workflow_parent_event_id = "code-task-123"
+        task.gate_feedback = "Rename the helper."
         response_text = """\
 ---outcome---
 verdict: needs_changes
@@ -998,6 +1140,12 @@ comments: fix the null branch
         await dl._emit_mesh_outcome_event(task, response_text, success=True)
 
         assert mesh.publish.await_count == 2
+        assert mesh.publish.await_args_list[0].args[0].payload["gate_feedback"] == (
+            "Rename the helper."
+        )
+        assert mesh.publish.await_args_list[1].args[0].payload["gate_feedback"] == (
+            "Rename the helper."
+        )
 
         canonical_event = mesh.publish.await_args_list[0].args[0]
         canonical_topic = mesh.publish.await_args_list[0].kwargs["topic"]
@@ -1337,7 +1485,7 @@ correlation_ids:
     async def test_task_lifecycle_publishes_sleipnir_started_completed_and_dropped(
         self,
     ) -> None:
-        dl = _make_drive_loop(queue_max=1)
+        dl = _make_drive_loop()
         published = []
         dl._sleipnir_publisher = SimpleNamespace(publish=AsyncMock(side_effect=published.append))
         dl._source_id = "drive_loop"
@@ -1349,7 +1497,7 @@ correlation_ids:
 
         await dl._emit_sleipnir_task_started(task)
         await dl._emit_sleipnir_task_completed(task, "success", response_text="")
-        await dl.enqueue(_make_agent_task(task_id="task-kept"))
+        await dl.enqueue(_make_agent_task(task_id="task-dropped"))
         await dl.enqueue(_make_agent_task(task_id="task-dropped"))
 
         assert [event.event_type for event in published] == [
@@ -1362,7 +1510,7 @@ correlation_ids:
         assert published[1].payload["task_id"] == "task-observed"
         assert published[1].payload["root_correlation_id"] == "root-observed"
         assert published[2].payload["task_id"] == "task-dropped"
-        assert published[2].payload["reason"] == "queue_full"
+        assert published[2].payload["reason"] == "duplicate_task"
 
     @pytest.mark.asyncio
     async def test_success_without_verdict_still_routes_pass_alias(self) -> None:
@@ -2323,9 +2471,12 @@ rationale: delivery_evidence approval was denied
         dl._skuld_channel.emit.assert_awaited_once()
         error = dl._skuld_channel.emit.await_args.args[0]
         assert error.type == RavnEventType.ERROR
-        assert error.payload["failure_kind"] == "outcome_rejected"
-        assert "verdict 'blocked'" in error.payload["message"]
-        assert "delivery_evidence approval was denied" in error.payload["message"]
+        # A declared block is reported as one, with the agent's reason; it used
+        # to read as a malformed outcome ("cannot be accepted").
+        assert error.payload["failure_kind"] == "blocked"
+        assert error.payload["message"] == (
+            "Workflow node delivery-coordinate is blocked: delivery_evidence approval was denied"
+        )
 
     @pytest.mark.asyncio
     async def test_merges_tool_metadata_into_canonical_outcome(self) -> None:
@@ -2450,13 +2601,23 @@ summary: post-mortem source captured
         assert "ignored the transport-only check" in recent_context
         assert recent_context.endswith("Human message: makes sense, ignore")
 
-        dl._settings.resident_state.directed_message_context_max_chars = 200
-        bounded_context = dl._directed_message_context(
+        long_prior = "x" * 50_000
+        whole_context = dl._directed_message_context(
             "current message",
-            {"recent_room_context": {"content": "x" * 500}},
+            {"recent_room_context": {"content": long_prior}},
         )
-        assert "prior room context truncated: 300 characters omitted" in bounded_context
-        assert bounded_context.endswith("Human message: current message")
+        assert long_prior in whole_context
+        assert "truncated" not in whole_context
+        assert whole_context.endswith("Human message: current message")
+
+        long_reply = "y" * 50_000
+        whole_reply = dl._directed_message_context(
+            "current message",
+            {"reply_context": {"content": long_reply}},
+        )
+        assert long_reply in whole_reply
+        assert "truncated" not in whole_reply
+        assert cap_hit_counts() == {}
 
     def test_record_tool_outcome_fields_merges_existing_values(self) -> None:
         dl = _make_drive_loop()
@@ -2475,6 +2636,17 @@ summary: post-mortem source captured
             "source_id": "src_1",
             "mount_name": "tmp-mimir",
         }
+
+    @pytest.mark.asyncio
+    async def test_a_message_marked_queue_first_goes_ahead_of_waiting_messages(self) -> None:
+        dl = _make_drive_loop()
+        dl.enqueue = AsyncMock()
+
+        await dl.handle_directed_message("A notice")
+        await dl.handle_directed_message("Start the workflow", {"queue_first": True})
+
+        notice, brief = [call.args[0] for call in dl.enqueue.await_args_list]
+        assert brief.priority < notice.priority
 
     @pytest.mark.asyncio
     async def test_handle_directed_message_carries_workflow_metadata(self) -> None:
@@ -2899,6 +3071,8 @@ recommendation: choose whether to optimize for latency or quality
         assert help_event.payload["context"]["root_correlation_id"] == "root-help"
         assert help_event.payload["context"]["workflow_parent_event_id"] == "parent-help"
         assert help_event.payload["context"]["workflow_node_id"] == "chair-synthesis"
+        # Not a resident case, so there is no case for a reply to resume.
+        assert "resident_case_id" not in help_event.payload["context"]
         assert help_event.payload["collaboration_routing_only"] is True
         assert alias_event.payload["event_type"] == "council.human_input.requested"
 
@@ -2908,6 +3082,86 @@ recommendation: choose whether to optimize for latency or quality
             skuld_channel.emit.await_args_list[2].args[0].payload["event_type"]
             == "council.human_input.requested"
         )
+
+    @pytest.mark.asyncio
+    async def test_a_resident_outcome_never_publishes_its_own_help_request(self) -> None:
+        """With a resident runtime its disposition alone asks the operator, after the
+        question is persisted. An outcome-path request reached the operator for a
+        question the runtime had not persisted (a spent budget), so no reply bound."""
+        dl = _make_drive_loop()
+        dl._mesh = AsyncMock()
+        dl._skuld_channel = AsyncMock()
+        dl._resident_runtime = object()
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="regin",
+            produces=SimpleNamespace(
+                event_type="valkyrie.judgment.proposed",
+                event_type_map={"help_needed": "valkyrie.help.requested"},
+            ),
+        )
+        task = _make_agent_task(task_id="task-steward")
+        task.root_correlation_id = "regin-operator-room"
+        task.resident_case_id = "resident-stewardship-20261026T002939Z"
+        response_text = """\
+---outcome---
+verdict: help_needed
+summary: which route is authorized
+question: Which deployment route is authorized?
+reason: needs_context
+---end---
+"""
+
+        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+
+        topics = [call.kwargs.get("topic") for call in dl._mesh.publish.await_args_list]
+        assert "help_needed" not in topics
+        emitted = [call.args[0].type for call in dl._skuld_channel.emit.await_args_list]
+        assert "help_needed" not in emitted
+
+    @pytest.mark.asyncio
+    async def test_a_workflow_persona_question_is_asked_beside_a_resident_runtime(
+        self,
+    ) -> None:
+        """Flock peers run a resident runtime, but it only judges resident Valkyrie
+        outcomes: a workflow persona's outcome reaches it empty and it stops. Its
+        question was dropped, so the workflow waited for an answer nobody was asked
+        for and its A2A task sat WORKING for hours."""
+        dl = _make_drive_loop()
+        dl._mesh = AsyncMock()
+        dl._skuld_channel = AsyncMock()
+        dl._resident_runtime = object()
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="specification-framer",
+            produces=SimpleNamespace(
+                event_type="spec.frame.completed",
+                event_type_map={"framed": "spec.framed", "blocked": "spec.blocked"},
+            ),
+        )
+        task = _make_agent_task(task_id="event_capability_frame_43a506ffdce4c130")
+        response_text = """\
+---outcome---
+verdict: help_needed
+summary: Framed the probe; the fleet table is missing
+question: What are the documented default fleet targets?
+reason: guessing endpoints would produce an unsafe network tool
+---end---
+"""
+
+        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+
+        help_events = [
+            call.args[0]
+            for call in dl._mesh.publish.await_args_list
+            if call.kwargs.get("topic") == "help_needed"
+        ]
+        assert len(help_events) == 1
+        assert help_events[0].payload["summary"] == (
+            "What are the documented default fleet targets?"
+        )
+        emitted = [call.args[0].type for call in dl._skuld_channel.emit.await_args_list]
+        assert "help_needed" in emitted
 
     @pytest.mark.asyncio
     async def test_help_needed_without_question_is_failed_without_help_or_alias(self) -> None:
@@ -3140,6 +3394,7 @@ class TestSteadyStateTelemetryRefresh:
         try:
             await task
         except asyncio.CancelledError:
+            # The test explicitly cancelled the heartbeat task above.
             pass
 
         assert calls, "heartbeat did not re-state registered gauges"

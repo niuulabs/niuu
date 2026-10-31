@@ -9,8 +9,10 @@ from uuid import uuid4
 
 import pytest
 
+from identity.ports import AuthorizationDeniedError
 from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
 from ting.domain.models import CampaignStageState, WorkflowCampaign, WorkflowCampaignStatus
+from ting.ports.workflow_campaign_repository import CampaignAlreadyTerminalError
 
 
 def _campaign() -> WorkflowCampaign:
@@ -101,6 +103,48 @@ async def test_lists_campaigns_and_active_owners() -> None:
 
 
 @pytest.mark.asyncio
+async def test_lists_campaign_summaries_without_the_persona_definitions() -> None:
+    campaign = _campaign()
+    pool = AsyncMock()
+    pool.fetch.return_value = [_row(campaign)]
+    repo = PostgresWorkflowCampaignRepository(pool)
+
+    found = await repo.list_campaign_summaries(owner_id="owner-1")
+
+    assert [item.id for item in found] == [campaign.id]
+    query = pool.fetch.await_args.args[0]
+    assert "SELECT *" not in query
+    for kept in ("workflow_revision", "workflow_digest", "{graph,tags}"):
+        assert kept in query
+
+
+@pytest.mark.asyncio
+async def test_lists_a_tickets_campaigns_without_loading_the_rest() -> None:
+    campaign = _campaign()
+    saga_id = uuid4()
+    pool = AsyncMock()
+    pool.fetch.return_value = [_row(campaign)]
+    repo = PostgresWorkflowCampaignRepository(pool)
+
+    found = await repo.list_ticket_campaigns(owner_id="owner-1", saga_id=saga_id, issue_id="i-1")
+
+    assert [item.id for item in found] == [campaign.id]
+    query, *params = pool.fetch.await_args.args
+    assert "metadata ? 'ticket'" in query
+    assert params == ["owner-1", str(saga_id), "i-1"]
+
+
+@pytest.mark.asyncio
+async def test_lists_every_ticket_campaign_when_not_narrowed() -> None:
+    pool = AsyncMock()
+    pool.fetch.return_value = []
+    repo = PostgresWorkflowCampaignRepository(pool)
+
+    assert await repo.list_ticket_campaigns(owner_id="owner-1") == []
+    assert pool.fetch.await_args.args[1:] == ("owner-1", None, None)
+
+
+@pytest.mark.asyncio
 async def test_gets_active_campaign_by_owner_and_session() -> None:
     campaign = _campaign()
     pool = AsyncMock()
@@ -162,3 +206,30 @@ async def test_saves_and_deletes_campaign() -> None:
     assert json.loads(save_args[8]) == campaign.workflow_snapshot
     assert json.loads(save_args[13])[0]["stage_id"] == "build"
     assert json.loads(save_args[14]) == campaign.metadata
+
+
+@pytest.mark.asyncio
+async def test_a_finished_campaign_cannot_be_reopened_by_a_stale_write() -> None:
+    """CancelTask failed a campaign; an activity event holding the older,
+    blocked copy wrote it back, and the cancelled task showed INPUT_REQUIRED."""
+    pool = AsyncMock()
+    pool.execute.return_value = "INSERT 0 0"
+    pool.fetchval.return_value = "failed"
+    repo = PostgresWorkflowCampaignRepository(pool)
+
+    with pytest.raises(CampaignAlreadyTerminalError, match="already failed"):
+        await repo.save_campaign(_campaign())
+
+    sql = pool.execute.await_args.args[0]
+    assert "workflow_campaigns.status IN ('completed', 'failed')" in sql
+
+
+@pytest.mark.asyncio
+async def test_a_refused_write_to_an_active_campaign_is_still_an_ownership_error() -> None:
+    pool = AsyncMock()
+    pool.execute.return_value = "INSERT 0 0"
+    pool.fetchval.return_value = "running"
+    repo = PostgresWorkflowCampaignRepository(pool)
+
+    with pytest.raises(AuthorizationDeniedError):
+        await repo.save_campaign(_campaign())

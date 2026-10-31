@@ -22,7 +22,7 @@ class PlatformBudgetReporter:
 
     Plain-kwargs constructible (dynamic-adapters.md) like every other
     dynamic adapter: builds its own workload-authenticated client from
-    ``base_url``/``pat_token``/``workload_token_file``/etc — the same shape
+    ``base_url``/``access_token``/``workload_token_file``/etc — the same shape
     ``gateway.platform`` already uses — rather than taking a live client
     object. ``client`` is accepted only for tests that supply a fake.
     """
@@ -32,7 +32,7 @@ class PlatformBudgetReporter:
         *,
         base_url: str,
         client: Any = None,
-        pat_token: str = "",
+        access_token: str = "",
         workload_token_file: str = "",
         workload_exchange_url: str = "",
         workload_audiences: list[str] | None = None,
@@ -46,7 +46,7 @@ class PlatformBudgetReporter:
 
             self._client = client_from_workload_identity(
                 base_url=self._base_url,
-                external_token=pat_token,
+                external_token=access_token,
                 workload_token_file=workload_token_file,
                 workload_exchange_url=workload_exchange_url,
                 workload_audiences=workload_audiences,

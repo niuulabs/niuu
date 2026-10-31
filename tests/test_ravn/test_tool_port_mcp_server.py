@@ -94,7 +94,7 @@ async def test_tool_port_mcp_server_emits_tool_metrics_and_propagates_trace(
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-    import niuu.observability as observability_module
+    from niuu import observability as observability_module
     from niuu.observability import Observability
 
     exporter = InMemorySpanExporter()

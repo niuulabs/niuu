@@ -1,5 +1,11 @@
-# Garbage-collects dev container images and PR Helm charts older than 2 days.
+# Garbage-collects PR container images and PR Helm charts older than 2 days.
 # Runs daily at 03:00 UTC.
+#
+# A container version is deleted only when every tag on it starts with pr-.
+# A digest built on a PR can also carry other tags (dev-<sha>, dev, a
+# release tag) once it is promoted, and deploys pin those digests, so a
+# version with any other tag is kept. Untagged versions (the per-platform
+# children of a multi-arch index) have no tags and are never touched here.
 name: Cleanup Dev Packages
 
 on:
@@ -24,8 +30,9 @@ jobs:
           - volundr-web
           - niuu-web
           - niuu
+          - gbrain
     steps:
-      - name: Delete stale dev container versions
+      - name: Delete stale PR container versions
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
@@ -45,6 +52,12 @@ jobs:
               const tags = version.metadata?.container?.tags || [];
               const isPr = tags.some(t => t.startsWith('pr-'));
               const isOld = new Date(version.updated_at) < cutoff;
+              const kept = tags.filter(t => !t.startsWith('pr-'));
+
+              if (isPr && isOld && kept.length > 0) {
+                console.log(`Keeping ${container}@${version.id}: also tagged ${kept.join(', ')}`);
+                continue;
+              }
 
               if (isPr && isOld) {
                 console.log(`Deleting ${container}@${version.id} (tags: ${tags.join(', ')}, updated: ${version.updated_at})`);

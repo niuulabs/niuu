@@ -13,6 +13,16 @@ from sleipnir.domain.events import SleipnirEvent
 EventHandler = Callable[[SleipnirEvent], Awaitable[None]]
 
 
+class StreamNotFoundError(RuntimeError):
+    """The stream a subscriber was configured to read does not exist.
+
+    A deterministic configuration fault, not a transient one: retrying the
+    same subscribe cannot succeed until someone creates the stream or removes
+    it from the configuration, so callers must not treat it like a
+    connection error.
+    """
+
+
 class Subscription(ABC):
     """Represents an active event subscription.
 
@@ -91,4 +101,6 @@ class SleipnirSubscriber(ABC):
             contract.  Returning acknowledges the event; raising requests
             redelivery on transports that can redeliver.
         :returns: A :class:`Subscription` handle; call ``unsubscribe()`` to cancel.
+        :raises StreamNotFoundError: The transport reads from a configured
+            stream that does not exist on the broker.
         """

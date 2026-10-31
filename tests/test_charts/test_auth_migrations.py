@@ -1,4 +1,4 @@
-"""Auth schema changes ship consistently in local, CLI, and owning Helm charts."""
+"""Auth schema changes ship in every owning Helm chart, matching the source SQL."""
 
 import subprocess
 from pathlib import Path
@@ -61,7 +61,6 @@ def test_auth_migration_copies_match(chart, names, variant):
             file = f"{name}.{direction}.sql"
             source = ROOT / "migrations" / ("ting" if variant == "ting" else "") / file
             sql = source.read_text()
-            assert (ROOT / "src/cli/migrations" / variant / file).read_text() == sql
             assert data[file].strip() == sql.strip()
     if chart == "guild":
         assert "000061_observatory_fragments.up.sql" in data

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from base64 import b64encode
 
 import httpx
 import pytest
 import respx
 
+from tracker.ports import TrackerRequestError
 from volundr.adapters.outbound.jira import JiraAdapter, JiraAPIError
 
 SITE_URL = "https://example.atlassian.net"
@@ -222,5 +224,216 @@ async def test_direct_issue_reads_hide_issues_outside_label_scope() -> None:
     )
     try:
         assert await adapter.get_issue("PROJ-42") is None
+    finally:
+        await adapter.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_issue_requests_and_renders_the_adf_description() -> None:
+    issue = _issue()
+    issue["fields"]["description"] = {
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {
+                "type": "heading",
+                "attrs": {"level": 2},
+                "content": [{"type": "text", "text": "Acceptance criteria"}],
+            },
+            {
+                "type": "bulletList",
+                "content": [
+                    {
+                        "type": "listItem",
+                        "content": [
+                            {
+                                "type": "paragraph",
+                                "content": [{"type": "text", "text": "Sign-in succeeds"}],
+                            }
+                        ],
+                    }
+                ],
+            },
+        ],
+    }
+    route = respx.get(f"{DIRECT_API}/issue/PROJ-42").mock(
+        return_value=httpx.Response(200, json=issue)
+    )
+    adapter = JiraAdapter(site_url=SITE_URL, email="ada@example.com", api_token="secret")
+    try:
+        result = await adapter.get_issue("PROJ-42")
+    finally:
+        await adapter.close()
+
+    assert result is not None
+    assert result.description == "## Acceptance criteria\n\n- Sign-in succeeds"
+    assert "description" in route.calls.last.request.url.params["fields"].split(",")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_search_omits_the_description_field() -> None:
+    route = respx.get(f"{DIRECT_API}/search/jql").mock(
+        return_value=httpx.Response(200, json={"issues": [_issue()], "isLast": True})
+    )
+    adapter = JiraAdapter(site_url=SITE_URL, email="ada@example.com", api_token="secret")
+    try:
+        issues = await adapter.search_issues("login")
+    finally:
+        await adapter.close()
+
+    assert issues[0].description is None
+    assert "description" not in route.calls.last.request.url.params["fields"].split(",")
+
+
+def _scoped_adapter(**kwargs) -> JiraAdapter:
+    return JiraAdapter(site_url=SITE_URL, email="ada@example.com", api_token="secret", **kwargs)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_issue_posts_fields_and_reads_the_issue_back() -> None:
+    create = respx.post(f"{DIRECT_API}/issue").mock(
+        return_value=httpx.Response(201, json={"id": "10001", "key": "PROJ-42"})
+    )
+    created = _issue()
+    created["fields"]["labels"] = ["defect", "auth"]
+    created["fields"]["description"] = "Line one\n\nLine two"
+    respx.get(f"{DIRECT_API}/issue/PROJ-42").mock(return_value=httpx.Response(200, json=created))
+    adapter = _scoped_adapter(labels=["auth"], issue_type="Bug")
+    try:
+        issue = await adapter.create_issue(
+            "Fix the sign-in",
+            "Line one\n\nLine two",
+            team="PROJ",
+            labels=["defect", "auth"],
+            priority=1,
+        )
+    finally:
+        await adapter.close()
+
+    assert issue.identifier == "PROJ-42"
+    assert issue.description == "Line one\n\nLine two"
+    fields = json.loads(create.calls.last.request.content)["fields"]
+    assert fields == {
+        "project": {"key": "PROJ"},
+        "summary": "Fix the sign-in",
+        "description": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "Line one"}]},
+                {"type": "paragraph", "content": []},
+                {"type": "paragraph", "content": [{"type": "text", "text": "Line two"}]},
+            ],
+        },
+        "issuetype": {"name": "Bug"},
+        "labels": ["defect", "auth"],
+        "priority": {"name": "Highest"},
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_issue_defaults_to_task_without_labels_or_priority() -> None:
+    create = respx.post(f"{DIRECT_API}/issue").mock(
+        return_value=httpx.Response(201, json={"id": "10001", "key": "PROJ-42"})
+    )
+    respx.get(f"{DIRECT_API}/issue/PROJ-42").mock(return_value=httpx.Response(200, json=_issue()))
+    adapter = _scoped_adapter(issue_type="  ")
+    try:
+        await adapter.create_issue("T", "B", team="PROJ", priority=0)
+    finally:
+        await adapter.close()
+
+    fields = json.loads(create.calls.last.request.content)["fields"]
+    assert fields["issuetype"] == {"name": "Task"}
+    assert "labels" not in fields
+    assert "priority" not in fields
+
+
+@pytest.mark.asyncio
+async def test_create_issue_rejects_projects_outside_scope_and_bad_priority() -> None:
+    adapter = _scoped_adapter(project_keys=["PROJ"])
+    try:
+        with pytest.raises(TrackerRequestError, match="outside this Jira connection"):
+            await adapter.create_issue("T", "B", team="OTHER")
+        with pytest.raises(TrackerRequestError, match="between 0 and 4, got 5"):
+            await adapter.create_issue("T", "B", team="PROJ", priority=5)
+    finally:
+        await adapter.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_issue_surfaces_jira_validation_errors() -> None:
+    respx.post(f"{DIRECT_API}/issue").mock(
+        return_value=httpx.Response(400, json={"errors": {"project": "valid project is required"}})
+    )
+    adapter = _scoped_adapter()
+    try:
+        with pytest.raises(TrackerRequestError, match="valid project is required"):
+            await adapter.create_issue("T", "B", team="NOPE")
+    finally:
+        await adapter.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_issue_raises_when_jira_returns_no_key_or_issue_vanishes() -> None:
+    route = respx.post(f"{DIRECT_API}/issue")
+    route.mock(return_value=httpx.Response(201, json={"id": "10001"}))
+    adapter = _scoped_adapter()
+    try:
+        with pytest.raises(JiraAPIError, match="did not include an issue key"):
+            await adapter.create_issue("T", "B", team="PROJ")
+        route.mock(return_value=httpx.Response(201, json={"id": "10001", "key": "PROJ-42"}))
+        respx.get(f"{DIRECT_API}/issue/PROJ-42").mock(return_value=httpx.Response(404))
+        with pytest.raises(JiraAPIError, match="PROJ-42 could not be read back"):
+            await adapter.create_issue("T", "B", team="PROJ")
+    finally:
+        await adapter.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_update_issue_puts_summary_and_adf_description() -> None:
+    edit = respx.put(f"{DIRECT_API}/issue/PROJ-42").mock(return_value=httpx.Response(204))
+    respx.get(f"{DIRECT_API}/issue/PROJ-42").mock(return_value=httpx.Response(200, json=_issue()))
+    adapter = _scoped_adapter()
+    try:
+        issue = await adapter.update_issue("PROJ-42", title="Fix the sign-in", description="Body")
+    finally:
+        await adapter.close()
+
+    assert issue.identifier == "PROJ-42"
+    fields = json.loads(edit.calls.last.request.content)["fields"]
+    assert fields == {
+        "summary": "Fix the sign-in",
+        "description": {
+            "type": "doc",
+            "version": 1,
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Body"}]}],
+        },
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_update_issue_rejects_nothing_out_of_scope_and_jira_validation() -> None:
+    respx.get(f"{DIRECT_API}/issue/OTHER-1").mock(return_value=httpx.Response(404))
+    respx.get(f"{DIRECT_API}/issue/PROJ-42").mock(return_value=httpx.Response(200, json=_issue()))
+    respx.put(f"{DIRECT_API}/issue/PROJ-42").mock(
+        return_value=httpx.Response(400, text='{"errors":{"summary":"too long"}}')
+    )
+    adapter = _scoped_adapter(project_keys=["PROJ"])
+    try:
+        with pytest.raises(TrackerRequestError, match="Nothing to update"):
+            await adapter.update_issue("PROJ-42")
+        with pytest.raises(TrackerRequestError, match="outside this Jira connection"):
+            await adapter.update_issue("OTHER-1", title="x")
+        with pytest.raises(TrackerRequestError, match="too long"):
+            await adapter.update_issue("PROJ-42", title="x" * 300)
     finally:
         await adapter.close()

@@ -265,6 +265,7 @@ async def test_anthropic_adapter_stream_emits_thinking_events():
             "delta": {"stop_reason": "end_turn"},
             "usage": {"output_tokens": 25},
         },
+        {"type": "message_stop"},
     )
 
     with respx.mock(base_url="https://api.test") as mock:
@@ -312,6 +313,7 @@ async def test_anthropic_adapter_stream_no_thinking_events_without_param():
             "delta": {"stop_reason": "end_turn"},
             "usage": {"output_tokens": 5},
         },
+        {"type": "message_stop"},
     )
 
     with respx.mock(base_url="https://api.test") as mock:

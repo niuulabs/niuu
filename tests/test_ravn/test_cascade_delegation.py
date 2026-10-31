@@ -230,17 +230,15 @@ class TestDriveLoopDeadline:
         assert "expired-in-queue" not in executed
 
 
-class TestDriveLoopQueueFull:
+class TestDriveLoopBacklog:
     @pytest.mark.asyncio
-    async def test_task_discarded_when_queue_full(self):
-        """When the queue is at capacity, additional tasks are silently discarded."""
-        dl = _make_drive_loop(queue_max=2)
-        for i in range(2):
-            await dl.enqueue(_make_agent_task(f"task-{i}"))
-        extra = _make_agent_task("task-extra")
-        await dl.enqueue(extra)
-        assert dl.task_status("task-extra") == "unknown"
-        assert dl._queue.qsize() == 2
+    async def test_a_backlog_is_queued_not_discarded(self):
+        """There is no capacity cap: every distinct task waits its turn."""
+        dl = _make_drive_loop()
+        for i in range(60):
+            assert await dl.enqueue(_make_agent_task(f"task-{i}")) is True
+        assert dl.task_status("task-59") == "queued"
+        assert dl._queue.qsize() == 60
 
 
 # ---------------------------------------------------------------------------
@@ -623,6 +621,31 @@ class TestDriveLoopJournal:
         recovered_tool.recover_pending.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_a_recovered_result_over_the_limit_is_cut_and_counted(self, tmp_path: Path):
+        from ravn.cap_telemetry import cap_hit_counts
+
+        journal = str(tmp_path / "queue.json")
+        first = _make_drive_loop(journal_path=journal)
+        task = _make_agent_task("interrupted-task")
+        first._inflight_tasks[task.task_id] = task
+        first._persist_queue()
+        recovered_tool = MagicMock()
+        recovered_tool.name = "build_tool"
+        recovered_tool.recover_pending = AsyncMock(
+            return_value=[ToolResult(tool_call_id="", content="r" * 50)]
+        )
+        agent = MagicMock()
+        agent.tools = [recovered_tool]
+        restarted = _make_drive_loop(journal_path=journal)
+        restarted._settings.tools.max_result_chars = 10
+        restarted._load_journal()
+
+        (result,) = await restarted._recover_interrupted_tool_operations(agent, task)
+
+        assert result.endswith("r" * 10 + "\n… (truncated)")
+        assert cap_hit_counts() == {"tools.max_result_chars": 1}
+
+    @pytest.mark.asyncio
     async def test_journal_skips_expired_tasks(self, tmp_path: Path):
         """Tasks with past deadlines are discarded during journal restore."""
         journal_path = tmp_path / "queue.json"
@@ -647,21 +670,22 @@ class TestDriveLoopJournal:
         assert dl.task_status("expired-journal-task") == "unknown"
 
     @pytest.mark.asyncio
-    async def test_journal_handles_corrupt_file(self, tmp_path: Path):
-        """Corrupt journal does not raise — it is silently skipped."""
+    async def test_corrupt_journal_stops_startup(self, tmp_path: Path):
+        """Starting empty would silently lose every task the journal held."""
         journal_path = tmp_path / "queue.json"
         journal_path.write_text("{ not valid json }{{{")
         dl = _make_drive_loop(journal_path=str(journal_path))
-        dl._load_journal()  # must not raise
+        with pytest.raises(RuntimeError, match="cannot be read"):
+            dl._load_journal()
 
     @pytest.mark.asyncio
-    async def test_journal_handles_invalid_record(self, tmp_path: Path):
-        """Journal records with missing fields are skipped gracefully."""
+    async def test_unrestorable_journal_record_stops_startup(self, tmp_path: Path):
+        """A record missing fields names the task instead of being skipped."""
         journal_path = tmp_path / "queue.json"
         journal_path.write_text(json.dumps([{"task_id": "broken"}]))
         dl = _make_drive_loop(journal_path=str(journal_path))
-        dl._load_journal()
-        assert dl.task_status("broken") == "unknown"
+        with pytest.raises(RuntimeError, match="broken"):
+            dl._load_journal()
 
 
 # ---------------------------------------------------------------------------

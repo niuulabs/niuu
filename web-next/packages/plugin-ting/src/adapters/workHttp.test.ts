@@ -45,6 +45,41 @@ describe('Work HTTP read adapter', () => {
     expect(http.get).toHaveBeenCalledWith('/work/project/a%2Fb');
   });
 
+  it('posts a gate decision to the ticket it answers', async () => {
+    const http = client();
+    const decision = {
+      gateId: 'gate-1',
+      activationId: 'activation-1',
+      decision: 'approve' as const,
+      notes: '',
+    };
+
+    await buildWorkHttpAdapter(http).decideGate('saga/1', 'issue 1', decision);
+
+    expect(http.post).toHaveBeenCalledWith(
+      '/work/project/saga%2F1/tasks/issue%201/gate-decision',
+      decision,
+    );
+  });
+
+  it('starts a ticket through its coordinator', async () => {
+    const http = client();
+
+    await buildWorkHttpAdapter(http).startTicket('saga/1', 'issue 1');
+
+    expect(http.post).toHaveBeenCalledWith('/work/project/saga%2F1/tasks/issue%201/start', {});
+  });
+
+  it('names the column a ticket was dropped on', async () => {
+    const http = client();
+
+    await buildWorkHttpAdapter(http).startTicket('saga-1', 'issue-1', 'planning');
+
+    expect(http.post).toHaveBeenCalledWith('/work/project/saga-1/tasks/issue-1/start', {
+      columnId: 'planning',
+    });
+  });
+
   it('propagates permission errors rather than presenting an empty collection', async () => {
     const http = client();
     const denied = new ApiClientError('Forbidden', 403);

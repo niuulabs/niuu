@@ -15,6 +15,7 @@ from niuu.domain.models import (
     Principal,
     RegisteredInstance,
 )
+from niuu.domain.services.token_scope import scoped_credential_claims
 from niuu.ports.http_auth import HttpAuthPort
 from ting.adapters.inbound.auth import current_bearer_token
 
@@ -83,7 +84,12 @@ def _principal_headers(
         "x-auth-roles": ",".join(principal.roles),
     }
     token = current_bearer_token()
-    if token:
+    # A scoped credential (a resident's build token, a developer child token)
+    # is admitted only on its own entry points; Guild's instance registry is
+    # not one, so forwarding it turned every scoped A2A launch into a 403 on
+    # the target lookup. Use Ting's own credential for those, as the Forge
+    # path already does (a2a._downstream_auth_token).
+    if token and scoped_credential_claims(token) is None:
         headers = {key: value for key, value in headers.items() if key.lower() != "authorization"}
         headers["authorization"] = f"Bearer {token}"
     headers.update(principal_headers)

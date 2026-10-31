@@ -255,6 +255,21 @@ class TestRetrieval:
         await adapter.close()
 
     @respx.mock
+    async def test_get_page_preserves_requested_json_artifact_path(self) -> None:
+        respx.post(_MCP).mock(
+            return_value=httpx.Response(
+                200,
+                json=_tool_result(structured=[_page("capabilities/build-widget/learned_tool")]),
+            )
+        )
+        adapter = _adapter()
+
+        page = await adapter.get_page("capabilities/build-widget/learned_tool.json")
+
+        assert page.meta.path == "capabilities/build-widget/learned_tool.json"
+        await adapter.close()
+
+    @respx.mock
     async def test_list_pages_filters_prefix_locally(self) -> None:
         route = respx.post(_MCP).mock(
             return_value=httpx.Response(200, json=_tool_result(structured=[_page("wiki/x")]))

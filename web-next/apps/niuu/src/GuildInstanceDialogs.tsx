@@ -124,7 +124,7 @@ export function EditInstanceDialog({
     >
       <DialogContent
         title="Edit node settings"
-        description={`Update ${instance.name} in the Guild registry.`}
+        description={`Update ${instance.name} in the infrastructure registry.`}
       >
         <form onSubmit={submit} className="niuu:space-y-4 niuu:text-text-primary">
           <fieldset disabled={pending} className="niuu:space-y-4">
@@ -295,7 +295,7 @@ export function DeleteInstanceDialog({
     >
       <DialogContent
         title={`Delete ${instance.name}?`}
-        description="This removes the node from Guild and the environment selectors. Its server and sessions keep running."
+        description="This removes the node from Infrastructure and the environment selectors. Its server and sessions keep running."
       >
         <p className="niuu:mb-4 niuu:break-all niuu:font-mono niuu:text-sm niuu:text-text-secondary">
           {instance.baseUrl}

@@ -13,6 +13,8 @@ from ravn.api.valkyrie_event_projection import (
     _court_decisions_from_events,
     _event_dict,
     _event_log_entry,
+    _event_timestamp,
+    _event_valkyrie_id,
     _is_raw_signal_event,
     _is_runtime_event,
     _operational_states_from_events,
@@ -46,6 +48,8 @@ from ravn.api.valkyrie_requests import (
     LearningReviseRequest,
 )
 from ravn.api.valkyrie_runtime_projection import (
+    _apply_last_dreams,
+    _dream_outcome,
     _merge_observed_runtime,
     _resolve_huddle_message_author,
     _runtime_event_key,
@@ -74,11 +78,26 @@ class ValkyrieDashboardProjection:
         #: Superseding candidates authored by revise; survive live re-ingest.
         self._authored_learnings: dict[str, dict[str, Any]] = {}
         self._seen_event_ids: set[str] = set()
+        #: Each resident's last finished dream, by valkyrie id. Kept apart from
+        #: the bounded event windows, which a busy fleet turns over in minutes.
+        self._last_dreams: dict[str, dict[str, Any]] = {}
 
     def dashboard(self) -> Dashboard:
         self._refresh_live_report()
         self._dashboard = _merge_observed_runtime(self._dashboard)
+        _apply_last_dreams(self._dashboard, self._last_dreams)
         return deepcopy(self._dashboard)
+
+    def _record_dream(self, event_data: dict[str, Any]) -> None:
+        payload = event_data.get("payload") if isinstance(event_data.get("payload"), dict) else {}
+        dream = _dream_outcome(event_data, payload, _event_timestamp(event_data))
+        valkyrie_id = _event_valkyrie_id(payload)
+        if dream is None or not valkyrie_id:
+            return
+        existing = self._last_dreams.get(valkyrie_id)
+        if existing is not None and existing["finishedAt"] > dream["finishedAt"]:
+            return
+        self._last_dreams[valkyrie_id] = dream
 
     def record_event(
         self,
@@ -98,6 +117,7 @@ class ValkyrieDashboardProjection:
                         -(CONTROL_TELEMETRY_LIMIT + RAW_SIGNAL_TELEMETRY_LIMIT) :
                     ]
                 )
+        self._record_dream(event_data)
         if _is_runtime_event(event_data):
             runtime_key = _runtime_event_key(event_data)
             existing = self._runtime_events.get(runtime_key)

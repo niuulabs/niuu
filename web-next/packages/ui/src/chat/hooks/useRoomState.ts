@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback } from 'react';
 import type { ChatMessage, ChatMessagePart, RoomParticipant } from '../types';
 import { toolImages } from '../toolImages';
 import type { ToolResultBlock } from '../components/ToolBlock/groupContentBlocks';
-import { isPresentedFileTool } from '../components/ToolBlock/groupContentBlocks';
+import { isStandaloneCardTool } from '../components/ToolBlock/groupContentBlocks';
 
 export interface UseRoomStateReturn {
   isRoomMode: boolean;
@@ -47,7 +47,7 @@ export function hideToolParts(parts: readonly ChatMessagePart[]): ChatMessagePar
     const hidden =
       INTERNAL_PART_TYPES.has(part.type) &&
       !imageIds.has(part.type === 'tool_use' ? part.id : part.tool_use_id) &&
-      !(part.type === 'tool_use' && part.name && isPresentedFileTool(part.name));
+      !(part.type === 'tool_use' && part.name && isStandaloneCardTool(part.name));
     if (!hidden) kept.push(part);
     else if (kept.at(-1)?.type !== 'tool_separator') {
       kept.push({ type: 'tool_separator', id: part.id ?? part.tool_use_id });

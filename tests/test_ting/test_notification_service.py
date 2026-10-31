@@ -10,6 +10,8 @@ import httpx
 import pytest
 
 from niuu.domain.models import IntegrationConnection, IntegrationType
+from niuu.ports.channel_resolver import NotificationChannelUnavailableError
+from niuu.ports.notifications import NotificationDeliveryError
 from ting.adapters.memory_event_bus import InMemoryEventBus
 from ting.adapters.notification_channel_factory import NotificationChannelFactory
 from ting.adapters.telegram_notification import TelegramNotificationAdapter
@@ -60,7 +62,12 @@ class FailingChannel(NotificationChannel):
         return True
 
     async def send(self, notification: Notification) -> None:
-        raise RuntimeError("Channel failed")
+        raise NotificationDeliveryError("hooks.example.com returned HTTP 500", retryable=True)
+
+
+class UnresolvableChannelFactory(ChannelResolverPort):
+    async def for_owner(self, owner_id: str) -> list[NotificationChannel]:
+        raise NotificationChannelUnavailableError("Messaging connection c1 has no credential")
 
 
 class StubChannelFactory(ChannelResolverPort):
@@ -221,17 +228,17 @@ class TestTelegramNotificationAdapter:
         assert "Ticket: NIU-100" in msg
 
     @pytest.mark.asyncio
-    async def test_send_no_bot_token(self) -> None:
-        """Send with empty bot_token should not raise."""
+    async def test_send_no_bot_token_raises(self) -> None:
         adapter = TelegramNotificationAdapter(bot_token="", chat_id="123")
         n = Notification(
             title="T", body="B", urgency=NotificationUrgency.HIGH, owner_id="u", event_type="e"
         )
-        await adapter.send(n)  # Should not raise
+        with pytest.raises(NotificationDeliveryError, match="bot_token") as raised:
+            await adapter.send(n)
+        assert raised.value.retryable is False
 
     @pytest.mark.asyncio
-    async def test_send_http_error_does_not_raise(self) -> None:
-        """HTTP errors should be logged, not raised."""
+    async def test_send_http_error_raises(self) -> None:
         import respx
 
         with respx.mock:
@@ -240,7 +247,9 @@ class TestTelegramNotificationAdapter:
             n = Notification(
                 title="T", body="B", urgency=NotificationUrgency.HIGH, owner_id="u", event_type="e"
             )
-            await adapter.send(n)  # Should not raise
+            with pytest.raises(NotificationDeliveryError, match="HTTP 500") as raised:
+                await adapter.send(n)
+            assert raised.value.retryable is True
             await adapter.close()
 
     @pytest.mark.asyncio
@@ -293,8 +302,7 @@ class TestTelegramNotificationAdapter:
             await adapter.close()
 
     @pytest.mark.asyncio
-    async def test_send_connection_error_does_not_raise(self) -> None:
-        """Connection errors should be caught, not raised."""
+    async def test_send_connection_error_raises_without_the_token(self) -> None:
         import respx
 
         with respx.mock:
@@ -305,7 +313,9 @@ class TestTelegramNotificationAdapter:
             n = Notification(
                 title="T", body="B", urgency=NotificationUrgency.HIGH, owner_id="u", event_type="e"
             )
-            await adapter.send(n)  # Should not raise
+            with pytest.raises(NotificationDeliveryError, match="ConnectError") as raised:
+                await adapter.send(n)
+            assert "tok" not in str(raised.value)
             await adapter.close()
 
 
@@ -343,7 +353,7 @@ class TestNotificationChannelFactory:
         assert channels == []
 
     @pytest.mark.asyncio
-    async def test_missing_credential_skipped(self) -> None:
+    async def test_missing_credential_raises(self) -> None:
         conn = IntegrationConnection(
             id="conn-1",
             owner_id="user-1",
@@ -358,8 +368,8 @@ class TestNotificationChannelFactory:
         repo = StubIntegrationRepo(connections=[conn])
         cred_store = StubCredentialStore()  # No credentials
         factory = NotificationChannelFactory(repo, cred_store)
-        channels = await factory.for_owner("user-1")
-        assert channels == []
+        with pytest.raises(NotificationChannelUnavailableError, match="conn-1.*'tg-cred'"):
+            await factory.for_owner("user-1")
 
     @pytest.mark.asyncio
     async def test_valid_connection_creates_adapter(self) -> None:
@@ -404,7 +414,7 @@ class TestNotificationChannelFactory:
         assert channels[0]._message_thread_id == 11  # noqa: SLF001
 
     @pytest.mark.asyncio
-    async def test_invalid_adapter_path_skipped(self) -> None:
+    async def test_invalid_adapter_path_raises(self) -> None:
         conn = IntegrationConnection(
             id="conn-1",
             owner_id="user-1",
@@ -419,8 +429,12 @@ class TestNotificationChannelFactory:
         repo = StubIntegrationRepo(connections=[conn])
         cred_store = StubCredentialStore(values={"user:user-1:cred": {"key": "val"}})
         factory = NotificationChannelFactory(repo, cred_store)
-        channels = await factory.for_owner("user-1")
-        assert channels == []
+        with pytest.raises(
+            NotificationChannelUnavailableError, match="nonexistent.module.Adapter.*ModuleNotFound"
+        ) as raised:
+            await factory.for_owner("user-1")
+        assert "val" not in str(raised.value)
+        assert raised.value.__cause__ is None
 
     @pytest.mark.asyncio
     async def test_multiple_connections(self) -> None:
@@ -664,8 +678,8 @@ class TestNotificationServiceEventMapping:
         # No assertion needed — just verifying no crash
 
     @pytest.mark.asyncio
-    async def test_channel_send_error_does_not_crash(self) -> None:
-        """If a channel fails to send, other channels still get notified."""
+    async def test_channel_send_error_is_counted_after_every_channel_is_tried(self) -> None:
+        """A failed channel fails the event; the other channels are still tried."""
         event_bus = InMemoryEventBus()
         failing = FailingChannel()
         recording = RecordingChannel()
@@ -692,6 +706,57 @@ class TestNotificationServiceEventMapping:
         await service.stop()
 
         assert len(recording.sent) == 1
+        assert service.stats.delivered == 1
+        assert service.stats.failed_deliveries == 1
+        assert service.stats.failed_events == 1
+        assert service.stats.last_failure == (
+            "run.state_changed: hooks.example.com returned HTTP 500"
+        )
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_channels_fail_the_event_and_the_loop_keeps_running(
+        self,
+    ) -> None:
+        event_bus = InMemoryEventBus()
+        service = NotificationService(event_bus, UnresolvableChannelFactory())
+        await service.start()
+
+        for tracker_id in ("NIU-401", "NIU-402"):
+            await event_bus.emit(
+                TingEvent(
+                    event="run.state_changed",
+                    data={"status": "REVIEW", "tracker_id": tracker_id, "owner_id": "user-1"},
+                )
+            )
+        await asyncio.sleep(0.1)
+        assert service.running is True
+        await service.stop()
+
+        assert service.stats.failed_events == 2
+        assert service.stats.delivered == 0
+        assert "Messaging connection c1 has no credential" in service.stats.last_failure
+
+    @pytest.mark.asyncio
+    async def test_unexpected_errors_are_reported_by_type_only(self) -> None:
+        class LeakyChannel(RecordingChannel):
+            async def send(self, notification: Notification) -> None:
+                raise RuntimeError("https://hooks.example.com/secret-path")
+
+        event_bus = InMemoryEventBus()
+        service = NotificationService(
+            event_bus, StubChannelFactory(channels={"user-1": [LeakyChannel()]})
+        )
+        await service.start()
+        await event_bus.emit(
+            TingEvent(
+                event="run.state_changed",
+                data={"status": "REVIEW", "tracker_id": "NIU-403", "owner_id": "user-1"},
+            )
+        )
+        await asyncio.sleep(0.1)
+        await service.stop()
+
+        assert service.stats.last_failure == "run.state_changed: RuntimeError"
 
     @pytest.mark.asyncio
     async def test_urgency_filter_respected(self) -> None:

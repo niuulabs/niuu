@@ -81,6 +81,46 @@ data:
           host: "0.0.0.0"
           port: 7781
           resident_hud_enabled: {{ .Values.resident.hudEnabled | default false }}
+        {{- if .Values.resident.openclaw.enabled }}
+        # Sessions for Volundr's resident sessions API. agent_id "main" is the
+        # session-key grammar the controller addresses (agent:main:niuu-<uuid>).
+        openclaw:
+          enabled: true
+          host: "0.0.0.0"
+          port: {{ .Values.resident.openclaw.port }}
+          token_env: RAVN_OPENCLAW_TOKEN
+          agent_id: main
+          max_live_sessions: {{ .Values.resident.openclaw.maxSessions }}
+          store_path: {{ .Values.resident.openclaw.storePath | quote }}
+        {{- end }}
+        {{- if .Values.resident.voice.enabled }}
+        {{- if not .Values.resident.voice.minters }}
+        {{- fail "resident.voice.enabled needs resident.voice.minters: at least one provider whose key file is mounted" }}
+        {{- end }}
+        {{- if not .Values.session.ownerId }}
+        {{- fail "resident.voice.enabled needs session.ownerId: only the resident's owner may call it" }}
+        {{- end }}
+        # Realtime voice calls; nginx forwards /voice/ here.
+        voice:
+          enabled: true
+          host: "127.0.0.1"
+          port: {{ .Values.resident.voice.port }}
+          store_path: {{ .Values.resident.voice.storePath | quote }}
+          display_name: {{ .Values.resident.voice.displayName | default (include "skuld.residentName" .) | quote }}
+          time_zone: {{ .Values.resident.voice.timeZone | quote }}
+          owner_id: {{ .Values.session.ownerId | quote }}
+          user_id_header: {{ .Values.envoy.headerNames.userId | quote }}
+          {{- with .Values.resident.voice.models }}
+          models:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          minters:
+            {{- toYaml .Values.resident.voice.minters | nindent 12 }}
+          {{- if .Values.resident.voice.roomCopy }}
+          room_broker_url: "http://127.0.0.1:8081"
+          room_participant_id: {{ .Values.resident.flock.peerId | default (printf "flock-%s" $persona) | quote }}
+          {{- end }}
+        {{- end }}
       {{- if .Values.resident.platform.enabled }}
       platform:
         enabled: true
@@ -88,16 +128,35 @@ data:
         # Workload identity (config-first; replaces the legacy
         # NIUU_WORKLOAD_IDENTITY_* env vars on the ravn container).
         workload_token_file: "/var/run/secrets/niuu-workload/token"
-        {{- if .Values.resident.platform.workloadExchangeUrl }}
-        workload_exchange_url: {{ .Values.resident.platform.workloadExchangeUrl | quote }}
-        {{- else if .Values.volundr.apiUrl }}
-        workload_exchange_url: {{ printf "%s/api/v1/tokens/workload/exchange" (.Values.volundr.apiUrl | trimSuffix "/") | quote }}
-        {{- end }}
+        workload_exchange_url: {{ include "skuld.residentWorkloadExchangeUrl" . | quote }}
         {{- with .Values.resident.platform.workflowAliases }}
         workflow_aliases:
           {{- toYaml . | nindent 10 }}
         {{- end }}
+        {{- with .Values.resident.platform.a2aAgentCardUrls }}
+        a2a_agent_card_urls:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.resident.platform.a2aDefaultConnectionId }}
+        a2a_default_connection_id: {{ . | quote }}
+        {{- end }}
       {{- end }}
+    {{- $codexAuthAdapter := dig "codexAuth" "adapter" "" .Values.broker }}
+    {{- if and .Values.resident.platform.enabled $codexAuthAdapter (ne $codexAuthAdapter "skuld.codex_auth.HostCodexAuthProvider") }}
+    # The resident's own Codex transport (a persona on CliTransportExecutor)
+    # authenticates through the same broker contract as the skuld container
+    # (skuld-configmap codex_auth), using this container's workload identity
+    # (gateway.platform above). Without it the transport falls back to the
+    # host login in $HOME/.codex, which a resident's own home never has.
+    # The broker is the cluster's own Volundr, the one the skuld container
+    # calls (volundr_api_url); the token is still exchanged at the platform.
+    runtime_executor:
+      codex_auth_adapter: {{ $codexAuthAdapter | quote }}
+      codex_auth_kwargs: {{ dig "codexAuth" "kwargs" dict .Values.broker | toJson }}
+      {{- if .Values.volundr.apiUrl }}
+      volundr_api_url: {{ .Values.volundr.apiUrl | quote }}
+      {{- end }}
+    {{- end }}
     {{- if .Values.resident.triggers.enabled }}
     {{- if not .Values.resident.platform.enabled }}
     {{- fail "resident.triggers.enabled requires resident.platform.enabled — a resident with no platform gateway has nothing to poll its triggers from" }}
@@ -116,11 +175,7 @@ data:
       kwargs:
         base_url: {{ .Values.resident.platform.baseUrl | quote }}
         workload_token_file: "/var/run/secrets/niuu-workload/token"
-        {{- if .Values.resident.platform.workloadExchangeUrl }}
-        workload_exchange_url: {{ .Values.resident.platform.workloadExchangeUrl | quote }}
-        {{- else if .Values.volundr.apiUrl }}
-        workload_exchange_url: {{ printf "%s/api/v1/tokens/workload/exchange" (.Values.volundr.apiUrl | trimSuffix "/") | quote }}
-        {{- end }}
+        workload_exchange_url: {{ include "skuld.residentWorkloadExchangeUrl" . | quote }}
     {{- end }}
     initiative:
       enabled: true

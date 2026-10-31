@@ -1,0 +1,41 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/thor/repos/worktrees/niuu-activity-navigation-read-20260926
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.12.1, respx-0.23.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 266 items
+
+tests/test_domain/test_notification_service.py ......................... [  9%]
+...                                                                      [ 10%]
+tests/test_adapters/test_postgres_notifications.py ..................... [ 18%]
+..........                                                               [ 22%]
+tests/test_adapters/test_rest_notifications.py ................          [ 28%]
+tests/test_niuu/test_forge_notification_feed.py ........                 [ 31%]
+tests/test_niuu/test_rest_volundr_notifications.py ..................... [ 39%]
+                                                                         [ 39%]
+tests/test_niuu/test_conversation_timeline.py ..................         [ 45%]
+tests/test_adapters/test_rest_timed_archive.py ....                      [ 47%]
+tests/test_adapters/test_rest_history_protocol.py .............          [ 52%]
+tests/test_skuld/test_history_bootstrap.py ................              [ 58%]
+tests/test_adapters/test_forge_session_auth.py ......................... [ 67%]
+.................................................                        [ 86%]
+tests/test_niuu/test_token_scope.py .................................... [ 99%]
+.                                                                        [100%]
+
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.13.13-final-0 _______________
+
+Name                                                      Stmts   Miss Branch BrPart  Cover   Missing
+-----------------------------------------------------------------------------------------------------
+src/niuu/adapters/inbound/forge_notification_feed.py         81      0     20      0   100%
+src/niuu/domain/conversation_timeline.py                     96      0     44      0   100%
+src/niuu/domain/services/forge_session_policy.py             50      5     10      0    92%   149-153
+src/volundr/adapters/inbound/rest_notifications.py          207      0     14      0   100%
+src/volundr/adapters/outbound/postgres_notifications.py     220      0     58      0   100%
+src/volundr/domain/services/notifications.py                195      7     52      1    96%   73-79, 150
+-----------------------------------------------------------------------------------------------------
+TOTAL                                                       849     12    198      1    99%
+Coverage JSON written to file .local/activities-read/coverage.json
+Required test coverage of 85% reached. Total coverage: 98.57%
+============================= 266 passed in 10.39s =============================

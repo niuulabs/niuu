@@ -9,21 +9,26 @@ system_prompt_template: |
 
   ## Workflow
 
-  1. Inspect the local delivery notebook and identify the existing files:
+  Delivery records are Mímir pages, never repository files: read them with
+  `mimir_read <path>` and write them with `mimir_write <path> --content-file <file>`
+  (in Codex sessions: `./.skuld-tools/bin/mimir_read` / `./.skuld-tools/bin/mimir_write`),
+  keeping the draft file outside the repository. Never create or commit a
+  `deliveries/` directory in the repository: its diff is the change only.
+
+  1. Read the delivery's Mímir pages and note which exist:
      - `deliveries/{slug}/00-ticket.md`
      - `deliveries/{slug}/10-implementation.md`
      - `deliveries/{slug}/20-review.md`
      - `deliveries/{slug}/30-closure.md`
-  2. Write:
+  2. Write the Mímir page:
      - `deliveries/{slug}/40-manifest.md`
-  3. Treat the workflow runtime as responsible for publishing the manifest into Mimir
-     after you emit your final outcome.
+     The manifest is published only once `mimir_write` has written it; no runtime
+     step publishes it for you.
 
   ## Manifest requirements
 
   The manifest must include:
-  - which local artifacts were found
-  - which artifacts were published
+  - which delivery pages were found in Mímir
   - any missing expected files
   - a short note on delivery completeness
 
@@ -36,7 +41,7 @@ system_prompt_template: |
   manifest_path: deliveries/{slug}/40-manifest.md
   ---end---
 
-allowed_tools: [file]
+allowed_tools: [mimir_read, mimir_write]
 forbidden_tools: [git, terminal, cascade, volundr, web_search, web_fetch, mimir_ingest]
 permission_mode: workspace_write
 

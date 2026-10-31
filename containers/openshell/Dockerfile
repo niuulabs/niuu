@@ -1,4 +1,24 @@
-FROM ghcr.io/astral-sh/uv:0.12.13@sha256:b485bd65cc2cf1c9a93b3554012c9c3778cf7b1b5fd3d3096ce9e1226c97e1e6 AS uv
+# Security fixes awaiting stable CPython releases; no interpreter ABI changes.
+FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm@sha256:516b51cb9db2ef061e465c803e50f64361b82cefd91e525b889b967b83e83527 AS python-security
+COPY containers/python-security/ /security/
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && python /security/build.py /patched-stdlib
+
+FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
+
+# The sandbox base ships gh v2.102.0 (the latest release), built with Go 1.27.1 and
+# golang.org/x/net v0.58.0 (GO-2026-6603/6604/6611/6612). Replace it with the same
+# release built with Go 1.27.3 and the patched module until upstream ships them.
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS gh-build
+ARG TARGETARCH
+WORKDIR /src
+RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.102.0.tar.gz -O /tmp/gh.tar.gz \
+    && echo "08bf0ef8b4409893889175e0f5279d30d6edd96465816042c0d7c72eac598158  /tmp/gh.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/gh.tar.gz --strip-components=1 \
+    && go get golang.org/x/net@v0.60.0 \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath \
+        -ldflags '-s -w -X github.com/cli/cli/v2/internal/build.Version=2.102.0-niuu.1 -X github.com/cli/cli/v2/internal/build.Date=2026-09-30' \
+        -o /out/gh ./cmd/gh
 
 FROM ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:aeef1c63f00e2913ea002ccb3aaf925f338b5c5d70e63576f0d95c16a138044e AS base
 
@@ -12,18 +32,23 @@ ARG OS_PACKAGES_REFRESH=
 # Refresh inherited runtime packages and the Python managed by uv.
 RUN apt-get update && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/* \
-    && UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python upgrade 3.14 \
-    && PYTHON_BIN=$(UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python find 3.14.7) \
+    && UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python install 3.14.10 \
+    && PYTHON_BIN=$(UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python find 3.14.10) \
     && ln -sf "$PYTHON_BIN" /usr/local/bin/python \
     && ln -sf "$PYTHON_BIN" /usr/local/bin/python3 \
     && ln -sf "$PYTHON_BIN" /sandbox/.venv/bin/python \
-    && sed -i 's/3.14.3/3.14.7/g' /sandbox/.venv/pyvenv.cfg \
+    && sed -i 's/3.14.3/3.14.10/g' /sandbox/.venv/pyvenv.cfg \
     && UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python uninstall 3.14.3 \
-    && uv pip install --python /sandbox/.venv/bin/python pip==26.2.1
+    && uv pip install --python /sandbox/.venv/bin/python pip==26.2.2
 
-COPY containers/node/npm-bootstrap/package.json containers/node/npm-bootstrap/package-lock.json /opt/npm-bootstrap/
+RUN --mount=type=bind,from=python-security,source=/patched-stdlib,target=/patched-stdlib \
+    --mount=type=bind,source=containers/python-security,target=/security \
+    python /security/install.py /patched-stdlib && python /security/verify.py
+
+COPY containers/node/npm-bootstrap/package.json containers/node/npm-bootstrap/package-lock.json containers/node/npm-bootstrap/replace-nested.sh /opt/npm-bootstrap/
 RUN cd /opt/npm-bootstrap && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
     && rm -rf /tmp/npm-cache /tmp/grok-install \
+    && sh /opt/npm-bootstrap/replace-nested.sh /opt/npm-bootstrap node_modules/npm/node_modules brace-expansion ip-address undici \
     && rm -rf /usr/lib/node_modules/npm \
     && ln -s /opt/npm-bootstrap/node_modules/npm /usr/lib/node_modules/npm \
     && ln -sf /usr/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
@@ -37,6 +62,10 @@ RUN cd /opt/openshell-tools && GROK_HOME=/tmp/grok-install npm ci --omit=dev --l
     && ln -s /opt/openshell-tools/node_modules/@hono /usr/lib/node_modules/@hono \
     && ln -s /opt/openshell-tools/node_modules/tar /usr/lib/node_modules/tar \
     && ln -sf /opt/openshell-tools/node_modules/.bin/copilot /usr/local/bin/copilot
+
+# Replace the base's gh before the filesystem is exported, so its layer is not kept.
+COPY --from=gh-build /out/gh /usr/bin/gh
+RUN gh --version
 
 # Remove superseded upstream agents and installation caches before exporting
 # the base filesystem. Deleting them in the final image would retain their layers.
@@ -65,6 +94,7 @@ COPY containers/skuld/npm-tools/package.json containers/skuld/npm-tools/package-
 RUN cd /opt/skuld-tools \
     && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
     && rm -rf /tmp/npm-cache /tmp/grok-install \
+    && sh /opt/npm-bootstrap/replace-nested.sh /opt/skuld-tools node_modules/@earendil-works/pi-coding-agent/node_modules undici \
     && rm -rf /usr/lib/node_modules/@openai \
     && mkdir -p /usr/lib/node_modules \
     && mv /opt/skuld-tools/node_modules/@openai /usr/lib/node_modules/@openai \
@@ -83,14 +113,17 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/niuu
 COPY pyproject.toml uv.lock README.md /app/
 # Dependencies resolve from the lockfile alone, so this layer survives source
 # edits; only the project itself is installed after src/ is copied.
-RUN uv sync --frozen --no-dev --no-editable --no-cache --no-install-project --extra nats --extra dsh
+RUN uv sync --frozen --no-dev --no-editable --no-cache --no-install-project --extra nats --extra dsh --extra otel
 COPY src/ /app/src/
+# migrations/ is force-included into the wheel as cli/migrations (see
+# pyproject.toml); the build fails without it.
+COPY migrations/ /app/migrations/
 # vendor/envoy_authz_protos/ is one of the wheel's registered package roots
 # (see pyproject.toml); the build fails without it even though this image
 # does not run identity.authz_main.
 COPY vendor/ /app/vendor/
 COPY scripts/openshell-run-installed-skuld.sh /usr/local/bin/openshell-run-installed-skuld
-RUN uv sync --frozen --no-dev --no-editable --no-cache --extra nats --extra dsh \
+RUN uv sync --frozen --no-dev --no-editable --no-cache --extra nats --extra dsh --extra otel \
     && mkdir -p /run/secrets \
     && chmod 0755 /usr/local/bin/openshell-run-installed-skuld \
     && chown -R sandbox:sandbox /opt/niuu /run/secrets

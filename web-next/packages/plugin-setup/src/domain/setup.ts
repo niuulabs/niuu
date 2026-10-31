@@ -304,7 +304,7 @@ const GROUP_SPECS: readonly GroupSpec[] = [
   {
     key: 'anthropic',
     title: 'Anthropic · Claude',
-    description: 'Claude Code sessions, Ravn judgment',
+    description: 'Claude Code sessions, agent judgment',
     keySlug: 'anthropic',
     signInSlug: 'claude-code',
     signInLabel: 'Sign in with your Claude subscription',
@@ -848,9 +848,17 @@ export function credentialProblemLabel(connection: IntegrationConnection): strin
   if (code === 'refresh_failed') {
     return 'The token could not be renewed automatically. Sign in again.';
   }
-  if (code === 'login_worker_failed' || code === 'runner_start_failed') {
+  if (code === 'oauth_reconnect_required') {
+    return 'The provider no longer accepts the stored sign-in. Sign in again.';
+  }
+  if (
+    code === 'login_worker_failed' ||
+    code === 'runner_start_failed' ||
+    code === 'enrollment_failed'
+  ) {
     return 'The last sign-in did not finish. Start it again.';
   }
+  if (code === 'enrollment_expired') return 'The last sign-in timed out. Start it again.';
   if (code === 'provider_login_rejected') return 'The provider rejected the last sign-in.';
   return `Last sign-in problem: ${code.replace(/_/g, ' ')}.`;
 }

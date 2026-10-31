@@ -7,11 +7,10 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from volundr.domain.project_ports import ProjectWorkspace
-from volundr.domain.projects import ForgeProject, ProjectReceipt
+from volundr.domain.projects import ForgeProject, ProjectReceipt, canonical_repository_url
 
 
 class GitProjectWorkspace(ProjectWorkspace):
@@ -37,22 +36,7 @@ class GitProjectWorkspace(ProjectWorkspace):
 
     @staticmethod
     def _canonical_remote(remote: str) -> str:
-        # Validate before returning anything to the caller; credential-bearing
-        # remotes must never become public project metadata or error text.
-        ForgeProject.validate_repository_url(remote)
-        value = remote
-        if value.startswith("git@"):
-            host, path = value[4:].split(":", 1)
-            value = f"https://{host}/{path}"
-        url = urlsplit(value)
-        path = url.path.rstrip("/")
-        if path.endswith(".git"):
-            path = path[:-4]
-        if not path or path == "/":
-            raise ValueError("Git remote must identify a repository")
-        if url.hostname == "github.com":
-            path = path.lower()
-        return urlunsplit(("https", url.netloc.lower(), path, "", ""))
+        return canonical_repository_url(remote)
 
     async def _git(self, root: Path, *arguments: str) -> str:
         proc = await asyncio.create_subprocess_exec(
@@ -78,7 +62,11 @@ class GitProjectWorkspace(ProjectWorkspace):
             raise ValueError("Project Git metadata exceeds the configured context budget")
         return out.decode("utf-8").strip()
 
-    async def discover(self, workspace_path: str) -> ForgeProject:
+    async def inspect(self, workspace_path: str) -> tuple[str, UUID | None]:
+        _root, remote, metadata = await self._inspect(workspace_path)
+        return remote, UUID(metadata["id"]) if "id" in metadata else None
+
+    async def _inspect(self, workspace_path: str) -> tuple[Path, str, dict]:
         root = self._checkout_root(workspace_path)
         output = await self._git(root, "remote", "-v")
         remotes: dict[str, set[str]] = {}
@@ -121,7 +109,10 @@ class GitProjectWorkspace(ProjectWorkspace):
                 raise ValueError(
                     "project.json must contain a valid project UUID and matching repository"
                 ) from None
+        return root, remote, metadata
 
+    async def discover(self, workspace_path: str) -> ForgeProject:
+        root, remote, metadata = await self._inspect(workspace_path)
         name = metadata.get("name", root.name)
         slug = metadata.get("slug", re.sub(r"[^a-z0-9]+", "-", root.name.lower()).strip("-")[:63])
         project = ForgeProject(

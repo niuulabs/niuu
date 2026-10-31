@@ -185,11 +185,41 @@ function DefaultPermissionRequests({
 function InputRequestForm({
   request,
   onRespond,
+  onDismiss,
 }: {
   request: InputRequest;
   onRespond: (requestId: string, values: string[]) => void;
+  onDismiss?: (requestId: string) => void;
 }) {
   const [values, setValues] = useState(() => request.questions.map(() => ''));
+  if (request.answerable === false) {
+    return (
+      <section className="niuu-chat-request" data-answerable="false">
+        <div className="niuu-chat-request-copy">
+          <strong className="niuu-chat-request-title">Answer in the session terminal</strong>
+          {request.questions.map((question, index) => (
+            <p className="niuu-chat-request-prompt" key={`${request.requestId}-${index}`}>
+              {question.prompt}
+              {question.choices.length > 0 && ` (${question.choices.join(' / ')})`}
+            </p>
+          ))}
+          <p className="niuu-chat-request-prompt">
+            This question can&apos;t be answered from here. Answer it in the session&apos;s
+            terminal; the card closes when Claude continues.
+          </p>
+        </div>
+        {onDismiss && (
+          <button
+            type="button"
+            className="niuu-chat-request-button"
+            onClick={() => onDismiss(request.requestId)}
+          >
+            Dismiss
+          </button>
+        )}
+      </section>
+    );
+  }
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const responses = values.map((value) => value.trim());
@@ -341,6 +371,8 @@ export interface SessionChatProps {
   onBookmark?: (messageId: string, bookmarked: boolean) => void;
   onPermissionRespond?: (requestId: string, behavior: PermissionBehavior) => void;
   onInputRespond?: (requestId: string, values: string[]) => void;
+  /** Remove a card no client can answer (read-only cards only). */
+  onInputDismiss?: (requestId: string) => void;
   onFetchFiles?: (path: string, apiBase: string) => Promise<FileEntry[]>;
   onMessageCountChange?: (count: number) => void;
 
@@ -401,6 +433,7 @@ export function SessionChat({
   onBookmark,
   onPermissionRespond,
   onInputRespond,
+  onInputDismiss,
   onFetchFiles,
   onMessageCountChange,
   renderPermissions,
@@ -1338,6 +1371,7 @@ export function SessionChat({
                     key={request.requestId}
                     request={request}
                     onRespond={handleInputRespond}
+                    onDismiss={onInputDismiss}
                   />
                 ))}
               </div>

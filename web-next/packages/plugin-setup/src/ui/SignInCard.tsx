@@ -250,7 +250,13 @@ function EnrollmentSignInCard({
       entry.credentialEnrollment?.defaultCredentialName ??
       credentialNameFor(entry.slug);
     start.mutate(
-      { slug: entry.slug, credentialName, oauthApp },
+      {
+        slug: entry.slug,
+        credentialName,
+        oauthApp,
+        // A reconnect signs the existing connection in again, in place.
+        connectionId: reconnect ? connection?.id : undefined,
+      },
       { onSuccess: (started) => setEnrollmentId(started.id) },
     );
   };

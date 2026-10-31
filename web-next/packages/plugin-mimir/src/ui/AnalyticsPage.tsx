@@ -232,7 +232,7 @@ export function AnalyticsPage() {
           </span>
         </summary>
         <p className="niuu:text-sm niuu:text-text-secondary">
-          These reports belong to the connected Mimir service and do not change with the selected
+          These reports belong to the connected memory service and do not change with the selected
           instance. They help assess whether searches find useful pages and identify unanswered
           queries.
         </p>

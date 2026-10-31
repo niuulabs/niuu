@@ -86,7 +86,7 @@ describe('HistoryPage', () => {
   it('filters rows by raven ID', async () => {
     renderWithVolundr(<HistoryPage />);
     await waitFor(() => expect(screen.getAllByTestId('history-row').length).toBeGreaterThan(0));
-    const ravnFilter = screen.getByLabelText(/raven id/i);
+    const ravnFilter = screen.getByLabelText(/agent id/i);
     fireEvent.change(ravnFilter, { target: { value: 'r2' } });
     // Historical ds-3 (r2/failed) + historical ds-4b (r2/terminated) = 2
     await waitFor(() => expect(screen.getAllByTestId('history-row').length).toBe(2));
@@ -129,7 +129,7 @@ describe('HistoryPage', () => {
   it('shows Clear filters button when a filter is active', async () => {
     renderWithVolundr(<HistoryPage />);
     expect(screen.queryByRole('button', { name: /clear filters/i })).not.toBeInTheDocument();
-    const ravnFilter = screen.getByLabelText(/raven id/i);
+    const ravnFilter = screen.getByLabelText(/agent id/i);
     fireEvent.change(ravnFilter, { target: { value: 'r1' } });
     expect(screen.getByRole('button', { name: /clear filters/i })).toBeInTheDocument();
   });
@@ -138,7 +138,7 @@ describe('HistoryPage', () => {
     renderWithVolundr(<HistoryPage />);
     await waitFor(() => expect(screen.getAllByTestId('history-row').length).toBeGreaterThan(0));
     const totalCount = screen.getAllByTestId('history-row').length;
-    const ravnFilter = screen.getByLabelText(/raven id/i);
+    const ravnFilter = screen.getByLabelText(/agent id/i);
     fireEvent.change(ravnFilter, { target: { value: 'r2' } });
     await waitFor(() => expect(screen.getAllByTestId('history-row').length).toBe(2));
     fireEvent.click(screen.getByRole('button', { name: /clear filters/i }));

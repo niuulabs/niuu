@@ -14,6 +14,7 @@ from volundr.domain.compute import (
     ComputeLease,
     ComputeLeaseBusyError,
     ComputeLeaseRepository,
+    ComputeProvisioningLimitError,
     LeaseState,
     MachineBootstrap,
     MachineProviderError,
@@ -59,17 +60,29 @@ class VmPodManager(PodManager):
         provisioning_timeout_seconds: float = 600,
         cleanup_timeout_seconds: float = 300,
         poll_interval_seconds: float = 2,
+        runtime_wait_log_every: int = 10,
+        runtime_wait_surface_after: int = 3,
         **_extra,
     ):
         if not profile or not pool_id or max_machines < 1:
             raise ValueError("VM sessions require a profile, pool_id and positive max_machines")
         if min(provisioning_timeout_seconds, cleanup_timeout_seconds, poll_interval_seconds) <= 0:
             raise ValueError("VM session timeouts must be positive")
+        if min(runtime_wait_log_every, runtime_wait_surface_after) < 1:
+            raise ValueError("VM runtime wait reporting counts must be positive")
         self._profile, self._pool_id, self._limit = profile, pool_id, max_machines
         self._origin = (public_origin or f"http://{server_public_host}:{server_port}").rstrip("/")
         self._provisioning_timeout = provisioning_timeout_seconds
         self._cleanup_timeout = cleanup_timeout_seconds
         self._poll = poll_interval_seconds
+        # A guest that stays "not ready" (e.g. a runner without the configured Skuld)
+        # is logged on the first and every Nth attempt, and its reason becomes the
+        # session's visible wait detail after M attempts.
+        self._runtime_wait_log_every = runtime_wait_log_every
+        self._runtime_wait_surface_after = runtime_wait_surface_after
+        # Session id -> why its guest runtime is not ready yet. Kept here, not on the
+        # lease, because every reconcile rewrites lease.error from the machine state.
+        self._wait_reasons: dict[UUID, str] = {}
         self._service: ComputeLeaseService | None = None
         self._repository: ComputeLeaseRepository | None = None
         self._runtime: VmRuntime | None = None
@@ -410,7 +423,15 @@ class VmPodManager(PodManager):
                     "volundr.compute.assignments",
                     attributes={"pool": self._pool_id, "source": "cold"},
                 )
-                lease = await service.acquire(
+                timeout_seconds = (
+                    (await self._pool_service.policy()).provisioning_timeout_seconds
+                    if self._pool_service
+                    else self._provisioning_timeout
+                )
+                lease = await self._acquire_when_provisioning_frees(
+                    service,
+                    session,
+                    timeout_seconds,
                     session_id=session.id,
                     owner_id=session.owner_id or "",
                     tenant_id=session.tenant_id or "",
@@ -418,42 +439,105 @@ class VmPodManager(PodManager):
                     bootstrap=machine_bootstrap,
                     session_bootstrap=bootstrap,
                     execution_plan=plan,
-                    timeout_seconds=(await self._pool_service.policy()).provisioning_timeout_seconds
-                    if self._pool_service
-                    else self._provisioning_timeout,
+                    timeout_seconds=timeout_seconds,
                 )
                 if plan is not None:
                     bootstrap = await service.bootstrap_for(lease)
-            async with asyncio.timeout(self._provisioning_timeout):
-                while True:
-                    try:
-                        lease = await service.reconcile(lease.id)
-                    except ComputeLeaseBusyError:
-                        # Pool maintenance and session startup share the same
-                        # per-allocation operation lock. Retry this durable
-                        # claim within the existing provisioning deadline.
-                        await asyncio.sleep(self._poll)
-                        continue
-                    if lease.state in {LeaseState.FAILED, LeaseState.DRAINING, LeaseState.RELEASED}:
-                        raise RuntimeError(
-                            lease.error or "VM allocation cannot start; inspect its durable lease"
-                        )
-                    if (
-                        lease.machine
-                        and lease.machine.state == MachineState.RUNNING
-                        and lease.machine.addresses
-                    ):
-                        try:
-                            await self._start_runtime(lease.id, bootstrap)
-                            break
-                        except (VmRuntimeUnavailableError, ComputeLeaseBusyError):
-                            pass  # Retry the same pinned guest while SSH finishes booting.
-                    await asyncio.sleep(self._poll)
+            # Survives the timeout's cancellation of the wait, so the failure says why.
+            wait: dict = {"count": 0, "reason": None}
+            try:
+                async with asyncio.timeout(self._provisioning_timeout):
+                    lease = await self._wait_and_start(service, session, lease, bootstrap, wait)
+            except TimeoutError:
+                if wait["reason"] is None:
+                    raise
+                raise RuntimeError(self._runtime_not_ready(wait["reason"])) from None
             return PodStartResult(
                 chat_endpoint=self.initial_chat_endpoint(session),
                 code_endpoint=None,
                 pod_name=str(lease.id),
             )
+
+    async def _acquire_when_provisioning_frees(
+        self, service: ComputeLeaseService, session: Session, wait_seconds: float, **claim
+    ) -> ComputeLease:
+        """Queue behind the pool's provisioning limit instead of failing the start.
+
+        A full pool (no unreserved slots) still fails at once; only the transient
+        concurrent-provisioning limit waits, bounded by the provisioning timeout.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait_seconds
+        queued = False
+        while True:
+            try:
+                return await service.acquire(**claim)
+            except ComputeProvisioningLimitError:
+                if loop.time() >= deadline:
+                    raise
+                if not queued:
+                    logger.info(
+                        "Session %s waits for a provisioning slot in compute pool %s",
+                        session.id,
+                        self._pool_id,
+                    )
+                    queued = True
+                await asyncio.sleep(self._poll)
+
+    async def _wait_and_start(
+        self,
+        service: ComputeLeaseService,
+        session: Session,
+        lease: ComputeLease,
+        bootstrap: MachineBootstrap,
+        wait: dict,
+    ) -> ComputeLease:
+        while True:
+            try:
+                lease = await service.reconcile(lease.id)
+            except ComputeLeaseBusyError:
+                # Pool maintenance and session startup share the same
+                # per-allocation operation lock. Retry this durable
+                # claim within the existing provisioning deadline.
+                await asyncio.sleep(self._poll)
+                continue
+            if lease.state in {LeaseState.FAILED, LeaseState.DRAINING, LeaseState.RELEASED}:
+                error = lease.error or "VM allocation cannot start; inspect its durable lease"
+                if wait["reason"] is not None:
+                    # The lease's durable deadline can expire just before this wait's
+                    # own timeout: either way the guest never became ready, so say why.
+                    error = f"{self._runtime_not_ready(wait['reason'])}. {error}"
+                raise RuntimeError(error)
+            if (
+                lease.machine
+                and lease.machine.state == MachineState.RUNNING
+                and lease.machine.addresses
+            ):
+                try:
+                    await self._start_runtime(lease.id, bootstrap)
+                    self._wait_reasons.pop(session.id, None)
+                    return lease
+                except ComputeLeaseBusyError:
+                    pass
+                except VmRuntimeUnavailableError as exc:
+                    # Retry the same pinned guest while it finishes booting, but never
+                    # silently: a guest that stays unprepared needs an operator.
+                    wait["count"] += 1
+                    wait["reason"] = str(exc) or type(exc).__name__
+                    if wait["count"] == 1 or wait["count"] % self._runtime_wait_log_every == 0:
+                        logger.warning(
+                            "Session %s: VM runtime not ready on allocation %s (attempt %d): %s",
+                            session.id,
+                            lease.id,
+                            wait["count"],
+                            wait["reason"],
+                        )
+                    if wait["count"] >= self._runtime_wait_surface_after:
+                        self._wait_reasons[session.id] = f"Runtime not ready: {wait['reason']}"
+            await asyncio.sleep(self._poll)
+
+    def _runtime_not_ready(self, reason: str) -> str:
+        return f"VM runtime did not become ready within {self._provisioning_timeout:g}s: {reason}"
 
     async def _retry_failed_runtime(self, lease_id: UUID):
         """Re-open only a failed guest-runtime start on the same running machine."""
@@ -697,7 +781,13 @@ class VmPodManager(PodManager):
             return SessionStatus.PROVISIONING
         if not await runtime.ready(lease, bootstrap):
             return SessionStatus.PROVISIONING
-        await service.mark_busy(lease.id)
+        if lease.state is not LeaseState.BUSY:
+            try:
+                await service.mark_busy(lease.id)
+            except ComputeLeaseBusyError:
+                # Another operation holds the allocation. The runtime is ready,
+                # so a read must not fail; the next status check records BUSY.
+                pass
         return SessionStatus.RUNNING
 
     async def status_detail(self, session: Session) -> str | None:
@@ -706,7 +796,7 @@ class VmPodManager(PodManager):
         lease = await repository.active_for_session(self._pool_id, session.id)
         if lease is None or lease.state not in {LeaseState.PROVISIONING, LeaseState.READY}:
             return None
-        return lease.error
+        return self._wait_reasons.get(session.id) or lease.error
 
     async def wait_for_ready(self, session: Session, timeout: float) -> SessionStatus:
         try:
@@ -721,6 +811,7 @@ class VmPodManager(PodManager):
 
     async def stop(self, session: Session) -> bool:
         service, repository, _ = self._configured()
+        self._wait_reasons.pop(session.id, None)
         async with self._locks.setdefault(session.id, asyncio.Lock()):
             lease = await repository.active_for_session(self._pool_id, session.id)
             if lease is None:
@@ -772,7 +863,6 @@ class VmPodManager(PodManager):
                         ):
                             raise
                     await asyncio.sleep(self._poll)
-            return True
 
     async def _finish_stop(self, lease):
         if self._pool_service:

@@ -21,6 +21,7 @@ from urllib.parse import quote
 import httpx
 
 from ravn.adapters.channels._http_mixin import GatewayHttpMixin
+from ravn.adapters.channels._message_split import split_message
 from ravn.adapters.channels.gateway import RavnGateway
 from ravn.config import MatrixChannelConfig
 from ravn.ports.gateway_channel import GatewayChannelPort, MessageHandler
@@ -92,17 +93,15 @@ class MatrixGateway(GatewayHttpMixin, GatewayChannelPort):
 
     async def send_text(self, chat_id: str, text: str) -> None:
         """Send a plain-text message to Matrix room *chat_id*."""
-        limit = self._config.message_max_chars
-        if len(text) > limit:
-            text = text[: limit - 3] + "..."
-        txn_id = uuid.uuid4().hex
-        await self._cs_put(
-            f"/rooms/{_quote(chat_id)}/send/{_EVENT_TYPE_MESSAGE}/{txn_id}",
-            json={
-                "msgtype": _MSGTYPE_TEXT,
-                "body": text,
-            },
-        )
+        for chunk in split_message(text, self._config.message_max_chars):
+            txn_id = uuid.uuid4().hex
+            await self._cs_put(
+                f"/rooms/{_quote(chat_id)}/send/{_EVENT_TYPE_MESSAGE}/{txn_id}",
+                json={
+                    "msgtype": _MSGTYPE_TEXT,
+                    "body": chunk,
+                },
+            )
 
     async def send_image(self, chat_id: str, image: bytes, caption: str = "") -> None:
         """Upload *image* to the homeserver and send an m.image event."""

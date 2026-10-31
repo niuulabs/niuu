@@ -4,7 +4,7 @@ Returns the status of internal services and infrastructure:
   - Database connection
   - EventBus subscriber count
   - ActivitySubscriber running state
-  - NotificationService running state
+  - NotificationService running state and delivery counters
   - ReviewEngine running state
 """
 
@@ -27,6 +27,10 @@ class DetailedHealthResponse(BaseModel):
     event_bus_subscriber_count: int
     activity_subscriber_running: bool
     notification_service_running: bool
+    notifications_delivered: int = 0
+    notification_failed_deliveries: int = 0
+    notification_failed_events: int = 0
+    notification_last_failure: str | None = None
     review_engine_running: bool
 
 
@@ -49,6 +53,9 @@ def create_health_router() -> APIRouter:
         notification_running = (
             notification_service.running if notification_service is not None else False
         )
+        notification_stats = (
+            notification_service.stats if notification_service is not None else None
+        )
 
         review_engine = getattr(request.app.state, "review_engine", None)
         review_running = review_engine.running if review_engine is not None else False
@@ -62,6 +69,16 @@ def create_health_router() -> APIRouter:
             event_bus_subscriber_count=event_bus_count,
             activity_subscriber_running=activity_running,
             notification_service_running=notification_running,
+            notifications_delivered=notification_stats.delivered if notification_stats else 0,
+            notification_failed_deliveries=(
+                notification_stats.failed_deliveries if notification_stats else 0
+            ),
+            notification_failed_events=(
+                notification_stats.failed_events if notification_stats else 0
+            ),
+            notification_last_failure=(
+                notification_stats.last_failure if notification_stats else None
+            ),
             review_engine_running=review_running,
         )
 

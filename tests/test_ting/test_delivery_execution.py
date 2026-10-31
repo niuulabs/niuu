@@ -1250,7 +1250,6 @@ async def test_one_poisoned_child_does_not_stall_reconciliation_of_others() -> N
         plan_revision=PLAN_REVISION,
         workstreams=[_proposal(execution, "api"), _proposal(execution, "ui")],
     )
-    api_child = next(child for child in repository.children if child.key == "api")
 
     result = await service.reconcile(execution.id)
 

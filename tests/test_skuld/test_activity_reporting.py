@@ -53,6 +53,21 @@ class TestActivityStateReporting:
         assert call_args[1]["json"]["state"] == "active"
 
     @pytest.mark.asyncio
+    async def test_disabled_activity_reporting_tracks_state_without_posting(self, test_broker):
+        """A runtime with no Forge session (a resident) keeps its local state but
+        never posts to /api/v1/forge/sessions/<id>/activity."""
+        test_broker._settings.activity_reporting_enabled = False
+        mock_client = AsyncMock()
+        test_broker._http_client = mock_client
+        test_broker._http_client_jwt = None
+
+        delivered = await test_broker._report_activity_state("active")
+
+        assert delivered is False
+        assert test_broker._activity_state == "active"
+        mock_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_report_activity_state_deduplicates(self, test_broker):
         """Reporting the same state twice should not make a second HTTP call."""
         mock_client = AsyncMock()

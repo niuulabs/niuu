@@ -47,6 +47,11 @@ class StubRavnGateway:
     delay: float = 0.0
     raise_after: int | None = None
     seen: list[tuple[str, str]] = field(default_factory=list)
+    dropped: list[str] = field(default_factory=list)
+
+    def drop_session(self, session_id: str) -> bool:
+        self.dropped.append(session_id)
+        return True
 
     async def handle_message_stream(self, session_id: str, text: str) -> AsyncIterator[_Event]:
         self.seen.append((session_id, text))
@@ -80,9 +85,13 @@ async def running_shim(
     *,
     stub: StubRavnGateway | None = None,
     tick_seconds: float | None = None,
+    agent_id: str = "travis",
+    max_live_sessions: int = 8,
+    token: str = TOKEN,
+    notifications=None,
 ):
     """Boot the shim on an ephemeral port and yield its URL."""
-    import ravn.adapters.channels.gateway_openclaw as mod
+    from ravn.adapters.channels import gateway_openclaw as mod
 
     stub = stub or StubRavnGateway(script=plain_turn())
 
@@ -91,21 +100,22 @@ async def running_shim(
         host = "127.0.0.1"
         port = 0
         token_env = "RAVN_OPENCLAW_TEST_TOKEN_ENV"
-        agent_id = "travis"
         session_prefix = ""
-        max_live_sessions = 8
         store_path = str(tmp_path / "state.db")
+
+    Cfg.agent_id = agent_id
+    Cfg.max_live_sessions = max_live_sessions
 
     import os
 
-    os.environ["RAVN_OPENCLAW_TEST_TOKEN_ENV"] = TOKEN
+    os.environ["RAVN_OPENCLAW_TEST_TOKEN_ENV"] = token
 
     original_tick = mod.TICK_EMIT_SECONDS
     if tick_seconds is not None:
         mod.TICK_EMIT_SECONDS = tick_seconds
 
     store = OpenClawStore(Cfg.store_path)
-    gw = OpenClawGateway(Cfg(), stub, store=store)
+    gw = OpenClawGateway(Cfg(), stub, store=store, notifications=notifications)
     config = uvicorn.Config(
         gw._app,
         host="127.0.0.1",
@@ -482,3 +492,201 @@ class TestHeartbeat:
                             break
                 assert saw_delta
                 assert ticks_during_turn >= 2, "the transport would have been killed"
+
+
+async def _turn_states(client: FakeLexiChatClient, session_key: str) -> list[str]:
+    """Chat states for *session_key* up to and including its terminal one."""
+    states: list[str] = []
+    for _ in range(60):
+        frame = await client.next_event(timeout=10)
+        if frame["event"] != "chat" or frame["payload"]["sessionKey"] != session_key:
+            continue
+        states.append(frame["payload"]["state"])
+        if states[-1] in {"final", "error", "aborted"}:
+            return states
+    raise AssertionError(f"no terminal chat event for {session_key}: {states}")
+
+
+class TestSessionLifecycle:
+    """sessions.patch / sessions.delete / chat.abort: what Volundr's session API drives."""
+
+    async def test_hello_advertises_the_lifecycle_methods(self, tmp_path) -> None:
+        async with running_shim(tmp_path) as shim:
+            async with FakeLexiChatClient(url=shim.url, token=TOKEN) as client:
+                methods = client.hello["features"]["methods"]
+                assert {"sessions.patch", "sessions.delete", "chat.abort"} <= set(methods)
+
+    async def test_patch_creates_a_labelled_session_and_renames_it(self, tmp_path) -> None:
+        async with running_shim(tmp_path) as shim:
+            async with FakeLexiChatClient(url=shim.url, token=TOKEN) as client:
+                created = await client.request(
+                    "sessions.patch", {"key": "agent:travis:niuu-1", "label": "Research"}
+                )
+                assert created["ok"] is True
+                assert created["payload"]["entry"]["label"] == "Research"
+                await client.request(
+                    "sessions.patch", {"key": "agent:travis:niuu-1", "label": "Renamed"}
+                )
+                rows = (await client.request("sessions.list"))["payload"]["sessions"]
+                row = next(r for r in rows if r["key"] == "agent:travis:niuu-1")
+                assert row["label"] == row["displayName"] == "Renamed"
+                assert row["hasActiveRun"] is False
+
+    async def test_patch_refuses_keys_this_agent_does_not_own(self, tmp_path) -> None:
+        async with running_shim(tmp_path) as shim:
+            async with FakeLexiChatClient(url=shim.url, token=TOKEN) as client:
+                resp = await client.request("sessions.patch", {"key": "telegram:8572736034"})
+                assert resp["ok"] is False
+                assert resp["error"]["code"] == "NOT_FOUND"
+                assert shim.gateway.store.get_session("telegram:8572736034") is None
+
+    async def test_patch_enforces_the_session_cap(self, tmp_path) -> None:
+        async with running_shim(tmp_path, max_live_sessions=2) as shim:
+            async with FakeLexiChatClient(url=shim.url, token=TOKEN) as client:
+                # The seeded main session is one of the two.
+                first = await client.request("sessions.patch", {"key": "agent:travis:niuu-1"})
+                second = await client.request("sessions.patch", {"key": "agent:travis:niuu-2"})
+                assert first["ok"] is True
+                assert second["ok"] is False
+                assert second["error"]["code"] == "RATE_LIMITED"
+                # Renaming an existing session is not a new one.
+                again = await client.request(
+                    "sessions.patch", {"key": "agent:travis:niuu-1", "label": "x"}
+                )
+                assert again["ok"] is True
+
+    async def test_each_session_is_its_own_conversation(self, tmp_path) -> None:
+        async with running_shim(tmp_path) as shim:
+            async with FakeLexiChatClient(url=shim.url, token=TOKEN) as client:
+                for key in ("agent:travis:niuu-a", "agent:travis:niuu-b"):
+                    await client.request("sessions.patch", {"key": key})
+                    await client.request("sessions.subscribe", {"sessionKey": key})
+                    await client.request("chat.send", {"sessionKey": key, "message": key[-1]})
+                    assert (await _turn_states(client, key))[-1] == "final"
+                # Ravn ran each turn on the session's own key: separate agents, separate context.
+                assert shim.stub.seen == [
+                    ("agent:travis:niuu-a", "a"),
+                    ("agent:travis:niuu-b", "b"),
+                ]
+                for key in ("agent:travis:niuu-a", "agent:travis:niuu-b"):
+                    history = (await client.request("chat.history", {"sessionKey": key}))[
+                        "payload"
+                    ]["messages"]
+                    assert [m["role"] for m in history] == ["user", "assistant"]
+                    assert history[0]["content"] == key[-1]
+
+    async def test_delete_removes_transcript_and_ravn_conversation(self, tmp_path) -> None:
+        async with running_shim(tmp_path) as shim:
+            async with FakeLexiChatClient(url=shim.url, token=TOKEN) as client:
+                key = "agent:travis:niuu-gone"
+                await client.request("sessions.patch", {"key": key})
+                await client.request("sessions.subscribe", {"sessionKey": key})
+                await client.request("chat.send", {"sessionKey": key, "message": "hi"})
+                await _turn_states(client, key)
+                resp = await client.request("sessions.delete", {"key": key})
+                assert resp["ok"] is True
+                assert resp["payload"]["deleted"] is True
+                assert shim.gateway.store.get_session(key) is None
+                assert shim.gateway.store.message_count(key) == 0
+                assert shim.stub.dropped == [key]
+                rows = (await client.request("sessions.list"))["payload"]["sessions"]
+                assert key not in {r["key"] for r in rows}
+                # Deleting again is a no-op, not an error.
+                again = await client.request("sessions.delete", {"key": key})
+                assert again["payload"]["deleted"] is False
+
+    async def test_the_main_session_cannot_be_deleted(self, tmp_path) -> None:
+        async with running_shim(tmp_path) as shim:
+            async with FakeLexiChatClient(url=shim.url, token=TOKEN) as client:
+                resp = await client.request("sessions.delete", {"key": "agent:travis:main"})
+                assert resp["ok"] is False
+                assert resp["error"]["code"] == "INVALID_REQUEST"
+                assert shim.gateway.store.get_session("agent:travis:main") is not None
+
+    async def test_abort_ends_the_turn_and_frees_the_session(self, tmp_path) -> None:
+        stub = StubRavnGateway(script=plain_turn(), delay=0.3)
+        async with running_shim(tmp_path, stub=stub) as shim:
+            async with FakeLexiChatClient(url=shim.url, token=TOKEN) as client:
+                key = "agent:travis:main"
+                await client.request("sessions.subscribe", {"sessionKey": key})
+                await client.request("chat.send", {"sessionKey": key, "message": "slow"})
+                # Wait for the first streamed delta, then abort mid-turn.
+                for _ in range(40):
+                    frame = await client.next_event(timeout=10)
+                    if frame["event"] == "chat" and frame["payload"]["state"] == "delta":
+                        break
+                resp = await client.request("chat.abort", {"sessionKey": key})
+                assert resp["payload"]["aborted"] is True
+                assert (await _turn_states(client, key))[-1] == "aborted"
+                assert shim.gateway.store.get_session(key)["status"] == "idle"
+                # The partial answer is what was persisted; the rest is never relayed.
+                await asyncio.sleep(1.0)
+                history = (await client.request("chat.history", {"sessionKey": key}))["payload"][
+                    "messages"
+                ]
+                assert [m["role"] for m in history] == ["user", "assistant"]
+                assert history[-1]["content"] == "p"
+                again = await client.request("chat.abort", {"sessionKey": key})
+                assert again["payload"]["aborted"] is False
+
+    async def test_chat_events_carry_the_native_gateway_fields(self, tmp_path) -> None:
+        stub = StubRavnGateway(script=plain_turn(), raise_after=1)
+        async with running_shim(tmp_path, stub=stub) as shim:
+            async with FakeLexiChatClient(url=shim.url, token=TOKEN) as client:
+                key = "agent:travis:main"
+                await client.request("sessions.subscribe", {"sessionKey": key})
+                await client.request("chat.send", {"sessionKey": key, "message": "x"})
+                payloads = []
+                for _ in range(40):
+                    frame = await client.next_event(timeout=10)
+                    if frame["event"] == "chat":
+                        payloads.append(frame["payload"])
+                        if frame["payload"]["state"] == "error":
+                            break
+                assert payloads[0]["message"]["content"] == "p"
+                assert "ravn blew up" in payloads[-1]["errorMessage"]
+                assert shim.gateway.store.get_session(key)["status"] == "idle"
+
+
+def test_a_restart_frees_sessions_left_busy(tmp_path) -> None:
+    store = OpenClawStore(tmp_path / "state.db")
+    store.upsert_session("agent:main:niuu-1", agent_id="main", status="busy")
+
+    class Cfg:
+        agent_id = "main"
+        token_env = "RAVN_OPENCLAW_TEST_TOKEN_ENV"
+        rooms_dir = str(tmp_path / "rooms")
+
+    OpenClawGateway(Cfg(), StubRavnGateway(), store=store)
+
+    assert store.get_session("agent:main:niuu-1")["status"] == "idle"
+    store.close()
+
+
+def test_a_configured_path_serves_the_shim_under_its_own_prefix(tmp_path) -> None:
+    """Behind an ingress the resident shares with other routes (a Valkyrie's)."""
+    from fastapi.testclient import TestClient
+
+    store = OpenClawStore(tmp_path / "state.db")
+
+    class Cfg:
+        agent_id = "main"
+        token_env = "RAVN_OPENCLAW_TEST_TOKEN_ENV"
+        rooms_dir = str(tmp_path / "rooms")
+        path = "/openclaw"
+
+    gateway = OpenClawGateway(Cfg(), StubRavnGateway(), store=store)
+
+    client = TestClient(gateway._app)
+    assert client.get("/openclaw/health").json() == {"ok": True, "status": "live"}
+    assert client.get("/health").status_code == 404
+    assert "/openclaw" in {getattr(route, "path", "") for route in gateway._app.routes}
+    store.close()
+
+
+def test_the_shim_path_must_be_absolute() -> None:
+    from ravn.config import OpenClawChannelConfig
+
+    with pytest.raises(ValueError, match="must start with '/'"):
+        OpenClawChannelConfig(path="openclaw")
+    assert OpenClawChannelConfig().path == "/"

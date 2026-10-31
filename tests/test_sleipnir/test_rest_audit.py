@@ -38,6 +38,8 @@ class _InMemoryAuditRepository(AuditRepository):
             events = [e for e in events if e.correlation_id == q.correlation_id]
         if q.source:
             events = [e for e in events if e.source == q.source]
+        if q.service is not None:
+            events = [e for e in events if e.source.split(":", 1)[0] == q.service]
         return events[: q.limit]
 
     async def purge_expired(self) -> int:
@@ -241,3 +243,16 @@ def test_audit_event_response_nullable_fields():
     assert resp.causation_id is None
     assert resp.tenant_id is None
     assert resp.ttl is None
+
+
+@pytest.mark.parametrize("path", ["/audit/events", "/api/v1/audit/events"])
+async def test_service_filter_precedes_limit(repo, client, path):
+    # Matching events beyond the old 1000-row fetch must still be returned.
+    for i in range(1001):
+        await repo.append(make_event(event_id=f"other-{i}", source="ting:dispatcher"))
+    await repo.append(make_event(event_id="matching", source="ravn:agent"))
+
+    response = client.get(path, params={"service": "ravn", "limit": 1})
+
+    assert response.status_code == 200
+    assert [event["event_id"] for event in response.json()] == ["matching"]

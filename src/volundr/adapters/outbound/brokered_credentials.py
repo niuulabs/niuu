@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 
 from volundr.domain.models import SessionSpec
@@ -24,7 +25,7 @@ class BrokeredCredentialPodManager:
 
     def _with_brokered_credentials(self, spec: SessionSpec) -> SessionSpec:
         values = self._with_brokered_credential_values(spec.values)
-        return SessionSpec(values=values, pod_spec=spec.pod_spec)
+        return dataclasses.replace(spec, values=values)
 
     def _with_brokered_credential_values(self, source: dict) -> dict:
         values = copy.deepcopy(source)

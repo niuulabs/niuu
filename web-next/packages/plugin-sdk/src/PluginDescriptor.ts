@@ -18,6 +18,13 @@ export interface PluginTab {
   /** Optional count badge rendered next to the tab label. */
   count?: number;
   /**
+   * Optional live count badge. A React hook the shell calls inside its own badge
+   * component, so it may read services or queries; it is only mounted while the
+   * plugin's tabs are visible. Takes precedence over `count`. Return `null` or
+   * `undefined` (or 0) to hide the badge.
+   */
+  useCount?: () => number | null | undefined;
+  /**
    * Show this tab only while Simple mode is on. Advanced mode hides it, so a
    * plugin can offer a simplified page under its own id without changing the
    * tabs Advanced users know.

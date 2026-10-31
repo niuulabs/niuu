@@ -16,7 +16,7 @@ dependencies = [
     "claude-agent-sdk==0.2.159",
     "mcp==1.30.0",
     "asyncpg>=0.31.0",
-    "httpx>=0.28.1",
+    "httpx[http2]>=0.28.1",
     "idna>=3.19",
     "fastapi>=0.141.1",
     "starlette>=1.6.0",
@@ -24,14 +24,14 @@ dependencies = [
     # https://github.com/Kludex/starlette/pull/3498.
     "anyio>=4.14.2,<4.15",
     "python-multipart>=0.0.32",
-    "PyJWT>=2.13.0",
+    "PyJWT>=2.15.1",
     "cryptography>=50.0.1",
-    "urllib3>=2.7.0",
+    "urllib3>=2.8.0",
     "uvicorn>=0.52.4",
     "websockets>=17.1",
     "python-on-whales>=0.81.0",
-    "gitpython>=3.1.61",
-    "msgpack>=1.2.2",
+    "gitpython>=3.2.1",
+    "msgpack>=1.2.3",
     "typer>=0.27.2",
     "respx>=0.23.1",
     "pynng>=0.9.0",
@@ -41,7 +41,7 @@ dependencies = [
     "docker>=7.2.0",
     "grpcio>=1.78.0,<2",
 
-    "pillow>=12.3.0",
+    "pillow>=13.0.0",
 ]
 
 [project.optional-dependencies]
@@ -49,7 +49,7 @@ switchyard = [
     "nemo-switchyard @ git+https://github.com/NVIDIA-NeMo/Switchyard.git@578e1b7cbd9db9577c4a9f14b0218ebc543b2049",
 ]
 openshell = [
-    "openshell @ https://github.com/jve/OpenShell/releases/download/niuu-7bd0ed45e/openshell-0.0.117.dev137%2Bg5b9daab93-py3-none-any.whl#sha256=77c334fb24652a8767409f79b990af4bdde9f5c65e15b03ee4b599909d5749b3 ; python_version >= '3.12'",
+    "openshell @ https://github.com/jve/OpenShell/releases/download/niuu-sdk-03d0f94d4/openshell-0.1.6rc6.dev12%2Bg03d0f94d4-py3-none-any.whl#sha256=09d8439f2cea37b65773db013449b827f81973ab00ae4442c89a42c9cc6ec146 ; python_version >= '3.12'",
 ]
 # DeepSeek Harness runtime for DshJsonRpcTransport (Skuld and OpenShell images).
 # Exact pin: dsh is a developer preview with promised breaking changes.
@@ -64,6 +64,15 @@ nats = [
 embeddings = [
     "sentence-transformers>=6.0.1",
 ]
+# Image provenance verification (`volundr_git verify_image_provenance`): the
+# platform fetches a repository's GitHub build attestations and verifies them
+# with Sigstore. cramjam decodes the Snappy-compressed bundles GitHub stores
+# behind `bundle_url`. Images that host the platform install this extra;
+# `git.provenance.enabled: true` (the default) without it is fatal at startup.
+provenance = [
+    "sigstore>=4.5.1,<5",
+    "cramjam>=2.14.0,<3",
+]
 test = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
@@ -71,7 +80,7 @@ test = [
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
     "httpx2>=2.12.0",
-    "aiohttp>=3.14.3",
+    "aiohttp>=3.14.4",
 ]
 rabbitmq = [
     "aio-pika>=10.0.1",
@@ -110,6 +119,9 @@ cli = [
     # (no-fallbacks), turning on tracing into a broken local platform. The
     # CLI binary always carries the otel packages so that choice always works.
     "volundr[otel]",
+    # Likewise git.provenance.enabled defaults to true in the platform the CLI
+    # hosts, and enabled without sigstore is fatal.
+    "volundr[provenance]",
 ]
 tui = [
     "textual>=8.2.8",
@@ -126,7 +138,8 @@ dev = [
     "textual>=8.2.8",
     "typer>=0.27.2",
     "nats-py[nkeys]>=2.15.0",
-    "aiohttp>=3.14.3",
+    "aiohttp>=3.14.4",
+    "volundr[provenance]",
 ]
 
 [project.scripts]
@@ -182,7 +195,13 @@ build-backend = "hatchling.build"
 # under vendor/envoy_authz_protos/ (see its README and
 # scripts/generate_envoy_authz_protos.py) instead of depending on the
 # xds-protos wheel, which bundles a colliding copy of opentelemetry/proto/**.
-packages = ["src/audit", "src/cli", "src/credentials", "src/features", "src/guild", "src/identity", "src/integrations", "src/niuu", "src/volundr", "src/ting", "src/tracker", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/personas", "vendor/envoy_authz_protos/envoy", "vendor/envoy_authz_protos/xds", "vendor/envoy_authz_protos/udpa", "vendor/envoy_authz_protos/validate"]
+packages = ["src/audit", "src/cli", "src/credentials", "src/features", "src/guild", "src/identity", "src/integrations", "src/niuu", "src/volundr", "src/ting", "src/tracker", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/personas", "src/yggdrasil", "vendor/envoy_authz_protos/envoy", "vendor/envoy_authz_protos/xds", "vendor/envoy_authz_protos/udpa", "vendor/envoy_authz_protos/validate"]
+
+# Migrations live only in migrations/ (the chart reads them through a symlink).
+# The wheel carries them as cli/migrations so an installed service — every
+# container image — can run them; see cli.resources.migration_dir.
+[tool.hatch.build.targets.wheel.force-include]
+"migrations" = "cli/migrations"
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -218,7 +237,7 @@ force-exclude = true
 select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.coverage.run]
-source = ["src/audit", "src/volundr", "src/cli", "src/credentials", "src/features", "src/guild", "src/identity", "src/integrations", "src/ting", "src/tracker", "src/niuu", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory"]
+source = ["src/audit", "src/volundr", "src/cli", "src/credentials", "src/features", "src/guild", "src/identity", "src/integrations", "src/ting", "src/tracker", "src/niuu", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/yggdrasil"]
 branch = true
 # Textual TUI widgets require a running terminal and cannot be exercised with
 # plain pytest. They are excluded from coverage measurement until Textual

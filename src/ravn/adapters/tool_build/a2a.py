@@ -26,6 +26,7 @@ from ravn.adapters.tool_build._contract import (
 )
 from ravn.adapters.tool_build.gate_review import GateReviewer, QuestionAnswerer
 from ravn.adapters.tool_build.http import AsyncJsonHttpClient, client_from_workload_identity
+from ravn.domain.a2a_status import a2a_status_text
 from ravn.domain.capability_catalog import (
     WorkflowCapability,
     WorkflowSelector,
@@ -38,6 +39,8 @@ from ravn.ports.tool_build_backend import (
     ToolBuildPendingError,
     ToolBuildRequest,
     ToolBuildResult,
+    ToolBuildTaskEndedError,
+    ToolBuildTaskStatus,
 )
 
 logger = logging.getLogger(__name__)
@@ -158,9 +161,19 @@ class A2AToolBuildBackend(ToolBuildBackend):
             "ravn.tool_build.backend": self.name,
             "ravn.tool_build.name": request.name,
             "ravn.tool_build.operation.id": request.operation_id,
+            "ravn.environment.id": request.environment_id,
+            "ravn.valkyrie.id": request.valkyrie_id,
+            "a2a.skill.id": self._workflow_id,
+            "ting.workflow.id": self._workflow_id,
+            "ting.connection.id": self._connection_id,
+            "tool.name": request.name,
+            "environment_id": request.environment_id,
+            "valkyrie_id": request.valkyrie_id,
+            "workflow_id": self._workflow_id,
+            "connection_id": self._connection_id,
             "a2a.card.url": self._card_url,
         }
-        with telemetry.span("ravn.a2a.tool_build", attributes=attributes) as span:
+        with telemetry.span("tool_build", attributes=attributes) as span:
             telemetry.event("ravn.tool_build.requested", attributes=attributes, content=request)
             try:
                 result = await self._build_observed(request)
@@ -175,6 +188,13 @@ class A2AToolBuildBackend(ToolBuildBackend):
                         "ravn.tool_build.outcome": "pending",
                         "a2a.task.id": exc.task_id,
                         "a2a.push.registered": exc.push_registered,
+                    },
+                )
+                telemetry.count(
+                    "ravn.tool_build.operations",
+                    attributes={
+                        "ravn.tool_build.backend": self.name,
+                        "ravn.tool_build.outcome": "pending",
                     },
                 )
                 raise
@@ -245,6 +265,27 @@ class A2AToolBuildBackend(ToolBuildBackend):
             )
             return result
 
+    async def task_status(self, task_id: str) -> ToolBuildTaskStatus:
+        endpoint, _workflow_id, _push_supported = await self._resolve_endpoint_and_workflow()
+        state = _task_state(await self._get_task(endpoint, task_id))
+        if state == _COMPLETED_STATE:
+            return ToolBuildTaskStatus.COMPLETED
+        if state in _FAILED_STATES:
+            return ToolBuildTaskStatus.ENDED
+        return ToolBuildTaskStatus.ACTIVE
+
+    async def cancel(self, task_id: str) -> str:
+        endpoint, _workflow_id, _push_supported = await self._resolve_endpoint_and_workflow()
+        state = _task_state(await self._get_task(endpoint, task_id))
+        if state in _TERMINAL_STATES:
+            return state
+        cancelled = await self._rpc(endpoint, "CancelTask", {"id": task_id})
+        get_observability().event(
+            "ravn.a2a.task.cancelled",
+            attributes={"a2a.task.id": task_id, "a2a.task.state": _task_state(cancelled)},
+        )
+        return _task_state(cancelled)
+
     async def _build_observed(self, request: ToolBuildRequest) -> ToolBuildResult:
         endpoint, workflow_id, push_supported = await self._resolve_endpoint_and_workflow()
         telemetry = get_observability()
@@ -290,22 +331,27 @@ class A2AToolBuildBackend(ToolBuildBackend):
             {
                 "a2a.task.id": task_id,
                 "a2a.skill.id": workflow_id,
+                "ting.workflow.id": workflow_id,
+                "ting.connection.id": self._connection_id,
+                "workflow_id": workflow_id,
+                "connection_id": self._connection_id,
                 "a2a.endpoint": endpoint,
             }
         )
 
         push_registered = bool(continuation.get("push_registered"))
-        if not push_registered and push_supported and self._push_callback_url:
-            try:
-                await self._register_push(endpoint, task_id)
-                push_registered = True
-            except ToolBuildError as exc:
-                logger.warning(
-                    "A2A tool-build push registration failed for task %s; "
-                    "using compatibility polling: %s",
-                    task_id,
-                    exc,
+        if not push_registered and self._push_callback_url:
+            # Configured for push, so a build must be followable by push. Falling
+            # back to polling inside this turn left later builder questions
+            # unanswered once the turn ended.
+            if not push_supported:
+                raise ToolBuildError(
+                    f"A2A builder at {self._card_url} does not advertise push "
+                    f"notifications, so task {task_id} could not wake this resident; "
+                    "enable push on the builder or remove push_callback_url"
                 )
+            await self._register_push(endpoint, task_id)
+            push_registered = True
 
         if push_registered:
             final, gate_exchanges = await self._advance_push_task_once(
@@ -327,7 +373,9 @@ class A2AToolBuildBackend(ToolBuildBackend):
             )
         state = _task_state(final)
         if state in _FAILED_STATES:
-            raise ToolBuildError(f"A2A task {task_id} ended in state {state!r}")
+            raise ToolBuildTaskEndedError(
+                task_id=task_id, state=state, reason=_task_end_reason(final)
+            )
         if state != _COMPLETED_STATE:
             raise ToolBuildError(
                 f"A2A task {task_id} did not finish within "
@@ -634,8 +682,6 @@ class A2AToolBuildBackend(ToolBuildBackend):
                 raise ToolBuildError(
                     "A2A gate continuation requires gateDecision=approve or request_changes"
                 )
-            if decision == "request_changes" and not answer:
-                raise ToolBuildError("A2A gate change request requires review notes")
 
         payload = continuation.get("input_payload")
         payload = dict(payload) if isinstance(payload, dict) else {}
@@ -939,22 +985,30 @@ class A2AToolBuildBackend(ToolBuildBackend):
             # Target a specific Volundr connection (e.g. the resident's own
             # cluster) instead of the principal's default.
             metadata["connectionId"] = self._connection_id
-        trace_context = get_observability().inject()
-        if trace_context:
-            metadata["traceContext"] = trace_context
-        result = await self._rpc(
-            endpoint,
-            "SendMessage",
-            {
-                "message": {
-                    "messageId": operation_id,
-                    "contextId": operation_id,
-                    "role": "ROLE_USER",
-                    "parts": [{"text": prompt}],
-                    "metadata": metadata,
-                }
-            },
-        )
+        telemetry = get_observability()
+        attributes = {
+            "a2a.endpoint": endpoint,
+            "a2a.skill.id": workflow_id,
+            "ravn.tool_build.operation.id": operation_id,
+            "ravn.tool_build.name": request.name,
+        }
+        with telemetry.span("ravn.a2a.SendMessage", attributes=attributes):
+            trace_context = telemetry.inject()
+            if trace_context:
+                metadata["traceContext"] = trace_context
+            result = await self._rpc(
+                endpoint,
+                "SendMessage",
+                {
+                    "message": {
+                        "messageId": operation_id,
+                        "contextId": operation_id,
+                        "role": "ROLE_USER",
+                        "parts": [{"text": prompt}],
+                        "metadata": metadata,
+                    }
+                },
+            )
         task = result.get("task")
         if not isinstance(task, dict):
             raise ToolBuildError("A2A SendMessage returned no task")
@@ -1253,7 +1307,19 @@ def _task_status_message(task: dict[str, Any]) -> str:
     status = task.get("status")
     if not isinstance(status, dict):
         return ""
-    return str(status.get("message") or status.get("update") or "")[:500]
+    return a2a_status_text(status)[:500]
+
+
+def _task_end_reason(task: dict[str, Any]) -> str:
+    """The peer's full account of why a task ended, from its status or metadata."""
+    status = task.get("status")
+    reason = a2a_status_text(status if isinstance(status, dict) else None)
+    if reason:
+        return reason
+    metadata = task.get("metadata")
+    if isinstance(metadata, dict):
+        return str(metadata.get("error") or "").strip()
+    return ""
 
 
 def _activity_question(task: dict[str, Any]) -> str:

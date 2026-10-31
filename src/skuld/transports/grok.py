@@ -36,6 +36,8 @@ from skuld.transports import (
     _filter_event,
     _stop_process,
 )
+from skuld.transports.mcp_config import build_acp_mcp_servers
+from skuld.transports.session_env import session_process_env
 
 logger = logging.getLogger("skuld.transport")
 
@@ -189,10 +191,15 @@ class GrokACPTransport(CLITransport):
         acp_prompt_timeout_s: float = 300.0,
         acp_auth_preflight_timeout_s: float = 60.0,
         live_frame_max_bytes: int = 8 * 1024 * 1024,
+        mcp_servers: list[dict] | None = None,
         **_: Any,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
+        # Session MCP servers (incl. Skuld's built-in forge server), sent in ACP
+        # session/new form once initialize has told us which transports Grok takes.
+        self._raw_mcp_servers = list(mcp_servers or [])
+        self._mcp_capabilities: dict[str, Any] = {}
         self._model = _resolve_model(model)
         self._requested_session_id = session_id
         self._grok_bin_override = grok_bin
@@ -278,7 +285,7 @@ class GrokACPTransport(CLITransport):
                 cwd=self.workspace_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env={**os.environ},
+                env=session_process_env(),
             )
             await asyncio.wait_for(proc.communicate(), timeout=self._auth_preflight_timeout)
             logger.info("Grok auth preflight complete (rc=%s)", proc.returncode)
@@ -350,7 +357,7 @@ class GrokACPTransport(CLITransport):
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**os.environ},  # inherits XAI_API_KEY / auth.json etc.
+            env=session_process_env(),  # XAI_API_KEY / auth.json, no broker creds
             limit=self._live_frame_max_bytes,
         )
         self._process = process
@@ -485,6 +492,7 @@ class GrokACPTransport(CLITransport):
                 logger.debug("Grok ACP unhandled message: %s", str(data)[:200])
 
         except asyncio.CancelledError:
+            # Cancellation stops the reader and fails pending requests in finally.
             pass
         except Exception as exc:
             logger.exception("Grok ACP reader loop error: %r", exc)
@@ -662,11 +670,19 @@ class GrokACPTransport(CLITransport):
             },
         )
         logger.debug("Grok ACP initialize result keys: %s", list(result.keys()) if result else None)
+        capabilities = (result or {}).get("agentCapabilities")
+        mcp = capabilities.get("mcpCapabilities") if isinstance(capabilities, dict) else None
+        self._mcp_capabilities = mcp if isinstance(mcp, dict) else {}
 
     async def _acp_new_session(self) -> None:
         params: dict[str, Any] = {
             "cwd": self.workspace_dir,
-            "mcpServers": [],
+            "mcpServers": build_acp_mcp_servers(
+                self._raw_mcp_servers,
+                env=session_process_env(),
+                supports_http=bool(self._mcp_capabilities.get("http")),
+                supports_sse=bool(self._mcp_capabilities.get("sse")),
+            ),
         }
         if self._system_prompt:
             # Pass system prompt if ACP supports the key (ignored or error will surface in practice)

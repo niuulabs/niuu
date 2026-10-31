@@ -114,4 +114,22 @@ describe('createMockSetupService', () => {
     await expect(service.cancelEnrollment('missing')).rejects.toThrow('not found');
     await expect(service.submitEnrollmentCode('missing', 'c')).rejects.toThrow('not found');
   });
+
+  it('signs an existing account in again in place, keeping its id', async () => {
+    const service = createMockSetupService({ latencyMs: 0, enrollmentPolls: 1 });
+    const first = await service.startEnrollment('codex', 'codex-work');
+    await service.getEnrollment(first.id);
+    await service.getEnrollment(first.id);
+    const [connection] = await service.listIntegrations();
+    expect(connection).toMatchObject({ slug: 'codex', credentialName: 'codex-work' });
+
+    const again = await service.startEnrollment('codex', 'codex-work', 'default', connection!.id);
+    expect(again.connectionId).toBe(connection!.id);
+    await service.getEnrollment(again.id);
+    const done = await service.getEnrollment(again.id);
+    expect(done).toMatchObject({ state: 'complete', connectionId: connection!.id });
+    expect(await service.listIntegrations()).toEqual([
+      expect.objectContaining({ id: connection!.id, credentialStatus: 'valid' }),
+    ]);
+  });
 });

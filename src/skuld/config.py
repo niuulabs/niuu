@@ -16,11 +16,12 @@ import json
 import os
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
+    NoDecode,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
     YamlConfigSettingsSource,
@@ -29,7 +30,9 @@ from pydantic_settings import (
 from identity.authz_config import AuthorizationAdapterConfig
 from niuu.config import DynamicAdapterConfig
 from niuu.domain.observability import ObservabilityConfig
+from niuu.forge_mcp.models import ForgeMcpGrant
 from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshNatsConfig
+from skuld.claude_permission import DEFAULT_CLAUDE_PERMISSION_MODE
 
 
 class SkuldObservabilityConfig(ObservabilityConfig):
@@ -114,6 +117,32 @@ class MeshConfig(BaseModel):
     consumes_event_types: list[str] = Field(
         default_factory=lambda: ["code.requested"],
     )
+    flock_broker: bool = Field(
+        default=False,
+        description=(
+            "Skuld brokers a Ravn flock instead of working in it. Its CLI hands work "
+            "to the flock's Ravns over the mesh (the Forge MCP flock tools) and reports "
+            "only the outcomes they publish; Skuld never republishes its own turns as "
+            "a peer outcome, consumes no peer events, and the CLI runs without its "
+            "native sub-agents, which would otherwise stand in for the flock."
+        ),
+    )
+    flock_outcome_history: int = Field(
+        default=200,
+        ge=1,
+        description="Flock member outcomes and failures a broker keeps for its flock tools.",
+    )
+
+    @model_validator(mode="after")
+    def _broker_consumes_nothing(self) -> "MeshConfig":
+        if self.flock_broker and self.consumes_event_types:
+            raise ValueError(
+                "mesh.flock_broker is set but mesh.consumes_event_types is "
+                f"{self.consumes_event_types}: a broker that also subscribes to peer "
+                "events would take the flock's own work. Set consumes_event_types to [] "
+                "or unset flock_broker"
+            )
+        return self
 
 
 class WorkflowTriggerConfig(BaseModel):
@@ -144,6 +173,14 @@ class WorkflowTriggerConfig(BaseModel):
 class WorkflowRuntimeConfig(BaseModel):
     """Workflow graph metadata injected into Skuld-backed flock sessions."""
 
+    gate_consumer_wait_s: float = Field(
+        default=20.0,
+        description=(
+            "How long a gate decision waits for the flock to reconnect after a restart. "
+            "Bounded by how long a caller will hold the request; on a hit the decision "
+            "fails with a 503 and the gate stays pending."
+        ),
+    )
     workflow_id: str = Field(default="")
     name: str = Field(default="")
     version: str = Field(default="")
@@ -239,8 +276,9 @@ class RoomConfig(BaseModel):
     presence_sweep_interval_s: float = Field(
         default=30.0,
         description=(
-            "How often expired participants (heartbeat TTL exceeded, no live "
-            "WebSocket) are evicted from room state. 0 disables the sweep."
+            "How often participants past their heartbeat TTL with no live WebSocket "
+            "are shown as away. They keep their membership until they leave. 0 "
+            "disables the check."
         ),
     )
 
@@ -614,6 +652,126 @@ class WorkloadIdentityConfig(BaseModel):
         return value
 
 
+class ForgeMcpConfig(BaseModel):
+    """The built-in ``forge`` MCP server Skuld injects into every MCP-capable engine.
+
+    The engine spawns ``python -m skuld.forge_mcp`` over stdio; it forwards each
+    tool call to this broker's loopback ``/api/forge-mcp/*`` routes, guarded by
+    the per-start broker secret. The broker performs the Forge calls with its
+    own credential (or ``token`` when set), so no Forge credential reaches the
+    model.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Inject the built-in forge MCP server (SKULD__FORGE_MCP__ENABLED=false: off).",
+    )
+    server_name: str = Field(
+        default="forge",
+        min_length=1,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description="MCP server name; tools appear to Claude as mcp__<name>__<tool>.",
+    )
+    grants: Annotated[list[ForgeMcpGrant] | None, NoDecode] = Field(
+        default=None,
+        description=(
+            "Narrow the tool grants of the session token (SKULD__FORGE_MCP__GRANTS): "
+            "'message' (send_message, message_status) and 'lifecycle' "
+            "(create/start/stop_session). The grants themselves come from the token's "
+            "scopes; this can only remove some. Unset keeps the token's grants; without "
+            "a token no grant is offered. Read tools and notify need no grant."
+        ),
+    )
+    token: str = Field(
+        default="",
+        description=(
+            "Scoped session-bound Forge token (SKULD__FORGE_MCP__TOKEN), minted by Forge "
+            "at launch. Used only as the bearer for MCP-proxied Forge calls; empty uses "
+            "the broker's own credential (and offers no grants)."
+        ),
+    )
+    runtime_dir: str = Field(
+        default="",
+        description=(
+            "Broker-owned 0700 directory for the loopback secret and generated engine "
+            "configs. Empty uses <tempdir>/skuld-<uid>/<session id>."
+        ),
+    )
+    notify_confirm_timeout_s: float = Field(
+        default=5.0,
+        ge=0,
+        description="How long notify waits for Forge to acknowledge the log flush.",
+    )
+    forge_request_timeout_s: float = Field(
+        default=20.0, gt=0, description="Timeout for one Forge REST call made by a tool."
+    )
+    broker_request_timeout_s: float = Field(
+        default=60.0,
+        gt=0,
+        description="Timeout for one stdio-server → broker tool call.",
+    )
+    stdio_max_concurrency: int = Field(
+        default=4, ge=1, description="Tool calls the stdio server runs in parallel."
+    )
+    startup_timeout_s: float = Field(
+        default=20.0, gt=0, description="Engine-side MCP server startup timeout (Codex)."
+    )
+    tool_timeout_s: float = Field(
+        default=120.0, gt=0, description="Engine-side MCP tool call timeout (Codex)."
+    )
+    list_default_limit: int = Field(
+        default=20, ge=1, description="Items returned by list tools when none is asked."
+    )
+    list_max_limit: int = Field(default=50, ge=1, description="Upper bound for list tools.")
+    transcript_default_turns: int = Field(
+        default=10, ge=1, description="Turns session_transcript returns when none is asked."
+    )
+    transcript_max_turns: int = Field(
+        default=30, ge=1, description="Upper bound on turns session_transcript returns."
+    )
+    transcript_turn_max_chars: int = Field(
+        default=2000, ge=1, description="Characters kept per transcript turn."
+    )
+    output_max_chars: int = Field(
+        default=24000, ge=1024, description="Upper bound on one tool result's text."
+    )
+    skill_enabled: bool = Field(
+        default=True,
+        description="Materialize the forge-notify skill for engines with per-session skills.",
+    )
+    flock_outcome_wait_max_s: float = Field(
+        default=45.0,
+        gt=0,
+        description=(
+            "Longest one flock_outcomes call waits for a flock member's outcome. Must be "
+            "shorter than broker_request_timeout_s; the broker polls again for longer work."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _flock_wait_fits_broker_call(self) -> "ForgeMcpConfig":
+        if self.flock_outcome_wait_max_s >= self.broker_request_timeout_s:
+            raise ValueError(
+                f"forge_mcp.flock_outcome_wait_max_s ({self.flock_outcome_wait_max_s}) must be "
+                f"shorter than forge_mcp.broker_request_timeout_s "
+                f"({self.broker_request_timeout_s}), or every long wait is cut off mid-call"
+            )
+        return self
+
+    @field_validator("grants", mode="before")
+    @classmethod
+    def _coerce_grants(cls, value: Any) -> Any:
+        """Accept ``message,lifecycle`` or a JSON list (env forms) as well as a list.
+
+        An empty string is an explicit empty list (narrow to no grants).
+        """
+        if not isinstance(value, str):
+            return value
+        if value.strip().startswith("["):
+            return json.loads(value)
+        return [part.strip() for part in value.split(",") if part.strip()]
+
+
 class CodexAuthConfig(BaseModel):
     """Dynamic Codex authentication adapter configuration."""
 
@@ -847,6 +1005,16 @@ class SkuldSettings(BaseSettings):
             "Claude Remote Control permission-mode override; empty follows skip_permissions."
         ),
     )
+    # A Forge node decides how unattended Claude sessions run: YOLO where the host allows it,
+    # Claude's classifier-gated ``auto`` mode elsewhere. Set it once in the node's config file
+    # (``claude_permission_mode: bypassPermissions`` on YOLO hosts). Claude transports validate it.
+    claude_permission_mode: str = Field(
+        default=DEFAULT_CLAUDE_PERMISSION_MODE,
+        description=(
+            "Claude Code --permission-mode used when skip_permissions is on "
+            "(auto, bypassPermissions or acceptEdits)."
+        ),
+    )
     # Default ON: Claude tmux sessions launch with agent teams (--teammate-mode
     # tmux) so a session can spin up a team of agents. Only the tmux transport
     # consumes this; other transports ignore it. Override with SKULD__AGENT_TEAMS=0.
@@ -896,6 +1064,21 @@ class SkuldSettings(BaseSettings):
     service_user_id: str = Field(default="skuld-broker")
     service_tenant_id: str = Field(default="default")
     persistence_mount_path: str = Field(default="/volundr/sessions")
+    home_dir: str = Field(
+        default="",
+        description=(
+            "The session's home directory (what the agent sees as ~). Empty derives the "
+            "cluster layout {persistence_mount_path}/{session.id}/home. Local mode sets the "
+            "HOME the broker actually runs with."
+        ),
+    )
+    presented_files_dir: str = Field(
+        default="",
+        description=(
+            "Broker-owned staging directory for present-file copies (outside the "
+            "workspace, survives broker restarts). Empty uses {home}/.forge-presented."
+        ),
+    )
     archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
     # OFF by default in our pipeline: the watcher tails session JSONL and POSTs
     # chronicle timeline events we don't use (and which 405 through the guild
@@ -911,6 +1094,14 @@ class SkuldSettings(BaseSettings):
     # Volundr session_event_log so any client can replay the full transcript
     # (including the in-flight turn) regardless of whether a socket is attached.
     event_log_enabled: bool = Field(default=True)
+    activity_reporting_enabled: bool = Field(
+        default=True,
+        description=(
+            "Report activity state to the Forge session "
+            "(/api/v1/forge/sessions/<id>/activity). Off for a runtime that has "
+            "no Forge session, such as a resident."
+        ),
+    )
     event_log_batch_size: int = Field(default=100)
     event_log_flush_interval_ms: int = Field(default=500)
     event_log_max_buffer: int = Field(default=50_000)
@@ -957,6 +1148,27 @@ class SkuldSettings(BaseSettings):
         ge=1,
         description="Maximum retained native question receipt identities for deduplication.",
     )
+    tmux_workspace_trust_stable_s: float = Field(
+        default=0.5,
+        ge=0,
+        description=(
+            "How long Claude's workspace-trust menu must render unchanged before a key is "
+            "sent (early keys are dropped while the CLI negotiates the terminal)."
+        ),
+    )
+    tmux_workspace_trust_settle_s: float = Field(
+        default=1.0,
+        ge=0,
+        description=(
+            "Minimum time after a workspace-trust key before the next one; a menu still "
+            "shown after it means the key was not consumed and is retried."
+        ),
+    )
+    tmux_workspace_trust_max_attempts: int = Field(
+        default=3,
+        ge=1,
+        description="Maximum navigation keys and, separately, confirmations for workspace trust.",
+    )
     tmux_native_text_wait_s: float = Field(
         default=0.1,
         gt=0,
@@ -994,6 +1206,7 @@ class SkuldSettings(BaseSettings):
     )
     acp_prompt_timeout_s: float = Field(default=300.0)  # ACP/MSP (Grok Build, Muse) turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
+    forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)
     observability: SkuldObservabilityConfig = Field(default_factory=SkuldObservabilityConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
@@ -1043,6 +1256,28 @@ class SkuldSettings(BaseSettings):
 
         return self
 
+    @model_validator(mode="after")
+    def _flock_broker_can_reach_its_flock(self) -> "SkuldSettings":
+        """A broker the flock tools cannot serve would do the flock's work itself."""
+        if not self.mesh.flock_broker:
+            return self
+        missing = [
+            name
+            for name, enabled in (
+                ("mesh.enabled", self.mesh.enabled),
+                ("room.enabled", self.room.enabled),
+                ("forge_mcp.enabled", self.forge_mcp.enabled),
+            )
+            if not enabled
+        ]
+        if missing:
+            raise ValueError(
+                f"mesh.flock_broker is set but {', '.join(missing)} is off: the broker reaches "
+                "its flock through the room's mesh route via the forge MCP flock tools. "
+                "Enable them, or unset mesh.flock_broker"
+            )
+        return self
+
     @property
     def workspace_path(self) -> str:
         """Resolved workspace directory path."""
@@ -1058,9 +1293,18 @@ class SkuldSettings(BaseSettings):
     @property
     def home_path(self) -> str:
         """Resolved home directory path for the session."""
+        if self.home_dir:
+            return self.home_dir
         if self.persistent_home_path:
             return self.persistent_home_path
         return f"{self.persistence_mount_path}/{self.session.id}/home"
+
+    @property
+    def presented_files_path(self) -> str:
+        """Where present-file stages its copies."""
+        if self.presented_files_dir:
+            return self.presented_files_dir
+        return f"{self.home_path}/.forge-presented"
 
     @classmethod
     def settings_customise_sources(

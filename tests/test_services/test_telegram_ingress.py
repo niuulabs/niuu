@@ -378,7 +378,7 @@ async def test_run_bot_processes_updates_and_persists_next_offset():
     assert cursor_repo.upserts[-1][2] == "8"
 
 
-async def test_run_bot_swallow_poller_errors():
+async def test_run_bot_ends_on_poller_errors_for_the_manager_to_restart():
     service = TelegramIngressService(
         integration_repo=_FakeIntegrationRepo([]),
         credential_store=_FakeCredentialStore({}),
@@ -486,3 +486,55 @@ async def test_load_offset_handles_missing_and_invalid_cursor_values():
 
     cursor_repo.values = {("telegram", _consumer_key("token-1")): "invalid"}
     assert await service._load_offset(binding) is None
+
+
+async def test_run_manager_restarts_a_poller_that_ended():
+    """A poller that hit an error (e.g. the 409 Conflict while two Völundr pods
+    overlap in a rolling update) kept its finished task registered, so the
+    manager never polled that bot again."""
+    service = TelegramIngressService(
+        integration_repo=_FakeIntegrationRepo([]),
+        credential_store=_FakeCredentialStore({}),
+        communication_ingress=_FakeCommunicationIngress(),
+        refresh_interval_s=0.01,
+    )
+    binding = SimpleNamespace(bot_token="token-1")
+    service._load_bindings = AsyncMock(return_value=[binding])  # type: ignore[method-assign]
+    runs: list[str] = []
+
+    async def fake_run_bot(b):
+        runs.append(b.bot_token)
+        if len(runs) == 2:
+            service._stop_event.set()
+
+    service._run_bot = fake_run_bot  # type: ignore[method-assign]
+
+    await asyncio.wait_for(service._run_manager(), timeout=2)
+
+    assert runs == ["token-1", "token-1"]
+    await service.stop()
+
+
+async def test_run_bot_treats_a_conflict_as_another_instance_polling(caplog):
+    from volundr.domain.services.telegram_ingress import TelegramConflictError
+
+    caplog.set_level("INFO", logger="volundr.domain.services.telegram_ingress")
+    service = TelegramIngressService(
+        integration_repo=_FakeIntegrationRepo([]),
+        credential_store=_FakeCredentialStore({}),
+        communication_ingress=_FakeCommunicationIngress(),
+    )
+    binding = SimpleNamespace(bot_token="token-1", owner_ids=("u1",), connection_ids=("c1",))
+
+    class _FakeBot:
+        def __init__(self, token: str) -> None:
+            self.token = token
+
+        async def get_updates(self, **kwargs):
+            raise TelegramConflictError("terminated by other getUpdates request")
+
+    with patch("volundr.domain.services.telegram_ingress.Bot", _FakeBot):
+        await service._run_bot(binding)
+
+    assert "polled by another instance" in caplog.text
+    assert "ERROR" not in caplog.text

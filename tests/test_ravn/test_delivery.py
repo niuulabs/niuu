@@ -1033,7 +1033,7 @@ def _coordinator_settings() -> Settings:
     settings = Settings()
     settings.gateway.platform.enabled = True
     settings.gateway.platform.base_url = "https://platform.example"
-    settings.gateway.platform.pat_token = "platform-token"
+    settings.gateway.platform.access_token = "platform-token"
     settings.workflow_execution.execution_id = str(uuid4())
     settings.workflow_execution.base_url = "https://ting.example"
     settings.workflow_execution.auth_token_file = "/projected/developer/token"
@@ -1132,7 +1132,7 @@ def test_coordinator_runtime_explicit_anonymous_dev_avoids_platform_base_auth(tm
     )
     assert persona is not None
     settings = _coordinator_settings()
-    settings.gateway.platform.pat_token = ""
+    settings.gateway.platform.access_token = ""
     settings.gateway.platform.workload_token_file = "/missing/projected-token"
     settings.gateway.platform.anonymous_dev_mode = True
     settings.workflow_execution.auth_token_file = ""

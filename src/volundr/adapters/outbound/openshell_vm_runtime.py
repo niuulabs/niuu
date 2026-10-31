@@ -9,6 +9,7 @@ provided by the machine image or the operator's bootstrap commands.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import shlex
 import tomllib
@@ -29,6 +30,10 @@ from volundr.domain.models import PodSpecAdditions, Session, SessionSpec
 from volundr.domain.vm_runtime import VmRuntimeUnavailableError
 
 _SPEC = "/etc/niuu/openshell-session.json"
+#: The Docker bridge that gives each guest its callback address. OpenShell does
+#: not attach sandboxes to it: workloads run with network=none and supervisors
+#: on the host network, which reaches this address like any other host address.
+DEFAULT_CALLBACK_NETWORK_NAME = "niuu-callback"
 _CONFIG = "/etc/openshell/gateway.toml"
 _UNIT = """[Unit]
 Description=Niuu OpenShell Docker gateway
@@ -75,13 +80,42 @@ class OpenShellVmRuntime(SshContainerVmRuntime):
         gateway_kwargs: dict,
         network_subnet: str,
         gateway_client_secret: str = "",
+        callback_network_name: str = DEFAULT_CALLBACK_NETWORK_NAME,
         **kwargs,
     ):
         config = tomllib.loads(gateway_config)["openshell"]
+        if config.get("version") != 2:
+            raise ValueError("OpenShell VM gateway_config must declare [openshell] version = 2")
         gateway = config["gateway"]
         docker = config["drivers"]["docker"]
         if gateway.get("compute_driver") != "docker" or not docker.get("enable_bind_mounts"):
             raise ValueError("OpenShell VM gateway requires Docker with enable_bind_mounts=true")
+        # The runtime mounts the guest's workspace and home into every sandbox
+        # through template.driver_config, as host bind mounts.
+        if not docker.get("allow_driver_config"):
+            raise ValueError(
+                "OpenShell VM gateway must set allow_driver_config = true under "
+                "[openshell.drivers.docker]: the runtime mounts workspace and home "
+                "through the sandbox driver config"
+            )
+        if (docker.get("resource_admission") or {}).get("enabled", True):
+            raise ValueError(
+                "OpenShell VM gateway must set enabled = false under "
+                "[openshell.drivers.docker.resource_admission]: OpenShell cannot label "
+                "host bind mounts, so admission rejects the workspace and home mounts"
+            )
+        if "network_name" in docker:
+            raise ValueError(
+                "OpenShell VM gateway_config sets [openshell.drivers.docker] network_name, "
+                "which OpenShell v0.1.6 removed; delete it — sandboxes no longer join a "
+                "Docker network, and the runtime creates its own callback bridge "
+                f"({callback_network_name!r})"
+            )
+        if docker.get("supervisor_network_mode", "host") not in {"host", "auto"}:
+            raise ValueError(
+                "OpenShell VM gateway requires host-networked supervisors; remove "
+                "supervisor_network_mode or set it to 'host'"
+            )
         if gateway.get("auth", {}).get("allow_unauthenticated_users", False):
             raise ValueError("OpenShell VM gateway must require authentication")
         if not gateway.get("oidc"):
@@ -90,10 +124,31 @@ class OpenShellVmRuntime(SshContainerVmRuntime):
             raise ValueError("OpenShell VM gateway uses plaintext inside pinned SSH transport")
         self._gateway_host, port = gateway["bind_address"].rsplit(":", 1)
         self._gateway_port = int(port)
-        if self._gateway_host != docker["host_gateway_ip"]:
-            raise ValueError("Gateway bind address must be the configured Docker bridge address")
-        if not gateway_image or not docker.get("supervisor_image"):
-            raise ValueError("Configure matching OpenShell gateway and supervisor images")
+        callback = ipaddress.ip_address(self._gateway_host)
+        subnet = ipaddress.ip_network(network_subnet)
+        if callback.is_loopback or callback not in subnet or callback == subnet.network_address:
+            raise ValueError(
+                f"Gateway bind address {self._gateway_host} must be a host address in "
+                f"network_subnet {network_subnet}: it is the guest's callback bridge address, "
+                "and sandbox egress cannot reach loopback"
+            )
+        # Host-networked supervisors default to 127.0.0.1, where this gateway
+        # does not listen; they must call back on its bridge address.
+        expected_endpoint = f"http://{gateway['bind_address']}"
+        if docker.get("grpc_endpoint") != expected_endpoint:
+            raise ValueError(
+                f"Set grpc_endpoint = {expected_endpoint!r} under [openshell.drivers.docker] "
+                "so supervisors reach the gateway on its bridge address"
+            )
+        if (
+            not gateway_image
+            or not docker.get("supervisor_image")
+            or not docker.get("sandbox_runtime_image")
+        ):
+            raise ValueError(
+                "Configure matching OpenShell gateway_image and the Docker driver's "
+                "supervisor_image and sandbox_runtime_image (one OpenShell build)"
+            )
         forbidden = {
             "gateway_endpoint",
             "driver_config",
@@ -105,12 +160,12 @@ class OpenShellVmRuntime(SshContainerVmRuntime):
         if forbidden & gateway_kwargs.keys():
             raise ValueError("VM runtime owns gateway endpoint, storage mounts and sandbox paths")
         self._network_subnet = network_subnet
+        self._callback_network_name = callback_network_name
         self._gateway_image = gateway_image
         self._gateway_config = gateway_config
         self._gateway_kwargs = deepcopy(gateway_kwargs)
         if gateway_client_secret:
             self._gateway_kwargs["client_secret"] = gateway_client_secret
-        self._docker = docker
         self._managers: dict[str, tuple[str, OpenShellGatewayPodManager]] = {}
         # Codex recreates its executable symlinks; they refer to image paths,
         # not durable session data and cannot be safely extracted on the host.
@@ -130,9 +185,9 @@ cid=$(docker create {shlex.quote(self._gateway_image)})
 trap 'docker rm "$cid" >/dev/null' EXIT
 docker cp "$cid:/usr/local/bin/openshell-gateway" /usr/local/bin/openshell-gateway
 chmod 755 /usr/local/bin/openshell-gateway
-docker network inspect {shlex.quote(self._docker["network_name"])} >/dev/null 2>&1 || \\
+docker network inspect {shlex.quote(self._callback_network_name)} >/dev/null 2>&1 || \\
   docker network create --subnet {shlex.quote(self._network_subnet)} \\
-  --gateway {shlex.quote(self._gateway_host)} {shlex.quote(self._docker["network_name"])}
+  --gateway {shlex.quote(self._gateway_host)} {shlex.quote(self._callback_network_name)}
 if [ ! -s /var/lib/openshell/jwt/signing.pem ]; then
   openssl genpkey -algorithm Ed25519 -out /var/lib/openshell/jwt/signing.pem
   chmod 600 /var/lib/openshell/jwt/signing.pem
@@ -315,7 +370,7 @@ systemctl enable --now openshell-gateway
         if sandbox is None or not sandbox.ready:
             raise VmRuntimeUnavailableError("OpenShell sandbox is not ready")
         return await asyncio.to_thread(
-            manager._tcp_proxy_target, str(session.id), sandbox.id, manager._service_port
+            manager._tcp_proxy_target, str(session.id), sandbox.name, manager._service_port
         )
 
     async def ready(self, lease, bootstrap):

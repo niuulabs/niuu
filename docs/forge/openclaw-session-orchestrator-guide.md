@@ -320,6 +320,42 @@ session_definitions:
 
 That keeps the rest of the built-in Codex transport settings intact.
 
+#### Claude permission mode is a node setting
+
+Each Forge node decides how its unattended Claude sessions run. Skuld brokers on local-process nodes read the
+node's config file (`NIUU_CONFIG`), so set it once there instead of on every session request:
+
+```yaml
+# YOLO hosts (Thor, DGX Spark) must say so explicitly:
+claude_permission_mode: bypassPermissions
+# Every other node runs Claude's classifier-gated auto mode, which is also the default.
+claude_permission_mode: auto
+```
+
+It applies when `skipPermissions` is on, for the tmux, persistent-subprocess, subprocess and SDK transports,
+and for Remote Control unless `remote_control_permission_mode` overrides it. Accepted values are `auto`,
+`bypassPermissions` and `acceptEdits`, in any case. `plan`, `manual`, `dontAsk` and `default` need a human to
+answer prompts. Only Claude transports check the value: a typo stops that node's Claude broker at start with the
+remedy and leaves its Codex and other engines running. The broker logs the mode in effect and warns when the
+node left the default.
+
+A definition can override the node for its own sessions with `defaults.broker.claudePermissionMode`; clients
+cannot set it per request. Kubernetes-backed Forge pods do not read the node config file, so there the definition
+key is the way to set it. Brokers read the setting when they start: running sessions pick up a change on their
+next stop/start.
+
+Claude Code sessions should run in tmux (`TmuxInteractiveTransport`) so they stay steerable. Point
+the default definition at it:
+
+```yaml
+session_definitions:
+  skuldClaude:
+    defaults:
+      broker:
+        transport: tmux-interactive
+        transportAdapter: skuld.transports.tmux_interactive.TmuxInteractiveTransport
+```
+
 #### Remote-access URLs should use `server.external_host`
 
 When the server binds to `0.0.0.0`, that is only the listen address. It is not a usable browser-facing host for remote clients.
@@ -576,6 +612,7 @@ Documented session-stream events:
 - `chronicle_deleted`
 - `pr_created`
 - `pr_merged`
+- `session_notification` (owner-scoped; see "Session notifications" below)
 
 Important real-world event:
 
@@ -644,6 +681,40 @@ Recommended timeout strategy:
 
 - if the stream goes silent beyond your liveness threshold, reconnect
 - after reconnect, refresh all sessions you still care about
+
+### Session notifications (feed + `session_notification`)
+
+Forge keeps a durable, cursor-ordered notification feed. Entries come from three places:
+
+- an agent raising a milestone, decision, attention, error or info (via the Forge MCP
+  `notify` tool, stored as a notification turn in the session log);
+- Forge itself: a `reply_ready` for every final assistant reply, and an `attention`
+  when a session starts waiting for its owner;
+- a direct submit from you: `POST /api/v1/forge/sessions/{id}/notifications` with a
+  `NotificationDraft` plus a required `idempotency_key`. It returns 201 for a new
+  notification, or 200 with the existing one when you retry the same key.
+
+The feed is owner-scoped. You see your own notifications, and an admin sees their
+tenant's. Read it with `GET /api/v1/forge/notifications`:
+
+- Pages come newest first. Pass `next_before` as `before` for the next page.
+- For gap-fill, pass `after=<last seq you saw>` to get the entries after it, in
+  ascending order.
+- Filters: `kind` and `source` (comma-separated), `min_severity`, `session_id`,
+  `project_id` and `unread`.
+- Each item has `read`, computed against your watermark. Move the watermark forward with
+  `PUT /api/v1/forge/notifications/read-state` and
+  `{read_through_seq, expected_revision}`. A stale revision returns `409`.
+
+Every new entry is also pushed on `/sessions/stream` as `session_notification`. Its
+`data` is the notification without `read`, and only the owner or an admin receives it.
+
+The stream is not durable. After a reconnect, call
+`GET /notifications?after=<last seq>` to fill the gap. Through the Guild facade, add
+`all_instances=true`. The cursors are then opaque per-instance tokens, so use the
+response's `next_before` and `next_after`. See
+[operator/forge-notifications.md](operator/forge-notifications.md) for the full API,
+rules and configuration.
 
 ## 9. Live chat transport
 

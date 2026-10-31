@@ -7,23 +7,29 @@ import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
+from niuu.domain.discovered_residents import discovered_resident_id
 from niuu.ports.realm_repository import RealmRepository
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.models import (
     Principal,
+    ResidentBackend,
     ResidentCapability,
     ResidentCondition,
     ResidentDeploymentProfile,
     ResidentDesiredState,
     ResidentEndpoint,
+    ResidentEngine,
     ResidentLogPage,
     ResidentObservedState,
     ResidentRuntime,
     ResidentSession,
 )
 from volundr.domain.ports import (
+    DiscoveredResident,
     ResidentChatConnection,
     ResidentDeploymentProfileProvider,
+    ResidentDiscoverySource,
+    ResidentLogsUnavailableError,
     ResidentRuntimeController,
     ResidentRuntimeLogReader,
     ResidentRuntimeObservation,
@@ -35,6 +41,13 @@ from volundr.domain.ports import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: The resident session API ("channels"), provided by an engine session controller.
+_SESSION_CAPABILITIES = (
+    ResidentCapability.SESSION_LIST,
+    ResidentCapability.SESSION_CREATE,
+    ResidentCapability.SESSION_DELETE,
+)
 
 
 class ResidentRuntimeNotFoundError(Exception):
@@ -61,6 +74,10 @@ class ResidentRuntimeDeploymentError(Exception):
     """Raised when a resident backend operation fails."""
 
 
+class ResidentRuntimeStateError(Exception):
+    """Raised when the resident's current state cannot serve the request, e.g. no pod."""
+
+
 class ResidentRuntimeService:
     """Authorize and orchestrate durable resident runtime lifecycle state."""
 
@@ -85,11 +102,14 @@ class ResidentRuntimeService:
         self._controllers = {controller.backend: controller for controller in controllers or []}
         if len(self._controllers) != len(controllers or []):
             raise ValueError("Resident runtime controller backends must be unique")
+        # Keyed by (backend, engine): one engine can have a controller per backend
+        # (Ravn on Flux and on OpenShell). A backend of None drives any backend.
         self._session_controllers = {
-            controller.engine: controller for controller in session_controllers or []
+            (controller.runtime_backend, controller.engine): controller
+            for controller in session_controllers or []
         }
         if len(self._session_controllers) != len(session_controllers or []):
-            raise ValueError("Resident session controller engines must be unique")
+            raise ValueError("Resident session controller engines must be unique per backend")
         self._span_repository = span_repository
         self._event_repository = event_repository
         self._deployment_tasks: dict[UUID, asyncio.Task[None]] = {}
@@ -97,11 +117,13 @@ class ResidentRuntimeService:
     def list_profiles(self) -> list[ResidentDeploymentProfile]:
         """Return profiles that are actually enabled on this target."""
         return [
-            profile
+            self._with_wired_capabilities(profile)
             for profile in self._profiles.list()
             if (controller := self._controllers.get(profile.backend))
+            and not isinstance(controller, ResidentDiscoverySource)
             and controller.supports(profile)
             and self._profile_session_api_available(profile)
+            and self._profile_logs_available(profile, controller)
         ]
 
     async def create(
@@ -120,7 +142,11 @@ class ResidentRuntimeService:
     ) -> ResidentRuntime:
         """Persist one resident and provision its backend asynchronously."""
         profile = self._require_profile(profile_id)
-        self._require_controller(profile)
+        if isinstance(self._require_controller(profile), ResidentDiscoverySource):
+            raise ResidentRuntimeValidationError(
+                f"Resident profile {profile_id} is for residents the Forge discovers; it "
+                "deploys none"
+            )
         runtime = await self.create_record(
             principal,
             name=name,
@@ -248,7 +274,7 @@ class ResidentRuntimeService:
                 f"Resident profile {profile_id} does not support flock membership"
             )
         if realm_id is not None and self._realm_repository is not None:
-            realm = await self._realm_repository.get_realm(realm_id)
+            realm = await self._realm_repository.get_tenant_realm(realm_id, principal.tenant_id)
             if realm is None:
                 raise ResidentRuntimeValidationError(f"Realm not found: {realm_id}")
 
@@ -316,7 +342,11 @@ class ResidentRuntimeService:
             if desired_state is ResidentDesiredState.SUSPENDED:
                 observation = await controller.suspend(updated)
             else:
-                observation = await controller.resume(updated)
+                # With its profile, a resident resumes on the platform's current
+                # version: it was not upgraded while suspended.
+                observation = await controller.resume(
+                    updated, profile=self._resumable_profile(updated, controller)
+                )
         except Exception as exc:
             await self._record_backend_failure(updated, "LifecycleFailed", str(exc))
             raise ResidentRuntimeDeploymentError(
@@ -353,14 +383,7 @@ class ResidentRuntimeService:
         try:
             profile = self._require_profile(runtime.profile_id)
             controller = self._require_controller(profile)
-            if (
-                runtime.observed_state
-                in {
-                    ResidentObservedState.PENDING,
-                    ResidentObservedState.DEPLOYING,
-                }
-                and not runtime.backend_ref
-            ):
+            if self._awaits_deployment(runtime):
                 self._schedule_deployment(runtime, profile)
                 return runtime
             runtime = runtime.model_copy(update={"capabilities": profile.capabilities})
@@ -370,15 +393,103 @@ class ResidentRuntimeService:
             raise ResidentRuntimeDeploymentError(
                 f"Failed to reconcile resident {runtime.name}: {exc}"
             ) from exc
-        return await self._apply_observation(runtime, observation)
+        reconciled = await self._apply_observation(runtime, observation)
+        # A controller that found the backend gone reports it as owning nothing;
+        # provision it again off the reconcile loop, as for a new resident.
+        if self._awaits_deployment(reconciled):
+            self._schedule_deployment(reconciled, profile)
+        return reconciled
+
+    @staticmethod
+    def _awaits_deployment(runtime: ResidentRuntime) -> bool:
+        return (
+            runtime.observed_state
+            in {
+                ResidentObservedState.PENDING,
+                ResidentObservedState.DEPLOYING,
+            }
+            and not runtime.backend_ref
+        )
 
     async def reconcile_all(self) -> None:
-        """Refresh every durable resident without letting one failure stop the pass."""
+        """Refresh every durable resident without letting one failure stop the pass.
+
+        Records of discovered residents are brought in line with their sources first,
+        so a newly discovered resident is reconciled in the same pass.
+        """
+        await self.sync_discovered()
         for runtime in await self._repository.list_for_reconciliation():
             try:
                 await self.reconcile(runtime.id)
             except ResidentRuntimeDeploymentError:
                 continue
+
+    async def sync_discovered(self) -> None:
+        """Keep one record per resident each discovery source reports, and no other.
+
+        A discovered resident's record has the id derived from its key, so the same
+        resident keeps the same record (and its sessions) across passes and restarts.
+        A source that cannot answer raises; its records are left as they are.
+        """
+        for controller in self._controllers.values():
+            if not isinstance(controller, ResidentDiscoverySource):
+                continue
+            discovered = {
+                discovered_resident_id(resident.key): resident
+                for resident in await controller.discovered_residents()
+            }
+            known = {
+                runtime.id: runtime
+                for runtime in await self._repository.list_for_reconciliation()
+                if runtime.backend is controller.backend
+            }
+            for runtime_id, resident in discovered.items():
+                await self._record_discovered(controller.backend, runtime_id, resident)
+            for runtime_id, runtime in known.items():
+                if runtime_id in discovered:
+                    continue
+                await self._repository.delete(runtime_id)
+                logger.info("Resident %s is no longer discovered; removed its record", runtime.name)
+
+    async def _record_discovered(
+        self,
+        backend: ResidentBackend,
+        runtime_id: UUID,
+        resident: DiscoveredResident,
+    ) -> None:
+        profile = self._require_profile(resident.profile_id)
+        if profile.backend is not backend:
+            raise ResidentRuntimeValidationError(
+                f"Discovered resident {resident.key!r} names profile {profile.id}, which is for "
+                f"the {profile.backend.value} backend, not {backend.value}"
+            )
+        fields = {
+            "owner_id": resident.owner_id,
+            "tenant_id": resident.tenant_id,
+            "name": resident.name,
+            "persona_name": resident.persona_name,
+            "model": resident.model or profile.default_model,
+            "profile_id": profile.id,
+            "engine": profile.engine,
+        }
+        existing = await self._repository.get(runtime_id)
+        if existing is None:
+            await self._repository.create(
+                ResidentRuntime(
+                    id=runtime_id,
+                    backend=backend,
+                    capabilities=profile.capabilities,
+                    backend_ref={"key": resident.key},
+                    **fields,
+                )
+            )
+            logger.info("Discovered resident %s (%s)", resident.name, resident.key)
+            return
+        if all(getattr(existing, name) == value for name, value in fields.items()):
+            return
+        await self._repository.update(
+            existing.model_copy(update={**fields, "updated_at": datetime.now(UTC)})
+        )
 
     @staticmethod
     def _require_lifecycle_capability(
@@ -504,6 +615,8 @@ class ResidentRuntimeService:
                 sources=sources,
                 min_level=min_level,
             )
+        except ResidentLogsUnavailableError as exc:
+            raise ResidentRuntimeStateError(f"No logs to read: {exc}") from exc
         except Exception as exc:
             raise ResidentRuntimeDeploymentError(
                 f"Failed to read resident {runtime.name} logs: {exc}"
@@ -625,7 +738,40 @@ class ResidentRuntimeService:
         profile = self._profiles.get(profile_id)
         if profile is None:
             raise ResidentProfileNotFoundError(f"Resident profile not found: {profile_id}")
-        return profile
+        return self._with_wired_capabilities(profile)
+
+    def _with_wired_capabilities(
+        self,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentDeploymentProfile:
+        """The profile with the session capabilities its wiring provides.
+
+        A resident's sessions ("channels") exist wherever an engine session
+        controller drives the profile's backend, so the session API follows from
+        what is wired, not from a hand-kept list per profile. Reconciling a
+        resident refreshes its capabilities from this, so existing residents gain
+        them too.
+        """
+        controller = self._session_controller_for(profile.backend, profile.engine)
+        if controller is None or not controller.provides_sessions(profile):
+            return profile
+        missing = [
+            capability
+            for capability in _SESSION_CAPABILITIES
+            if capability not in profile.capabilities
+        ]
+        if not missing:
+            return profile
+        return profile.model_copy(update={"capabilities": [*profile.capabilities, *missing]})
+
+    def _session_controller_for(
+        self,
+        backend: ResidentBackend,
+        engine: ResidentEngine,
+    ) -> ResidentSessionController | None:
+        return self._session_controllers.get((backend, engine)) or self._session_controllers.get(
+            (None, engine)
+        )
 
     def _require_controller(
         self,
@@ -636,6 +782,7 @@ class ResidentRuntimeService:
             controller is None
             or not controller.supports(profile)
             or not self._profile_session_api_available(profile)
+            or not self._profile_logs_available(profile, controller)
         ):
             raise ResidentProfileNotFoundError(
                 f"Resident profile is not deployable on this target: {profile.id}"
@@ -643,14 +790,31 @@ class ResidentRuntimeService:
         return controller
 
     def _profile_session_api_available(self, profile: ResidentDeploymentProfile) -> bool:
-        session_capabilities = {
-            ResidentCapability.SESSION_LIST,
-            ResidentCapability.SESSION_CREATE,
-            ResidentCapability.SESSION_DELETE,
-        }
-        return not session_capabilities.intersection(profile.capabilities) or (
-            profile.engine in self._session_controllers
+        return not set(_SESSION_CAPABILITIES).intersection(profile.capabilities) or (
+            self._session_controller_for(profile.backend, profile.engine) is not None
         )
+
+    @staticmethod
+    def _profile_logs_available(
+        profile: ResidentDeploymentProfile,
+        controller: ResidentRuntimeController,
+    ) -> bool:
+        """A profile advertises logs only on a backend that reads them."""
+        return ResidentCapability.LOGS not in profile.capabilities or isinstance(
+            controller, ResidentRuntimeLogReader
+        )
+
+    def _resumable_profile(
+        self,
+        runtime: ResidentRuntime,
+        controller: ResidentRuntimeController,
+    ) -> ResidentDeploymentProfile | None:
+        """The resident's profile when its controller can still deploy it, else None."""
+        profile = self._profiles.get(runtime.profile_id)
+        if profile is None or profile.backend is not runtime.backend:
+            return None
+        profile = self._with_wired_capabilities(profile)
+        return profile if controller.supports(profile) else None
 
     def _require_controller_for_runtime(
         self,
@@ -664,10 +828,11 @@ class ResidentRuntimeService:
         return controller
 
     def _session_controller(self, runtime: ResidentRuntime) -> ResidentSessionController:
-        controller = self._session_controllers.get(runtime.engine)
+        controller = self._session_controller_for(runtime.backend, runtime.engine)
         if controller is None:
             raise ResidentRuntimeDeploymentError(
-                f"Resident engine session API is unavailable: {runtime.engine.value}"
+                "Resident engine session API is unavailable: "
+                f"{runtime.engine.value} on {runtime.backend.value}"
             )
         return controller
 

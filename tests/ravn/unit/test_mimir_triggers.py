@@ -12,6 +12,7 @@ from niuu.domain.mimir import LintIssue, MimirLintReport
 from niuu.ports.mimir import MimirPageMeta, MimirSource, MimirSourceMeta
 from ravn.adapters.triggers.mimir_source import MimirSourceTrigger
 from ravn.adapters.triggers.mimir_staleness import MimirStalenessTrigger
+from ravn.cap_telemetry import cap_hit_counts
 from ravn.config import MimirSourceTriggerConfig, MimirStalenessTriggerConfig
 from ravn.domain.models import AgentTask
 
@@ -170,6 +171,7 @@ class TestMimirSourceTrigger:
         assert "## Source content\n\nabc" in context
         assert "def" not in context
         assert "Source content truncated" in context
+        assert cap_hit_counts() == {"mimir.source_trigger.max_content_chars": 1}
 
     @pytest.mark.asyncio
     async def test_poll_once_does_not_embed_literal_source_footer_marker(self) -> None:

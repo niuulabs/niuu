@@ -2,6 +2,7 @@
 
 import json
 import shlex
+import tomllib
 
 import pytest
 
@@ -112,9 +113,8 @@ def test_static_headers_are_preserved():
     assert json.loads(build_claude_mcp_config(config))["mcpServers"]["remote"]["headers"] == {
         "X-Key": "test"
     }
-    assert ('mcp_servers.remote.http_headers."X-Key"', '"test"') in build_codex_mcp_overrides(
-        config
-    )
+    # Codex keeps quotes in a dotted -c key, so a quoted key would name the header '"X-Key"'.
+    assert ("mcp_servers.remote.http_headers.X-Key", '"test"') in build_codex_mcp_overrides(config)
 
 
 def test_openshell_opaque_environment_credential(monkeypatch, capsys):
@@ -166,7 +166,8 @@ def test_header_helper_runs_the_script_not_the_module():
         )
     )
     helper = overrides["mcp_servers.linear.http_headers_helper"]
+    argv = shlex.split(tomllib.loads(f"helper = {helper}")["helper"])
 
-    assert "-m" not in helper
+    assert "-m" not in argv
     assert "skuld/mcp_credentials.py" in helper
     assert "--oauth" in helper

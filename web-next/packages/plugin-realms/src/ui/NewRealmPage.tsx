@@ -177,7 +177,9 @@ function ConnectStep({
     queryKey: ['mimir', 'deployments'],
     queryFn: () => {
       if (!mimir.mounts.getDeployments) {
-        throw new Error('This Mímir has no deployment target; realm memory cannot be created.');
+        throw new Error(
+          'This memory instance has no deployment target; realm memory cannot be created.',
+        );
       }
       return mimir.mounts.getDeployments();
     },
@@ -319,7 +321,7 @@ function ConnectStep({
 
       <SectionCard
         title="Realm memory"
-        description="A Mímir mount is created for this realm; the resident writes what it learns there."
+        description="A memory mount is created for this realm; the resident writes what it learns there."
       >
         {deployments.error ? (
           <ErrorState message={String(deployments.error)} />

@@ -14,11 +14,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ravn.domain.models import TokenUsage, TurnResult
+from niuu.domain.notifications import MAX_BODY_CHARS
+from ravn.cap_telemetry import record_truncation
 from ravn.domain.resident_continuation import (
     ResidentA2ATaskRecord,
-    ResidentBudgetDecision,
-    ResidentBudgetLimits,
     ResidentBudgetSnapshot,
     ResidentDecisionStreakRecord,
     ResidentMemoryEntry,
@@ -57,69 +56,6 @@ def _a2a_task_path(task_id: str) -> Path:
     slug = (_slug(task_id) or "task")[:80]
     digest = hashlib.sha256(task_id.encode()).hexdigest()[:16]
     return _A2A_TASKS_PATH / f"{slug}-{digest}.md"
-
-
-class ResidentRunBudget:
-    """In-memory run budget with persistable snapshots."""
-
-    def __init__(
-        self,
-        limits: ResidentBudgetLimits,
-        *,
-        clock: Any = time.monotonic,
-    ) -> None:
-        self._limits = limits
-        self._clock = clock
-        self._started_at = float(clock())
-        self._turns_used = 0
-        self._usage = TokenUsage(input_tokens=0, output_tokens=0)
-        self._cost_usd = 0.0
-
-    @property
-    def limits(self) -> ResidentBudgetLimits:
-        return self._limits
-
-    def snapshot(self) -> ResidentBudgetSnapshot:
-        return ResidentBudgetSnapshot(
-            turns_used=self._turns_used,
-            elapsed_seconds=max(0.0, float(self._clock()) - self._started_at),
-            usage=self._usage,
-            cost_usd=self._cost_usd,
-        )
-
-    def can_continue(self) -> ResidentBudgetDecision:
-        snapshot = self.snapshot()
-        if self._limits.max_turns > 0 and snapshot.turns_used >= self._limits.max_turns:
-            return ResidentBudgetDecision(False, f"max turns reached: {self._limits.max_turns}")
-        if (
-            self._limits.max_wall_clock_seconds > 0
-            and snapshot.elapsed_seconds >= self._limits.max_wall_clock_seconds
-        ):
-            return ResidentBudgetDecision(
-                False,
-                f"max wall-clock seconds reached: {self._limits.max_wall_clock_seconds:g}",
-            )
-        if self._limits.max_tokens > 0 and snapshot.total_tokens >= self._limits.max_tokens:
-            return ResidentBudgetDecision(
-                False,
-                f"max token budget reached: {self._limits.max_tokens}",
-            )
-        if self._limits.max_cost_usd > 0 and snapshot.cost_usd >= self._limits.max_cost_usd:
-            return ResidentBudgetDecision(
-                False,
-                f"max cost budget reached: ${self._limits.max_cost_usd:.2f}",
-            )
-        return ResidentBudgetDecision(True, "budget available")
-
-    def record_turn(self, result: TurnResult) -> ResidentBudgetSnapshot:
-        self._turns_used += 1
-        self._usage = self._usage + result.usage
-        return self.snapshot()
-
-    def record_usage(self, usage: TokenUsage) -> ResidentBudgetSnapshot:
-        self._turns_used += 1
-        self._usage = self._usage + usage
-        return self.snapshot()
 
 
 class NullResidentMemory(ResidentMemoryPort):
@@ -175,7 +111,13 @@ class NullResidentMemory(ResidentMemoryPort):
     async def read_operator_needed(self, case_id: str = "") -> ResidentMemoryEntry | None:
         return None
 
+    async def read_closed_operator_question(self, case_id: str) -> ResidentMemoryEntry | None:
+        return None
+
     async def write_operator_answer(self, answer: str, *, case_id: str = "") -> str:
+        return ""
+
+    async def withdraw_operator_needed(self, case_id: str, *, reason: str, turn_ref: str) -> str:
         return ""
 
     async def read_operator_answer(self, case_id: str = "") -> ResidentMemoryEntry | None:
@@ -264,11 +206,19 @@ class LocalResidentMemory(ResidentMemoryPort):
                 live += 1
         return (live, total)
 
-    async def prune_cases(self) -> int:
-        """Delete unresumable cases beyond the retention policy; return the count."""
-        return await asyncio.to_thread(self._prune_cases_sync)
+    async def prune_cases(self, *, keep_case_id: str = "") -> int:
+        """Delete unresumable cases beyond the retention policy; return the count.
 
-    def _prune_cases_sync(self) -> int:
+        ``keep_case_id`` is never pruned. The sweep runs from ``write_turn``,
+        and a turn that has just been written is not yet resumable (its wake or
+        operator marker comes after it), so without this a resident holding
+        more live cases than the cap deleted the case it was in the middle of
+        writing and failed its own read-after-write.
+        """
+        keep = _slug(keep_case_id) if keep_case_id else ""
+        return await asyncio.to_thread(self._prune_cases_sync, keep)
+
+    def _prune_cases_sync(self, keep: str = "") -> int:
         base = self._root / self._prefix / "cases"
         if not base.is_dir():
             return 0
@@ -279,6 +229,9 @@ class LocalResidentMemory(ResidentMemoryPort):
         live = 0
         for case_dir in base.iterdir():
             if not case_dir.is_dir():
+                continue
+            if keep and case_dir.name == keep:
+                live += 1
                 continue
             if self._case_is_resumable(case_dir):
                 live += 1
@@ -318,7 +271,7 @@ class LocalResidentMemory(ResidentMemoryPort):
             )
         return removed
 
-    async def _maybe_prune_cases(self) -> None:
+    async def _maybe_prune_cases(self, *, keep_case_id: str = "") -> None:
         """Sweep when one is due. Never blocking, never on the read path."""
         if self._retention_max_cases <= 0 and self._retention_max_age_days <= 0:
             return
@@ -330,7 +283,7 @@ class LocalResidentMemory(ResidentMemoryPort):
             return
         self._last_retention_sweep = now
         try:
-            await self.prune_cases()
+            await self.prune_cases(keep_case_id=keep_case_id)
         except Exception:  # noqa: BLE001 — bookkeeping must never break a turn
             logger.warning("resident cases: retention sweep failed", exc_info=True)
 
@@ -387,7 +340,7 @@ class LocalResidentMemory(ResidentMemoryPort):
         ref = self._write(rel, _render_turn_record(record))
         # Every turn writes here, so this is the natural sweep tick. The
         # interval throttle keeps it off all but one write in fifteen minutes.
-        await self._maybe_prune_cases()
+        await self._maybe_prune_cases(keep_case_id=record.case_id)
         return ref
 
     async def write_working_state(self, record: ResidentWorkingStateRecord) -> str:
@@ -515,6 +468,20 @@ class LocalResidentMemory(ResidentMemoryPort):
             content=content,
         )
 
+    async def read_closed_operator_question(self, case_id: str) -> ResidentMemoryEntry | None:
+        rel = self._prefix / _case_path(case_id, _OPERATOR_NEEDED_PATH)
+        path = self._safe_path(rel)
+        if not path.exists():
+            return None
+        content = path.read_text(encoding="utf-8")
+        if _operator_marker_is_pending(content):
+            return None
+        return ResidentMemoryEntry(
+            path=str(rel),
+            summary=_first_heading_or_line(content),
+            content=content,
+        )
+
     async def write_operator_answer(self, answer: str, *, case_id: str = "") -> str:
         now = datetime.now(UTC)
         answer_rel = self._prefix / _case_path(case_id, _OPERATOR_ANSWER_PATH)
@@ -548,6 +515,16 @@ class LocalResidentMemory(ResidentMemoryPort):
             _render_answered_operator_needed(prior, answer_path=answer_ref, answered_at=now),
         )
         return answer_ref
+
+    async def withdraw_operator_needed(self, case_id: str, *, reason: str, turn_ref: str) -> str:
+        marker_rel = self._prefix / _case_path(case_id, _OPERATOR_NEEDED_PATH)
+        prior = self._safe_path(marker_rel).read_text(encoding="utf-8")
+        return self._write(
+            marker_rel,
+            _render_withdrawn_operator_needed(
+                prior, reason=reason, turn_ref=turn_ref, withdrawn_at=datetime.now(UTC)
+            ),
+        )
 
     async def read_operator_answer(self, case_id: str = "") -> ResidentMemoryEntry | None:
         rel = self._prefix / _case_path(case_id, _OPERATOR_ANSWER_PATH)
@@ -660,7 +637,7 @@ def _render_turn_record(record: ResidentTurnRecord) -> str:
         "## Tool Results\n\n"
         f"{tool_results}\n\n"
         "## Mandate\n\n"
-        f"{record.mandate[:4000]}\n\n"
+        f"{record.mandate}\n\n"
         "## Outcome Fields\n\n"
         f"{fields or '- none'}\n\n"
         "## Selected Next Action\n\n"
@@ -868,6 +845,25 @@ def _parse_a2a_task(content: str) -> ResidentA2ATaskRecord | None:
     )
 
 
+def _operator_question_line(question: str) -> str:
+    """The question as stored and read back, bounded by what a notification carries.
+
+    The answer is bound to this text, so a cut is a cap hit rather than a quiet
+    edit of what was asked.
+    """
+    line = _compact_line(question, limit=MAX_BODY_CHARS)
+    flat = " ".join(question.split())
+    if len(flat) > MAX_BODY_CHARS:
+        record_truncation(
+            "niuu.notifications.MAX_BODY_CHARS",
+            what="an operator question",
+            kept=MAX_BODY_CHARS,
+            total=len(flat),
+            remedy="ask a shorter question; the operator's notification cannot carry more",
+        )
+    return line
+
+
 def _render_operator_needed(
     *,
     question: str,
@@ -890,12 +886,12 @@ def _render_operator_needed(
         f"- case_input_tokens: {turn.cumulative_usage.input_tokens}\n"
         f"- case_output_tokens: {turn.cumulative_usage.output_tokens}\n"
         f"- reason: {_compact_line(reason, limit=500)}\n"
-        f"- question: {_compact_line(question, limit=1000)}\n"
+        f"- question: {_operator_question_line(question)}\n"
         f"- created_at: {datetime.now(UTC).isoformat()}\n\n"
         "## Selected Next Action\n\n"
         f"{turn.selected_next_action.action if turn.selected_next_action else 'none'}\n\n"
         "## Mandate\n\n"
-        f"{turn.mandate[:4000]}\n"
+        f"{turn.mandate}\n"
     )
 
 
@@ -939,6 +935,25 @@ def _render_consumed_operator_answer(content: str, *, consumed_at: datetime) -> 
     else:
         rendered = "# Operator Answer\n\n- status: consumed\n"
     return rendered.rstrip() + "\n" + f"- consumed_at: {consumed_at.isoformat()}\n"
+
+
+def _render_withdrawn_operator_needed(
+    prior: str,
+    *,
+    reason: str,
+    turn_ref: str,
+    withdrawn_at: datetime,
+) -> str:
+    if not _operator_marker_is_pending(prior):
+        raise ValueError("only a pending operator question can be withdrawn")
+    content = re.sub(r"^- status: .*$", "- status: withdrawn", prior, count=1, flags=re.MULTILINE)
+    return (
+        content.rstrip()
+        + "\n"
+        + f"- withdrawn_at: {withdrawn_at.isoformat()}\n"
+        + f"- withdrawn_by: {turn_ref}\n"
+        + f"- withdraw_reason: {_compact_line(reason, limit=500)}\n"
+    )
 
 
 def _render_answered_operator_needed(
@@ -990,7 +1005,7 @@ def _render_scheduled_wake(record: ResidentScheduledWakeRecord) -> str:
         f"- reason: {_compact_line(record.reason, limit=500)}\n"
         f"- created_at: {record.created_at.isoformat()}\n\n"
         "## Mandate\n\n"
-        f"{record.mandate[:4000]}\n"
+        f"{record.mandate}\n"
     )
 
 

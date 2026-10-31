@@ -121,6 +121,26 @@ class TestDeviceEndpoints:
         listed = client.get("/api/v1/forge/devices", headers=self._AUTH)
         assert len(listed.json()) == 1
 
+    def test_register_keeps_the_environment_and_ignores_unknown_fields(self, client, device_repo):
+        resp = client.post(
+            "/api/v1/forge/devices",
+            json={
+                "platform": "ios",
+                "token": "tok-env",
+                "environment": "sandbox",
+                "kind": "alert",  # what the Lexi app also sends; not part of this API
+            },
+            headers=self._AUTH,
+        )
+        assert resp.status_code == 201
+        assert device_repo.devices[-1].environment == "sandbox"
+        bad = client.post(
+            "/api/v1/forge/devices",
+            json={"platform": "ios", "token": "t", "environment": "staging"},
+            headers=self._AUTH,
+        )
+        assert bad.status_code == 422
+
     def test_register_rejects_bad_platform(self, client):
         resp = client.post(
             "/api/v1/forge/devices",
@@ -152,6 +172,56 @@ class TestDeviceEndpoints:
         )
         other = client.get("/api/v1/forge/devices", headers={"x-auth-user-id": "user-2"})
         assert other.json() == []
+
+    def _client_with_hook(
+        self, repository, pod_manager, stats_repository, pricing_provider, device_repo, hook
+    ) -> TestClient:
+        app = FastAPI()
+        app.state.identity = _StubIdentity()
+        session_service = SessionService(repository=repository, pod_manager=pod_manager)
+        app.include_router(
+            create_router(
+                session_service=session_service,
+                stats_service=StatsService(stats_repository, session_service),
+                pricing_provider=pricing_provider,
+                device_repository=device_repo,
+                on_device_registered=hook,
+                session_participant_service=make_session_participant_service(session_service),
+            )
+        )
+        return TestClient(app, raise_server_exceptions=False)
+
+    def test_registration_provisions_the_owners_push_rule(
+        self, repository, pod_manager, stats_repository, pricing_provider, device_repo
+    ):
+        owners: list[str] = []
+
+        async def hook(owner_id: str) -> None:
+            owners.append(owner_id)
+
+        client = self._client_with_hook(
+            repository, pod_manager, stats_repository, pricing_provider, device_repo, hook
+        )
+        resp = client.post(
+            "/api/v1/forge/devices", json={"platform": "ios", "token": "t"}, headers=self._AUTH
+        )
+        assert resp.status_code == 201
+        assert owners == ["user-1"]
+
+    def test_failed_rule_provisioning_fails_the_registration(
+        self, repository, pod_manager, stats_repository, pricing_provider, device_repo
+    ):
+        async def hook(owner_id: str) -> None:
+            raise RuntimeError("rules store down")
+
+        client = self._client_with_hook(
+            repository, pod_manager, stats_repository, pricing_provider, device_repo, hook
+        )
+        resp = client.post(
+            "/api/v1/forge/devices", json={"platform": "ios", "token": "t"}, headers=self._AUTH
+        )
+        # Not acknowledged, so the app registers again; the device upsert is idempotent.
+        assert resp.status_code == 500
 
     def test_503_when_repository_absent(
         self, repository, pod_manager, stats_repository, pricing_provider

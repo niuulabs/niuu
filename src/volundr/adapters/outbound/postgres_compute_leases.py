@@ -16,6 +16,7 @@ from volundr.domain.compute import (
     ComputeLeaseBusyError,
     ComputeLeaseRepository,
     ComputePoolPolicy,
+    ComputeProvisioningLimitError,
 )
 
 
@@ -63,7 +64,7 @@ class PostgresComputeLeaseRepository(ComputeLeaseRepository):
                     lease.pool_id,
                 )
                 if provisioning >= policy.max_provisioning:
-                    raise ComputeCapacityError("Compute pool provisioning limit reached")
+                    raise ComputeProvisioningLimitError("Compute pool provisioning limit reached")
             if policy_data and lease.session_id is None:
                 warm = await conn.fetchval(
                     "SELECT COUNT(*) FROM compute_leases WHERE pool_id = $1 "

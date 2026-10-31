@@ -119,18 +119,7 @@ async def test_missing_prerequisite_fails_before_applying_any(tmp_path):
     conn.execute.assert_not_awaited()
 
 
-def test_aliases_are_identical_sql_in_source_package_and_chart():
-    import yaml
-
-    root = MIGRATIONS.parent
-    packaged = root / "src/cli/migrations/volundr"
-    template = (root / "charts/volundr/templates/migrations-configmap.yaml").read_text()
-    # Only inspect literal data; Helm metadata is rendered by the separate chart gate.
-    literal = template[template.index("\ndata:\n") + 1 : template.rindex("{{- end")]
-    data = yaml.safe_load(literal)["data"]
-    for path in [*MIGRATIONS.glob("*.sql"), MIGRATIONS / "lineage-aliases.json"]:
-        assert (packaged / path.name).read_bytes() == path.read_bytes(), path.name
-        assert data[path.name] == path.read_text(), path.name
+def test_aliases_pin_the_digest_of_their_canonical_migration():
     manifest = json.loads((MIGRATIONS / "lineage-aliases.json").read_text())
     for canonical, aliases in manifest.items():
         digest = hashlib.sha256((MIGRATIONS / canonical).read_bytes()).hexdigest()
@@ -149,3 +138,25 @@ async def test_later_forge_cursor_repairs_upstream_authority_and_compute(version
     assert ("000066_compute_leases.up.sql" in names) == (version == 66)
     assert all(int(name[:6]) <= version for name in names)
     conn.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("canonical", "historical"),
+    [
+        ("000074_session_coordination_revision", "000068_session_coordination_revision"),
+        ("000075_session_read_state", "000067_session_read_state"),
+        ("000084_forge_notifications", "000069_forge_notifications"),
+        (
+            "000085_forge_notification_delivery_rate_index",
+            "000070_forge_notification_delivery_rate_index",
+        ),
+        ("000086_forge_notification_reads", "000071_forge_notification_reads"),
+    ],
+)
+def test_renumbered_fork_migrations_alias_their_applied_filenames(canonical, historical):
+    """Forge installs applied these under fork numbers; the canonical file must adopt them."""
+    digest = hashlib.sha256((MIGRATIONS / f"{canonical}.up.sql").read_bytes()).hexdigest()
+    entry = {"filename": f"{historical}.up.sql", "sha256": digest}
+    aliases = json.loads((MIGRATIONS / "lineage-aliases.json").read_text())
+    assert entry in aliases[f"{canonical}.up.sql"]
+    assert not (MIGRATIONS / f"{historical}.up.sql").exists()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from ravn.adapters.tools.build_tool import _build_result_outcome
@@ -26,6 +28,10 @@ from ravn.domain.models import ToolResult
         (
             ToolResult(tool_call_id="", content='{"status": "input_required"}'),
             "input_required",
+        ),
+        (
+            ToolResult(tool_call_id="", content='{"status": "pending"}'),
+            "pending",
         ),
     ],
 )
@@ -101,6 +107,35 @@ def test_span_context_and_metrics_are_real_when_sdk_is_installed() -> None:
     telemetry.shutdown()
 
 
+def test_histogram_buckets_are_applied_when_given() -> None:
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.trace import TracerProvider
+
+    from niuu.observability import Observability
+
+    reader = InMemoryMetricReader()
+    telemetry = Observability(
+        tracer_provider=TracerProvider(),
+        meter_provider=MeterProvider(metric_readers=[reader]),
+    )
+    telemetry.duration("fast.call", 0.2, buckets=[0.1, 0.25, 0.5])
+    telemetry.record("unit.score", 0.7)
+
+    points = {
+        metric.name: metric.data.data_points[0]
+        for resource in reader.get_metrics_data().resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+    }
+    assert list(points["fast.call"].explicit_bounds) == [0.1, 0.25, 0.5]
+    assert list(points["fast.call"].bucket_counts) == [0, 1, 0, 0]
+    assert list(points["unit.score"].explicit_bounds)[:3] == [0.0, 5.0, 10.0]
+
+    telemetry.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_learned_tool_lifecycle_has_explicit_trace_spans(
     tmp_path,
@@ -108,11 +143,11 @@ async def test_learned_tool_lifecycle_has_explicit_trace_spans(
 ) -> None:
     from contextlib import contextmanager
 
-    import ravn.adapters.tools.build_tool as build_tool_module
-    import ravn.adapters.tools.learned_tool_run as learned_tool_module
-    import ravn.adapters.tools.skill_tools as skill_tools_module
     from ravn.adapters.permission.allow_deny import AllowAllPermission
     from ravn.adapters.skill.file_registry import FileSkillRegistry
+    from ravn.adapters.tools import build_tool as build_tool_module
+    from ravn.adapters.tools import learned_tool_run as learned_tool_module
+    from ravn.adapters.tools import skill_tools as skill_tools_module
     from ravn.adapters.tools.build_tool import BuildTool
     from ravn.adapters.tools.learned_tool_run import LearnedToolRunTool
     from ravn.adapters.tools.skill_tools import SkillManageTool
@@ -147,6 +182,9 @@ async def test_learned_tool_lifecycle_has_explicit_trace_spans(
             return None
 
         def count(self, *_args, **_kwargs) -> None:
+            return None
+
+        def duration(self, *_args, **_kwargs) -> None:
             return None
 
         def gauge(self, *_args, **_kwargs) -> None:
@@ -259,6 +297,52 @@ def test_linked_span_starts_a_bounded_trace_with_causal_link() -> None:
     assert len(after.links) == 1
     assert after.links[0].context.trace_id == before.context.trace_id
     telemetry.shutdown()
+
+
+def test_log_record_factory_adds_active_trace_ids() -> None:
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from niuu.observability import (
+        Observability,
+        disable_trace_log_correlation,
+        enable_trace_log_correlation,
+    )
+
+    exporter = InMemorySpanExporter()
+    tracer_provider = TracerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    telemetry = Observability(
+        tracer_provider=tracer_provider,
+        meter_provider=MeterProvider(metric_readers=[InMemoryMetricReader()]),
+    )
+    logger = logging.getLogger("tests.observability")
+
+    try:
+        enable_trace_log_correlation()
+        with telemetry.span("logged"):
+            record = logger.makeRecord(
+                logger.name,
+                logging.INFO,
+                __file__,
+                1,
+                "build started",
+                (),
+                None,
+            )
+    finally:
+        disable_trace_log_correlation()
+        telemetry.shutdown()
+
+    span = exporter.get_finished_spans()[0]
+    assert record.trace_id == f"{span.context.trace_id:032x}"
+    assert record.span_id == f"{span.context.span_id:016x}"
+    assert record.otelTraceID == record.trace_id
+    assert record.otelSpanID == record.span_id
 
 
 class TestMetricToolNameBounding:

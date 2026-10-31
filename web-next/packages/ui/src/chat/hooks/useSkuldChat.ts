@@ -1,6 +1,7 @@
 import { extractInlineImages } from '../inlineImages';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getAuthHeaders } from '@niuulabs/query';
+import { FORGE_NOTIFICATION_TOOL_NAME } from '@niuulabs/domain';
 import { extractOutcomeBlock } from '../components/OutcomeCard';
 import type {
   AgentInternalEvent,
@@ -173,6 +174,7 @@ type CliStreamEvent = {
   skills?: SlashCommandWireItem[];
   commands?: SlashCommandWireItem[];
   turns?: ConversationTurn[];
+  turn?: ConversationTurn;
   fields?: Record<string, unknown>;
 };
 
@@ -240,6 +242,8 @@ interface UseSkuldChatResult {
   sendResendPrompt: () => void;
   respondToPermission: (requestId: string, behavior: PermissionBehavior) => void;
   respondToInput: (requestId: string, values: string[]) => void;
+  /** Drop a card this client cannot answer (answered elsewhere, e.g. in the terminal). */
+  dismissInputRequest: (requestId: string) => void;
   sendInterrupt: () => void;
   sendSetModel: (model: string) => void;
   sendSetThinkingTokens: (tokens: number) => void;
@@ -249,6 +253,11 @@ interface UseSkuldChatResult {
 }
 
 const SINGLE_PARTICIPANT_ID = 'skuld-primary';
+// Skuld's correlated rejections of an answer (skuld/control_errors.py): the question is
+// still pending natively, so its card must come back.
+const ANSWER_REJECTION_CODES = new Set(['question_answer_rejected', 'question_recovery_required']);
+// Skuld cannot deliver an answer to this question; it comes back read-only.
+const RECOVERY_REQUIRED = 'question_recovery_required';
 const STORAGE_PREFIX = 'niuu.skuldChat.v2.';
 
 type PersistedAgentEvent = Omit<AgentInternalEvent, 'timestamp'> & { timestamp?: string };
@@ -539,6 +548,34 @@ export function transformTurns(turns: ConversationTurn[]): ChatMessage[] {
   });
 }
 
+/** Broker-appended notification turns (contract §1) that must render live, not only on reload. */
+export function isNotificationTurn(turn: ConversationTurn | undefined): turn is ConversationTurn {
+  if (!turn || typeof turn.id !== 'string' || !turn.id) return false;
+  if (turn.metadata?.kind === 'notification') return true;
+  return (
+    turn.parts?.some(
+      (part) => part.type === 'tool_use' && part.name === FORGE_NOTIFICATION_TOOL_NAME,
+    ) ?? false
+  );
+}
+
+/**
+ * Place a live broker turn where the durable log will put it: the broker appends it
+ * while the provider turn is still streaming, so it precedes that (unflushed) turn.
+ */
+export function insertBrokerTurn(
+  messages: ChatMessage[],
+  message: ChatMessage,
+  streamingMessageId: string | null,
+): ChatMessage[] {
+  if (messages.some((existing) => existing.id === message.id)) return messages;
+  const streamingIndex = streamingMessageId
+    ? messages.findIndex((existing) => existing.id === streamingMessageId)
+    : -1;
+  if (streamingIndex < 0) return [...messages, message];
+  return [...messages.slice(0, streamingIndex), message, ...messages.slice(streamingIndex)];
+}
+
 export function participantsFromTurns(turns: ConversationTurn[]): Map<string, RoomParticipant> {
   const next = new Map<string, RoomParticipant>();
   for (const turn of turns) {
@@ -756,6 +793,13 @@ export function useSkuldChat(
   );
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
   const [pendingInputRequests, setPendingInputRequests] = useState<InputRequest[]>([]);
+  // Answered but not yet resolved by Skuld: a rejected answer restores its card, so the
+  // question stays answerable instead of vanishing while the agent still waits on it.
+  const answeredInputRequestsRef = useRef(new Map<string, InputRequest>());
+  const pendingInputRequestsRef = useRef<InputRequest[]>([]);
+  useEffect(() => {
+    pendingInputRequestsRef.current = pendingInputRequests;
+  }, [pendingInputRequests]);
   const [availableCommandsState, setAvailableCommandsState] = useState<{
     url: string | null;
     commands: SlashCommand[];
@@ -1796,6 +1840,23 @@ export function useSkuldChat(
                   (typeof event.content === 'string' ? event.content : 'Unknown error'));
             if (event.code && event.request_id) {
               optimisticUserMessagesRef.current.delete(event.request_id);
+              const answered = answeredInputRequestsRef.current.get(event.request_id);
+              if (answered && ANSWER_REJECTION_CODES.has(event.code)) {
+                answeredInputRequestsRef.current.delete(event.request_id);
+                const restored =
+                  event.code === RECOVERY_REQUIRED ? { ...answered, answerable: false } : answered;
+                setPendingInputRequests((prev) => [
+                  ...prev.filter((request) => request.requestId !== answered.requestId),
+                  restored,
+                ]);
+              } else if (event.code === RECOVERY_REQUIRED) {
+                const requestId = event.request_id;
+                setPendingInputRequests((prev) =>
+                  prev.map((request) =>
+                    request.requestId === requestId ? { ...request, answerable: false } : request,
+                  ),
+                );
+              }
               setMessages((previous) => [
                 ...previous.map((message) =>
                   message.id === event.request_id
@@ -1900,6 +1961,16 @@ export function useSkuldChat(
             if (url) {
               setHistoryLoadedForUrl(url);
             }
+            break;
+          }
+          case 'conversation.turn': {
+            // Other broker turns keep their existing (history-refresh) behaviour.
+            if (!isNotificationTurn(event.turn)) break;
+            const [message] = transformTurns([event.turn]);
+            if (!message) break;
+            const streamingId = streamingMessageIdRef.current;
+            const live = { ...message, participant: getDefaultAssistantParticipant() };
+            setMessages((prev) => insertBrokerTurn(prev, live, streamingId));
             break;
           }
           case 'user_confirmed': {
@@ -2024,7 +2095,9 @@ export function useSkuldChat(
             const inputRequest: InputRequest = {
               requestId: event.request_id,
               questions: normalizedQuestions,
+              ...(event.metadata?.answerable === false ? { answerable: false } : {}),
             };
+            answeredInputRequestsRef.current.delete(inputRequest.requestId);
             setPendingInputRequests((prev) => [
               ...prev.filter((request) => request.requestId !== inputRequest.requestId),
               inputRequest,
@@ -2033,6 +2106,7 @@ export function useSkuldChat(
           }
           case 'ask_user_resolved': {
             if (!event.request_id) break;
+            answeredInputRequestsRef.current.delete(event.request_id);
             setPendingInputRequests((prev) =>
               prev.filter((request) => request.requestId !== event.request_id),
             );
@@ -2542,15 +2616,34 @@ export function useSkuldChat(
 
   const respondToInput = useCallback(
     (requestId: string, values: string[]) => {
+      const request = pendingInputRequestsRef.current.find(
+        (candidate) => candidate.requestId === requestId,
+      );
       sendJson({
         type: 'ask_user_answer',
         request_id: requestId,
-        answers: values.map((answer) => ({ answer })),
+        // Text that is not one of the offered choices is a custom ("Type something")
+        // answer; Skuld only accepts it when marked as free text.
+        answers: values.map((answer, index) => {
+          const choices = request?.questions[index]?.choices ?? [];
+          return choices.length > 0 && !choices.includes(answer)
+            ? { answer, free_text: answer }
+            : { answer };
+        }),
       });
-      setPendingInputRequests((prev) => prev.filter((request) => request.requestId !== requestId));
+      setPendingInputRequests((prev) => {
+        const answered = prev.find((request) => request.requestId === requestId);
+        if (answered) answeredInputRequestsRef.current.set(requestId, answered);
+        return prev.filter((request) => request.requestId !== requestId);
+      });
     },
     [sendJson],
   );
+
+  const dismissInputRequest = useCallback((requestId: string) => {
+    answeredInputRequestsRef.current.delete(requestId);
+    setPendingInputRequests((prev) => prev.filter((request) => request.requestId !== requestId));
+  }, []);
 
   const clearMessages = useCallback(() => {
     setMessages([]);
@@ -2558,6 +2651,7 @@ export function useSkuldChat(
     setAgentEvents(new Map());
     setPendingPermissions([]);
     setPendingInputRequests([]);
+    answeredInputRequestsRef.current.clear();
     internalStreamsRef.current.clear();
     resetStreaming();
   }, [resetStreaming]);
@@ -2602,6 +2696,7 @@ export function useSkuldChat(
     sendResendPrompt,
     respondToPermission,
     respondToInput,
+    dismissInputRequest,
     sendInterrupt: () => sendJson({ type: 'interrupt' }),
     sendSetModel: (model: string) => sendJson({ type: 'set_model', model }),
     sendSetThinkingTokens: (tokens: number) =>

@@ -221,3 +221,20 @@ async def test_protocol2_live_overflow_is_typed_control_and_count_limit_is_enfor
     assert json.loads(ws.send_text.await_args.args[0])["reason"] == "live_frame_too_large"
     with pytest.raises(ValueError):
         WebSocketChannel(ws, history_protocol=2)
+
+
+async def test_gateway_resolves_durable_completion_id_after_timeline_split(tmp_path, monkeypatch):
+    from tests.test_niuu.test_conversation_timeline import _assistant, _part, _user
+
+    broker = make_broker(tmp_path)
+    source = _assistant([_part(2), _part(6)])
+    source["id"] = "durable-completion"
+    source["metadata"] = {"final_output": True}
+    source.pop("in_progress")
+    broker._conversation_turns = [ConversationTurn(**t) for t in [_user(1), _user(5), source]]
+    monkeypatch.setattr(broker_api, "broker", broker)
+    listing = await broker_api.get_conversation_history()
+    resolved = await broker_api.get_conversation_history(turn_id="durable-completion")
+    assert len(resolved["turns"]) == 1
+    assert resolved["turns"][0] == listing["turns"][-1]
+    assert resolved["turns"][0]["id"] != "durable-completion"

@@ -51,5 +51,23 @@ class WorkloadTokenIssuer(ABC):
         audiences: list[str],
         token_use: str = "",
         claims: dict[str, Any] | None = None,
+        ttl_seconds: int | None = None,
     ) -> IssuedWorkloadToken:
-        """Issue a short-lived token bound to *principal* and workload claims."""
+        """Issue a token bound to *principal* and workload claims.
+
+        ``ttl_seconds`` overrides the issuer's configured lifetime for callers
+        whose credential is bound to something shorter-lived than wall-clock
+        time (a Forge session launch) and is revoked server-side.
+        """
+
+    @abstractmethod
+    def verify_token(self, token: str) -> dict[str, Any]:
+        """Verify a token this issuer minted (signature, expiry, issuer, audience).
+
+        Returns the claims. Raises :class:`WorkloadTokenVerificationError` when the
+        token is not valid.
+        """
+
+
+class WorkloadTokenVerificationError(ValueError):
+    """A token was not minted by this issuer, or is expired or malformed."""

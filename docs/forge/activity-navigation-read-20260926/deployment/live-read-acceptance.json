@@ -1,0 +1,35 @@
+{
+  "source": "a358be6ddfb7b6bc5d53f43d6793cd3ee580ca2a",
+  "server": "4b44432fec51b521c5d2d40ce6de2bd5d5650c8a",
+  "target": "00cfdbc4-91d3-57c0-8013-2382dfe1120c",
+  "older_unopened": "23da8b98-31f7-51e3-aa61-fe56afba96fd",
+  "before": {
+    "head_seq": 74,
+    "read_through_seq": 72,
+    "unread_count": 2,
+    "revision": 4
+  },
+  "after_open": {
+    "head_seq": 74,
+    "read_through_seq": 72,
+    "unread_count": 1,
+    "revision": 5
+  },
+  "repeat": {
+    "read_through_seq": 72,
+    "revision": 5,
+    "unread_count": 1,
+    "head_seq": 74
+  },
+  "individual_read_success": true,
+  "older_unopened_unread_after_open": true,
+  "repeat_idempotent": true,
+  "later_external_mark_all": {
+    "time": "2026-09-26T22:13:11Z",
+    "client": "100.74.128.96",
+    "read_through_seq": 74,
+    "revision": 6
+  },
+  "full_qa02_passed": false,
+  "reason": "External explicit PUT read-state advanced the watermark during relaunch; not an app item-read side effect."
+}

@@ -69,7 +69,7 @@ interface EnrichedEntry extends DispatchEntry {
 // ---------------------------------------------------------------------------
 
 const GATE_LABELS: Record<string, string> = {
-  raven_resolution: 'no raven',
+  raven_resolution: 'no agent',
   upstream_blocked: 'upstream',
   cluster_healthy: 'cluster',
 };
@@ -172,7 +172,7 @@ function PendingDispatchBar({
 
   return (
     <div
-      className="niuu:border-b niuu:border-brand/20 niuu:bg-[linear-gradient(180deg,rgba(56,189,248,0.08),rgba(21,26,32,0.96))] niuu:px-4 niuu:py-3"
+      className="ting-dispatch__active-batch niuu:border-b niuu:border-brand/20 niuu:bg-[linear-gradient(180deg,rgba(56,189,248,0.08),rgba(21,26,32,0.96))] niuu:px-4 niuu:py-3"
       role="status"
       aria-live="polite"
     >
@@ -183,7 +183,7 @@ function PendingDispatchBar({
             Dispatching {entries.length} run{entries.length === 1 ? '' : 's'}
           </div>
           <div className="niuu:mt-1 niuu:text-xs niuu:text-text-secondary">
-            Keeping this batch visible while Ting submits it.
+            Keeping this batch visible while Niuu submits it.
           </div>
           <div className="niuu:mt-2 niuu:text-[11px] niuu:uppercase niuu:tracking-wide niuu:text-brand">
             Target: {targetLabel}

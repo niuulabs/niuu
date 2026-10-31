@@ -1,4 +1,10 @@
-FROM python:3.14-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f AS builder
+# Security fixes awaiting stable CPython releases; no interpreter ABI changes.
+FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm@sha256:516b51cb9db2ef061e465c803e50f64361b82cefd91e525b889b967b83e83527 AS python-security
+COPY containers/python-security/ /security/
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && python /security/build.py /patched-stdlib
+
+FROM python:3.14-slim-bookworm@sha256:516b51cb9db2ef061e465c803e50f64361b82cefd91e525b889b967b83e83527 AS builder
 
 ARG TARGETARCH
 
@@ -8,10 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
-    UV_VERSION="0.12.13"; \
+    UV_VERSION="0.13.5"; \
     case "${TARGETARCH}" in \
-      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="745765a3b6e360ad76743599ae5c42e9278c7edf8bbff9fc76d05bf2623a04dd" ;; \
-      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="2eaa5d94f5db7b3a1a092156b9420459e42ab0217d917fe74a876309cef9b5e9" ;; \
+      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f" ;; \
+      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="4bb69cf95ed13f23713bb7bc09f241896ea0c75b7c557e615a20604b82f9c403" ;; \
       *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_ARCHIVE}" -o "/tmp/${UV_ARCHIVE}"; \
@@ -24,13 +30,20 @@ WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/
+# migrations/ is force-included into the wheel as cli/migrations (see
+# pyproject.toml); the build fails without it.
+COPY migrations/ /app/migrations/
 # vendor/envoy_authz_protos/ is one of the wheel's registered package roots
 # (see pyproject.toml); the build fails without it even though this image
 # does not run identity.authz_main.
 COPY vendor/ /app/vendor/
 RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats
 
-FROM python:3.14-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f
+FROM python:3.14-slim-bookworm@sha256:516b51cb9db2ef061e465c803e50f64361b82cefd91e525b889b967b83e83527
+
+RUN --mount=type=bind,from=python-security,source=/patched-stdlib,target=/patched-stdlib \
+    --mount=type=bind,source=containers/python-security,target=/security \
+    python /security/install.py /patched-stdlib && python /security/verify.py
 
 # CI passes the UTC date, so the registry layer cache cannot keep this upgrade
 # (and the security fixes it pulls) for more than a day.

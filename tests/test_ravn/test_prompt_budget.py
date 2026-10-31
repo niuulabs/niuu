@@ -10,6 +10,8 @@ import pytest
 
 from ravn.agent import RavnAgent
 from ravn.budget import _CHARS_PER_TOKEN
+from ravn.cap_telemetry import cap_hit_counts
+from ravn.domain.events import RavnEventType
 from ravn.domain.exceptions import PromptBudgetExceededError
 from ravn.domain.models import (
     StreamEvent,
@@ -238,6 +240,24 @@ class TestToolResultCap:
         assert "tool result truncated" in history_blob
         assert "x" * 2_000 not in history_blob
 
+    async def test_channels_receive_the_capped_result(self) -> None:
+        """An uncapped result is larger than a NATS message, which loses the event."""
+        agent = _agent(
+            make_tool_then_text_llm("giant_result"),
+            tools=[GiantResultTool(size=50_000)],
+            max_tool_result_chars=1_000,
+        )
+
+        result = await agent.run_turn("go")
+
+        emitted = [
+            event.payload["result"]
+            for event in agent._channel.events
+            if event.type == RavnEventType.TOOL_RESULT
+        ]
+        assert emitted == [result.tool_results[0].content]
+        assert len(emitted[0]) < 2_000
+
     async def test_disabled_cap_keeps_full_result(self) -> None:
         agent = _agent(
             make_tool_then_text_llm("giant_result"),
@@ -267,10 +287,15 @@ class TestToolResultCap:
             max_tool_result_chars=1_000,
         )
 
-        with caplog.at_level(logging.WARNING, logger="ravn.agent"):
+        with caplog.at_level(logging.ERROR, logger="ravn.cap_telemetry"):
             await agent.run_turn("go")
 
-        assert any("truncated" in r.message for r in caplog.records)
+        # A cap hit: logged at error with the knob, and counted.
+        assert any(
+            r.levelno == logging.ERROR and "tools.max_result_chars" in r.getMessage()
+            for r in caplog.records
+        )
+        assert cap_hit_counts() == {"tools.max_result_chars": 1}
 
 
 class _PassthroughCompressor:
@@ -379,3 +404,68 @@ class TestBudgetDerivedToolResultCap:
         shared = agent._budget_tool_result_char_limit()
 
         assert shared == pytest.approx(alone / 4, rel=0.02)
+
+
+def make_parallel_tools_then_text_llm(tool_name: str, count: int) -> LLMPort:
+    """LLM that makes *count* parallel calls to *tool_name*, then finishes."""
+    calls = {"count": 0}
+
+    async def _stream(*args, **kwargs) -> AsyncIterator[StreamEvent]:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            for index in range(count):
+                yield StreamEvent(
+                    type=StreamEventType.TOOL_CALL,
+                    tool_call=ToolCall(id=f"tc{index}", name=tool_name, input={}),
+                )
+        else:
+            yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="done")
+        yield StreamEvent(
+            type=StreamEventType.MESSAGE_DONE,
+            usage=TokenUsage(input_tokens=10, output_tokens=5),
+        )
+
+    llm = AsyncMock(spec=LLMPort)
+    llm.stream = _stream
+    return llm
+
+
+class TestParallelToolResultsShareTheSlot:
+    """Parallel results share one protected message, so they share its allowance.
+
+    Regin made three and four parallel calls per step; each result was capped
+    alone, together they filled the protected tail past the 64k ceiling, and the
+    turn died at 77179 estimated tokens with compaction unable to help.
+    """
+
+    @staticmethod
+    def _agent_with(count: int, *, result_size: int) -> RavnAgent:
+        fixed_cost_chars = 14_600 * _CHARS_PER_TOKEN // 3 * 2
+        agent = _agent(
+            make_parallel_tools_then_text_llm("giant_result", count),
+            tools=[GiantResultTool(size=result_size)],
+            max_tool_result_chars=100_000,
+            max_prompt_tokens=48_000,
+            token_estimate_safety_factor=1.5,
+            system_prompt="R" * fixed_cost_chars,
+        )
+        agent._compressor = _PassthroughCompressor(protect_last=2)
+        return agent
+
+    async def test_four_parallel_giant_results_fit_the_budget(self) -> None:
+        agent = self._agent_with(4, result_size=150_000)
+
+        result = await agent.run_turn("go")
+
+        assert result.response == "done"
+        assert agent.prompt_budget_status["estimated_prompt_tokens"] <= 48_000
+
+    async def test_each_parallel_result_gets_a_share_of_the_slot(self) -> None:
+        single = self._agent_with(1, result_size=150_000)
+        alone = len((await single.run_turn("go")).tool_results[0].content)
+
+        quad = self._agent_with(4, result_size=150_000)
+        shares = [len(r.content) for r in (await quad.run_turn("go")).tool_results]
+
+        assert len(shares) == 4
+        assert all(share < alone / 3 for share in shares)

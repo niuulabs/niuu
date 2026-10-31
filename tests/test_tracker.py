@@ -79,6 +79,44 @@ class InMemoryIssueTracker(IssueTrackerProvider):
         self._issues[issue_id] = updated
         return updated
 
+    async def update_issue(
+        self,
+        issue_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> TrackerIssue:
+        issue = self._issues.get(issue_id)
+        if issue is None:
+            raise TrackerIssueNotFoundError(f"Issue not found: {issue_id}")
+        changes = {"title": title, "description": description}
+        updated = issue.model_copy(update={k: v for k, v in changes.items() if v is not None})
+        self._issues[issue_id] = updated
+        return updated
+
+    async def create_issue(
+        self,
+        title: str,
+        description: str,
+        *,
+        team: str,
+        labels: list[str] | None = None,
+        priority: int | None = None,
+    ) -> TrackerIssue:
+        identifier = f"{team}-{len(self._issues) + 1}"
+        issue = TrackerIssue(
+            id=identifier,
+            identifier=identifier,
+            title=title,
+            description=description,
+            status="Backlog",
+            labels=labels or [],
+            priority=priority or 0,
+            url=f"https://tracker.test/{identifier}",
+        )
+        self._issues[identifier] = issue
+        return issue
+
 
 class InMemoryMappingRepository(ProjectMappingRepository):
     """In-memory project mapping repository for testing."""

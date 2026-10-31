@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -25,6 +26,7 @@ from identity.models import (  # noqa: F401
     UserStatus,
 )
 from niuu.domain import models as shared_models
+from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from tracker.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue  # noqa: F401
 from volundr.domain.projects import SessionCoordination
 from volundr.domain.session_read_state import SessionReadState
@@ -139,6 +141,8 @@ class EventType(StrEnum):
     SESSION_READ_STATE = "session_read_state"
     SESSION_ACTIVITY = "session_activity"
     SESSION_NEEDS_INPUT = "session_needs_input"
+    # A new Forge notification (owner-scoped: only its owner or an admin receives it).
+    SESSION_NOTIFICATION = "session_notification"
 
 
 class CommunicationPlatform(StrEnum):
@@ -251,10 +255,29 @@ class DeviceToken(BaseModel):
         default=None,
         description="APNs topic (bundle id) to target; falls back to the channel default",
     )
+    environment: str | None = Field(
+        default=None,
+        description="APNs environment of the token: 'sandbox' (development builds) or 'production'",
+    )
     created_at: datetime = Field(default_factory=_utc_now)
     updated_at: datetime = Field(default_factory=_utc_now)
 
     model_config = {"frozen": False}
+
+
+#: Keys a push payload already carries; custom push data must not reuse them.
+PUSH_RESERVED_KEYS = frozenset(
+    {
+        "aps",
+        "session_id",
+        "kind",
+        "request_id",
+        "notification_id",
+        "url",
+        "resident_id",
+        "resident_session_id",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -265,10 +288,29 @@ class PushMessage:
     title: str
     body: str
     session_id: str
-    #: question | confirmation | permission
+    #: question | confirmation | permission (needs input), or a notification kind
     kind: str
     urgency: float
     request_id: str = ""
+    #: What the push announces; relays route on it.
+    event_type: str = "session.needs_input"
+    #: Set for pushes delivered from the Forge notification outbox.
+    notification_id: str = ""
+    #: Deep link back to Forge, when known.
+    url: str = ""
+    #: A resident's notification: the resident and its channel ("" = main room).
+    resident_id: str = ""
+    resident_session_id: str = ""
+    #: APNs ``aps.category`` for this push, so the phone can offer inline actions
+    #: ("" = none, the push carries no category).
+    category: str = ""
+    #: Extra custom keys carried in the push payload; never a key the payload already uses.
+    data: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        reserved = PUSH_RESERVED_KEYS & set(self.data)
+        if reserved:
+            raise ValueError(f"Push data may not override payload keys: {sorted(reserved)}")
 
 
 class GitSource(BaseModel):
@@ -439,6 +481,13 @@ class Session(BaseModel):
     owner_id: str | None = Field(
         default=None,
         description="User ID of the session owner (IDP sub claim)",
+    )
+    actor_id: str | None = Field(
+        default=None,
+        description=(
+            "Workload that created the session on the owner's behalf (an exchanged "
+            "token's act.sub, e.g. a resident's ServiceAccount); None when the owner did"
+        ),
     )
     tenant_id: str | None = Field(
         default=None,
@@ -1346,6 +1395,9 @@ class Workspace:
 # Keep in sync with charts/volundr/templates/kyverno-pvc-isolation.yaml.
 LABEL_OWNER = "volundr/owner"
 LABEL_SESSION_ID = "volundr/session-id"
+# Pods that mount a user's home claim carry its name, so a single-node (RWO)
+# home co-locates exactly the pods that share it — not every pod of the owner.
+LABEL_HOME_CLAIM = "volundr/home-claim"
 LABEL_PVC_TYPE = "volundr/pvc-type"
 LABEL_TENANT_ID = "volundr/tenant-id"
 LABEL_MANAGED_BY = "app.kubernetes.io/managed-by"
@@ -1423,6 +1475,9 @@ class ResidentBackend(StrEnum):
     HELMRELEASE = "helmrelease"
     OPENSHELL = "openshell"
     LOCAL = "local"
+    # Running outside the Forge (deployed from infrastructure); the Forge discovers
+    # it and drives its sessions, but never deploys, restarts or removes it.
+    DISCOVERED = "discovered"
 
 
 class ResidentEngine(StrEnum):
@@ -1649,10 +1704,16 @@ class TranslatedResources:
 
 @dataclass
 class SessionSpec:
-    """Merged result from all contributors."""
+    """Merged result from all contributors.
+
+    ``forge_session`` is the scoped credential minted for this launch. It is a
+    secret: pod managers deliver it to the broker only when they declare
+    ``delivers_forge_session_token`` and never put it in values or manifests.
+    """
 
     values: dict[str, Any]
     pod_spec: PodSpecAdditions
+    forge_session: IssuedForgeSessionToken | None = None
 
     @staticmethod
     def merge(contributions: list) -> SessionSpec:

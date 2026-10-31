@@ -1,5 +1,6 @@
 """Tests for SessionService.reconcile_liveness (G6 — dead-broker detection)."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -369,6 +370,48 @@ class TestReconcileActiveSessions:
 
         assert count == 0
         assert pod_manager.stop_calls == []
+
+    async def test_starting_row_with_spawn_in_flight_is_not_reaped(
+        self, service, repo, pod_manager
+    ):
+        # The runtime does not exist until _provision_background creates it, so
+        # an absent runtime must not read as a dead one while the spawn runs.
+        session = _session(SessionStatus.STARTING, datetime.now(UTC))
+        await repo.create(session)
+        status_calls: list[object] = []
+
+        async def absent(observed):
+            status_calls.append(observed)
+            return SessionStatus.STOPPED
+
+        pod_manager.status = absent  # type: ignore[method-assign]
+        spawn = asyncio.get_running_loop().create_future()
+        service._provisioning_tasks[session.id] = spawn
+
+        assert await service.reconcile_active_sessions() == 0
+        looked_up = await service.reconcile_session_if_active(session.id)
+        assert (await service.mark_session_dead(session.id)).status == SessionStatus.STARTING
+
+        assert looked_up.status == SessionStatus.STARTING
+        assert (await repo.get(session.id)).status == SessionStatus.STARTING
+        assert (await repo.get(session.id)).error is None
+        assert status_calls == []
+        spawn.cancel()
+
+    async def test_starting_row_without_spawn_task_is_reconciled(self, service, repo, pod_manager):
+        # A process restart mid-spawn leaves a STARTING row nobody is creating.
+        session = _session(SessionStatus.STARTING, datetime.now(UTC))
+        await repo.create(session)
+
+        async def absent(_session):
+            return SessionStatus.STOPPED
+
+        pod_manager.status = absent  # type: ignore[method-assign]
+
+        result = await service.reconcile_session_if_active(session.id)
+
+        assert result.status == SessionStatus.STOPPED
+        assert (result.error or "").startswith("liveness:")
 
     async def test_mark_session_dead_reconciles_single_row(self, service, repo, pod_manager):
         session = _session(SessionStatus.RUNNING, datetime.now(UTC))

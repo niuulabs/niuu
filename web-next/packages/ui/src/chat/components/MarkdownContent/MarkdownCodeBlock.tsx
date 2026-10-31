@@ -31,7 +31,8 @@ function SyntaxTokens({ code, language }: CodeBlockProps) {
             tokens = (
               await codeToTokens(code, {
                 lang: language as keyof typeof bundledLanguages,
-                theme: 'github-dark',
+                themes: { light: 'github-light', dark: 'github-dark' },
+                defaultColor: 'dark',
               })
             ).tokens;
             if (cache.size >= 40) cache.delete(cache.keys().next().value!);
@@ -67,7 +68,7 @@ function SyntaxTokens({ code, language }: CodeBlockProps) {
         <Fragment key={index}>
           {index > 0 && '\n'}
           {line.map((token, i) => (
-            <span key={i} style={{ color: token.color }}>
+            <span key={i} style={{ color: token.color, ...token.htmlStyle }}>
               {token.content}
             </span>
           ))}

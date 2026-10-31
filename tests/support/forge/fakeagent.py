@@ -384,7 +384,8 @@ def _question_widget(header: str, question: str, options: list[str], *, multi: b
                 ]
             )
         else:
-            lines.extend([question, ""])
+            # Native Claude Code 2.1.280 decorates its question with a gutter.
+            lines.extend([f"│ {question}", ""])
             labels = [*options, custom or ("Type something" if multi else "Type something.")]
             for index, label in enumerate(labels):
                 marker = "❯" if index == focus else " "
@@ -810,10 +811,16 @@ def _install_sigint_handler() -> None:
 
 
 def _workspace_trust_widget() -> bool:
-    """Test-only startup screen: default No, arrow navigation, Enter to confirm."""
+    """Test-only startup screen: default No, arrow navigation, Enter to confirm.
+
+    ``FORGE_FAKEAGENT_WORKSPACE_TRUST_RESETS=<n>`` reproduces Claude 2.1.281's startup
+    race: the first ``n`` Enter presses land while the dialog is being re-mounted, so
+    they are swallowed and the dialog redraws with No highlighted again.
+    """
     fd = sys.stdin.fileno()
     previous = termios.tcgetattr(fd)
     selected_yes = False
+    resets = int(os.environ.get("FORGE_FAKEAGENT_WORKSPACE_TRUST_RESETS") or 0)
     try:
         tty.setcbreak(fd)
         while True:
@@ -824,6 +831,9 @@ def _workspace_trust_widget() -> bool:
             key = _read_widget_key()
             if key in {"\x1b[A", "\x1b[B"}:
                 selected_yes = not selected_yes
+            elif key in {"\r", "\n"} and resets > 0:
+                resets -= 1
+                selected_yes = False  # re-mounted: the Enter is lost, No is default again
             elif key in {"\r", "\n"}:
                 _emit("\x1b[2J\x1b[H")
                 return selected_yes

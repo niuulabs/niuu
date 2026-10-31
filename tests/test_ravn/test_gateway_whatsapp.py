@@ -131,7 +131,7 @@ async def test_send_text_posts_to_graph_api(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_send_text_truncates_long_message(monkeypatch):
+async def test_send_text_splits_long_message(monkeypatch):
     monkeypatch.setenv("WA_KEY", "tok")
     monkeypatch.setenv("WA_PHONE", "99999")
     client = _make_http_client()
@@ -142,9 +142,8 @@ async def test_send_text_truncates_long_message(monkeypatch):
 
     await adapter.send_text("+1", "x" * 20)
 
-    body = client.post.call_args[1]["json"]["text"]["body"]
-    assert len(body) <= 10
-    assert body.endswith("...")
+    bodies = [call[1]["json"]["text"]["body"] for call in client.post.call_args_list]
+    assert bodies == ["x" * 10, "x" * 10]
 
 
 # ---------------------------------------------------------------------------

@@ -411,7 +411,7 @@ class TestLLMClassification:
         mimir.upsert_page.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_llm_failure_does_not_crash_enricher(self) -> None:
+    async def test_llm_failure_fails_the_sweep(self) -> None:
         mimir = AsyncMock()
         mimir.list_pages = AsyncMock(return_value=[_page_meta()])
         mimir.list_sources = AsyncMock(return_value=[])
@@ -422,12 +422,12 @@ class TestLLMClassification:
         llm.generate = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
 
         enricher = _make_enricher(mimir=mimir, llm=llm)
-        # Should not raise
-        await enricher._poll_once()
+        with pytest.raises(RuntimeError, match="LLM unavailable"):
+            await enricher._poll_once()
         mimir.upsert_page.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_llm_invalid_json_does_not_crash_enricher(self) -> None:
+    async def test_llm_invalid_json_fails_the_sweep(self) -> None:
         mimir = AsyncMock()
         mimir.list_pages = AsyncMock(return_value=[_page_meta()])
         mimir.list_sources = AsyncMock(return_value=[])
@@ -444,7 +444,8 @@ class TestLLMClassification:
         llm.generate = AsyncMock(return_value=bad_response)
 
         enricher = _make_enricher(mimir=mimir, llm=llm)
-        await enricher._poll_once()
+        with pytest.raises(ValueError, match="no JSON"):
+            await enricher._poll_once()
         mimir.upsert_page.assert_not_called()
 
     @pytest.mark.asyncio
@@ -543,12 +544,13 @@ class TestStatePersistence:
         assert loaded is not None
         assert loaded == ts
 
-    def test_load_state_handles_corrupt_file(self, tmp_path: Path) -> None:
+    def test_load_state_raises_on_a_corrupt_file(self, tmp_path: Path) -> None:
         state_file = tmp_path / "thread_enricher_state.json"
         state_file.write_text("not valid json", encoding="utf-8")
         enricher = _make_enricher(state_dir=tmp_path)
-        # Should not raise — returns None gracefully
-        assert enricher._load_state() is None
+        # Starting over silently would re-classify every page.
+        with pytest.raises(json.JSONDecodeError):
+            enricher._load_state()
 
     @pytest.mark.asyncio
     async def test_poll_once_persists_last_checked_at(self, tmp_path: Path) -> None:
@@ -594,8 +596,10 @@ class TestStatePersistence:
 
 class TestPollErrorHandling:
     @pytest.mark.asyncio
-    async def test_page_processing_error_does_not_abort_poll(self) -> None:
-        """An error on one page should not prevent other pages from being processed."""
+    async def test_page_processing_error_fails_the_poll_without_advancing(
+        self, tmp_path: Path
+    ) -> None:
+        """A page that fails stops the sweep, so the next one retries it instead of skipping it."""
         page_a = _page_meta(path="technical/a.md")
         page_b = _page_meta(path="technical/b.md")
 
@@ -614,9 +618,9 @@ class TestPollErrorHandling:
         llm = AsyncMock()
         llm.generate = AsyncMock(return_value=_llm_response(is_thread=True, confidence=0.9))
 
-        enricher = _make_enricher(mimir=mimir, llm=llm)
-        # Should not raise
-        await enricher._poll_once()
+        enricher = _make_enricher(mimir=mimir, llm=llm, state_dir=tmp_path)
+        with pytest.raises(RuntimeError, match="transient error"):
+            await enricher._poll_once()
 
-        # Second page was still processed
-        assert mimir.get_page.call_count == 2
+        assert mimir.get_page.call_count == 1
+        assert enricher._load_state() is None

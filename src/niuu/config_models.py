@@ -7,6 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from niuu.domain.guild_membership import GuildInstance, GuildMembership
+
 
 class DatabaseConfig(BaseModel):
     """PostgreSQL database configuration shared by hosted services."""
@@ -274,9 +276,16 @@ class WorkloadIdentityMappingConfig(BaseModel):
     subject: str = Field(default="", description="Exact subject claim to match.")
     subject_prefix: str = Field(
         default="",
-        description="Subject claim prefix to match for dynamic workload identities.",
+        description=(
+            "Subject claim prefix to match for dynamic workload identities. It must end on a "
+            "separator (: - / . _ @) so it names whole segments; an exact subject outranks "
+            "any prefix, and a longer prefix outranks a shorter one."
+        ),
     )
-    issuer: str = Field(default="", description="Optional exact issuer claim to match.")
+    issuer: str = Field(
+        default="",
+        description="Exact issuer claim to match. Required: a mapping without one admits no one.",
+    )
     claims: dict[str, Any] = Field(
         default_factory=dict,
         description="Additional exact-match claim selectors. Dot notation is supported.",
@@ -307,6 +316,15 @@ class WorkloadIdentityMappingConfig(BaseModel):
             "resident id out of a Kubernetes ServiceAccount subject. Unset uses the "
             "whole claim value verbatim; a claim value that fails to match a "
             "configured pattern is rejected, not passed through unstripped."
+        ),
+    )
+    owner_from: str = Field(
+        default="",
+        description=(
+            "Where the owner comes from. Empty: owner_id or owner_id_claim. 'delegation': "
+            "the caller is admitted only while an active workload delegation names its "
+            "verifier and subject, and its token speaks for that record's owner and tenant "
+            "with the workload as actor (owner_id, owner_id_claim and tenant_id are unused)."
         ),
     )
     tenant_id: str = Field(default="default", description="Tenant/org id for isolation.")
@@ -400,3 +418,57 @@ class WorkloadIdentityConfig(BaseModel):
     tenant_resolver: WorkloadIdentityTenantResolverConfig = Field(
         default_factory=WorkloadIdentityTenantResolverConfig
     )
+
+
+class GuildMembershipConfig(BaseModel):
+    """The Guild this host belongs to (``guild:`` in the host's config).
+
+    On a host joined with ``niuu join`` the CLI writes this section from the join
+    response (it shares the file with the CLI's own ``guild.node_id``, which this
+    model ignores). A cluster that its Guild registers from configuration
+    (``niuu.instances`` on the Guild) sets it through its chart instead. On the
+    Guild itself, ``url`` is the Guild's own public origin.
+
+    An empty ``url`` means the host belongs to no Guild.
+    """
+
+    url: str = Field(
+        default="",
+        description="Public origin of the Guild this host belongs to; empty when it has none.",
+    )
+    instance_id: str = Field(
+        default="",
+        description="This host's Forge instance id in that Guild's registry.",
+    )
+    instance_name: str = Field(default="", description="That instance's display name.")
+    instance_slug: str = Field(default="", description="That instance's slug.")
+
+    @model_validator(mode="after")
+    def _validate_membership(self) -> GuildMembershipConfig:
+        self.url = self.url.strip().rstrip("/")
+        self.instance_id = self.instance_id.strip()
+        self.instance_name = self.instance_name.strip()
+        self.instance_slug = self.instance_slug.strip()
+        if self.url and not re.match(r"^https?://[^/\s]+(/\S*)?$", self.url):
+            raise ValueError(f"guild.url {self.url!r} must be an http(s) URL")
+        instance = (self.instance_id, self.instance_name, self.instance_slug)
+        if any(instance) and not all(instance):
+            raise ValueError(
+                "guild.instance_id, guild.instance_name and guild.instance_slug are set "
+                "together or not at all (copy them from the Guild's instance registry, "
+                "GET /api/v1/niuu/targets/volundr)"
+            )
+        if any(instance) and not self.url:
+            raise ValueError("guild.instance_* names an instance in a Guild, so set guild.url")
+        return self
+
+    def membership(self) -> GuildMembership | None:
+        """The configured membership, or ``None`` when this host belongs to no Guild."""
+        if not self.url:
+            return None
+        instance = (
+            GuildInstance(id=self.instance_id, name=self.instance_name, slug=self.instance_slug)
+            if self.instance_id
+            else None
+        )
+        return GuildMembership(guild_url=self.url, instance=instance)

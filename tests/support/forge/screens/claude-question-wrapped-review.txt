@@ -1,0 +1,33 @@
+←  ☒ Environment  ☒ Features  ✔ Submit  →
+
+Review your answers
+
+ │ ● Which environment should the architecture presentation target when demonstrating the
+ │   notification workflow across multiple Forge servers in the guild?
+   → Staging
+ ● Which features should the demonstration cover?
+   → Questions, Notifications
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

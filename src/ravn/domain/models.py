@@ -69,6 +69,14 @@ class StreamEventType(StrEnum):
     TOOL_CALL = "tool_call"
     MESSAGE_DONE = "message_done"
     THINKING = "thinking"  # Provider reasoning content
+    REASONING_DETAILS = "reasoning_details"  # Opaque reasoning to hand back next step
+    PROVIDER_ITEMS = "provider_items"  # The turn's verbatim output in the provider's protocol
+    # The connection to the model dropped mid-answer and the request is being
+    # re-issued. Everything yielded before this event belonged to an answer
+    # that will not complete and must be discarded -- text, thinking, tool
+    # calls, provider items and usage alike -- because the re-issued request
+    # starts the answer over (a model does not repeat itself word for word).
+    STREAM_RESTART = "stream_restart"
 
 
 # ---------------------------------------------------------------------------
@@ -217,20 +225,61 @@ class ToolResult:
     is_error: bool = False
 
 
+# Keys a message's api dict carries its provider items under (see Message).
+PROVIDER_ITEMS_KEY = "provider_items"
+PROVIDER_PROTOCOL_KEY = "provider_protocol"
+
+
 @dataclass(frozen=True)
 class Message:
-    """A single message in a conversation."""
+    """A single message in a conversation.
+
+    ``reasoning`` is the readable reasoning text. ``reasoning_details`` is the
+    opaque reasoning payload a provider returned with the turn (for example the
+    ChatGPT Responses backend's encrypted reasoning, relayed by Bifröst); it is
+    kept verbatim and sent back with this message on later requests so the
+    provider continues that reasoning instead of re-deriving it. Empty when the
+    provider returned none, which is every provider that does not do this.
+
+    ``provider_items`` is the assistant turn exactly as the provider returned it,
+    in its own protocol (named by ``provider_protocol``): OpenAI Responses output
+    items, or Anthropic content blocks. It is kept when the adapter speaks a
+    protocol whose state lives in those items — encrypted reasoning, and the
+    opaque ``compaction`` items of provider-native compaction — and an adapter of
+    the same protocol replays it verbatim instead of rebuilding the turn from
+    ``content``. ``content`` stays Ravn's readable view of the same turn.
+    """
 
     role: str  # "user" or "assistant"
     content: str | list[dict]
     reasoning: str = ""
+    reasoning_details: list[dict[str, Any]] = field(default_factory=list)
+    provider_items: list[dict[str, Any]] = field(default_factory=list)
+    provider_protocol: str = ""
 
     def to_api_dict(self) -> dict[str, Any]:
         """Return the transport-neutral message representation."""
         message: dict[str, Any] = {"role": self.role, "content": self.content}
         if self.reasoning:
             message["reasoning"] = self.reasoning
+        if self.reasoning_details:
+            message["reasoning_details"] = self.reasoning_details
+        if self.provider_items:
+            message[PROVIDER_ITEMS_KEY] = self.provider_items
+            message[PROVIDER_PROTOCOL_KEY] = self.provider_protocol
         return message
+
+    @classmethod
+    def from_api_dict(cls, raw: dict[str, Any]) -> Message:
+        """Rebuild a message from :meth:`to_api_dict` output (checkpoints)."""
+        return cls(
+            role=raw["role"],
+            content=raw["content"],
+            reasoning=raw.get("reasoning", ""),
+            reasoning_details=raw.get("reasoning_details", []),
+            provider_items=raw.get(PROVIDER_ITEMS_KEY, []),
+            provider_protocol=raw.get(PROVIDER_PROTOCOL_KEY, ""),
+        )
 
 
 @dataclass(frozen=True)
@@ -242,6 +291,9 @@ class LLMResponse:
     stop_reason: StopReason
     usage: TokenUsage
     reasoning: str = ""
+    reasoning_details: list[dict[str, Any]] = field(default_factory=list)
+    provider_items: list[dict[str, Any]] = field(default_factory=list)
+    provider_protocol: str = ""
 
 
 @dataclass(frozen=True)
@@ -252,6 +304,14 @@ class StreamEvent:
     text: str | None = None
     tool_call: ToolCall | None = None
     usage: TokenUsage | None = None
+    reasoning_details: list[dict[str, Any]] | None = None
+    # PROVIDER_ITEMS: the whole turn's output items and the protocol they are in.
+    provider_items: list[dict[str, Any]] | None = None
+    provider_protocol: str = ""
+    # MESSAGE_DONE: why generation stopped, when the provider said. A stream may
+    # carry more than one MESSAGE_DONE (a usage chunk, then the finish); any
+    # one reporting MAX_TOKENS means the turn was cut off.
+    stop_reason: StopReason | None = None
 
 
 @dataclass(frozen=True)
@@ -346,6 +406,32 @@ class SleipnirEnvelope:
 # ---------------------------------------------------------------------------
 
 
+#: Trigger of the resident home turn, the one task that reads the durable inbox
+#: (operator directed messages, A2A updates, coalesced observations).
+RESIDENT_HOME_TRIGGER = "resident:home"
+#: Case id prefix of a home turn. The case outlives the turn: a home case that sleeps is
+#: resumed by its scheduled wake under another trigger, still carrying the home turn's
+#: mandate with every observation it judged.
+RESIDENT_HOME_CASE_PREFIX = "resident-home-"
+#: A home turn runs ahead of signal work, level with an operator answer
+#: resuming its case. Only one home turn is ever queued or running, so this
+#: cannot crowd the queue; at the default priority it waited behind every
+#: signal task, and an operator's message sat unread for 16 hours.
+RESIDENT_HOME_PRIORITY = 1
+#: Prefix shared by every task an Environment signal produced.
+SIGNAL_TRIGGER_PREFIX = "signal:"
+#: Trigger of a periodic idle-triage window over below-threshold signals.
+IDLE_TRIAGE_TRIGGER = "signal:idle_triage"
+#: Trigger of one window over a batch from a durable (acking) signal source.
+DURABLE_SIGNAL_WINDOW_TRIGGER = "signal:durable_window"
+#: Trigger of the one window a restart folds a per-observation backlog into.
+SIGNAL_BACKLOG_TRIGGER = "signal:restored_backlog"
+#: Triggers of signal tasks that already cover many observations.
+SIGNAL_WINDOW_TRIGGERS = frozenset(
+    {IDLE_TRIAGE_TRIGGER, DURABLE_SIGNAL_WINDOW_TRIGGER, SIGNAL_BACKLOG_TRIGGER}
+)
+
+
 @dataclass
 class AgentTask:
     """A task enqueued by the drive loop for autonomous execution.
@@ -363,12 +449,12 @@ class AgentTask:
     output_mode: OutputMode
     persona: str | None = None
     priority: int = 10  # lower = higher priority
-    max_tokens: int | None = None
     deadline: datetime | None = None  # task discarded if queue time exceeds this
     output_path: Path | None = None  # where to save task output (cron tasks)
     root_correlation_id: str = ""  # Propagated from triggering event for fan-in chain tracking
     workflow_parent_event_id: str = ""  # Direct upstream event ID for per-cycle joins
     workflow_node_id: str = ""  # Active workflow graph node for node-scoped contracts
+    gate_feedback: str = ""  # A person's gate comment, carried on through the run's next steps
     # A strict review join resolves one immutable upstream workflow cycle.  Keep
     # that causal identity separate from the last reviewer event so the runtime
     # can reject an outcome if a newer artifact supersedes it while queued or
@@ -385,7 +471,8 @@ class AgentTask:
     #: thing that was actually asked. A room message arrives wrapped in framing plus up to 4,000
     #: characters of prior room context, and recalling on all of that embeds an average of the
     #: room's recent chatter instead of the question — against documents averaging 158 characters.
-    #: Empty means the context IS the query, which is true for every non-room trigger.
+    #: A resident home turn is the same case: its context is every observation's payload,
+    #: so it recalls on their summaries. Empty means the context IS the query.
     recall_query: str = ""
     # Durable resident continuation metadata.  These fields are transport
     # state, not a semantic task taxonomy: the model still selects the action
@@ -402,6 +489,9 @@ class AgentTask:
     #: inbox acknowledges against it so observations that arrive mid-turn stay
     #: pending instead of being acknowledged unseen.
     resident_inbox_expected: dict[str, str] = field(default_factory=dict)
+    #: System One opinion per inbox slot, taken when the home turn selected it
+    #: (``ravn.resident_attention``). Compared with the turn's outcome afterwards.
+    resident_slot_opinions: dict[str, dict[str, Any]] = field(default_factory=dict)
     resident_answer_ref: str = ""
     resident_wake_ref: str = ""
     resident_help_published: bool = False

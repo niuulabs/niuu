@@ -24,6 +24,7 @@ from niuu.adapters.cli.runtime import (
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.transports.claude_env import claude_spawn_env
 from skuld.transports.mcp_config import build_claude_mcp_config
+from skuld.transports.session_tools import SessionTools, claude_cli_args
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
@@ -49,9 +50,11 @@ class SdkWebSocketTransport(CLITransport):
         initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
         resume_session_id: str | None = None,
+        session_tools: SessionTools | None = None,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
+        self._session_tools = session_tools
         self._sdk_port = sdk_port
         self._broker_session_id = session_id
         self._model = model
@@ -107,10 +110,15 @@ class SdkWebSocketTransport(CLITransport):
             cmd.extend(["--model", self._model])
         if self._skip_permissions:
             cmd.extend(["--permission-mode", "bypassPermissions"])
-        if self._system_prompt:
-            cmd.extend(["--append-system-prompt", self._system_prompt])
-        if self._mcp_config:
-            cmd.extend(["--mcp-config", self._mcp_config])
+        cmd.extend(
+            claude_cli_args(
+                self._session_tools,
+                mcp_servers=self._raw_mcp_servers,
+                legacy_mcp_config=self._mcp_config,
+                system_prompt=self._system_prompt,
+                include_system_prompt=True,
+            )
+        )
         if self._initial_prompt and not resume_id:
             self._pending_messages.append(
                 {
@@ -141,6 +149,7 @@ class SdkWebSocketTransport(CLITransport):
         _, shim_env = ensure_codex_tool_shims(
             self.workspace_dir,
             mcp_servers=self._raw_mcp_servers,
+            session_env=self._session_tools.env if self._session_tools else None,
         )
         if shim_env:
             env.update(shim_env)

@@ -40,6 +40,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from ravn.adapters.channels.openclaw_store import flatten_text
+
 #: Ravn event types we translate. Everything else is passed through as an
 #: unknown block so a new DriveLoop type shows up as data rather than vanishing.
 THOUGHT = "thought"
@@ -83,11 +85,15 @@ class TurnTranslator:
     # -- helpers -----------------------------------------------------------
 
     def _message(self) -> dict[str, Any]:
+        blocks = [dict(b) for b in self.blocks]
         return {
             "messageId": self.run_id,
             "id": self.run_id,
             "role": "assistant",
-            "blocks": [dict(b) for b in self.blocks],
+            "blocks": blocks,
+            # The native gateway's flat answer text. LexiChat reads ``blocks``; Volundr's
+            # OpenClaw session controller reads ``content``, so both see the same answer.
+            "content": flatten_text(blocks),
         }
 
     def _event(self, state: str, **extra: Any) -> dict[str, Any]:
@@ -98,6 +104,10 @@ class TurnTranslator:
             "message": self._message(),
         }
         payload.update(extra)
+        error = extra.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            # The native gateway's field name, read by Volundr's OpenClaw session controller.
+            payload["errorMessage"] = str(error["message"])
         return payload
 
     def _ensure_text_block(self) -> int:
@@ -144,9 +154,25 @@ class TurnTranslator:
             self.thinking_buf += text
             self.blocks[self._ensure_thinking_block()]["text"] = self.thinking_buf
         else:
+            if text == self._last_text():
+                # A CLI executor re-sends the message it just streamed (its
+                # ``assistant`` event) as one more thought. That repeat is not new
+                # text: appending it would double the cumulative snapshot, and a
+                # client diffing snapshots would show the whole answer twice.
+                return []
             self.text_buf += text
-            self.blocks[self._ensure_text_block()]["text"] = self.text_buf
+            block = self.blocks[self._ensure_text_block()]
+            # Per block: text after a tool is a new paragraph, so it must not
+            # carry the text streamed before the tool again.
+            block["text"] = str(block.get("text") or "") + text
         return [self._event("delta")]
+
+    def _last_text(self) -> str:
+        """The text of the most recent answer block, or "" when there is none."""
+        for block in reversed(self.blocks):
+            if block.get("type") == "text":
+                return str(block.get("text") or "")
+        return ""
 
     def _on_tool_start(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         self._tool_n += 1
@@ -203,7 +229,17 @@ class TurnTranslator:
         text = str(payload.get("text") or "")
         if text:
             self.text_buf = text
-            self.blocks[self._ensure_text_block()]["text"] = text
+            index = self._ensure_text_block()
+            # The response may be the whole turn's answer or only its last message;
+            # either way the snapshot must not repeat the text of earlier blocks.
+            before = "".join(
+                str(block.get("text") or "")
+                for block in self.blocks[:index]
+                if block.get("type") == "text"
+            )
+            if before and text.startswith(before):
+                text = text[len(before) :]
+            self.blocks[index]["text"] = text
         self.finished = True
         return [self._event("final")]
 

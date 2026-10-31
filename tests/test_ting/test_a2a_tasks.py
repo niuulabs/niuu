@@ -2,21 +2,32 @@
 
 from __future__ import annotations
 
+import gzip
+import json
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import jwt
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from grpc import server as grpc_server
 
 from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from niuu.domain.models import Principal
+from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+from ravn.adapters.tools.build_tool import BuildTool
 from ting.api.a2a import (
     _launch_digest,
     campaign_to_task,
@@ -34,10 +45,12 @@ from ting.domain.models import (
     WorkflowDefinition,
     WorkflowScope,
 )
+from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.domain.workflow_snapshot import build_workflow_snapshot
-from ting.ports.volundr import SpawnRequest, VolundrPort, VolundrSession
+from ting.ports.volundr import ActivityEvent, SpawnRequest, VolundrPort, VolundrSession
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
+from ting.system_workflows import load_system_workflows
 
 A2A_PATH = "/api/v1/ting/a2a"
 _SIGNING_KEY = "test-only-signing-key-32-bytes-long!"
@@ -115,6 +128,28 @@ class InMemoryCampaignRepository(WorkflowCampaignRepository):
     async def get_campaign(self, campaign_id: UUID) -> WorkflowCampaign | None:
         return self._campaigns.get(campaign_id)
 
+    async def get_active_campaign_by_session(
+        self,
+        *,
+        owner_id: str,
+        session_id: str,
+        connection_id: str | None = None,
+    ) -> WorkflowCampaign | None:
+        matches = [
+            campaign
+            for campaign in self._campaigns.values()
+            if campaign.owner_id == owner_id
+            and campaign.session_id == session_id
+            and campaign.status
+            in {
+                WorkflowCampaignStatus.PENDING,
+                WorkflowCampaignStatus.RUNNING,
+                WorkflowCampaignStatus.BLOCKED,
+            }
+            and (connection_id is None or campaign.connection_id == connection_id)
+        ]
+        return matches[0] if len(matches) == 1 else None
+
     async def get_campaign_by_slug(
         self,
         slug: str,
@@ -132,6 +167,22 @@ class InMemoryCampaignRepository(WorkflowCampaignRepository):
     async def save_campaign(self, campaign: WorkflowCampaign) -> WorkflowCampaign:
         self._campaigns[campaign.id] = campaign
         return campaign
+
+    async def save_ticket_campaign(
+        self, campaign: WorkflowCampaign, *, saga_id: UUID, issue_id: str
+    ) -> str | None:
+        ticket = {"sagaId": str(saga_id), "issueId": issue_id}
+        for other in self._campaigns.values():
+            link = other.metadata.get("ticket") or {}
+            if (
+                other.id != campaign.id
+                and {key: link.get(key) for key in ticket} == ticket
+                and other.status
+                not in (WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED)
+            ):
+                return other.slug
+        self._campaigns[campaign.id] = campaign
+        return None
 
     async def delete_campaign(self, campaign_id: UUID) -> bool:
         return self._campaigns.pop(campaign_id, None) is not None
@@ -174,6 +225,15 @@ class InMemoryA2ALaunchRepository:
             return claimed
         return None
 
+    async def release(self, reservation_id, *, lease_token):
+        from dataclasses import replace
+
+        for key, reservation in self.by_message.items():
+            if reservation.id == reservation_id and reservation.lease_token == lease_token:
+                self.by_message[key] = replace(
+                    reservation, state="reserved", lease_token=None, lease_expires_at=None
+                )
+
     async def mark_launched(self, reservation_id, *, lease_token, session_id):
         from dataclasses import replace
 
@@ -188,6 +248,26 @@ class InMemoryA2ALaunchRepository:
                 self.by_message[key] = launched
                 return launched
         raise ValueError("missing reservation")
+
+
+class RecordingExecutionRepository:
+    def __init__(self) -> None:
+        self.reserved = []
+        self.execution = None
+
+    async def reserve_parent_launch(self, execution):
+        self.reserved.append(execution)
+        self.execution = execution
+        return execution, True
+
+    async def attach_parent_session(self, execution_id, *, session_id, connection_id):
+        assert self.execution is not None and self.execution.id == execution_id
+        self.execution = replace(
+            self.execution,
+            parent_session_id=session_id,
+            connection_id=connection_id,
+        )
+        return self.execution
 
 
 class RecordingVolundrPort(VolundrPort):
@@ -539,6 +619,8 @@ def _make_client(
     app.include_router(create_research_router())
     app.state.settings = settings or Settings(auth=AuthConfig(allow_anonymous_dev=False))
     app.state.a2a_push_dispatcher = push_dispatcher
+    app.state.saga_repo = SimpleNamespace(get_saga=AsyncMock(return_value=None))
+    app.state.ticket_coordinator_repo = SimpleNamespace(get=AsyncMock(return_value=None))
     launch_repo = launch_repo or InMemoryA2ALaunchRepository()
     app.dependency_overrides[resolve_workflow_repo] = lambda: workflow_repo
     app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaigns
@@ -586,6 +668,114 @@ def _send_params(skill_id: str, *, prompt: str = "Build the widget tool") -> dic
     }
 
 
+class _LocalOTLPHTTPReceiver(ThreadingHTTPServer):
+    """In-process OTLP receiver with queryable metric and log payloads."""
+
+    def __init__(self) -> None:
+        super().__init__(("127.0.0.1", 0), _LocalOTLPRequestHandler)
+        self.metric_requests: list[Any] = []
+        self.log_requests: list[Any] = []
+
+    @property
+    def endpoint(self) -> str:
+        host, port = self.server_address
+        return f"http://{host}:{port}"
+
+
+class _LocalOTLPRequestHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
+        from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
+        from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
+            ExportMetricsServiceRequest,
+        )
+
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        if self.headers.get("Content-Encoding") == "gzip":
+            body = gzip.decompress(body)
+        receiver = self.server
+        if self.path == "/v1/metrics":
+            request = ExportMetricsServiceRequest.FromString(body)
+            receiver.metric_requests.append(request)  # type: ignore[attr-defined]
+        elif self.path == "/v1/logs":
+            request = ExportLogsServiceRequest.FromString(body)
+            receiver.log_requests.append(request)  # type: ignore[attr-defined]
+        else:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return None
+
+
+class _LocalTempoReceiver:
+    """In-process Tempo OTLP/gRPC receiver with a trace-name query."""
+
+    def __init__(self) -> None:
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import (
+            TraceServiceServicer,
+            add_TraceServiceServicer_to_server,
+        )
+
+        requests: list[Any] = []
+
+        class Receiver(TraceServiceServicer):
+            def Export(self, request, _context):  # noqa: N802 - OTLP service contract
+                requests.append(request)
+                from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+                    ExportTraceServiceResponse,
+                )
+
+                return ExportTraceServiceResponse()
+
+        self.requests = requests
+        self.server = grpc_server(ThreadPoolExecutor(max_workers=1))
+        add_TraceServiceServicer_to_server(Receiver(), self.server)
+        self.port = self.server.add_insecure_port("127.0.0.1:0")
+
+    @property
+    def endpoint(self) -> str:
+        return f"127.0.0.1:{self.port}"
+
+    def start(self) -> None:
+        self.server.start()
+
+    def stop(self) -> None:
+        self.server.stop(0).wait()
+
+
+def _metric_names(requests: list[Any]) -> set[str]:
+    return {
+        metric.name
+        for request in requests
+        for resource_metrics in request.resource_metrics
+        for scope_metrics in resource_metrics.scope_metrics
+        for metric in scope_metrics.metrics
+    }
+
+
+def _span_names(requests: list[Any]) -> set[str]:
+    return {
+        span.name
+        for request in requests
+        for resource_spans in request.resource_spans
+        for scope_spans in resource_spans.scope_spans
+        for span in scope_spans.spans
+    }
+
+
+def _log_records(requests: list[Any]) -> list[Any]:
+    return [
+        log_record
+        for request in requests
+        for resource_logs in request.resource_logs
+        for scope_logs in resource_logs.scope_logs
+        for log_record in scope_logs.log_records
+    ]
+
+
 class TestSendMessage:
     def test_launches_workflow_and_returns_submitted_task(self) -> None:
         workflow = _make_workflow()
@@ -622,7 +812,318 @@ class TestSendMessage:
         assert campaign.owner_id == "user-1"
         assert campaign.metadata["surface"] == "a2a"
         assert campaign.metadata["a2a_message_id"] == "msg-1"
-        assert campaign.metadata["a2a_workflow_slug"] == "build-the-widget-tool"
+        # NIU-1149: the recorded slug is the one the session runs under (its
+        # launch name), not the caller's requested sessionName — `{slug}` in
+        # the workflow's artifact paths must resolve to where it wrote them.
+        assert campaign.metadata["a2a_workflow_slug"] == result["id"]
+        # The task id stays the stable recovery key; the session itself gets a
+        # name a human can read (workflow + prompt), never ``a2a-<hex>``.
+        assert port.spawned[0].tracker_issue_id == f"workflow:{result['id']}"
+        assert port.spawned[0].name == "tool-builder-build-the-widget-tool"
+
+    def test_caller_session_name_names_the_session(self) -> None:
+        workflow = _make_workflow()
+        client, _campaigns, port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+        params = _send_params(str(workflow.id))
+        params["message"]["metadata"]["sessionName"] = "NIU-1114 GitOps reconciliation"
+
+        response = _rpc(client, "SendMessage", params)
+
+        assert response.status_code == 200
+        task_id = response.json()["result"]["task"]["id"]
+        assert port.spawned[0].name == "niu-1114-gitops-reconciliation"
+        assert port.spawned[0].tracker_issue_id == f"workflow:{task_id}"
+
+    def test_fan_out_skill_binds_durable_execution_context(self) -> None:
+        workflow = next(
+            item for item in load_system_workflows() if item.name == "Research Campaign"
+        )
+        ledger = RecordingExecutionRepository()
+        client, campaigns, port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+        client.app.state.persona_source = FilesystemPersonaAdapter(
+            persona_dirs=[], include_builtin=True
+        )
+        client.app.state.workflow_execution_repo = ledger
+        params = _send_params(
+            str(workflow.id),
+            prompt="Research durable context binding for this campaign",
+        )
+        params["message"]["metadata"].update(
+            {
+                "connectionId": "local",
+                "repo": "https://github.com/niuulabs/niuu",
+                "branch": "regin",
+                "traceContext": {
+                    "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+                    "tracestate": "niuu=resident",
+                },
+            }
+        )
+
+        response = _rpc(client, "SendMessage", params)
+
+        assert response.status_code == 200, response.text
+        task = response.json()["result"]["task"]
+        assert task["status"]["state"] == "TASK_STATE_SUBMITTED"
+        assert len(ledger.reserved) == 1
+        assert ledger.execution.parent_node_id == "research-threads"
+        assert ledger.execution.parent_session_id == "session-123"
+        assert ledger.execution.connection_id == "local"
+
+        workload = port.spawned[0].workload_config
+        provenance = workload["provenance"]["workflow_execution"]
+        assert provenance["execution_id"] == str(ledger.execution.id)
+        assert provenance["parent_session_key"] == f"workflow:execution-{ledger.execution.id.hex}"
+        assert workload["ravn_config"]["workflow_execution"]["enabled"] is True
+        assert workload["provenance"]["trace_context"] == {
+            "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+            "tracestate": "niuu=resident",
+        }
+
+        campaign = next(iter(campaigns._campaigns.values()))
+        assert campaign.metadata["workflow_execution_id"] == str(ledger.execution.id)
+
+    def test_a_coordinators_launch_keeps_its_ticket(self) -> None:
+        """The link a coordinator's launch carries survives the session starting."""
+        workflow = _make_workflow()
+        client, campaigns, _ = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+        saga_id = uuid4()
+        client.app.state.saga_repo.get_saga.return_value = SimpleNamespace(
+            board_workflows=(), workflow_id=None, workflow_snapshot=None
+        )
+        ticket = {"sagaId": str(saga_id), "issueId": "issue-1", "identifier": "NIU-1"}
+        params = _send_params(str(workflow.id))
+        params["message"]["metadata"]["ticket"] = ticket
+
+        response = _rpc(client, "SendMessage", params)
+
+        assert response.status_code == 200, response.text
+        campaign = next(iter(campaigns._campaigns.values()))
+        assert campaign.session_id
+        assert campaign.metadata["ticket"] == ticket
+
+    def test_campaign_names_the_workload_that_sent_the_task(self) -> None:
+        """A resident's exchanged token (act.sub) is recorded on the campaign it launches."""
+        workflow = _make_workflow()
+        client, campaigns, _ = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+        token = jwt.encode(
+            {"sub": "user-1", "act": {"sub": "system:serviceaccount:nats:regin"}},
+            "test-only-hmac-key-at-least-32-bytes-long",
+            algorithm="HS256",
+        )
+
+        response = _rpc(
+            client, "SendMessage", _send_params(str(workflow.id)), headers=_headers(token=token)
+        )
+
+        import asyncio
+
+        task_id = response.json()["result"]["task"]["id"]
+        campaign = asyncio.run(campaigns.get_campaign_by_slug(task_id))
+        assert campaign is not None
+        assert campaign.owner_id == "user-1"
+        assert campaign.metadata["actor_id"] == "system:serviceaccount:nats:regin"
+
+    def test_campaign_sent_by_its_owner_has_no_actor(self) -> None:
+        workflow = _make_workflow()
+        client, campaigns, _ = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+
+        response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
+
+        import asyncio
+
+        task_id = response.json()["result"]["task"]["id"]
+        campaign = asyncio.run(campaigns.get_campaign_by_slug(task_id))
+        assert campaign is not None
+        assert "actor_id" not in campaign.metadata
+
+    def test_task_lifecycle_drives_send_get_and_cancel_over_jsonrpc(self) -> None:
+        """Exercise all required task operations against one launched workflow."""
+        workflow = _make_workflow()
+        client, campaigns, port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+
+        sent = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
+
+        assert sent.status_code == 200
+        task_id = sent.json()["result"]["task"]["id"]
+        fetched = _rpc(client, "GetTask", {"id": task_id})
+        canceled = _rpc(client, "CancelTask", {"id": task_id})
+
+        assert fetched.status_code == 200
+        assert fetched.json()["result"]["id"] == task_id
+        assert canceled.status_code == 200
+        assert canceled.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
+        assert port.stopped == ["session-123"]
+        persisted = next(iter(campaigns._campaigns.values()))
+        assert persisted.metadata["a2a_canceled"] is True
+
+    def test_jsonrpc_span_uses_traceparent_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class Span:
+            def set_attribute(self, _name, _value) -> None:
+                return None
+
+        class RecordingTelemetry:
+            def __init__(self) -> None:
+                self.spans: list[tuple[str, dict[str, Any]]] = []
+                self.counts: list[tuple[str, dict[str, Any]]] = []
+                self.durations: list[str] = []
+
+            @contextmanager
+            def span(self, name, **kwargs):
+                self.spans.append(
+                    (
+                        name,
+                        {
+                            key: dict(value) if isinstance(value, dict) else value
+                            for key, value in kwargs.items()
+                        },
+                    )
+                )
+                yield Span()
+
+            def event(self, *_args, **_kwargs) -> None:
+                return None
+
+            def inject(self) -> dict[str, str]:
+                return {}
+
+            def mark_error(self, *_args, **_kwargs) -> None:
+                return None
+
+            def count(self, name, *, attributes=None, **_kwargs) -> None:
+                self.counts.append((name, dict(attributes or {})))
+
+            def duration(self, name, *_args, **_kwargs) -> None:
+                self.durations.append(name)
+
+        telemetry = RecordingTelemetry()
+        monkeypatch.setattr("ting.api.a2a.get_observability", lambda: telemetry)
+        workflow = _make_workflow()
+        client, _campaigns, _port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+        traceparent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+
+        response = _rpc(
+            client,
+            "SendMessage",
+            _send_params(str(workflow.id)),
+            headers={**_headers(), "traceparent": traceparent},
+        )
+
+        assert response.status_code == 200
+        assert telemetry.spans[0] == (
+            "ting.a2a.SendMessage",
+            {
+                "attributes": {
+                    "rpc.system": "jsonrpc",
+                    "rpc.method": "SendMessage",
+                    "workflowId": str(workflow.id),
+                    "a2a.skill.id": str(workflow.id),
+                    "a2a.message.id": "msg-1",
+                },
+                "carrier": {"traceparent": traceparent},
+            },
+        )
+        assert (
+            "a2a_requests_total",
+            {"method": "SendMessage", "outcome": "ok"},
+        ) in telemetry.counts
+        assert "a2a_request_duration_seconds" in telemetry.durations
+
+    def test_a2a_otlp_export_reaches_tempo_and_loki_receivers(self) -> None:
+        """Exercise Ting's real OTLP exporters against local queryable receivers."""
+        from niuu.domain.observability import ObservabilityConfig
+        from niuu.observability import configure_observability, shutdown_observability
+
+        tempo = _LocalTempoReceiver()
+        loki = _LocalOTLPHTTPReceiver()
+        tempo.start()
+        loki_thread = Thread(target=loki.serve_forever, daemon=True)
+        loki_thread.start()
+        a2a_logger = logging.getLogger("ting.api.a2a")
+        previous_level = a2a_logger.level
+        a2a_logger.setLevel(logging.INFO)
+        traceparent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+        # The OTLP pipeline is process-global; another test on this worker may
+        # have left one active with a different fingerprint. Start clean.
+        shutdown_observability()
+        try:
+            telemetry = configure_observability(
+                ObservabilityConfig(
+                    enabled=True,
+                    trace_endpoint=tempo.endpoint,
+                    metric_endpoint=f"{loki.endpoint}/v1/metrics",
+                    log_endpoint=f"{loki.endpoint}/v1/logs",
+                    insecure=True,
+                    metric_export_interval_milliseconds=1_000,
+                ),
+                component="ting",
+                default_service_name="ting",
+            )
+            workflow = _make_workflow()
+            client, _campaigns, _port = _make_client(
+                workflow_repo=InMemoryWorkflowRepository([workflow]),
+            )
+
+            response = _rpc(
+                client,
+                "SendMessage",
+                _send_params(str(workflow.id)),
+                headers={**_headers(), "traceparent": traceparent},
+            )
+
+            assert response.status_code == 200
+            telemetry.shutdown()
+
+            assert "ting.a2a.SendMessage" in _span_names(tempo.requests)
+            trace_ids = {
+                span.trace_id.hex()
+                for request in tempo.requests
+                for resource_spans in request.resource_spans
+                for scope_spans in resource_spans.scope_spans
+                for span in scope_spans.spans
+                if span.name == "ting.a2a.SendMessage"
+            }
+            assert trace_ids == {"0123456789abcdef0123456789abcdef"}
+            assert {
+                "a2a_requests_total",
+                "a2a_request_duration_seconds",
+            }.issubset(_metric_names(loki.metric_requests))
+            records = _log_records(loki.log_requests)
+            a2a_records = [
+                record
+                for record in records
+                if "A2A JSON-RPC SendMessage finished" in record.body.string_value
+            ]
+            assert len(a2a_records) == 1
+            assert a2a_records[0].trace_id.hex() == "0123456789abcdef0123456789abcdef"
+            assert a2a_records[0].span_id
+            print(
+                "OTLP exporter proof: "
+                "Tempo query span=ting.a2a.SendMessage trace_id=0123456789abcdef0123456789abcdef; "
+                "Loki receiver query metrics=a2a_requests_total,a2a_request_duration_seconds; "
+                "logs=A2A JSON-RPC SendMessage finished with correlated trace_id."
+            )
+        finally:
+            a2a_logger.setLevel(previous_level)
+            shutdown_observability()
+            loki.shutdown()
+            loki.server_close()
+            loki_thread.join()
+            tempo.stop()
 
     def test_reuses_task_when_message_is_retried(self) -> None:
         workflow = _make_workflow()
@@ -1054,6 +1555,8 @@ class TestSendMessage:
         assert campaign is not None
         assert campaign.connection_id == "spark-01"
         assert campaign.session_id == "recovered-session"
+        # The stale pre-launch slug is replaced by the recovered launch's own.
+        assert campaign.metadata["a2a_workflow_slug"] == task_id
 
     def test_launch_failure_marks_the_campaign_failed_instead_of_leaving_it_pending(
         self,
@@ -1225,6 +1728,103 @@ class TestGetTask:
 
         assert response.status_code == 403
 
+    def test_scoped_launcher_reads_the_task_its_workload_launched(self) -> None:
+        """build_tool follows the task it started, with the token it started it with."""
+        regin = "system:serviceaccount:nats:regin"
+        campaign = _make_campaign(slug="task-built-by-regin", metadata={"actor_id": regin})
+        client, _, _ = _make_client(campaign_repo=InMemoryCampaignRepository([campaign]))
+        client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
+        token = _build_token(["ting:workflow:launch"], act={"sub": regin})
+
+        response = _rpc(client, "GetTask", {"id": campaign.slug}, headers=_headers(token=token))
+
+        assert response.status_code == 200
+        assert response.json()["result"]["id"] == campaign.slug
+
+    def test_scoped_launcher_reads_completed_artifacts_with_ting_credential(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """NIU-1149: the build's artifacts are read with Ting's Mimir credential."""
+        from niuu.adapters.outbound.http_auth import StaticBearerTokenAuthAdapter
+        from ting.api import research as research_module
+
+        regin = "system:serviceaccount:nats:regin"
+        campaign = _make_campaign(
+            slug="tool-built-by-regin",
+            status=WorkflowCampaignStatus.COMPLETED,
+            metadata={"actor_id": regin},
+        )
+        client, _, _ = _make_client(campaign_repo=InMemoryCampaignRepository([campaign]))
+        client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
+        client.app.state.mimir_service_auth = StaticBearerTokenAuthAdapter(token="ting-mimir")
+        seen: list[str | None] = []
+
+        def _resolve(*_args: Any, bearer_token: str | None = None, **_kwargs: Any) -> None:
+            seen.append(bearer_token)
+            return None
+
+        monkeypatch.setattr(research_module, "resolve_mimir_workload", _resolve)
+        token = _build_token(["ting:workflow:launch"], act={"sub": regin})
+
+        response = _rpc(client, "GetTask", {"id": campaign.slug}, headers=_headers(token=token))
+
+        assert response.status_code == 200, response.text
+        assert "error" not in response.json()
+        assert seen == ["ting-mimir"]
+
+    def test_scoped_launcher_cannot_read_another_workloads_task(self) -> None:
+        campaign = _make_campaign(
+            slug="task-built-by-ivaldi",
+            metadata={"actor_id": "system:serviceaccount:nats:ivaldi"},
+        )
+        client, _, _ = _make_client(campaign_repo=InMemoryCampaignRepository([campaign]))
+        client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
+        token = _build_token(
+            ["ting:workflow:launch"], act={"sub": "system:serviceaccount:nats:regin"}
+        )
+
+        response = _rpc(client, "GetTask", {"id": campaign.slug}, headers=_headers(token=token))
+
+        assert response.status_code == 403
+        assert "tasks its workload launched" in response.json()["detail"]
+
+    def test_scoped_launcher_cannot_read_tasks_its_owner_launched_directly(self) -> None:
+        """No recorded actor means the owner launched it; a scoped token gets nothing."""
+        campaign = _make_campaign(slug="task-by-owner")
+        client, _, _ = _make_client(campaign_repo=InMemoryCampaignRepository([campaign]))
+        client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
+        token = _build_token(
+            ["ting:workflow:launch"], act={"sub": "system:serviceaccount:nats:regin"}
+        )
+
+        response = _rpc(client, "GetTask", {"id": campaign.slug}, headers=_headers(token=token))
+
+        assert response.status_code == 403
+
+    def test_actor_match_without_launch_scope_is_denied(self) -> None:
+        regin = "system:serviceaccount:nats:regin"
+        campaign = _make_campaign(slug="task-built-by-regin", metadata={"actor_id": regin})
+        client, _, _ = _make_client(campaign_repo=InMemoryCampaignRepository([campaign]))
+        client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
+        token = _build_token(["forge:session:create"], act={"sub": regin})
+
+        response = _rpc(client, "GetTask", {"id": campaign.slug}, headers=_headers(token=token))
+
+        assert response.status_code == 403
+
+    def test_scoped_launcher_cancels_the_task_its_workload_launched(self) -> None:
+        regin = "system:serviceaccount:nats:regin"
+        campaign = _make_campaign(slug="task-built-by-regin", metadata={"actor_id": regin})
+        client, _, port = _make_client(campaign_repo=InMemoryCampaignRepository([campaign]))
+        client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
+        token = _build_token(["ting:workflow:launch"], act={"sub": regin})
+
+        response = _rpc(client, "CancelTask", {"id": campaign.slug}, headers=_headers(token=token))
+
+        assert response.status_code == 200
+        assert response.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
+        assert port.stopped == ["session-123"]
+
     def test_execution_gateway_token_is_bound_to_exact_ledger_task(self) -> None:
         execution_id = uuid4()
         attempt_id = uuid4()
@@ -1325,6 +1925,20 @@ class TestGetTask:
         result = response.json()["result"]
         assert result["status"]["state"] == "TASK_STATE_FAILED"
         assert result["metadata"]["error"] == "refresh token was already used"
+        # The protocol's own place for why the task ended, which A2A callers read.
+        message = result["status"]["message"]
+        assert message["role"] == "ROLE_AGENT"
+        assert message["parts"] == [{"text": "refresh token was already used"}]
+
+    def test_only_a_failed_task_carries_a_failure_status_message(self) -> None:
+        campaign = _make_campaign(
+            status=WorkflowCampaignStatus.RUNNING,
+            metadata={"failure_error": "an earlier attempt failed"},
+        )
+
+        task = campaign_to_task(campaign)
+
+        assert not task.status.HasField("message")
 
     def test_completed_task_projects_only_server_stored_delivery_result(self) -> None:
         campaign = _make_campaign(
@@ -1473,6 +2087,27 @@ class TestCancelTask:
         followup = _rpc(client, "GetTask", {"id": campaign.slug})
         assert followup.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
 
+    def test_cancel_is_recorded_before_the_session_stops(self) -> None:
+        """Stopping the session emits events; a projector reading the campaign
+        while it was still active wrote it back over the cancellation."""
+        campaign = _make_campaign(status=WorkflowCampaignStatus.BLOCKED)
+        repo = InMemoryCampaignRepository([campaign])
+        client, _, port = _make_client(campaign_repo=repo)
+        states_at_stop: list[str] = []
+        original_stop = port.stop_session
+
+        async def _stop(session_id, **kwargs):
+            stored = await repo.get_campaign_by_slug(campaign.slug)
+            states_at_stop.append(stored.status.value)
+            await original_stop(session_id, **kwargs)
+
+        port.stop_session = _stop
+
+        response = _rpc(client, "CancelTask", {"id": campaign.slug})
+
+        assert response.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
+        assert states_at_stop == ["failed"]
+
     def test_cancel_terminal_task_is_not_cancelable(self) -> None:
         campaign = _make_campaign(status=WorkflowCampaignStatus.COMPLETED)
         client, _, port = _make_client(
@@ -1534,6 +2169,36 @@ class TestProtocolSurface:
         assert [task["id"] for task in result["tasks"]] == ["task-mine"]
         assert result["totalSize"] == 1
 
+    def test_scoped_launcher_lists_only_the_tasks_its_workload_launched(self) -> None:
+        """build_tool looks up its earlier task by contextId before re-sending."""
+        regin = "system:serviceaccount:nats:regin"
+        mine = _make_campaign(slug="task-regin", metadata={"actor_id": regin})
+        theirs = _make_campaign(
+            slug="task-ivaldi", metadata={"actor_id": "system:serviceaccount:nats:ivaldi"}
+        )
+        owners = _make_campaign(slug="task-owner")
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([mine, theirs, owners]),
+        )
+        client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
+        token = _build_token(["ting:workflow:launch"], act={"sub": regin})
+
+        response = _rpc(client, "ListTasks", {}, headers=_headers(token=token))
+
+        assert response.status_code == 200
+        assert [task["id"] for task in response.json()["result"]["tasks"]] == [mine.slug]
+
+    def test_scoped_list_without_launch_scope_is_denied(self) -> None:
+        client, _, _ = _make_client()
+        client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
+        token = _build_token(
+            ["forge:session:create"], act={"sub": "system:serviceaccount:nats:regin"}
+        )
+
+        response = _rpc(client, "ListTasks", {}, headers=_headers(token=token))
+
+        assert response.status_code == 403
+
     def test_missing_identity_headers_are_unauthorized(self) -> None:
         client, _, _ = _make_client()
 
@@ -1587,6 +2252,41 @@ class TestPushNotifications:
         )
         assert deleted.status_code == 200
         assert dispatcher.repo.configs == {}
+
+    def test_scoped_launcher_registers_push_for_its_own_task_only(self) -> None:
+        """build_tool registers a callback for the build it just launched."""
+        regin = "system:serviceaccount:nats:regin"
+        mine = _make_campaign(slug="task-regin", metadata={"actor_id": regin})
+        theirs = _make_campaign(
+            slug="task-ivaldi", metadata={"actor_id": "system:serviceaccount:nats:ivaldi"}
+        )
+        dispatcher = RecordingPushDispatcher()
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([mine, theirs]),
+            push_dispatcher=dispatcher,
+        )
+        client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
+        token = _build_token(["ting:workflow:launch"], act={"sub": regin})
+
+        def register(task_id: str):
+            return _rpc(
+                client,
+                "CreateTaskPushNotificationConfig",
+                {
+                    "taskId": task_id,
+                    "id": "ravn-tool-build",
+                    "url": "https://resident.example/a2a/push",
+                    "authentication": {"scheme": "Bearer"},
+                },
+                headers=_headers(token=token),
+            )
+
+        own = register(mine.slug)
+        other = register(theirs.slug)
+
+        assert own.status_code == 200
+        assert own.json()["result"]["taskId"] == mine.slug
+        assert other.status_code == 403
 
     def test_rejects_unowned_or_unallowlisted_callback(self) -> None:
         campaign = _make_campaign()
@@ -1729,7 +2429,23 @@ def _mimir_workflow(root: Path) -> WorkflowDefinition:
 class TestTaskArtifacts:
     _SLUG = "build-widget"
     _JSON_PATH = "capabilities/build-widget/learned_tool.json"
-    _JSON_CONTENT = '{"manifest": {"name": "widget"}}'
+    _JSON_CONTENT = json.dumps(
+        {
+            "manifest": {
+                "name": "widget",
+                "description": "Echo a supplied payload.",
+                "input_schema": {"type": "object"},
+                "required_permission": "tool:run",
+            },
+            "tool_code": "def run(payload):\n    return {'echo': payload}\n",
+            "test_code": (
+                "import _verify_tool\n\n"
+                "def test_echo():\n"
+                "    assert _verify_tool.run({'a': 1}) == {'echo': {'a': 1}}\n"
+            ),
+            "requirements": [],
+        }
+    )
 
     def _client_with_files(
         self,
@@ -1785,6 +2501,105 @@ class TestTaskArtifacts:
         )
         assert fetched.status_code == 200
         assert fetched.json()["content"] == self._JSON_CONTENT
+
+    def test_blocked_publish_retry_completes_task_with_artifact(self, tmp_path: Path) -> None:
+        """A successful publish supersedes its earlier help-needed task state."""
+        import asyncio
+
+        workflow = _mimir_workflow(tmp_path)
+        workflow.graph["nodes"].append(
+            {
+                "id": "capability-complete",
+                "kind": "end",
+                "completionEvent": "capability.ready",
+            }
+        )
+        campaign = _make_campaign(
+            slug=self._SLUG,
+            metadata={"a2a_workflow_slug": self._SLUG},
+            workflow_snapshot=build_workflow_snapshot(workflow),
+        )
+        campaigns = InMemoryCampaignRepository([campaign])
+        port = RecordingVolundrPort()
+        settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
+        client, _, _ = _make_client(
+            campaign_repo=campaigns,
+            settings=settings,
+            volundr=port,
+        )
+        artifact_dir = tmp_path / "wiki" / "capabilities" / self._SLUG
+        artifact_dir.mkdir(parents=True)
+        (artifact_dir / "learned_tool.json").write_text(self._JSON_CONTENT, encoding="utf-8")
+
+        class Factory:
+            async def primary_for_owner(self, owner_id: str):
+                return port
+
+            async def for_connection(self, owner_id: str, connection_id: str):
+                return None
+
+        projector = WorkflowCampaignProjector(
+            repo=campaigns,
+            volundr_factory=Factory(),
+            event_bus=AsyncMock(),
+        )
+
+        async def project_publish_retry() -> None:
+            assert await projector.record_help_needed(
+                {"summary": "Publisher needs the artifact path."},
+                campaign.owner_id,
+                session_id=campaign.session_id,
+                gate={"node_id": "capability-publish", "status": "blocked"},
+            )
+            assert await projector.handle_activity(
+                ActivityEvent(
+                    session_id=campaign.session_id,
+                    state="idle",
+                    metadata={
+                        "completion_source": "ravn_flock",
+                        "completion_event_type": "capability.ready",
+                        "completion_peer_id": "workflow-stop:capability-complete",
+                        "outcome_valid": True,
+                        "structured_outcome": {
+                            "verdict": "approve",
+                            "authoritative": True,
+                            "checks": [
+                                {
+                                    "persona": "capability-publisher",
+                                    "event_type": "capability.ready",
+                                    "verdict": "published",
+                                }
+                            ],
+                        },
+                    },
+                    owner_id=campaign.owner_id,
+                ),
+                campaign.owner_id,
+            )
+
+        asyncio.run(project_publish_retry())
+
+        result = _rpc(client, "GetTask", {"id": campaign.slug}).json()["result"]
+
+        assert result["status"]["state"] == "TASK_STATE_COMPLETED"
+        artifacts = {artifact["artifactId"]: artifact for artifact in result["artifacts"]}
+        artifact = artifacts[self._JSON_PATH]["parts"][0]
+        assert artifact["text"] == self._JSON_CONTENT
+
+        installed: list = []
+        build_tool = BuildTool(
+            tools_dir=tmp_path / "tools",
+            artifacts_dir=tmp_path / "artifacts",
+            register_tool=lambda tool, replace=False: installed.append((tool, replace)),
+            autonomy_mode="autonomous",
+        )
+        installation = asyncio.run(build_tool.execute(json.loads(artifact["text"])))
+
+        assert installation.is_error is False
+        assert len(installed) == 1
+        execution = asyncio.run(installed[0][0].execute({"installed": True}))
+        assert execution.is_error is False
+        assert json.loads(execution.content) == {"echo": {"installed": True}}
 
     def test_running_task_exposes_no_artifacts(self, tmp_path: Path) -> None:
         client, campaign = self._client_with_files(

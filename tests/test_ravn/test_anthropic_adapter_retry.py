@@ -9,8 +9,14 @@ import pytest
 import respx
 
 from ravn.adapters.llm.anthropic import AnthropicAdapter
+from ravn.cap_telemetry import cap_hit_counts, reset_cap_hits, retry_counts
 from ravn.domain.exceptions import LLMError
 from ravn.domain.models import StreamEventType
+
+
+@pytest.fixture(autouse=True)
+def _fresh_counts() -> None:
+    reset_cap_hits()
 
 
 def _sse(event: dict) -> str:
@@ -36,6 +42,7 @@ def _text_block_sse(text: str) -> list[str]:
         ),
         _sse({"type": "content_block_stop", "index": 0}),
         _sse({"type": "message_delta", "delta": {}, "usage": usage}),
+        _sse({"type": "message_stop"}),
     ]
 
 
@@ -58,6 +65,7 @@ def _tool_block_sse(tool_id: str, name: str, chunk: str) -> list[str]:
         ),
         _sse({"type": "content_block_stop", "index": 0}),
         _sse({"type": "message_delta", "delta": {}, "usage": usage}),
+        _sse({"type": "message_stop"}),
     ]
 
 
@@ -67,8 +75,8 @@ async def test_retry_on_429_then_success() -> None:
     adapter = AnthropicAdapter(
         api_key="k",
         base_url="https://api.anthropic.com",
-        max_retries=2,
-        retry_base_delay=0.0,
+        gateway_outage_window_seconds=5.0,
+        retry_base_delay=0.001,
     )
 
     response_body = {
@@ -106,8 +114,8 @@ async def test_retry_exhausted_raises_llm_error() -> None:
     adapter = AnthropicAdapter(
         api_key="k",
         base_url="https://api.anthropic.com",
-        max_retries=2,
-        retry_base_delay=0.0,
+        gateway_outage_window_seconds=0.05,
+        retry_base_delay=0.01,
     )
 
     respx.post("https://api.anthropic.com/v1/messages").mock(
@@ -124,8 +132,8 @@ async def test_transport_error_retried() -> None:
     adapter = AnthropicAdapter(
         api_key="k",
         base_url="https://api.anthropic.com",
-        max_retries=1,
-        retry_base_delay=0.0,
+        gateway_outage_window_seconds=5.0,
+        retry_base_delay=0.001,
     )
 
     response_body = {
@@ -155,8 +163,8 @@ async def test_transport_error_exhausted_raises() -> None:
     adapter = AnthropicAdapter(
         api_key="k",
         base_url="https://api.anthropic.com",
-        max_retries=1,
-        retry_base_delay=0.0,
+        gateway_outage_window_seconds=0.05,
+        retry_base_delay=0.01,
     )
 
     def side_effect(request):
@@ -164,8 +172,13 @@ async def test_transport_error_exhausted_raises() -> None:
 
     respx.post("https://api.anthropic.com/v1/messages").mock(side_effect=side_effect)
 
-    with pytest.raises(LLMError):
+    with pytest.raises(LLMError, match="llm.gateway_outage_window_seconds") as raised:
         await adapter.generate([], tools=[], system="", model="m", max_tokens=100)
+
+    # The failure that was retried is the cause, not swallowed between attempts.
+    assert isinstance(raised.value.__cause__, httpx.ConnectError)
+    assert retry_counts()["llm.anthropic"] >= 1
+    assert cap_hit_counts() == {"llm.gateway_outage_window_seconds": 1}
 
 
 @respx.mock
@@ -220,6 +233,7 @@ async def test_stream_input_json_delta_without_prior_block_start() -> None:
     lines = [
         _sse({"type": "content_block_delta", "index": 99, "delta": delta}),
         _sse({"type": "message_delta", "delta": {}, "usage": usage}),
+        _sse({"type": "message_stop"}),
     ]
     sse_body = "\n".join(lines) + "\n"
 
@@ -242,8 +256,8 @@ async def test_stream_retry_exhausted_raises_llm_error() -> None:
     adapter = AnthropicAdapter(
         api_key="k",
         base_url="https://api.anthropic.com",
-        max_retries=1,
-        retry_base_delay=0.0,
+        gateway_outage_window_seconds=0.05,
+        retry_base_delay=0.01,
     )
 
     respx.post("https://api.anthropic.com/v1/messages").mock(
@@ -261,8 +275,8 @@ async def test_stream_retry_on_server_error() -> None:
     adapter = AnthropicAdapter(
         api_key="k",
         base_url="https://api.anthropic.com",
-        max_retries=2,
-        retry_base_delay=0.0,
+        gateway_outage_window_seconds=5.0,
+        retry_base_delay=0.001,
     )
 
     sse_body = "\n".join(_text_block_sse("ok")) + "\n"

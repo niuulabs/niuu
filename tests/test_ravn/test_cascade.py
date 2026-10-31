@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ravn.adapters.personas.loader import PersonaConfig, PersonaConsumes
+from ravn.adapters.personas.loader import PersonaConfig, PersonaConsumes, PersonaFanIn
 from ravn.adapters.tools.cascade_tools import (
     FlockSpawnTool,
     FlockStatusTool,
@@ -155,6 +155,85 @@ async def test_mesh_outcome_subscription_enqueues_work(tmp_path):
     assert dl.queued_task_ids()[0].startswith("event_coder_")
     queued = list(dl._queue._queue)  # type: ignore[attr-defined]
     assert queued[0][2].workflow_parent_event_id == source_event.event_id
+
+
+def _outcome_event(event_type: str, persona: str, parent_event_id: str = "") -> RavnEvent:
+    payload = {"event_type": event_type, "persona": persona}
+    if parent_event_id:
+        payload["workflow_parent_event_id"] = parent_event_id
+    return RavnEvent(
+        type=RavnEventType.OUTCOME,
+        source=f"flock-{persona}",
+        payload=payload,
+        timestamp=datetime.now(UTC),
+        urgency=0.5,
+        correlation_id="session-123",
+        session_id="session-123",
+        root_correlation_id="session-123",
+    )
+
+
+@pytest.mark.asyncio
+async def test_contributor_persona_acts_on_any_one_of_its_triggers(tmp_path):
+    """A reviewer's all_must_pass aggregates its verdict, not its two triggers.
+
+    Regression: the reviewer persona (consumes code.changed and
+    review.requested, fan_in all_must_pass, contributes_to review.verdict)
+    held the coder's code.changed in a consumer slot waiting for a
+    review.requested that never comes, so no review ever ran.
+    """
+    dl = _make_drive_loop(journal_path=str(tmp_path / "reviewer-queue.json"))
+    settings = Settings()
+    settings.mesh.enabled = True
+    settings.discovery.enabled = False
+    mesh = MagicMock()
+    persona = PersonaConfig(
+        name="reviewer",
+        consumes=PersonaConsumes(event_types=["code.changed", "review.requested"]),
+        fan_in=PersonaFanIn(strategy="all_must_pass", contributes_to="review.verdict"),
+    )
+
+    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
+
+    with patch("ravn.cli.commands._build_mesh", return_value=mesh):
+        _wire_cascade(dl, settings, persona)
+
+    handlers = dict(mesh._pending_outcome_subscriptions)
+    await handlers["code.changed"](_outcome_event("code.changed", "coder"))
+
+    assert len(dl.queued_task_ids()) == 1
+    assert dl.queued_task_ids()[0].startswith("event_reviewer_")
+    assert dl.fan_in.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_non_contributor_all_must_pass_still_joins_its_triggers(tmp_path):
+    """A persona contributing to nothing keeps all_must_pass as a join of its inputs."""
+    dl = _make_drive_loop(journal_path=str(tmp_path / "postmortem-queue.json"))
+    settings = Settings()
+    settings.mesh.enabled = True
+    settings.discovery.enabled = False
+    mesh = MagicMock()
+    persona = PersonaConfig(
+        name="postmortem-analyst",
+        consumes=PersonaConsumes(event_types=["review.completed", "security.completed"]),
+        fan_in=PersonaFanIn(strategy="all_must_pass"),
+    )
+
+    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
+
+    with patch("ravn.cli.commands._build_mesh", return_value=mesh):
+        _wire_cascade(dl, settings, persona)
+
+    handlers = dict(mesh._pending_outcome_subscriptions)
+    await handlers["review.completed"](_outcome_event("review.completed", "reviewer", "change-1"))
+    assert dl.queued_task_ids() == []
+    assert dl.fan_in.pending_count == 1
+
+    await handlers["security.completed"](
+        _outcome_event("security.completed", "security", "change-1")
+    )
+    assert len(dl.queued_task_ids()) == 1
 
 
 def _review_cycle_settings() -> Settings:
@@ -1609,7 +1688,7 @@ async def test_mode1_local_parallel_tasks():
     def _agent_factory(channel, task_id=None, persona=None, triggered_by=None):  # noqa: ANN001
         return mock_agent
 
-    cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=3, task_queue_max=50)
+    cfg = InitiativeConfig(enabled=True, max_concurrent_tasks=3)
     settings = MagicMock()
     settings.skuld.enabled = False
     settings.cascade.enabled = False

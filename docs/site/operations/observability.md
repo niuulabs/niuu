@@ -40,7 +40,7 @@ content is necessary and approved for that audience.
 
 ## Point the stack at a collector
 
-Set `observability.enabled: true`, `trace_endpoint`, and `metric_endpoint` in
+Set `observability.enabled: true`, `trace_endpoint`, `metric_endpoint`, and `log_endpoint` in
 each service's config (see [Configuration](../reference/configuration.md#observability-opentelemetry))
 and point them at any OTLP-compatible backend — Tempo, Jaeger, Grafana Cloud,
 Honeycomb, or a local `otel-collector`. A minimal local setup, one collector
@@ -51,11 +51,12 @@ observability:
   enabled: true
   trace_endpoint: "http://localhost:4317"            # OTLP/gRPC — Tempo/Jaeger default
   metric_endpoint: "http://localhost:4318/v1/metrics" # OTLP/HTTP
+  log_endpoint: "http://localhost:4318/v1/logs"       # OTLP/HTTP — Loki via collector
   insecure: true
 ```
 
 Nothing exports until `enabled: true` is set explicitly — the default is off.
-`enabled: true` with `trace_endpoint` or `metric_endpoint` left blank fails
+`enabled: true` with `trace_endpoint`, `metric_endpoint`, or `log_endpoint` left blank fails
 config validation at startup (`niuu.domain.observability.ObservabilityConfig`).
 An endpoint that validates but is actually unreachable does not fail startup
 — the OTLP exporters connect lazily and retry in the background, so a wrong

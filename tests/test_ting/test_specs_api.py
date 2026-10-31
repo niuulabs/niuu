@@ -911,7 +911,7 @@ class TestLoadSpecArtifacts:
         workflow = _spec_workflow(tmp_path)
         campaign = _campaign_for_workflow(workflow, "slug")
 
-        import ting.api.specs as specs_module
+        from ting.api import specs as specs_module
 
         original = specs_module._campaign_knowledge
         specs_module._campaign_knowledge = lambda *a, **kw: _Adapter()

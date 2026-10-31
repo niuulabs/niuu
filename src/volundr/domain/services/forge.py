@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from niuu.forge_mcp.credentials import normalize_grants
+from volundr.domain.services.forge_session_launch import FORGE_MCP_KEY, GRANTS_KEY
+
 if TYPE_CHECKING:
     from datetime import datetime
     from uuid import UUID
@@ -143,6 +146,12 @@ class ForgeService:
 
     async def _launch_session(self, data, principal, existing=None, project_options=None):
         resolved_definition = self._resolve_session_definition(data.model, data.definition)
+        forge_mcp = getattr(data, "forge_mcp", None)
+        requested_grants = tuple(forge_mcp.grants) if forge_mcp is not None else ()
+        # Refuse an escalating create before a session row exists.
+        self._session_service.check_forge_mcp_grants(
+            principal, requested_grants, launch_spec=data.launch_spec
+        )
         # No slot, no record: a session created only to fail would sit in the
         # list as an error the person did not ask for.
         await self._session_service.ensure_capacity()
@@ -162,6 +171,10 @@ class ForgeService:
         persona_name = getattr(data, "persona_name", "")
         if persona_name:
             workload_config["persona"] = persona_name
+        if requested_grants:
+            workload_config[FORGE_MCP_KEY] = {
+                GRANTS_KEY: [grant.value for grant in normalize_grants(requested_grants)]
+            }
         return await self._session_service.start_session(
             session.id,
             definition=resolved_definition,

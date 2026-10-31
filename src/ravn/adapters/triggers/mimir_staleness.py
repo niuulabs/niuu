@@ -134,7 +134,6 @@ class MimirStalenessTrigger(TriggerPort):
                 output_mode=OutputMode.SILENT,
                 persona=self._config.persona,
                 priority=9,
-                max_tokens=self._config.max_tokens,
             )
             logger.info("MimirStalenessTrigger: enqueuing refresh for stale page %r", path)
             await enqueue(task)

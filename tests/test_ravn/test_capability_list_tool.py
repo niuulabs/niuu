@@ -267,6 +267,7 @@ async def test_capability_list_includes_learned_tools_without_loading_them() -> 
         "has_tests": False,
         "requirements_count": 0,
         "supersedes": "",
+        "version": 1,
         "lifecycle": {"status": "unmanaged"},
     }
 
@@ -305,7 +306,13 @@ async def test_capability_list_exposes_learned_tool_lifecycle_evidence() -> None
     # A compact entry still has to answer "is this one working?" — otherwise a
     # resident that cannot tell a healthy tool from a failing one rebuilds it,
     # which is the same waste by a different route.
-    assert listed["usage"] == {"status": "active", "runs": 4, "failures": 1}
+    assert listed["usage"] == {
+        "status": "active",
+        "runs": 4,
+        "failures": 1,
+        "successes": 3,
+        "last_used": "2026-07-27T08:00:00+00:00",
+    }
     assert "input_schema" not in listed
 
     result = await tool.execute({"kind": "tool", "names": ["current_probe"]})

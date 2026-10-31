@@ -383,3 +383,51 @@ describe('buildRealmGovernanceHttpAdapter', () => {
     expect(workflows).toEqual([{ id: 'wf-1', tags: ['tool-builder'] }]);
   });
 });
+
+describe('realm-detail SSE subscription', () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('connects, forwards realm.detail events, and disconnects on unsubscribe', async () => {
+    let signal: AbortSignal | undefined;
+    global.fetch = vi.fn((_input, init) => {
+      signal = (init as RequestInit).signal ?? undefined;
+      return Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(
+                new TextEncoder().encode(
+                  [
+                    'event: realm.detail',
+                    'data: {"realm":{"slug":"asgard"},"trust_grants":[],"capabilities":[]}',
+                    '',
+                    '',
+                  ].join('\n'),
+                ),
+              );
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+    }) as typeof fetch;
+    const adapter = buildRealmGovernanceHttpAdapter(makeClient(), makeClient(), '/api/v1');
+    const received: unknown[] = [];
+    const unsubscribe = adapter.subscribeRealmDetail('asgard', (detail) => received.push(detail));
+
+    await vi.waitFor(() =>
+      expect(received).toEqual([{ realm: { slug: 'asgard' }, trust_grants: [], capabilities: [] }]),
+    );
+    unsubscribe();
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/v1/realms/asgard/stream',
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    );
+    expect(signal?.aborted).toBe(true);
+  });
+});

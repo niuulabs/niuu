@@ -155,8 +155,8 @@ function RealmTeardown({
     <div className="niuu:flex niuu:flex-col niuu:gap-2" data-testid="realm-teardown">
       <span className="niuu:text-xs niuu:text-text-muted">
         Deleting the realm removes its resident, persona, memory routing rule, trust and
-        capabilities. The Mímir instance stays (the platform cannot remove one yet); its pages are
-        still under Mímir › Registry.
+        capabilities. The memory instance stays (the platform cannot remove one yet); its pages are
+        still under Memory › Library.
       </span>
       <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
         {armed ? (
@@ -307,7 +307,7 @@ export function RealmSettingsPage() {
           (persona.error as { status?: number }).status === 404 ? (
             <EmptyState
               title={`No persona named ${view.personaName} yet`}
-              description="This realm was not set up by the wizard, so it has no charter persona. Clone it to create one, or write the persona under Ravn › Personas."
+              description="This realm was not set up by the wizard, so it has no charter persona. Clone it to create one, or write the persona under Agents › Personas."
             />
           ) : (
             <ErrorState message={String(persona.error)} />
@@ -375,7 +375,7 @@ export function RealmSettingsPage() {
       {section === 'memory' ? (
         <SectionCard
           title="Realm memory"
-          description="The Mímir mount created with the realm, and where its writes go."
+          description="The memory mount created with the realm, and where its writes go."
         >
           <div className="niuu:flex niuu:flex-col niuu:gap-3">
             <div className="niuu:flex niuu:items-center niuu:gap-2">
@@ -385,7 +385,7 @@ export function RealmSettingsPage() {
                 <Chip tone="muted">{data.mountName ?? 'no mount'} · not discovered yet</Chip>
               )}
               <Link to={'/mimir/registry' as never} className="niuu:text-xs niuu:text-brand-300">
-                Open in Mímir › Registry
+                Open in Memory › Library
               </Link>
             </div>
             <span className="niuu:text-xs niuu:text-text-muted">

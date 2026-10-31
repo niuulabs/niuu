@@ -809,7 +809,9 @@ Session definitions are Kubernetes custom resources that describe how session po
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `strategy.type` | string | `"Recreate"` | Deployment strategy. `Recreate` avoids PVC mount conflicts during upgrades |
+| `strategy.type` | string | `"RollingUpdate"` | Deployment strategy. Rolling with `maxSurge: 1`, `maxUnavailable: 0`: the new pod is ready before the old one stops, so a rollout never returns 503 |
+| `rollout.colocate` | bool | `true` | Schedule a rolling update's new pod on the node already running Völundr, so a ReadWriteOnce sessions volume mounts on both during the overlap |
+| `rollout.drainSeconds` | int | `10` | Seconds a terminating pod keeps serving (preStop sleep on every serving container) while its endpoints are removed; keep below `terminationGracePeriodSeconds` |
 | `nodeSelector` | object | `{}` | Node selector |
 | `tolerations` | list | `[]` | Tolerations |
 | `affinity` | object | `{}` | Affinity rules |

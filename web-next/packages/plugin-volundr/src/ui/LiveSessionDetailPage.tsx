@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RenameSession } from './RenameSession';
 import { AssignSessionProject } from './AssignSessionProject';
@@ -38,6 +38,7 @@ import {
   KeyRound,
   MessageCircleReply,
   MessageSquareText,
+  PanelRight,
   Play,
   RotateCcw,
   ScrollText,
@@ -80,6 +81,16 @@ import { SessionResources } from './SessionResources';
 import { SessionEnvironment } from './SessionEnvironment';
 import { SessionRuntimeVersion } from './SessionRuntimeVersion';
 import { sessionModelLabel } from '../domain/sessionModelLabel';
+import { formatReviewMessage, type ReviewControls } from '../domain/reviewComments';
+import {
+  buildAttentionItems,
+  latestChecklist,
+  runningPeers,
+  type SessionGateSummary,
+} from '../domain/sessionAttention';
+import { ReviewAddButton, ReviewBar, ReviewLineThread } from './ReviewComments';
+import { SessionAttentionPanel } from './SessionAttentionPanel';
+import { useReviewComments } from './useReviewComments';
 
 export type LiveSessionTab =
   'chat' | 'terminal' | 'diffs' | 'files' | 'chronicles' | 'telemetry' | 'logs';
@@ -3302,12 +3313,15 @@ function DiffViewer({
   diff,
   loading,
   error,
+  review,
 }: {
   file: SessionFile | null;
   diff: DiffData | null;
   loading: boolean;
   error: Error | null;
+  review?: ReviewControls;
 }) {
+  const [composingLine, setComposingLine] = useState<string | null>(null);
   return (
     <div
       className="niuu:flex niuu:h-full niuu:flex-col niuu:overflow-auto"
@@ -3357,36 +3371,60 @@ function DiffViewer({
               <div className="niuu:bg-bg-tertiary niuu:px-4 niuu:py-0.5 niuu:text-text-muted">
                 @@ -{hunk.oldStart},{hunk.oldCount} +{hunk.newStart},{hunk.newCount} @@
               </div>
-              {hunk.lines.map((line, j) => (
-                <div
-                  key={j}
-                  className={cn(
-                    'niuu:flex niuu:gap-2 niuu:px-4 niuu:py-px',
-                    line.type === 'add' &&
-                      'niuu:bg-[color-mix(in_srgb,var(--color-brand)_8%,transparent)]',
-                    line.type === 'remove' &&
-                      'niuu:bg-[color-mix(in_srgb,var(--color-critical)_8%,transparent)]',
-                  )}
-                >
-                  <span className="niuu:w-8 niuu:flex-shrink-0 niuu:select-none niuu:text-right niuu:text-text-faint">
-                    {line.oldLine ?? ''}
-                  </span>
-                  <span className="niuu:w-8 niuu:flex-shrink-0 niuu:select-none niuu:text-right niuu:text-text-faint">
-                    {line.newLine ?? ''}
-                  </span>
-                  <span
-                    className={cn(
-                      'niuu:w-3 niuu:flex-shrink-0 niuu:select-none',
-                      line.type === 'add' && 'niuu:text-state-ok',
-                      line.type === 'remove' && 'niuu:text-critical',
-                      line.type === 'context' && 'niuu:text-text-faint',
-                    )}
-                  >
-                    {line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' '}
-                  </span>
-                  <span className="niuu:text-text-primary">{line.content || '\u00A0'}</span>
-                </div>
-              ))}
+              {hunk.lines.map((line, j) => {
+                const side = line.type === 'remove' ? 'old' : 'new';
+                const lineNumber = side === 'old' ? line.oldLine : line.newLine;
+                const composerKey = `${side}:${lineNumber}`;
+                return (
+                  <Fragment key={j}>
+                    <div
+                      className={cn(
+                        'niuu-review-line niuu:flex niuu:gap-2 niuu:px-4 niuu:py-px',
+                        line.type === 'add' &&
+                          'niuu:bg-[color-mix(in_srgb,var(--color-brand)_8%,transparent)]',
+                        line.type === 'remove' &&
+                          'niuu:bg-[color-mix(in_srgb,var(--color-critical)_8%,transparent)]',
+                      )}
+                    >
+                      {review && lineNumber != null ? (
+                        <ReviewAddButton
+                          line={lineNumber}
+                          side={side}
+                          onClick={() => setComposingLine(composerKey)}
+                        />
+                      ) : null}
+                      <span className="niuu:w-8 niuu:flex-shrink-0 niuu:select-none niuu:text-right niuu:text-text-faint">
+                        {line.oldLine ?? ''}
+                      </span>
+                      <span className="niuu:w-8 niuu:flex-shrink-0 niuu:select-none niuu:text-right niuu:text-text-faint">
+                        {line.newLine ?? ''}
+                      </span>
+                      <span
+                        className={cn(
+                          'niuu:w-3 niuu:flex-shrink-0 niuu:select-none',
+                          line.type === 'add' && 'niuu:text-state-ok',
+                          line.type === 'remove' && 'niuu:text-critical',
+                          line.type === 'context' && 'niuu:text-text-faint',
+                        )}
+                      >
+                        {line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' '}
+                      </span>
+                      <span className="niuu:text-text-primary">{line.content || '\u00A0'}</span>
+                    </div>
+                    {review && lineNumber != null ? (
+                      <ReviewLineThread
+                        review={review}
+                        filePath={file.path}
+                        side={side}
+                        line={lineNumber}
+                        snippet={line.content}
+                        composing={composingLine === composerKey}
+                        onCloseComposer={() => setComposingLine(null)}
+                      />
+                    ) : null}
+                  </Fragment>
+                );
+              })}
             </div>
           ))
         )}
@@ -3395,7 +3433,13 @@ function DiffViewer({
   );
 }
 
-function LiveDiffsTab({ chatEndpoint }: { chatEndpoint: string | null }) {
+function LiveDiffsTab({
+  chatEndpoint,
+  review,
+}: {
+  chatEndpoint: string | null;
+  review?: ReviewControls;
+}) {
   const {
     files,
     filesLoading,
@@ -3447,7 +3491,14 @@ function LiveDiffsTab({ chatEndpoint }: { chatEndpoint: string | null }) {
         )}
       </div>
       <div className="niuu:overflow-hidden">
-        <DiffViewer file={selected} diff={diff} loading={diffLoading} error={diffError} />
+        <DiffViewer
+          key={selected?.path}
+          file={selected}
+          diff={diff}
+          loading={diffLoading}
+          error={diffError}
+          review={review}
+        />
       </div>
     </div>
   );
@@ -3506,6 +3557,9 @@ function LiveSessionDetailPageInner({
   const showTokenUsage = tokenVisibility === '1';
   const [detailsPreference] = useForgePreference('details', '0', ['0', '1']);
   const showDetails = detailsPreference === '1';
+  const [panelVisibility, setPanelVisibility] = useForgePreference('panel', '1', ['0', '1']);
+  const showPanel = panelVisibility === '1';
+  const review = useReviewComments();
   // Signing an AI or Git account in again without leaving the session.
   const openConnections = useContext(ChatConnectionsContext);
   const [visibleMessageCount, setVisibleMessageCount] = useState<number | null>(null);
@@ -3649,6 +3703,39 @@ function LiveSessionDetailPageInner({
       },
     };
   }, [chat.meshEvents, chat.participants, dismissedHumanGateIds, workflowGates]);
+  const attentionItems = useMemo(() => {
+    const pendingGates = workflowGates.filter(
+      (gate) =>
+        gate.status === 'pending' &&
+        gate.pending_behavior === 'help_needed' &&
+        !dismissedHumanGateIds.has(gate.id),
+    );
+    const gates: SessionGateSummary[] = pendingGates.map((gate) => ({
+      id: gate.id,
+      title: gate.label,
+      detail: gate.summary || 'Waiting for your approval.',
+    }));
+    if (activeHumanGate?.source === 'legacy') {
+      gates.push({
+        id: activeHumanGate.eventId,
+        title: activeHumanGate.participant.displayName || 'Workflow gate',
+        detail: activeHumanGate.event.summary,
+      });
+    }
+    return buildAttentionItems({
+      gates,
+      permissions: chat.pendingPermissions,
+      inputRequests: chat.pendingInputRequests,
+    });
+  }, [
+    activeHumanGate,
+    chat.pendingInputRequests,
+    chat.pendingPermissions,
+    dismissedHumanGateIds,
+    workflowGates,
+  ]);
+  const checklist = useMemo(() => latestChecklist(chat.messages), [chat.messages]);
+  const peers = useMemo(() => runningPeers(chat.participants), [chat.participants]);
   const sessionDetail = sessionQuery.data;
   const costValue =
     sessionDetail?.costCents != null ? formatCurrencyCents(sessionDetail.costCents) : null;
@@ -3659,7 +3746,7 @@ function LiveSessionDetailPageInner({
     if (forgeBadgeLabel) {
       return null;
     }
-    return { label: 'Forge', value: sessionForgeLabel(liveSession) };
+    return { label: 'Host', value: sessionForgeLabel(liveSession) };
   }, [costValue, forgeBadgeLabel, liveSession]);
   const tabCounts: Partial<Record<SessionTab, number>> = {
     chat: liveSession?.messageCount || replayMessages.length || undefined,
@@ -3735,6 +3822,17 @@ function LiveSessionDetailPageInner({
       : tabs.some((tab) => tab.id === activeTab)
         ? activeTab
         : (tabs.find((tab) => tab.id === 'chat')?.id ?? tabs[0]?.id ?? 'chat');
+
+  const openTab = useCallback((tab: SessionTab) => {
+    setTabWasManuallySelected(true);
+    setActiveTab(tab);
+  }, []);
+
+  const handleSendReview = useCallback(() => {
+    chat.sendMessage(formatReviewMessage(review.comments), []);
+    review.clear();
+    openTab('chat');
+  }, [chat, openTab, review]);
 
   const evaluatePermissionAutoApproval = useCallback(
     (permission: (typeof chat.pendingPermissions)[number]) =>
@@ -3988,10 +4086,7 @@ function LiveSessionDetailPageInner({
                       id={`tab-${tab.id}`}
                       role="tab"
                       aria-selected={resolvedActiveTab === tab.id}
-                      onClick={() => {
-                        setTabWasManuallySelected(true);
-                        setActiveTab(tab.id);
-                      }}
+                      onClick={() => openTab(tab.id)}
                       className={cn(
                         'niuu-live-session__tab',
                         resolvedActiveTab === tab.id && 'niuu-live-session__tab--active',
@@ -4025,6 +4120,12 @@ function LiveSessionDetailPageInner({
                 }
                 active={showInternalMessages}
                 onClick={handleToggleInternalMessages}
+              />
+              <SessionToolbarButton
+                icon={PanelRight}
+                title={showPanel ? 'Hide session panel' : 'Show session panel'}
+                active={showPanel}
+                onClick={() => setPanelVisibility(showPanel ? '0' : '1')}
               />
               {canShowResendPromptToFlock && (
                 <SessionToolbarButton
@@ -4117,40 +4218,97 @@ function LiveSessionDetailPageInner({
           </div>
         ) : null}
 
-        <div className="niuu:min-h-0 niuu:flex-1 niuu:overflow-hidden">
-          {resolvedActiveTab === 'chat' && (
-            <div role="tabpanel" className="niuu:flex niuu:h-full niuu:min-h-0 niuu:flex-col">
-              {isReady && chatEndpoint ? (
-                <>
-                  {activeHumanGate && (
-                    <WorkflowHumanGateCard
-                      title={
-                        activeHumanGate.source === 'native'
-                          ? activeHumanGate.gate.label
-                          : activeHumanGate.participant.displayName ||
-                            activeHumanGate.participant.persona ||
-                            activeHumanGate.event.persona ||
-                            'Workflow gate'
-                      }
-                      summary={
-                        activeHumanGate.source === 'native'
-                          ? activeHumanGate.summary
-                          : activeHumanGate.event.summary || 'Workflow gate'
-                      }
-                      reason={
-                        activeHumanGate.source === 'native'
-                          ? activeHumanGate.reason
-                          : activeHumanGate.event.reason
-                      }
-                      recommendation={
-                        activeHumanGate.source === 'native'
-                          ? activeHumanGate.recommendation
-                          : activeHumanGate.event.recommendation
-                      }
-                      onApprove={(notes) => handleHumanGateReply('APPROVE', notes)}
-                      onRequestChanges={(notes) => handleHumanGateReply('CHANGES_REQUESTED', notes)}
+        <div className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:overflow-hidden">
+          <div className="niuu:min-h-0 niuu:min-w-0 niuu:flex-1 niuu:overflow-hidden">
+            {resolvedActiveTab === 'chat' && (
+              <div role="tabpanel" className="niuu:flex niuu:h-full niuu:min-h-0 niuu:flex-col">
+                {isReady && chatEndpoint ? (
+                  <>
+                    {activeHumanGate && (
+                      <WorkflowHumanGateCard
+                        title={
+                          activeHumanGate.source === 'native'
+                            ? activeHumanGate.gate.label
+                            : activeHumanGate.participant.displayName ||
+                              activeHumanGate.participant.persona ||
+                              activeHumanGate.event.persona ||
+                              'Workflow gate'
+                        }
+                        summary={
+                          activeHumanGate.source === 'native'
+                            ? activeHumanGate.summary
+                            : activeHumanGate.event.summary || 'Workflow gate'
+                        }
+                        reason={
+                          activeHumanGate.source === 'native'
+                            ? activeHumanGate.reason
+                            : activeHumanGate.event.reason
+                        }
+                        recommendation={
+                          activeHumanGate.source === 'native'
+                            ? activeHumanGate.recommendation
+                            : activeHumanGate.event.recommendation
+                        }
+                        onApprove={(notes) => handleHumanGateReply('APPROVE', notes)}
+                        onRequestChanges={(notes) =>
+                          handleHumanGateReply('CHANGES_REQUESTED', notes)
+                        }
+                      />
+                    )}
+                    <SessionChat
+                      className="niuu:h-full"
+                      showToolbar={false}
+                      showDisplayControls={false}
+                      showInternalToggle={false}
+                      internalVisibility={showInternalMessages}
+                      showTokenUsage={showTokenUsage}
+                      messages={chat.messages}
+                      streamingContent={chat.streamingContent}
+                      streamingParts={chat.streamingParts}
+                      streamingModel={chat.streamingModel}
+                      connected={chat.connected}
+                      historyLoaded={chat.historyLoaded}
+                      hasOlderHistory={chat.hasOlderHistory}
+                      loadingOlderHistory={chat.loadingOlderHistory}
+                      olderHistoryError={chat.olderHistoryError}
+                      onLoadOlderHistory={chat.loadOlderHistory}
+                      historyError={chat.historyError}
+                      onRetryHistory={chat.retryHistory}
+                      participants={chat.participants}
+                      meshEvents={chat.meshEvents}
+                      agentEvents={chat.agentEvents}
+                      pendingPermissions={chat.pendingPermissions}
+                      pendingInputRequests={chat.pendingInputRequests}
+                      availableCommands={chat.availableCommands}
+                      capabilities={chat.capabilities}
+                      chatEndpoint={chatEndpoint}
+                      historyEndpoint={historyEndpoint}
+                      sessionName={sessionName}
+                      onSend={chat.sendMessage}
+                      onSendDirected={chat.sendDirectedMessages}
+                      onStop={chat.sendInterrupt}
+                      onClear={chat.clearMessages}
+                      onSetInternalVisibility={chat.sendSetInternalVisibility}
+                      onSetModel={chat.sendSetModel}
+                      onSetThinkingTokens={chat.sendSetThinkingTokens}
+                      onRewindFiles={chat.sendRewindFiles}
+                      onPermissionRespond={chat.respondToPermission}
+                      onInputRespond={chat.respondToInput}
+                      onInputDismiss={chat.dismissInputRequest}
+                      onFetchFiles={fetchSessionMentionFiles}
+                      onMessageCountChange={setVisibleMessageCount}
+                      renderPermissions={permissionRenderer}
                     />
-                  )}
+                  </>
+                ) : canReplayTranscript && transcriptQuery.isLoading ? (
+                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                    Loading saved transcript…
+                  </div>
+                ) : canReplayTranscript && transcriptQuery.isError ? (
+                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-critical">
+                    Failed to load saved transcript.
+                  </div>
+                ) : canReplayTranscript && replayMessages.length > 0 ? (
                   <SessionChat
                     className="niuu:h-full"
                     showToolbar={false}
@@ -4158,144 +4316,120 @@ function LiveSessionDetailPageInner({
                     showInternalToggle={false}
                     internalVisibility={showInternalMessages}
                     showTokenUsage={showTokenUsage}
-                    messages={chat.messages}
-                    streamingContent={chat.streamingContent}
-                    streamingParts={chat.streamingParts}
-                    streamingModel={chat.streamingModel}
-                    connected={chat.connected}
-                    historyLoaded={chat.historyLoaded}
-                    hasOlderHistory={chat.hasOlderHistory}
-                    loadingOlderHistory={chat.loadingOlderHistory}
-                    olderHistoryError={chat.olderHistoryError}
-                    onLoadOlderHistory={chat.loadOlderHistory}
-                    historyError={chat.historyError}
-                    onRetryHistory={chat.retryHistory}
-                    participants={chat.participants}
-                    meshEvents={chat.meshEvents}
-                    agentEvents={chat.agentEvents}
-                    pendingPermissions={chat.pendingPermissions}
-                    availableCommands={chat.availableCommands}
-                    capabilities={chat.capabilities}
+                    messages={replayMessages}
                     chatEndpoint={chatEndpoint}
-                    historyEndpoint={historyEndpoint}
+                    connected={false}
+                    historyLoaded={!transcriptQuery.isLoading}
+                    participants={replayParticipants}
+                    meshEvents={replayMeshEvents}
                     sessionName={sessionName}
-                    onSend={chat.sendMessage}
-                    onSendDirected={chat.sendDirectedMessages}
-                    onStop={chat.sendInterrupt}
-                    onClear={chat.clearMessages}
-                    onSetInternalVisibility={chat.sendSetInternalVisibility}
-                    onSetModel={chat.sendSetModel}
-                    onSetThinkingTokens={chat.sendSetThinkingTokens}
-                    onRewindFiles={chat.sendRewindFiles}
-                    onPermissionRespond={chat.respondToPermission}
-                    onFetchFiles={fetchSessionMentionFiles}
                     onMessageCountChange={setVisibleMessageCount}
-                    renderPermissions={permissionRenderer}
+                    onSend={() => {}}
+                    onStop={() => {}}
                   />
-                </>
-              ) : canReplayTranscript && transcriptQuery.isLoading ? (
-                <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                  Loading saved transcript…
-                </div>
-              ) : canReplayTranscript && transcriptQuery.isError ? (
-                <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-critical">
-                  Failed to load saved transcript.
-                </div>
-              ) : canReplayTranscript && replayMessages.length > 0 ? (
-                <SessionChat
-                  className="niuu:h-full"
-                  showToolbar={false}
-                  showDisplayControls={false}
-                  showInternalToggle={false}
-                  internalVisibility={showInternalMessages}
-                  showTokenUsage={showTokenUsage}
-                  messages={replayMessages}
-                  chatEndpoint={chatEndpoint}
-                  connected={false}
-                  historyLoaded={!transcriptQuery.isLoading}
-                  participants={replayParticipants}
-                  meshEvents={replayMeshEvents}
-                  sessionName={sessionName}
-                  onMessageCountChange={setVisibleMessageCount}
-                  onSend={() => {}}
-                  onStop={() => {}}
+                ) : isSessionBooting(sessionStatus) ? (
+                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                    Session is starting…
+                  </div>
+                ) : canReplayTranscript ? (
+                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                    No saved transcript yet.
+                  </div>
+                ) : (
+                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                    Start the session to chat.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {resolvedActiveTab === 'terminal' && (
+              <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
+                {isReady ? (
+                  <SessionTerminalLive url={terminalUrl} readOnly={readOnly} />
+                ) : isSessionBooting(sessionStatus) ? (
+                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                    Session is starting…
+                  </div>
+                ) : (
+                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                    Start the session to access terminal.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {resolvedActiveTab === 'diffs' && (
+              <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
+                <LiveDiffsTab chatEndpoint={chatEndpoint} review={readOnly ? undefined : review} />
+              </div>
+            )}
+
+            {resolvedActiveTab === 'files' && (
+              <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
+                <SessionFilesWorkspace
+                  sessionId={sessionId}
+                  filesystem={filesystem}
+                  review={readOnly ? undefined : review}
                 />
-              ) : isSessionBooting(sessionStatus) ? (
-                <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                  Session is starting…
-                </div>
-              ) : canReplayTranscript ? (
-                <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                  No saved transcript yet.
-                </div>
-              ) : (
-                <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                  Start the session to chat.
-                </div>
-              )}
-            </div>
-          )}
+              </div>
+            )}
 
-          {resolvedActiveTab === 'terminal' && (
-            <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
-              {isReady ? (
-                <SessionTerminalLive url={terminalUrl} readOnly={readOnly} />
-              ) : isSessionBooting(sessionStatus) ? (
-                <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                  Session is starting…
-                </div>
-              ) : (
-                <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                  Start the session to access terminal.
-                </div>
-              )}
-            </div>
-          )}
+            {resolvedActiveTab === 'chronicles' && (
+              <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
+                <LiveChroniclesTab
+                  sessionId={sessionId}
+                  sessionStatus={sessionStatus}
+                  session={liveSession ?? null}
+                  volundr={volundr}
+                />
+              </div>
+            )}
 
-          {resolvedActiveTab === 'diffs' && (
-            <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
-              <LiveDiffsTab chatEndpoint={chatEndpoint} />
-            </div>
-          )}
+            {resolvedActiveTab === 'telemetry' && (
+              <div
+                role="tabpanel"
+                className="niuu-live-telemetry-panel niuu:h-full niuu:min-h-0 niuu:overflow-auto"
+              >
+                <TelemetryTab
+                  sessionId={sessionId}
+                  session={liveSession ?? null}
+                  runLabel={telemetryRunLabel ?? sessionName ?? 'session'}
+                  volundr={volundr}
+                  isRunning={isRunning}
+                />
+              </div>
+            )}
 
-          {resolvedActiveTab === 'files' && (
-            <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
-              <SessionFilesWorkspace sessionId={sessionId} filesystem={filesystem} />
-            </div>
-          )}
-
-          {resolvedActiveTab === 'chronicles' && (
-            <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
-              <LiveChroniclesTab
-                sessionId={sessionId}
-                sessionStatus={sessionStatus}
-                session={liveSession ?? null}
-                volundr={volundr}
-              />
-            </div>
-          )}
-
-          {resolvedActiveTab === 'telemetry' && (
-            <div
-              role="tabpanel"
-              className="niuu-live-telemetry-panel niuu:h-full niuu:min-h-0 niuu:overflow-auto"
-            >
-              <TelemetryTab
-                sessionId={sessionId}
-                session={liveSession ?? null}
-                runLabel={telemetryRunLabel ?? sessionName ?? 'session'}
-                volundr={volundr}
-                isRunning={isRunning}
-              />
-            </div>
-          )}
-
-          {resolvedActiveTab === 'logs' && (
-            <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
-              <LiveLogsTab sessionId={sessionId} volundr={volundr} />
-            </div>
-          )}
+            {resolvedActiveTab === 'logs' && (
+              <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
+                <LiveLogsTab sessionId={sessionId} volundr={volundr} />
+              </div>
+            )}
+          </div>
+          {showPanel ? (
+            <SessionAttentionPanel
+              items={attentionItems}
+              peers={peers}
+              ticket={sessionTrackerIssue}
+              checklist={checklist}
+              changedFiles={tabCounts.diffs}
+              showOpenChat={resolvedActiveTab !== 'chat'}
+              onOpenChat={() => openTab('chat')}
+              onOpenDiffs={() => openTab('diffs')}
+              onRespondPermission={chat.respondToPermission}
+            />
+          ) : null}
         </div>
+
+        {review.comments.length > 0 ? (
+          <ReviewBar
+            count={review.comments.length}
+            canSend={isSessionConnected}
+            onSend={handleSendReview}
+            onDiscard={review.clear}
+          />
+        ) : null}
 
         <DeleteSessionDialog
           open={deleteDialogOpen}

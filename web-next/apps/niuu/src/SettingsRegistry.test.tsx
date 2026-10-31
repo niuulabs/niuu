@@ -121,8 +121,9 @@ it('mounts personal storage and session display alongside Volundr service settin
     plugins: { volundr: { enabled: true, order: 1 } },
     services: {},
   });
-  expect(providers.map((p) => p.id)).toEqual(['session-view', 'storage', 'volundr']);
-  expect(providers[0]).toMatchObject({ source: 'local', scope: 'user', defaultSectionId: 'tabs' });
-  expect(providers[1]).toMatchObject({ source: 'local', scope: 'user' });
-  expect(providers[2]).toMatchObject({ source: 'remote', scope: 'service' });
+  // Providers sort by title, and Volundr's reads "Session platform".
+  expect(providers.map((p) => p.id)).toEqual(['volundr', 'session-view', 'storage']);
+  expect(providers[0]).toMatchObject({ source: 'remote', scope: 'service' });
+  expect(providers[1]).toMatchObject({ source: 'local', scope: 'user', defaultSectionId: 'tabs' });
+  expect(providers[2]).toMatchObject({ source: 'local', scope: 'user' });
 });

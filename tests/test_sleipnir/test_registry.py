@@ -66,6 +66,7 @@ def test_volundr_session_constants_present():
     assert registry.VOLUNDR_TOKEN_USAGE == "volundr.token.usage"
     assert registry.VOLUNDR_CHRONICLE_CREATED == "volundr.chronicle.created"
     assert registry.VOLUNDR_CHRONICLE_UPDATED == "volundr.chronicle.updated"
+    assert registry.VOLUNDR_SESSION_NOTIFICATION == "volundr.session.notification"
 
 
 def test_bifrost_constants_present():

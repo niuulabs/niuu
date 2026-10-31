@@ -403,6 +403,15 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
             if sandbox := broker_config.get("sandbox"):
                 env.append({"name": "SKULD__SANDBOX", "value": str(sandbox)})
 
+            # Pods do not read the node's config file: a definition carries the node's mode.
+            claude_permission_mode = broker_config.get(
+                "claudePermissionMode", broker_config.get("claude_permission_mode")
+            )
+            if claude_permission_mode:
+                env.append(
+                    {"name": "SKULD__CLAUDE_PERMISSION_MODE", "value": str(claude_permission_mode)}
+                )
+
             if "agentTeams" in broker_config:
                 env.append(
                     {

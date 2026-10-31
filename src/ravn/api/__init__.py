@@ -13,7 +13,7 @@ import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 import httpx
@@ -34,10 +34,13 @@ from niuu.settings_schema import (
     SettingsSectionSchema,
 )
 from niuu.utils import import_class
-from ravn.adapters.platform_runtime import HttpPlatformRuntimeAdapter
+from ravn.adapters.platform_runtime import HttpPlatformRuntimeAdapter, PlatformRequestError
 from ravn.api.persistence_wiring import aclose_stores, build_budget_ledger, build_trigger_store
 from ravn.api.residents import (
     ResidentDirectory,
+    ResidentLogsUnavailableError,
+    ResidentNotFoundError,
+    ResidentSessionsUnavailableError,
     StandaloneDiscoveryUnavailableError,
     forward_auth,
 )
@@ -46,6 +49,8 @@ from ravn.api.trigger_validation import (
     check_repo_allowlisted,
     validate_trigger_spec,
 )
+from ravn.api.valkyrie_config import ValkyrieDashboardConfig
+from ravn.api.valkyrie_roster import ValkyrieCatalogRoster
 from ravn.api.valkyries import (
     ValkyrieDashboardProjection,
     build_nats_review_command_publisher_from_env,
@@ -56,9 +61,12 @@ from ravn.api.warden_stream import WardenStreamBroker
 from ravn.config import Settings
 from ravn.domain.budget_totals import BudgetTotals
 from ravn.domain.trigger_record import TriggerRecord
+from ravn.dynamic_adapters import build_dynamic_adapter
 from ravn.ports.budget_ledger import BudgetLedgerPort
 from ravn.ports.platform_runtime import PlatformRuntimePort
 from ravn.ports.resident_discovery import ResidentDiscoveryPort
+from ravn.ports.resident_logs import ResidentLogPort, ResidentLogSourceError
+from ravn.ports.resident_roster import ResidentRosterPort
 from ravn.ports.trigger_store import TriggerStorePort
 from ravn.ports.warden_deployer import WardenDeploymentError
 from ravn.ports.warden_discovery import WardenDiscoveryPort
@@ -117,6 +125,9 @@ class ResidentCreateRequest(BaseModel):
     realm_id: UUID | None = None
 
 
+_FORWARDED_PLATFORM_STATUSES = frozenset({401, 403, 404, 409, 422})
+
+
 def _raise_platform_error(exc: httpx.HTTPStatusError) -> None:
     try:
         payload = exc.response.json()
@@ -172,6 +183,8 @@ def create_app(
     warden_discovery: WardenDiscoveryPort | None = None,
     resident_discovery: ResidentDiscoveryPort | None = None,
     platform_runtime: PlatformRuntimePort | None = None,
+    resident_roster: ResidentRosterPort | None = None,
+    resident_logs: ResidentLogPort | None = None,
 ) -> FastAPI:
     """Create and return the Ravn FastAPI sub-application.
 
@@ -184,6 +197,17 @@ def create_app(
             filesystem-backed location when omitted.
     """
     app = FastAPI(title="Ravn API", docs_url=None, redoc_url=None)
+
+    @app.exception_handler(PlatformRequestError)
+    async def platform_request_failed(request: Request, exc: PlatformRequestError) -> JSONResponse:
+        # The platform's refusal of the caller's credential is the caller's
+        # answer; anything else it could not serve is an upstream failure.
+        status_code = (
+            exc.status_code
+            if exc.status_code in _FORWARDED_PLATFORM_STATUSES
+            else http_status.HTTP_502_BAD_GATEWAY
+        )
+        return JSONResponse(status_code=status_code, content={"detail": exc.detail})
 
     @app.exception_handler(StandaloneDiscoveryUnavailableError)
     async def standalone_discovery_unavailable(
@@ -208,7 +232,24 @@ def create_app(
         base_url=loaded_settings.gateway.platform.base_url,
         timeout_seconds=loaded_settings.gateway.platform.timeout,
     )
-    resident_directory = ResidentDirectory(platform=platform, discovery=standalone_discovery)
+    # The projection holds the Valkyries' live telemetry-derived state; the
+    # resident roster reads the catalog from the same config and that state
+    # from the projection, so the fleet list and the dashboard cannot disagree.
+    valkyrie_dashboard_config = ValkyrieDashboardConfig()
+    valkyrie_projection = ValkyrieDashboardProjection(valkyrie_dashboard_config)
+    if resident_roster is None:
+        resident_roster = ValkyrieCatalogRoster(
+            dashboard=valkyrie_projection,
+            config=valkyrie_dashboard_config,
+        )
+    if resident_logs is None:
+        resident_logs = build_dynamic_adapter(loaded_settings.resident_logs)
+    resident_directory = ResidentDirectory(
+        platform=platform,
+        discovery=standalone_discovery,
+        roster=resident_roster,
+        logs=resident_logs,
+    )
     trigger_store = build_trigger_store(loaded_settings.trigger_store)
     budget_ledger = build_budget_ledger(loaded_settings.budget_ledger)
     # See TriggerExecutionConfig: this process only stores triggers, it
@@ -486,8 +527,18 @@ def create_app(
     async def list_ravens_endpoint(
         request: Request,
         principal: Principal = Depends(extract_principal),
+        visibility: Literal["system"] | None = Query(
+            default=None,
+            description=(
+                "`system` lists only residents visible to every member of the "
+                "caller's org, without the caller's own; for shared views such as "
+                "the Observatory."
+            ),
+        ),
     ) -> list[dict]:
         """List durable residents and visible compatibility deployments."""
+        if visibility == "system":
+            return await resident_directory.list_system_ravens(principal)
         auth_headers, auth_params = forward_auth(request)
         return await resident_directory.list_ravens(principal, auth_headers, auth_params)
 
@@ -539,12 +590,13 @@ def create_app(
         lines: int = Query(default=200, ge=1, le=5000),
         source: list[str] = Query(default_factory=list),
         min_level: str = Query(default="", max_length=32),
-        _: Principal = Depends(extract_principal),
+        principal: Principal = Depends(extract_principal),
     ) -> dict:
         auth_headers, auth_params = forward_auth(request)
         try:
             return await resident_directory.get_raven_logs(
                 ravn_id,
+                principal=principal,
                 lines=lines,
                 sources=tuple(source),
                 min_level=min_level,
@@ -553,6 +605,17 @@ def create_app(
             )
         except httpx.HTTPStatusError as exc:
             _raise_platform_error(exc)
+        except ResidentNotFoundError as exc:
+            raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail=str(exc))
+        except ResidentLogsUnavailableError as exc:
+            raise HTTPException(status_code=http_status.HTTP_409_CONFLICT, detail=str(exc))
+        except ResidentLogSourceError as exc:
+            raise HTTPException(status_code=http_status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+        except ValueError as exc:
+            # An unknown min_level or a container name that is not one.
+            raise HTTPException(
+                status_code=http_status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            )
 
     @app.post("/api/v1/ravn/ravens/{ravn_id}/suspend")
     async def suspend_raven_endpoint(
@@ -590,12 +653,12 @@ def create_app(
     async def list_resident_sessions_endpoint(
         ravn_id: str,
         request: Request,
-        _: Principal = Depends(extract_principal),
+        principal: Principal = Depends(extract_principal),
     ) -> list[dict]:
         auth_headers, auth_params = forward_auth(request)
         try:
             return await resident_directory.list_resident_sessions(
-                ravn_id, auth_headers, auth_params
+                ravn_id, principal, auth_headers, auth_params
             )
         except httpx.HTTPStatusError as exc:
             _raise_platform_error(exc)
@@ -608,15 +671,17 @@ def create_app(
         ravn_id: str,
         body: dict,
         request: Request,
-        _: Principal = Depends(extract_principal),
+        principal: Principal = Depends(extract_principal),
     ) -> dict:
         auth_headers, auth_params = forward_auth(request)
         try:
             return await resident_directory.create_resident_session(
-                ravn_id, body, auth_headers, auth_params
+                ravn_id, body, principal, auth_headers, auth_params
             )
         except httpx.HTTPStatusError as exc:
             _raise_platform_error(exc)
+        except ResidentSessionsUnavailableError as exc:
+            raise HTTPException(status_code=http_status.HTTP_409_CONFLICT, detail=str(exc))
 
     @app.delete(
         "/api/v1/ravn/ravens/{ravn_id}/sessions/{session_id}",
@@ -626,15 +691,17 @@ def create_app(
         ravn_id: str,
         session_id: str,
         request: Request,
-        _: Principal = Depends(extract_principal),
+        principal: Principal = Depends(extract_principal),
     ) -> Response:
         auth_headers, auth_params = forward_auth(request)
         try:
             await resident_directory.delete_resident_session(
-                ravn_id, session_id, auth_headers, auth_params
+                ravn_id, session_id, principal, auth_headers, auth_params
             )
         except httpx.HTTPStatusError as exc:
             _raise_platform_error(exc)
+        except ResidentSessionsUnavailableError as exc:
+            raise HTTPException(status_code=http_status.HTTP_409_CONFLICT, detail=str(exc))
         return Response(status_code=http_status.HTTP_204_NO_CONTENT)
 
     @app.get("/api/v1/ravn/deployment-profiles")
@@ -1275,7 +1342,6 @@ def create_app(
     from ravn.api.valkyries import build_skuld_room_client_from_env  # noqa: PLC0415
     from ravn.odin.review_service import OdinReviewService  # noqa: PLC0415
 
-    valkyrie_projection = ValkyrieDashboardProjection()
     valkyrie_learning_commands = build_nats_review_command_publisher_from_env(
         loaded_settings.valkyrie.command,
         loaded_settings.valkyrie.telemetry,
@@ -1337,6 +1403,11 @@ def create_app(
             warmup = getattr(store, "warmup", None)
             if warmup is not None:
                 await warmup()
+        # A configured telemetry stream the server does not have raises here
+        # and fails startup: carrying on would show that environment's
+        # residents as never observed, with nothing else saying why.
+        if valkyrie_telemetry is not None:
+            await valkyrie_telemetry.start()
         review_sweep_task = asyncio.create_task(
             _run_review_sweep(),
             name="odin_review_sweep",
@@ -1346,11 +1417,6 @@ def create_app(
             if brief_interval > 0
             else None
         )
-        if valkyrie_telemetry is not None:
-            try:
-                await valkyrie_telemetry.start()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("valkyrie telemetry subscription did not start: %s", exc)
         try:
             await valkyrie_learning_commands.start()
         except Exception as exc:  # noqa: BLE001

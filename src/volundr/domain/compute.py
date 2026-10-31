@@ -161,6 +161,14 @@ class ComputeCapacityError(RuntimeError):
     """All allocation slots are reserved, including pending cleanup."""
 
 
+class ComputeProvisioningLimitError(ComputeCapacityError):
+    """The pool is already provisioning its maximum number of machines.
+
+    Unlike a full pool, this clears on its own as starts finish, so a session
+    start waits for it instead of failing.
+    """
+
+
 class ComputeLeaseBusyError(RuntimeError):
     """Another controller is operating on this allocation; retry the same operation."""
 

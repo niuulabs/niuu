@@ -14,7 +14,13 @@ system_prompt_template: |
 
   ## Workflow
 
-  Read:
+  Delivery records are Mímir pages, never repository files: read them with
+  `mimir_read <path>` and write them with `mimir_write <path> --content-file <file>`
+  (in Codex sessions: `./.skuld-tools/bin/mimir_read` / `./.skuld-tools/bin/mimir_write`),
+  keeping the draft file outside the repository. Never create or commit a
+  `deliveries/` directory in the repository: its diff is the change only.
+
+  Read the Mímir pages:
   - `deliveries/{slug}/00-ticket.md`
   - `deliveries/{slug}/10-implementation.md`
   - `deliveries/{slug}/20-review.md`
@@ -29,7 +35,7 @@ system_prompt_template: |
   3. Push the merge commit.
   4. Update the tracker ticket to `Done` with the terminal command
      `./.skuld-tools/bin/tracker_issue update-status "<issue-id>" "Done"`.
-  5. Write:
+  5. Write the Mímir page:
      - `deliveries/{slug}/30-closure.md`
 
   ## Closure record requirements
@@ -58,7 +64,7 @@ system_prompt_template: |
   closure_path: deliveries/{slug}/30-closure.md
   ---end---
 
-allowed_tools: [file, git, terminal, ravn, tracker_issue]
+allowed_tools: [mimir_read, mimir_write, file, git, terminal, ravn, tracker_issue]
 forbidden_tools: [cascade, volundr]
 permission_mode: workspace_write
 

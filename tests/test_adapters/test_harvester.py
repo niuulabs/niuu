@@ -12,6 +12,7 @@ import yaml
 
 from niuu.adapters.outbound.http_auth import (
     FileBearerTokenAuthAdapter,
+    NoAuthHeaderAdapter,
     StaticBearerTokenAuthAdapter,
 )
 from volundr.adapters.outbound.harvester import (
@@ -38,6 +39,8 @@ class HarvesterAPI:
         self.delay_delete = False
         self.conflict = False
         self.prefix = "/proxy/"
+        self.image_storage_class = "image-storage"
+        self.network_exists = True
 
     def handle(self, request):
         self.requests.append(request)
@@ -47,8 +50,12 @@ class HarvesterAPI:
         if self.denied:
             return httpx.Response(self.denied, json={"message": "do-not-expose-secret"})
         if request.method == "GET" and "/virtualmachineimages/" in path:
-            return httpx.Response(200, json={"status": {"storageClassName": "image-storage"}})
+            return httpx.Response(
+                200, json={"status": {"storageClassName": self.image_storage_class}}
+            )
         if request.method == "GET" and "/network-attachment-definitions/" in path:
+            if not self.network_exists:
+                return httpx.Response(404, json={})
             return httpx.Response(200, json={"metadata": {"name": "lan"}})
         if request.method == "GET":
             if path in self.objects:
@@ -84,6 +91,24 @@ class HarvesterAPI:
         raise AssertionError(request)
 
 
+class RecordingAuth:
+    """Test double for the outbound HTTP authentication port."""
+
+    def __init__(self, headers: dict[str, str], *, invalidates: bool = False):
+        self._headers = headers
+        self.invalidates = invalidates
+        self.header_calls = 0
+        self.invalidate_calls = 0
+
+    def headers(self) -> dict[str, str]:
+        self.header_calls += 1
+        return self._headers
+
+    def invalidate(self) -> bool:
+        self.invalidate_calls += 1
+        return self.invalidates
+
+
 @pytest.fixture
 def api():
     return HarvesterAPI()
@@ -107,6 +132,41 @@ def provider(api):
         auth=StaticBearerTokenAuthAdapter(token="test-only-token"),
         transport=httpx.MockTransport(api.handle),
     )
+
+
+@pytest.mark.parametrize(
+    ("base_url", "timeout_seconds", "page_size", "profiles", "match"),
+    [
+        ("http://harvester.test", 30, 100, {"small": {}}, "HTTPS origin"),
+        ("https://harvester.test?unsafe=true", 30, 100, {"small": {}}, "HTTPS origin"),
+        ("https://harvester.test", 0, 100, {"small": {}}, "must be positive"),
+        ("https://harvester.test", 30, 0, {"small": {}}, "must be positive"),
+        ("https://harvester.test", 30, 100, {}, "at least one"),
+    ],
+)
+def test_constructor_rejects_unsafe_or_incomplete_configuration(
+    base_url, timeout_seconds, page_size, profiles, match
+):
+    with pytest.raises(ValueError, match=match):
+        HarvesterMachineProvider(
+            base_url=base_url,
+            namespace="test-vms",
+            installation_id="test-installation",
+            profiles=profiles,
+            auth=StaticBearerTokenAuthAdapter(token="test-only-token"),
+            timeout_seconds=timeout_seconds,
+            page_size=page_size,
+        )
+
+
+async def test_request_requires_a_configured_authorization_header(provider, api):
+    provider._auth = NoAuthHeaderAdapter()
+
+    with pytest.raises(MachineProviderError, match="authentication is missing"):
+        await provider.get(uuid4())
+
+    assert not api.requests
+    await provider.close()
 
 
 async def test_real_api_shape_idempotency_inventory_and_cleanup(provider, api):
@@ -134,8 +194,10 @@ async def test_real_api_shape_idempotency_inventory_and_cleanup(provider, api):
     assert await provider.create(request) == machine
     assert len([r for r in api.requests if r.method == "POST"]) == 3
     assert await provider.list() == [machine]
-    assert await provider.delete(request.allocation_id)
-    assert await provider.delete(request.allocation_id)
+    deleted = await provider.delete(request.allocation_id)
+    assert deleted
+    deleted = await provider.delete(request.allocation_id)
+    assert deleted
     assert not api.objects
     await provider.close()
 
@@ -148,7 +210,8 @@ async def test_partial_create_is_discoverable_and_removable(provider, api):
     assert "private-body" not in str(exc.value)
     assert len(api.objects) == 2
     assert (await provider.list())[0].allocation_id == request.allocation_id
-    assert await provider.delete(request.allocation_id)
+    deleted = await provider.delete(request.allocation_id)
+    assert deleted
     assert not api.objects
     await provider.close()
 
@@ -175,6 +238,71 @@ async def test_auth_server_and_redirect_failures_are_not_hidden(provider, api, s
     await provider.close()
 
 
+async def test_missing_authentication_port_header_fails_before_request(provider, api):
+    auth = RecordingAuth({})
+    provider._auth = auth
+
+    with pytest.raises(MachineProviderError, match="authentication is missing"):
+        await provider.get(uuid4())
+
+    assert auth.header_calls == 1
+    assert auth.invalidate_calls == 0
+    assert not api.requests
+    await provider.close()
+
+
+async def test_auth_refresh_must_return_a_new_authorization_header(provider):
+    class RefreshingAuth:
+        def __init__(self):
+            self.header_calls = 0
+            self.invalidate_calls = 0
+
+        def headers(self) -> dict[str, str]:
+            self.header_calls += 1
+            if self.header_calls == 1:
+                return {"Authorization": "Bearer expired"}
+            return {}
+
+        def invalidate(self) -> bool:
+            self.invalidate_calls += 1
+            return True
+
+    auth = RefreshingAuth()
+    provider._auth = auth
+    await provider.close()
+    provider._client = httpx.AsyncClient(
+        base_url="https://harvester.test/proxy/",
+        transport=httpx.MockTransport(lambda request: httpx.Response(401)),
+    )
+
+    with pytest.raises(MachineProviderError, match="refresh returned no credential"):
+        await provider.get(uuid4())
+
+    assert auth.header_calls == 2
+    assert auth.invalidate_calls == 1
+    await provider.close()
+
+
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        (httpx.Response(200, content=b"not-json"), "invalid JSON"),
+        (httpx.Response(200, json=["not-an-object"]), "unexpected response"),
+    ],
+)
+async def test_malformed_upstream_responses_are_rejected(provider, response, message):
+    await provider.close()
+    provider._client = httpx.AsyncClient(
+        base_url="https://harvester.test/proxy/",
+        transport=httpx.MockTransport(lambda request: response),
+    )
+
+    with pytest.raises(MachineProviderError, match=message):
+        await provider.get(uuid4())
+
+    await provider.close()
+
+
 async def test_changed_request_and_foreign_resources_are_never_adopted(provider, api):
     request = MachineRequest(allocation_id=uuid4(), profile="small")
     await provider.create(request)
@@ -195,17 +323,20 @@ async def test_delete_waits_for_vm_and_guest_before_erasing_disk(provider, api):
     request = MachineRequest(allocation_id=uuid4(), profile="small")
     await provider.create(request)
     api.delay_delete = True
-    assert not await provider.delete(request.allocation_id)
+    deleted = await provider.delete(request.allocation_id)
+    assert not deleted
     assert len(api.objects) == 3
     vm_path = next(k for k in api.objects if "/virtualmachines/" in k)
     vm = api.objects.pop(vm_path)
     vmi_path = vm_path.replace("/virtualmachines/", "/virtualmachineinstances/")
     api.objects[vmi_path] = vm
-    assert not await provider.delete(request.allocation_id)
+    deleted = await provider.delete(request.allocation_id)
+    assert not deleted
     assert len(api.objects) == 3
     api.objects.pop(vmi_path)
     api.delay_delete = False
-    assert await provider.delete(request.allocation_id)
+    deleted = await provider.delete(request.allocation_id)
+    assert deleted
     await provider.close()
 
 
@@ -234,10 +365,159 @@ async def test_vm_state_and_guest_addresses(provider, api, phase, expected):
     await provider.close()
 
 
+async def test_vm_failure_condition_overrides_ready_guest_state(provider, api):
+    request = MachineRequest(allocation_id=uuid4(), profile="small")
+    await provider.create(request)
+    vm_path = next(path for path in api.objects if "/virtualmachines/" in path)
+    vm = api.objects[vm_path]
+    vm["status"] = {
+        "ready": True,
+        "conditions": [{"type": "Failure", "status": "True"}],
+    }
+    api.objects[vm_path.replace("/virtualmachines/", "/virtualmachineinstances/")] = {
+        "metadata": copy.deepcopy(vm["metadata"]),
+        "status": {"phase": "Running", "interfaces": [{"ipAddresses": ["10.20.0.3"]}]},
+    }
+
+    result = await provider.get(request.allocation_id)
+
+    assert result.state == MachineState.FAILED
+    assert result.addresses == ("10.20.0.3",)
+    await provider.close()
+
+
 async def test_create_conflict_resolves_same_owned_request(provider, api):
     api.conflict = True
     await provider.create(MachineRequest(allocation_id=uuid4(), profile="small"))
     assert len(api.objects) == 3
+    await provider.close()
+
+
+async def test_create_rejects_an_unresolved_resource_conflict(provider, api):
+    original_handle = api.handle
+
+    def conflict_without_resource(request):
+        if request.method == "POST":
+            return httpx.Response(409, json={})
+        return original_handle(request)
+
+    await provider.close()
+    provider._client = httpx.AsyncClient(
+        base_url="https://harvester.test/proxy/",
+        transport=httpx.MockTransport(conflict_without_resource),
+    )
+
+    with pytest.raises(MachineProviderError, match="conflicted but the resource is unavailable"):
+        await provider.create(MachineRequest(allocation_id=uuid4(), profile="small"))
+
+    assert not api.objects
+    await provider.close()
+
+
+async def test_create_rejects_unknown_profile_before_calling_harvester(provider, api):
+    with pytest.raises(ValueError, match="Unknown Harvester machine profile: unavailable"):
+        await provider.create(MachineRequest(allocation_id=uuid4(), profile="unavailable"))
+
+    assert not api.requests
+    await provider.close()
+
+
+async def test_create_requires_ready_image_storage_and_existing_network(provider, api):
+    api.image_storage_class = None
+    request = MachineRequest(allocation_id=uuid4(), profile="small")
+
+    with pytest.raises(MachineProviderError, match="no ready storage class"):
+        await provider.create(request)
+
+    assert not api.objects
+    api.image_storage_class = "image-storage"
+    api.network_exists = False
+
+    with pytest.raises(MachineProviderError, match="network does not exist"):
+        await provider.create(request)
+
+    assert not api.objects
+    await provider.close()
+
+
+async def test_get_reports_deleting_and_failed_virtual_machines(provider, api):
+    request = MachineRequest(allocation_id=uuid4(), profile="small")
+    await provider.create(request)
+    vm = next(v for key, v in api.objects.items() if "/virtualmachines/" in key)
+    vm["metadata"]["deletionTimestamp"] = "2026-10-17T00:00:00Z"
+
+    assert (await provider.get(request.allocation_id)).state == MachineState.DELETING
+
+    vm["metadata"].pop("deletionTimestamp")
+    vm["status"] = {"conditions": [{"type": "Failure", "status": "True"}]}
+
+    assert (await provider.get(request.allocation_id)).state == MachineState.FAILED
+    await provider.close()
+
+
+async def test_delete_refuses_resources_without_a_uid(provider, api):
+    request = MachineRequest(allocation_id=uuid4(), profile="small")
+    await provider.create(request)
+    vm = next(v for key, v in api.objects.items() if "/virtualmachines/" in key)
+    vm["metadata"].pop("uid")
+
+    with pytest.raises(MachineProviderError, match="has no UID"):
+        await provider.delete(request.allocation_id)
+
+    assert len(api.objects) == 3
+    await provider.close()
+
+
+async def test_list_follows_inventory_pagination(provider, api):
+    requests = [MachineRequest(allocation_id=uuid4(), profile="small") for _ in range(2)]
+    for request in requests:
+        await provider.create(request)
+
+    original_handle = api.handle
+
+    def paginated_handle(request):
+        path = request.url.path.removeprefix(api.prefix)
+        if request.method != "GET" or not request.url.params.get("labelSelector"):
+            return original_handle(request)
+        api.requests.append(request)
+        items = [item for key, item in api.objects.items() if key.rsplit("/", 1)[0] == path]
+        offset = int(request.url.params.get("continue", "0"))
+        continuation = str(offset + 1) if offset + 1 < len(items) else ""
+        return httpx.Response(
+            200,
+            json={"items": items[offset : offset + 1], "metadata": {"continue": continuation}},
+        )
+
+    await provider.close()
+    provider._client = httpx.AsyncClient(
+        base_url="https://harvester.test/proxy/",
+        transport=httpx.MockTransport(paginated_handle),
+    )
+
+    machines = await provider.list()
+
+    assert [machine.allocation_id for machine in machines] == sorted(
+        request.allocation_id for request in requests
+    )
+    inventory_requests = [
+        request
+        for request in api.requests
+        if request.method == "GET" and request.url.params.get("labelSelector")
+    ]
+    assert len(inventory_requests) == 6
+    assert all(request.url.params["limit"] == "100" for request in inventory_requests)
+    await provider.close()
+
+
+async def test_list_rejects_managed_resources_without_an_allocation_id(provider, api):
+    request = MachineRequest(allocation_id=uuid4(), profile="small")
+    await provider.create(request)
+    vm = next(value for path, value in api.objects.items() if "/virtualmachines/" in path)
+    vm["metadata"]["labels"].pop(ALLOCATION_LABEL)
+
+    with pytest.raises(MachineOwnershipError, match="lacks an allocation ID"):
+        await provider.list()
+
     await provider.close()
 
 

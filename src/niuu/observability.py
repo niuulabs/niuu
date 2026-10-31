@@ -36,6 +36,7 @@ import atexit
 import json
 import logging
 import re
+from collections.abc import Sequence
 from contextlib import nullcontext
 from contextvars import ContextVar
 from threading import Lock
@@ -85,11 +86,15 @@ class Observability:
         *,
         tracer_provider: Any | None = None,
         meter_provider: Any | None = None,
+        logger_provider: Any | None = None,
+        log_handler: logging.Handler | None = None,
         capture_content: bool = False,
         content_max_chars: int = 8_192,
     ) -> None:
         self._tracer_provider = tracer_provider
         self._meter_provider = meter_provider
+        self._logger_provider = logger_provider
+        self._log_handler = log_handler
         self._counters: dict[str, Any] = {}
         self._histograms: dict[str, Any] = {}
         self._gauges: dict[str, Any] = {}
@@ -267,6 +272,7 @@ class Observability:
         *,
         attributes: dict[str, Any] | None = None,
         description: str = "",
+        buckets: Sequence[float] | None = None,
     ) -> None:
         self.record(
             name,
@@ -274,6 +280,7 @@ class Observability:
             unit="s",
             attributes=attributes,
             description=description,
+            buckets=buckets,
         )
 
     def record(
@@ -284,7 +291,14 @@ class Observability:
         unit: str = "1",
         attributes: dict[str, Any] | None = None,
         description: str = "",
+        buckets: Sequence[float] | None = None,
     ) -> None:
+        """Record *value* on histogram *name*.
+
+        *buckets* sets the explicit bucket boundaries when the instrument is first created. Without
+        it the SDK defaults apply (0, 5, 10, 25 … 10000), which cannot resolve sub-second
+        latencies or values in [0, 1]: every observation lands in one bucket.
+        """
         if self._meter is None:
             return
         key = f"{name}\0{unit}"
@@ -295,6 +309,9 @@ class Observability:
                     name,
                     unit=unit,
                     description=description,
+                    explicit_bucket_boundaries_advisory=(
+                        list(buckets) if buckets is not None else None
+                    ),
                 )
                 self._histograms[key] = instrument
         instrument.record(value, attributes=_clean_attributes(attributes or {}))
@@ -326,7 +343,10 @@ class Observability:
         if self._shutdown:
             return
         self._shutdown = True
-        for provider in (self._meter_provider, self._tracer_provider):
+        if self._log_handler is not None:
+            logging.getLogger().removeHandler(self._log_handler)
+            self._log_handler = None
+        for provider in (self._logger_provider, self._meter_provider, self._tracer_provider):
             if provider is not None:
                 provider.shutdown()
 
@@ -379,6 +399,40 @@ _active_fingerprint: tuple[Any, ...] | None = None
 _active_component = ""
 _seen_components: set[str] = set()
 _current_component: ContextVar[str] = ContextVar("niuu_observability_component", default="")
+_previous_log_record_factory: Any | None = None
+_trace_log_correlation_enabled = False
+
+
+def enable_trace_log_correlation() -> None:
+    """Add active OpenTelemetry trace IDs to Python log records."""
+    global _previous_log_record_factory, _trace_log_correlation_enabled
+    if _trace_log_correlation_enabled:
+        return
+    previous = logging.getLogRecordFactory()
+
+    def record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+        record = previous(*args, **kwargs)
+        trace_id, span_id = _current_span_ids()
+        record.trace_id = trace_id
+        record.span_id = span_id
+        record.otelTraceID = trace_id
+        record.otelSpanID = span_id
+        return record
+
+    _previous_log_record_factory = previous
+    logging.setLogRecordFactory(record_factory)
+    _trace_log_correlation_enabled = True
+
+
+def disable_trace_log_correlation() -> None:
+    """Restore the prior log-record factory."""
+    global _previous_log_record_factory, _trace_log_correlation_enabled
+    if not _trace_log_correlation_enabled:
+        return
+    if _previous_log_record_factory is not None:
+        logging.setLogRecordFactory(_previous_log_record_factory)
+    _previous_log_record_factory = None
+    _trace_log_correlation_enabled = False
 
 
 def _pipeline_fingerprint(config: ObservabilityConfig) -> tuple[Any, ...]:
@@ -392,6 +446,7 @@ def _pipeline_fingerprint(config: ObservabilityConfig) -> tuple[Any, ...]:
         config.enabled,
         config.trace_endpoint,
         config.metric_endpoint,
+        config.log_endpoint,
         config.insecure,
         tuple(sorted(config.headers.items())),
         config.capture_content,
@@ -415,6 +470,29 @@ def _resolve_service_name(config: ObservabilityConfig, default_service_name: str
     if "service_name" in config.model_fields_set or not default_service_name:
         return config.service_name
     return default_service_name
+
+
+def _not_from_telemetry_export(record: logging.LogRecord) -> bool:
+    """Keep a record out of OTLP when a telemetry export emitted it.
+
+    A record logged while telemetry is being exported (the exporter's HTTP
+    client, gRPC, the SDK) describes that export. Exporting it queues another
+    export, which logs again: on Ting at debug level this fed itself at
+    ~145-280 exports a second, nearly all urllib3 reporting its own log posts.
+
+    The SDK marks every export by setting the suppress-instrumentation key in
+    the context of whichever thread runs it, the batch worker or the thread
+    ``LoggingHandler.flush`` starts for ``force_flush``, so that mark, not a
+    thread name, is what identifies these records. They still reach the
+    process's other handlers (stdout), so an export failure stays visible;
+    they are only kept off the path they describe.
+    """
+    from opentelemetry.context import (  # noqa: PLC0415 - optional SDK
+        _SUPPRESS_INSTRUMENTATION_KEY,
+        get_value,
+    )
+
+    return not get_value(_SUPPRESS_INSTRUMENTATION_KEY)
 
 
 def configure_observability(
@@ -460,7 +538,7 @@ def configure_observability(
         if fingerprint != _active_fingerprint:
             raise RuntimeError(
                 f"Conflicting observability configuration: component "
-                f"'{component_name}' requests a trace_endpoint/metric_endpoint/"
+                f"'{component_name}' requests a trace_endpoint/metric_endpoint/log_endpoint/"
                 f"headers/capture_content different from the pipeline component "
                 f"'{_active_component}' already configured for this process. "
                 "One process exports through one OTLP pipeline — align both "
@@ -487,7 +565,10 @@ def configure_observability(
         return _active
     try:
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+        from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
         from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+        from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+        from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
         from opentelemetry.sdk.metrics import MeterProvider
         from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
         from opentelemetry.sdk.resources import Resource
@@ -520,20 +601,41 @@ def configure_observability(
         export_interval_millis=config.metric_export_interval_milliseconds,
     )
     meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+    logger_provider = LoggerProvider(resource=resource)
+    logger_provider.add_log_record_processor(
+        BatchLogRecordProcessor(
+            OTLPLogExporter(endpoint=config.log_endpoint, headers=config.headers)
+        )
+    )
+
+    class OTLPLoggingHandler(LoggingHandler):
+        """Bridge Python records to the SDK without its deprecated constructor."""
+
+        def __init__(self, provider: Any) -> None:
+            logging.Handler.__init__(self, level=logging.NOTSET)
+            self._logger_provider = provider
+            self.addFilter(_not_from_telemetry_export)
+
+    log_handler = OTLPLoggingHandler(logger_provider)
+    logging.getLogger().addHandler(log_handler)
     _active = Observability(
         tracer_provider=trace_provider,
         meter_provider=meter_provider,
+        logger_provider=logger_provider,
+        log_handler=log_handler,
         capture_content=config.capture_content,
         content_max_chars=config.content_max_chars,
     )
     _active_fingerprint = fingerprint
     _active_component = component_name
     _seen_components.add(component_name)
+    enable_trace_log_correlation()
     atexit.register(_active.shutdown)
     logger.info(
-        "Niuu OpenTelemetry enabled: traces=%s metrics=%s service=%s component=%s",
+        "Niuu OpenTelemetry enabled: traces=%s metrics=%s logs=%s service=%s component=%s",
         config.trace_endpoint,
         config.metric_endpoint,
+        config.log_endpoint,
         service_name,
         component_name,
     )
@@ -551,6 +653,7 @@ def shutdown_observability() -> None:
     _active_fingerprint = None
     _active_component = ""
     _seen_components.clear()
+    disable_trace_log_correlation()
 
 
 def instrument_fastapi_app(
@@ -879,9 +982,22 @@ async def _httpx_async_request_hook(span: Any, request_info: Any) -> None:
     _httpx_request_hook(span, request_info)
 
 
+def _current_span_ids() -> tuple[str, str]:
+    try:
+        from opentelemetry import trace
+    except ImportError:
+        return "", ""
+    context = trace.get_current_span().get_span_context()
+    if not context.is_valid:
+        return "", ""
+    return f"{context.trace_id:032x}", f"{context.span_id:016x}"
+
+
 __all__ = [
     "Observability",
     "configure_observability",
+    "disable_trace_log_correlation",
+    "enable_trace_log_correlation",
     "get_observability",
     "instrument_fastapi_app",
     "instrument_httpx_client",

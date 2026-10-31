@@ -157,6 +157,8 @@ export interface InputRequest {
     prompt: string;
     choices: string[];
   }>;
+  /** False when no client can answer it (it must be answered in the session's terminal). */
+  answerable?: boolean;
 }
 
 export interface FileEntry {

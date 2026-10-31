@@ -104,7 +104,7 @@ async def test_resume_rebases_overflow_gap_range_alongside_sequence(tmp_path):
     assert broker._event_log_seq == 108
 
 
-@pytest.mark.parametrize("status", [401, 403, 404, 429, 503])
+@pytest.mark.parametrize("status", [403, 404])
 async def test_unknown_durable_head_prevents_starting_at_sequence_zero(tmp_path, status):
     broker = _broker(tmp_path)
     client = AsyncMock()
@@ -113,6 +113,20 @@ async def test_unknown_durable_head_prevents_starting_at_sequence_zero(tmp_path,
         with pytest.raises(RuntimeError, match="durable event log"):
             await broker._init_event_log()
     assert broker._event_log_task is None
+
+
+@pytest.mark.parametrize("status", [401, 429, 503])
+async def test_retryable_head_failure_never_flushes_at_sequence_zero(tmp_path, status):
+    broker = _broker(tmp_path, event_log_flush_interval_ms=1)
+    client = AsyncMock()
+    client.get.return_value = _resp(status)
+    with patch.object(broker, "_get_http_client", AsyncMock(return_value=client)):
+        await broker._init_event_log()
+        broker._enqueue_event_log({"type": "assistant"})
+        await asyncio.sleep(0.05)
+        await broker._stop_event_log()
+    assert not broker._event_log_head_known
+    client.post.assert_not_called()
 
 
 @pytest.mark.parametrize(

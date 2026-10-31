@@ -1000,7 +1000,7 @@ test('an enabled Terminal tab explains unsupported hosts without trying to spawn
   await page.goto('/volundr/sessions/review');
   await page.getByRole('tab', { name: /Terminal/ }).click();
   await expect(
-    page.getByText('This Forge host does not provide terminal access for this session.'),
+    page.getByText('This host does not provide terminal access for this session.'),
   ).toBeVisible();
   await page.getByRole('button', { name: 'Try again' }).click();
   await expect(page.getByText('Terminal unavailable', { exact: true })).toBeVisible();
@@ -1012,11 +1012,11 @@ test('keeps top-level navigation and visible account controls clear at every wid
 }, testInfo) => {
   await fixture(page);
   await page.goto('/volundr/sessions/review');
-  await page.getByRole('button', { name: 'Ting', exact: true }).click();
+  await page.getByTestId('rail-item-ting').click();
   await expect(page).toHaveURL(/\/ting\/work$/);
   await expect(page.getByTestId('ting-tab-work')).toBeVisible();
   await expect(page.getByTestId('ting-tab-workflows')).toBeVisible();
-  await page.getByRole('button', { name: 'Völundr', exact: true }).click();
+  await page.getByTestId('rail-item-volundr').click();
   await expect(page).toHaveURL(/\/volundr\/forge$/);
   const header = page.locator('.niuu-shell__topbar');
   const tabs = page.locator('.niuu-shell__tabs');

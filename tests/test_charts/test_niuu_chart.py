@@ -193,3 +193,39 @@ def test_shared_image_tag_can_be_deployed_independently(component, local_tag, ex
     assert (
         _deployment_image(rendered, f"niuu-test-{component}") == f"ghcr.io/niuulabs/niuu:{expected}"
     )
+
+
+class _DuplicateKeyLoader(yaml.SafeLoader):
+    """Safe loader that refuses a mapping key repeated within one mapping."""
+
+
+def _construct_unique_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False):
+    seen: set = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"duplicate key {key!r}", key_node.start_mark
+            )
+        seen.add(key)
+    return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+
+_DuplicateKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
+
+
+def test_rendered_manifests_have_no_duplicate_keys() -> None:
+    """Helm keeps the last of two equal keys, but Fleet's kustomize post-render
+    rejects the whole release, which blocked every ymir upgrade."""
+    rendered = _render_niuu_chart()
+
+    duplicates = []
+    for document in rendered.split("\n---\n"):
+        try:
+            list(yaml.load_all(document, Loader=_DuplicateKeyLoader))
+        except yaml.constructor.ConstructorError as exc:
+            duplicates.append(f"{document.splitlines()[0]}: {exc.problem} {exc.problem_mark}")
+
+    assert duplicates == []

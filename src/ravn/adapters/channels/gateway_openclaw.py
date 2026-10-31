@@ -40,6 +40,7 @@ import json
 import logging
 import os
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -62,9 +63,11 @@ from ravn.adapters.channels.openclaw_protocol import (
 )
 from ravn.adapters.channels.openclaw_store import OpenClawStore, now_ms
 from ravn.adapters.channels.openclaw_translate import TurnTranslator
+from ravn.domain.notification_channel import current_notification_channel
 
 if TYPE_CHECKING:
     from ravn.adapters.channels.gateway import RavnGateway
+    from ravn.ports.resident_notifications import ResidentNotificationOutboxPort
 
 logger = logging.getLogger(__name__)
 
@@ -78,11 +81,35 @@ SUPPORTED_METHODS = [
     "health",
     "agents.list",
     "sessions.list",
+    "sessions.patch",
+    "sessions.delete",
     "sessions.subscribe",
     "sessions.messages.subscribe",
     "chat.history",
     "chat.send",
+    "chat.abort",
 ]
+
+#: Advertised only when this shim serves a resident notification outbox: Forge drains
+#: it with these (see ``niuu.domain.resident_notifications``).
+NOTIFICATION_METHODS = [
+    "notifications.subscribe",
+    "notifications.pull",
+    "notifications.ack",
+]
+#: Sent to connections that called ``notifications.subscribe`` when an entry is added.
+NOTIFICATIONS_CHANGED_EVENT = "notifications.changed"
+#: The most entries one ``notifications.pull`` returns.
+MAX_NOTIFICATION_PULL = 200
+
+
+@dataclass
+class _ActiveRun:
+    """The turn currently relayed for one session key."""
+
+    run_id: str
+    translator: TurnTranslator
+    aborted: bool = False
 
 
 class OpenClawGateway:
@@ -95,9 +122,18 @@ class OpenClawGateway:
         *,
         store: OpenClawStore | None = None,
         agent_id: str | None = None,
+        notifications: ResidentNotificationOutboxPort | None = None,
     ) -> None:
         self._config = config
         self._gateway = gateway
+        #: The resident's notification outbox, drained by Forge through this shim.
+        self._notifications = notifications
+        self._notification_sends: set[asyncio.Task[None]] = set()
+        self._unsubscribe_notifications = (
+            notifications.subscribe(self._notifications_changed)
+            if notifications is not None
+            else None
+        )
         self._agent_id = agent_id or getattr(config, "agent_id", None) or "travis"
         self._store = store or OpenClawStore(
             getattr(config, "store_path", "~/.ravn/openclaw/state.db")
@@ -117,7 +153,11 @@ class OpenClawGateway:
         #: Last turn id relayed per room, so the poller emits each turn exactly once.
         self._room_cursor: dict[str, str] = {}
         self._room_poller: asyncio.Task[None] | None = None
+        #: The relayed turn per session key. Each key is its own Ravn conversation.
+        self._runs: dict[str, _ActiveRun] = {}
         self._app = self._build_app()
+        # No turn survives a restart; a session left "busy" would refuse every send.
+        self._store.reset_busy_sessions()
         self._seed_main_session()
 
     # -- config ------------------------------------------------------------
@@ -179,6 +219,8 @@ class OpenClawGateway:
         try:
             await server.serve()
         finally:
+            if self._unsubscribe_notifications is not None:
+                self._unsubscribe_notifications()
             if self._room_poller is not None:
                 self._room_poller.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -191,12 +233,14 @@ class OpenClawGateway:
     def _build_app(self) -> FastAPI:
         app = FastAPI(title="Ravn OpenClaw shim", docs_url=None, redoc_url=None)
 
-        @app.get("/health")
+        path = str(getattr(self._config, "path", "/") or "/")
+
+        @app.get(f"{path.rstrip('/')}/health")
         async def health() -> dict[str, Any]:
             # Both fields are non-optional in Swift's HealthResponse.
             return {"ok": True, "status": "live"}
 
-        @app.websocket("/")
+        @app.websocket(path)
         async def ws_root(websocket: WebSocket) -> None:
             await self._serve(websocket)
 
@@ -208,6 +252,7 @@ class OpenClawGateway:
         try:
             await conn.run()
         except WebSocketDisconnect:
+            # Peer disconnect is the normal end of this connection.
             pass
         except Exception:
             logger.exception("OpenClaw shim connection failed")
@@ -216,6 +261,22 @@ class OpenClawGateway:
             await conn.aclose()
 
     # -- fan-out -----------------------------------------------------------
+
+    def _notifications_changed(self) -> None:
+        """Tell every notification subscriber the outbox has a new entry."""
+        subscribers = [conn for conn in list(self._conns) if conn.wants_notifications]
+        for conn in subscribers:
+            task = asyncio.get_running_loop().create_task(
+                conn.send_event(NOTIFICATIONS_CHANGED_EVENT, {"ts": now_ms()})
+            )
+            self._notification_sends.add(task)
+            task.add_done_callback(self._notification_sent)
+
+    def _notification_sent(self, task: asyncio.Task[None]) -> None:
+        self._notification_sends.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            # A connection that went away mid-send; it re-pulls when it reconnects.
+            logger.info("notifications.changed not delivered: %s", task.exception())
 
     async def broadcast(self, session_key: str, event: str, payload: dict[str, Any]) -> None:
         """Send an event to every connection subscribed to *session_key*."""
@@ -230,6 +291,22 @@ class OpenClawGateway:
         return self._store
 
     @property
+    def notifications(self) -> ResidentNotificationOutboxPort | None:
+        return self._notifications
+
+    def require_notifications(self) -> ResidentNotificationOutboxPort:
+        if self._notifications is None:
+            raise RuntimeError("This OpenClaw shim serves no resident notification outbox")
+        return self._notifications
+
+    @property
+    def methods(self) -> list[str]:
+        """The RPCs this shim answers, as hello-ok advertises them."""
+        if self._notifications is None:
+            return list(SUPPORTED_METHODS)
+        return [*SUPPORTED_METHODS, *NOTIFICATION_METHODS]
+
+    @property
     def token(self) -> str:
         return self._token
 
@@ -240,6 +317,10 @@ class OpenClawGateway:
     @property
     def room_identity(self) -> str:
         return self._room_identity
+
+    @property
+    def max_sessions(self) -> int:
+        return self._max_sessions
 
     def owns_session_key(self, key: str) -> bool:
         """Only keys this shim minted are addressable.
@@ -341,6 +422,8 @@ class OpenClawGateway:
     async def run_turn(self, session_key: str, message: str) -> str:
         """Start a Ravn turn and stream it to subscribers. Returns the run id."""
         run_id = f"run-{uuid.uuid4().hex[:16]}"
+        # The session row first: a message row references it.
+        self._store.upsert_session(session_key, agent_id=self._agent_id, status="busy")
         self._store.append_message(
             session_key,
             message_id=f"{run_id}-user",
@@ -348,11 +431,45 @@ class OpenClawGateway:
             blocks=[{"type": "text", "text": message}],
             run_id=run_id,
         )
-        self._store.upsert_session(session_key, agent_id=self._agent_id, status="busy")
+        run = _ActiveRun(
+            run_id=run_id,
+            translator=TurnTranslator(session_key=session_key, run_id=run_id),
+        )
+        self._runs[session_key] = run
         # Detached on purpose: the turn's life is not tied to any socket, so
         # backgrounding the phone cannot cancel it mid-tool.
-        asyncio.create_task(self._drive(session_key, message, run_id))
+        asyncio.create_task(self._drive(session_key, message, run))
         return run_id
+
+    async def abort_turn(self, session_key: str) -> bool:
+        """End the relayed turn on *session_key* now, as ``aborted``.
+
+        Ravn has no safe mid-turn cancel: ``RavnAgent.interrupt`` is sticky and
+        would end every later turn too, and cancelling the stream waits for the
+        turn anyway. So the turn finishes inside Ravn while the shim stops
+        relaying it: subscribers get ``aborted`` with what streamed so far, that
+        partial answer is the persisted one, and the session is free again — a
+        next message queues behind the finishing turn on Ravn's per-session lock.
+        """
+        run = self._runs.get(session_key)
+        if run is None or run.aborted or run.translator.finished:
+            return False
+        run.aborted = True
+        await self._emit(session_key, run.translator.aborted(), run.translator, run.run_id)
+        self._store.upsert_session(session_key, agent_id=self._agent_id, status="idle")
+        await self.broadcast(session_key, "sessions.changed", {"sessionKey": session_key})
+        return True
+
+    async def delete_session(self, session_key: str) -> bool:
+        """Delete one session: its transcript, its row and its Ravn conversation."""
+        await self.abort_turn(session_key)
+        self._runs.pop(session_key, None)
+        drop_session = getattr(self._gateway, "drop_session", None)
+        if callable(drop_session):
+            drop_session(session_key)
+        existed = self._store.get_session(session_key) is not None
+        self._store.delete_session(session_key)
+        return existed
 
     _TERMINAL_STATES = frozenset({"final", "error", "aborted"})
 
@@ -376,7 +493,8 @@ class OpenClawGateway:
 
     def _persist_turn(self, session_key: str, translator: TurnTranslator, run_id: str) -> None:
         blocks = translator.final_blocks()
-        if not blocks:
+        if not blocks or self._store.get_session(session_key) is None:
+            # Nothing said, or the session was deleted mid-turn.
             return
         # append_message is idempotent on message_id, so a re-entry (terminal
         # in the loop, then finish() in the finally) updates rather than dupes.
@@ -388,11 +506,17 @@ class OpenClawGateway:
             run_id=run_id,
         )
 
-    async def _drive(self, session_key: str, message: str, run_id: str) -> None:
-        translator = TurnTranslator(session_key=session_key, run_id=run_id)
+    async def _drive(self, session_key: str, message: str, run: _ActiveRun) -> None:
+        translator = run.translator
+        run_id = run.run_id
         reason = "stream closed"
+        # The turn's own task inherits this, so what it notifies names this channel.
+        current_notification_channel.set(session_key)
         try:
             async for event in self._gateway.handle_message_stream(session_key, message):
+                if run.aborted:
+                    # Drained, not relayed: Ravn finishes the turn it cannot cancel.
+                    continue
                 frame = {"type": str(event.type), "payload": event.payload}
                 await self._emit(session_key, translator.ingest(frame), translator, run_id)
         except asyncio.CancelledError:
@@ -404,11 +528,16 @@ class OpenClawGateway:
             logger.exception("Ravn turn failed for %s", session_key)
             reason = f"{type(exc).__name__}: {exc}"
         finally:
-            # No-op when the turn already terminated cleanly; synthesizes an
-            # error terminal when Ravn's stream just ended.
-            await self._emit(session_key, translator.finish(reason=reason), translator, run_id)
-            self._persist_turn(session_key, translator, run_id)
-            self._store.upsert_session(session_key, agent_id=self._agent_id, status="idle")
+            if not run.aborted:
+                # No-op when the turn already terminated cleanly; synthesizes an
+                # error terminal when Ravn's stream just ended.
+                await self._emit(session_key, translator.finish(reason=reason), translator, run_id)
+                self._persist_turn(session_key, translator, run_id)
+            if self._runs.get(session_key) is run:
+                del self._runs[session_key]
+                # Only the latest turn owns the status, and a deleted session stays deleted.
+                if self._store.get_session(session_key) is not None:
+                    self._store.upsert_session(session_key, agent_id=self._agent_id, status="idle")
             await self.broadcast(session_key, "sessions.changed", {"sessionKey": session_key})
 
 
@@ -425,6 +554,7 @@ class _Connection:
         self._device_id: str | None = None
         self._subscriptions: set[str] = set()
         self._subscribe_all = False
+        self._notification_subscriber = False
         self._tick_task: asyncio.Task | None = None
         self._send_lock = asyncio.Lock()
 
@@ -440,6 +570,10 @@ class _Connection:
 
     def is_subscribed(self, session_key: str) -> bool:
         return self._authed and (self._subscribe_all or session_key in self._subscriptions)
+
+    @property
+    def wants_notifications(self) -> bool:
+        return self._authed and self._notification_subscriber
 
     async def aclose(self) -> None:
         if self._tick_task:
@@ -516,11 +650,22 @@ class _Connection:
             "health": self._on_health,
             "agents.list": self._on_agents_list,
             "sessions.list": self._on_sessions_list,
+            "sessions.patch": self._on_sessions_patch,
+            "sessions.delete": self._on_sessions_delete,
             "sessions.subscribe": self._on_subscribe,
             "sessions.messages.subscribe": self._on_subscribe,
             "chat.history": self._on_chat_history,
             "chat.send": self._on_chat_send,
+            "chat.abort": self._on_chat_abort,
         }
+        if self._gw.notifications is not None:
+            handlers.update(
+                {
+                    "notifications.subscribe": self._on_notifications_subscribe,
+                    "notifications.pull": self._on_notifications_pull,
+                    "notifications.ack": self._on_notifications_ack,
+                }
+            )
         handler = handlers.get(method)
         if handler is None:
             # Must stay decodable and must NOT tear down the socket — verified
@@ -598,7 +743,7 @@ class _Connection:
                     device_token=mint_device_token(device_id, self._gw.token),
                     agent_id=self._gw.agent_id,
                     main_session_key=self._gw.main_session_key,
-                    methods=SUPPORTED_METHODS,
+                    methods=self._gw.methods,
                 ),
             )
         )
@@ -651,6 +796,42 @@ class _Connection:
             self._subscribe_all = True
         await self._send(response_frame(req_id, {"ok": True}))
 
+    # -- resident notification outbox ------------------------------------
+
+    async def _on_notifications_subscribe(self, req_id: str, _params: dict[str, Any]) -> None:
+        self._notification_subscriber = True
+        await self._send(response_frame(req_id, {"ok": True}))
+
+    async def _on_notifications_pull(self, req_id: str, params: dict[str, Any]) -> None:
+        """The oldest unacknowledged outbox entries, in write order."""
+        outbox = self._gw.require_notifications()
+        limit = params.get("limit", MAX_NOTIFICATION_PULL)
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            await self._send(
+                error_frame(req_id, ErrorCodes.INVALID_REQUEST, "limit must be a positive integer")
+            )
+            return
+        entries = await outbox.pending(limit=min(limit, MAX_NOTIFICATION_PULL))
+        await self._send(
+            response_frame(
+                req_id, {"entries": [entry.model_dump(mode="json") for entry in entries]}
+            )
+        )
+
+    async def _on_notifications_ack(self, req_id: str, params: dict[str, Any]) -> None:
+        """Forge recorded everything up to ``throughSeq``: drop it from the outbox."""
+        outbox = self._gw.require_notifications()
+        through = params.get("throughSeq")
+        if not isinstance(through, int) or isinstance(through, bool) or through < 1:
+            await self._send(
+                error_frame(
+                    req_id, ErrorCodes.INVALID_REQUEST, "throughSeq must be a positive integer"
+                )
+            )
+            return
+        acknowledged = await outbox.acknowledge(through_seq=through)
+        await self._send(response_frame(req_id, {"ok": True, "acknowledged": acknowledged}))
+
     async def _on_chat_history(self, req_id: str, params: dict[str, Any]) -> None:
         key = params.get("sessionKey")
         if not self._gw.owns_session_key(key):
@@ -664,6 +845,74 @@ class _Connection:
         await self._send(
             response_frame(req_id, {"messages": self._gw.store.history(key, limit=limit)})
         )
+
+    # -- session lifecycle -------------------------------------------------
+
+    def _own_conversation_key(self, params: dict[str, Any]) -> str | None:
+        """The session key of a request, when it names one of this agent's conversations.
+
+        Rooms are excluded: they live in their own brokers, not in this store.
+        The native gateway calls the field ``key``; ``sessionKey`` is accepted too.
+        """
+        key = params.get("key") or params.get("sessionKey")
+        if not self._gw.owns_session_key(key) or self._gw.room_for_key(key) is not None:
+            return None
+        return str(key)
+
+    async def _on_sessions_patch(self, req_id: str, params: dict[str, Any]) -> None:
+        """Create a conversation, or rename one. Each key is a separate Ravn conversation."""
+        key = self._own_conversation_key(params)
+        if key is None:
+            await self._send(
+                error_frame(
+                    req_id,
+                    ErrorCodes.NOT_FOUND,
+                    "unknown session",
+                    details={"sessionKey": str(params.get("key") or params.get("sessionKey"))},
+                )
+            )
+            return
+        label = params.get("label")
+        label = label.strip() if isinstance(label, str) and label.strip() else None
+        store = self._gw.store
+        if store.get_session(key) is None and store.session_count() >= self._gw.max_sessions:
+            await self._send(
+                error_frame(
+                    req_id,
+                    ErrorCodes.RATE_LIMITED,
+                    "this agent already has its maximum number of sessions",
+                    details={"limit": self._gw.max_sessions},
+                )
+            )
+            return
+        store.upsert_session(key, agent_id=self._gw.agent_id, display_name=label)
+        entry = store.session_entry(key) or {}
+        await self._send(response_frame(req_id, {"ok": True, "key": key, "entry": entry}))
+        await self._gw.broadcast(key, "sessions.changed", {"sessionKey": key})
+
+    async def _on_sessions_delete(self, req_id: str, params: dict[str, Any]) -> None:
+        """Delete a conversation with its transcript. Deleting a missing one is a no-op."""
+        key = self._own_conversation_key(params)
+        if key is None:
+            await self._send(error_frame(req_id, ErrorCodes.NOT_FOUND, "unknown session"))
+            return
+        if key == self._gw.main_session_key:
+            await self._send(
+                error_frame(
+                    req_id, ErrorCodes.INVALID_REQUEST, "the main session cannot be deleted"
+                )
+            )
+            return
+        deleted = await self._gw.delete_session(key)
+        await self._send(response_frame(req_id, {"ok": True, "key": key, "deleted": deleted}))
+
+    async def _on_chat_abort(self, req_id: str, params: dict[str, Any]) -> None:
+        key = self._own_conversation_key(params)
+        if key is None:
+            await self._send(error_frame(req_id, ErrorCodes.NOT_FOUND, "unknown session"))
+            return
+        aborted = await self._gw.abort_turn(key)
+        await self._send(response_frame(req_id, {"ok": True, "aborted": aborted}))
 
     # -- chat.send ---------------------------------------------------------
 
@@ -698,6 +947,17 @@ class _Connection:
                 return
 
         row = self._gw.store.get_session(key)
+        if row is None and self._gw.store.session_count() >= self._gw.max_sessions:
+            # chat.send creates the session it names, so it honours the same cap.
+            await self._send(
+                error_frame(
+                    req_id,
+                    ErrorCodes.RATE_LIMITED,
+                    "this agent already has its maximum number of sessions",
+                    details={"limit": self._gw.max_sessions},
+                )
+            )
+            return
         if row is not None and row["status"] == "busy":
             # Ravn's per-session lock would silently queue this behind the
             # running turn with no feedback. Refusing is the honest answer.
@@ -719,15 +979,11 @@ class _Connection:
     async def _on_room_send(
         self, req_id: str, room: openclaw_room.RoomClient, message: str
     ) -> None:
-        """Post a device's message into a room, as the operator's own seat.
-
-        The seat is (re)joined first: a room sweeps participants that stop sending presence, so a
-        phone that has been quiet since yesterday would otherwise post as a participant the room
-        no longer has, and be refused. Joining is idempotent and refreshes presence.
-        """
+        """Post a device's message into a room, as the operator's own seat."""
         identity = self._gw.room_identity
-        await room.join(participant_id=identity)
-        if not await room.post(message, participant_id=identity):
+        if not await room.seat(participant_id=identity) or not await room.post(
+            message, participant_id=identity
+        ):
             await self._send(
                 error_frame(
                     req_id,

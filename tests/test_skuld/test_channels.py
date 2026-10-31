@@ -1,6 +1,7 @@
 """Tests for Skuld message channel abstraction."""
 
 import json
+import logging
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,6 +16,7 @@ from skuld.channels import (
     format_telegram_event,
     render_telegram_html,
     split_message,
+    telegram_length,
 )
 
 # ---------------------------------------------------------------------------
@@ -786,6 +788,44 @@ class TestSplitMessage:
         assert all(len(c) <= 10 for c in chunks)
         assert "".join(chunks) == text
 
+    def test_length_is_counted_in_utf16_units(self):
+        # Telegram counts an emoji outside the BMP as two units.
+        text = "\U0001f600" * 10
+        chunks = split_message(text, max_length=10)
+        assert [telegram_length(c) for c in chunks] == [10, 10]
+        assert "".join(chunks) == text
+
+    def test_html_is_never_cut_inside_a_tag_or_entity(self):
+        text = "<b>" + "a" * 8 + "</b>&amp;" + "c" * 8
+        chunks = split_message(text, max_length=16, html=True)
+        for chunk in chunks:
+            assert telegram_length(chunk) <= 16
+            assert chunk.count("<") == chunk.count(">")
+            assert "&am" not in chunk.replace("&amp;", "")
+
+    def test_html_tags_open_at_a_split_are_closed_and_reopened(self):
+        text = "<b>" + "\n".join(["line"] * 12) + "</b>"
+        chunks = split_message(text, max_length=30, html=True)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            assert chunk.startswith("<b>")
+            assert chunk.endswith("</b>")
+            assert telegram_length(chunk) <= 30
+        visible = "".join(c.removeprefix("<b>").removesuffix("</b>") for c in chunks)
+        assert visible.replace("\n", "") == "line" * 12
+
+    def test_html_keeps_every_character_of_a_long_unbroken_run(self):
+        text = "<i>" + "x" * 50 + "</i>"
+        chunks = split_message(text, max_length=20, html=True)
+        assert all(telegram_length(c) <= 20 for c in chunks)
+        assert "".join(c.removeprefix("<i>").removesuffix("</i>") for c in chunks) == "x" * 50
+
+    def test_html_attributes_survive_the_reopen(self):
+        text = '<a href="https://x.test/a">' + "word " * 20 + "</a>"
+        chunks = split_message(text, max_length=60, html=True)
+        assert len(chunks) > 1
+        assert all(c.startswith('<a href="https://x.test/a">') for c in chunks)
+
 
 # ---------------------------------------------------------------------------
 # TelegramChannel (without python-telegram-bot)
@@ -868,6 +908,26 @@ class TestTelegramChannelMocked:
             parse_mode="HTML",
             message_thread_id=77,
         )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_chunk_is_an_error_and_the_event_is_not_marked_delivered(
+        self, channel, caplog
+    ):
+        channel._bot.send_message = AsyncMock(side_effect=[RuntimeError("400 bad"), MagicMock()])
+        event = {
+            "type": "room_message",
+            "participant": {"persona": "resident"},
+            "content": ("word " * 300 + "\n") * 4,
+            "visibility": "public",
+            "sourceEventId": "evt-1",
+        }
+
+        with caplog.at_level(logging.ERROR, logger="skuld.channels"):
+            await channel.send_event(event)
+
+        assert channel._bot.send_message.await_count == 2
+        assert "evt-1" not in channel._delivered_event_ids
+        assert any("chunk 1/2" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.asyncio
     async def test_send_event_room_message_uses_html_parse_mode(self, channel):
@@ -1031,6 +1091,44 @@ class TestTelegramChannelMocked:
         assert payload["trace_context"] == {"traceparent": "00-abc-def-01"}
         assert payload["reply_context"]["participant_id"] == "ivaldi"
         assert "Need operator input" in payload["reply_context"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_help_reply_names_the_case_of_the_question_it_answers(self, channel):
+        def sent_message(message_id: int) -> MagicMock:
+            sent = MagicMock()
+            sent.message_id = message_id
+            sent.chat.id = 12345
+            return sent
+
+        def question(case_id: str) -> dict:
+            return {
+                "type": "room_notification",
+                "notificationType": "help_needed",
+                "participantId": "regin",
+                "participant": {"persona": "Regin"},
+                "summary": f"Question for {case_id}",
+                "reason": "needs_context",
+                "context": {"resident_case_id": case_id},
+            }
+
+        channel._bot.send_message.return_value = sent_message(501)
+        await channel.send_event(question("case-older"))
+        channel._bot.send_message.return_value = sent_message(502)
+        await channel.send_event(question("case-newer"))
+
+        on_message = AsyncMock()
+        channel._on_message = on_message
+        update = MagicMock()
+        update.effective_chat.id = 12345
+        update.message.text = "It is intended behaviour"
+        update.message.message_id = 503
+        update.message.reply_to_message.message_id = 501
+        update.message.message_thread_id = None
+
+        await channel._handle_text_message(update, None)
+
+        payload = on_message.await_args.args[0]
+        assert payload["reply_context"]["help_context"] == {"resident_case_id": "case-older"}
 
     @pytest.mark.asyncio
     async def test_room_message_reply_retains_peer_trace_and_prior_content(self, channel):

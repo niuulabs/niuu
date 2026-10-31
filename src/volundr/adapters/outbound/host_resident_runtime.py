@@ -126,7 +126,7 @@ CONDITION_TYPE = "ProcessesReady"
 STATE_FILE_NAME = "host-processes.json"
 LOOPBACK_HOST = "127.0.0.1"
 ALL_INTERFACES = "0.0.0.0"
-RAVN_PLATFORM_TOKEN_ENV = "RAVN__GATEWAY__PLATFORM__PAT_TOKEN"
+RAVN_PLATFORM_TOKEN_ENV = "RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN"
 LOG_CHUNK_BYTES = 65536
 FAILURE_LOG_LINES = 100
 SANDBOX_REFERENCE = re.compile(r"(?<![\w./-])/sandbox(?![\w.-])")
@@ -388,7 +388,11 @@ class HostProcessResidentRuntimeController(
             await self._stop(runtime)
             return self._idle_observation(runtime, ResidentObservedState.SUSPENDED, "Suspended")
 
-    async def resume(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+    async def resume(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile | None = None,
+    ) -> ResidentRuntimeObservation:
         async with self._lock(runtime.id):
             profile = self._profiles.get(runtime.id)
             if profile is None:
@@ -626,13 +630,19 @@ class HostProcessResidentRuntimeController(
         outputs = [item.output for item in active if not item.output.done()]
         if outputs:
             _, unfinished = await asyncio.wait(outputs, timeout=self._stop_timeout)
-            for task in unfinished:
+            for item in active:
+                if item.output not in unfinished:
+                    continue
                 logger.warning(
                     "A descendant of resident process %s left its process group and still "
                     "holds its output; it keeps running unrecorded",
-                    task.get_name(),
+                    item.output.get_name(),
                 )
-                task.cancel()
+                item.output.cancel()
+                # Process has no public close API; its transport owns the pipe
+                # that cannot reach EOF while an escaped descendant holds it.
+                item.process._transport.close()
+            await asyncio.gather(*unfinished, return_exceptions=True)
 
     def _terminate_recorded(self, runtime: ResidentRuntime, tracked: set[int]) -> None:
         """Stop processes a previous platform run started for this resident."""

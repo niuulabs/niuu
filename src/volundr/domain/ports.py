@@ -24,6 +24,7 @@ from credentials.ports import (  # noqa: F401
 from identity.models import Resource  # noqa: F401
 from identity.ports import AuthorizationPort, TenantRepository, UserRepository  # noqa: F401
 from niuu.domain.outcome import OutcomeField
+from niuu.domain.resident_notifications import ResidentNotificationEntry
 from niuu.ports.credentials import CredentialStorePort  # noqa: F401
 from niuu.ports.git import (
     GitAuthError,  # noqa: F401
@@ -151,9 +152,11 @@ class SessionRepository(ABC):
 
     @abstractmethod
     async def update_coordination(
-        self, session: Session, coordination: SessionCoordination
+        self, session: Session, coordination: SessionCoordination | None
     ) -> Session | None:
         """Atomically replace membership if its revision and access scope still match.
+
+        ``None`` removes the session from its project.
 
         Preserve runtime fields; invalidate the old launch brief. None means conflict.
         Ordinary updates must never overwrite this independently managed state.
@@ -542,6 +545,16 @@ class PodManager(ABC):
         """
         return await self.capacity()
 
+    @property
+    def delivers_forge_session_token(self) -> bool:
+        """Whether ``start`` hands ``spec.forge_session`` to the broker privately.
+
+        Forge mints a session credential only for a pod manager that can deliver it
+        without exposing it (process env, never argv, logs or the model's env). A
+        manager that cannot keeps the broker on its own credential.
+        """
+        return False
+
     def initial_chat_endpoint(self, session: Session) -> str | None:
         """Return the deterministic chat endpoint before pods are ready, if known."""
         return None
@@ -573,6 +586,19 @@ class PodManager(ABC):
         Returns:
             True if stopped successfully.
         """
+
+    async def destroy(self, session: Session) -> bool:
+        """Permanently remove everything the session's compute owns.
+
+        Called when the session itself is deleted, so nothing is kept for a
+        resume. Backends whose ``stop`` already releases all compute inherit
+        this; a backend whose ``stop`` retains resources for a later resume
+        must override it. Raises when the removal cannot be completed.
+
+        Returns:
+            True when this call removed something, False when it was already gone.
+        """
+        return await self.stop(session)
 
     @abstractmethod
     async def status(self, session: Session) -> SessionStatus:
@@ -726,26 +752,21 @@ class NotificationChannel(ABC):
     @abstractmethod
     async def send(self, message: PushMessage, devices: list[DeviceToken]) -> None:
         """Deliver a push. ``devices`` is the owner's registered devices (may be
-        empty for relay channels that resolve recipients themselves)."""
+        empty for relay channels that resolve recipients themselves).
 
+        Raises ``niuu.ports.notifications.NotificationDeliveryError`` when the
+        push was not delivered; a channel with no recipient to try returns."""
 
-class AttentionNotifier(ABC):
-    """Port the session service calls when a session needs the user.
+    async def deliver(self, message: PushMessage, devices: list[DeviceToken]) -> str:
+        """Deliver a push and report failures (the notification outbox path).
 
-    Decouples session logic from the push delivery mechanism: the session
-    service emits the intent, an adapter resolves devices and dispatches.
-    """
-
-    @abstractmethod
-    async def notify_needs_input(
-        self,
-        session: Session,
-        *,
-        kind: str,
-        prompt: str,
-        request_id: str,
-    ) -> None:
-        """Alert the session owner that the session is blocked awaiting them."""
+        Raises ``niuu.ports.notifications.NotificationDeliveryError`` when nothing
+        was delivered; returns a short, secret-free description of what was.
+        Channels with nothing more to report keep this default, which calls
+        ``send`` and lets its error propagate.
+        """
+        await self.send(message, devices)
+        return f"handed to {type(self).__name__}"
 
 
 class LaunchSpecProvider(ABC):
@@ -863,16 +884,28 @@ class ResidentRuntimeController(ABC):
         """Suspend a resident while retaining its durable storage."""
 
     @abstractmethod
-    async def resume(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
-        """Resume a suspended resident."""
+    async def resume(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile | None = None,
+    ) -> ResidentRuntimeObservation:
+        """Resume a suspended resident; with its profile, on the version it renders now."""
 
     @abstractmethod
     async def delete(self, runtime: ResidentRuntime) -> bool:
         """Delete backend resources, returning whether a resource existed."""
 
 
+class ResidentLogsUnavailableError(RuntimeError):
+    """The resident has nothing to read logs from right now, e.g. no running pod.
+
+    A state of the resident, not a backend fault: the API answers 409 with this
+    message, so the caller learns why instead of seeing a gateway error.
+    """
+
+
 class ResidentRuntimeLogReader(ABC):
-    """Optional backend port for normalized resident logs."""
+    """Backend port for normalized resident logs; every resident backend implements it."""
 
     @abstractmethod
     async def logs(
@@ -892,6 +925,89 @@ class ResidentRuntimeProxyTargetResolver(ABC):
     @abstractmethod
     def resident_proxy_target(self, runtime: ResidentRuntime) -> SessionProxyTarget | None:
         """Resolve the backend service reached by the shared session proxy."""
+
+
+class ResidentOpenClawTokens(ABC):
+    """Each Ravn resident's own OpenClaw shim token, kept per resident.
+
+    No cluster-wide master: a resident's token is its own, generated once (or adopted
+    from the resident's running workload) and removed with the resident.
+    """
+
+    @abstractmethod
+    async def stored(self, runtime: ResidentRuntime) -> str | None:
+        """The resident's kept token; None before it has one."""
+
+    @abstractmethod
+    async def ensure(self, runtime: ResidentRuntime, *, adopt: str | None = None) -> str:
+        """The kept token; else keep ``adopt`` (the one the resident runs with) or a new one."""
+
+    @abstractmethod
+    async def forget(self, runtime: ResidentRuntime) -> None:
+        """Remove the resident's token (the resident is gone)."""
+
+
+class ResidentOpenClawShimHost(ABC):
+    """Optional backend port: the backend runs a Ravn resident's OpenClaw shim.
+
+    A Ravn resident's sessions ("channels") are served by Ravn's OpenClaw-protocol
+    shim inside the resident's own workload. A backend that implements this port
+    starts the shim with the resident's own token and routes Völundr to its port,
+    so Völundr wires Ravn sessions on it by default
+    (``RavnResidentSessionController``).
+    """
+
+    @abstractmethod
+    def set_resident_openclaw_tokens(self, tokens: ResidentOpenClawTokens) -> None:
+        """Where each Ravn resident's own shim token is kept."""
+
+    @abstractmethod
+    async def resident_openclaw_token(self, runtime: ResidentRuntime) -> str:
+        """The token the resident's shim checks.
+
+        The kept one; else the one the resident's running workload already has
+        (adopted, so a running resident keeps its sessions); else a new one.
+        """
+
+    @abstractmethod
+    def resident_openclaw_target(
+        self,
+        runtime: ResidentRuntime,
+        port: int,
+    ) -> SessionProxyTarget | None:
+        """Route to the resident's shim on ``port``; None before the backend reports it."""
+
+
+@dataclass(frozen=True)
+class DiscoveredResident:
+    """A resident running outside the Forge, as its discovery source describes it.
+
+    ``key`` is the resident's own name elsewhere (e.g. its catalog id); the Forge's
+    record of it has the id ``niuu.domain.discovered_residents.discovered_resident_id``
+    derives from the key.
+    """
+
+    key: str
+    name: str
+    owner_id: str
+    tenant_id: str
+    profile_id: str
+    persona_name: str = ""
+    model: str = ""
+
+
+class ResidentDiscoverySource(ABC):
+    """Optional backend port: the backend discovers its residents instead of deploying them.
+
+    The Forge keeps a record for each discovered resident (so its sessions, chat and
+    notifications run through the same controllers as a deployed resident's), adds
+    records for new ones and removes the records of residents no longer discovered.
+    Its profiles are never offered for deployment.
+    """
+
+    @abstractmethod
+    async def discovered_residents(self) -> list[DiscoveredResident]:
+        """Every resident the backend currently knows; raises when it cannot tell."""
 
 
 class ResidentDeviceApprover(ABC):
@@ -917,11 +1033,27 @@ class ResidentChatConnection(ABC):
 
     @abstractmethod
     async def send(self, frame: dict[str, Any]) -> None:
-        """Send one shared-chat command."""
+        """Send one shared-chat command.
+
+        A command the engine does not support is answered with
+        :func:`unsupported_chat_command_frame` through :meth:`receive`, never by
+        raising: clients send optional control frames, and one of them must not
+        end the chat.
+        """
 
     @abstractmethod
     async def close(self) -> None:
         """Close the engine connection."""
+
+
+def unsupported_chat_command_frame(command: object, message: str = "") -> dict[str, Any]:
+    """The error frame answering a shared-chat command an engine does not support."""
+    command_type = str(command or "")
+    return {
+        "type": "error",
+        "error": message or f"Unsupported shared chat command: {command_type}",
+        "command": command_type,
+    }
 
 
 class ResidentSessionController(ABC):
@@ -931,6 +1063,24 @@ class ResidentSessionController(ABC):
     @abstractmethod
     def engine(self) -> ResidentEngine:
         """Return the resident engine implemented by this controller."""
+
+    @property
+    def runtime_backend(self) -> ResidentBackend | None:
+        """The backend whose residents this controller drives; None drives any backend.
+
+        A controller bound to one runtime controller names its backend, so one
+        engine can have a controller per backend (Ravn on Flux and on OpenShell).
+        """
+        return None
+
+    def provides_sessions(self, profile: ResidentDeploymentProfile) -> bool:
+        """Whether residents of ``profile`` get sessions from this controller.
+
+        The resident session capabilities (session.list/create/delete) follow from
+        this; a controller whose engine can switch its session API off per profile
+        says so here.
+        """
+        return True
 
     @abstractmethod
     async def list_sessions(self, runtime: ResidentRuntime) -> list[ResidentSession]:
@@ -957,6 +1107,50 @@ class ResidentSessionController(ABC):
         session_id: UUID,
     ) -> ResidentChatConnection:
         """Open a normalized shared-chat connection."""
+
+
+class ResidentNotificationsUnavailableError(RuntimeError):
+    """The resident serves no notification outbox (an older engine, or switched off)."""
+
+
+class ResidentNotificationStream(ABC):
+    """An open read of one resident's notification outbox (see
+    :mod:`niuu.domain.resident_notifications`)."""
+
+    @abstractmethod
+    async def pending(self, *, limit: int) -> list[ResidentNotificationEntry]:
+        """The oldest entries not acknowledged yet, in the resident's write order."""
+
+    @abstractmethod
+    async def acknowledge(self, *, through_seq: int) -> None:
+        """Everything up to ``through_seq`` is recorded; the resident may drop it."""
+
+    @abstractmethod
+    async def wait_for_more(self, *, timeout: float) -> None:
+        """Return when the resident reports new entries, or after ``timeout`` seconds.
+
+        Raises when the connection to the resident ends.
+        """
+
+    @abstractmethod
+    def resident_session_id(self, channel: str | None) -> UUID | None:
+        """The resident session an entry's ``channel`` names; ``None`` is the main room."""
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Close the read."""
+
+
+class ResidentNotificationSource(ABC):
+    """A resident session controller that can also read its residents' notifications."""
+
+    @abstractmethod
+    async def open_notifications(self, runtime: ResidentRuntime) -> ResidentNotificationStream:
+        """Open the resident's notification outbox.
+
+        Raises :class:`ResidentNotificationsUnavailableError` when the resident
+        serves none.
+        """
 
 
 class ResidentRuntimeRepository(ABC):
@@ -1107,6 +1301,20 @@ class SessionEventLogRepository(ABC):
     @abstractmethod
     async def latest_seq(self, session_id: UUID) -> int:
         """Return the highest seq stored for a session, or 0 if none."""
+
+    async def read_seqs(self, session_id: UUID, seqs: list[int]) -> list[SessionLogEntry]:
+        """Return the STORED rows for exactly these seqs, ordered by seq.
+
+        Seqs with no stored row are omitted. This concrete default is built on
+        :meth:`read_after` (one bounded range read) so in-memory fakes inherit it;
+        SQL adapters override it with a single ``seq = ANY(...)`` lookup.
+        """
+        wanted = set(seqs)
+        if not wanted:
+            return []
+        low = min(wanted) - 1
+        rows = await self.read_after(session_id, after_seq=low, limit=max(wanted) - low)
+        return [row for row in rows if row.seq in wanted]
 
     async def import_history(
         self, session_id: UUID, source_id: str, entries: list[SessionLogEntry]
@@ -1557,6 +1765,38 @@ class SecretInjectionPort(ABC):
 
     async def cleanup_session(self, session_id: str) -> None:
         """Clean up per-session resources (ConfigMaps, etc.). Default no-op."""
+
+    @property
+    def supports_workloads(self) -> bool:
+        """Whether this adapter can inject credentials into a long-lived workload (a resident)."""
+        return False
+
+    async def workload_pod_spec_additions(
+        self,
+        user_id: str,
+        credential_mappings: list[CredentialMapping],
+        *,
+        workload_id: str,
+        service_account_name: str,
+        inject_containers: str,
+        tenant_id: str | None = None,
+    ) -> PodSpecAdditions:
+        """Provision a workload's credentials, bound to the workload's own service account.
+
+        Unlike a session, a resident keeps the service account its workload identity is
+        mapped to, so the adapter binds its access to that account instead of creating
+        one, and returns only the annotations that render the credentials into
+        ``inject_containers``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot inject credentials into a resident workload"
+        )
+
+    async def cleanup_workload(self, workload_id: str) -> None:
+        """Remove a workload's credential access. Idempotent."""
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot inject credentials into a resident workload"
+        )
 
 
 class ResourceProvider(ABC):

@@ -14,10 +14,12 @@ from starlette.responses import JSONResponse
 
 from identity.ports import AuthorizationDeniedError, AuthorizationEvaluationError
 from niuu.adapters.http_integrations import HTTPIntegrationRepository
+from niuu.adapters.notifications.integrations import NotificationChannelFactory
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
+from niuu.observability import enable_trace_log_correlation
 from niuu.ports.delivery import EvidenceAuthenticator
 from niuu.ports.integrations import IntegrationRepository
 from niuu.ports.workload_identity import WorkloadTokenIssuer
@@ -36,7 +38,6 @@ from ting.adapters.guild_instances import GuildInstanceRegistryClient
 from ting.adapters.inbound.rest_integrations import create_telegram_setup_router
 from ting.adapters.inbound.rest_pats import create_pats_router
 from ting.adapters.inbound.rest_telegram_webhook import create_telegram_webhook_router
-from ting.adapters.notification_channel_factory import NotificationChannelFactory
 from ting.adapters.parent_workflow_continuation import VolundrParentWorkflowContinuation
 from ting.adapters.plain_child_gates import (
     SchemaOnlyChildResultVerifier,
@@ -49,13 +50,14 @@ from ting.adapters.postgres_notification_subscriptions import (
     PostgresNotificationSubscriptionRepository,
 )
 from ting.adapters.postgres_sagas import PostgresSagaRepository
+from ting.adapters.postgres_ticket_coordinators import PostgresTicketCoordinatorRepository
 from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
 from ting.adapters.postgres_workflow_executions import PostgresWorkflowExecutionRepository
 from ting.adapters.tracker_factory import TrackerAdapterFactory
 from ting.adapters.volundr_factory import GuildRegistryUnavailableError, VolundrAdapterFactory
 from ting.adapters.workflow_execution_worker import ExecutionReconciler, WorkflowExecutionWorker
 from ting.api.a2a import create_a2a_router, resolve_a2a_launch_repo
-from ting.api.a2a_card import create_agent_card_router
+from ting.api.a2a_card import create_agent_card_router, resolve_card_workflow_repo
 from ting.api.audit import create_audit_router
 from ting.api.dispatch import (
     create_dispatch_router,
@@ -97,6 +99,7 @@ from ting.api.tracker import (
 from ting.api.work import create_work_router, resolve_work_trackers
 from ting.api.workflow_executions import (
     create_workflow_executions_router,
+    resolve_optional_workflow_execution_repo,
     resolve_workflow_execution_repo,
     resolve_workflow_execution_service,
 )
@@ -131,6 +134,11 @@ from ting.domain.services.resource_authorization import (
     AuthorizedWorkflowRepository,
 )
 from ting.domain.services.review_engine import ReviewEngine
+from ting.domain.services.ticket_advance import TicketAdvancer
+from ting.domain.services.ticket_coordinator import (
+    TicketCoordinatorService,
+    coordinator_ravn_config,
+)
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.domain.services.workflow_execution import WorkflowExecutionService
 from ting.domain.services.workflow_migration import workflow_catalog_migration_is_current
@@ -164,6 +172,20 @@ def _create_http_auth_adapter(config):
 def _use_local_volundr_factory(settings: Settings) -> bool:
     """Return True when Ting should force the single local Volundr adapter."""
     return settings.auth.allow_anonymous_dev and not settings.volundr.use_connection_factory_in_dev
+
+
+def _dispatch_service_config(settings: Settings) -> DispatchServiceConfig:
+    """Map the dispatch settings onto the dispatch service's config."""
+    return DispatchServiceConfig(
+        default_system_prompt=settings.dispatch.default_system_prompt,
+        default_model=settings.dispatch.default_model,
+        default_session_definition=settings.dispatch.default_session_definition,
+        dispatch_prompt_template=settings.dispatch.dispatch_prompt_template,
+        session_definitions=settings.session_definitions,
+        configured_models=list(settings.bifrost.models),
+        workflow_cli_turn_timeout_seconds=settings.dispatch.workflow_cli_turn_timeout_seconds,
+        live_flock=settings.dispatch.flock,
+    )
 
 
 def _workflow_execution_token_issuer(
@@ -311,14 +333,24 @@ def _configure_logging(settings: Settings) -> None:
     level_name = settings.logging.level.upper()
     log_format = settings.logging.format.lower()
     level = getattr(logging, level_name, logging.INFO)
+    if settings.observability.enabled:
+        enable_trace_log_correlation()
 
     if log_format == "json":
-        fmt = (
-            '{"time":"%(asctime)s","level":"%(levelname)s",'
-            '"logger":"%(name)s","message":"%(message)s"}'
-        )
+        fields = [
+            '"time":"%(asctime)s"',
+            '"level":"%(levelname)s"',
+            '"logger":"%(name)s"',
+            '"message":"%(message)s"',
+        ]
+        if settings.observability.enabled:
+            fields.extend(['"trace_id":"%(trace_id)s"', '"span_id":"%(span_id)s"'])
+        fmt = "{" + ",".join(fields) + "}"
     else:
-        fmt = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        fmt = "%(asctime)s - %(name)s - %(levelname)s"
+        if settings.observability.enabled:
+            fmt += " - trace_id=%(trace_id)s span_id=%(span_id)s"
+        fmt += " - %(message)s"
 
     logging.basicConfig(
         level=level,
@@ -469,7 +501,7 @@ async def _seed_webhook_integration(
         id="0e1b3a82-7c4f-5d62-9e8b-1e4cf5ab21d3",
         owner_id=owner_id,
         integration_type=IntegrationType.MESSAGING,
-        adapter="ting.adapters.webhook_notification.WebhookNotificationAdapter",
+        adapter="niuu.adapters.notifications.webhook.WebhookNotificationAdapter",
         credential_name=cred_name,
         config={"url": url, "min_urgency": min_urgency},
         enabled=True,
@@ -617,6 +649,9 @@ def create_app(
     app.state.identity = _ting_identity_cls(**settings.auth.kwargs)
     app.state.workload_identity_service = create_workload_identity_service(
         settings.workload_identity
+    )
+    app.state.mimir_service_auth = _create_http_auth_adapter(
+        settings.dispatch.flock.mimir_service_auth
     )
 
     # -- Routers --
@@ -868,11 +903,15 @@ def create_app(
                 )
 
             app.dependency_overrides[resolve_workflow_repo] = _resolve_workflow_repo
+            # The Agent Card is public discovery: it reads system workflows
+            # without a principal (see resolve_card_workflow_repo).
+            app.dependency_overrides[resolve_card_workflow_repo] = lambda: workflow_repo
 
             workflow_campaign_repo = PostgresWorkflowCampaignRepository(pool)
             app.state.workflow_campaign_repo = workflow_campaign_repo
             a2a_launch_repo = PostgresA2ALaunchReservationRepository(pool)
             app.state.a2a_launch_repo = a2a_launch_repo
+            app.state.ticket_coordinator_repo = PostgresTicketCoordinatorRepository(pool)
 
             async def _resolve_a2a_launch_repo():
                 return a2a_launch_repo
@@ -1060,6 +1099,9 @@ def create_app(
                 app.dependency_overrides[resolve_workflow_execution_repo] = (
                     _resolve_generic_workflow_execution_repo
                 )
+                app.dependency_overrides[resolve_optional_workflow_execution_repo] = (
+                    _resolve_generic_workflow_execution_repo
+                )
                 app.dependency_overrides[resolve_workflow_execution_service] = (
                     _resolve_generic_workflow_execution_service
                 )
@@ -1130,15 +1172,7 @@ def create_app(
                 volundr_factory=app.state.volundr_factory,
                 saga_repo=saga_repo,
                 dispatcher_repo=dispatcher_repo,
-                config=DispatchServiceConfig(
-                    default_system_prompt=settings.dispatch.default_system_prompt,
-                    default_model=settings.dispatch.default_model,
-                    default_session_definition=settings.dispatch.default_session_definition,
-                    dispatch_prompt_template=settings.dispatch.dispatch_prompt_template,
-                    session_definitions=settings.session_definitions,
-                    configured_models=list(settings.bifrost.models),
-                    live_flock=settings.dispatch.flock,
-                ),
+                config=_dispatch_service_config(settings),
                 sleipnir_publisher=sleipnir_bus,
                 flow_provider=flow_provider,
                 workflow_repo=workflow_repo,
@@ -1276,11 +1310,48 @@ def create_app(
             app.dependency_overrides[resolve_event_bus] = _resolve_event_bus
             app.dependency_overrides[dispatcher_resolve_event_bus] = _resolve_event_bus
 
+            stale_campaigns = settings.a2a.stale_campaigns
+
+            def _background_coordinators(
+                adapter: VolundrPort, principal: Principal
+            ) -> TicketCoordinatorService:
+                # No request here: the adapter carries the owner's own connection credentials.
+                return TicketCoordinatorService(
+                    repo=app.state.ticket_coordinator_repo,
+                    volundr=adapter,
+                    principal=principal,
+                    auth_token=None,
+                    persona=settings.ticket_coordinator.persona,
+                    model=settings.ticket_coordinator.model,
+                    session_definitions=settings.session_definitions,
+                    configured_models=list(settings.bifrost.models),
+                    cli_turn_timeout_seconds=settings.dispatch.workflow_cli_turn_timeout_seconds,
+                    ravn_config=coordinator_ravn_config(
+                        settings.dispatch.flock.ravn_config,
+                        settings.ticket_coordinator.ravn_config,
+                    ),
+                    platform_origin=settings.a2a.public_base_url.rstrip("/"),
+                    anonymous_platform=settings.auth.allow_anonymous_dev,
+                )
+
             workflow_campaign_projector = WorkflowCampaignProjector(
                 repo=workflow_campaign_repo,
                 volundr_factory=app.state.volundr_factory,
                 event_bus=event_bus,
                 push_dispatcher=a2a_push_dispatcher,
+                sweep_interval_seconds=stale_campaigns.sweep_interval_seconds,
+                input_wait_timeout_seconds=stale_campaigns.input_wait_timeout_seconds,
+                idle_timeout_seconds=stale_campaigns.idle_timeout_seconds,
+                coordinator_repo=app.state.ticket_coordinator_repo,
+                coordinator_persona=settings.ticket_coordinator.persona,
+                ticket_advancer=TicketAdvancer(
+                    saga_repo=saga_repo,
+                    campaign_repo=workflow_campaign_repo,
+                    coordinator_repo=app.state.ticket_coordinator_repo,
+                    tracker_factory=app.state.tracker_factory,
+                    volundr_factory=app.state.volundr_factory,
+                    coordinators=_background_coordinators,
+                ),
             )
             app.state.workflow_campaign_projector = workflow_campaign_projector
             await workflow_campaign_projector.start()

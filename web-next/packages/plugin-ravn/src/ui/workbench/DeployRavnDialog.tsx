@@ -130,7 +130,7 @@ export function DeployRavnDialog({
   return (
     <Dialog open={open} onOpenChange={close}>
       <DialogContent
-        title="Deploy a ravn"
+        title="Deploy an agent"
         description="Pick where it runs, then who it is."
         className="rw-dialog"
       >
@@ -139,8 +139,8 @@ export function DeployRavnDialog({
             <div className="rw-step">Runtime</div>
             {launch && (
               <div>
-                <div className="rw-target-label">This Forge · no container</div>
-                <div className="rw-profiles" role="radiogroup" aria-label="Forge session">
+                <div className="rw-target-label">This host · no container</div>
+                <div className="rw-profiles" role="radiogroup" aria-label="Session">
                   <button
                     type="button"
                     role="radio"
@@ -151,11 +151,11 @@ export function DeployRavnDialog({
                     data-testid="ravn-deploy-runtime-session"
                   >
                     <span className="rw-profile__title">
-                      Ravn session
+                      Agent session
                       <EngineLabel engine="ravn" />
                     </span>
                     <span className="rw-profile__desc">
-                      Runs the persona&rsquo;s ravn and its chat room as processes on this Forge.
+                      Runs the persona&rsquo;s agent and its chat room as processes on this host.
                       Stopping it ends the session.
                     </span>
                     <span className="rw-profile__caps">processes · Chat · Logs</span>
@@ -232,7 +232,7 @@ export function DeployRavnDialog({
                   <div className="rw-field">
                     <span className="rw-field__label">Model</span>
                     <span className="rw-field__note" data-testid="ravn-deploy-session-model">
-                      Set by this Forge&rsquo;s ravn configuration
+                      Set by this host&rsquo;s agent configuration
                     </span>
                   </div>
                 )}
@@ -371,8 +371,8 @@ function SessionSummary({
   return (
     <>
       Starts <strong>{name}</strong>
-      {name !== typed.trim() && ' (Forge names sessions in lowercase)'} as a Ravn session on this
-      Forge with persona <strong>{persona}</strong>.
+      {name !== typed.trim() && ' (session names are lowercase)'} as an agent session on this host
+      with persona <strong>{persona}</strong>.
     </>
   );
 }

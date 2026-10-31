@@ -102,6 +102,7 @@ export function RunMeshCanvas({
   const colorsRef = useRef({
     labelPrimary: LABEL_COLOR_PRIMARY_FALLBACK,
     labelMuted: LABEL_COLOR_MUTED_FALLBACK,
+    accent: '',
   });
   const [hover, setHover] = useState<HoverState | null>(null);
 
@@ -153,6 +154,27 @@ export function RunMeshCanvas({
     const ro = new ResizeObserver(() => setup());
     ro.observe(canvas);
 
+    function updateColors() {
+      if (!canvas) return;
+      const style = getComputedStyle(canvas);
+      const light = canvas.closest('[data-theme]')?.getAttribute('data-theme') === 'light';
+      colorsRef.current = {
+        accent: light ? style.getPropertyValue('--color-brand').trim() : '',
+        labelPrimary:
+          style.getPropertyValue('--color-text-primary').trim() || LABEL_COLOR_PRIMARY_FALLBACK,
+        labelMuted:
+          style.getPropertyValue('--color-text-muted').trim() || LABEL_COLOR_MUTED_FALLBACK,
+      };
+    }
+
+    updateColors();
+    const themeObserver = new MutationObserver(updateColors);
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+      subtree: true,
+    });
+
     function setup() {
       if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
@@ -161,15 +183,6 @@ export function RunMeshCanvas({
       canvas.height = rect.height * dpr;
       const W = rect.width;
       const H = rect.height;
-
-      // Resolve colors from CSS custom properties so they respond to theme changes
-      const style = getComputedStyle(document.documentElement);
-      colorsRef.current = {
-        labelPrimary:
-          style.getPropertyValue('--color-text-primary').trim() || LABEL_COLOR_PRIMARY_FALLBACK,
-        labelMuted:
-          style.getPropertyValue('--color-text-muted').trim() || LABEL_COLOR_MUTED_FALLBACK,
-      };
 
       nodes = [];
       const count = visibleClusters.length;
@@ -251,11 +264,21 @@ export function RunMeshCanvas({
       const ravenNodes = nodes.filter((n): n is RavenNode => n.kind === 'raven');
       const hoverNow = hoverRef.current;
 
+      const accent = colorsRef.current.accent;
+
       // Cluster halos
       clusterNodes.forEach((n) => {
         const grad = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r + HALO_EXTRA);
-        grad.addColorStop(0, `rgba(125,211,252,${HALO_OPACITY})`);
-        grad.addColorStop(1, 'rgba(125,211,252,0)');
+        grad.addColorStop(
+          0,
+          accent
+            ? `color-mix(in srgb, ${accent} ${HALO_OPACITY * 100}%, transparent)`
+            : `rgba(125,211,252,${HALO_OPACITY})`,
+        );
+        grad.addColorStop(
+          1,
+          accent ? `color-mix(in srgb, ${accent} 0%, transparent)` : 'rgba(125,211,252,0)',
+        );
         ctx.fillStyle = grad;
         ctx.beginPath();
         ctx.arc(n.x, n.y, n.r + HALO_EXTRA, 0, Math.PI * 2);
@@ -263,7 +286,7 @@ export function RunMeshCanvas({
       });
 
       // Edges
-      ctx.strokeStyle = EDGE_STROKE;
+      ctx.strokeStyle = accent ? `color-mix(in srgb, ${accent} 30%, transparent)` : EDGE_STROKE;
       ctx.lineWidth = 1;
       edges.forEach(([a, b]) => {
         ctx.beginPath();
@@ -282,7 +305,9 @@ export function RunMeshCanvas({
         const x = a.x + (b.x - a.x) * p.t;
         const y = a.y + (b.y - a.y) * p.t;
         const alpha = Math.max(0, 1 - Math.abs(p.t - 0.5) * PULSE_ALPHA_FACTOR);
-        ctx.fillStyle = `${PULSE_FILL_BASE}${alpha})`;
+        ctx.fillStyle = accent
+          ? `color-mix(in srgb, ${accent} ${alpha * 100}%, transparent)`
+          : `${PULSE_FILL_BASE}${alpha})`;
         ctx.beginPath();
         ctx.arc(x, y, PULSE_RADIUS, 0, Math.PI * 2);
         ctx.fill();
@@ -291,12 +316,14 @@ export function RunMeshCanvas({
       // Raven nodes
       ravenNodes.forEach((n) => {
         const isHover = hoverNow?.node === n;
-        ctx.fillStyle = isHover ? RAVEN_FILL_HOVER : RAVEN_FILL;
+        ctx.fillStyle = accent || (isHover ? RAVEN_FILL_HOVER : RAVEN_FILL);
         ctx.beginPath();
         ctx.arc(n.x, n.y, isHover ? RAVEN_RADIUS_HOVER : RAVEN_RADIUS, 0, Math.PI * 2);
         ctx.fill();
         if (isHover) {
-          ctx.strokeStyle = HOVER_RING_STROKE;
+          ctx.strokeStyle = accent
+            ? `color-mix(in srgb, ${accent} 40%, transparent)`
+            : HOVER_RING_STROKE;
           ctx.lineWidth = 1;
           ctx.beginPath();
           ctx.arc(n.x, n.y, HOVER_RING_RADIUS, 0, Math.PI * 2);
@@ -323,6 +350,7 @@ export function RunMeshCanvas({
       cancelAnimationFrame(rafId);
       clearInterval(spawnInterval);
       ro.disconnect();
+      themeObserver.disconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleClusters.map((c) => c.id).join(',')]);

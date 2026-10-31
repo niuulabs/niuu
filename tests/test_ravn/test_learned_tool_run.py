@@ -263,6 +263,10 @@ class TestLearnedToolRunTool:
         assert "archived after 2 consecutive failures" in second.content
         shown = await manager.show("flaky_tool", include_archived=True)
         assert shown["metadata"]["status"] == "archived"
+        # The failure that crossed the threshold is kept: a repair is told
+        # what broke instead of only that something did.
+        assert shown["metadata"]["archived_reason"] == "rolled_back"
+        assert "boom" in shown["metadata"]["archived_detail"]
 
         third = await dispatch.execute({"name": "flaky_tool", "input": {}})
         assert third.is_error
@@ -418,54 +422,62 @@ class TestCapabilityKeyDedup:
         )
         assert capability_key("get_pod") != capability_key("get_pod_logs")
 
-    def test_an_existing_tool_is_found_under_a_different_spelling(self, tmp_path: Path) -> None:
-        from ravn.valkyrie_evolution.learned_tools import find_installed_capability
+    async def test_an_existing_tool_is_found_under_a_different_spelling(
+        self, tmp_path: Path
+    ) -> None:
+        from ravn.valkyrie_evolution.tool_curation import find_installed_capability
 
         _install_tool(tmp_path, "inspect_kubernetes_node_disk_pressure")
         code_dir, artifacts_dir = learned_tool_storage(tmp_path)
 
-        found = find_installed_capability(
-            artifacts_dir=artifacts_dir,
+        found = await find_installed_capability(
             tools_dir=code_dir,
+            artifacts_dir=artifacts_dir,
+            skills=None,
             capability_id="",
             name="inspect_k8s_node_disk_pressure",
+            description="",
         )
 
         assert found is not None
-        assert found.manifest.name == "inspect_kubernetes_node_disk_pressure"
+        assert found.entry.name == "inspect_kubernetes_node_disk_pressure"
+        assert found.matched_by == "spelling"
 
-    def test_exact_name_still_wins_over_a_fold(self, tmp_path: Path) -> None:
-        from ravn.valkyrie_evolution.learned_tools import find_installed_capability
+    async def test_exact_name_still_wins_over_a_fold(self, tmp_path: Path) -> None:
+        from ravn.valkyrie_evolution.tool_curation import find_installed_capability
 
         _install_tool(tmp_path, "inspect_k8s_node_disk_pressure")
         _install_tool(tmp_path, "inspect_kubernetes_node_disk_pressure")
         code_dir, artifacts_dir = learned_tool_storage(tmp_path)
 
-        found = find_installed_capability(
-            artifacts_dir=artifacts_dir,
+        found = await find_installed_capability(
             tools_dir=code_dir,
+            artifacts_dir=artifacts_dir,
+            skills=None,
             capability_id="",
             name="inspect_k8s_node_disk_pressure",
+            description="",
         )
 
         assert found is not None
-        assert found.manifest.name == "inspect_k8s_node_disk_pressure"
+        assert found.entry.name == "inspect_k8s_node_disk_pressure"
 
-    def test_an_unrelated_tool_is_not_matched(self, tmp_path: Path) -> None:
-        from ravn.valkyrie_evolution.learned_tools import find_installed_capability
+    async def test_an_unrelated_tool_is_not_matched(self, tmp_path: Path) -> None:
+        from ravn.valkyrie_evolution.tool_curation import find_installed_capability
 
         _install_tool(tmp_path, "inspect_node_memory_pressure")
         code_dir, artifacts_dir = learned_tool_storage(tmp_path)
 
-        assert (
-            find_installed_capability(
-                artifacts_dir=artifacts_dir,
-                tools_dir=code_dir,
-                capability_id="",
-                name="inspect_node_disk_pressure",
-            )
-            is None
+        found = await find_installed_capability(
+            tools_dir=code_dir,
+            artifacts_dir=artifacts_dir,
+            skills=None,
+            capability_id="",
+            name="inspect_node_disk_pressure",
+            description="",
         )
+
+        assert found is None
 
 
 class TestContainedLearnedToolRunnerVerify:

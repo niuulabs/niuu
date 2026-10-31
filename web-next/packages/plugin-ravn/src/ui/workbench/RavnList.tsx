@@ -124,10 +124,10 @@ export function RavnList({
   );
 
   return (
-    <aside className="rw-rail" aria-label="Ravens" data-testid="ravn-list">
+    <aside className="rw-rail" aria-label="Agents" data-testid="ravn-list">
       <div className="rw-rail__head">
         <div>
-          <h2 className="rw-rail__title">Ravens</h2>
+          <h2 className="rw-rail__title">Agents</h2>
           <div className="rw-rail__sub">
             {counts.running} running
             {counts.attention > 0 && ` · ${counts.attention} need attention`}
@@ -168,7 +168,7 @@ export function RavnList({
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
             placeholder="Filter by name, persona, model…"
-            aria-label="Filter ravens"
+            aria-label="Filter agents"
             data-testid="ravn-search"
           />
         </label>
@@ -177,7 +177,7 @@ export function RavnList({
           <select
             value={grouping}
             onChange={(event) => onGroupingChange(event.target.value as RavnGrouping)}
-            aria-label="Group ravens by"
+            aria-label="Group agents by"
             data-testid="ravn-grouping"
           >
             {RAVN_GROUPINGS.map((option) => (
@@ -198,8 +198,8 @@ export function RavnList({
         {groups.length === 0 ? (
           <p className="rw-rail__empty" data-testid="ravn-list-empty">
             {ravens.length === 0
-              ? 'No ravens yet. Deploy one to get started.'
-              : 'No ravens match these filters.'}
+              ? 'No agents yet. Deploy one to get started.'
+              : 'No agents match these filters.'}
           </p>
         ) : (
           groups.map((group) => (

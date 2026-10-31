@@ -1,0 +1,14 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/thor/.local/share/niuu/releases/forge-activity-read-20260926
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.12.1, respx-0.23.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 39 items
+
+tests/test_volundr/test_api_release_guard.py ........................... [ 69%]
+.                                                                        [ 71%]
+tests/test_volundr/test_runtime_backend_preservation.py .......          [ 89%]
+tests/test_volundr/test_api_restart_preservation.py ....                 [100%]
+
+============================= 39 passed in 36.64s ==============================

@@ -291,3 +291,86 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* Light palette overrides; the existing themes retain their original colors. */
+[data-theme='light'] .specs-campaign-card__stage {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .specs-campaign-card__stage span,
+[data-theme='light'] .specs-meta-list dt {
+  color: var(--color-text-faint);
+}
+[data-theme='light'] .specs-campaign-card__stage strong,
+[data-theme='light'] .specs-panel-title {
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .specs-doc-pill,
+[data-theme='light'] .specs-review-pill,
+[data-theme='light'] .specs-doc-tab,
+[data-theme='light'] .specs-action-button {
+  border: 1px solid var(--color-border-subtle);
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .specs-doc-pill.is-present {
+  border-color: color-mix(in srgb, var(--color-brand) 35%, transparent);
+  color: var(--color-brand);
+  background: color-mix(in srgb, var(--color-brand) 10%, transparent);
+}
+[data-theme='light'] .specs-review-pill {
+  border-color: color-mix(in srgb, var(--color-accent-amber) 35%, transparent);
+  color: var(--color-accent-amber);
+  background: color-mix(in srgb, var(--color-accent-amber) 10%, transparent);
+}
+[data-theme='light'] .specs-doc-tabs {
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+[data-theme='light'] .specs-doc-tab.is-active {
+  border-color: color-mix(in srgb, var(--color-brand) 55%, transparent);
+  background: color-mix(in srgb, var(--color-brand) 12%, transparent);
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .specs-document-shell,
+[data-theme='light'] .specs-review-panel,
+[data-theme='light'] .specs-side-panel {
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-secondary);
+}
+[data-theme='light'] .specs-meta-list dd,
+[data-theme='light'] .specs-markdown {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .specs-markdown h1,
+[data-theme='light'] .specs-markdown h2,
+[data-theme='light'] .specs-markdown h3,
+[data-theme='light'] .specs-review-notes h3 {
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .specs-markdown code {
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-primary);
+  color: var(--color-brand);
+}
+[data-theme='light'] .specs-review-notes {
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-primary);
+}
+[data-theme='light'] .specs-review-notes p {
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .specs-inline-link {
+  color: var(--color-brand);
+}
+[data-theme='light'] .specs-review-panel textarea {
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+}
+[data-theme='light'] .specs-action-button.is-primary {
+  border-color: color-mix(in srgb, var(--color-brand) 50%, transparent);
+  background: color-mix(in srgb, var(--color-brand) 12%, transparent);
+  color: var(--color-text-secondary);
+}
+[data-theme='light'] .specs-action-button.is-danger {
+  border-color: color-mix(in srgb, var(--color-critical) 45%, transparent);
+  color: var(--color-critical);
+}

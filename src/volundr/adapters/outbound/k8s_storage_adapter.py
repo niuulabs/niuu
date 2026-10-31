@@ -57,6 +57,38 @@ def _storage_bytes(quantity: str) -> Decimal:
     return Decimal(quantity)
 
 
+def build_pvc_manifest(
+    *,
+    name: str,
+    namespace: str,
+    storage: str,
+    storage_class: str | None,
+    access_mode: str,
+    labels: dict[str, str],
+):
+    """Build a Volundr-managed PVC for the Kubernetes API.
+
+    ``storage`` is a Kubernetes quantity ("20Gi"). ``storage_class=None``
+    leaves ``storageClassName`` unset, so the cluster's default class applies.
+    """
+    from kubernetes_asyncio import client
+
+    return client.V1PersistentVolumeClaim(
+        metadata=client.V1ObjectMeta(
+            name=name,
+            namespace=namespace,
+            labels=labels,
+        ),
+        spec=client.V1PersistentVolumeClaimSpec(
+            access_modes=[access_mode],
+            storage_class_name=storage_class,
+            resources=client.V1VolumeResourceRequirements(
+                requests={"storage": storage},
+            ),
+        ),
+    )
+
+
 class K8sStorageAdapter(StoragePort):
     """Kubernetes implementation of StoragePort.
 
@@ -83,13 +115,22 @@ class K8sStorageAdapter(StoragePort):
         file_browser_image: str = "",
         file_browser_lifetime_seconds: int = 600,
         file_browser_timeout_seconds: float = 20,
+        pvc_labels: dict[str, str] | None = None,
         **_extra: object,
     ) -> None:
+        """``pvc_labels`` are added to every PVC this adapter creates.
+
+        A runtime that admits only labelled volumes needs them: OpenShell mounts
+        a session's home and workspace claims only when they carry the labels
+        its resource admission requires (``openshell.ai/sandbox-attachable:
+        "true"`` and ``openshell.ai/sandbox-attachable-workspace: "default"``).
+        """
         if home_size_gb < 1:
             raise ValueError("home_size_gb must be positive")
         if file_browser_lifetime_seconds <= 0 or file_browser_timeout_seconds <= 0:
             raise ValueError("Home file browser lifetime and timeout must be positive")
         self._home_size_gb = home_size_gb
+        self._pvc_labels = {str(key): str(value) for key, value in (pvc_labels or {}).items()}
         self._file_browser_image = file_browser_image
         self._file_browser_lifetime = file_browser_lifetime_seconds
         self._file_browser_timeout = file_browser_timeout_seconds
@@ -141,21 +182,14 @@ class K8sStorageAdapter(StoragePort):
         labels: dict[str, str],
     ) -> dict:
         """Build a PVC manifest dict for the Kubernetes API."""
-        from kubernetes_asyncio import client
-
-        return client.V1PersistentVolumeClaim(
-            metadata=client.V1ObjectMeta(
-                name=name,
-                namespace=self._namespace,
-                labels=labels,
-            ),
-            spec=client.V1PersistentVolumeClaimSpec(
-                access_modes=[access_mode],
-                storage_class_name=storage_class,
-                resources=client.V1VolumeResourceRequirements(
-                    requests={"storage": f"{storage_gb}Gi"},
-                ),
-            ),
+        labels = {**self._pvc_labels, **labels}
+        return build_pvc_manifest(
+            name=name,
+            namespace=self._namespace,
+            storage=f"{storage_gb}Gi",
+            storage_class=storage_class,
+            access_mode=access_mode,
+            labels=labels,
         )
 
     def _pvc_to_workspace(self, pvc) -> Workspace:
@@ -267,6 +301,18 @@ class K8sStorageAdapter(StoragePort):
                 )
                 if (existing.metadata.labels or {}).get(LABEL_OWNER) != user_id:
                     raise ValueError(f"Home PVC {name} is not owned by the requested user")
+                missing_labels = {
+                    key: value
+                    for key, value in self._pvc_labels.items()
+                    if (existing.metadata.labels or {}).get(key) != value
+                }
+                if missing_labels:
+                    # A home created before the labels were configured.
+                    existing = await api.patch_namespaced_persistent_volume_claim(
+                        name=name,
+                        namespace=self._namespace,
+                        body={"metadata": {"labels": missing_labels}},
+                    )
                 requested = existing.spec.resources.requests["storage"]
                 desired = max(quota.home_gb, self._home_size_gb)
                 if _storage_bytes(requested) < desired * 1024**3:

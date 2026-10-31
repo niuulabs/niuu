@@ -92,9 +92,15 @@ async def rig(repository, pod_manager):
     )
     service = ProjectService(project_repo, workspace, sessions, instance_id="thor")
     project = await service.register(
-        ForgeProject(slug="lexi", name="Lexi", repo_url="https://github.com/xteo/project-lexi"),
+        ForgeProject(
+            slug="lexi",
+            name="Lexi",
+            repo_url="https://github.com/xteo/project-lexi",
+            workspace_path="/projects/lexi",
+        ),
         None,
     )
+    workspace.context.reset_mock()  # registration validated the checkout; tests count their own
     forge = ForgeService(
         sessions,
         project_service=service,

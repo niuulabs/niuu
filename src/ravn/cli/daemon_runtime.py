@@ -20,6 +20,7 @@ async def _run_daemon(
     from ravn.adapters.channels.gateway import RavnGateway
     from ravn.adapters.channels.gateway_http import HttpGateway
     from ravn.adapters.channels.gateway_telegram import TelegramGateway
+    from ravn.cli.runtime_builders import require_tool_build_push  # noqa: PLC0415
     from ravn.drive_loop import DriveLoop
     from ravn.ports.channel import ChannelPort
 
@@ -48,6 +49,7 @@ async def _run_daemon(
                 max_iterations = persona_config.iteration_budget
     base_model = _resolve_persona_model(settings, persona_config)
 
+    require_tool_build_push(settings)
     workspace = _resolve_workspace(settings)
     from ravn.cli.tool_builders import _build_learned_tool_resolver  # noqa: PLC0415
 
@@ -55,7 +57,10 @@ async def _run_daemon(
     cli_transport_executor = _uses_cli_transport_executor(persona_config)
     llm = None if cli_transport_executor else _build_llm(settings)
     memory = _build_memory(settings)
-    compressor = None if cli_transport_executor else _build_compressor(settings, llm)
+    # Built here for the persona's own model so an impossible compaction setting
+    # fails at startup; each task builds its own for the model it runs on.
+    if llm is not None:
+        _build_compaction(settings, llm, base_model)
     pre_hooks, post_hooks = _build_hooks(settings)
 
     mcp_manager: Any | None = None
@@ -64,6 +69,11 @@ async def _run_daemon(
     # Build Mímir adapter early so _agent_factory closure can capture it.
     daemon_mimir = _build_mimir(settings)
     memory = _with_mimir_fact_capture(memory, daemon_mimir)
+    learning_consolidation = _build_learning_consolidation(settings, llm)
+    capability_matcher = _build_capability_matcher(settings, learning_consolidation)
+    friction_ledger = _build_friction_ledger(
+        settings, mimir=daemon_mimir, consolidation=learning_consolidation
+    )
 
     # Resolve the resident's charter once, before any consumer (this runtime,
     # EnvironmentSignalRuntime's triage prompts, resident context, the HUD
@@ -96,7 +106,23 @@ async def _run_daemon(
             settings,
             state=resident_state,
             inbox=resident_inbox,
+            known_resolutions=(
+                friction_ledger if settings.reflection.self_improvement.enabled else None
+            ),
         )
+
+    # What the resident wants its owner to hear about (questions it waits on, its
+    # agent's own notifications). Forge drains it through the OpenClaw shim.
+    from ravn.cli.resident_runtime_wiring import (  # noqa: PLC0415
+        build_resident_notification_outbox,
+    )
+
+    resident_notification_outbox = build_resident_notification_outbox(settings)
+    if resident_runtime is not None and resident_notification_outbox is not None:
+        resident_runtime.bind_notification_outbox(resident_notification_outbox)
+        raised = await resident_runtime.raise_pending_attention()
+        if raised:
+            logger.info("Raised %d waiting operator question(s) for the owner", raised)
 
     # Populated by _wire_cron after drive_loop is created; captured by _agent_factory.
     cron_tools: list[Any] = []
@@ -132,6 +158,17 @@ async def _run_daemon(
         workspace=workspace,
     )
     if resident_runtime is not None and resident_learning_runtime is not None:
+        from ravn.valkyrie_evolution.tool_curation import learned_tool_health  # noqa: PLC0415
+
+        learned_tool_state_dir = _resident_ravn_state_dir(workspace, settings)
+        learned_tool_skills = resident_learning_runtime.skills
+        resident_runtime.bind_learned_tool_health(
+            lambda: learned_tool_health(
+                learned_tool_state_dir,
+                learned_tool_skills,
+                refused=learned_tool_resolver.list_refused,
+            )
+        )
         resident_runtime.bind_review_requester(resident_learning_runtime.review_requester)
         resident_learning_runtime.bind_operator_answerer(resident_runtime.submit_operator_answer)
 
@@ -264,6 +301,7 @@ async def _run_daemon(
             skill_manager=(
                 resident_learning_runtime.skills if resident_learning_runtime is not None else None
             ),
+            learned_tool_resolver=learned_tool_resolver,
         )
         if profile_cfg.include_mcp:
             tools.extend(_filter_tools(mcp_tools, settings, resolved_persona))
@@ -280,6 +318,15 @@ async def _run_daemon(
         if cron_tools:
             tools.extend(_filter_tools(cron_tools, settings, resolved_persona))
 
+        # Like a Forge session's notify, offered to every persona wherever the outbox
+        # exists; only an explicit disable or a persona's forbidden_tools drops it.
+        if resident_notification_outbox is not None and _notify_tool_allowed(
+            settings, resolved_persona
+        ):
+            from ravn.adapters.tools.notify import ResidentNotifyTool  # noqa: PLC0415
+
+            tools.append(ResidentNotifyTool(resident_notification_outbox))
+
         # NIU-571: Apply trust gradient constraints for thread-triggered tasks
         tools = _apply_trust_filter(tools, settings, triggered_by)
 
@@ -288,6 +335,9 @@ async def _run_daemon(
             settings,
             resolved_persona,
             cli_transport_executor=_uses_cli_transport_executor(resolved_persona),
+        )
+        compressor, native_compaction = (
+            _build_compaction(settings, llm, resolved_model) if llm is not None else (None, None)
         )
         agent = executor.build(
             llm=llm,
@@ -310,10 +360,20 @@ async def _run_daemon(
             inject_learnings=settings.reflection.inject_learnings,
             max_learnings_injected=settings.reflection.max_learnings_injected,
             learning_token_budget=settings.reflection.learning_token_budget,
+            learning_index=learning_consolidation.lessons if learning_consolidation else None,
+            learning_entry_max_chars=settings.reflection.learning_entry_max_chars,
+            max_route_recoveries=settings.reflection.verified_promotion.max_route_recoveries,
+            route_excerpt_chars=settings.reflection.verified_promotion.excerpt_chars,
+            max_friction_signals=(
+                settings.reflection.friction.max_signals
+                if settings.reflection.friction.enabled
+                else 0
+            ),
             episode_summary_max_chars=settings.agent.episode_summary_max_chars,
             episode_task_max_chars=settings.agent.episode_task_max_chars,
             iteration_budget=budget,
             compressor=compressor,
+            native_compaction=native_compaction,
             prompt_builder=_build_prompt_builder(settings),
             reflection_model=settings.effective_memory_reflection_model(),
             reflection_max_tokens=settings.memory.reflection_max_tokens,
@@ -358,6 +418,10 @@ async def _run_daemon(
                 if resident_learning_runtime is not None
                 else None
             ),
+            capability_matcher=capability_matcher,
+            skill_manager=(
+                resident_learning_runtime.skills if resident_learning_runtime is not None else None
+            ),
         )
 
     tasks: list[asyncio.Task] = []
@@ -371,6 +435,7 @@ async def _run_daemon(
     # Gateway channels (human-initiated turns)
     gw_tasks: list[str] = []
     http_gateway: Any | None = None
+    gw: RavnGateway | None = None
     channels_cfg = settings.gateway.channels
     _any_channel = (
         channels_cfg.telegram.enabled
@@ -381,6 +446,7 @@ async def _run_daemon(
         or channels_cfg.whatsapp.enabled
         or getattr(channels_cfg, "openclaw", None) is not None
         and channels_cfg.openclaw.enabled
+        or channels_cfg.voice.enabled
     )
     if _any_channel:
         gw = RavnGateway(
@@ -404,7 +470,17 @@ async def _run_daemon(
             tasks.append(asyncio.create_task(http_gateway.run(), name="http"))
             gw_tasks.append("http")
 
-        for task, name in _make_channel_tasks(channels_cfg, gw):
+        def _voice_factory() -> Any:
+            from ravn.cli.voice_wiring import build_voice_gateway  # noqa: PLC0415
+
+            return build_voice_gateway(settings, persona_config)
+
+        for task, name in _make_channel_tasks(
+            channels_cfg,
+            gw,
+            notifications=resident_notification_outbox,
+            voice_factory=_voice_factory,
+        ):
             tasks.append(task)
             gw_tasks.append(name)
 
@@ -475,7 +551,21 @@ async def _run_daemon(
         )
         if hasattr(drive_loop, "set_persona_config"):
             drive_loop.set_persona_config(persona_config)
-        if learned_tool_resolver is not None and hasattr(drive_loop, "register_telemetry_refresh"):
+        from ravn.cli.runtime_builders import (  # noqa: PLC0415
+            build_resident_first_opinion,
+            build_resident_slot_attention,
+        )
+
+        first_opinion = build_resident_first_opinion(
+            settings, has_resident_runtime=resident_runtime is not None
+        )
+        if first_opinion is not None:
+            drive_loop.set_first_opinion(first_opinion)
+            # build_resident_first_opinion refuses to build without a resident runtime.
+            resident_runtime.bind_slot_attention(
+                build_resident_slot_attention(settings, first_opinion)
+            )
+        if hasattr(drive_loop, "register_telemetry_refresh"):
             # The inventory is published once while the resolver is built, so
             # the gauge ages out and the fleet reads zero installed tools while
             # hundreds sit on disk. Re-state it on every heartbeat.
@@ -484,7 +574,7 @@ async def _run_daemon(
                     publish_learned_tool_inventory,
                 )
 
-                publish_learned_tool_inventory(learned_tool_resolver.list_artifacts())
+                publish_learned_tool_inventory(learned_tool_resolver.list_loadable_artifacts())
 
             drive_loop.register_telemetry_refresh(_refresh_learned_tool_inventory)
         if resident_runtime is not None:
@@ -542,6 +632,7 @@ async def _run_daemon(
                 llm=llm,
                 interaction_tracker=interaction_tracker,
                 agent_factory=_agent_factory,
+                gateway=gw,
             )
 
         # Wire task dispatch subscription when requested (--listen / --daemon)
@@ -586,12 +677,61 @@ async def _run_daemon(
         await realm_capability_sync.start()
         typer.echo("  Realm capability sync: subscribed")
 
+    learning_curator = _build_learning_curator(
+        settings,
+        mimir=daemon_mimir,
+        consolidation=learning_consolidation,
+    )
+    self_improvement = _build_self_improvement(
+        settings,
+        mimir=daemon_mimir,
+        consolidation=learning_consolidation,
+        ledger=friction_ledger,
+        drive_loop=drive_loop,
+        resident_id=(
+            resident_runtime.resident_id
+            if resident_runtime is not None
+            else settings.environment.resident_name or settings.environment.id
+        ),
+    )
+    # Only a resident that adopts and builds learned tools has a library to
+    # curate; an ordinary daemon has neither the tools nor the dream.
+    tool_curator = (
+        _build_learned_tool_curator(
+            settings,
+            workspace=workspace,
+            skills=resident_learning_runtime.skills,
+            matcher=capability_matcher,
+            load_refusal=learned_tool_resolver.load_refusal,
+        )
+        if resident_learning_runtime is not None
+        else None
+    )
     resident_wakefulness = _build_resident_wakefulness(
         settings,
         resident_learning_runtime=resident_learning_runtime,
         publisher=environment_signal_publisher,
         memory=memory,
+        learning_curator=learning_curator,
+        self_improvement=self_improvement,
+        tool_curator=tool_curator,
+        state_dir=_resident_ravn_state_dir(workspace, settings),
     )
+    if tool_curator is not None and resident_wakefulness is None:
+        raise RuntimeError(
+            "resident_evolution.tool_curation.enabled is true, but learned-tool curation "
+            "runs inside the resident consolidation dream and resident wakefulness is not "
+            "running. Enable resident_wakefulness (with a mesh publisher), or set "
+            "resident_evolution.tool_curation.enabled: false."
+        )
+    if learning_curator is not None and resident_wakefulness is None:
+        raise RuntimeError(
+            "reflection.curation.enabled is true, but learning curation runs inside "
+            "the resident consolidation dream and resident wakefulness is not running "
+            "(resident_wakefulness.enabled, a resident learning runtime, and a mesh "
+            "publisher are all required). Enable those or set "
+            "reflection.curation.enabled: false."
+        )
     if resident_wakefulness is not None:
         await resident_wakefulness.start()
         typer.echo("  Resident wakefulness: started")
@@ -652,6 +792,7 @@ async def _run_daemon(
         resident_learning_runtime=resident_learning_runtime,
         resident_wakefulness=resident_wakefulness,
         resident_inbox=resident_inbox,
+        resident_runtime=resident_runtime,
         owns_publisher=not environment_signal_publisher_started,
     )
     if environment_signal_runtime is not None:
@@ -719,6 +860,9 @@ async def _run_daemon(
             mimir=daemon_mimir,
             llm=llm,
             config=settings.effective_post_session_reflection_config(),
+            lessons=learning_consolidation.lessons if learning_consolidation else None,
+            judge=learning_consolidation.judge if learning_consolidation else None,
+            friction=friction_ledger,
         )
         await daemon_reflection_svc.start()
 
@@ -736,30 +880,11 @@ async def _run_daemon(
     typer.echo("Press Ctrl+C to stop.")
 
     if not tasks:
+        # Nothing runs, so the gather below returns at once and the one shutdown
+        # in its ``finally`` releases everything that was built. A second,
+        # hand-copied shutdown here had drifted: it skipped memory, the event
+        # publisher, MCP and the notification outbox.
         typer.echo("No channels or triggers enabled — daemon has nothing to do.", err=True)
-        if daemon_bus is not None:
-            with suppress(Exception):
-                await daemon_bus.flush()
-        if daemon_reflection_svc is not None:
-            await daemon_reflection_svc.stop()
-        if sleipnir_catalog_publisher is not None:
-            await sleipnir_catalog_publisher.stop()
-        if environment_signal_runtime is not None:
-            await environment_signal_runtime.stop()
-        if resident_wakefulness is not None:
-            await resident_wakefulness.stop()
-        if odin_court is not None:
-            await odin_court.stop()
-        if feedback_recorder is not None:
-            await feedback_recorder.stop()
-        if huddle_archiver is not None:
-            await huddle_archiver.stop()
-        if resident_learning_runtime is not None:
-            await resident_learning_runtime.stop()
-        if environment_signal_publisher_started and environment_signal_publisher is not None:
-            await environment_signal_publisher.stop()
-        shutdown_observability()
-        return
 
     try:
         await asyncio.gather(*tasks)
@@ -787,20 +912,48 @@ async def _run_daemon(
             await environment_signal_runtime.stop()
         if environment_signal_publisher_started and environment_signal_publisher is not None:
             await environment_signal_publisher.stop()
+        if resident_notification_outbox is not None:
+            # Every task and trigger above has stopped, so nothing writes to the
+            # outbox any more; its SQLite connection is released, not leaked.
+            resident_notification_outbox.close()
         if memory is not None:
             # MemoryPort.close() is a no-op for file/sqlite backends and closes
             # the connection pool for postgres. Called unconditionally: the
             # composition root should not have to know which backend it wired.
-            with suppress(Exception):
-                await memory.close()
+            await _shutdown_step("memory.close", memory.close)
         await event_publisher.close()
         await _shutdown_mcp(mcp_manager)
         # NIU-598: flush pending events before tearing down daemon reflection service.
         if daemon_bus is not None:
-            with suppress(Exception):
-                await daemon_bus.flush()
+            await _shutdown_step("daemon_bus.flush", daemon_bus.flush)
         if daemon_reflection_svc is not None:
             await daemon_reflection_svc.stop()
         if sleipnir_catalog_publisher is not None:
             await sleipnir_catalog_publisher.stop()
         shutdown_observability()
+
+
+async def _shutdown_step(name: str, step: Any) -> None:
+    """Run one shutdown step; a failure is reported and the shutdown goes on.
+
+    Raising here would skip every later step (closing connections, flushing the
+    rest), so this is the one place a failure continues. It is never silent: it
+    logs at error with the traceback and counts as degraded ``shutdown.<name>``.
+    """
+    from ravn.cap_telemetry import record_degraded  # noqa: PLC0415
+
+    try:
+        await step()
+    except Exception as exc:  # noqa: BLE001 - reported and counted below
+        logger.error("daemon shutdown: %s failed", name, exc_info=True)
+        record_degraded(f"shutdown.{name}", f"{name} failed during shutdown: {exc}")
+
+
+def _notify_tool_allowed(settings: Any, persona: Any | None) -> bool:
+    """Whether the resident's ``notify`` tool is offered (see ``ResidentNotifyTool``)."""
+    from ravn.adapters.tools.notify import NOTIFY_TOOL_NAME  # noqa: PLC0415
+
+    if NOTIFY_TOOL_NAME in set(settings.tools.disabled):
+        return False
+    forbidden = set(getattr(persona, "forbidden_tools", None) or [])
+    return NOTIFY_TOOL_NAME not in forbidden

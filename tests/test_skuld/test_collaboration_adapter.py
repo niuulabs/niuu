@@ -160,6 +160,9 @@ async def test_activity_and_agent_event_are_surface_projections_only() -> None:
     assert activity["type"] == "room_activity"
     assert json.loads(activity["detail"]) == {"tool": "shell"}
     assert agent_event["type"] == "room_agent_event"
+    assert agent_event["frame"]["data"] == "BashTool"
+    assert agent_event["frame"]["metadata"] == {"input": {"command": "kubectl get pods"}}
+    assert agent_event["frame"]["payload"]["tool_name"] == "BashTool"
     assert timeline.await_args.args[0]["label"] == "Resident: kubectl get pods"
     observe.assert_awaited_once()
     peer_id, event_type, observation = observe.await_args.args
@@ -474,3 +477,46 @@ async def test_unknown_event_and_unknown_participant_do_not_create_fake_output()
     await adapter.handle_collaboration_frame("ravn-1", {"kind": "invented"})
 
     channels.broadcast.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event_type", "payload", "data", "metadata"),
+    [
+        ("thought", {"text": "Checking"}, "Checking", {}),
+        ("thought", {"text": "hmm", "thinking": True}, "hmm", {"thinking": True}),
+        (
+            "tool_result",
+            {"tool_name": "BashTool", "result": "3 pods", "is_error": False},
+            "3 pods",
+            {"tool_name": "BashTool", "is_error": False},
+        ),
+        ("error", {"message": "Backend unavailable"}, "Backend unavailable", {}),
+    ],
+)
+async def test_agent_event_frame_carries_the_data_envelope_room_clients_render(
+    event_type: str, payload: dict, data: object, metadata: dict
+) -> None:
+    """Room clients stream a participant's turn from ``frame.data``/``frame.metadata``."""
+    adapter, channels = _adapter()
+    await adapter.register("ravn-1", "Resident", _websocket())
+    channels.broadcast.reset_mock()
+
+    await adapter.handle_collaboration_frame(
+        "ravn-1",
+        {
+            "events": [
+                {
+                    "kind": "agent_event",
+                    "sourceEventType": event_type,
+                    "event": {"type": event_type, "payload": payload, "taskId": "", "urgency": 0.5},
+                }
+            ]
+        },
+    )
+
+    frame = channels.broadcast.await_args.args[0]["frame"]
+    assert frame["type"] == event_type
+    assert frame["data"] == data
+    assert frame["metadata"] == metadata
+    assert frame["payload"] == payload

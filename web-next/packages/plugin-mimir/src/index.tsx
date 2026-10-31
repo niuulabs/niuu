@@ -1,5 +1,5 @@
 import { createRoute, redirect } from '@tanstack/react-router';
-import { Brain } from 'lucide-react';
+import { MemoryIcon } from '@niuulabs/ui';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import type { PluginCtx } from '@niuulabs/plugin-sdk';
 import { MemoryExploreView } from './ui/memory/MemoryExploreView';
@@ -23,19 +23,17 @@ function redirectToMemory({ location }: { location: { search: unknown } }): neve
 export const mimirPlugin = definePlugin({
   id: 'mimir',
   rune: 'M',
-  title: 'Mímir',
-  subtitle: 'the well of knowledge',
+  icon: <MemoryIcon />,
+  title: 'Memory',
+  subtitle: 'what niuu knows, and how sure it is',
   // Memory: what the platform and its residents know. The Memory scene
   // (Explore/Focus/Ask/Replay) is the home for both Simple and Advanced mode.
   simple: {
     tabs: ['memory'],
-    title: 'Memory',
-    subtitle: 'what niuu knows, and how sure it is',
-    icon: <Brain size={17} aria-hidden="true" />,
   },
   tabs: [
-    { id: 'memory', label: 'Memory', rune: '◎', path: '/mimir' },
-    { id: 'registry', label: 'Registry', rune: '⛁', path: '/mimir/registry' },
+    { id: 'memory', label: 'Explore', path: '/mimir' },
+    { id: 'registry', label: 'Library', path: '/mimir/registry' },
   ],
   routes: (rootRoute) => [
     ...['wardens', 'health', 'analytics'].map((section) =>

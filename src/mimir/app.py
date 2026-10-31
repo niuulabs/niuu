@@ -296,14 +296,16 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
 
         try:
             principal = await identity_adapter.validate_headers(dict(request.headers))
-        except InvalidTokenError as exc:
+        except InvalidTokenError:
             # 'oidc' returns here — a missing/invalid bearer is always 401,
             # never merely anonymous (see the docstring above). For every
             # other auth_mode, an unverified caller is anonymous: principal
             # stays None and only the tenant check below (if configured)
             # can still refuse the request.
             if auth_mode == "oidc":
-                return JSONResponse(status_code=401, content={"detail": str(exc)})
+                return JSONResponse(
+                    status_code=401, content={"detail": "Invalid or missing bearer token"}
+                )
             principal = None
 
         # identity_adapter.validate_headers always returns a real Principal

@@ -53,6 +53,10 @@ class ProjectWorkspace(ABC):
         """Inspect a local Git checkout and recover its stable project identity."""
 
     @abstractmethod
+    async def inspect(self, workspace_path: str) -> tuple[str, UUID | None]:
+        """Return a checkout's canonical remote and the project UUID its manifest names."""
+
+    @abstractmethod
     async def context(self, project: ForgeProject) -> tuple[str, str]:
         """Return bounded project context and its Git revision."""
 

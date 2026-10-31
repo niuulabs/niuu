@@ -1,3 +1,4 @@
+import { syncTerminalTheme } from './syncTerminalTheme';
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { cn } from '@niuulabs/ui';
 import type { IPtyStream } from '../../ports/IPtyStream';
@@ -159,6 +160,7 @@ export function Terminal({
       xterm.loadAddon(fitAddon);
       xterm.loadAddon(webLinksAddon);
       xterm.open(containerRef.current);
+      const stopThemeSync = syncTerminalTheme(xterm, containerRef.current);
       fitAddon.fit();
 
       handleRef.current = {
@@ -180,6 +182,7 @@ export function Terminal({
 
       handleRef.current.dispose = () => {
         resizeObserver.disconnect();
+        stopThemeSync();
         fitAddon.dispose();
         webLinksAddon.dispose();
         xterm.dispose();

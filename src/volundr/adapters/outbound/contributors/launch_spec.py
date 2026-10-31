@@ -65,10 +65,14 @@ class LaunchSpecContributor(SessionContributor):
     def _apply(values: dict, source: LaunchSpec) -> None:
         """Merge runtime config from a launch spec into values.
 
-        Resource configs are already in K8s-native format and pass through as
-        ``resources``; ad-hoc user configs are translated by ResourceContributor.
+        A K8s-native resource config (``requests``/``limits``) passes through as
+        ``resources``. The user-facing form (``cpu``/``memory``/``gpu``) is what
+        the launch wizard reads from a spec and sends with the launch, where
+        ResourceContributor translates it; copying it here put ``cpu`` and
+        ``memory`` straight into the container's ``resources``, fields
+        Kubernetes ignores with a warning on every session pod.
         """
-        if source.resource_config:
+        if _is_k8s_native_resources(source.resource_config):
             values["resources"] = source.resource_config
         if source.env_vars:
             # `env` is not a key the skuld chart renders — only `envVars`, as a
@@ -86,3 +90,10 @@ class LaunchSpecContributor(SessionContributor):
         if source.workload_config:
             for key, value in source.workload_config.items():
                 values.setdefault(key, value)
+
+
+_K8S_RESOURCE_KEYS = frozenset({"requests", "limits"})
+
+
+def _is_k8s_native_resources(resource_config: dict) -> bool:
+    return bool(resource_config) and set(resource_config) <= _K8S_RESOURCE_KEYS

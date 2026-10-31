@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path as FilePath
 from typing import Any, Literal
@@ -16,13 +17,22 @@ from uuid import UUID, uuid4
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from niuu.domain.conversation_timeline import resolve_timeline_turn
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
-from niuu.domain.services.token_scope import OPENSHELL_SESSION_TOKEN_USE, require_scope
+from niuu.domain.notifications import notification_visible_to
+from niuu.domain.services.token_scope import (
+    FORGE_NOTIFY_SCOPE,
+    FORGE_SESSION_LIFECYCLE_SCOPE,
+    FORGE_SESSION_MESSAGE_SCOPE,
+    FORGE_SESSION_READ_SCOPE,
+    require_scope,
+)
 from niuu.domain.session_endpoint import public_session_endpoint
 from niuu.domain.text_projection import projection_revision
+from niuu.forge_mcp.models import ForgeMcpGrant
 from niuu.room_access import ROOM_ROLE_HEADER
 from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turns, is_elided_input
 from skuld.conversation_snapshot import (
@@ -38,6 +48,8 @@ from skuld.tool_result_preview import (
     warm_previews_from_turns,
 )
 from volundr.adapters.inbound.auth import extract_principal, require_role
+from volundr.adapters.inbound.durable_transcripts import DurableTranscripts
+from volundr.adapters.inbound.forge_session_auth import require_bound_session
 from volundr.adapters.inbound.rest_projects import (
     create_projects_router,
     create_session_projects_router,
@@ -62,12 +74,14 @@ from volundr.domain.models import (
     CleanupTarget,
     DevicePlatform,
     DeviceToken,
+    EventType,
     ExternalSessionRecord,
     GitProviderType,
     GitSource,
     LocalMountSource,
     ModelProvider,
     Principal,
+    RealtimeEvent,
     Session,
     SessionActivityState,
     SessionSource,
@@ -107,6 +121,10 @@ from volundr.domain.services import (
     SessionStateError,
     StatsService,
     TokenService,
+)
+from volundr.domain.services.forge_session_launch import (
+    FORGE_MCP_KEY,
+    ForgeMcpGrantEscalationError,
 )
 from volundr.domain.services.permission_auto_approval import (
     evaluate_permission_auto_approval,
@@ -312,13 +330,18 @@ _DURABLE_WARMING: set[str] = set()
 
 
 async def _warm_durable_count(
-    forge: ForgeService, session_id: UUID, seq: int, sid_str: str
+    forge: ForgeService,
+    durable_transcripts: DurableTranscripts,
+    session_id: UUID,
+    seq: int,
+    sid_str: str,
 ) -> None:
     """Background: rebuild the durable transcript ONCE to populate the count cache at ``seq`` so
     the next conversation poll can detect a desync WITHOUT blocking the (cold) open. Fire-and-
     forget; never raises into the event loop."""
     try:
-        durable = await forge.get_transcript(session_id)
+        # The shallow rebuild has the same turns as the full one, and warms its cache.
+        durable = await durable_transcripts.shallow(forge, session_id)
         turns = durable.get("turns") if isinstance(durable, dict) else None
         _durable_count_cache_put(
             sid_str,
@@ -454,6 +477,21 @@ def _fallback_workspace_transcript(session: Session) -> dict | None:
 _RFC1123_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 
+class ForgeMcpSessionOptions(BaseModel):
+    """Forge MCP options for a new session."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    grants: list[ForgeMcpGrant] = Field(
+        default_factory=list,
+        description=(
+            "Operator grants for the session's Forge MCP: 'message' (steer other "
+            "sessions) and 'lifecycle' (create/start/stop sessions). Reading sessions "
+            "and notifying need no grant. They persist across restarts."
+        ),
+    )
+
+
 class SessionCreate(BaseModel):
     """Request model for creating a session."""
 
@@ -571,6 +609,19 @@ class SessionCreate(BaseModel):
         default_factory=dict,
         description="Workload-specific configuration (e.g. personas, mesh, mimir settings)",
     )
+    forge_mcp: ForgeMcpSessionOptions | None = Field(
+        default=None,
+        description="Forge MCP grants for the session (see ForgeMcpSessionOptions).",
+    )
+
+    @field_validator("workload_config")
+    @classmethod
+    def _no_forge_mcp_in_workload_config(cls, value: dict) -> dict:
+        if FORGE_MCP_KEY in value:
+            raise ValueError(
+                "set Forge MCP grants with the top-level forge_mcp field, not workload_config"
+            )
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -828,6 +879,10 @@ class DeviceRegistration(BaseModel):
     platform: str = Field(description="Device platform (ios/android/web)")
     token: str = Field(min_length=1, max_length=512, description="Push token / endpoint")
     app_bundle_id: str | None = Field(default=None, description="APNs topic (bundle id) to target")
+    environment: Literal["sandbox", "production"] | None = Field(
+        default=None,
+        description="APNs environment of the token; omitted uses the push channel's default",
+    )
 
 
 class DeviceResponse(BaseModel):
@@ -921,6 +976,10 @@ class SessionResponse(BaseModel):
     owner_id: str | None = Field(
         default=None,
         description="User ID of the session owner",
+    )
+    actor_id: str | None = Field(
+        default=None,
+        description="Workload that created the session on the owner's behalf, if any",
     )
     tenant_id: str | None = Field(
         default=None,
@@ -1069,6 +1128,7 @@ class SessionResponse(BaseModel):
             launch_spec_id=session.launch_spec_id,
             archived_at=(session.archived_at.isoformat() if session.archived_at else None),
             owner_id=session.owner_id,
+            actor_id=session.actor_id,
             tenant_id=session.tenant_id,
             activity_state=(session.activity_state.value if session.activity_state else None),
             activity_state_since=(
@@ -1584,11 +1644,13 @@ def create_router(
     *,
     external_session_service: ExternalSessionService | None = None,
     device_repository: DeviceTokenRepository | None = None,
+    on_device_registered: Callable[[str], Awaitable[object]] | None = None,
     prefix: str = "/api/v1/forge",
     server_public_host: str = "127.0.0.1",
     openshell_internal_gateway_url: str = DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL,
     preview_cache: PreviewCache | None = None,
     preview_cache_dir: FilePath | str = DEFAULT_PREVIEW_CACHE_DIR,
+    durable_transcripts: DurableTranscripts | None = None,
     project_service=None,
     runtime_build: dict | None = None,
     runtime_health_timeout: float = 3.0,
@@ -1600,6 +1662,8 @@ def create_router(
     router = APIRouter(prefix=prefix)
     if preview_cache is None:
         preview_cache = PreviewCache(preview_cache_dir)
+    if durable_transcripts is None:
+        durable_transcripts = DurableTranscripts()
     event_stream = None
     if broadcaster is not None:
         if stats_service is None:
@@ -1640,14 +1704,7 @@ def create_router(
     )
 
     def _require_bound_workload_session(request: Request, session_id: UUID) -> None:
-        if request.headers.get("x-auth-token-use") != OPENSHELL_SESSION_TOKEN_USE:
-            return
-        if request.headers.get("x-auth-workload-session-id") == str(session_id):
-            return
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="OpenShell workload token is not bound to this session",
-        )
+        require_bound_session(request, session_id)
 
     async def _optional_principal(request: Request, *, strict: bool = False) -> Principal | None:
         """Extract principal if identity is configured, else return None.
@@ -1748,16 +1805,29 @@ def create_router(
         settings = request.app.state.settings
         admin = request.app.state.admin_settings
         storage = request.app.state.storage
+        # True exactly when the notification feed routes are served on this host.
+        notifications = getattr(request.app.state, "notification_service", None) is not None
+        session_tokens = getattr(request.app.state, "forge_session_tokens", None)
         return {
             "local_mounts_enabled": settings.local_mounts.enabled,
             "file_manager_enabled": admin.get("storage", {}).get("file_manager_enabled", True),
             "home_volumes_supported": storage.supports_home_volumes,
             "mini_mode": settings.local_mounts.mini_mode,
             "local_mounts_allowed_prefixes": settings.local_mounts.allowed_prefixes,
-            "capabilities": {"local_session_scope": True},
+            "capabilities": {
+                "local_session_scope": True,
+                "notifications": notifications,
+                "forge_session_tokens": session_tokens is not None,
+                "forge_session_token_key": session_tokens.key_source if session_tokens else None,
+                "forge_mcp_http": getattr(request.app.state, "forge_mcp_http", False),
+            },
+            "notifications_enabled": notifications,
             "projects_enabled": project_service is not None,
             "project_assignment_enabled": project_service is not None,
-            "project_contract_version": 1 if project_service is not None else 0,
+            # 2: name-only projects, optional repository, brief, and assignment
+            # with role/parent/detach. Every version-1 request is still accepted.
+            "project_contract_version": 2 if project_service is not None else 0,
+            "project_lightweight": project_service is not None,
             "project_instance_id": project_service.instance_id if project_service else None,
         }
 
@@ -1843,7 +1913,12 @@ def create_router(
             ),
         )
 
-    @router.get("/sessions", response_model=None, tags=["Sessions"])
+    @router.get(
+        "/sessions",
+        response_model=None,
+        tags=["Sessions"],
+        dependencies=[Depends(require_scope(FORGE_SESSION_READ_SCOPE))],
+    )
     async def list_sessions(
         request: Request,
         response: Response,
@@ -1932,6 +2007,7 @@ def create_router(
         - session_deleted: When a session is deleted
         - stats_updated: Periodic stats updates (every 30s)
         - heartbeat: Keep-alive signal (every 30s)
+        - session_notification: A new notification (sent only to its owner or an admin)
 
         Session events are scoped like ``GET /sessions``: a caller receives
         events for its own sessions, or for its tenant's sessions as a tenant
@@ -1960,6 +2036,24 @@ def create_router(
 
         client_host = request.client.host if request.client else "unknown"
         logger.info("SSE stream: client connected from %s", client_host)
+        # Notifications are owner-scoped: only the owner (or an admin of its tenant)
+        # receives one. With no identity adapter at all (bare dev app) nothing is
+        # scoped; with one, an unidentified client gets no notification events.
+        open_stream = getattr(request.app.state, "identity", None) is None
+        viewer = None if open_stream else principal
+
+        def _visible(event: RealtimeEvent) -> bool:
+            if event.type is not EventType.SESSION_NOTIFICATION or open_stream:
+                return True
+            if viewer is None:
+                return False
+            return notification_visible_to(
+                user_id=viewer.user_id,
+                roles=viewer.roles,
+                tenant_id=viewer.tenant_id,
+                owner_id=event.data.get("owner_id"),
+                notification_tenant_id=event.data.get("tenant_id"),
+            )
 
         async def event_generator():
             event_count = 0
@@ -1973,6 +2067,8 @@ def create_router(
                             event_count,
                         )
                         break
+                    if not _visible(event):
+                        continue
 
                     # Format as SSE
                     event_data = json.dumps(event.data)
@@ -2148,7 +2244,9 @@ def create_router(
     async def create_session(
         request: Request,
         data: SessionCreate,
-        _build_scope: None = Depends(require_scope("forge:session:create")),
+        _build_scope: None = Depends(
+            require_scope("forge:session:create", FORGE_SESSION_LIFECYCLE_SCOPE)
+        ),
     ) -> SessionResponse:
         """Create and start a new session.
 
@@ -2164,6 +2262,8 @@ def create_router(
             started = await project_result(
                 forge.create_and_start_session(data, principal=principal)
             )
+        except ForgeMcpGrantEscalationError as e:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
         except RepoValidationError as e:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -2185,6 +2285,7 @@ def create_router(
 
     @router.get(
         "/sessions/{session_id}",
+        dependencies=[Depends(require_scope(FORGE_SESSION_READ_SCOPE))],
         response_model=SessionResponse,
         responses={404: {"model": ErrorResponse}},
         tags=["Sessions"],
@@ -2426,7 +2527,7 @@ def create_router(
     @router.delete(
         "/sessions/{session_id}",
         status_code=status.HTTP_204_NO_CONTENT,
-        responses={404: {"model": ErrorResponse}},
+        responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
         tags=["Sessions"],
     )
     async def delete_session(
@@ -2448,6 +2549,12 @@ def create_router(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access denied to session {session_id}",
             )
+        except RuntimeError as exc:
+            # The session's compute could not be removed; the session is kept.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
         if not deleted:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -2456,6 +2563,7 @@ def create_router(
 
     @router.post(
         "/sessions/{session_id}/start",
+        dependencies=[Depends(require_scope(FORGE_SESSION_LIFECYCLE_SCOPE))],
         response_model=SessionResponse,
         responses={
             404: {"model": ErrorResponse},
@@ -2467,6 +2575,7 @@ def create_router(
     )
     @router.post(
         "/sessions/{session_id}/resume",
+        dependencies=[Depends(require_scope(FORGE_SESSION_LIFECYCLE_SCOPE))],
         response_model=SessionResponse,
         responses={
             404: {"model": ErrorResponse},
@@ -2498,6 +2607,8 @@ def create_router(
                 integration_ids=data.integration_ids if data else None,
             )
             return _session_response(session)
+        except ForgeMcpGrantEscalationError as e:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -2523,6 +2634,7 @@ def create_router(
 
     @router.post(
         "/sessions/{session_id}/stop",
+        dependencies=[Depends(require_scope(FORGE_SESSION_LIFECYCLE_SCOPE))],
         response_model=SessionResponse,
         responses={
             404: {"model": ErrorResponse},
@@ -2556,6 +2668,7 @@ def create_router(
 
     @router.post(
         "/sessions/{session_id}/activity",
+        dependencies=[Depends(require_scope(FORGE_NOTIFY_SCOPE))],
         status_code=status.HTTP_204_NO_CONTENT,
         responses={404: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
         tags=["Sessions"],
@@ -2640,7 +2753,9 @@ def create_router(
         """Register a push device for the authenticated user.
 
         The iOS app/widget calls this so a session that needs attention can fan
-        a push out to it. Idempotent on (owner, token).
+        a push out to it. Idempotent on (owner, token). With ``push.enabled`` it
+        also gives the owner the "Needs-input pushes" rule; when that fails the
+        registration answers 500 so the app registers again.
         """
         if device_repository is None:
             raise HTTPException(
@@ -2665,8 +2780,11 @@ def create_router(
             platform=platform,
             token=data.token,
             app_bundle_id=data.app_bundle_id,
+            environment=data.environment,
         )
         stored = await device_repository.upsert(device)
+        if on_device_registered is not None:
+            await on_device_registered(principal.user_id)
         return DeviceResponse.from_device(stored)
 
     @router.get(
@@ -2817,6 +2935,7 @@ def create_router(
 
     @router.post(
         "/sessions/{session_id}/usage",
+        dependencies=[Depends(require_scope(FORGE_NOTIFY_SCOPE))],
         response_model=TokenUsageResponse,
         status_code=status.HTTP_201_CREATED,
         responses={
@@ -3058,6 +3177,7 @@ def create_router(
         session_id: UUID,
         *path_segments: str,
         timeout: float = 30.0,
+        extra_headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         try:
             _, base_url = await forge.get_session_proxy_target(session_id)
@@ -3077,6 +3197,7 @@ def create_router(
             value = request.headers.get(name)
             if value:
                 headers[name] = value
+        headers.update(extra_headers or {})
         body = await request.body()
         try:
             proxy_url, routing_headers = _http_proxy_target(
@@ -3202,7 +3323,53 @@ def create_router(
         return payload if isinstance(payload, dict) else {}
 
     @router.post(
+        "/sessions/{session_id}/room/{operation}",
+        dependencies=[Depends(require_scope(FORGE_SESSION_MESSAGE_SCOPE))],
+        tags=["Sessions"],
+        responses={
+            403: {"model": ErrorResponse},
+            404: {"model": ErrorResponse},
+            502: {"model": ErrorResponse},
+        },
+    )
+    async def post_session_room(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+        operation: Literal["direct", "join", "leave", "workflow-events"] = Path(
+            description="Room operation on the session's broker"
+        ),
+    ) -> Response:
+        """Reach a session's room through Forge, which can always route to its broker.
+
+        A session's advertised origin may serve browsers only, and on a cluster
+        the Forge host does not serve session paths, so services come through here.
+        """
+        principal = await extract_principal(request)
+        session = await forge.get_session(session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        if session.owner_id != principal.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to reach this session's room",
+            )
+        # Stamped only after the ownership check above, as the gate route stamps
+        # approver: the broker reads its caller's room role from this header.
+        response = await _proxy_session_api(
+            request, session_id, "room", operation, extra_headers={ROOM_ROLE_HEADER: "owner"}
+        )
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            media_type=response.headers.get("content-type"),
+        )
+
+    @router.post(
         "/sessions/{session_id}/messages",
+        dependencies=[Depends(require_scope(FORGE_SESSION_MESSAGE_SCOPE))],
         tags=["Sessions"],
         responses={
             404: {"model": ErrorResponse},
@@ -3236,7 +3403,6 @@ def create_router(
 
         # Keep the caller's identity across a timeout/retry. The broker atomically
         # claims it in durable storage before dispatching to the native process.
-        import re
 
         req_id = body.get("request_id") or str(uuid4())
         if not isinstance(req_id, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", req_id):
@@ -3432,6 +3598,7 @@ def create_router(
 
     @router.get(
         "/sessions/{session_id}/conversation",
+        dependencies=[Depends(require_scope(FORGE_SESSION_READ_SCOPE))],
         tags=["Sessions"],
         responses={
             404: {"model": ErrorResponse},
@@ -3522,7 +3689,7 @@ def create_router(
                 return payload
             all_turns = payload["turns"]
             if turn_id is not None:
-                turn = next((t for t in all_turns if t.get("id") == turn_id), None)
+                turn = resolve_timeline_turn(all_turns, turn_id)
                 if turn is None:
                     raise HTTPException(404, "History item no longer exists in this projection")
                 return {
@@ -3757,7 +3924,9 @@ def create_router(
                                 if seq > 0 and sid_str not in _DURABLE_WARMING:
                                     _DURABLE_WARMING.add(sid_str)
                                     asyncio.create_task(
-                                        _warm_durable_count(forge, session_id, seq, sid_str)
+                                        _warm_durable_count(
+                                            forge, durable_transcripts, session_id, seq, sid_str
+                                        )
                                     )
                             elif durable_count > live_count and durable_tail != live_tail:
                                 # WARM + desync: rebuild to return the fuller durable body (rare).
@@ -3775,7 +3944,11 @@ def create_router(
                                 # mismatch, not a count surplus, selects the durable body.
                                 t_dur = time.perf_counter()
                                 try:
-                                    durable = await forge.get_transcript(session_id)
+                                    durable = await (
+                                        durable_transcripts.shallow(forge, session_id)
+                                        if shallow
+                                        else durable_transcripts.full(forge, session_id)
+                                    )
                                 except (RuntimeError, ValueError):
                                     durable = None
                                 timings["fault_c_rebuild_ms"] = round(
@@ -3831,7 +4004,11 @@ def create_router(
             )
 
         try:
-            return _maybe_elide(await forge.get_transcript(session_id))
+            # Shallow reads (every client poll) come from the per-seq cache; a stopped session
+            # rebuilds once, not on every poll. Full reads are single-flight per session.
+            if shallow and turn_id is None:
+                return _maybe_elide(await durable_transcripts.shallow(forge, session_id))
+            return _maybe_elide(await durable_transcripts.full(forge, session_id))
         except RuntimeError as e:
             fallback = _fallback_workspace_transcript(session)
             if fallback is not None:
@@ -3846,10 +4023,21 @@ def create_router(
                 detail=str(e),
             )
 
-    @router.get("/sessions/{session_id}/conversation/turns/{turn_id}", tags=["Sessions"])
+    @router.get(
+        "/sessions/{session_id}/conversation/turns/{turn_id}",
+        tags=["Sessions"],
+        dependencies=[Depends(require_scope(FORGE_SESSION_READ_SCOPE))],
+    )
     async def get_conversation_item(request: Request, session_id: UUID, turn_id: str) -> dict:
-        """Explicit full-item expansion, never used for automatic history recovery."""
-        return await get_conversation(
+        """Explicit full-item expansion, never used for automatic history recovery.
+
+        Also reports where the turn sits (``index`` of ``total_turns``) in the complete
+        shallow listing, the same absolute index space the windowed read pages through, so
+        a client can open the transcript at it (``after=index-1``). A live broker may answer
+        the item request with only that turn, so the position is never taken from the item
+        response itself. ``index`` is null when the turn is outside the current listing.
+        """
+        item = await get_conversation(
             request=request,
             session_id=session_id,
             detail="full",
@@ -3862,6 +4050,27 @@ def create_router(
             cursor=None,
             turn_id=turn_id,
         )
+        listing = await get_conversation(
+            request=request,
+            session_id=session_id,
+            detail="shallow",
+            limit=0,
+            before=0,
+            after=-1,
+            max_bytes=0,
+            after_id=None,
+            history_protocol=0,
+            cursor=None,
+            turn_id=None,
+        )
+        turns = listing.get("turns") if isinstance(listing, dict) else None
+        turns = turns if isinstance(turns, list) else []
+        resolved_id = item["turn"]["id"]
+        index = next(
+            (i for i, t in enumerate(turns) if isinstance(t, dict) and t.get("id") == resolved_id),
+            None,
+        )
+        return {**item, "index": index, "total_turns": len(turns), "requested_turn_id": turn_id}
 
     async def _fetch_full_tool_result(
         request: Request,
@@ -3985,7 +4194,7 @@ def create_router(
 
         # (3) Durable-log rebuild → workspace fallback (stopped/seed-only sessions).
         try:
-            transcript = await forge.get_transcript(session_id)
+            transcript = await durable_transcripts.full(forge, session_id)
         except (RuntimeError, ValueError):
             transcript = _fallback_workspace_transcript(session) or {"turns": []}
         turns = transcript.get("turns", []) if isinstance(transcript, dict) else []
@@ -4331,7 +4540,10 @@ def create_router(
                 response = await client.post(
                     proxy_url,
                     headers=headers,
-                    json=body.model_dump(),
+                    json={
+                        **body.model_dump(),
+                        "decided_by": principal.email or principal.user_id,
+                    },
                 )
                 response.raise_for_status()
                 return response.json()
@@ -4471,6 +4683,7 @@ def create_router(
 
     @router.get(
         "/sessions/{session_id}/transcript",
+        dependencies=[Depends(require_scope(FORGE_SESSION_READ_SCOPE))],
         tags=["Sessions"],
         responses={
             404: {"model": ErrorResponse},
@@ -4482,7 +4695,7 @@ def create_router(
     ) -> dict:
         """Return the persisted session transcript directly from workspace storage."""
         try:
-            return await forge.get_transcript(session_id)
+            return await durable_transcripts.full(forge, session_id)
         except LookupError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -4501,6 +4714,7 @@ def create_router(
 
     @router.get(
         "/sessions/{session_id}/transcript/download",
+        dependencies=[Depends(require_scope(FORGE_SESSION_READ_SCOPE))],
         tags=["Sessions"],
         responses={
             400: {"model": ErrorResponse},

@@ -733,6 +733,33 @@ describe('SessionChat', () => {
     expect(onInputRespond).toHaveBeenCalledWith('input-1', ['Production']);
   });
 
+  it('shows an unanswerable question read-only with a dismiss action', () => {
+    const onInputRespond = vi.fn();
+    const onInputDismiss = vi.fn();
+    render(
+      <SessionChat
+        {...defaultProps}
+        pendingInputRequests={[
+          {
+            requestId: 'tty-1-639a5901',
+            questions: [{ prompt: 'Which build flavour?', choices: ['debug', 'release'] }],
+            answerable: false,
+          },
+        ]}
+        onInputRespond={onInputRespond}
+        onInputDismiss={onInputDismiss}
+      />,
+    );
+
+    expect(screen.getByText('Answer in the session terminal')).toBeInTheDocument();
+    expect(screen.getByText('Which build flavour? (debug / release)')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'debug' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(onInputDismiss).toHaveBeenCalledWith('tty-1-639a5901');
+    expect(onInputRespond).not.toHaveBeenCalled();
+  });
+
   it('submits trimmed free-text clarification responses and rejects blank input', () => {
     const onInputRespond = vi.fn();
     render(

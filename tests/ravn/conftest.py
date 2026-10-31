@@ -8,6 +8,7 @@ import pytest
 
 from ravn.adapters.permission.allow_deny import AllowAllPermission, DenyAllPermission
 from ravn.agent import RavnAgent
+from ravn.cap_telemetry import reset_cap_hits
 from ravn.domain.models import (
     LLMResponse,
     StopReason,
@@ -78,7 +79,13 @@ class MockLLM(LLMPort):
         for tool_call in response.tool_calls:
             yield StreamEvent(type=StreamEventType.TOOL_CALL, tool_call=tool_call)
 
-        yield StreamEvent(type=StreamEventType.MESSAGE_DONE, usage=response.usage)
+        yield StreamEvent(
+            type=StreamEventType.MESSAGE_DONE,
+            usage=response.usage,
+            stop_reason=(
+                StopReason.MAX_TOKENS if response.stop_reason == StopReason.MAX_TOKENS else None
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -167,3 +174,9 @@ def failing_tool() -> FailingTool:
 def mock_llm() -> MockLLM:
     """A MockLLM pre-loaded with a single text response."""
     return MockLLM([make_text_response("Hello!")])
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cap_hits() -> None:
+    """Cap-hit counts are process-wide; each test starts from none."""
+    reset_cap_hits()

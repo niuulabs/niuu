@@ -24,11 +24,10 @@ from a2a.utils.constants import (
     PROTOCOL_VERSION_CURRENT,
     TransportProtocol,
 )
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from google.protobuf.json_format import MessageToDict
 
 from niuu.version import package_version
-from ting.api.workflows import resolve_workflow_repo
 from ting.config import A2AConfig
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_document import load_workflow_placement
@@ -116,13 +115,27 @@ def render_agent_card(card: AgentCard) -> tuple[str, str]:
     return payload, etag
 
 
+async def resolve_card_workflow_repo() -> WorkflowRepository:
+    """Workflow source for the public Agent Card.
+
+    The card is discovery served without a credential, so it cannot use the
+    principal-bound ``resolve_workflow_repo``. The composition root overrides
+    this with the unwrapped repository; the route reads system-scope
+    workflows only, which is everything the card publishes.
+    """
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Workflow repository not configured",
+    )
+
+
 def create_agent_card_router(config: A2AConfig) -> APIRouter:
     router = APIRouter(tags=["A2A"])
 
     @router.get(AGENT_CARD_WELL_KNOWN_PATH)
     async def get_agent_card(
         request: Request,
-        repo: WorkflowRepository = Depends(resolve_workflow_repo),
+        repo: WorkflowRepository = Depends(resolve_card_workflow_repo),
     ) -> Response:
         workflows = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
         card = build_agent_card(

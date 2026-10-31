@@ -12,7 +12,13 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
-from ravn.odin.review import REVIEW_DECISIONS, ReviewItem, ReviewStatus
+from ravn.odin.review import (
+    ANSWERED_DECISION,
+    OPERATOR_DECISIONS,
+    OPERATOR_QUESTION_ACTION,
+    ReviewItem,
+    ReviewStatus,
+)
 from ravn.ports.review_queue import ReviewQueueStore
 from sleipnir.domain import registry
 from sleipnir.domain.events import SleipnirEvent
@@ -35,11 +41,24 @@ _SETTLED_STATUSES = frozenset(
         ReviewStatus.APPLIED.value,
         ReviewStatus.APPLY_FAILED.value,
         ReviewStatus.EXPIRED.value,
+        ReviewStatus.WITHDRAWN.value,
     }
 )
 
-#: Statuses recording the resident's apply outcome, which a decision precedes.
+#: Statuses recording the resident's outcome, which a decision precedes: a
+#: decided event redelivered after one of these must not walk the item back.
 _RESOLVED_STATUSES = frozenset(
+    {
+        ReviewStatus.APPLIED.value,
+        ReviewStatus.APPLY_FAILED.value,
+        ReviewStatus.WITHDRAWN.value,
+    }
+)
+
+#: Statuses showing the resident already applied an operator decision; a
+#: withdrawal that arrives after one of these describes a question that was
+#: answered through the queue, so it must not rewrite that history.
+_APPLIED_STATUSES = frozenset(
     {
         ReviewStatus.APPLIED.value,
         ReviewStatus.APPLY_FAILED.value,
@@ -112,12 +131,18 @@ class OdinReviewService:
             stale_decision = (
                 event_type == registry.ODIN_REVIEW_DECIDED and existing.status in _RESOLVED_STATUSES
             )
+            late_withdrawal = (
+                item.status == ReviewStatus.WITHDRAWN.value and existing.status in _APPLIED_STATUSES
+            )
+            if late_withdrawal:
+                return
             if item.status != ReviewStatus.PENDING.value and not stale_decision:
                 existing.status = item.status
             if event_type == registry.ODIN_REVIEW_DECIDED or item.decided_by:
                 existing.decided_by = item.decided_by
                 existing.decided_at = item.decided_at
                 existing.decision_reason = item.decision_reason
+                existing.decision_answer = item.decision_answer
             if event_type == registry.ODIN_REVIEW_RESOLVED:
                 existing.apply_outcome = item.apply_outcome
                 existing.apply_detail = item.apply_detail
@@ -165,9 +190,15 @@ class OdinReviewService:
         decision: str,
         operator_id: str,
         reason: str = "",
+        answer: str = "",
     ) -> tuple[ReviewItem, dict[str, Any]]:
-        """Apply an operator decision and publish it to the residents."""
-        if decision not in REVIEW_DECISIONS:
+        """Apply an operator decision and publish it to the residents.
+
+        ``answered`` settles an ``answer_operator_question`` item with the
+        operator's free-text ``answer``; the item becomes ``approved`` and the
+        resident receives the answer verbatim.
+        """
+        if decision not in OPERATOR_DECISIONS:
             raise ReviewDecisionError(f"unknown decision {decision!r}", status_code=422)
         item = await self._store.get(item_id)
         if item is None:
@@ -182,7 +213,24 @@ class OdinReviewService:
                 "a reason is required when rejecting a review item",
                 status_code=422,
             )
-        item.decide(decision=decision, operator_id=operator_id, reason=reason)
+        if decision == ANSWERED_DECISION:
+            if item.requested_action != OPERATOR_QUESTION_ACTION:
+                raise ReviewDecisionError(
+                    f"review item {item_id} is a {item.requested_action or item.kind!r} request, "
+                    f"not a question: only {OPERATOR_QUESTION_ACTION!r} items can be answered",
+                    status_code=422,
+                )
+            if not answer.strip():
+                raise ReviewDecisionError(
+                    "an answer is required when answering a question",
+                    status_code=422,
+                )
+        elif answer:
+            raise ReviewDecisionError(
+                f"an answer is only valid with decision {ANSWERED_DECISION!r}",
+                status_code=422,
+            )
+        item.decide(decision=decision, operator_id=operator_id, reason=reason, answer=answer)
         await self._store.upsert(item)
         delivery: dict[str, Any] = {"published": False, "message": "no publisher configured"}
         if self._publisher is not None:

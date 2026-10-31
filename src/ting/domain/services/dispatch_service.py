@@ -30,6 +30,7 @@ except ImportError:
 from mimir.connections import normalize_mimir_workload_config, resolve_mimir_registry_refs
 from niuu.config_models import default_session_definitions
 from niuu.domain.model_runtime import (
+    is_self_hosted_model,
     session_definition_for_model,
     transport_adapter_for_session_definition,
     validate_session_definition_for_models,
@@ -37,6 +38,7 @@ from niuu.domain.model_runtime import (
 from niuu.domain.models import Principal
 from niuu.domain.tags import matches_tags
 from ravn.domain.persona_document import PortablePersonaSource
+from ting.config import DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS
 from ting.domain.flock_merge import build_flock_workload_config
 from ting.domain.models import (
     DispatcherState,
@@ -71,7 +73,6 @@ from ting.ports.workflow_repository import WorkflowRepository
 logger = logging.getLogger(__name__)
 
 _DEFAULT_WORKFLOW_SESSION_DEFINITION = "skuldCodex"
-_WORKFLOW_CLI_TURN_TIMEOUT_S = 120.0
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +84,16 @@ _READY_STATUS_TYPES = {"unstarted"}
 _ACTIVE_SESSION_STATUSES = {"running", "starting", "creating"}
 _COMPLETED_LINEAR_STATES = {"completed", "cancelled"}
 _CLI_TRANSPORT_EXECUTOR = "ravn.adapters.executors.cli.CliTransportExecutor"
+# CLI transports that call their vendor's API unless pointed at the session's
+# model gateway, which is then how they serve a self-hosted model. OpenCode and
+# PI reach such a model through their own provider configuration instead.
+_MODEL_GATEWAY_TRANSPORTS = frozenset(
+    {
+        "skuld.transports.sdk.SDKTransport",
+        "skuld.transports.tmux_interactive.TmuxInteractiveTransport",
+        "skuld.transports.codex_ws.CodexWebSocketTransport",
+    }
+)
 
 
 def _sanitize_log(value: object) -> str:
@@ -122,12 +133,69 @@ def _workflow_persona_model_conflicts(
     return {name: models for name, models in persona_models.items() if len(models) > 1}
 
 
+def _cli_executor(
+    transport_adapter: str,
+    model: str,
+    *,
+    workflow_cli_turn_timeout_seconds: float,
+    configured_models: list[Any] | None,
+) -> dict[str, Any]:
+    """The executor that runs a persona's turns on its session's CLI transport."""
+    executor_kwargs: dict[str, Any] = {"transport_adapter": transport_adapter}
+    if transport_adapter == "skuld.transports.sdk.SDKTransport":
+        executor_kwargs["transport_kwargs"] = {"turn_timeout_s": workflow_cli_turn_timeout_seconds}
+    elif transport_adapter == "skuld.transports.codex_ws.CodexWebSocketTransport":
+        executor_kwargs["transport_kwargs"] = {"skip_permissions": True}
+    if transport_adapter in _MODEL_GATEWAY_TRANSPORTS and is_self_hosted_model(
+        model, configured_models=configured_models
+    ):
+        # Only the persona can say its model is self-hosted: the
+        # session carries the gateway address whatever its personas
+        # run, and a cloud persona must keep its vendor's API.
+        executor_kwargs["model_gateway"] = True
+    return {"adapter": _CLI_TRANSPORT_EXECUTOR, "kwargs": executor_kwargs}
+
+
+def persona_on_model(
+    persona: dict[str, Any],
+    model: str,
+    *,
+    session_definitions: dict[str, Any],
+    workflow_cli_turn_timeout_seconds: float,
+    configured_models: list[Any] | None = None,
+) -> tuple[dict[str, Any], str | None]:
+    """Run a persona on a model, as a workflow stage does; return it and its session definition."""
+    definition, runtime_error = session_definition_for_model(
+        model,
+        session_definitions=session_definitions,
+        configured_models=configured_models,
+    )
+    if runtime_error:
+        raise ValueError(
+            f"Persona '{persona.get('name', 'unknown')}' model '{model}': {runtime_error}"
+        )
+    runtime_persona = {**persona, "llm": {**(persona.get("llm") or {}), "model": model}}
+    transport_adapter = transport_adapter_for_session_definition(
+        definition,
+        session_definitions=session_definitions,
+    )
+    if transport_adapter:
+        runtime_persona["executor"] = _cli_executor(
+            transport_adapter,
+            model,
+            workflow_cli_turn_timeout_seconds=workflow_cli_turn_timeout_seconds,
+            configured_models=configured_models,
+        )
+    return runtime_persona, definition
+
+
 def _resolve_workflow_execution(
     workflow_snapshot: dict[str, Any] | None,
     *,
     fallback_model: str,
     requested_definition: str | None,
     session_definitions: dict[str, Any],
+    workflow_cli_turn_timeout_seconds: float,
     configured_models: list[Any] | None = None,
 ) -> tuple[str, str | None, list[dict[str, Any]]]:
     if not workflow_snapshot:
@@ -199,17 +267,12 @@ def _resolve_workflow_execution(
             if resolved_definition:
                 resolved_definitions.add(resolved_definition)
             if transport_adapter:
-                executor_kwargs: dict[str, Any] = {"transport_adapter": transport_adapter}
-                if transport_adapter == "skuld.transports.sdk.SDKTransport":
-                    executor_kwargs["transport_kwargs"] = {
-                        "turn_timeout_s": _WORKFLOW_CLI_TURN_TIMEOUT_S
-                    }
-                elif transport_adapter == "skuld.transports.codex_ws.CodexWebSocketTransport":
-                    executor_kwargs["transport_kwargs"] = {"skip_permissions": True}
-                runtime_persona["executor"] = {
-                    "adapter": _CLI_TRANSPORT_EXECUTOR,
-                    "kwargs": executor_kwargs,
-                }
+                runtime_persona["executor"] = _cli_executor(
+                    transport_adapter,
+                    model,
+                    workflow_cli_turn_timeout_seconds=workflow_cli_turn_timeout_seconds,
+                    configured_models=configured_models,
+                )
         personas.append(runtime_persona)
 
     if len(resolved_definitions) == 1:
@@ -489,6 +552,7 @@ class DispatchConfig:
     live_flock: object | None = field(default=None, repr=False)
     session_definitions: dict[str, Any] = field(default_factory=default_session_definitions)
     configured_models: list[Any] = field(default_factory=list)
+    workflow_cli_turn_timeout_seconds: float = DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS
 
     def __getattribute__(self, name: str) -> object:
         live = super().__getattribute__("live_flock")
@@ -1407,6 +1471,7 @@ class DispatchService:
                 fallback_model=effective_model,
                 requested_definition=workflow_definition,
                 session_definitions=self._config.session_definitions,
+                workflow_cli_turn_timeout_seconds=self._config.workflow_cli_turn_timeout_seconds,
                 configured_models=self._config.configured_models,
             )
             personas = copy.deepcopy(workflow_persona_overrides)

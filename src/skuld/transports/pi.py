@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +17,7 @@ from typing import Any
 
 from niuu.domain.reasoning import validate_effort
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.transports.session_env import session_process_env
 
 _TOOLS = {
     "bash": "Bash",
@@ -149,7 +149,7 @@ class PiRpcTransport(CLITransport):
                 command += ["--append-system-prompt", self._system]
             if self._name:
                 command += ["--name", self._name]
-            env = dict(os.environ)
+            env = session_process_env()
             if self._agent_dir:
                 env["PI_CODING_AGENT_DIR"] = self._agent_dir
             try:

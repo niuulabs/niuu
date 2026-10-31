@@ -10,8 +10,16 @@ spec:
     # Single entry point - nginx handles all internal routing
     # When envoy is enabled, traffic flows: Service -> Envoy -> Nginx -> backends
     - port: {{ .Values.service.port }}
-      targetPort: {{ if .Values.envoy.enabled }}envoy{{ else }}http{{ end }}
+      targetPort: {{ if include "skuld.envoyEnabled" . }}envoy{{ else }}http{{ end }}
       protocol: TCP
       name: http
+    {{- if and (include "skuld.residentEnabled" .) .Values.resident.openclaw.enabled }}
+    # Ravn's OpenClaw shim: the resident's sessions, for Volundr's session controller.
+    # Bypasses Envoy; the shim authenticates every connect with its own token.
+    - port: {{ .Values.resident.openclaw.port }}
+      targetPort: ravn-openclaw
+      protocol: TCP
+      name: openclaw
+    {{- end }}
   selector:
     {{- include "skuld.selectorLabels" . | nindent 4 }}

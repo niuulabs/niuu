@@ -8,6 +8,7 @@ export {
   ApiClientError,
   type ApiClient,
   type ApiError,
+  type ApiResponse,
 } from './http-client';
 
 export { openEventStream, type EventStreamOptions, type EventStreamHandle } from './event-stream';

@@ -98,3 +98,34 @@ async def test_codex_mixed_raw_tool_result_keeps_images_and_text(tmp_path):
     assert json.loads(result["content"]) == content
     persisted = next(event["message"]["content"][0] for event in events if event["type"] == "user")
     assert json.loads(persisted["content"]) == content
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        # An Artifact tool result: a JSON object whose ``type`` is itself an object
+        # (2026-09-29, Forge session 570d065e: every shallow history page 500'd with
+        # ``TypeError: unhashable type: 'dict'``).
+        json.dumps(
+            {
+                "title": "Deck",
+                "type": {"release": "1790612728-51af", "url": "https://claude.ai/artifact/x"},
+            }
+        ),
+        [{"type": {"release": "r1"}}, {"type": ["a", "b"]}, {"type": 3}],
+        {"type": ["image"]},
+    ],
+)
+def test_non_string_types_are_not_images_and_do_not_raise(content):
+    assert image_payloads(content) == []
+    assert image_metadata(content) == []
+
+
+def test_shallow_history_elides_a_tool_result_whose_type_is_an_object():
+    content = json.dumps(
+        {"type": {"release": "r1", "url": "https://claude.ai/artifact/x"}, "own_files": ["a"] * 400}
+    )
+    block = {"type": "tool_result", "tool_use_id": "toolu_1", "content": content}
+    placeholder = elide_tool_result_block(block)
+    assert placeholder is not block
+    assert "is_image" not in placeholder

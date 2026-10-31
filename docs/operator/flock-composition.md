@@ -31,12 +31,29 @@ Every Ravn node in a flock session gets its `llm:` section from these layers, la
 | Layer | Source |
 |-------|--------|
 | Forge default | Volundr `ravn_flock_llm_config` (Helm value `ravnFlockLlmConfig`) |
+| Forge default for the session definition | Volundr `ravn_flock_llm_config_by_definition.<definition>` (Helm value `ravnFlockLlmConfigByDefinition`) |
 | Launch override | `workload_config.llm_config` (Ting sends `dispatch.flock.llm_config` here) |
 | Persona override | `workload_config.personas[i].llm` |
 
 A deployment-wide `workload_config.ravn_config.llm` section is layered over the result.
 
 The session's `model` is not one of these layers. In a flock session it sets the model of the Skuld broker's own CLI agent, and Ting fills it with `dispatch.default_model`. To choose a Ravn's model, use `llm_config.model`.
+
+### Under OpenShell, Ravns run on the session's runtime
+
+Under OpenShell, each Ravn peer inherits the broker's environment, so it runs on the session definition's CLI: Codex for `skuldCodex`, Claude Code for `skuldClaude`. A persona with its own `executor` is the exception. The runtime therefore has to serve the Ravn's model. A Codex flock that resolves to `claude-sonnet-4-6` **fails at launch** and names the definition, the model and the personas, instead of starting a flock whose every first turn fails with the provider's `model_not_found`.
+
+A single Forge default cannot serve both a Claude and a Codex flock, so give each definition its own:
+
+```yaml
+ravnFlockLlmConfig:
+  model: claude-sonnet-4-6
+ravnFlockLlmConfigByDefinition:
+  skuldCodex:
+    model: gpt-5.6-terra
+```
+
+Whether a runtime serves a model is decided as it is for Ting workflows. The model's vendor, from the Bifrost catalog or else its id, must be in the definition's `compatibleProviders`. Ravns in k8s pod sessions use their own LLM adapter, so this check does not apply to them.
 
 If a node still has no `model` after these layers, the launch **fails** and the session records why. It does not start on Ravn's built-in default model. Fix it by setting `ravn_flock_llm_config` on the Forge, by passing `llm_config` in the launch, or by giving each persona an `llm.model`.
 
@@ -52,6 +69,19 @@ ravn_flock_llm_config:
     kwargs:
       base_url: https://vllm.example.internal
 ```
+
+### The broker hands work to the flock
+
+In a flock session, Skuld is the flock's **broker**, not one of its members. Volundr launches it with `mesh.flock_broker: true`. With that setting:
+
+- The broker's CLI agent gets three `forge` MCP tools. `flock_members` lists the Ravns. `flock_delegate` hands one a task over the mesh, and it runs as that Ravn's persona. `flock_outcomes` returns the outcomes and failures members published, attributed to the room participant each came from.
+- Members react to each other's outcomes on their own. A change handed to the coder reaches the reviewer through the coder's `code.changed`, with no second hand-off.
+- The broker reports only what `flock_outcomes` returned. When nothing arrives within `forge_mcp.flock_outcome_wait_max_s`, the tool returns an error rather than an empty success.
+- Skuld never republishes the broker's own turns as `code.changed`, consumes no peer events, and runs Codex without its native sub-agents. A sub-agent playing "the reviewer" could otherwise produce a verdict no Ravn gave.
+
+A broker that cannot reach its flock does not start. That covers `mesh.flock_broker` set with the room, the mesh or the `forge` MCP server off, and a configured MCP server that replaces the built-in `forge` one.
+
+A persona's `fan_in.strategy` describes how its output combines with the other contributors to its `contributes_to` target. For a persona with `contributes_to`, it does not make that persona wait for all of its own consumed event types. Those event types are alternative triggers: the reviewer runs on `code.changed` *or* `review.requested`.
 
 A standalone `ravn flock init` (outside the Forge) writes the `llm:` section of `~/.ravn/config.yaml` into every node config, or the section of the file you pass with `--llm-config`. With neither, the node configs carry no `llm:` section, and init reports that the nodes run on Ravn's built-in default.
 

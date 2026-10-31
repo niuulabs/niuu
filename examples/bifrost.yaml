@@ -64,6 +64,31 @@ bifrost:
         - llama3.1:8b
       cost_per_token: 0.0
 
+    # Example: OpenAI models over a ChatGPT/Codex subscription (no API key).
+    # `adapter` names the class; `kwargs` are its constructor arguments. The
+    # subscription belongs to a Völundr user: Bifröst authenticates to Völundr's
+    # Codex token broker with its own workload identity (the service account must
+    # map to that user) and caches the short-lived token it gets back.
+    # Reasoning carries across tool calls with no setting: each reasoning item
+    # comes back as a thinking block with a `signature`, and over /v1/chat/completions
+    # as `reasoning_details`; a client that sends the assistant message back with
+    # it lets the next step continue that reasoning.
+    # chatgpt:
+    #   adapter: bifrost.adapters.chatgpt_subscription.ChatGPTSubscriptionAdapter
+    #   models:
+    #     - gpt-6-sol
+    #   kwargs:
+    #     broker_base_url: http://niuu-volundr.volundr.svc
+    #     auth_adapter: niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter
+    #     auth_kwargs:
+    #       exchange_url: https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange
+    #       token_file: /var/run/secrets/niuu/workload/token   # projected SA token
+    #       audiences: [volundr-api]
+    #     # reasoning_effort: high        # default when the request names none
+    #     # reasoning_summary: auto       # summary text, when the request enables thinking
+    #     # parallel_tool_calls: true
+    #     # refresh_skew_seconds: 60      # renew the token this long before expiry
+
   # ── Model aliases ───────────────────────────────────────────────────────────
   #
   # Clients can request an alias; Bifröst resolves it before routing.

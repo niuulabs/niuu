@@ -1,0 +1,155 @@
+schema_version: 1
+id: 0b51b458-0aeb-5a1b-8f79-d805834491e3
+name: Infra Change Flow
+description: Tracker-driven change to a GitOps repository. Implements and reviews the change, then
+  waits for the commissioning resident to approve the merge, because merging deploys it.
+version: 1.0.2
+persona_dependencies:
+  closer:
+    id: closer
+    revision: content-a17b9bad186e3987
+    digest: sha256:a17b9bad186e3987634529f87c739cc81402dcdb4e6e478845a74a50590d3d9f
+    path: personas/closer.yaml
+  coder:
+    id: coder
+    revision: content-f32c566d84bbb188
+    digest: sha256:f32c566d84bbb18825d4743eafa5b34d3a536be1d4678945c2581070903451d1
+    path: personas/coder.yaml
+  reviewer:
+    id: reviewer
+    revision: content-15cb459d3cdecf21
+    digest: sha256:15cb459d3cdecf210f15b2f3dbbd731d016e038704bf6e53ee7df8033806a9f5
+    path: personas/reviewer.yaml
+graph:
+  # The session never works on the target branch: it gets workflow/<slug> cut
+  # from it, and only the closer merges into the target, after the merge gate.
+  workingBranch: isolated
+  nodes:
+  - id: infra-change-request
+    kind: trigger
+    label: Start infra change
+    source: tracker delivery
+    dispatchEvent: delivery.requested
+    position:
+      x: 96
+      y: 280
+  - id: infra-change-memory
+    kind: resource
+    label: Delivery Memory
+    resourceType: mimir
+    bindingMode: registry
+    registryEntryId: mimir-yggdrasil
+    url: https://mimir.yggdrasil.niuu.world/api/v1
+    authRef: workload:mimir
+    role: shared
+    categories:
+    - delivery
+    - tracker
+    - review
+    position:
+      x: 352
+      y: 520
+  - id: infra-change-implement
+    kind: stage
+    label: Implement infra change
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: coder
+      budget: 40
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - delivery.requested
+      - review.changes_requested
+    position:
+      x: 352
+      y: 280
+  - id: infra-change-review
+    kind: stage
+    label: Review infra change
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: reviewer
+      budget: 24
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - code.changed
+    position:
+      x: 704
+      y: 280
+  - id: infra-change-merge-gate
+    kind: gate
+    label: Approve the merge
+    condition: Merging deploys this change to every cluster it touches. Review the diff against
+      the ticket, then approve the merge or request changes.
+    mode: human_approval
+    pendingBehavior: help_needed
+    approvalEvent: merge.approved
+    changesRequestedEvent: review.changes_requested
+    instructions: Read the branch diff. Approve only a change that touches the intended clusters and
+      apps, carries no secret values, and lists new manifests in their bundle. Otherwise request changes
+      with specifics.
+    position:
+      x: 1056
+      y: 480
+  - id: infra-change-close
+    kind: stage
+    label: Merge and close ticket
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: closer
+      budget: 20
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - merge.approved
+    position:
+      x: 1056
+      y: 280
+  - id: infra-change-complete
+    kind: end
+    label: Infra change merged
+    joinMode: all
+    completionEvent: delivery.merged
+    position:
+      x: 1408
+      y: 280
+  edges:
+  - id: edge-infra-change-request-to-implement
+    source: infra-change-request
+    target: infra-change-implement
+    label: delivery.requested -> delivery.requested
+  - id: edge-infra-change-implement-to-review
+    source: infra-change-implement
+    target: infra-change-review
+    label: code.changed -> code.changed
+  - id: edge-infra-change-review-to-implement
+    source: infra-change-review
+    target: infra-change-implement
+    label: review.changes_requested -> review.changes_requested
+  - id: edge-infra-change-review-to-gate
+    source: infra-change-review
+    target: infra-change-merge-gate
+    label: review.passed -> review.passed
+  - id: edge-infra-change-gate-to-implement
+    source: infra-change-merge-gate
+    target: infra-change-implement
+    label: review.changes_requested -> review.changes_requested
+  - id: edge-infra-change-gate-to-close
+    source: infra-change-merge-gate
+    target: infra-change-close
+    label: merge.approved -> merge.approved
+  - id: edge-infra-change-close-to-end
+    source: infra-change-close
+    target: infra-change-complete
+    label: delivery.merged -> delivery.merged
+  resourceBindings:
+  - id: binding-infra-change-memory
+    resourceNodeId: infra-change-memory
+    targetType: workflow
+    targetId: tracker-infra-change-flow
+    access: read_write
+    writePrefixes:
+    - deliveries/
+    readPriority: 1

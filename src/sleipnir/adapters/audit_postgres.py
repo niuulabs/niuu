@@ -134,6 +134,11 @@ def _build_query(q: AuditQuery) -> tuple[str, list]:
         params.append(q.source)
         idx += 1
 
+    if q.service is not None:
+        conditions.append(f"split_part(source, ':', 1) = ${idx}")
+        params.append(q.service)
+        idx += 1
+
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     # Over-fetch when we need Python-level fnmatch filtering
     limit = q.limit * 10 if apply_fnmatch else q.limit

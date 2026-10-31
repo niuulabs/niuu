@@ -9,29 +9,33 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import io
+import itertools
 import json
 import logging
 import re
 import shlex
 import socket
 import tarfile
+import tempfile
 import threading
 import time
 from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import IO, Any
 from urllib.parse import urlparse, urlunparse
 from uuid import UUID, uuid4
 
 import grpc
 import httpx
 import yaml
-from google.protobuf import struct_pb2
+from google.protobuf import duration_pb2, struct_pb2
 from openshell._proto import datamodel_pb2, openshell_pb2, openshell_pb2_grpc, sandbox_pb2
 
 from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
@@ -45,11 +49,44 @@ from niuu.ports.realm_repository import RealmRepository
 from niuu.ports.session_proxy import SessionProxyTarget
 from niuu.ports.workload_identity import WorkloadTokenIssuer
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
+from volundr.adapters.outbound.k8s_storage_adapter import _storage_bytes
 from volundr.adapters.outbound.local_process import LocalProcessPodManager
-from volundr.adapters.outbound.resident_container_spec import (
-    image_from_values as _shared_image_from_values,
+from volundr.adapters.outbound.openshell_contract import (
+    DEFAULT_SANDBOX_ATTACHABLE_LABELS,
+    OPENSHELL_WORKSPACE,
+    check_peer_workloads,
+    check_pod_metadata_keys,
+    check_policy_allows_egress,
+    check_volume_mounts,
+    network_mode,
+)
+from volundr.adapters.outbound.openshell_resident_workspace import (
+    ANNOTATION_MIGRATION_DIGEST,
+    ANNOTATION_MIGRATION_HOLDER,
+    ANNOTATION_MIGRATION_PHASE,
+    ANNOTATION_MIGRATION_SOURCE,
+    PHASE_COMPLETE,
+    PHASE_COPYING,
+    PHASE_VERIFIED,
+    RESTARTABLE_PHASES,
+    ResidentWorkspaceClaim,
+    ResidentWorkspaceClaims,
+    WorkspaceClaimInUseError,
+    WorkspaceManifest,
+    WorkspaceMigrationError,
+    WorkspaceMigrationHeldError,
+    WorkspaceMigrationLease,
+    WorkspaceTooLargeError,
+    WorkspaceVerificationError,
+    read_workspace_manifest,
+    resident_workspace_claim,
+    resident_workspace_claim_name,
+    workspace_migration_state,
 )
 from volundr.adapters.outbound.resident_container_spec import (
+    RAVN_OPENCLAW_PORT,
+    RAVN_OPENCLAW_TOKEN_ENV,
+    enable_resident_openclaw_shim,
     realm_charter_page_for,
     realm_mount_name_for,
     realm_routing_prefix_for,
@@ -59,6 +96,10 @@ from volundr.adapters.outbound.resident_container_spec import (
     resident_flock_runtime_config,
     resident_flock_skuld_config,
     resident_mesh_pod_metadata,
+    resident_openclaw_shim_enabled,
+)
+from volundr.adapters.outbound.resident_container_spec import (
+    image_from_values as _shared_image_from_values,
 )
 from volundr.adapters.outbound.resident_container_spec import (
     resident_attribution_headers as _shared_resident_attribution_headers,
@@ -84,6 +125,7 @@ from volundr.domain.models import (
     ResidentCondition,
     ResidentConditionStatus,
     ResidentDeploymentProfile,
+    ResidentDesiredState,
     ResidentEndpoint,
     ResidentEngine,
     ResidentLogEntry,
@@ -101,6 +143,8 @@ from volundr.domain.ports import (
     PodManager,
     PodStartResult,
     ResidentDeviceApprover,
+    ResidentOpenClawShimHost,
+    ResidentOpenClawTokens,
     ResidentRuntimeController,
     ResidentRuntimeLogReader,
     ResidentRuntimeObservation,
@@ -118,9 +162,60 @@ DEFAULT_SANDBOX_IMAGE = "ghcr.io/niuulabs/skuld:openshell-codex-openbao-20260709
 DEFAULT_SANDBOX_COMMAND = ["/usr/local/bin/openshell-run-installed-skuld"]
 DEFAULT_SERVICE_PORT = 9200
 READY_POLL_INTERVAL = 1.0
-DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS = 30.0
+#: How long a session's sandbox delete may take, the DeleteSandbox call and the
+#: wait for its record to go together. The OpenShell Kubernetes driver answers
+#: DeleteSandbox only once the workload Pod has gone (its 30s termination grace
+#: plus one 30s Kubernetes API timeout) and it has confirmed the Sandbox CR is
+#: gone; a flock's peer-workload Pod took about 60s on Noatun, so 30s turned
+#: every first flock delete into a 503.
+DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS = 120.0
+#: How long a resident's deploy or migration waits for a sandbox it removes to go.
+#: Deleting a resident sandbox (its pod, volumes and gateway records) took over
+#: 30s on Noatun, so a rollback gave up on a sandbox that was still going.
+DEFAULT_RESIDENT_SANDBOX_DELETE_TIMEOUT_SECONDS = 180.0
 TCP_FORWARD_BUFFER_BYTES = 64 * 1024
+# The gateway decodes at most 1 MiB per gRPC message; streamed stdin stays well below.
+EXEC_STDIN_CHUNK_BYTES = 256 * 1024
+#: The image Völundr created a resident's sandbox with (sandbox annotation).
+SANDBOX_IMAGE_ANNOTATION = "volundr.niuu.io/image"
+#: The image of the sandbox this one replaced on an upgrade. A Völundr that still
+#: renders it (the old replica while Völundr itself rolls out) must not move back.
+SANDBOX_REPLACED_IMAGE_ANNOTATION = "volundr.niuu.io/replaced-image"
+#: The resident's own workspace claim this sandbox mounts. A resident sandbox
+#: without it predates the claim: its workspace is copied onto the claim once.
+SANDBOX_WORKSPACE_CLAIM_ANNOTATION = "volundr.niuu.io/workspace-claim"
+#: The sandbox a resident's workspace migration creates beside the old one; the
+#: next one it is recreated as (an upgrade) takes the default name again.
+RESIDENT_MIGRATION_SANDBOX_PREFIX = "m-"
+RESIDENT_SANDBOX_PREFIX = "r-"
+RESIDENT_SANDBOX_ID_CHARS = 17
+#: Ravn keeps much of its state under ~/.ravn (memory.db, the drive-loop queue and
+#: cron state, skills), outside RAVN_STATE_DIR. On a persistent workspace that
+#: directory lives on the claim and ~/.ravn links to it.
+RAVN_HOME_STATE_DIR = ".ravn"
+RAVN_PERSISTED_HOME_DIR = ".ravn-home"
+#: Where a resident's own claim is mounted; its workspace path links here.
+#: Outside /sandbox on purpose: as soon as a driver mount sits under /sandbox, the
+#: gateway drops its own /sandbox volume (seeded from the image, and writable
+#: through the pod's fsGroup), and /sandbox is the image's directory, owned by the
+#: image's ``sandbox`` user rather than the UID the gateway runs the sandbox as
+#: (1000). Völundr then cannot write ``/sandbox/.volundr`` or link ``~/.ravn``.
+RESIDENT_WORKSPACE_VOLUME_PATH = "/resident-workspace"
+RESIDENT_WORKSPACE_VOLUME_NAME = "resident-workspace"
+#: What the workspace path of a claim-backed sandbox can be (_workspace_link_state_script).
+WORKSPACE_LINK_STATES = frozenset({"linked", "mounted", "foreign", "directory", "missing"})
+#: The states in which the workspace path is the resident's volume.
+WORKSPACE_ON_VOLUME = frozenset({"linked", "mounted"})
+DEFAULT_WORKSPACE_MIGRATION_LEASE_SECONDS = 300.0
+DEFAULT_WORKSPACE_MIGRATION_TIMEOUT_SECONDS = 1800.0
+# Backoff for calls the gateway rejected because its SQLite store was locked by
+# a concurrent write (SQLITE_BUSY); several resident deployments at once hit it.
+GATEWAY_BUSY_RETRY_DELAYS = (0.25, 0.5, 1.0, 2.0, 4.0)
 BOOTSTRAP_TIMEOUT_SECONDS = 600
+#: Backgrounding a process with nohup returns at once; this bounds a wedged exec.
+DETACHED_EXEC_TIMEOUT_SECONDS = 10
+#: Unpacking one projected-file tar archive into the sandbox.
+WRITE_FILES_TIMEOUT_SECONDS = 30.0
 BOOTSTRAP_GIT_ATTEMPTS = 20
 MAX_SANDBOX_ROUTING_NAME_LENGTH = 19
 OAUTH_CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
@@ -142,7 +237,6 @@ CODEX_ENROLLMENT_HOME = "/tmp/niuu-codex-enrollment"
 CODEX_ENROLLMENT_AUTH_PATH = f"{CODEX_ENROLLMENT_HOME}/auth.json"
 CODEX_ENROLLMENT_LOG_PATH = "/tmp/niuu-codex-enrollment.log"
 CODEX_ENROLLMENT_PID_PATH = "/tmp/niuu-codex-enrollment.pid"
-PROVIDER_NETWORK_ONLY_CREDENTIAL = "network_only"
 CODEX_DEVICE_CODE_PATTERN = re.compile(r"[A-Z0-9]{4,8}(?:-[A-Z0-9]{4,8})+")
 HERMES_API_SERVER_KEY_ENV = "API_SERVER_KEY"
 HERMES_API_SERVER_DEFAULT_PORT = 8642
@@ -178,6 +272,44 @@ class OpenShellSandbox:
     ready: bool = False
     labels: dict[str, str] | None = None
     providers: tuple[str, ...] = ()
+    #: The image of the sandbox's template and the sandbox's own annotations.
+    image: str = ""
+    annotations: dict[str, str] | None = None
+
+
+class WorkspaceRepair(Enum):
+    """What checking a running resident's workspace link did."""
+
+    #: Already on its volume, checked before, or a deployment owns its processes.
+    SKIPPED = "skipped"
+    REPAIRED = "repaired"
+    #: Its sandbox exists but the repair failed; tried again on the next pass.
+    FAILED = "failed"
+    #: Its sandbox is gone or being deleted: redeploy it, do not repair it.
+    SANDBOX_GONE = "sandbox-gone"
+
+
+@dataclass(frozen=True)
+class OpenShellPlatformFollow:
+    """What following the platform's version means for one resident this pass."""
+
+    #: The sandbox is being recreated on the current image: report this.
+    redeploy: ResidentRuntimeObservation | None = None
+    #: Reported with the resident's observation: a held or failed upgrade.
+    condition: ResidentCondition | None = None
+    failed: bool = False
+    #: The upgrade removed the resident's service but not its sandbox: expose it again.
+    service_removed: bool = False
+
+
+@dataclass(frozen=True)
+class OpenShellTransfer:
+    """How a streamed exec ended: its exit (None: none reported), stderr, bytes read."""
+
+    exit_code: int | None
+    stderr: str
+    size: int
+    truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -268,6 +400,59 @@ class ClientCredentialsTokenProvider:
             self._client.close()
 
 
+def _gateway_store_busy(exc: grpc.RpcError) -> bool:
+    details = getattr(exc, "details", None)
+    message = details() if callable(details) else str(exc)
+    return "database is locked" in str(message or "")
+
+
+class _BusyRetryingStub:
+    """Retry gateway calls rejected only because the gateway's store was busy.
+
+    The rejected call's database transaction did not commit, so it is safe to
+    send again. Exec streams fail on their first event, so that event is read
+    inside the retry; the bidirectional TCP forward is passed through untouched.
+    """
+
+    _SERVER_STREAMS = frozenset({"ExecSandbox"})
+    # Bidirectional streams consume their request iterator: never sent twice.
+    _PASSTHROUGH = frozenset({"ForwardTcp", "ExecSandboxInteractive"})
+
+    def __init__(self, stub: Any, delays: Sequence[float] = GATEWAY_BUSY_RETRY_DELAYS) -> None:
+        self._stub = stub
+        self._delays = tuple(delays)
+
+    def __getattr__(self, name: str) -> Any:
+        method = getattr(self._stub, name)
+        if name in self._PASSTHROUGH or not callable(method):
+            return method
+        if name in self._SERVER_STREAMS:
+            return lambda *args, **kwargs: self._retry(
+                lambda: _started_stream(method(*args, **kwargs))
+            )
+        return lambda *args, **kwargs: self._retry(lambda: method(*args, **kwargs))
+
+    def _retry(self, call: Any) -> Any:
+        for delay in self._delays:
+            try:
+                return call()
+            except grpc.RpcError as exc:
+                if not _gateway_store_busy(exc):
+                    raise
+                logger.info("OpenShell gateway store busy; retrying in %.2fs", delay)
+            time.sleep(delay)
+        return call()
+
+
+def _started_stream(stream: Any) -> Any:
+    iterator = iter(stream)
+    try:
+        first = next(iterator)
+    except StopIteration:
+        return iter(())
+    return itertools.chain((first,), iterator)
+
+
 class OpenShellGatewayClient:
     """Native gRPC client for the OpenShell gateway calls Volundr needs."""
 
@@ -290,8 +475,8 @@ class OpenShellGatewayClient:
             else grpc.secure_channel(self._endpoint, grpc.ssl_channel_credentials())
         )
         self._channel = channel
-        self._stub = openshell_pb2_grpc.OpenShellStub(channel)
-        self._workspace_scope = datamodel_pb2.WorkspaceSelector(workspace="default")
+        self._stub = _BusyRetryingStub(openshell_pb2_grpc.OpenShellStub(channel))
+        self._workspace_scope = datamodel_pb2.WorkspaceSelector(workspace=OPENSHELL_WORKSPACE)
 
     def close(self) -> None:
         self._channel.close()
@@ -309,15 +494,28 @@ class OpenShellGatewayClient:
         env: dict[str, str],
         labels: dict[str, str],
         annotations: dict[str, str] | None = None,
+        pod_labels: dict[str, str] | None = None,
+        pod_annotations: dict[str, str] | None = None,
         resources: dict[str, Any] | None = None,
         driver_config: dict[str, Any] | None = None,
         providers: Sequence[str] = (),
         policy: Any | None = None,
     ) -> OpenShellSandbox:
+        """Create a sandbox.
+
+        ``labels``/``annotations`` are the sandbox's own gateway metadata, which
+        Völundr reads back. ``pod_labels``/``pod_annotations`` go onto the
+        sandbox Pod and must be admitted by the gateway's ``allowed_pod_labels``
+        / ``allowed_pod_annotations``; only what something on the Pod reads
+        belongs there.
+        """
+        check_pod_metadata_keys("labels", (pod_labels or {}).keys())
+        check_pod_metadata_keys("annotations", (pod_annotations or {}).keys())
         template = openshell_pb2.SandboxTemplate(image=image)
-        template.labels.update(labels)
-        if annotations:
-            template.annotations.update(annotations)
+        if pod_labels:
+            template.labels.update(pod_labels)
+        if pod_annotations:
+            template.annotations.update(pod_annotations)
         template.environment.update(env)
         if resources:
             template.resources.CopyFrom(_protobuf_struct(resources))
@@ -330,7 +528,11 @@ class OpenShellGatewayClient:
             providers=list(providers),
         )
         request = openshell_pb2.CreateSandboxRequest(
-            workspace_scope=self._workspace_scope, spec=spec, name=name, labels=labels
+            workspace_scope=self._workspace_scope,
+            spec=spec,
+            name=name,
+            labels=labels,
+            annotations=annotations or {},
         )
         response = self._stub.CreateSandbox(
             request,
@@ -385,20 +587,23 @@ class OpenShellGatewayClient:
         )
         return _sandbox_from_proto(response.sandbox)
 
-    def delete_sandbox(self, name: str) -> bool:
-        try:
-            response = self._stub.DeleteSandbox(
-                openshell_pb2.DeleteSandboxRequest(
-                    workspace_scope=self._workspace_scope, name=name
-                ),
-                timeout=self._timeout,
-                metadata=self._metadata(),
-            )
-        except grpc.RpcError as exc:
-            if exc.code() == grpc.StatusCode.NOT_FOUND:
-                return False
-            raise
-        return bool(response.deleted)
+    def delete_sandbox(self, name: str, *, timeout: float) -> bool:
+        """Delete a sandbox by name; False when it was already gone.
+
+        The gateway answers only once the sandbox's pod has terminated, so the
+        call takes the caller's delete budget as its deadline, not the default
+        RPC timeout. ACCEPTED (the gateway record still exists while the pod
+        goes) and COMPLETED both mean this call deleted it; callers that need it
+        gone poll ``get_sandbox`` until it disappears.
+        """
+        response = self._stub.DeleteSandbox(
+            openshell_pb2.DeleteSandboxRequest(
+                workspace_scope=self._workspace_scope, name=name, allow_missing=True
+            ),
+            timeout=timeout,
+            metadata=self._metadata(),
+        )
+        return _deletion_outcome(response.outcome, f"sandbox {name!r}")
 
     def delete_service(self, *, sandbox_name: str, service: str) -> bool:
         if len(sandbox_name) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
@@ -407,16 +612,22 @@ class OpenShellGatewayClient:
         try:
             response = self._stub.DeleteService(
                 openshell_pb2.DeleteServiceRequest(
-                    workspace_scope=self._workspace_scope, sandbox=sandbox_name, service=service
+                    workspace_scope=self._workspace_scope,
+                    sandbox=sandbox_name,
+                    name=service,
+                    allow_missing=True,
                 ),
                 timeout=self._timeout,
                 metadata=self._metadata(),
             )
         except grpc.RpcError as exc:
+            # The gateway resolves the sandbox before honouring allow_missing,
+            # so a sandbox that no longer exists answers NOT_FOUND. Its service
+            # is then already absent.
             if exc.code() == grpc.StatusCode.NOT_FOUND:
                 return False
             raise
-        return bool(response.deleted)
+        return _deletion_outcome(response.outcome, f"service {service!r} of {sandbox_name!r}")
 
     def get_provider(self, name: str) -> Any | None:
         try:
@@ -528,7 +739,7 @@ class OpenShellGatewayClient:
             openshell_pb2.ExposeServiceRequest(
                 workspace_scope=self._workspace_scope,
                 sandbox=sandbox_name,
-                service=service,
+                name=service,
                 target_port=int(target_port),
                 domain=True,
             ),
@@ -537,31 +748,26 @@ class OpenShellGatewayClient:
         )
         return str(response.url or "")
 
-    def start_tcp_forward(self, *, sandbox_id: str, target_port: int) -> OpenShellTcpForwarder:
+    def start_tcp_forward(self, *, sandbox: str, target_port: int) -> OpenShellTcpForwarder:
         """Open a local listener backed by OpenShell's authenticated ForwardTcp RPC."""
-        return OpenShellTcpForwarder(self, sandbox_id=sandbox_id, target_port=target_port)
+        return OpenShellTcpForwarder(self, sandbox=sandbox, target_port=target_port)
 
     def _forward_tcp_connection(
         self,
         connection: socket.socket,
         *,
-        sandbox_id: str,
+        sandbox: str,
         target_port: int,
     ) -> None:
-        session = self._stub.CreateSshSession(
-            openshell_pb2.CreateSshSessionRequest(sandbox_id=sandbox_id),
-            timeout=self._timeout,
-            metadata=self._metadata(),
-        )
-        token = str(session.token)
-
+        # A TCP target is authorized by this client's gateway principal; only
+        # SSH targets need a CreateSshSession token, so none is minted here.
         def frames():
             yield openshell_pb2.TcpForwardFrame(
                 init=openshell_pb2.TcpForwardInit(
-                    sandbox_id=sandbox_id,
-                    service_id=f"volundr-resident:{sandbox_id}:{target_port}",
+                    sandbox=sandbox,
+                    workspace=self._workspace_scope.workspace,
+                    service_id=f"volundr-resident:{sandbox}:{target_port}",
                     tcp=openshell_pb2.TcpRelayTarget(host="127.0.0.1", port=target_port),
-                    authorization_token=token,
                 )
             )
             while True:
@@ -570,25 +776,15 @@ class OpenShellGatewayClient:
                     return
                 yield openshell_pb2.TcpForwardFrame(data=data)
 
-        try:
-            responses = self._stub.ForwardTcp(frames(), metadata=self._metadata())
-            for response in responses:
-                if response.HasField("data"):
-                    connection.sendall(response.data)
-        finally:
-            try:
-                self._stub.RevokeSshSession(
-                    openshell_pb2.RevokeSshSessionRequest(token=token),
-                    timeout=self._timeout,
-                    metadata=self._metadata(),
-                )
-            except grpc.RpcError:
-                logger.debug("OpenShell TCP forward session revocation failed", exc_info=True)
+        responses = self._stub.ForwardTcp(frames(), metadata=self._metadata())
+        for response in responses:
+            if response.HasField("data"):
+                connection.sendall(response.data)
 
     def exec_detached(
         self,
         *,
-        sandbox_id: str,
+        sandbox: str,
         command: Sequence[str],
         env: dict[str, str],
         log_path: str,
@@ -601,11 +797,12 @@ class OpenShellGatewayClient:
         script = f"mkdir -p {log_dir}\nnohup {command_line} >{quoted_log_path} 2>&1 &\n{pid_write}"
         stream = self._stub.ExecSandbox(
             openshell_pb2.ExecSandboxRequest(
-                sandbox_id=sandbox_id,
+                workspace_scope=self._workspace_scope,
+                sandbox=sandbox,
                 command=["sh", "-s"],
                 environment=env,
                 stdin=script.encode(),
-                timeout_seconds=10,
+                execution_timeout=_duration(DETACHED_EXEC_TIMEOUT_SECONDS),
             ),
             timeout=self._timeout,
             metadata=self._metadata(),
@@ -616,17 +813,9 @@ class OpenShellGatewayClient:
                 exit_code = int(event.exit.exit_code)
         return exit_code
 
-    def get_provider_environment(self, sandbox_id: str) -> dict[str, str]:
-        response = self._stub.GetSandboxProviderEnvironment(
-            openshell_pb2.GetSandboxProviderEnvironmentRequest(sandbox_id=sandbox_id),
-            timeout=self._timeout,
-            metadata=self._metadata(),
-        )
-        return {str(key): str(value) for key, value in response.environment.items()}
-
     def get_sandbox_logs(
         self,
-        sandbox_id: str,
+        sandbox: str,
         *,
         lines: int,
         sources: Sequence[str],
@@ -635,7 +824,7 @@ class OpenShellGatewayClient:
         response = self._stub.GetSandboxLogs(
             openshell_pb2.GetSandboxLogsRequest(
                 workspace_scope=self._workspace_scope,
-                sandbox_id=sandbox_id,
+                sandbox=sandbox,
                 lines=lines,
                 sources=list(sources),
                 min_level=min_level,
@@ -646,7 +835,9 @@ class OpenShellGatewayClient:
         return ResidentLogPage(
             entries=[
                 ResidentLogEntry(
-                    timestamp_ms=int(entry.timestamp_ms),
+                    timestamp_ms=(
+                        entry.event_time.ToMilliseconds() if entry.HasField("event_time") else 0
+                    ),
                     level=str(entry.level),
                     source=str(entry.source),
                     target=str(entry.target),
@@ -661,18 +852,19 @@ class OpenShellGatewayClient:
     def exec_script(
         self,
         *,
-        sandbox_id: str,
+        sandbox: str,
         script: str,
         env: dict[str, str],
     ) -> tuple[int, str]:
         stdin = script.encode()
         stream = self._stub.ExecSandbox(
             openshell_pb2.ExecSandboxRequest(
-                sandbox_id=sandbox_id,
+                workspace_scope=self._workspace_scope,
+                sandbox=sandbox,
                 command=["sh", "-s"],
                 environment=env,
                 stdin=stdin,
-                timeout_seconds=BOOTSTRAP_TIMEOUT_SECONDS,
+                execution_timeout=_duration(BOOTSTRAP_TIMEOUT_SECONDS),
             ),
             timeout=max(self._timeout, float(BOOTSTRAP_TIMEOUT_SECONDS)),
             metadata=self._metadata(),
@@ -688,16 +880,125 @@ class OpenShellGatewayClient:
                 exit_code = int(event.exit.exit_code)
         return exit_code, "".join(output)
 
-    def write_files(self, *, sandbox_id: str, files: dict[str, bytes]) -> None:
+    def exec_to_file(
+        self,
+        *,
+        sandbox: str,
+        script: str,
+        destination: IO[bytes],
+        max_bytes: int,
+        timeout_seconds: float,
+    ) -> OpenShellTransfer:
+        """Run a script and write its stdout to ``destination``, up to ``max_bytes``.
+
+        Runs without a login shell, so profile output can't mix into the bytes.
+        Past ``max_bytes`` the stream is abandoned and the transfer is truncated.
+        """
+        stream = self._stub.ExecSandbox(
+            openshell_pb2.ExecSandboxRequest(
+                workspace_scope=self._workspace_scope,
+                sandbox=sandbox,
+                command=["sh", "-s"],
+                stdin=script.encode(),
+                execution_timeout=_duration(timeout_seconds),
+                no_login_shell=True,
+            ),
+            timeout=max(self._timeout, float(timeout_seconds)),
+            metadata=self._metadata(),
+        )
+        written = 0
+        errors: list[str] = []
+        exit_code: int | None = None
+        for event in stream:
+            if event.HasField("stdout"):
+                data = bytes(event.stdout.data)
+                if written + len(data) > max_bytes:
+                    return OpenShellTransfer(
+                        exit_code=None, stderr="".join(errors), size=written, truncated=True
+                    )
+                destination.write(data)
+                written += len(data)
+            elif event.HasField("stderr"):
+                errors.append(_exec_output_text(event.stderr.data))
+            elif event.HasField("exit"):
+                exit_code = int(event.exit.exit_code)
+        return OpenShellTransfer(exit_code=exit_code, stderr="".join(errors), size=written)
+
+    def exec_from_file(
+        self,
+        *,
+        sandbox: str,
+        command: Sequence[str],
+        source: IO[bytes],
+        timeout_seconds: float,
+    ) -> OpenShellTransfer:
+        """Run a command with the rest of ``source`` on its stdin, in gateway-sized chunks.
+
+        ExecSandbox takes stdin in one message, which the gateway caps, so this
+        streams it over the interactive exec. That stream has no stdin EOF of its
+        own: when the request stream ends, the gateway sends the sandbox EOF and
+        closes the SSH channel at once, so the supervisor can no longer report
+        the command's exit and the call fails with "exec relay closed before the
+        command reported an exit status". So the command reads exactly the
+        source's size (``head -c``) and finishes without EOF, and the request
+        stream stays open until the gateway has reported the exit.
+
+        ``source`` must be seekable; it is read from its current position.
+        """
+        position = source.tell()
+        size = source.seek(0, io.SEEK_END) - position
+        source.seek(position)
+        remote = f"head -c {size} | {shlex.join(str(part) for part in command)}"
+        start = openshell_pb2.ExecSandboxRequest(
+            workspace_scope=self._workspace_scope,
+            sandbox=sandbox,
+            command=["sh", "-c", remote],
+            execution_timeout=_duration(timeout_seconds),
+            no_login_shell=True,
+        )
+        deadline = max(self._timeout, float(timeout_seconds))
+        finished = threading.Event()
+        sent = 0
+
+        def frames():
+            nonlocal sent
+            yield openshell_pb2.ExecSandboxInput(start=start)
+            while not finished.is_set() and (chunk := source.read(EXEC_STDIN_CHUNK_BYTES)):
+                sent += len(chunk)
+                yield openshell_pb2.ExecSandboxInput(stdin=chunk)
+            # Ending the request stream now would close the channel before the exit.
+            finished.wait(deadline)
+
+        output: list[str] = []
+        exit_code: int | None = None
+        try:
+            stream = self._stub.ExecSandboxInteractive(
+                frames(),
+                timeout=deadline,
+                metadata=self._metadata(),
+            )
+            for event in stream:
+                if event.HasField("stdout"):
+                    output.append(_exec_output_text(event.stdout.data))
+                elif event.HasField("stderr"):
+                    output.append(_exec_output_text(event.stderr.data))
+                elif event.HasField("exit"):
+                    exit_code = int(event.exit.exit_code)
+        finally:
+            finished.set()
+        return OpenShellTransfer(exit_code=exit_code, stderr="".join(output), size=sent)
+
+    def write_files(self, *, sandbox: str, files: dict[str, bytes]) -> None:
         for extraction_root, archive in _credential_file_archives(files):
             stream = self._stub.ExecSandbox(
                 openshell_pb2.ExecSandboxRequest(
-                    sandbox_id=sandbox_id,
+                    workspace_scope=self._workspace_scope,
+                    sandbox=sandbox,
                     command=["tar", "-xf", "-", "-C", extraction_root],
                     stdin=archive,
-                    timeout_seconds=30,
+                    execution_timeout=_duration(WRITE_FILES_TIMEOUT_SECONDS),
                 ),
-                timeout=max(self._timeout, 30.0),
+                timeout=max(self._timeout, WRITE_FILES_TIMEOUT_SECONDS),
                 metadata=self._metadata(),
             )
             output: list[str] = []
@@ -728,11 +1029,11 @@ class OpenShellTcpForwarder:
         self,
         client: OpenShellGatewayClient,
         *,
-        sandbox_id: str,
+        sandbox: str,
         target_port: int,
     ) -> None:
         self._client = client
-        self._sandbox_id = sandbox_id
+        self._sandbox = sandbox
         self._target_port = target_port
         self._closed = threading.Event()
         self._connections: set[socket.socket] = set()
@@ -763,7 +1064,7 @@ class OpenShellTcpForwarder:
         try:
             self._client._forward_tcp_connection(
                 connection,
-                sandbox_id=self._sandbox_id,
+                sandbox=self._sandbox,
                 target_port=self._target_port,
             )
         except (OSError, grpc.RpcError):
@@ -794,6 +1095,7 @@ class OpenShellGatewayPodManager(
     ResidentRuntimeLogReader,
     ResidentRuntimeProxyTargetResolver,
     ResidentDeviceApprover,
+    ResidentOpenClawShimHost,
 ):
     """Kubernetes OpenShell PodManager using OIDC and native gRPC."""
 
@@ -823,6 +1125,9 @@ class OpenShellGatewayPodManager(
         command_timeout: float = 30.0,
         ready_timeout: float = 300.0,
         resource_delete_timeout: float = DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS,
+        resident_sandbox_delete_timeout_seconds: float = (
+            DEFAULT_RESIDENT_SANDBOX_DELETE_TIMEOUT_SECONDS
+        ),
         credential_token_endpoint: str = DEFAULT_CREDENTIAL_TOKEN_ENDPOINT,
         volundr_api_url: str = "",
         workload_audience: str = "volundr-api",
@@ -840,11 +1145,72 @@ class OpenShellGatewayPodManager(
         codex_auth_kwargs: dict | None = None,
         sandbox_policy: dict[str, Any] | None = None,
         driver_config: dict[str, Any] | None = None,
+        resident_workspace_namespace: str = "",
+        resident_workspace_size: str = "2Gi",
+        resident_storage_class: str = "",
+        resident_access_mode: str = "ReadWriteOnce",
+        resident_workspace_migration_max_size: str = "1Gi",
+        resident_workspace_migration_lease_seconds: float = (
+            DEFAULT_WORKSPACE_MIGRATION_LEASE_SECONDS
+        ),
+        resident_workspace_migration_timeout_seconds: float = (
+            DEFAULT_WORKSPACE_MIGRATION_TIMEOUT_SECONDS
+        ),
+        resident_workspace_migration_holder: str = "",
+        sandbox_attachable_labels: dict[str, str] | None = None,
         client: OpenShellGatewayClient | None = None,
         **_extra: object,
     ) -> None:
         if sandbox_policy is None and client is None:
             raise ValueError("OpenShell sandbox_policy configuration is required")
+        if resident_workspace_migration_lease_seconds <= 0:
+            raise ValueError("resident_workspace_migration_lease_seconds must be positive")
+        if resident_workspace_migration_timeout_seconds <= 0:
+            raise ValueError("resident_workspace_migration_timeout_seconds must be positive")
+        if resident_sandbox_delete_timeout_seconds <= 0:
+            raise ValueError("resident_sandbox_delete_timeout_seconds must be positive")
+        # Each resident's own workspace claim, in the namespace where the gateway runs
+        # sandboxes. Unset, residents keep their workspace in the sandbox only.
+        # The gateway mounts a claim only when it carries the labels its resource
+        # admission requires (``required_labels``; OpenShell's defaults unless
+        # the operator changed them on the gateway).
+        self._workspace_claims = (
+            ResidentWorkspaceClaims(
+                self._get_core_api,
+                resident_workspace_namespace,
+                attach_labels=(
+                    DEFAULT_SANDBOX_ATTACHABLE_LABELS
+                    if sandbox_attachable_labels is None
+                    else sandbox_attachable_labels
+                ),
+            )
+            if resident_workspace_namespace
+            else None
+        )
+        self._resident_workspace_defaults = {
+            "size": resident_workspace_size,
+            "storage_class": resident_storage_class,
+            "access_mode": resident_access_mode,
+        }
+        self._workspace_migration_max_bytes = int(
+            _storage_bytes(resident_workspace_migration_max_size)
+        )
+        self._workspace_migration_max_size = resident_workspace_migration_max_size
+        self._workspace_migration_lease_seconds = float(resident_workspace_migration_lease_seconds)
+        self._workspace_migration_timeout = float(resident_workspace_migration_timeout_seconds)
+        # Who holds a migration: the pod name, so a restarted container resumes its own.
+        self._workspace_migration_holder = resident_workspace_migration_holder or (
+            socket.gethostname()
+        )
+        self._core_api_client: Any | None = None
+        # Residents whose workspace migration failed in this Völundr: id -> reason.
+        # Their old sandbox keeps running; retried on Restart or when Völundr restarts.
+        self._failed_workspace_migrations: dict[str, WorkspaceMigrationError] = {}
+        # The sandbox a resident's failed migration created and could not remove,
+        # by resident id: reconcile removes it (_remove_abandoned_migration_sandbox).
+        self._abandoned_migration_sandboxes: dict[str, str] = {}
+        # Claim-backed sandboxes whose workspace path this Völundr saw on the volume.
+        self._linked_workspaces: set[str] = set()
         self._gateway_public_url = gateway_public_url.rstrip("/")
         gateway_hostport = _endpoint_hostport(gateway_endpoint)
         gateway_host, separator, gateway_port = gateway_hostport.rpartition(":")
@@ -859,6 +1225,11 @@ class OpenShellGatewayPodManager(
         self._sandbox_workspace = sandbox_workspace
         self._sandbox_home = sandbox_home.rstrip("/")
         self._sandbox_policy = _sandbox_policy_from_config(sandbox_policy or {"version": 1})
+        self._network_policies = dict((sandbox_policy or {}).get("network_policies") or {})
+        # A resident on its own claim also writes the volume mounted outside /sandbox.
+        self._resident_claim_policy = _sandbox_policy_from_config(
+            _with_read_write_path(sandbox_policy or {"version": 1}, RESIDENT_WORKSPACE_VOLUME_PATH)
+        )
         self._service_port = int(service_port)
         self._service_name = service_name
         self._command_log_path = command_log_path
@@ -866,6 +1237,7 @@ class OpenShellGatewayPodManager(
         self._memory = memory
         self._ready_timeout = float(ready_timeout)
         self._resource_delete_timeout = float(resource_delete_timeout)
+        self._resident_delete_timeout = float(resident_sandbox_delete_timeout_seconds)
         self._credential_token_endpoint = credential_token_endpoint
         self._volundr_api_url = volundr_api_url.rstrip("/")
         self._workload_audience = workload_audience
@@ -898,6 +1270,8 @@ class OpenShellGatewayPodManager(
             timeout=command_timeout,
         )
         self._service_urls: dict[str, str] = {}
+        # Held while a deploy, restart or reconcile owns a resident's processes.
+        self._resident_process_locks: dict[str, asyncio.Lock] = {}
         self._resident_forwarders: dict[str, OpenShellTcpForwarder] = {}
         self._provider_grants: dict[str, tuple[OpenShellProviderGrant, ...]] = {}
         self._credential_store: CredentialStorePort | None = None
@@ -905,6 +1279,194 @@ class OpenShellGatewayPodManager(
         self._resident_runtime_repository: ResidentRuntimeRepository | None = None
         self._workload_token_issuer: WorkloadTokenIssuer | None = None
         self._realm_repository: RealmRepository | None = None
+        # Where each Ravn resident's own OpenClaw shim token is kept, handed over by
+        # the Ravn session controller (set_resident_openclaw_tokens). None: no Ravn
+        # sessions on this backend.
+        self._resident_openclaw_tokens: ResidentOpenClawTokens | None = None
+        # Ravn residents whose shim this Volundr has seen up, or restarted once to start.
+        self._resident_openclaw_checked: set[str] = set()
+        # Residents whose sandbox is being recreated on the current image: resident
+        # id -> the image it replaces, until the new sandbox is deployed.
+        self._resident_upgrades: dict[str, str] = {}
+        # Residents whose upgrade failed in this Völundr: id -> (target image, reason).
+        # Not retried until the target changes, an explicit restart, or Völundr restarts.
+        self._failed_resident_upgrades: dict[str, tuple[str, str]] = {}
+        # (resident id, target image) upgrades held, logged once; "" when the image is unknown.
+        self._held_resident_upgrades: set[tuple[str, str]] = set()
+        # Residents whose old sandbox an upgrade could not remove: id -> the reason,
+        # logged once per reason. Retried on every pass.
+        self._retrying_resident_upgrades: dict[str, str] = {}
+        # Residents whose sandbox was seen gone or being deleted while they should run:
+        # id -> that sandbox, logged once until the resident is deployed again.
+        self._going_resident_sandboxes: dict[str, str] = {}
+        # Why a running resident's workspace link could not be repaired: sandbox id ->
+        # the error, logged once per error until the repair succeeds.
+        self._failed_workspace_repairs: dict[str, str] = {}
+
+    def set_resident_openclaw_tokens(self, tokens: ResidentOpenClawTokens) -> None:
+        """Where each Ravn resident's own shim token is kept (RavnResidentSessionController)."""
+        self._resident_openclaw_tokens = tokens
+
+    async def _get_core_api(self) -> Any:
+        """CoreV1Api for residents' workspace claims (the gateway can't create volumes)."""
+        from kubernetes_asyncio import client
+
+        from niuu.adapters.flux import create_flux_api_client
+
+        if self._core_api_client is None:
+            self._core_api_client = await create_flux_api_client()
+        return client.CoreV1Api(self._core_api_client)
+
+    def _resident_workspace_claim(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentWorkspaceClaim | None:
+        """The claim Völundr manages for this resident; None when it manages none."""
+        if self._workspace_claims is None:
+            return None
+        return resident_workspace_claim(
+            runtime,
+            profile,
+            size=self._resident_workspace_defaults["size"],
+            storage_class=self._resident_workspace_defaults["storage_class"],
+            access_mode=self._resident_workspace_defaults["access_mode"],
+            mount_path=self._sandbox_workspace,
+        )
+
+    def _resident_values(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> tuple[dict[str, Any], ResidentWorkspaceClaim | None]:
+        """The values a resident's sandbox renders, with its own claim at the workspace."""
+        values = self._with_brokered_credential_values(_resident_profile_values(profile))
+        claim = self._resident_workspace_claim(runtime, profile)
+        if claim is None:
+            return values, None
+        resident_values = {key: value for key, value in values.items() if key != "persistence"}
+        resident_values["residentWorkspace"] = {
+            "existingClaim": claim.name,
+            "mountPath": RESIDENT_WORKSPACE_VOLUME_PATH,
+        }
+        return resident_values, claim
+
+    async def resident_openclaw_token(self, runtime: ResidentRuntime) -> str:
+        """The kept token; else the one the resident's Ravn process runs with; else new."""
+        tokens = self._resident_openclaw_tokens
+        if tokens is None:
+            raise RuntimeError("Ravn resident sessions are not wired on openshell")
+        token = await tokens.stored(runtime)
+        if token:
+            return token
+        return await tokens.ensure(runtime, adopt=await self._read_resident_openclaw_token(runtime))
+
+    async def _read_resident_openclaw_token(self, runtime: ResidentRuntime) -> str | None:
+        """Read RAVN_OPENCLAW_TOKEN back from the running Ravn process, if it has one."""
+        sandbox_name = str(runtime.backend_ref.get("name") or "")
+        if not sandbox_name:
+            return None
+        try:
+            exit_code, output = await asyncio.to_thread(
+                self._client.exec_script,
+                sandbox=sandbox_name,
+                script=_resident_process_env_script("ravn", RAVN_OPENCLAW_TOKEN_ENV),
+                env={},
+            )
+        except Exception:
+            logger.debug("Could not read resident %s's shim token", runtime.id, exc_info=True)
+            return None
+        token = output.strip()
+        if exit_code != 0 or not token or any(c.isspace() for c in token):
+            return None
+        return token
+
+    def _resident_openclaw_enabled(
+        self,
+        runtime: ResidentRuntime,
+        values: dict[str, Any],
+    ) -> bool:
+        return resident_openclaw_shim_enabled(
+            runtime,
+            values,
+            tokens_provisioned=self._resident_openclaw_tokens is not None,
+        )
+
+    async def _resident_openclaw_environment(
+        self,
+        runtime: ResidentRuntime,
+        values: dict[str, Any],
+    ) -> dict[str, str]:
+        """The shim's token for the Ravn process; never in the sandbox's own env."""
+        if not self._resident_openclaw_enabled(runtime, values):
+            return {}
+        return {RAVN_OPENCLAW_TOKEN_ENV: await self.resident_openclaw_token(runtime)}
+
+    async def _forget_resident_openclaw_token(self, runtime: ResidentRuntime) -> None:
+        if runtime.engine is ResidentEngine.RAVN and self._resident_openclaw_tokens is not None:
+            await self._resident_openclaw_tokens.forget(runtime)
+
+    async def _start_resident_openclaw_shim(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+        values: dict[str, Any],
+        sandbox: OpenShellSandbox,
+    ) -> None:
+        """Restart a running Ravn resident once whose processes predate its shim.
+
+        A Ravn resident deployed before Ravn sessions were on by default runs without
+        the shim; restarting its processes (the restart path) starts it with the new
+        ravn.yaml and the resident's own token. Checked until seen up, and restarted at
+        most once per resident per Volundr, so a shim that cannot start never restarts
+        the resident in a loop.
+        """
+        runtime_id = str(runtime.id)
+        if runtime_id in self._resident_openclaw_checked:
+            return
+        if self._resident_process_lock(runtime).locked():
+            return
+        port = _resident_openclaw_port(values)
+        listening = await self._resident_processes_ready(sandbox.name, (), service_port=port)
+        self._resident_openclaw_checked.add(runtime_id)
+        if listening:
+            return
+        logger.info("Restarting resident %s to start its Ravn sessions shim", runtime.id)
+        try:
+            # Its processes only, in place: moving it to another image is
+            # _follow_platform's decision, not this one's.
+            async with self._resident_process_lock(runtime):
+                await self._restart(runtime, profile, follow_platform=False)
+        except Exception:
+            logger.warning(
+                "Could not restart resident %s to start its Ravn sessions shim",
+                runtime.id,
+                exc_info=True,
+            )
+
+    def resident_openclaw_target(
+        self,
+        runtime: ResidentRuntime,
+        port: int,
+    ) -> SessionProxyTarget | None:
+        """The shim's sandbox port over the same native TCP tunnel Hermes residents use."""
+        sandbox_id = str(runtime.backend_ref.get("id") or "")
+        sandbox_name = str(runtime.backend_ref.get("name") or "")
+        if not sandbox_id or not sandbox_name:
+            return None
+        key = _openclaw_forwarder_key(runtime, sandbox_id)
+        forwarder = self._resident_forwarders.get(key)
+        if forwarder is None:
+            # A redeployed resident has a new sandbox: retire the old one's tunnel.
+            for stale in [k for k in self._resident_forwarders if _is_openclaw_key(k, runtime)]:
+                self._resident_forwarders.pop(stale).close()
+            forwarder = self._client.start_tcp_forward(sandbox=sandbox_name, target_port=port)
+            self._resident_forwarders[key] = forwarder
+        return SessionProxyTarget(
+            service_url=f"http://ravn-openclaw.internal:{port}/",
+            connect_host=forwarder.host,
+            connect_port=forwarder.port,
+        )
 
     def set_credential_store(self, store: CredentialStorePort) -> None:
         """Inject credential store for resolving OpenShell launch credentials."""
@@ -979,7 +1541,7 @@ class OpenShellGatewayPodManager(
             ready = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
             config_exit, _ = await asyncio.to_thread(
                 self._client.exec_script,
-                sandbox_id=ready.id,
+                sandbox=ready.name,
                 script=(
                     "umask 077\n"
                     f"mkdir -p {shlex.quote(CODEX_ENROLLMENT_HOME)} "
@@ -993,7 +1555,7 @@ class OpenShellGatewayPodManager(
                 raise RuntimeError("Codex enrollment home initialization failed")
             launch_exit = await asyncio.to_thread(
                 self._client.exec_detached,
-                sandbox_id=ready.id,
+                sandbox=ready.name,
                 command=("codex", "login", "--device-auth"),
                 env=environment,
                 log_path=CODEX_ENROLLMENT_LOG_PATH,
@@ -1002,7 +1564,7 @@ class OpenShellGatewayPodManager(
             if launch_exit != 0:
                 raise RuntimeError("Codex device login failed to start")
             verification_uri, user_code = await self._wait_for_codex_device_challenge(
-                ready.id,
+                ready.name,
                 environment,
             )
         except Exception:
@@ -1033,8 +1595,8 @@ class OpenShellGatewayPodManager(
                 state=CredentialEnrollmentState.FAILED,
                 error_code="unsupported_method",
             )
-        sandbox_id = enrollment.runner_ref.get("sandbox_id", "")
-        if not sandbox_id:
+        enrollment_sandbox = enrollment.runner_ref.get("sandbox_name", "")
+        if not enrollment_sandbox:
             return CredentialEnrollmentPoll(
                 state=CredentialEnrollmentState.FAILED,
                 error_code="runner_missing",
@@ -1052,7 +1614,7 @@ class OpenShellGatewayPodManager(
         )
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox_id,
+            sandbox=enrollment_sandbox,
             script=script,
             env={"CODEX_HOME": CODEX_ENROLLMENT_HOME},
         )
@@ -1091,14 +1653,14 @@ class OpenShellGatewayPodManager(
 
     async def _wait_for_codex_device_challenge(
         self,
-        sandbox_id: str,
+        sandbox_name: str,
         environment: dict[str, str],
     ) -> tuple[str, str]:
         deadline = time.monotonic() + self._credential_enrollment_challenge_timeout_seconds
         while time.monotonic() < deadline:
             exit_code, output = await asyncio.to_thread(
                 self._client.exec_script,
-                sandbox_id=sandbox_id,
+                sandbox=sandbox_name,
                 script=(
                     f"if [ -f {shlex.quote(CODEX_ENROLLMENT_LOG_PATH)} ]; then "
                     f"sed -n '1,120p' {shlex.quote(CODEX_ENROLLMENT_LOG_PATH)}; fi\n"
@@ -1118,8 +1680,7 @@ class OpenShellGatewayPodManager(
         grant: OpenShellProviderGrant,
     ) -> None:
         try:
-            await asyncio.to_thread(self._client.delete_sandbox, sandbox_name)
-            await self._wait_for_sandbox_deleted(sandbox_name)
+            await self._delete_sandbox_and_wait(sandbox_name)
         finally:
             if grant.provider_name:
                 await asyncio.to_thread(self._client.delete_provider_grant, grant)
@@ -1197,7 +1758,7 @@ class OpenShellGatewayPodManager(
             sandbox = self._client.get_sandbox(self._sandbox_name(session))
             if sandbox is None or not sandbox.ready:
                 return None
-            return self._tcp_proxy_target(str(session.id), sandbox.id, self._service_port)
+            return self._tcp_proxy_target(str(session.id), sandbox.name, self._service_port)
         base = self._service_urls.get(str(session.id))
         if not base and session.chat_endpoint:
             parsed = urlparse(session.chat_endpoint)
@@ -1211,12 +1772,12 @@ class OpenShellGatewayPodManager(
         if runtime.engine is ResidentEngine.HERMES:
             return self._hermes_proxy_target(runtime)
         if len(self._resident_sandbox_name(runtime)) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
-            sandbox_id = str(runtime.backend_ref.get("id") or "")
-            if not sandbox_id:
+            sandbox_name = str(runtime.backend_ref.get("name") or "")
+            if not sandbox_name:
                 return None
             return self._tcp_proxy_target(
                 str(runtime.id),
-                sandbox_id,
+                sandbox_name,
                 int(runtime.backend_ref.get("service_port") or self._service_port),
             )
         base = self._service_urls.get(str(runtime.id)) or str(
@@ -1228,14 +1789,14 @@ class OpenShellGatewayPodManager(
         runtime_id = str(runtime.id)
         forwarder = self._resident_forwarders.get(runtime_id)
         if forwarder is None:
-            sandbox_id = str(runtime.backend_ref.get("id") or "")
+            sandbox_name = str(runtime.backend_ref.get("name") or "")
             service_port = int(
                 runtime.backend_ref.get("service_port") or HERMES_API_SERVER_DEFAULT_PORT
             )
-            if not sandbox_id:
+            if not sandbox_name:
                 return None
             forwarder = self._client.start_tcp_forward(
-                sandbox_id=sandbox_id,
+                sandbox=sandbox_name,
                 target_port=service_port,
             )
             self._resident_forwarders[runtime_id] = forwarder
@@ -1245,12 +1806,14 @@ class OpenShellGatewayPodManager(
             connect_port=forwarder.port,
         )
 
-    def _tcp_proxy_target(self, workload_id: str, sandbox_id: str, port: int) -> SessionProxyTarget:
+    def _tcp_proxy_target(
+        self, workload_id: str, sandbox_name: str, port: int
+    ) -> SessionProxyTarget:
         # Existing long sandbox names predate the workspace-aware DNS limit.
         # Reuse the authenticated native tunnel rather than renaming live pods.
         forwarder = self._resident_forwarders.get(workload_id)
         if forwarder is None:
-            forwarder = self._client.start_tcp_forward(sandbox_id=sandbox_id, target_port=port)
+            forwarder = self._client.start_tcp_forward(sandbox=sandbox_name, target_port=port)
             self._resident_forwarders[workload_id] = forwarder
         return SessionProxyTarget(
             service_url="http://skuld.internal",
@@ -1270,6 +1833,9 @@ class OpenShellGatewayPodManager(
 
     async def start(self, session: Session, spec: SessionSpec) -> PodStartResult:
         spec = self._with_brokered_credentials(spec)
+        check_policy_allows_egress(
+            self._network_policies, (spec.values.get("openshell") or {}).get("egress") or []
+        )
         sandbox_name = self._sandbox_name(session)
         session_id = str(session.id)
         legacy = None
@@ -1297,10 +1863,13 @@ class OpenShellGatewayPodManager(
         }
         if spec.values.get("persistence", {}).get("existingClaim"):
             labels["volundr.niuu.io/storage"] = "forge"
-        annotations: dict[str, str] = {}
+        pod_labels: dict[str, str] = {}
+        pod_annotations: dict[str, str] = {}
         if spec.pod_spec:
-            labels.update({str(key): str(value) for key, value in spec.pod_spec.labels.items()})
-            annotations.update(self._supported_annotations_from_pod_spec(spec.pod_spec.annotations))
+            pod_labels.update({str(key): str(value) for key, value in spec.pod_spec.labels.items()})
+            pod_annotations.update(
+                self._supported_annotations_from_pod_spec(spec.pod_spec.annotations)
+            )
         self._warn_unsupported_pod_spec(session, spec)
         try:
             platform_providers = await self._resolve_platform_provider(
@@ -1341,7 +1910,7 @@ class OpenShellGatewayPodManager(
                 for name in provider_names
             )
             if legacy is not None:
-                sandbox = await asyncio.to_thread(self._client.start_sandbox, sandbox_name)
+                sandbox = await self._resume_legacy_sandbox(sandbox_name)
             else:
                 sandbox = await asyncio.to_thread(
                     self._client.create_sandbox,
@@ -1349,7 +1918,8 @@ class OpenShellGatewayPodManager(
                     image=self._sandbox_image,
                     env=env,
                     labels=labels,
-                    annotations=annotations,
+                    pod_labels=pod_labels,
+                    pod_annotations=pod_annotations,
                     resources=self._resources_from_spec(spec),
                     driver_config=driver_config,
                     providers=provider_names,
@@ -1362,11 +1932,11 @@ class OpenShellGatewayPodManager(
             if projected_files:
                 await asyncio.to_thread(
                     self._client.write_files,
-                    sandbox_id=ready.id,
+                    sandbox=ready.name,
                     files=projected_files,
                 )
             await self._bootstrap_workspace(
-                ready.id,
+                ready.name,
                 session,
                 spec,
                 env,
@@ -1380,13 +1950,13 @@ class OpenShellGatewayPodManager(
                 }
                 await asyncio.to_thread(
                     self._client.write_files,
-                    sandbox_id=ready.id,
+                    sandbox=ready.name,
                     files={**workload_files, workload_start_file: b"ready"},
                 )
             for process in runtime_processes:
                 process_exit = await asyncio.to_thread(
                     self._client.exec_detached,
-                    sandbox_id=ready.id,
+                    sandbox=ready.name,
                     command=process.command,
                     env={**process_env, **process.env},
                     log_path=process.log_path,
@@ -1412,7 +1982,7 @@ class OpenShellGatewayPodManager(
             )
             exit_code = await asyncio.to_thread(
                 self._client.exec_detached,
-                sandbox_id=ready.id,
+                sandbox=ready.name,
                 command=command,
                 env=process_env,
                 log_path=self._command_log_path,
@@ -1453,7 +2023,27 @@ class OpenShellGatewayPodManager(
             pod_name=sandbox_name,
         )
 
-    async def stop(self, session: Session) -> bool:
+    async def _resume_legacy_sandbox(self, sandbox_name: str) -> OpenShellSandbox:
+        """Start a stopped sandbox that owns its own storage.
+
+        OpenShell v0.1.6 re-admits a sandbox's attachments on start and refuses
+        state recorded by earlier gateways without admission provenance, so a
+        session stopped on an older gateway cannot be resumed in place.
+        """
+        try:
+            return await asyncio.to_thread(self._client.start_sandbox, sandbox_name)
+        except grpc.RpcError as exc:
+            raise RuntimeError(
+                f"OpenShell could not resume sandbox {sandbox_name}: {_rpc_error_text(exc)}. "
+                "A session stopped on an OpenShell gateway older than v0.1.6 cannot be "
+                "resumed; archive what it needs and start a new session (its storage "
+                "belongs to the old sandbox)"
+            ) from exc
+
+    async def _release_session_handles(
+        self, session: Session
+    ) -> tuple[str, OpenShellSandbox | None, tuple[OpenShellProviderGrant, ...]]:
+        """Close this process's handles on a session's sandbox and find its grants."""
         forwarder = self._resident_forwarders.pop(str(session.id), None)
         if forwarder is not None:
             await asyncio.to_thread(forwarder.close)
@@ -1468,6 +2058,29 @@ class OpenShellGatewayPodManager(
                 for name in sandbox.providers
                 if name.startswith("volundr-")
             )
+        return sandbox_name, sandbox, grants
+
+    async def destroy(self, session: Session) -> bool:
+        """Delete the session's sandbox, service and grants, whatever phase it is in.
+
+        ``stop`` only suspends a sandbox whose storage the gateway owns, so a
+        deleted session would leave its Sandbox CR and workspace volume behind.
+        Deletion does not wait for a stop: a sandbox whose pod already failed
+        never reaches STOPPED, but DeleteSandbox removes it all the same.
+        """
+        sandbox_name, _, grants = await self._release_session_handles(session)
+        try:
+            return await self._cleanup_resources(sandbox_name, grants)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not delete OpenShell sandbox {sandbox_name} for session {session.id}: "
+                f"{exc}. The session is kept so the delete can be retried; check the "
+                "OpenShell gateway's DeleteSandbox for this sandbox, then delete the "
+                "session again"
+            ) from exc
+
+    async def stop(self, session: Session) -> bool:
+        sandbox_name, sandbox, grants = await self._release_session_handles(session)
         if sandbox is not None and (sandbox.labels or {}).get("volundr.niuu.io/storage") != "forge":
             # Legacy volumes are owned by the Sandbox CR: deleting it also
             # deletes history. Native stop removes compute but retains storage.
@@ -1480,7 +2093,7 @@ class OpenShellGatewayPodManager(
                 # read-only Git caches, retaining the previous home as a backup.
                 exit_code, _ = await asyncio.to_thread(
                     self._client.exec_script,
-                    sandbox_id=sandbox.id,
+                    sandbox=sandbox.name,
                     script=(
                         "set -eu\n"
                         f"HOME_ROOT={shlex.quote(self._sandbox_home)}\n"
@@ -1559,16 +2172,114 @@ class OpenShellGatewayPodManager(
         except (RuntimeError, TypeError, ValueError):
             return False
 
+    def _resident_process_lock(self, runtime: ResidentRuntime) -> asyncio.Lock:
+        return self._resident_process_locks.setdefault(str(runtime.id), asyncio.Lock())
+
     async def deploy(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        async with self._resident_process_lock(runtime):
+            return await self._deploy(runtime, profile)
+
+    async def _deploy(
         self,
         runtime: ResidentRuntime,
         profile: ResidentDeploymentProfile,
     ) -> ResidentRuntimeObservation:
         if not self.supports(profile):
             raise RuntimeError(f"OpenShell does not support resident profile {profile.id!r}")
-        values = self._with_brokered_credential_values(_resident_profile_values(profile))
-        subject = self._resident_subject(runtime)
+        values, claim = self._resident_values(runtime, profile)
         sandbox_name = self._resident_sandbox_name(runtime)
+        sandbox = await self._owned_resident_sandbox(runtime, sandbox_name)
+        if claim is None:
+            return await self._deploy_sandbox(
+                runtime, values, sandbox_name=sandbox_name, sandbox=sandbox, claim=None
+            )
+        sandboxes = {sandbox_name: sandbox} if sandbox is not None else {}
+        for name in self._resident_sandbox_names(runtime):
+            if name in sandboxes or name == sandbox_name:
+                continue
+            found = await self._owned_resident_sandbox(runtime, name)
+            if found is not None:
+                sandboxes[name] = found
+        mounted = [item for item in sandboxes.values() if _sandbox_mounts_claim(item, claim)]
+        unmounted = [item for item in sandboxes.values() if not _sandbox_mounts_claim(item, claim)]
+        if len(unmounted) > 1:
+            raise RuntimeError(
+                f"Resident {runtime.name} has several sandboxes without its workspace volume "
+                f"({', '.join(sorted(item.name for item in unmounted))}); delete all but the "
+                "one that holds its state"
+            )
+        if unmounted:
+            return await self._deploy_unmigrated(
+                runtime, profile, values, claim, unmounted[0], mounted
+            )
+        if len(mounted) > 1:
+            raise RuntimeError(
+                f"Resident {runtime.name} has several sandboxes on its workspace volume "
+                f"({', '.join(sorted(item.name for item in mounted))}); delete all but one"
+            )
+        await self._ensure_resident_workspace_claim(runtime, claim)
+        current = mounted[0] if mounted else None
+        return await self._deploy_sandbox(
+            runtime,
+            values,
+            sandbox_name=current.name if current is not None else sandbox_name,
+            sandbox=current,
+            claim=claim,
+        )
+
+    async def _owned_resident_sandbox(
+        self,
+        runtime: ResidentRuntime,
+        sandbox_name: str,
+    ) -> OpenShellSandbox | None:
+        """The resident's sandbox of this name; None when there is none (or it is going)."""
+        sandbox = await asyncio.to_thread(self._client.get_sandbox, sandbox_name)
+        if sandbox is None:
+            return None
+        resident_label = dict(sandbox.labels or {}).get("volundr.niuu.io/resident")
+        if resident_label != str(runtime.id):
+            raise RuntimeError(
+                f"OpenShell sandbox {sandbox_name!r} is not owned by resident {runtime.id}"
+            )
+        if sandbox.phase == openshell_pb2.SANDBOX_PHASE_DELETING:
+            # A rolled-back attempt is still being deleted: let it go, then
+            # provision a fresh sandbox under the same name.
+            await self._wait_for_sandbox_deleted(
+                sandbox_name, timeout=self._resident_delete_timeout
+            )
+            return None
+        return sandbox
+
+    async def _deploy_sandbox(
+        self,
+        runtime: ResidentRuntime,
+        values: dict[str, Any],
+        *,
+        sandbox_name: str,
+        sandbox: OpenShellSandbox | None,
+        claim: ResidentWorkspaceClaim | None,
+        replaced_image: str = "",
+        before_start: Any = None,
+        migration: _WorkspaceMigrationProgress | None = None,
+        keep_sandbox_on_failure: bool = False,
+    ) -> ResidentRuntimeObservation:
+        """Deploy the resident into ``sandbox`` (adopted), or a new one named ``sandbox_name``.
+
+        ``before_start`` runs once the sandbox is ready, before any file is
+        written or process started (a workspace migration restores there).
+        ``keep_sandbox_on_failure`` leaves an adopted sandbox in place when the
+        deployment fails, for a sandbox that still holds the resident's state.
+        A migration's rollback removes only the new sandbox, never its source.
+        """
+        if migration is not None and sandbox_name == migration.source:
+            raise RuntimeError(
+                f"A workspace migration cannot deploy into its source sandbox {sandbox_name}"
+            )
+        subject = self._resident_subject(runtime)
         env = self._resident_environment(runtime, values)
         env.update(resident_flock_environment(runtime))
         service_name, service_port = _resident_service(
@@ -1579,18 +2290,13 @@ class OpenShellGatewayPodManager(
             raise RuntimeError("OpenClaw residents require the configured credential store")
         if runtime.engine is ResidentEngine.HERMES and self._credential_store is None:
             raise RuntimeError("Hermes residents require the configured credential store")
-        credential_context = OpenShellCredentialContext(
-            files={}, providers=(), environment={}, process_environment={}
-        )
         grants: tuple[OpenShellProviderGrant, ...] = ()
-        sandbox = await asyncio.to_thread(self._client.get_sandbox, sandbox_name)
-        if sandbox is not None:
-            resident_label = dict(sandbox.labels or {}).get("volundr.niuu.io/resident")
-            if resident_label != str(runtime.id):
-                raise RuntimeError(
-                    f"OpenShell sandbox {sandbox_name!r} is not owned by resident {runtime.id}"
-                )
         resumed_deployment = sandbox is not None
+        image = _image_from_values(values, default=self._sandbox_image)
+        # A resident whose sandbox an upgrade recreates keeps its identity: its
+        # credentials survive a failed attempt, as they did the old sandbox.
+        upgraded_from = self._resident_upgrades.get(str(runtime.id))
+        replaced_image = replaced_image or upgraded_from or ""
         try:
             if runtime.engine is ResidentEngine.OPENCLAW:
                 from volundr.adapters.outbound.openclaw_gateway import (
@@ -1626,32 +2332,58 @@ class OpenShellGatewayPodManager(
                 sandbox = await asyncio.to_thread(
                     self._client.create_sandbox,
                     name=sandbox_name,
-                    image=_image_from_values(values, default=self._sandbox_image),
+                    image=image,
                     env=env,
                     labels={
                         "app.kubernetes.io/managed-by": "volundr",
                         "volundr.niuu.io/resident": str(runtime.id),
                         "volundr.niuu.io/runtime": runtime.engine.value,
                         **resident_flock_labels(runtime, prefix="volundr.niuu.io"),
-                        **mesh_labels,
                     },
-                    annotations=mesh_annotations,
+                    # Ravn's Kubernetes discovery reads these from the Pod.
+                    pod_labels=mesh_labels,
+                    pod_annotations=mesh_annotations,
+                    annotations={
+                        SANDBOX_IMAGE_ANNOTATION: image,
+                        **(
+                            {SANDBOX_REPLACED_IMAGE_ANNOTATION: replaced_image}
+                            if replaced_image and replaced_image != image
+                            else {}
+                        ),
+                        **(
+                            {SANDBOX_WORKSPACE_CLAIM_ANNOTATION: claim.name}
+                            if claim is not None
+                            else {}
+                        ),
+                    },
                     resources=_resources_from_values(values, cpu=self._cpu, memory=self._memory),
                     driver_config=_driver_config_from_values(values),
                     providers=provider_names,
-                    policy=self._sandbox_policy,
+                    policy=self._resident_sandbox_policy(claim),
                 )
             ready = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
+            processes = self._resident_processes(runtime, values)
+            relaunch = False
+            if claim is not None:
+                if resumed_deployment and (
+                    await self._resident_workspace_link_state(ready) not in WORKSPACE_ON_VOLUME
+                ):
+                    # Its processes run off the volume: stop them, link, start them all.
+                    await self._stop_resident_processes_in(ready, processes)
+                    relaunch = True
+                # Every engine, before anything is written into the workspace.
+                await self._ensure_resident_workspace_link(ready)
+            if before_start is not None:
+                await before_start(ready)
             files = {
                 **credential_context.files,
                 **await self._resident_config_files(runtime, values),
             }
-            processes = self._resident_processes(runtime, values)
             for process in processes:
                 files.update(_shared_resident_process_files(runtime, process.files))
             await asyncio.to_thread(
                 self._client.write_files,
-                sandbox_id=ready.id,
+                sandbox=ready.name,
                 files=files,
             )
             process_env = {**env, **credential_context.process_environment}
@@ -1659,12 +2391,16 @@ class OpenShellGatewayPodManager(
                 process_env["OPENCLAW_GATEWAY_TOKEN"] = machine_credential["gateway_token"]
             if runtime.engine is ResidentEngine.HERMES and machine_credential is not None:
                 process_env[HERMES_API_SERVER_KEY_ENV] = machine_credential["api_key"]
-            if resumed_deployment:
-                await self._launch_missing_resident_processes(ready.id, process_env, processes)
+            process_env.update(await self._resident_openclaw_environment(runtime, values))
+            if claim is not None:
+                await self._verify_resident_workspace_link(ready)
+                await self._ensure_resident_home_links(runtime, ready)
+            if resumed_deployment and not relaunch:
+                await self._launch_missing_resident_processes(ready.name, process_env, processes)
             else:
-                await self._launch_resident_processes(ready.id, process_env, processes)
+                await self._launch_resident_processes(ready.name, process_env, processes)
             await self._wait_for_resident_processes(
-                ready.id,
+                ready.name,
                 processes,
                 service_port=service_port,
             )
@@ -1681,11 +2417,34 @@ class OpenShellGatewayPodManager(
                 )
                 if not service_url and not self._gateway_public_url:
                     raise RuntimeError("OpenShell did not return a resident service URL")
-        except Exception:
-            try:
-                await self._cleanup_resources(sandbox_name, grants, service_name=service_name)
-            except Exception:
-                logger.exception("OpenShell resident rollback failed for %s", runtime.id)
+        except Exception as exc:
+            # A migration's old sandbox keeps running on the resident's provider
+            # grants until the new one is healthy and the old one is gone.
+            keep_grants = migration is not None
+            if not keep_sandbox_on_failure:
+                try:
+                    await self._cleanup_resident_resources(
+                        sandbox_name,
+                        () if keep_grants else grants,
+                        service_name=service_name,
+                    )
+                except Exception:
+                    logger.exception("OpenShell resident rollback failed for %s", runtime.id)
+                    if migration is not None:
+                        # Reconcile removes it once it is safe to.
+                        migration.abandoned = sandbox_name
+            if upgraded_from is not None:
+                reason = (
+                    f"Upgrading resident {runtime.name} from {upgraded_from} to {image} "
+                    f"failed: {exc}. Restart the resident to retry."
+                )
+                logger.warning(reason)
+                self._failed_resident_upgrades[str(runtime.id)] = (image, reason)
+                raise
+            if migration is not None or keep_sandbox_on_failure or claim is not None:
+                # The resident keeps its identity: its state survives on its old
+                # sandbox or on its workspace volume.
+                raise
             if runtime.engine is ResidentEngine.OPENCLAW and self._credential_store is not None:
                 await self._credential_store.delete("resident", str(runtime.id), "openclaw-gateway")
             if runtime.engine is ResidentEngine.HERMES and self._credential_store is not None:
@@ -1694,11 +2453,17 @@ class OpenShellGatewayPodManager(
                 await self._credential_store.delete(
                     "resident", str(runtime.id), HERMES_CREDENTIAL_NAME
                 )
+            await self._forget_resident_openclaw_token(runtime)
             raise
 
         resolved_service_url = (service_url or self._gateway_public_url).rstrip("/")
         self._service_urls[str(runtime.id)] = resolved_service_url
         self._provider_grants[str(runtime.id)] = grants
+        self._resident_upgrades.pop(str(runtime.id), None)
+        self._failed_resident_upgrades.pop(str(runtime.id), None)
+        self._going_resident_sandboxes.pop(str(runtime.id), None)
+        if claim is not None:
+            self._failed_workspace_migrations.pop(str(runtime.id), None)
         return self._resident_observation(
             runtime,
             ready,
@@ -1708,6 +2473,799 @@ class OpenShellGatewayPodManager(
             service_port=service_port,
             process_names=tuple(process.name for process in processes),
         )
+
+    def _resident_sandbox_names(self, runtime: ResidentRuntime) -> tuple[str, str]:
+        """The two names a resident's sandbox takes: the default, and a migration's."""
+        suffix = runtime.id.hex[:RESIDENT_SANDBOX_ID_CHARS]
+        return (
+            f"{RESIDENT_SANDBOX_PREFIX}{suffix}",
+            f"{RESIDENT_MIGRATION_SANDBOX_PREFIX}{suffix}",
+        )
+
+    def _migration_sandbox_name(self, runtime: ResidentRuntime, old_name: str) -> str:
+        """The name of the sandbox a migration creates beside ``old_name``."""
+        default, migration = self._resident_sandbox_names(runtime)
+        return default if old_name == migration else migration
+
+    async def _ensure_resident_workspace_claim(
+        self,
+        runtime: ResidentRuntime,
+        claim: ResidentWorkspaceClaim,
+    ) -> None:
+        """Create the resident's claim; finish a migration whose old sandbox is gone.
+
+        A claim left ``verified`` lost its old sandbox after the copy was checked:
+        it is complete. One left ``copying`` lost the sandbox it was copying from,
+        so it holds a partial copy, and the resident is not started on it.
+        """
+        claims = self._require_workspace_claims()
+        pvc, created = await claims.ensure(runtime, claim)
+        if created:
+            logger.info(
+                "Created resident %s's workspace volume %s/%s (%s)",
+                runtime.name,
+                claims.namespace,
+                claim.name,
+                claim.size,
+            )
+            return
+        state = workspace_migration_state(pvc)
+        if state is None or state.phase == PHASE_COMPLETE:
+            return
+        if state.phase == PHASE_VERIFIED:
+            lease = WorkspaceMigrationLease(
+                claims,
+                pvc,
+                self._workspace_migration_holder,
+                self._workspace_migration_lease_seconds,
+            )
+            await lease.acquire(source=state.source, phase=PHASE_VERIFIED)
+            await lease.set_phase(PHASE_COMPLETE)
+            await lease.release()
+            logger.info(
+                "Migrated resident %s's workspace to %s/%s (old sandbox %s already gone)",
+                runtime.name,
+                claims.namespace,
+                claim.name,
+                state.source,
+            )
+            return
+        raise WorkspaceMigrationError(
+            f"Resident {runtime.name}'s workspace migration from sandbox {state.source} did "
+            f"not finish, and that sandbox is gone: volume {claims.namespace}/{claim.name} "
+            "holds a partial copy. Völundr will not start the resident on it. Inspect the "
+            "volume, then remove its volundr.niuu.io/workspace-migration annotation to use it "
+            "as it is, or delete the volume to start the resident empty."
+        )
+
+    async def _deploy_unmigrated(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+        values: dict[str, Any],
+        claim: ResidentWorkspaceClaim,
+        old: OpenShellSandbox,
+        stale: Sequence[OpenShellSandbox],
+    ) -> ResidentRuntimeObservation:
+        """Deploy a resident whose sandbox predates its claim: copy its state over once.
+
+        A migration that fails before the old sandbox is removed leaves it running
+        (its processes restarted) and reports a WorkspaceMigration condition; it is
+        retried on Restart or when Völundr restarts.
+        """
+        runtime_id = str(runtime.id)
+        failed = self._failed_workspace_migrations.get(runtime_id)
+        if failed is not None:
+            return await self._keep_unmigrated_sandbox(runtime, profile, old, failed)
+        try:
+            return await self._migrate_workspace(runtime, values, claim, old, stale)
+        except WorkspaceMigrationHeldError:
+            raise
+        except WorkspaceMigrationError as exc:
+            self._failed_workspace_migrations[runtime_id] = exc
+            logger.warning(
+                "Resident %s's workspace migration failed (%s): %s. Its sandbox %s keeps "
+                "running; Restart the resident to retry.",
+                runtime.name,
+                exc.reason,
+                exc,
+                old.name,
+            )
+            return await self._keep_unmigrated_sandbox(runtime, profile, old, exc)
+
+    async def _keep_unmigrated_sandbox(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+        sandbox: OpenShellSandbox,
+        error: WorkspaceMigrationError,
+    ) -> ResidentRuntimeObservation:
+        """Run the resident on the sandbox that still holds its state, and say why.
+
+        The sandbox is adopted as it is (no claim mounted): missing processes are
+        started. A failure here never removes it.
+        """
+        values = self._with_brokered_credential_values(_resident_profile_values(profile))
+        observation = await self._deploy_sandbox(
+            runtime,
+            values,
+            sandbox_name=sandbox.name,
+            sandbox=sandbox,
+            claim=None,
+            keep_sandbox_on_failure=True,
+        )
+        conditions = [*observation.conditions, _workspace_migration_failed_condition(error)]
+        running, target = _sandbox_image(sandbox), self._target_image(values)
+        if running and running != target:
+            conditions.append(self._hold_upgrade(runtime, running, target))
+        return replace(observation, conditions=conditions)
+
+    async def _remove_abandoned_migration_sandbox(
+        self,
+        runtime: ResidentRuntime,
+        values: dict[str, Any],
+        claim: ResidentWorkspaceClaim,
+        old: OpenShellSandbox,
+    ) -> None:
+        """Remove the sandbox this resident's failed migration created and left behind.
+
+        Only the sandbox this Völundr recorded when that migration's rollback could
+        not remove it, and only while it is still the resident's migration sandbox
+        beside ``old`` (labelled for the resident, mounting its claim), never
+        ``old`` itself, which runs the resident. It is removed under the
+        migration's lease, and only while the claim is still ``copying`` or holds a
+        copy of ``old`` (which then still runs the resident), so a migration that
+        another Völundr runs keeps its sandbox.
+        The removal is requested, not awaited; a later pass sees the sandbox gone.
+        """
+        runtime_id = str(runtime.id)
+        name = self._abandoned_migration_sandboxes.get(runtime_id)
+        if not name:
+            return
+        if name == old.name or name != self._migration_sandbox_name(runtime, old.name):
+            self._abandoned_migration_sandboxes.pop(runtime_id, None)
+            return
+        lock = self._resident_process_lock(runtime)
+        if lock.locked():
+            return
+        async with lock:
+            leftover = await asyncio.to_thread(self._client.get_sandbox, name)
+            if leftover is None:
+                self._abandoned_migration_sandboxes.pop(runtime_id, None)
+                logger.info(
+                    "Sandbox %s of resident %s's failed migration is gone", name, runtime.name
+                )
+                return
+            owner = dict(leftover.labels or {}).get("volundr.niuu.io/resident")
+            if owner != runtime_id or not _sandbox_mounts_claim(leftover, claim):
+                self._abandoned_migration_sandboxes.pop(runtime_id, None)
+                logger.warning(
+                    "Not removing sandbox %s: it is not resident %s's migration sandbox",
+                    name,
+                    runtime.name,
+                )
+                return
+            if leftover.phase == openshell_pb2.SANDBOX_PHASE_DELETING:
+                return
+            claims = self._require_workspace_claims()
+            pvc = await claims.read(claim.name)
+            state = workspace_migration_state(pvc) if pvc is not None else None
+            handover = _copied_from(state, old.name)
+            if state is None or (state.phase != PHASE_COPYING and not handover):
+                return
+            lease = WorkspaceMigrationLease(
+                claims,
+                pvc,
+                self._workspace_migration_holder,
+                self._workspace_migration_lease_seconds,
+            )
+            try:
+                if handover:
+                    await lease.acquire(source=old.name, phase=PHASE_COMPLETE, handover=True)
+                else:
+                    await lease.acquire(source=state.source or old.name)
+            except (WorkspaceMigrationHeldError, WorkspaceClaimInUseError):
+                return
+            service_name, _ = _resident_service(values, self._service_name, self._service_port)
+            try:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(
+                        self._client.delete_service, sandbox_name=name, service=service_name
+                    )
+                await asyncio.to_thread(
+                    self._client.delete_sandbox, name, timeout=self._resident_delete_timeout
+                )
+                logger.info(
+                    "Removing sandbox %s, left by resident %s's failed workspace migration",
+                    name,
+                    runtime.name,
+                )
+            except Exception:
+                logger.warning(
+                    "Could not remove sandbox %s of resident %s's failed workspace migration; "
+                    "retrying on the next pass",
+                    name,
+                    runtime.name,
+                    exc_info=True,
+                )
+            finally:
+                try:
+                    await lease.release()
+                except Exception:
+                    logger.exception("Could not release %s's migration lease", runtime.name)
+
+    async def _migrate_workspace(
+        self,
+        runtime: ResidentRuntime,
+        values: dict[str, Any],
+        claim: ResidentWorkspaceClaim,
+        old: OpenShellSandbox,
+        stale: Sequence[OpenShellSandbox],
+    ) -> ResidentRuntimeObservation:
+        """Copy the resident's state from ``old`` onto its claim, then run it there.
+
+        1. Measure the state; refuse more than the migration limit or the claim.
+        2. Create the claim and take the migration's lease on it.
+        3. Stop the resident's processes in ``old`` and archive its state out.
+        4. Create the new sandbox, on the current image, with the claim mounted.
+        5. Restore the archive into the claim, verify it file by file, and mark
+           the claim ``complete``.
+        6. Start the resident in the new sandbox and wait until it is healthy.
+        7. Only then remove ``old``.
+
+        Any failure before step 7 removes the new sandbox and raises a
+        WorkspaceMigrationError: ``old`` is untouched, and the caller restarts its
+        processes. A claim already ``complete`` from ``old`` (an earlier attempt
+        failed after its copy) is handed over without a copy when ``old`` still
+        holds exactly what the claim recorded; when ``old`` ran on since, its
+        newer state is copied again first.
+        """
+        claims = self._require_workspace_claims()
+        runtime_id = str(runtime.id)
+        sources = self._workspace_migration_sources(runtime)
+        processes = self._resident_processes(runtime, values)
+        service_name, _ = _resident_service(values, self._service_name, self._service_port)
+        new_name = self._migration_sandbox_name(runtime, old.name)
+        progress = _WorkspaceMigrationProgress(source=old.name)
+        # This attempt removes any leftover of an earlier one itself, under its lease.
+        self._abandoned_migration_sandboxes.pop(runtime_id, None)
+        lease: WorkspaceMigrationLease | None = None
+        renewer: asyncio.Task[None] | None = None
+        with contextlib.ExitStack() as spools:
+            try:
+                sizes = await self._workspace_source_sizes(old, sources)
+                self._check_workspace_fits(runtime, claim, sum(sizes.values()))
+                pvc, created = await claims.ensure(
+                    runtime,
+                    claim,
+                    annotations=_initial_migration_annotations(
+                        old.name, self._workspace_migration_holder
+                    ),
+                )
+                handover = False
+                if not created:
+                    state = workspace_migration_state(pvc)
+                    handover = _copied_from(state, old.name)
+                    if not handover and (state is None or state.phase not in RESTARTABLE_PHASES):
+                        raise WorkspaceClaimInUseError(
+                            f"Resident {runtime.name} runs in sandbox {old.name} without its "
+                            f"workspace volume, but {claims.namespace}/{claim.name} already "
+                            "holds a workspace; Völundr will not overwrite it. Delete the "
+                            f"volume to copy {old.name}'s state onto a new one, or delete "
+                            f"sandbox {old.name} to run the resident on the volume."
+                        )
+                candidate = WorkspaceMigrationLease(
+                    claims,
+                    pvc,
+                    self._workspace_migration_holder,
+                    self._workspace_migration_lease_seconds,
+                )
+                if handover:
+                    await candidate.acquire(source=old.name, phase=PHASE_COMPLETE, handover=True)
+                else:
+                    await candidate.acquire(source=old.name)
+                lease = candidate
+                logger.info(
+                    "Migrating resident %s's workspace to a persistent volume "
+                    "(%s/%s, from sandbox %s)",
+                    runtime.name,
+                    claims.namespace,
+                    claim.name,
+                    old.name,
+                )
+                renewer = asyncio.create_task(self._renew_workspace_migration_lease(lease))
+                for leftover in stale:
+                    # A sandbox an earlier attempt created: it never ran the resident
+                    # healthy, or ``old`` would be gone. The claim keeps its state.
+                    await self._cleanup_resident_resources(
+                        leftover.name,
+                        (),
+                        service_name=service_name,
+                    )
+                await self._stop_resident_processes(old, processes)
+                await self._close_resident_forwarders(runtime)
+                archives: list[tuple[str, IO[bytes]]] = []
+                expected = WorkspaceManifest({})
+                for source, destination in sources:
+                    if source not in sizes:
+                        continue
+                    archive = spools.enter_context(tempfile.TemporaryFile())
+                    manifest = await self._archive_workspace_source(old, source, archive)
+                    archives.append((destination, archive))
+                    expected = expected.merged(manifest.under(destination))
+
+                restore: Any = None
+                recorded = _migration_digest(lease.pvc)
+                if handover and recorded == expected.summary():
+                    logger.info(
+                        "Resident %s's workspace on %s/%s matches sandbox %s (%s); "
+                        "starting it there without copying again",
+                        runtime.name,
+                        claims.namespace,
+                        claim.name,
+                        old.name,
+                        recorded,
+                    )
+                else:
+                    if handover:
+                        # ``old`` ran on after the earlier copy: its state is newer.
+                        logger.info(
+                            "Resident %s's sandbox %s changed since its copy (%s, now %s); "
+                            "copying it onto %s/%s again",
+                            runtime.name,
+                            old.name,
+                            recorded or "no digest",
+                            expected.summary(),
+                            claims.namespace,
+                            claim.name,
+                        )
+                        await lease.set_phase(PHASE_COPYING)
+
+                    async def restore(ready: OpenShellSandbox) -> None:
+                        await self._restore_workspace(ready, archives)
+                        restored = await self._restored_workspace_manifest(ready, claim, spools)
+                        _verify_workspace_copy(expected, restored)
+                        # The copy is the resident's state from here on, whatever
+                        # happens to this attempt: a retry starts from it.
+                        await lease.set_phase(
+                            PHASE_COMPLETE, **{ANNOTATION_MIGRATION_DIGEST: expected.summary()}
+                        )
+                        logger.info(
+                            "Copied resident %s's workspace to %s/%s: %d files, %d bytes, "
+                            "verified; sandbox %s stays until the resident runs on it",
+                            runtime.name,
+                            claims.namespace,
+                            claim.name,
+                            expected.files,
+                            expected.size,
+                            old.name,
+                        )
+
+                observation = await self._deploy_sandbox(
+                    runtime,
+                    values,
+                    sandbox_name=new_name,
+                    sandbox=None,
+                    claim=claim,
+                    replaced_image=_sandbox_image(old),
+                    before_start=restore,
+                    migration=progress,
+                )
+            except Exception as exc:
+                if progress.abandoned:
+                    self._abandoned_migration_sandboxes[runtime_id] = progress.abandoned
+                if lease is not None and not lease.lost:
+                    try:
+                        await lease.release()
+                    except Exception:
+                        logger.exception("Could not release %s's migration lease", runtime.name)
+                if isinstance(exc, WorkspaceMigrationError):
+                    raise
+                raise WorkspaceMigrationError(
+                    f"Moving resident {runtime.name} from {old.name} onto its workspace "
+                    f"volume failed: {exc}"
+                ) from exc
+            finally:
+                if renewer is not None:
+                    renewer.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await renewer
+        # The resident runs healthy on its claim: only now does the old sandbox go.
+        await self._retire_migrated_sandbox(runtime, claim, old, service_name, lease)
+        return observation
+
+    async def _retire_migrated_sandbox(
+        self,
+        runtime: ResidentRuntime,
+        claim: ResidentWorkspaceClaim,
+        old: OpenShellSandbox,
+        service_name: str,
+        lease: WorkspaceMigrationLease,
+    ) -> None:
+        """Remove the sandbox a resident ran in before its claim, once it runs on the claim.
+
+        A failure here never touches the new sandbox, which now runs the resident:
+        ``old`` (its processes stopped) is removed on the next deployment.
+        """
+        claims = self._require_workspace_claims()
+        try:
+            await self._cleanup_resident_resources(
+                old.name,
+                (),
+                service_name=service_name,
+            )
+            logger.info(
+                "Migrated resident %s's workspace to %s/%s; it runs there, and its old "
+                "sandbox %s was removed",
+                runtime.name,
+                claims.namespace,
+                claim.name,
+                old.name,
+            )
+        except Exception:
+            logger.warning(
+                "Resident %s runs on its workspace volume %s/%s, but its old sandbox %s "
+                "(its processes stopped, its state copied) could not be removed; the "
+                "resident's next redeployment removes it, or delete it by hand",
+                runtime.name,
+                claims.namespace,
+                claim.name,
+                old.name,
+                exc_info=True,
+            )
+        finally:
+            if not lease.lost:
+                try:
+                    await lease.release()
+                except Exception:
+                    logger.exception("Could not release %s's migration lease", runtime.name)
+
+    async def _renew_workspace_migration_lease(self, lease: WorkspaceMigrationLease) -> None:
+        """Keep the lease while the migration runs; a lost lease stops its next step."""
+        interval = self._workspace_migration_lease_seconds / 3
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await lease.renew()
+            except WorkspaceMigrationError:
+                return
+            except Exception as exc:
+                lease.mark_lost(f"Could not renew the workspace migration lease: {exc}")
+                return
+
+    def _workspace_migration_sources(self, runtime: ResidentRuntime) -> tuple[tuple[str, str], ...]:
+        """(directory in the old sandbox, directory on the claim) pairs to copy."""
+        sources = [(self._sandbox_workspace, "")]
+        if runtime.engine is ResidentEngine.RAVN:
+            sources.append((f"{self._sandbox_home}/{RAVN_HOME_STATE_DIR}", RAVN_PERSISTED_HOME_DIR))
+        return tuple(sources)
+
+    def _check_workspace_fits(
+        self,
+        runtime: ResidentRuntime,
+        claim: ResidentWorkspaceClaim,
+        size: int,
+    ) -> None:
+        if size > self._workspace_migration_max_bytes:
+            raise WorkspaceTooLargeError(
+                f"Resident {runtime.name}'s workspace is {_human_bytes(size)}, over the "
+                f"{self._workspace_migration_max_size} migration limit; nothing was changed. "
+                "Free space in the sandbox, or raise "
+                "podManager.kwargs.resident_workspace_migration_max_size, then Restart it."
+            )
+        if size > claim.size_bytes:
+            raise WorkspaceTooLargeError(
+                f"Resident {runtime.name}'s workspace is {_human_bytes(size)}, more than its "
+                f"{claim.size} volume; nothing was changed. Raise the volume size "
+                "(deployment.volumes.workspace.size, or resident_workspace_size), then Restart it."
+            )
+
+    async def _workspace_source_sizes(
+        self,
+        sandbox: OpenShellSandbox,
+        sources: Sequence[tuple[str, str]],
+    ) -> dict[str, int]:
+        """Bytes used by each source directory that exists in the sandbox."""
+        exit_code, output = await asyncio.to_thread(
+            self._client.exec_script,
+            sandbox=sandbox.name,
+            script=_workspace_size_script(tuple(source for source, _ in sources)),
+            env={},
+        )
+        if exit_code != 0:
+            raise WorkspaceMigrationError(
+                f"Could not measure the workspace in sandbox {sandbox.name}: {output.strip()}"
+            )
+        sizes: dict[str, int] = {}
+        for line in output.splitlines():
+            kib, _, path = line.partition("\t")
+            if path and kib.strip().isdigit():
+                sizes[path] = int(kib) * 1024
+        return sizes
+
+    async def _stop_resident_processes(
+        self,
+        sandbox: OpenShellSandbox,
+        processes: Sequence[OpenShellRuntimeProcess],
+    ) -> None:
+        exit_code, output = await asyncio.to_thread(
+            self._client.exec_script,
+            sandbox=sandbox.name,
+            script=_resident_stop_script(tuple(process.name for process in processes)),
+            env={},
+        )
+        if exit_code != 0:
+            raise WorkspaceMigrationError(
+                f"Could not stop the resident's processes in {sandbox.name}: {output.strip()}"
+            )
+
+    async def _archive_workspace_source(
+        self,
+        sandbox: OpenShellSandbox,
+        source: str,
+        archive: IO[bytes],
+    ) -> WorkspaceManifest:
+        transfer = await asyncio.to_thread(
+            self._client.exec_to_file,
+            sandbox=sandbox.name,
+            script=f"set -eu\ncd {shlex.quote(source)}\nexec tar -cf - .\n",
+            destination=archive,
+            max_bytes=self._workspace_migration_max_bytes,
+            timeout_seconds=self._workspace_migration_timeout,
+        )
+        if transfer.truncated:
+            raise WorkspaceTooLargeError(
+                f"The archive of {source} in {sandbox.name} passed the "
+                f"{self._workspace_migration_max_size} migration limit; nothing was changed"
+            )
+        if transfer.exit_code != 0:
+            raise WorkspaceMigrationError(
+                f"Archiving {source} in {sandbox.name} failed with exit {transfer.exit_code}: "
+                f"{transfer.stderr.strip()}"
+            )
+        archive.seek(0)
+        manifest = read_workspace_manifest(archive)
+        archive.seek(0)
+        return manifest
+
+    async def _restore_workspace(
+        self,
+        sandbox: OpenShellSandbox,
+        archives: Sequence[tuple[str, IO[bytes]]],
+    ) -> None:
+        """Empty the claim (a resumed attempt's partial copy), then extract each archive."""
+        exit_code, output = await asyncio.to_thread(
+            self._client.exec_script,
+            sandbox=sandbox.name,
+            script=_workspace_clear_script(self._sandbox_workspace),
+            env={},
+        )
+        if exit_code != 0:
+            raise WorkspaceMigrationError(
+                f"Could not empty the workspace volume in {sandbox.name}: {output.strip()}"
+            )
+        for destination, archive in archives:
+            archive.seek(0)
+            target = str(PurePosixPath(self._sandbox_workspace, destination))
+            try:
+                transfer = await asyncio.to_thread(
+                    self._client.exec_from_file,
+                    sandbox=sandbox.name,
+                    command=["sh", "-c", _workspace_extract_script(target)],
+                    source=archive,
+                    timeout_seconds=self._workspace_migration_timeout,
+                )
+            except grpc.RpcError as exc:
+                raise WorkspaceMigrationError(
+                    f"Restoring into {target} in {sandbox.name} failed: {_rpc_error_text(exc)}"
+                ) from exc
+            if transfer.exit_code != 0:
+                raise WorkspaceMigrationError(
+                    f"Restoring into {target} in {sandbox.name} failed with exit "
+                    f"{transfer.exit_code}: {transfer.stderr.strip()}"
+                )
+
+    async def _restored_workspace_manifest(
+        self,
+        sandbox: OpenShellSandbox,
+        claim: ResidentWorkspaceClaim,
+        spools: contextlib.ExitStack,
+    ) -> WorkspaceManifest:
+        """Read what the claim now holds back out of the new sandbox (at most its size)."""
+        readback = spools.enter_context(tempfile.TemporaryFile())
+        transfer = await asyncio.to_thread(
+            self._client.exec_to_file,
+            sandbox=sandbox.name,
+            script=(
+                f"set -eu\ncd {shlex.quote(self._sandbox_workspace)}\n"
+                "exec tar --exclude=./lost+found -cf - .\n"
+            ),
+            destination=readback,
+            max_bytes=claim.size_bytes,
+            timeout_seconds=self._workspace_migration_timeout,
+        )
+        if transfer.truncated or transfer.exit_code != 0:
+            raise WorkspaceVerificationError(
+                f"Could not read the restored workspace back from {sandbox.name} "
+                f"(exit {transfer.exit_code}): {transfer.stderr.strip()}"
+            )
+        readback.seek(0)
+        return read_workspace_manifest(readback)
+
+    async def _ensure_resident_home_links(
+        self,
+        runtime: ResidentRuntime,
+        sandbox: OpenShellSandbox,
+    ) -> None:
+        """Point ~/.ravn at its directory on the claim before a Ravn resident starts."""
+        if runtime.engine is not ResidentEngine.RAVN:
+            return
+        link = f"{self._sandbox_home}/{RAVN_HOME_STATE_DIR}"
+        target = str(PurePosixPath(self._sandbox_workspace, RAVN_PERSISTED_HOME_DIR))
+        exit_code, output = await asyncio.to_thread(
+            self._client.exec_script,
+            sandbox=sandbox.name,
+            script=_home_link_script(link, target),
+            env={},
+        )
+        if exit_code != 0:
+            raise RuntimeError(
+                f"Could not keep {link} on the workspace volume in {sandbox.name}: {output.strip()}"
+            )
+
+    def _resident_sandbox_policy(self, claim: ResidentWorkspaceClaim | None) -> Any:
+        """The sandbox policy, with the resident's workspace volume writable."""
+        return self._sandbox_policy if claim is None else self._resident_claim_policy
+
+    async def _ensure_resident_workspace_link(self, sandbox: OpenShellSandbox) -> None:
+        """Point the workspace path at the resident's volume before anything uses it."""
+        exit_code, output = await asyncio.to_thread(
+            self._client.exec_script,
+            sandbox=sandbox.name,
+            script=_workspace_link_script(self._sandbox_workspace, RESIDENT_WORKSPACE_VOLUME_PATH),
+            env={},
+        )
+        if exit_code != 0:
+            raise RuntimeError(
+                f"Could not link {self._sandbox_workspace} to the workspace volume in "
+                f"{sandbox.name}: {output.strip()}"
+            )
+        for line in output.splitlines():
+            if line.startswith("moved-aside="):
+                logger.warning(
+                    "Moved %s in sandbox %s aside to %s (it was not the workspace volume) "
+                    "and linked it to %s",
+                    self._sandbox_workspace,
+                    sandbox.name,
+                    line.removeprefix("moved-aside="),
+                    RESIDENT_WORKSPACE_VOLUME_PATH,
+                )
+        self._linked_workspaces.add(sandbox.id)
+
+    async def _stop_resident_processes_in(
+        self,
+        sandbox: OpenShellSandbox,
+        processes: Sequence[OpenShellRuntimeProcess],
+    ) -> None:
+        exit_code, output = await asyncio.to_thread(
+            self._client.exec_script,
+            sandbox=sandbox.name,
+            script=_resident_stop_script(tuple(process.name for process in processes)),
+            env={},
+        )
+        if exit_code != 0:
+            raise RuntimeError(f"OpenShell resident process stop failed: {output.strip()}")
+
+    async def _resident_workspace_link_state(self, sandbox: OpenShellSandbox) -> str:
+        exit_code, output = await asyncio.to_thread(
+            self._client.exec_script,
+            sandbox=sandbox.name,
+            script=_workspace_link_state_script(
+                self._sandbox_workspace, RESIDENT_WORKSPACE_VOLUME_PATH
+            ),
+            env={},
+        )
+        state = output.strip().splitlines()[-1] if output.strip() else ""
+        if exit_code != 0 or state not in WORKSPACE_LINK_STATES:
+            raise RuntimeError(
+                f"Could not read {self._sandbox_workspace} in {sandbox.name}: {output.strip()}"
+            )
+        return state
+
+    async def _verify_resident_workspace_link(self, sandbox: OpenShellSandbox) -> None:
+        """Fail the deployment if the workspace path is no longer the volume."""
+        state = await self._resident_workspace_link_state(sandbox)
+        if state not in WORKSPACE_ON_VOLUME:
+            self._linked_workspaces.discard(sandbox.id)
+            raise RuntimeError(
+                f"{self._sandbox_workspace} in {sandbox.name} is a {state}, not the resident's "
+                "workspace volume; not starting the resident on it"
+            )
+
+    async def _repair_resident_workspace_link(
+        self,
+        runtime: ResidentRuntime,
+        values: dict[str, Any],
+        sandbox: OpenShellSandbox,
+        processes: Sequence[OpenShellRuntimeProcess],
+        service_port: int,
+    ) -> WorkspaceRepair:
+        """Put a running resident back on its volume if its workspace path is not the link.
+
+        Checked once per sandbox in this Völundr, and only on a sandbox that still
+        exists and is not being deleted (else SANDBOX_GONE: its redeployment
+        recreates it on the claim). The resident's processes stop, what is at the
+        workspace path is moved aside (never deleted), the path is linked, and the
+        processes start again with their files projected anew. The volume itself
+        is not written by the repair. A failure is logged once per error and
+        retried on the next pass.
+        """
+        if sandbox.id in self._linked_workspaces:
+            return WorkspaceRepair.SKIPPED
+        lock = self._resident_process_lock(runtime)
+        if lock.locked():
+            return WorkspaceRepair.SKIPPED
+        async with lock:
+            # Re-read under the lock: an upgrade or rollback may have removed it.
+            current = await asyncio.to_thread(self._client.get_sandbox, sandbox.name)
+            if (
+                current is None
+                or current.id != sandbox.id
+                or current.phase == openshell_pb2.SANDBOX_PHASE_DELETING
+            ):
+                self._failed_workspace_repairs.pop(sandbox.id, None)
+                return WorkspaceRepair.SANDBOX_GONE
+            try:
+                state = await self._resident_workspace_link_state(current)
+                if state in WORKSPACE_ON_VOLUME:
+                    self._linked_workspaces.add(current.id)
+                    self._failed_workspace_repairs.pop(current.id, None)
+                    return WorkspaceRepair.SKIPPED
+                logger.warning(
+                    "Resident %s's sandbox %s runs with %s %s, not on its workspace volume; "
+                    "stopping its processes, linking %s to %s and starting them again",
+                    runtime.name,
+                    current.name,
+                    self._sandbox_workspace,
+                    "missing" if state == "missing" else f"a {state}",
+                    self._sandbox_workspace,
+                    RESIDENT_WORKSPACE_VOLUME_PATH,
+                )
+                files, env = await self._resident_launch_inputs(runtime, values, processes)
+                await self._stop_resident_processes_in(current, processes)
+                await self._ensure_resident_workspace_link(current)
+                await asyncio.to_thread(self._client.write_files, sandbox=current.name, files=files)
+                await self._verify_resident_workspace_link(current)
+                await self._ensure_resident_home_links(runtime, current)
+                await self._launch_resident_processes(current.name, env, processes)
+                await self._wait_for_resident_processes(
+                    current.name, processes, service_port=service_port
+                )
+            except Exception as exc:
+                error = str(exc) or type(exc).__name__
+                if self._failed_workspace_repairs.get(current.id) != error:
+                    self._failed_workspace_repairs[current.id] = error
+                    logger.warning(
+                        "Could not put resident %s's sandbox %s back on its workspace volume; "
+                        "retrying on every pass: %s",
+                        runtime.name,
+                        current.name,
+                        error,
+                        exc_info=True,
+                    )
+                return WorkspaceRepair.FAILED
+        self._failed_workspace_repairs.pop(current.id, None)
+        logger.info(
+            "Resident %s runs on its workspace volume again in sandbox %s",
+            runtime.name,
+            current.name,
+        )
+        return WorkspaceRepair.REPAIRED
+
+    def _require_workspace_claims(self) -> ResidentWorkspaceClaims:
+        if self._workspace_claims is None:
+            raise RuntimeError("Resident workspace claims need resident_workspace_namespace")
+        return self._workspace_claims
 
     async def reconcile(
         self,
@@ -1721,6 +3279,35 @@ class OpenShellGatewayPodManager(
             self._resident_sandbox_name(runtime),
         )
         if sandbox is None:
+            failed_upgrade = self._failed_resident_upgrade(runtime, profile)
+            if failed_upgrade is not None and runtime.desired_state is ResidentDesiredState.RUNNING:
+                # Its upgrade's redeploy failed and rolled back: report that rather
+                # than redeploying it on every pass.
+                return ResidentRuntimeObservation(
+                    observed_state=ResidentObservedState.FAILED,
+                    conditions=[_upgrade_failed_condition(failed_upgrade)],
+                )
+            if (
+                runtime.desired_state is ResidentDesiredState.RUNNING
+                and str(runtime.id) in self._resident_upgrades
+            ):
+                # Its upgrade removed the old sandbox: the redeployment is the upgrade.
+                return _upgrading_observation(self._target_image(_resident_profile_values(profile)))
+            if runtime.desired_state is ResidentDesiredState.RUNNING:
+                # The gateway no longer knows this sandbox (for example after a
+                # gateway upgrade orphaned it). Report the resident as owning no
+                # backend so the service redeploys it in the background.
+                return ResidentRuntimeObservation(
+                    observed_state=ResidentObservedState.PENDING,
+                    conditions=[
+                        ResidentCondition(
+                            type="SandboxReady",
+                            status=ResidentConditionStatus.FALSE,
+                            reason="NotFound",
+                            message="OpenShell sandbox does not exist; redeploying",
+                        )
+                    ],
+                )
             return ResidentRuntimeObservation(
                 observed_state=ResidentObservedState.FAILED,
                 backend_ref=dict(runtime.backend_ref),
@@ -1733,19 +3320,108 @@ class OpenShellGatewayPodManager(
                     )
                 ],
             )
+        if (
+            sandbox.phase == openshell_pb2.SANDBOX_PHASE_DELETING
+            and runtime.desired_state is ResidentDesiredState.RUNNING
+        ):
+            return self._going_sandbox_observation(runtime, profile, sandbox.name)
+        if (
+            runtime.observed_state is ResidentObservedState.FAILED
+            and not runtime.backend_ref
+            and runtime.desired_state is ResidentDesiredState.RUNNING
+        ):
+            # A failed deployment never recorded owning this sandbox: its rollback
+            # did not finish. Deploying again adopts it and starts whatever
+            # resident processes are missing.
+            return ResidentRuntimeObservation(
+                observed_state=ResidentObservedState.PENDING,
+                conditions=[
+                    ResidentCondition(
+                        type="SandboxReady",
+                        status=ResidentConditionStatus.FALSE,
+                        reason="Unadopted",
+                        message="OpenShell sandbox is left from an unfinished deployment; adopting",
+                    )
+                ],
+            )
         processes_ready = False
-        values = self._with_brokered_credential_values(_resident_profile_values(profile))
+        values, claim = self._resident_values(runtime, profile)
+        follow = OpenShellPlatformFollow()
+        migration_failed: WorkspaceMigrationError | None = None
+        running_resident = bool(
+            sandbox.ready
+            and runtime.backend_ref
+            and runtime.desired_state is ResidentDesiredState.RUNNING
+        )
+        if running_resident and claim is not None and not _sandbox_mounts_claim(sandbox, claim):
+            migration_failed = self._failed_workspace_migrations.get(str(runtime.id))
+            if migration_failed is None:
+                # Its state is only in this sandbox: the deployment copies it onto
+                # the resident's own claim, then recreates the sandbox on it.
+                return ResidentRuntimeObservation(
+                    observed_state=ResidentObservedState.PENDING,
+                    conditions=[
+                        ResidentCondition(
+                            type="WorkspaceMigration",
+                            status=ResidentConditionStatus.FALSE,
+                            reason="Migrating",
+                            message=(
+                                f"Copying the workspace from sandbox {sandbox.name} onto "
+                                f"persistent volume {claim.name}"
+                            ),
+                        )
+                    ],
+                )
+            await self._remove_abandoned_migration_sandbox(runtime, values, claim, sandbox)
+        if running_resident:
+            follow = await self._follow_platform(
+                runtime,
+                values,
+                sandbox,
+                persisted=_sandbox_persists_workspace(
+                    values, self._sandbox_workspace, sandbox, claim
+                ),
+            )
+            if follow.redeploy is not None:
+                return follow.redeploy
         processes = self._resident_processes(runtime, values)
         service_name, service_port = _resident_service(
             values, self._service_name, self._service_port
         )
+        if running_resident and claim is not None and _sandbox_mounts_claim(sandbox, claim):
+            repaired = await self._repair_resident_workspace_link(
+                runtime, values, sandbox, processes, service_port
+            )
+            if repaired is WorkspaceRepair.SANDBOX_GONE:
+                return self._going_sandbox_observation(runtime, profile, sandbox.name)
         if sandbox.ready:
             processes_ready = await self._resident_processes_ready(
-                sandbox.id,
+                sandbox.name,
                 processes,
                 service_port=service_port,
             )
-        service_url = str(runtime.backend_ref.get("service_url") or "")
+            if (
+                not processes_ready
+                and runtime.backend_ref
+                and runtime.desired_state is ResidentDesiredState.RUNNING
+            ):
+                await self._start_missing_resident_processes(
+                    runtime,
+                    values,
+                    sandbox,
+                    processes,
+                    on_claim=claim is not None and _sandbox_mounts_claim(sandbox, claim),
+                )
+            elif (
+                processes_ready
+                and runtime.backend_ref
+                and runtime.desired_state is ResidentDesiredState.RUNNING
+                and self._resident_openclaw_enabled(runtime, values)
+            ):
+                await self._start_resident_openclaw_shim(runtime, profile, values, sandbox)
+        service_url = (
+            "" if follow.service_removed else str(runtime.backend_ref.get("service_url") or "")
+        )
         if not service_url and runtime.engine is ResidentEngine.HERMES:
             service_url = HERMES_INTERNAL_SERVICE_URL
         if (
@@ -1763,7 +3439,7 @@ class OpenShellGatewayPodManager(
             service_url = (service_url or self._gateway_public_url).rstrip("/")
             if service_url:
                 self._service_urls[str(runtime.id)] = service_url
-        return self._resident_observation(
+        observation = self._resident_observation(
             runtime,
             sandbox,
             service_url=service_url,
@@ -1772,45 +3448,301 @@ class OpenShellGatewayPodManager(
             service_port=service_port,
             process_names=tuple(process.name for process in processes),
         )
+        if migration_failed is not None:
+            observation = replace(
+                observation,
+                conditions=[
+                    *observation.conditions,
+                    _workspace_migration_failed_condition(migration_failed),
+                ],
+            )
+        if follow.condition is None:
+            return observation
+        return replace(
+            observation,
+            observed_state=(
+                ResidentObservedState.FAILED if follow.failed else observation.observed_state
+            ),
+            conditions=[*observation.conditions, follow.condition],
+        )
 
-    async def restart(
+    def _going_sandbox_observation(
         self,
         runtime: ResidentRuntime,
         profile: ResidentDeploymentProfile,
+        sandbox_name: str,
     ) -> ResidentRuntimeObservation:
-        if not self.supports(profile):
-            raise RuntimeError(f"OpenShell does not support resident profile {profile.id!r}")
-        values = self._with_brokered_credential_values(_resident_profile_values(profile))
-        sandbox = await asyncio.to_thread(
-            self._client.get_sandbox,
-            self._resident_sandbox_name(runtime),
+        """A resident that should run whose sandbox is gone or being deleted: redeploy it.
+
+        Its deployment waits for the sandbox to go, then creates it anew on the
+        resident's workspace claim (no copy: the claim already holds its state), as
+        a Restart does. Logged once per sandbox.
+        """
+        runtime_id = str(runtime.id)
+        if self._going_resident_sandboxes.get(runtime_id) != sandbox_name:
+            self._going_resident_sandboxes[runtime_id] = sandbox_name
+            logger.info(
+                "Resident %s's sandbox %s is gone or being deleted; redeploying it",
+                runtime.name,
+                sandbox_name,
+            )
+        if runtime_id in self._resident_upgrades:
+            return _upgrading_observation(
+                self._target_image(_resident_profile_values(profile)),
+                waiting_for=sandbox_name,
+            )
+        return ResidentRuntimeObservation(
+            observed_state=ResidentObservedState.PENDING,
+            conditions=[
+                ResidentCondition(
+                    type="SandboxReady",
+                    status=ResidentConditionStatus.FALSE,
+                    reason="SandboxGone",
+                    message=(
+                        f"OpenShell sandbox {sandbox_name} is gone or being deleted; "
+                        "redeploying the resident once it is gone"
+                    ),
+                )
+            ],
         )
-        if sandbox is None or not sandbox.ready:
-            raise RuntimeError("OpenShell resident sandbox is not ready")
+
+    def _target_image(self, values: dict[str, Any]) -> str:
+        """The image this Völundr deploys a resident's sandbox with."""
+        return _image_from_values(values, default=self._sandbox_image)
+
+    def _failed_resident_upgrade(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> str | None:
+        """The reason the resident's upgrade to the current image failed, if it did."""
+        failed = self._failed_resident_upgrades.get(str(runtime.id))
+        if failed is None:
+            return None
+        values = _resident_profile_values(profile)
+        return failed[1] if failed[0] == self._target_image(values) else None
+
+    async def _follow_platform(
+        self,
+        runtime: ResidentRuntime,
+        values: dict[str, Any],
+        sandbox: OpenShellSandbox,
+        *,
+        persisted: bool,
+    ) -> OpenShellPlatformFollow:
+        """Move a running resident onto the image this Völundr deploys, once.
+
+        A sandbox's image is fixed when it is created, so moving a resident onto a
+        new image (a new Ravn or Skuld) recreates its sandbox: the existing
+        sandbox and service are removed and the resident is reported as owning no
+        backend, so the service redeploys it in the background like a resident
+        whose sandbox is gone. Its credentials, shim token and record are kept.
+
+        Only a resident whose sandbox keeps its workspace on a claim (``persisted``:
+        its own Völundr-managed claim mounted, or the profile's) is moved; any
+        other would lose its state under ``/sandbox``, so its upgrade is held and
+        reported (UpgradeHeld), and neither reconcile nor restart recreates it. An image
+        the sandbox replaced is never deployed again by reconcile (an older
+        Völundr replica during Völundr's own rollout), and a failed redeployment is
+        reported, not retried, until the target changes or the resident restarts.
+        An old sandbox that is slow to go, or that the gateway would not remove, is
+        no failure: the redeployment waits for it, or the next pass tries again.
+        """
+        runtime_id = str(runtime.id)
+        target = self._target_image(values)
+        running = _sandbox_image(sandbox)
+        if not running:
+            if (runtime_id, "") not in self._held_resident_upgrades:
+                self._held_resident_upgrades.add((runtime_id, ""))
+                logger.info(
+                    "Resident %s's sandbox reports no image; not following the platform",
+                    runtime.name,
+                )
+            return OpenShellPlatformFollow()
+        if running == target:
+            self._failed_resident_upgrades.pop(runtime_id, None)
+            self._retrying_resident_upgrades.pop(runtime_id, None)
+            return OpenShellPlatformFollow()
+        if target == (sandbox.annotations or {}).get(SANDBOX_REPLACED_IMAGE_ANNOTATION):
+            return OpenShellPlatformFollow()
+        failed = self._failed_resident_upgrades.get(runtime_id)
+        if failed is not None and failed[0] == target:
+            return OpenShellPlatformFollow(
+                condition=_upgrade_failed_condition(failed[1]), failed=True
+            )
+        if not persisted:
+            return OpenShellPlatformFollow(condition=self._hold_upgrade(runtime, running, target))
+        lock = self._resident_process_lock(runtime)
+        if lock.locked():
+            return OpenShellPlatformFollow()
+        async with lock:
+            logger.info("Upgrading resident %s from %s to %s", runtime.name, running, target)
+            try:
+                await self._retire_resident_sandbox(runtime, running)
+            except Exception as exc:
+                return await self._unfinished_upgrade(runtime, sandbox.name, running, target, exc)
+        self._retrying_resident_upgrades.pop(runtime_id, None)
+        return OpenShellPlatformFollow(redeploy=_upgrading_observation(target))
+
+    async def _unfinished_upgrade(
+        self,
+        runtime: ResidentRuntime,
+        sandbox_name: str,
+        running: str,
+        target: str,
+        error: Exception,
+    ) -> OpenShellPlatformFollow:
+        """What an upgrade reports when its old sandbox did not go; never a dead end.
+
+        A deletion the gateway accepted but had not finished in time: the resident
+        is handed to its redeployment, which waits for the sandbox to go and
+        creates it anew on its workspace claim, as Restart does. A deletion the
+        gateway refused leaves the old sandbox running the resident: its service is
+        exposed again and the upgrade is retried on the next pass.
+        """
+        runtime_id = str(runtime.id)
+        if await self._sandbox_going(sandbox_name):
+            self._retrying_resident_upgrades.pop(runtime_id, None)
+            logger.warning(
+                "Resident %s's old sandbox %s was not gone within %gs of its upgrade to %s; "
+                "its redeployment waits for OpenShell to finish deleting it, then recreates "
+                "it on its workspace volume",
+                runtime.name,
+                sandbox_name,
+                self._resident_delete_timeout,
+                target,
+            )
+            return OpenShellPlatformFollow(
+                redeploy=_upgrading_observation(target, waiting_for=sandbox_name)
+            )
+        # The sandbox was not replaced: it runs the resident on its old image.
+        self._resident_upgrades.pop(runtime_id, None)
+        reason = (
+            f"Upgrading resident {runtime.name} from {running} to {target} is retried on the "
+            f"next pass: its sandbox {sandbox_name} could not be removed ({error})"
+        )
+        if self._retrying_resident_upgrades.get(runtime_id) != reason:
+            self._retrying_resident_upgrades[runtime_id] = reason
+            logger.warning(reason)
+        return OpenShellPlatformFollow(
+            condition=ResidentCondition(
+                type="PlatformUpgrade",
+                status=ResidentConditionStatus.FALSE,
+                reason="UpgradeRetrying",
+                message=reason,
+            ),
+            service_removed=True,
+        )
+
+    def _hold_upgrade(
+        self, runtime: ResidentRuntime, running: str, target: str
+    ) -> ResidentCondition:
+        """Why a resident without a persistent workspace stays on its image.
+
+        Its state lives only in its sandbox's ``/sandbox``, and a sandbox's image
+        cannot change without creating a new sandbox, so no path recreates it:
+        neither reconcile nor an explicit restart.
+        """
+        runtime_id = str(runtime.id)
+        reason = (
+            "No persistent workspace; the sandbox image can't change without losing "
+            f"/sandbox. The resident runs {running}; the platform deploys {target}. "
+            "Give it a persistent workspace (Völundr's resident_workspace_namespace, or the "
+            "profile's persistence.existingClaim) to upgrade it."
+        )
+        if (runtime_id, target) not in self._held_resident_upgrades:
+            self._held_resident_upgrades.add((runtime_id, target))
+            logger.info("Not upgrading resident %s: %s", runtime.name, reason)
+        return ResidentCondition(
+            type="PlatformUpgrade",
+            status=ResidentConditionStatus.FALSE,
+            reason="UpgradeHeld",
+            message=reason,
+        )
+
+    async def _retire_resident_sandbox(self, runtime: ResidentRuntime, image: str) -> None:
+        """Remove a resident's sandbox and service so it is deployed anew; keep the rest.
+
+        Its provider grants are named for the resident and re-applied by the
+        deployment; its credentials and shim token stay where they are kept.
+        """
+        runtime_id = str(runtime.id)
+        self._resident_upgrades[runtime_id] = image
+        await self._close_resident_forwarders(runtime)
+        self._service_urls.pop(runtime_id, None)
+        await self._cleanup_resident_resources(
+            self._resident_sandbox_name(runtime),
+            (),
+            service_name=str(runtime.backend_ref.get("service_name") or self._service_name),
+        )
+
+    async def _sandbox_going(self, sandbox_name: str) -> bool:
+        """Whether the sandbox is gone or the gateway is deleting it."""
+        sandbox = await asyncio.to_thread(self._client.get_sandbox, sandbox_name)
+        return sandbox is None or sandbox.phase == openshell_pb2.SANDBOX_PHASE_DELETING
+
+    async def _close_resident_forwarders(self, runtime: ResidentRuntime) -> None:
+        runtime_id = str(runtime.id)
+        for key in [
+            key
+            for key in self._resident_forwarders
+            if key == runtime_id or _is_openclaw_key(key, runtime)
+        ]:
+            await asyncio.to_thread(self._resident_forwarders.pop(key).close)
+
+    async def _start_missing_resident_processes(
+        self,
+        runtime: ResidentRuntime,
+        values: dict[str, Any],
+        sandbox: OpenShellSandbox,
+        processes: Sequence[OpenShellRuntimeProcess],
+        *,
+        on_claim: bool = False,
+    ) -> None:
+        """Start the processes of a deployed resident that are no longer running.
+
+        A process can stop after its deployment finished, for example when the
+        Volundr that launched it with an older configuration was replaced. A
+        deploy or restart in progress owns the processes, so this leaves them to
+        it. A failure is logged and retried on the next reconcile pass.
+        """
+        lock = self._resident_process_lock(runtime)
+        if lock.locked():
+            return
+        async with lock:
+            try:
+                files, env = await self._resident_launch_inputs(runtime, values, processes)
+                await asyncio.to_thread(self._client.write_files, sandbox=sandbox.name, files=files)
+                if on_claim:
+                    await self._ensure_resident_home_links(runtime, sandbox)
+                await self._launch_missing_resident_processes(sandbox.name, env, processes)
+            except Exception:
+                logger.warning(
+                    "Could not start missing OpenShell resident processes for %s",
+                    runtime.id,
+                    exc_info=True,
+                )
+                return
+        logger.info("Started missing OpenShell resident processes for %s", runtime.id)
+
+    async def _resident_launch_inputs(
+        self,
+        runtime: ResidentRuntime,
+        values: dict[str, Any],
+        processes: Sequence[OpenShellRuntimeProcess],
+    ) -> tuple[dict[str, bytes], dict[str, str]]:
+        """Return the files and environment that launch a deployed resident's processes."""
         credential_context = await self._resolve_credential_context(
             self._resident_subject(runtime), values
         )
-        processes = self._resident_processes(runtime, values)
-        exit_code, output = await asyncio.to_thread(
-            self._client.exec_script,
-            sandbox_id=sandbox.id,
-            script=_resident_stop_script(tuple(process.name for process in processes)),
-            env={},
-        )
-        if exit_code != 0:
-            raise RuntimeError(f"OpenShell resident process stop failed: {output.strip()}")
         files = {**credential_context.files, **await self._resident_config_files(runtime, values)}
         for process in processes:
             files.update(_shared_resident_process_files(runtime, process.files))
-        await asyncio.to_thread(
-            self._client.write_files,
-            sandbox_id=sandbox.id,
-            files=files,
-        )
         env = self._resident_environment(runtime, values)
         env.update(resident_flock_environment(runtime))
         env.update(credential_context.environment)
         env.update(credential_context.process_environment)
+        env.update(await self._resident_openclaw_environment(runtime, values))
         if runtime.engine is ResidentEngine.OPENCLAW:
             if self._credential_store is None:
                 raise RuntimeError("OpenClaw residents require the configured credential store")
@@ -1829,16 +3761,94 @@ class OpenShellGatewayPodManager(
                 self._credential_store,
                 runtime,
             )
-        await self._launch_resident_processes(sandbox.id, env, processes)
+        return files, env
+
+    async def restart(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        async with self._resident_process_lock(runtime):
+            return await self._restart(runtime, profile)
+
+    async def _restart(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+        *,
+        follow_platform: bool = True,
+    ) -> ResidentRuntimeObservation:
+        if not self.supports(profile):
+            raise RuntimeError(f"OpenShell does not support resident profile {profile.id!r}")
+        values, claim = self._resident_values(runtime, profile)
+        sandbox = await asyncio.to_thread(
+            self._client.get_sandbox,
+            self._resident_sandbox_name(runtime),
+        )
+        runtime_id = str(runtime.id)
+        if claim is not None and sandbox is not None and not _sandbox_mounts_claim(sandbox, claim):
+            # Restart retries a failed workspace migration (or runs it now): the
+            # resident comes back on its own claim, or on its old sandbox as before.
+            self._failed_workspace_migrations.pop(runtime_id, None)
+            return await self._deploy(runtime, profile)
+        if follow_platform and sandbox is None and runtime_id in self._failed_resident_upgrades:
+            # Its upgrade's redeploy failed and rolled back: try it again.
+            self._failed_resident_upgrades.pop(runtime_id, None)
+            return await self._deploy(runtime, profile)
+        if sandbox is None or not sandbox.ready:
+            raise RuntimeError("OpenShell resident sandbox is not ready")
+        running = _sandbox_image(sandbox)
+        target = self._target_image(values)
+        held: ResidentCondition | None = None
+        if follow_platform and running and running != target:
+            if _sandbox_persists_workspace(values, self._sandbox_workspace, sandbox, claim):
+                # A restart runs the resident on the platform's current version: a
+                # new image needs a new sandbox, and its workspace survives that.
+                logger.info("Upgrading resident %s from %s to %s", runtime.name, running, target)
+                self._failed_resident_upgrades.pop(runtime_id, None)
+                try:
+                    await self._retire_resident_sandbox(runtime, running)
+                except Exception:
+                    # Accepted but slow: the deployment waits for it to go.
+                    if not await self._sandbox_going(sandbox.name):
+                        raise
+                return await self._deploy(runtime, profile)
+            # Its state is only in this sandbox: restart its processes in place,
+            # as always, and keep reporting why it stays on its image.
+            held = self._hold_upgrade(runtime, running, target)
+        processes = self._resident_processes(runtime, values)
+        files, env = await self._resident_launch_inputs(runtime, values, processes)
+        exit_code, output = await asyncio.to_thread(
+            self._client.exec_script,
+            sandbox=sandbox.name,
+            script=_resident_stop_script(tuple(process.name for process in processes)),
+            env={},
+        )
+        if exit_code != 0:
+            raise RuntimeError(f"OpenShell resident process stop failed: {output.strip()}")
+        on_claim = claim is not None and _sandbox_mounts_claim(sandbox, claim)
+        if on_claim:
+            # A Restart also puts a resident that runs off its volume back on it.
+            await self._ensure_resident_workspace_link(sandbox)
+        await asyncio.to_thread(
+            self._client.write_files,
+            sandbox=sandbox.name,
+            files=files,
+        )
+        if on_claim:
+            await self._verify_resident_workspace_link(sandbox)
+        if claim is not None:
+            await self._ensure_resident_home_links(runtime, sandbox)
+        await self._launch_resident_processes(sandbox.name, env, processes)
         service_name, service_port = _resident_service(
             values, self._service_name, self._service_port
         )
         await self._wait_for_resident_processes(
-            sandbox.id,
+            sandbox.name,
             processes,
             service_port=service_port,
         )
-        return self._resident_observation(
+        observation = self._resident_observation(
             runtime,
             sandbox,
             service_url=str(runtime.backend_ref.get("service_url") or ""),
@@ -1847,19 +3857,30 @@ class OpenShellGatewayPodManager(
             service_port=service_port,
             process_names=tuple(process.name for process in processes),
         )
+        if held is None:
+            return observation
+        return replace(observation, conditions=[*observation.conditions, held])
 
     async def suspend(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
         raise RuntimeError("OpenShell resident suspension is unsupported")
 
-    async def resume(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+    async def resume(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile | None = None,
+    ) -> ResidentRuntimeObservation:
         raise RuntimeError("OpenShell resident suspension is unsupported")
 
     async def delete(self, runtime: ResidentRuntime) -> bool:
         runtime_id = str(runtime.id)
         self._service_urls.pop(runtime_id, None)
-        forwarder = self._resident_forwarders.pop(runtime_id, None)
-        if forwarder is not None:
-            await asyncio.to_thread(forwarder.close)
+        self._resident_process_locks.pop(runtime_id, None)
+        self._resident_openclaw_checked.discard(runtime_id)
+        self._resident_upgrades.pop(runtime_id, None)
+        self._failed_resident_upgrades.pop(runtime_id, None)
+        self._retrying_resident_upgrades.pop(runtime_id, None)
+        self._going_resident_sandboxes.pop(runtime_id, None)
+        await self._close_resident_forwarders(runtime)
         sandbox_name = self._resident_sandbox_name(runtime)
         grants = self._provider_grants.pop(runtime_id, ())
         if not grants:
@@ -1870,11 +3891,32 @@ class OpenShellGatewayPodManager(
                     for name in sandbox.providers
                     if name.startswith("volundr-")
                 )
-        deleted = await self._cleanup_resources(
+        service_name = str(runtime.backend_ref.get("service_name") or self._service_name)
+        self._failed_workspace_migrations.pop(runtime_id, None)
+        self._abandoned_migration_sandboxes.pop(runtime_id, None)
+        # A workspace migration leaves a second sandbox while it runs: remove both
+        # (only the resident's own), then the resident's workspace claim.
+        for other_name in self._resident_sandbox_names(runtime):
+            if self._workspace_claims is None or other_name == sandbox_name:
+                continue
+            other = await asyncio.to_thread(self._client.get_sandbox, other_name)
+            if other is None:
+                continue
+            if dict(other.labels or {}).get("volundr.niuu.io/resident") != runtime_id:
+                continue
+            await self._cleanup_resident_resources(other_name, (), service_name=service_name)
+        deleted = await self._cleanup_resident_resources(
             sandbox_name,
             grants,
-            service_name=str(runtime.backend_ref.get("service_name") or self._service_name),
+            service_name=service_name,
         )
+        if self._workspace_claims is not None and await self._workspace_claims.delete(runtime):
+            logger.info(
+                "Deleted resident %s's workspace volume %s/%s",
+                runtime.name,
+                self._workspace_claims.namespace,
+                resident_workspace_claim_name(runtime),
+            )
         if runtime.engine is ResidentEngine.OPENCLAW and self._credential_store is not None:
             await self._credential_store.delete("resident", runtime_id, "openclaw-gateway")
         if runtime.engine is ResidentEngine.HERMES and self._credential_store is not None:
@@ -1887,6 +3929,7 @@ class OpenShellGatewayPodManager(
             await self._credential_store.delete(
                 "resident", runtime_id, HERMES_LEGACY_CREDENTIAL_NAME
             )
+        await self._forget_resident_openclaw_token(runtime)
         return deleted
 
     async def logs(
@@ -1905,7 +3948,7 @@ class OpenShellGatewayPodManager(
             raise RuntimeError("OpenShell resident sandbox does not exist")
         native_page = await asyncio.to_thread(
             self._client.get_sandbox_logs,
-            sandbox.id,
+            sandbox.name,
             lines=lines,
             sources=sources,
             min_level=min_level,
@@ -1925,7 +3968,7 @@ class OpenShellGatewayPodManager(
             return native_page
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox.id,
+            sandbox=sandbox.name,
             script=_resident_process_log_script(lines, process_sources),
             env={},
         )
@@ -1945,17 +3988,20 @@ class OpenShellGatewayPodManager(
         for forwarder in forwarders:
             await asyncio.to_thread(forwarder.close)
         await asyncio.to_thread(self._client.close)
+        if self._core_api_client is not None:
+            await self._core_api_client.close()
+            self._core_api_client = None
 
     async def _launch_resident_processes(
         self,
-        sandbox_id: str,
+        sandbox_name: str,
         env: dict[str, str],
         processes: Sequence[OpenShellRuntimeProcess],
     ) -> None:
         for process in processes:
             exit_code = await asyncio.to_thread(
                 self._client.exec_detached,
-                sandbox_id=sandbox_id,
+                sandbox=sandbox_name,
                 command=process.command,
                 env={**env, **process.env},
                 log_path=process.log_path,
@@ -1968,14 +4014,14 @@ class OpenShellGatewayPodManager(
 
     async def _launch_missing_resident_processes(
         self,
-        sandbox_id: str,
+        sandbox_name: str,
         env: dict[str, str],
         processes: Sequence[OpenShellRuntimeProcess],
     ) -> None:
         for process in processes:
-            if await self._resident_processes_ready(sandbox_id, (process,)):
+            if await self._resident_processes_ready(sandbox_name, (process,)):
                 continue
-            await self._launch_resident_processes(sandbox_id, env, (process,))
+            await self._launch_resident_processes(sandbox_name, env, (process,))
 
     def _resident_processes(
         self,
@@ -2005,7 +4051,7 @@ class OpenShellGatewayPodManager(
                 command=(
                     "sh",
                     "-lc",
-                    'export RAVN__GATEWAY__PLATFORM__PAT_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
+                    'export RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
                     "exec /opt/niuu/bin/python -m ravn daemon "
                     "--config /sandbox/.volundr/ravn.yaml "
                     f"--persona {shlex.quote(runtime.persona_name or 'product-steward')}",
@@ -2019,14 +4065,14 @@ class OpenShellGatewayPodManager(
 
     async def _resident_processes_ready(
         self,
-        sandbox_id: str,
+        sandbox_name: str,
         processes: Sequence[OpenShellRuntimeProcess],
         *,
         service_port: int | None = None,
     ) -> bool:
         exit_code, _ = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox_id,
+            sandbox=sandbox_name,
             script=_resident_health_script(
                 tuple(process.name for process in processes),
                 service_port=service_port,
@@ -2037,7 +4083,7 @@ class OpenShellGatewayPodManager(
 
     async def _wait_for_resident_processes(
         self,
-        sandbox_id: str,
+        sandbox_name: str,
         processes: Sequence[OpenShellRuntimeProcess],
         *,
         service_port: int | None = None,
@@ -2045,7 +4091,7 @@ class OpenShellGatewayPodManager(
         deadline = time.monotonic() + self._ready_timeout
         while time.monotonic() < deadline:
             if await self._resident_processes_ready(
-                sandbox_id,
+                sandbox_name,
                 processes,
                 service_port=service_port,
             ):
@@ -2070,6 +4116,11 @@ class OpenShellGatewayPodManager(
         if runtime.engine is not ResidentEngine.RAVN:
             return {}
         realm_slug = await self._resolve_realm_slug(runtime)
+        ravn_config = _resident_ravn_config(
+            runtime, values, self._service_port, realm_slug, self._volundr_api_url
+        )
+        if self._resident_openclaw_enabled(runtime, values):
+            enable_resident_openclaw_shim(ravn_config, values)
         return {
             "/sandbox/.volundr/skuld.yaml": yaml.safe_dump(
                 _resident_skuld_config(
@@ -2080,12 +4131,7 @@ class OpenShellGatewayPodManager(
                 ),
                 sort_keys=False,
             ).encode(),
-            "/sandbox/.volundr/ravn.yaml": yaml.safe_dump(
-                _resident_ravn_config(
-                    runtime, values, self._service_port, realm_slug, self._volundr_api_url
-                ),
-                sort_keys=False,
-            ).encode(),
+            "/sandbox/.volundr/ravn.yaml": yaml.safe_dump(ravn_config, sort_keys=False).encode(),
         }
 
     async def _resolve_realm_slug(self, runtime: ResidentRuntime) -> str:
@@ -2211,6 +4257,16 @@ class OpenShellGatewayPodManager(
                 "service_name": service_name,
                 "service_port": service_port,
                 "process_names": list(process_names),
+                "image": _sandbox_image(sandbox),
+                **(
+                    {"workspace_claim": workspace_claim}
+                    if (
+                        workspace_claim := (sandbox.annotations or {}).get(
+                            SANDBOX_WORKSPACE_CLAIM_ANNOTATION, ""
+                        )
+                    )
+                    else {}
+                ),
             },
             endpoints=endpoints,
             conditions=conditions,
@@ -2231,7 +4287,7 @@ class OpenShellGatewayPodManager(
             raise RuntimeError("OpenClaw resident sandbox is not ready for device pairing")
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox.id,
+            sandbox=sandbox.name,
             script=f"openclaw devices approve {shlex.quote(request_id)}",
             env={
                 "OPENCLAW_GATEWAY_TOKEN": gateway_token,
@@ -2371,6 +4427,7 @@ class OpenShellGatewayPodManager(
         grants: Sequence[OpenShellProviderGrant],
         *,
         service_name: str | None = None,
+        delete_timeout: float | None = None,
     ) -> bool:
         errors: list[Exception] = []
         try:
@@ -2382,21 +4439,16 @@ class OpenShellGatewayPodManager(
         except Exception as exc:
             errors.append(exc)
         try:
-            deleted = await asyncio.to_thread(self._client.delete_sandbox, sandbox_name)
+            deleted = await self._delete_sandbox_and_wait(sandbox_name, timeout=delete_timeout)
         except Exception as exc:
             errors.append(exc)
             deleted = False
         else:
-            try:
-                await self._wait_for_sandbox_deleted(sandbox_name)
-            except Exception as exc:
-                errors.append(exc)
-            else:
-                for grant in reversed(grants):
-                    try:
-                        await asyncio.to_thread(self._client.delete_provider_grant, grant)
-                    except Exception as exc:
-                        errors.append(exc)
+            for grant in reversed(grants):
+                try:
+                    await asyncio.to_thread(self._client.delete_provider_grant, grant)
+                except Exception as exc:
+                    errors.append(exc)
         if errors:
             raise RuntimeError(
                 f"OpenShell resource cleanup failed for {sandbox_name}: "
@@ -2404,13 +4456,52 @@ class OpenShellGatewayPodManager(
             )
         return deleted
 
-    async def _wait_for_sandbox_deleted(self, sandbox_name: str) -> None:
-        deadline = time.monotonic() + self._resource_delete_timeout
+    async def _cleanup_resident_resources(
+        self,
+        sandbox_name: str,
+        grants: Sequence[OpenShellProviderGrant],
+        *,
+        service_name: str | None = None,
+    ) -> bool:
+        """Remove a resident's sandbox, service and grants, waiting as long as a resident needs.
+
+        Every removal of a resident sandbox goes through here: a resident's pod,
+        volumes and gateway records take longer to go than a session's.
+        """
+        return await self._cleanup_resources(
+            sandbox_name,
+            grants,
+            service_name=service_name,
+            delete_timeout=self._resident_delete_timeout,
+        )
+
+    async def _delete_sandbox_and_wait(
+        self, sandbox_name: str, *, timeout: float | None = None
+    ) -> bool:
+        """Delete a sandbox and wait until it is gone, both within one delete budget.
+
+        False when the sandbox was already gone.
+        """
+        limit = self._resource_delete_timeout if timeout is None else timeout
+        deadline = time.monotonic() + limit
+        deleted = await asyncio.to_thread(self._client.delete_sandbox, sandbox_name, timeout=limit)
+        await self._wait_for_sandbox_deleted(sandbox_name, timeout=limit, deadline=deadline)
+        return deleted
+
+    async def _wait_for_sandbox_deleted(
+        self,
+        sandbox_name: str,
+        *,
+        timeout: float | None = None,
+        deadline: float | None = None,
+    ) -> None:
+        limit = self._resource_delete_timeout if timeout is None else timeout
+        if deadline is None:
+            deadline = time.monotonic() + limit
         while await asyncio.to_thread(self._client.get_sandbox, sandbox_name) is not None:
             if time.monotonic() >= deadline:
                 raise TimeoutError(
-                    f"OpenShell sandbox {sandbox_name!r} was not deleted within "
-                    f"{self._resource_delete_timeout:g}s"
+                    f"OpenShell sandbox {sandbox_name!r} was not deleted within {limit:g}s"
                 )
             await asyncio.sleep(READY_POLL_INTERVAL)
 
@@ -2548,7 +4639,10 @@ class OpenShellGatewayPodManager(
                 f"Credential {credential_name!r} does not contain fields: "
                 + ", ".join(missing_fields)
             )
-        if mapping.get("materializeEnvironment") or mapping.get("materialize_environment"):
+        materialize = bool(
+            mapping.get("materializeEnvironment") or mapping.get("materialize_environment")
+        )
+        if materialize:
             values = await self._credential_store.get_value(
                 "user",
                 subject.owner_id,
@@ -2577,6 +4671,7 @@ class OpenShellGatewayPodManager(
                 env_name=env_name,
                 token_endpoint=self._credential_token_endpoint,
                 target_config=mapping.get("provider"),
+                network_only=materialize,
             )
             if provider_name in providers:
                 continue
@@ -2629,7 +4724,7 @@ class OpenShellGatewayPodManager(
 
     async def _bootstrap_workspace(
         self,
-        sandbox_id: str,
+        sandbox_name: str,
         session: Session,
         spec: SessionSpec,
         env: dict[str, str],
@@ -2639,7 +4734,7 @@ class OpenShellGatewayPodManager(
             return
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
-            sandbox_id=sandbox_id,
+            sandbox=sandbox_name,
             script=script,
             env=env,
         )
@@ -2949,6 +5044,10 @@ def _resident_skuld_config(
         "persistence_mount_path": "/sandbox/workspace",
         "volundr_api_url": volundr_api_url,
         "usage_report_path": f"/api/v1/forge/resident-runtimes/{runtime.id}/usage",
+        # A resident is a resident runtime, not a Forge session: Volundr has no
+        # Forge session event log or activity for its id (as in FluxPodManager).
+        "event_log_enabled": False,
+        "activity_reporting_enabled": False,
         "room": {
             "enabled": True,
             "presence_sweep_interval_s": 0,
@@ -3231,6 +5330,10 @@ def _resident_api_urls(values: dict[str, Any]) -> tuple[str, ...]:
     token_path = (codex_auth.get("kwargs") or {}).get("token_path", "")
     if urlparse(token_path).scheme:
         urls.append(token_path)
+    # Platform origins a flock's personas call with the mediated platform token
+    # (ravn_flock contributor), e.g. the launching Ting on another cluster.
+    openshell = values.get("openshell") if isinstance(values.get("openshell"), dict) else {}
+    urls.extend(str(url) for url in openshell.get("platformApiUrls") or [] if url)
     return tuple(urls)
 
 
@@ -3384,6 +5487,25 @@ def _driver_config_from_values(
             }
         )
         mounts.append({"name": name, "mount_path": mount_path, "read_only": False})
+    resident_workspace = values.get("residentWorkspace")
+    if isinstance(resident_workspace, dict) and resident_workspace.get("existingClaim"):
+        # A resident's own claim, mounted outside /sandbox so the gateway keeps
+        # its writable /sandbox (RESIDENT_WORKSPACE_VOLUME_PATH).
+        mount_path = str(resident_workspace.get("mountPath") or "")
+        if not mount_path.startswith("/") or PurePosixPath(mount_path).is_relative_to("/sandbox"):
+            raise ValueError("A resident's workspace volume must be mounted outside /sandbox")
+        volumes.append(
+            {
+                "name": RESIDENT_WORKSPACE_VOLUME_NAME,
+                "persistent_volume_claim": {
+                    "claim_name": str(resident_workspace["existingClaim"]),
+                    "read_only": False,
+                },
+            }
+        )
+        mounts.append(
+            {"name": RESIDENT_WORKSPACE_VOLUME_NAME, "mount_path": mount_path, "read_only": False}
+        )
     openshell = values.get("openshell") or {}
     workloads = deepcopy(openshell.get("workloads") or [])
     if workloads:
@@ -3395,11 +5517,6 @@ def _driver_config_from_values(
             command = workload.get("command")
             if not isinstance(command, list) or not command:
                 raise ValueError("OpenShell workload containers require an explicit command")
-            if workload.get("readiness_port"):
-                raise ValueError(
-                    "OpenShell session workloads cannot gate pod readiness "
-                    "before workspace bootstrap"
-                )
             environment = {
                 key: value
                 for key, value in (workload_environment or {}).items()
@@ -3418,11 +5535,268 @@ def _driver_config_from_values(
                 *command,
             ]
         mounts.extend(shared_mounts)
+        # Peers need the gateway's allow_driver_config = true; the driver rejects
+        # anything but the fields openshell_contract lists.
+        check_peer_workloads(workloads, volumes)
         config["containers"] = {"workloads": workloads}
     if volumes:
+        check_volume_mounts("agent", mounts, volumes)
         config["volumes"] = volumes
         config.setdefault("containers", {})["agent"] = {"volume_mounts": mounts}
     return config
+
+
+def _sandbox_image(sandbox: OpenShellSandbox) -> str:
+    """The image a resident's sandbox runs: as Völundr recorded it, else the gateway's."""
+    return (sandbox.annotations or {}).get(SANDBOX_IMAGE_ANNOTATION) or sandbox.image
+
+
+def _workspace_persisted(values: dict[str, Any], workspace: str) -> bool:
+    """Whether the profile mounts a persistent claim at or above the sandbox workspace."""
+    storage = values.get("persistence")
+    if not isinstance(storage, dict) or not storage.get("existingClaim"):
+        return False
+    mount_path = str(storage.get("mountPath") or "")
+    if not mount_path.startswith("/sandbox/"):
+        return False
+    return PurePosixPath(workspace).is_relative_to(PurePosixPath(mount_path))
+
+
+@dataclass
+class _WorkspaceMigrationProgress:
+    """A migration in flight: the sandbox it copies from, and what its rollback left."""
+
+    #: The old sandbox: it runs the resident until the new one is healthy, and a
+    #: rollback never removes it.
+    source: str = ""
+    #: The new sandbox, when the rollback could not remove it.
+    abandoned: str = ""
+
+
+def _copied_from(state: Any, source: str) -> bool:
+    """Whether the claim holds a verified copy of ``source``, which still exists."""
+    return state is not None and state.phase == PHASE_COMPLETE and state.source == source
+
+
+def _migration_digest(pvc: Any) -> str:
+    return str((pvc.metadata.annotations or {}).get(ANNOTATION_MIGRATION_DIGEST) or "")
+
+
+def _sandbox_mounts_claim(sandbox: OpenShellSandbox, claim: ResidentWorkspaceClaim) -> bool:
+    return (sandbox.annotations or {}).get(SANDBOX_WORKSPACE_CLAIM_ANNOTATION) == claim.name
+
+
+def _sandbox_persists_workspace(
+    values: dict[str, Any],
+    workspace: str,
+    sandbox: OpenShellSandbox,
+    claim: ResidentWorkspaceClaim | None,
+) -> bool:
+    """Whether recreating this sandbox keeps the resident's workspace.
+
+    With a Völundr-managed claim, only a sandbox created with it mounted; a
+    sandbox that predates the claim keeps its state in ``/sandbox`` until migrated.
+    """
+    if claim is not None:
+        return _sandbox_mounts_claim(sandbox, claim)
+    return _workspace_persisted(values, workspace)
+
+
+def _initial_migration_annotations(source: str, holder: str) -> dict[str, str]:
+    """A claim created for a migration is ``copying`` from birth, never mistaken for state."""
+    return {
+        ANNOTATION_MIGRATION_PHASE: PHASE_COPYING,
+        ANNOTATION_MIGRATION_SOURCE: source,
+        ANNOTATION_MIGRATION_HOLDER: holder,
+    }
+
+
+def _verify_workspace_copy(expected: WorkspaceManifest, restored: WorkspaceManifest) -> None:
+    """Every path, kind, size and SHA-256 must match before anything is deleted."""
+    if restored.entries == expected.entries:
+        return
+    missing = sorted(set(expected.entries) - set(restored.entries))
+    extra = sorted(set(restored.entries) - set(expected.entries))
+    changed = sorted(
+        path
+        for path in set(expected.entries) & set(restored.entries)
+        if expected.entries[path] != restored.entries[path]
+    )
+    raise WorkspaceVerificationError(
+        "The restored workspace does not match the archive "
+        f"(expected {expected.summary()}, restored {restored.summary()}; "
+        f"missing {missing[:5]}, unexpected {extra[:5]}, differing {changed[:5]})"
+    )
+
+
+def _workspace_migration_failed_condition(error: WorkspaceMigrationError) -> ResidentCondition:
+    return ResidentCondition(
+        type="WorkspaceMigration",
+        status=ResidentConditionStatus.FALSE,
+        reason=error.reason,
+        message=(
+            f"{error} The resident keeps running on its old sandbox with its state intact; "
+            "Restart it to retry the migration."
+        ),
+    )
+
+
+def _human_bytes(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KiB", "MiB"):
+        if value < 1024:
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GiB"
+
+
+def _workspace_size_script(sources: Sequence[str]) -> str:
+    """Print "<KiB>\\t<dir>" for each source directory that exists."""
+    quoted = " ".join(shlex.quote(source) for source in sources)
+    return (
+        "set -eu\n"
+        f"for src in {quoted}; do\n"
+        '  [ -d "$src" ] || continue\n'
+        '  printf \'%s\\t%s\\n\' "$(du -sk "$src" | cut -f1)" "$src"\n'
+        "done\n"
+    )
+
+
+def _workspace_clear_script(workspace: str) -> str:
+    """Empty the claim's root, keeping the filesystem's own lost+found."""
+    return (
+        "set -eu\n"
+        f"cd {shlex.quote(workspace)}\n"
+        "find . -mindepth 1 -maxdepth 1 ! -name lost+found -exec rm -rf {} +\n"
+    )
+
+
+def _workspace_extract_script(target: str) -> str:
+    """Extract stdin's archive into ``target`` without touching ``target`` itself.
+
+    The claim's root belongs to root (the fsGroup grants the sandbox user write
+    access), so restoring the archive's "./" onto it fails ("Cannot change mode");
+    ``--no-overwrite-dir`` avoids that only with some tar versions. The archive is
+    extracted into a fresh directory on the claim and its entries moved up.
+    """
+    return (
+        "set -eu\n"
+        f"target={shlex.quote(target)}\n"
+        'mkdir -p "$target"\n'
+        'stage=$(mktemp -d "$target/.volundr-restore.XXXXXX")\n'
+        'tar -C "$stage" -xf -\n'
+        'find "$stage" -mindepth 1 -maxdepth 1 -exec mv -- {} "$target"/ \\;\n'
+        'rmdir "$stage"\n'
+    )
+
+
+def _workspace_link_script(link: str, target: str) -> str:
+    """Make ``link`` (the workspace path) a symlink to the mounted volume ``target``.
+
+    A sandbox that mounts the volume at ``link`` itself (created before the volume
+    moved out of /sandbox) is left as it is. Anything else at ``link`` (a directory
+    a file projection or the runtime created) is moved aside, never deleted, and
+    its new path printed.
+    """
+    return (
+        "set -eu\n"
+        f"link={shlex.quote(link)}\n"
+        f"target={shlex.quote(target)}\n"
+        'if [ -L "$link" ]; then\n'
+        '  [ "$(readlink "$link")" = "$target" ] && exit 0\n'
+        '  echo "$link links to $(readlink "$link"), not $target" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        'if [ -d "$link" ] && [ "$(stat -c %d "$link")" != "$(stat -c %d "${link%/*}")" ]; then\n'
+        '  [ ! -e "$target" ] && exit 0\n'
+        '  echo "$link is a mount of its own, and the workspace volume is at $target" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        'if [ ! -d "$target" ]; then\n'
+        '  echo "the workspace volume is not mounted at $target" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        'if [ -d "$link" ] && rmdir "$link" 2>/dev/null; then\n'
+        "  :\n"
+        'elif [ -e "$link" ]; then\n'
+        '  aside="$link.pre-link-$(date -u +%Y%m%dT%H%M%SZ)"\n'
+        '  [ -e "$aside" ] && aside="$aside-$$"\n'
+        '  mv "$link" "$aside"\n'
+        '  echo "moved-aside=$aside"\n'
+        "fi\n"
+        'ln -s "$target" "$link"\n'
+    )
+
+
+def _workspace_link_state_script(link: str, target: str) -> str:
+    """Print what the workspace path is: linked, mounted, foreign, directory or missing."""
+    return (
+        "set -eu\n"
+        f"link={shlex.quote(link)}\n"
+        f"target={shlex.quote(target)}\n"
+        'if [ -L "$link" ]; then\n'
+        '  if [ "$(readlink "$link")" = "$target" ]; then echo linked; else echo foreign; fi\n'
+        'elif [ -d "$link" ] && [ "$(stat -c %d "$link")" != "$(stat -c %d "${link%/*}")" ]; then\n'
+        "  echo mounted\n"
+        'elif [ -e "$link" ]; then\n'
+        "  echo directory\n"
+        "else\n"
+        "  echo missing\n"
+        "fi\n"
+    )
+
+
+def _home_link_script(link: str, target: str) -> str:
+    """Make ``link`` a symlink to ``target`` on the claim; never replace real state."""
+    return (
+        "set -eu\n"
+        f"link={shlex.quote(link)}\n"
+        f"target={shlex.quote(target)}\n"
+        'mkdir -p "$target"\n'
+        'if [ -L "$link" ]; then\n'
+        '  [ "$(readlink "$link")" = "$target" ] && exit 0\n'
+        '  echo "$link links to $(readlink "$link"), not $target" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        'if [ -e "$link" ]; then\n'
+        '  echo "$link holds state outside the workspace volume; refusing to replace it" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        'ln -s "$target" "$link"\n'
+    )
+
+
+def _upgrading_observation(target: str, *, waiting_for: str = "") -> ResidentRuntimeObservation:
+    """A resident whose sandbox is being recreated on ``target``: no backend, redeploy it."""
+    message = f"Recreating the OpenShell sandbox on {target}"
+    if waiting_for:
+        message += f" once OpenShell has finished deleting sandbox {waiting_for}"
+    return ResidentRuntimeObservation(
+        observed_state=ResidentObservedState.PENDING,
+        conditions=[
+            ResidentCondition(
+                type="SandboxReady",
+                status=ResidentConditionStatus.FALSE,
+                reason="Upgrading",
+                message=message,
+            ),
+            ResidentCondition(
+                type="PlatformUpgrade",
+                status=ResidentConditionStatus.FALSE,
+                reason="Upgrading",
+                message=message,
+            ),
+        ],
+    )
+
+
+def _upgrade_failed_condition(message: str) -> ResidentCondition:
+    return ResidentCondition(
+        type="PlatformUpgrade",
+        status=ResidentConditionStatus.FALSE,
+        reason="UpgradeFailed",
+        message=message,
+    )
 
 
 def _resident_state_from_sandbox(
@@ -3488,6 +5862,32 @@ done
 """
 
 
+def _resident_openclaw_port(values: dict[str, Any]) -> int:
+    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
+    shim = resident.get("openclaw") if isinstance(resident.get("openclaw"), dict) else {}
+    return int(shim.get("port") or RAVN_OPENCLAW_PORT)
+
+
+def _resident_process_env_script(process_name: str, variable: str) -> str:
+    """Print one variable of a running resident process's environment, if set."""
+    pid_path = shlex.quote(f"/sandbox/.volundr/{process_name}.pid")
+    pattern = shlex.quote(f"s/^{variable}=//p")
+    return (
+        "set -eu\n"
+        f'pid="$(cat {pid_path})"\n'
+        f"tr '\\000' '\\n' < \"/proc/$pid/environ\" | sed -n {pattern}\n"
+    )
+
+
+def _openclaw_forwarder_key(runtime: ResidentRuntime, sandbox_id: str) -> str:
+    """A Ravn resident's shim tunnel to one sandbox, beside its skuld tunnel (its id)."""
+    return f"{runtime.id}:openclaw:{sandbox_id}"
+
+
+def _is_openclaw_key(key: str, runtime: ResidentRuntime) -> bool:
+    return key.startswith(f"{runtime.id}:openclaw:")
+
+
 def _resident_process_log_script(lines: int, sources: Sequence[str]) -> str:
     commands = ["set -eu"]
     for source in sources:
@@ -3499,6 +5899,15 @@ def _resident_process_log_script(lines: int, sources: Sequence[str]) -> str:
             )
         )
     return "\n".join(commands)
+
+
+def _rpc_error_text(exc: grpc.RpcError) -> str:
+    """``CODE: details`` of a failed gateway call, without the gRPC debug dump."""
+    code = exc.code() if callable(getattr(exc, "code", None)) else None
+    details = exc.details() if callable(getattr(exc, "details", None)) else None
+    name = getattr(code, "name", "")
+    text = str(details or exc)
+    return f"{name}: {text}" if name else text
 
 
 def _exec_output_text(value: Any) -> str:
@@ -3577,8 +5986,41 @@ def _provider_profile(
     token_endpoint: str,
     cache_ttl_seconds: int = 300,
     target_config: Any = None,
+    network_only: bool = False,
 ) -> Any:
+    """Build the OpenShell provider profile for one mapped credential field.
+
+    A token-grant credential is injected into HTTP requests by the gateway.
+    ``network_only`` drops it for credentials Völundr materializes into the
+    process environment itself: those reach raw-protocol endpoints (NATS,
+    databases) where OpenShell rejects token grants (``tls: skip`` bypasses
+    header injection), so the profile carries only the endpoint and binary
+    policy that admits the connection.
+    """
     target = _provider_target(env_name, target_config)
+    endpoints = target.get("endpoints") or [
+        _network_endpoint(
+            {
+                "host": host,
+                "port": 443,
+                "protocol": "rest",
+                "enforcement": "enforce",
+                "access": "full",
+            }
+        )
+        for host in target["hosts"]
+    ]
+    binaries = [sandbox_pb2.NetworkBinary(path=path) for path in target["binaries"]]
+    if network_only:
+        return openshell_pb2.ProviderProfile(
+            id=profile_id,
+            display_name=f"Niuu network access for {env_name}",
+            description="Endpoint policy for a credential Völundr materializes into the workload",
+            category=target["category"],
+            credentials=[],
+            endpoints=endpoints,
+            binaries=binaries,
+        )
     audience = f"{GRANT_AUDIENCE_PREFIX}{profile_id}"
     credential = openshell_pb2.ProviderProfileCredential(
         # Named for the env var it fills, not the generic "access_token".
@@ -3599,21 +6041,9 @@ def _provider_profile(
             audience=audience,
             jwt_svid_audience=token_endpoint,
             client_assertion_type=OAUTH_CLIENT_ASSERTION_TYPE,
-            cache_ttl_seconds=cache_ttl_seconds,
+            cache_ttl=_duration(cache_ttl_seconds),
         ),
     )
-    endpoints = target.get("endpoints") or [
-        sandbox_pb2.NetworkEndpoint(
-            host=host,
-            port=443,
-            protocol="rest",
-            tls="terminate",
-            enforcement="enforce",
-            access="full",
-        )
-        for host in target["hosts"]
-    ]
-    binaries = [sandbox_pb2.NetworkBinary(path=path) for path in target["binaries"]]
     return openshell_pb2.ProviderProfile(
         id=profile_id,
         display_name=f"Niuu runtime credential for {env_name}",
@@ -3628,14 +6058,11 @@ def _provider_profile(
 def _provider_credential_slots(profile: Any) -> dict[str, str]:
     """Name the credential slots a provider carries, empty until the grant fills them.
 
-    The gateway rejects a provider with no credentials at all, so a
-    network-only profile still declares one named slot that stays empty —
-    values arrive from the profile's token grant, never from this call.
+    OpenShell accepts only slots the profile declares, so a network-only
+    profile (no credentials) gets a provider with no slots at all; the gateway
+    allows that because none of the profile's credentials is required.
     """
-    slots = {str(credential.name): "" for credential in profile.credentials}
-    if slots:
-        return slots
-    return {PROVIDER_NETWORK_ONLY_CREDENTIAL: ""}
+    return {str(credential.name): "" for credential in profile.credentials}
 
 
 def _codex_enrollment_profile(profile_id: str) -> Any:
@@ -3665,13 +6092,14 @@ def _codex_enrollment_profile(profile_id: str) -> Any:
         ),
     }
     endpoints = [
-        sandbox_pb2.NetworkEndpoint(
-            host=host,
-            port=443,
-            protocol="rest",
-            tls="terminate",
-            enforcement="enforce",
-            access="full",
+        _network_endpoint(
+            {
+                "host": host,
+                "port": 443,
+                "protocol": "rest",
+                "enforcement": "enforce",
+                "access": "full",
+            }
         )
         for host in target["hosts"]
     ]
@@ -3721,17 +6149,20 @@ def _platform_provider_profile(
             audience=audience,
             jwt_svid_audience=token_endpoint,
             client_assertion_type=OAUTH_CLIENT_ASSERTION_TYPE,
-            cache_ttl_seconds=0,
+            # No cache_ttl override: the gateway caches for the token's own expires_in.
         ),
     )
+    # TLS is left unspecified: OpenShell detects it per connection and
+    # terminates HTTPS for inspection, while plain HTTP is inspected as is.
     endpoints = [
-        sandbox_pb2.NetworkEndpoint(
-            host=parsed.hostname,
-            port=port,
-            protocol="rest",
-            tls="terminate" if parsed.scheme == "https" else "",
-            enforcement="enforce",
-            access="full",
+        _network_endpoint(
+            {
+                "host": parsed.hostname,
+                "port": port,
+                "protocol": "rest",
+                "enforcement": "enforce",
+                "access": "full",
+            }
         )
         for parsed, port in parsed_urls
     ]
@@ -3770,15 +6201,23 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
             if not isinstance(allowed_ips, list):
                 raise RuntimeError("OpenShell credential provider allowed_ips must be a list")
             endpoints.append(
-                sandbox_pb2.NetworkEndpoint(
-                    host=str(raw["host"]),
-                    port=int(raw["port"]),
-                    protocol=str(raw.get("protocol") or ""),
-                    tls=str(raw.get("tls") or "skip"),
-                    enforcement=str(raw.get("enforcement") or "enforce"),
-                    access=str(raw.get("access") or "full"),
-                    allowed_ips=[str(item) for item in allowed_ips],
-                    allow_uninspected_credentials=raw.get("allow_uninspected_credentials") is True,
+                _network_endpoint(
+                    {
+                        "host": str(raw["host"]),
+                        "port": int(raw["port"]),
+                        "path": str(raw.get("path") or ""),
+                        "protocol": str(raw.get("protocol") or ""),
+                        # Unspecified TLS is OpenShell's automatic detection and
+                        # termination: the credential is injected into inspected
+                        # traffic. "skip" must be asked for explicitly.
+                        "tls": str(raw.get("tls") or ""),
+                        "enforcement": str(raw.get("enforcement") or "enforce"),
+                        "access": str(raw.get("access") or "full"),
+                        "allowed_ips": [str(item) for item in allowed_ips],
+                        "allow_uninspected_credentials": (
+                            raw.get("allow_uninspected_credentials") is True
+                        ),
+                    }
                 )
             )
         binaries = [
@@ -3926,7 +6365,13 @@ def _profiles_equivalent(existing: Any, expected: Any) -> bool:
         profile.resource_version = 0
         profile.source = ""
         profile.scope = ""
+        for endpoint in profile.endpoints:
+            # Gateway-derived on import; user-authored values are ignored.
+            endpoint.token_grant_owner = ""
+            endpoint.provider_credentialed = False
         for credential in profile.credentials:
+            # Output-only endpoint authorities the gateway resolves for a grant.
+            del credential.token_grant_owners[:]
             if credential.HasField("token_grant") and not credential.token_grant.grant_type:
                 # OpenShell canonicalizes an omitted grant type on import.
                 credential.token_grant.grant_type = (
@@ -3971,6 +6416,13 @@ def _credential_file_archives(files: dict[str, bytes]) -> list[tuple[str, bytes]
     ]
 
 
+#: Directories Völundr may make symlinks in a resident's sandbox (the workspace,
+#: onto its volume, and ~/.ravn, onto the volume's .ravn-home). A file projection
+#: never carries a directory entry for them: GNU tar replaces a symlink with a
+#: new, empty directory when it extracts a directory entry of that name.
+_LINKED_SANDBOX_DIRECTORIES = frozenset({"/sandbox/workspace", "/sandbox/.ravn"})
+
+
 def _credential_file_archive(
     files: dict[str, bytes],
     *,
@@ -3995,6 +6447,11 @@ def _credential_file_archive(
                     continue
                 if parent_str in directories:
                     continue
+                if str(root / parent) in _LINKED_SANDBOX_DIRECTORIES:
+                    # Extracted through whatever is there: a link, or a directory
+                    # tar creates itself.
+                    directories.add(parent_str)
+                    continue
                 directory = tarfile.TarInfo(parent_str)
                 directory.type = tarfile.DIRTYPE
                 directory.mode = 0o700
@@ -4011,6 +6468,47 @@ def _credential_file_archive(
     return output.getvalue()
 
 
+def _with_read_write_path(config: dict[str, Any], path: str) -> dict[str, Any]:
+    """The policy config with ``path`` writable (once a filesystem policy is set)."""
+    filesystem = config.get("filesystem")
+    if not isinstance(filesystem, dict):
+        return config
+    read_write = list(filesystem.get("read_write") or [])
+    if path not in read_write:
+        read_write.append(path)
+    return {**config, "filesystem": {**filesystem, "read_write": read_write}}
+
+
+#: NetworkEndpoint mode enums by their policy-YAML spelling (openshell_contract).
+_NETWORK_MODE_ENUMS = {
+    "tls": {
+        "": sandbox_pb2.NETWORK_TLS_MODE_UNSPECIFIED,
+        "skip": sandbox_pb2.NETWORK_TLS_MODE_SKIP,
+    },
+    "enforcement": {
+        "": sandbox_pb2.NETWORK_ENFORCEMENT_MODE_UNSPECIFIED,
+        "enforce": sandbox_pb2.NETWORK_ENFORCEMENT_MODE_ENFORCE,
+        "audit": sandbox_pb2.NETWORK_ENFORCEMENT_MODE_AUDIT,
+    },
+    "access": {
+        "": sandbox_pb2.NETWORK_ACCESS_PRESET_UNSPECIFIED,
+        "read-only": sandbox_pb2.NETWORK_ACCESS_PRESET_READ_ONLY,
+        "read-write": sandbox_pb2.NETWORK_ACCESS_PRESET_READ_WRITE,
+        "full": sandbox_pb2.NETWORK_ACCESS_PRESET_FULL,
+    },
+}
+
+
+def _network_endpoint(fields: dict[str, Any]) -> Any:
+    """A NetworkEndpoint from its policy-YAML form, mode strings mapped to enums."""
+    if not isinstance(fields, dict):
+        raise ValueError("OpenShell network endpoint must be a mapping")
+    endpoint = dict(fields)
+    for field, enums in _NETWORK_MODE_ENUMS.items():
+        endpoint[field] = enums[network_mode(field, endpoint.get(field))]
+    return sandbox_pb2.NetworkEndpoint(**endpoint)
+
+
 def _sandbox_policy_from_config(config: dict[str, Any]) -> Any:
     if int(config.get("version") or 0) != 1:
         raise ValueError("OpenShell sandbox_policy.version must be 1")
@@ -4019,9 +6517,7 @@ def _sandbox_policy_from_config(config: dict[str, Any]) -> Any:
     network_policies = {
         str(key): sandbox_pb2.NetworkPolicyRule(
             name=str(value.get("name") or key),
-            endpoints=[
-                sandbox_pb2.NetworkEndpoint(**endpoint) for endpoint in value.get("endpoints", [])
-            ],
+            endpoints=[_network_endpoint(endpoint) for endpoint in value.get("endpoints", [])],
             binaries=[sandbox_pb2.NetworkBinary(**binary) for binary in value.get("binaries", [])],
         )
         for key, value in (config.get("network_policies") or {}).items()
@@ -4038,9 +6534,10 @@ def _sandbox_policy_from_config(config: dict[str, Any]) -> Any:
 def _sandbox_from_proto(raw: Any) -> OpenShellSandbox:
     metadata = raw.metadata
     status = raw.status
+    template = getattr(raw.spec, "template", None)
     return OpenShellSandbox(
         id=str(metadata.id or ""),
-        name=str(metadata.name or status.sandbox_name or ""),
+        name=str(metadata.name or ""),
         phase=int(status.phase),
         ready=any(
             condition.type == "Ready" and condition.status == "True"
@@ -4048,6 +6545,8 @@ def _sandbox_from_proto(raw: Any) -> OpenShellSandbox:
         ),
         labels={str(key): str(value) for key, value in metadata.labels.items()},
         providers=tuple(str(name) for name in raw.spec.providers),
+        image=str(getattr(template, "image", "") or ""),
+        annotations={str(key): str(value) for key, value in metadata.annotations.items()},
     )
 
 
@@ -4063,6 +6562,31 @@ def _status_from_sandbox(sandbox: OpenShellSandbox) -> SessionStatus:
     if sandbox.phase == openshell_pb2.SANDBOX_PHASE_DELETING:
         return SessionStatus.STOPPING
     return SessionStatus.PROVISIONING
+
+
+def _duration(seconds: float) -> duration_pb2.Duration:
+    duration = duration_pb2.Duration()
+    duration.FromNanoseconds(int(float(seconds) * 1_000_000_000))
+    return duration
+
+
+def _deletion_outcome(outcome: int, target: str) -> bool:
+    """Whether a delete removed its target (True) or found it already gone (False).
+
+    ACCEPTED means the gateway still holds the record while the platform tears
+    it down: the delete was issued, and callers that need it gone keep polling.
+    """
+    if outcome in (
+        openshell_pb2.DELETION_OUTCOME_COMPLETED,
+        openshell_pb2.DELETION_OUTCOME_ACCEPTED,
+    ):
+        return True
+    if outcome == openshell_pb2.DELETION_OUTCOME_ALREADY_ABSENT:
+        return False
+    raise RuntimeError(
+        f"OpenShell gateway returned no deletion outcome for {target}; "
+        "the gateway predates DeletionOutcome — upgrade it to the pinned OpenShell release"
+    )
 
 
 def _protobuf_struct(value: dict[str, Any]) -> struct_pb2.Struct:

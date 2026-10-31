@@ -23,8 +23,10 @@ Usage::
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 from sleipnir.domain import registry
 from sleipnir.domain.events import SleipnirEvent
@@ -102,6 +104,45 @@ class VolundrSessionNeedsInputPayload:
     prompt: str = ""
     #: Opaque correlation id for the pending request (matches the chat WS frame).
     request_id: str = ""
+
+
+@dataclass(frozen=True)
+class VolundrSessionNotificationPayload:
+    """The owner-scoped Forge notification, as served by ``GET /notifications``."""
+
+    id: str
+    seq: int
+    owner_id: str
+    kind: str
+    severity: str
+    source: str
+    title: str
+    body: str = ""
+    session_id: str | None = None
+    session_seq: int | None = None
+    session_name: str | None = None
+    tenant_id: str | None = None
+    project_id: str | None = None
+    links: list[dict[str, Any]] = field(default_factory=list)
+    engine: str | None = None
+    model: str | None = None
+    correlation_id: str | None = None
+    created_at: str = ""
+
+
+#: Bus urgency by notification severity. ``critical`` outranks a needs-input
+#: request; ``warning`` matches it; routine milestones stay at the default.
+NOTIFICATION_SEVERITY_URGENCY: dict[str, float] = {
+    "info": 0.5,
+    "success": 0.5,
+    "warning": 0.9,
+    "critical": 0.95,
+}
+
+
+def notification_urgency(severity: str) -> float:
+    """Sleipnir urgency for a notification severity (unknown severities rank lowest)."""
+    return NOTIFICATION_SEVERITY_URGENCY.get(severity, NOTIFICATION_SEVERITY_URGENCY["info"])
 
 
 @dataclass(frozen=True)
@@ -650,6 +691,35 @@ def volundr_session_needs_input(
         domain="code",
         timestamp=datetime.now(UTC),
         correlation_id=correlation_id or session_id,
+    )
+
+
+def volundr_session_notification(
+    *,
+    notification: Mapping[str, Any],
+    source: str,
+    correlation_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when Forge records a new session notification.
+
+    ``notification`` is the notification JSON (``NotificationResponse`` without
+    ``read``). Consumers must honour ``owner_id``: the event is not a broadcast to
+    every user.
+    """
+    known = {item.name for item in dataclasses.fields(VolundrSessionNotificationPayload)}
+    payload = VolundrSessionNotificationPayload(
+        **{key: value for key, value in notification.items() if key in known}
+    )
+    label = payload.session_name or payload.session_id or payload.owner_id
+    return SleipnirEvent(
+        event_type=registry.VOLUNDR_SESSION_NOTIFICATION,
+        source=source,
+        payload=dataclasses.asdict(payload),
+        summary=f"Notification ({payload.kind}/{payload.severity}) {label}: {payload.title[:80]}",
+        urgency=notification_urgency(payload.severity),
+        domain="code",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or payload.correlation_id or payload.session_id,
     )
 
 

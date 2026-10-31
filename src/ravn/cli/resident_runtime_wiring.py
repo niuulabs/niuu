@@ -17,6 +17,7 @@ def _build_environment_signal_runtime(
     resident_learning_runtime: Any | None = None,
     resident_wakefulness: Any | None = None,
     resident_inbox: Any | None = None,
+    resident_runtime: Any | None = None,
     owns_publisher: bool = True,
 ) -> Any | None:
     """Build the resident Environment signal runtime when sources are configured."""
@@ -92,6 +93,7 @@ def _build_environment_signal_runtime(
         output_mode=output_mode,
         owns_publisher=owns_publisher,
         durable_home_enabled=resident_signal_recorder is not None,
+        home_wake=(resident_runtime.request_home_wake if resident_runtime is not None else None),
         # The dedupe set lives here so it survives a restart. Passed even
         # when environment signals are not routed through the inbox: the
         # two are separate choices, and a polling source re-reads its whole
@@ -226,6 +228,7 @@ def _build_resident_runtime(
     *,
     state: Any,
     inbox: Any | None,
+    known_resolutions: Any | None = None,
 ) -> Any:
     """Build the resident runtime.
 
@@ -249,16 +252,37 @@ def _build_resident_runtime(
         ),
         resident_personality=settings.environment.resident_personality,
         charter=settings.environment.charter,
-        max_turns=cfg.continuation_max_turns,
-        max_tokens=cfg.continuation_max_tokens,
-        context_max_chars=cfg.continuation_context_max_chars,
-        tool_result_max_chars=cfg.continuation_tool_result_max_chars,
         scheduled_wake_default_seconds=cfg.scheduled_wake_default_seconds,
+        failed_resume_retry_seconds=cfg.failed_resume_retry_seconds,
         repeated_decision_escalate_after=cfg.repeated_decision_escalate_after,
         health_refresh_interval_seconds=cfg.health_refresh_interval_seconds,
         stewardship_interval_seconds=cfg.stewardship_interval_seconds,
         directed_messages_enabled=settings.resident_inbox.directed_messages_enabled,
         environment_id=settings.environment.id,
+        known_resolutions=known_resolutions,
+        known_resolution_redirect_seconds=(
+            settings.reflection.self_improvement.redirect_delay_seconds
+        ),
+    )
+
+
+def build_resident_notification_outbox(settings: Settings) -> Any | None:
+    """The resident's notification outbox, served to Forge by its OpenClaw shim.
+
+    ``None`` when the shim is off or its notifications are switched off
+    (``gateway.channels.openclaw.notifications_enabled``): Forge drains the outbox
+    through the shim, so without it nothing would ever read it.
+    """
+    shim = settings.gateway.channels.openclaw
+    if not shim.enabled or not shim.notifications_enabled:
+        return None
+    from ravn.adapters.resident_notifications import (  # noqa: PLC0415
+        SqliteResidentNotificationOutbox,
+    )
+
+    return SqliteResidentNotificationOutbox(
+        shim.store_path,
+        max_pending=shim.notifications_max_pending,
     )
 
 
@@ -406,8 +430,16 @@ def _build_resident_wakefulness(
     resident_learning_runtime: Any | None,
     publisher: Any | None,
     memory: Any | None = None,
+    learning_curator: Any | None = None,
+    self_improvement: Any | None = None,
+    tool_curator: Any | None = None,
+    state_dir: Path,
 ) -> Any | None:
-    """Build the wakefulness state machine for a resident daemon."""
+    """Build the wakefulness state machine for a resident daemon.
+
+    ``state_dir`` holds the last consolidation dream time, so a restart does
+    not postpone the next dream by a full interval.
+    """
     if not settings.resident_wakefulness.enabled:
         return None
     if resident_learning_runtime is None or publisher is None:
@@ -427,12 +459,52 @@ def _build_resident_wakefulness(
         resident_learning=resident_learning_runtime,
         memory=memory,
         review_requester=resident_learning_runtime.review_requester,
+        learning_curator=learning_curator,
+        self_improvement=self_improvement,
+        tool_curator=tool_curator,
         tick_interval_seconds=cfg.tick_interval_seconds,
         wakeful_window_seconds=cfg.wakeful_window_seconds,
         dream_interval_seconds=cfg.dream_interval_seconds,
         dream_min_idle_seconds=cfg.dream_min_idle_seconds,
         stale_skill_age_seconds=cfg.stale_skill_age_seconds,
         promote_min_successes=cfg.promote_min_successes,
+        dream_snapshot_interval_seconds=cfg.dream_snapshot_interval_seconds,
+        state_path=state_dir / "consolidation_dream_state.json",
+    )
+
+
+def _build_learned_tool_curator(
+    settings: Settings,
+    *,
+    workspace: Path,
+    skills: Any | None,
+    matcher: Any | None,
+    persist: bool = True,
+    load_refusal: Any | None = None,
+) -> Any | None:
+    """Build the dream pass that retires learned tools, when it is enabled.
+
+    *load_refusal* is the resolver's check of whether this resident's execution
+    backend can load a tool; a curator built without one (the read-only plan
+    command) builds the same resolver from the settings, so what it plans to
+    retire is what the running resident would.
+    """
+    cfg = settings.resident_evolution.tool_curation
+    if not cfg.enabled:
+        return None
+    from ravn.cli.tool_builders import learned_tool_resolver_from_settings  # noqa: PLC0415
+    from ravn.valkyrie_evolution.tool_curation import LearnedToolCurator  # noqa: PLC0415
+
+    if load_refusal is None:
+        load_refusal = learned_tool_resolver_from_settings(settings, workspace).load_refusal
+
+    return LearnedToolCurator(
+        state_dir=_resident_ravn_state_dir(workspace, settings),
+        skills=skills,
+        matcher=matcher,
+        leftover_name_prefixes=cfg.leftover_name_prefixes,
+        persist=persist,
+        load_refusal=load_refusal,
     )
 
 

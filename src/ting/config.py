@@ -50,6 +50,10 @@ def _config_paths() -> list[Path]:
 CONFIG_PATHS = _config_paths()
 BUNDLED_FLOCK_FLOWS_PATH = (Path(__file__).parent / "flock_flows.yaml").resolve()
 
+# Default for ``dispatch.workflow_cli_turn_timeout_seconds``; the dispatch service's
+# own config defaults to the same value.
+DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS = 120.0
+
 
 class DatabaseConfig(BaseModel):
     """PostgreSQL database configuration."""
@@ -338,6 +342,16 @@ class FlockConfig(BaseModel):
         default="",
         description="URL of the Mimir knowledge base for coordinator context queries.",
     )
+    mimir_service_auth: HttpAuthAdapterConfig = Field(
+        default_factory=HttpAuthAdapterConfig,
+        description=(
+            "Credential Ting presents to Mimir when it reads a campaign's artifacts "
+            "for a caller holding a scoped workload credential. Scoped credentials "
+            "are never forwarded, so without this a resident's A2A build cannot "
+            "retrieve what it commissioned. Production: "
+            "WorkloadIdentityBearerTokenAuthAdapter with audience mimir."
+        ),
+    )
     mimir_registry_path: str = Field(
         default="~/.ravn/mimir/.mimir-registry.json",
         description=(
@@ -436,6 +450,19 @@ class DispatchConfig(BaseModel):
             "this config is not consulted — the API/UI is the source of truth. "
             "Set this to true in solo-dev setups so newly-spawned owners "
             "auto-pick the next ready issue after a phase gate unlocks."
+        ),
+    )
+    workflow_cli_turn_timeout_seconds: float = Field(
+        default=DEFAULT_WORKFLOW_CLI_TURN_TIMEOUT_SECONDS,
+        ge=0.0,
+        allow_inf_nan=False,
+        description=(
+            "Seconds a workflow persona running on Claude Code (the Agent SDK "
+            "transport) may spend on one turn. A turn is the persona's whole "
+            "agent loop for a task, every model and tool call included, so a "
+            "slow model needs a larger value. A turn that reaches the limit is "
+            "interrupted. 0 turns the limit off. Codex personas get no per-turn "
+            "limit from this setting."
         ),
     )
     flock: FlockConfig = Field(default_factory=FlockConfig)
@@ -925,6 +952,47 @@ class EventsConfig(BaseModel):
     )
 
 
+class StaleCampaignConfig(BaseModel):
+    """When an unfinished workflow campaign is given up on, and how often to look.
+
+    A campaign that waits for an answer nobody sends, or whose session sits
+    idle, keeps its session pod. On a node shared by one owner's sessions
+    those pods starved every later launch: eight idle builder sessions held
+    93% of the node's memory for up to 19 hours. Expired campaigns fail with
+    the reason, which notifies the caller and stops the session. 0 disables a
+    check.
+    """
+
+    sweep_interval_seconds: float = Field(
+        default=300.0,
+        ge=0.0,
+        description="Seconds between sweeps of active campaigns; 0 disables the sweep.",
+    )
+    input_wait_timeout_seconds: float = Field(
+        default=6 * 3600.0,
+        ge=0.0,
+        description=(
+            "Fail a campaign that has waited this long for an answer to its "
+            "input request (A2A INPUT_REQUIRED); 0 never expires a wait."
+        ),
+    )
+    idle_timeout_seconds: float = Field(
+        default=2 * 3600.0,
+        ge=0.0,
+        description=(
+            "Fail a submitted or working campaign whose session has made no progress "
+            "for this long: idle, gone, or reporting busy with nothing recorded since "
+            "(a busy report is re-sent as a heartbeat, so it is not progress; entering "
+            "the busy state or a usage report is). Workflow graphs declare no run "
+            "timeout to derive this from; it is the time an owner gets to notice and "
+            "nudge a stalled session before its pod is reclaimed, and must exceed the "
+            "longest single agent turn without a usage report. Each expiry is logged at "
+            "error, counted on ting_a2a_campaigns_expired_total{reason}, and pushed to "
+            "the A2A caller as a FAILED task whose status message says why. 0 disables."
+        ),
+    )
+
+
 class A2AConfig(BaseModel):
     """Agent-to-Agent protocol surface (agent card + task endpoint)."""
 
@@ -1045,6 +1113,34 @@ class A2AConfig(BaseModel):
         description=(
             "Public origin used for interface URLs on the agent card. "
             "Falls back to the request base URL when empty."
+        ),
+    )
+    stale_campaigns: StaleCampaignConfig = Field(
+        default_factory=StaleCampaignConfig,
+        description="Expiry of campaigns stuck waiting for input or idle.",
+    )
+
+
+class TicketCoordinatorConfig(BaseModel):
+    """The persistent session each ticket works through."""
+
+    persona: str = Field(
+        default="ticket-coordinator",
+        description="Ravn persona that coordinates a ticket.",
+    )
+    model: str = Field(
+        default="gpt-5.6-terra",
+        description=(
+            "Model a coordinator runs on. Its session definition and executor are worked "
+            "out as for a workflow stage, so a coordinator authenticates the same way."
+        ),
+    )
+    ravn_config: dict[str, Any] = Field(
+        default_factory=lambda: {"memory": {"reflection_model": "same-as-agent"}},
+        description=(
+            "Merged into the coordinator's Ravn configuration. The default keeps "
+            "episode reflection on the coordinator's own model, because a Forge "
+            "flock may run on an endpoint that serves no other model."
         ),
     )
 
@@ -1294,6 +1390,7 @@ class Settings(BaseSettings):
     event_bus: EventBusConfig = Field(default_factory=EventBusConfig)
     events: EventsConfig = Field(default_factory=EventsConfig)
     a2a: A2AConfig = Field(default_factory=A2AConfig)
+    ticket_coordinator: TicketCoordinatorConfig = Field(default_factory=TicketCoordinatorConfig)
     workflow_execution: WorkflowExecutionConfig = Field(default_factory=WorkflowExecutionConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)

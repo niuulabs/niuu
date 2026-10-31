@@ -137,15 +137,17 @@ async def test_local_parent_validation_and_remote_link(rig):
     assert remote.coordination.parent.instance_id == "spark"
 
 
-async def test_stale_context_revision_and_missing_dispatch_are_rejected(rig):
+async def test_stale_context_revision_is_rejected_and_dispatch_id_is_optional(rig):
     _, forge, project, repo, _ = rig
     with pytest.raises(ProjectConflictError, match="context changed"):
         await forge.create_and_start_session(launch(project, context_revision="stale"))
-    with pytest.raises(ValueError, match="dispatch_id"):
-        await forge.create_and_start_session(
-            launch(project).model_copy(update={"dispatch_id": None})
-        )
     assert await repo.list() == []
+    # Without a saved dispatch id a launch still works; it is not deduplicated.
+    undeduplicated = launch(project).model_copy(update={"dispatch_id": None})
+    first = await forge.create_and_start_session(undeduplicated)
+    second = await forge.create_and_start_session(undeduplicated)
+    assert first.id != second.id
+    assert first.coordination.project_id == second.coordination.project_id == project.id
 
 
 async def test_receipts_survive_service_replacement_and_export_retry(rig):

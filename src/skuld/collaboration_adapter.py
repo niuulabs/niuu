@@ -29,6 +29,16 @@ PeerObserver = Callable[[str, str, dict[str, Any]], Awaitable[None]]
 PresencePublisher = Callable[[Any], Awaitable[None]]
 UsageReporter = Callable[[dict[str, Any]], Awaitable[None]]
 FrameEmitter = Callable[[dict[str, Any]], Awaitable[None]]
+SessionDeliverer = Callable[[str, str], Awaitable[bool]]
+
+
+def _session_message(payload: dict[str, Any]) -> str:
+    """Render a delivery as the plain message another session takes in."""
+    if payload.get("type") == "directed_message":
+        return str(payload.get("content") or "")
+    persona = payload.get("persona") or "A participant"
+    summary = payload.get("summary") or ""
+    return f"{persona} reported {payload.get('eventType')}: {summary}".rstrip(": ")
 
 
 def _source_wire_fields(event: dict[str, Any]) -> dict[str, Any]:
@@ -46,6 +56,57 @@ def _source_wire_fields(event: dict[str, Any]) -> dict[str, Any]:
         if value:
             fields[key] = value
     return fields
+
+
+def _room_agent_frame(agent_event: Any) -> dict[str, Any]:
+    """Add the ``data``/``metadata`` envelope room clients read to a projected Ravn event.
+
+    The collaboration projection carries a Ravn event as ``{type, payload, taskId, urgency}``;
+    the room's browser clients (web-next ``useSkuldChat``) render a participant's live stream
+    from ``frame.data`` and ``frame.metadata``, the shape Ravn's Skuld channel sent before the
+    projection replaced it. Both shapes ride on the frame, so neither reader has to change.
+    """
+    if not isinstance(agent_event, dict):
+        return {}
+    payload = agent_event.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    data: Any
+    metadata: dict[str, Any]
+    match str(agent_event.get("type") or ""):
+        case "thought":
+            data = payload.get("text", "")
+            metadata = {"thinking": True} if payload.get("thinking") else {}
+        case "response":
+            data = payload.get("text", "")
+            metadata = {}
+        case "tool_start":
+            data = payload.get("tool_name", "")
+            metadata = {"input": payload.get("input", {})}
+            if "diff" in payload:
+                metadata["diff"] = payload["diff"]
+        case "tool_result":
+            data = payload.get("result", "")
+            metadata = {
+                "tool_name": payload.get("tool_name", ""),
+                "is_error": payload.get("is_error", False),
+            }
+        case "error":
+            data = payload.get("message", "")
+            metadata = {}
+        case "task_started":
+            data = payload.get("title", "")
+            metadata = {"task_id": payload.get("task_id", ""), "title": payload.get("title", "")}
+        case "task_complete":
+            data = payload
+            metadata = {
+                "task_id": agent_event.get("taskId") or "",
+                "success": payload.get("success", False),
+            }
+        case _:
+            data = payload
+            metadata = {}
+    return {**agent_event, "data": data, "metadata": metadata}
 
 
 def _peer_observation(
@@ -161,8 +222,10 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         environment_id: str | None = None,
         clock: Callable[[], float] | None = None,
         attestable_review_event_types: frozenset[str] | set[str] = frozenset(),
+        deliver_to_session: SessionDeliverer | None = None,
     ) -> None:
         self._config = config
+        self._deliver_to_session = deliver_to_session
         self._channels = channels
         self._emit_frame = emit_frame
         self._append_turn = append_turn
@@ -186,7 +249,7 @@ class SkuldCollaborationAdapter(CollaborationRoom):
             environment_id=environment_id or config.environment_id,
             broadcast=channels.broadcast,
             publish=self._publish_collaboration_event,
-            deliver=self._deliver_to_websocket,
+            deliver=self._deliver_to_peer,
             is_connected=lambda peer_id: peer_id in self._websockets,
             clock=clock,
             presence_sweep_interval_s=config.presence_sweep_interval_s,
@@ -480,7 +543,7 @@ class SkuldCollaborationAdapter(CollaborationRoom):
                 continue
             if source_is_mesh and participant.participant_kind == "mesh":
                 continue
-            await self._deliver_to_websocket(participant.peer_id, payload)
+            await self._deliver_to_peer(participant.peer_id, payload)
 
     async def _handle_delegation(self, participant: Participant, event: dict[str, Any]) -> None:
         await self._channels.broadcast(
@@ -501,7 +564,7 @@ class SkuldCollaborationAdapter(CollaborationRoom):
             {
                 "type": "room_agent_event",
                 "participantId": participant.peer_id,
-                "frame": event.get("event") or {},
+                "frame": _room_agent_frame(event.get("event")),
                 **_source_wire_fields(event),
             }
         )
@@ -567,6 +630,40 @@ class SkuldCollaborationAdapter(CollaborationRoom):
                 "visibility": visibility,
             },
         )
+
+    async def tell_joined_sessions(self, content: str) -> None:
+        """Tell every agent that joined from another session what just happened here."""
+        for participant in self.participants.values():
+            if participant.session_id:
+                await self._deliver_to_peer(
+                    participant.peer_id, {"type": "directed_message", "content": content}
+                )
+
+    async def _deliver_to_peer(self, peer_id: str, payload: dict[str, Any]) -> bool:
+        """Deliver over a peer's socket here, or to the session it joined from."""
+        participant = self.participant(peer_id)
+        if peer_id in self._websockets or participant is None or not participant.session_id:
+            return await self._deliver_to_websocket(peer_id, payload)
+        if self._deliver_to_session is None:
+            raise RuntimeError(
+                f"Room member {peer_id} joined from session {participant.session_id}, "
+                "but this broker has no route to another session; set volundr_api_url"
+            )
+        message = _session_message(payload)
+        if participant.notice_context:
+            message = f"[{participant.notice_context}] {message}"
+        delivered = await self._deliver_to_session(participant.session_id, message)
+        get_observability().count(
+            "skuld.collaboration.deliveries",
+            attributes={"outcome": "delivered" if delivered else "failed"},
+        )
+        if not delivered:
+            logger.error(
+                "Could not deliver to room member %s in session %s",
+                peer_id,
+                participant.session_id,
+            )
+        return delivered
 
     async def _deliver_to_websocket(self, peer_id: str, payload: dict[str, Any]) -> bool:
         websocket = self._websockets.get(peer_id)

@@ -1,0 +1,29 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/thor/repos/worktrees/niuu-compact-activity-guidance-20260926
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.12.1, respx-0.23.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 144 items
+
+tests/test_niuu/test_forge_mcp_tools.py ................................ [ 22%]
+.........                                                                [ 28%]
+tests/test_skuld/test_forge_mcp_injection.py ........................... [ 47%]
+.                                                                        [ 47%]
+tests/test_skuld/test_forge_mcp_broker.py ..........................     [ 65%]
+tests/test_skuld/test_forge_mcp_stdio.py .............                   [ 75%]
+tests/test_adapters/test_rest_forge_mcp.py ............................. [ 95%]
+.......                                                                  [100%]
+
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.13.13-final-0 _______________
+
+Name                             Stmts   Miss Branch BrPart  Cover
+------------------------------------------------------------------
+src/niuu/forge_mcp/guidance.py       1      0      0      0   100%
+src/niuu/forge_mcp/tools.py        333      6     86     10    96%
+src/skuld/forge_mcp/skill.py        29      0      0      0   100%
+------------------------------------------------------------------
+TOTAL                              363      6     86     10    96%
+Required test coverage of 85% reached. Total coverage: 96.44%
+============================= 144 passed in 12.49s =============================

@@ -64,7 +64,7 @@ const ACTION_AUTHORITY_COPY: Record<string, TermCopy> = {
   },
   court_required: {
     label: 'Needs court approval',
-    description: 'The ODIN court must weigh this before anything executes.',
+    description: 'The review court must weigh this before anything executes.',
   },
   human_review_required: {
     label: 'Needs your approval',
@@ -113,6 +113,28 @@ const WAKEFULNESS_COPY: Record<string, TermCopy> = {
   watching: { label: 'Watching', description: 'Passively monitoring the environment.' },
   wakeful: { label: 'Wakeful', description: 'Actively working on something.' },
   dreaming: { label: 'Dreaming', description: 'Consolidating what it learned.' },
+};
+
+const DREAM_STATUS_COPY: Record<string, TermCopy> = {
+  completed: { label: 'Completed', description: 'The consolidation dream finished.' },
+  noop: { label: 'Nothing to do', description: 'The dream found nothing to consolidate.' },
+  failed: {
+    label: 'Failed',
+    description: 'The dream stopped with an error; nothing after the failing step ran.',
+  },
+};
+
+const RETIREMENT_REASON_COPY: Record<string, TermCopy> = {
+  superseded: { label: 'Superseded', description: 'A newer tool does the same job.' },
+  debug_leftover: {
+    label: 'Debug leftover',
+    description: 'A scratch or probe tool that was never meant to stay.',
+  },
+  unrunnable: { label: 'Unrunnable', description: 'Its verification never passed.' },
+  unused: {
+    label: 'Unused',
+    description: 'Never used within the longest wait this resident has seen before a first use.',
+  },
 };
 
 const OUTCOME_COPY: Record<string, TermCopy> = {
@@ -205,6 +227,14 @@ export function severityCopy(severity: string): TermCopy {
 
 export function wakefulnessCopy(state: string): TermCopy {
   return WAKEFULNESS_COPY[state] ?? fallbackCopy(state);
+}
+
+export function dreamStatusCopy(status: string): TermCopy {
+  return DREAM_STATUS_COPY[status] ?? fallbackCopy(status);
+}
+
+export function retirementReasonCopy(reason: string): TermCopy {
+  return RETIREMENT_REASON_COPY[reason] ?? fallbackCopy(reason);
 }
 
 export function outcomeCopy(outcome: string): TermCopy | null {

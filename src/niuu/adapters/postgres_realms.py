@@ -21,29 +21,47 @@ class PostgresRealmRepository(RealmRepository):
     # Realms
     # ------------------------------------------------------------------
 
-    async def list_realms(self) -> list[Realm]:
-        """List all realms."""
+    async def list_realms(self, tenant_id: str) -> list[Realm]:
+        """List the tenant's realms."""
         rows = await self._pool.fetch(
             """
             SELECT id, slug, name, sleipnir_domain, owner_id, instance_id,
-                   autonomy_profile, created_at, updated_at
+                   autonomy_profile, created_at, updated_at, tenant_id
             FROM realms
+            WHERE tenant_id = $1
             ORDER BY created_at DESC
-            """
+            """,
+            tenant_id,
         )
         return [self._row_to_realm(row) for row in rows]
 
-    async def get_realm(self, realm_ref: UUID | str) -> Realm | None:
-        """Retrieve a realm by id (UUID) or slug (str)."""
+    async def get_realm(self, realm_id: UUID) -> Realm | None:
+        """Retrieve a realm by id in any tenant, for trusted internal callers."""
+        row = await self._pool.fetchrow(
+            """
+            SELECT id, slug, name, sleipnir_domain, owner_id, instance_id,
+                   autonomy_profile, created_at, updated_at, tenant_id
+            FROM realms
+            WHERE id = $1
+            """,
+            realm_id,
+        )
+        if row is None:
+            return None
+        return self._row_to_realm(row)
+
+    async def get_tenant_realm(self, realm_ref: UUID | str, tenant_id: str) -> Realm | None:
+        """Retrieve the tenant's realm by id (UUID) or slug (str)."""
         if isinstance(realm_ref, UUID):
             row = await self._pool.fetchrow(
                 """
                 SELECT id, slug, name, sleipnir_domain, owner_id, instance_id,
-                       autonomy_profile, created_at, updated_at
+                       autonomy_profile, created_at, updated_at, tenant_id
                 FROM realms
-                WHERE id = $1
+                WHERE id = $1 AND tenant_id = $2
                 """,
                 realm_ref,
+                tenant_id,
             )
             if row is None:
                 return None
@@ -52,24 +70,25 @@ class PostgresRealmRepository(RealmRepository):
         row = await self._pool.fetchrow(
             """
             SELECT id, slug, name, sleipnir_domain, owner_id, instance_id,
-                   autonomy_profile, created_at, updated_at
+                   autonomy_profile, created_at, updated_at, tenant_id
             FROM realms
-            WHERE slug = $1
+            WHERE slug = $1 AND tenant_id = $2
             """,
             realm_ref,
+            tenant_id,
         )
         if row is None:
             return None
         return self._row_to_realm(row)
 
     async def save_realm(self, realm: Realm) -> Realm:
-        """Create or update a realm (upsert by id)."""
+        """Create or update a realm (upsert by id). A realm never changes tenant."""
         await self._pool.execute(
             """
             INSERT INTO realms
                 (id, slug, name, sleipnir_domain, owner_id, instance_id,
-                 autonomy_profile, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 autonomy_profile, created_at, updated_at, tenant_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             ON CONFLICT (id) DO UPDATE SET
                 slug = EXCLUDED.slug,
                 name = EXCLUDED.name,
@@ -78,6 +97,7 @@ class PostgresRealmRepository(RealmRepository):
                 instance_id = EXCLUDED.instance_id,
                 autonomy_profile = EXCLUDED.autonomy_profile,
                 updated_at = EXCLUDED.updated_at
+            WHERE realms.tenant_id = EXCLUDED.tenant_id
             """,
             realm.id,
             realm.slug,
@@ -88,6 +108,7 @@ class PostgresRealmRepository(RealmRepository):
             realm.autonomy_profile,
             realm.created_at,
             realm.updated_at,
+            realm.tenant_id,
         )
         return realm
 
@@ -236,6 +257,7 @@ class PostgresRealmRepository(RealmRepository):
             owner_id=row["owner_id"],
             instance_id=row["instance_id"],
             autonomy_profile=row["autonomy_profile"],
+            tenant_id=row["tenant_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

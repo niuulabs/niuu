@@ -4,7 +4,7 @@ import { defineConfig, devices } from '@playwright/test';
 // never disable session navigation, reload and recovery coverage.
 export default defineConfig({
   testDir: './e2e',
-  testMatch: 'forge-stability.spec.ts',
+  testMatch: ['forge-stability.spec.ts', 'forge-notifications.spec.ts'],
   forbidOnly: true,
   retries: 0,
   workers: 1,

@@ -91,6 +91,7 @@ def wait_until(check, process: subprocess.Popen, timeout: float, description: st
             if result:
                 return result
         except (URLError, ConnectionError, TimeoutError):
+            # The service may still be starting; retry only within the deadline.
             pass
         time.sleep(0.5)
     raise TimeoutError(f"Timed out waiting for {description}")

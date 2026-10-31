@@ -777,6 +777,7 @@ async def test_heartbeat_loop_republishes_and_survives_a_failure(tmp_path) -> No
         try:
             await task
         except asyncio.CancelledError:
+            # The test explicitly cancelled the background task above.
             pass
 
     assert len(calls) >= 2

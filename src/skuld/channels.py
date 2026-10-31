@@ -887,29 +887,109 @@ def format_telegram_event(event: dict) -> str | None:
     return None
 
 
-def split_message(text: str, max_length: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> list[str]:
-    """Split a long message into chunks respecting Telegram's limit.
+def telegram_length(text: str) -> int:
+    """Length as Telegram counts it: UTF-16 code units, so most emoji count two."""
+    return len(text.encode("utf-16-le")) // 2
 
-    Splits at newline boundaries when possible, falling back to
-    hard breaks at max_length.
+
+# One HTML tag or character entity: never split inside either.
+_HTML_ATOM = re.compile(r"(<[^<>]*>|&#?\w+;)")
+_HTML_TAG_NAME = re.compile(r"</?\s*([a-zA-Z][\w-]*)")
+
+
+def split_message(
+    text: str,
+    max_length: int = TELEGRAM_MAX_MESSAGE_LENGTH,
+    *,
+    html: bool = False,
+) -> list[str]:
+    """Split a long message into chunks within Telegram's limit, losing nothing.
+
+    Length is measured in UTF-16 code units, which is what Telegram limits.
+    Chunks end at a line break when one fits. With ``html`` (``parse_mode:
+    HTML``) a chunk never ends inside a tag or an entity, and tags open at a
+    split are closed at the end of one chunk and reopened at the start of the
+    next — an unbalanced chunk is rejected by Telegram ("can't parse
+    entities") and its text was lost.
     """
-    if len(text) <= max_length:
+    if telegram_length(text) <= max_length:
         return [text]
+    if not html:
+        return _split_plain(text, max_length)
+    return _split_html(text, max_length)
 
+
+def _split_plain(text: str, max_length: int) -> list[str]:
     chunks: list[str] = []
-    while text:
-        if len(text) <= max_length:
-            chunks.append(text)
-            break
-
-        # Find last newline within the limit
-        split_pos = text.rfind("\n", 0, max_length)
-        if split_pos == -1:
-            split_pos = max_length
-
+    while telegram_length(text) > max_length:
+        limit = _fitting_prefix(text, max_length)
+        split_pos = text.rfind("\n", 0, limit)
+        if split_pos <= 0:
+            split_pos = limit
         chunks.append(text[:split_pos])
         text = text[split_pos:].lstrip("\n")
+    chunks.append(text)
+    return chunks
 
+
+def _fitting_prefix(text: str, budget: int) -> int:
+    """The longest prefix length of *text* within *budget* UTF-16 units (at least 1)."""
+    used = 0
+    for index, char in enumerate(text):
+        used += 2 if ord(char) > 0xFFFF else 1
+        if used > budget:
+            return max(1, index)
+    return len(text)
+
+
+def _split_html(text: str, max_length: int) -> list[str]:
+    chunks: list[str] = []
+    open_tags: list[tuple[str, str]] = []  # (name, the opening tag as written)
+    current = ""
+
+    def closing() -> str:
+        return "".join(f"</{name}>" for name, _ in reversed(open_tags))
+
+    def reopening() -> str:
+        return "".join(tag for _, tag in open_tags)
+
+    def flush() -> None:
+        nonlocal current
+        chunks.append(current + closing())
+        current = reopening()
+
+    def pieces(token: str) -> list[str]:
+        if _HTML_ATOM.fullmatch(token):
+            return [token]
+        # Text: one piece per line, so chunks prefer to end at a line break.
+        return [line for line in re.split(r"(?<=\n)", token) if line]
+
+    for token in _HTML_ATOM.split(text):
+        for piece in pieces(token):
+            name_match = _HTML_TAG_NAME.match(piece) if piece.startswith("<") else None
+            after = list(open_tags)
+            if name_match and piece.startswith("</"):
+                name = name_match.group(1).lower()
+                for index in range(len(after) - 1, -1, -1):
+                    if after[index][0] == name:
+                        del after[index]
+                        break
+            elif name_match:
+                after.append((name_match.group(1).lower(), piece))
+            tail = "".join(f"</{name}>" for name, _ in reversed(after))
+            if telegram_length(current + piece + tail) > max_length and current != reopening():
+                flush()
+            # A single text piece longer than a whole chunk is cut by length.
+            while not name_match and telegram_length(current + piece + closing()) > max_length:
+                room = max_length - telegram_length(current + closing())
+                cut = _fitting_prefix(piece, max(1, room))
+                current += piece[:cut]
+                piece = piece[cut:]
+                flush()
+            current += piece
+            open_tags[:] = after
+    if current and current != reopening():
+        chunks.append(current + closing())
     return chunks
 
 
@@ -1153,6 +1233,7 @@ class TelegramChannel(MessageChannel):
         self._text_buffer: list[str] = []
         self._flush_task: asyncio.Task | None = None
         self._last_send_results: list[dict[str, Any]] = []
+        self._last_send_failures = 0
         self._reply_targets: dict[int, dict[str, Any]] = {}
         self._delivered_event_ids: dict[str, None] = {}
         self._active_failure_keys: dict[str, None] = {}
@@ -1288,7 +1369,8 @@ class TelegramChannel(MessageChannel):
             carrier=carrier,
         ):
             await self._send_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
-            if source_event_id and self._last_send_results:
+            delivered_whole = bool(self._last_send_results) and not self._last_send_failures
+            if source_event_id and delivered_whole:
                 self._delivered_event_ids[source_event_id] = None
                 while len(self._delivered_event_ids) > TELEGRAM_REPLY_CACHE_SIZE:
                     self._delivered_event_ids.pop(next(iter(self._delivered_event_ids)))
@@ -1311,11 +1393,16 @@ class TelegramChannel(MessageChannel):
         trace_context = event.get("trace_context")
         if not isinstance(trace_context, dict):
             trace_context = {}
-        reply_context = {
+        reply_context: dict[str, Any] = {
             "event_type": str(event.get("type") or "room_message"),
             "content": rendered_text[:TELEGRAM_MAX_MESSAGE_LENGTH],
             "participant_id": peer_id,
         }
+        help_context = event.get("context")
+        if event.get("notificationType") == "help_needed" and isinstance(help_context, dict):
+            # The room keeps only a peer's latest question; this message's own
+            # context lets a reply to an older question name the case it answers.
+            reply_context["help_context"] = dict(help_context)
         for result in self._last_send_results:
             message_id = result.get("message_id")
             if not isinstance(message_id, int):
@@ -1359,8 +1446,9 @@ class TelegramChannel(MessageChannel):
         if not self._bot:
             return
 
-        chunks = split_message(text)
+        chunks = split_message(text, html=parse_mode == "HTML")
         self._last_send_results = []
+        self._last_send_failures = 0
         for index, chunk in enumerate(chunks):
             try:
                 kwargs = {
@@ -1390,8 +1478,13 @@ class TelegramChannel(MessageChannel):
                     result["message_id"],
                 )
             except Exception:
-                logger.warning(
-                    "Failed to send Telegram message to chat %s",
+                # The rest of the message still goes out, but the event is not
+                # marked delivered, so a redelivery can send it whole.
+                self._last_send_failures += 1
+                logger.error(
+                    "Failed to send Telegram message chunk %d/%d to chat %s",
+                    index + 1,
+                    len(chunks),
                     self._chat_id,
                     exc_info=True,
                 )

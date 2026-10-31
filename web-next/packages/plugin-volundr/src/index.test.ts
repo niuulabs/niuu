@@ -2,6 +2,7 @@ import { createRootRoute } from '@tanstack/react-router';
 import { UI_MODE_STORAGE_KEY } from '@niuulabs/shell';
 import { afterEach, describe, expect, it } from 'vitest';
 import { volundrPlugin } from './index';
+import { useUnreadNotificationCount } from './ui/hooks/useNotifications';
 
 /** The path a thrown TanStack redirect points at. */
 function redirectTarget(beforeLoad: unknown): string {
@@ -18,19 +19,25 @@ describe('volundrPlugin', () => {
     localStorage.clear();
   });
 
-  it('is Sessions in Simple mode, with only the sessions tab', () => {
-    expect(volundrPlugin.simple).toMatchObject({
-      tabs: ['sessions'],
+  it('is called Sessions, with only the sessions tab in Simple mode', () => {
+    expect(volundrPlugin).toMatchObject({
       title: 'Sessions',
       subtitle: 'coding agents in sandboxes',
     });
+    expect(volundrPlugin.simple).toMatchObject({ tabs: ['sessions'] });
   });
 
-  it('keeps Forge at the beginning of the tab list while sessions use their dedicated route', () => {
+  it('keeps Overview at the beginning of the tab list while sessions use their dedicated route', () => {
     expect(volundrPlugin.tabs).toEqual([
-      { id: 'forge', label: 'Forge', path: '/volundr/forge' },
+      { id: 'forge', label: 'Overview', path: '/volundr/forge' },
       { id: 'sessions', label: 'Sessions', path: '/volundr/sessions' },
       { id: 'catalog', label: 'Catalog', path: '/volundr/catalog' },
+      {
+        id: 'notifications',
+        label: 'Notifications',
+        path: '/volundr/notifications',
+        useCount: useUnreadNotificationCount,
+      },
     ]);
   });
 
@@ -45,6 +52,7 @@ describe('volundrPlugin', () => {
     expect(paths).toContain('/volundr/sessions/new');
     expect(paths).toContain('/volundr/sessions/$sessionId');
     expect(paths).toContain('/volundr/catalog');
+    expect(paths).toContain('/volundr/notifications');
     expect(paths).not.toContain('/volundr/templates');
     expect(paths).toContain('/volundr/credentials');
     expect(paths).toContain('/volundr/clusters');

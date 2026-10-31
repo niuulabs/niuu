@@ -61,7 +61,7 @@ FAKE_ENTRYPOINT = textwrap.dedent(
         )
         print("ravn escaped", escaped.pid, flush=True)
     shown = ("HOME", "SKULD__HOST", "NIUU_CONFIG", "CODEX_HOME", "RAVN_STATE_DIR",
-             "RAVN__GATEWAY__PLATFORM__PAT_TOKEN", "RAVN_API_AUTH__ADAPTER", "EXTRA_INHERITED")
+             "RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN", "RAVN_API_AUTH__ADAPTER", "EXTRA_INHERITED")
     print(role, "argv", " ".join(sys.argv[2:]), flush=True)
     for name in shown:
         print(role, "env", name, os.environ.get(name, "<unset>"), flush=True)
@@ -236,12 +236,14 @@ async def test_host_resident_lifecycle_runs_without_a_container_engine(
     assert f"[skuld] skuld env NIUU_CONFIG {root / 'config' / 'skuld.yaml'}" in messages
     assert f"[skuld] skuld env CODEX_HOME {root / 'home' / '.codex'}" in messages
     assert "[skuld] skuld env RAVN_API_AUTH__ADAPTER <unset>" in messages
-    ravn_messages = await _log_messages(controller, runtime, "ravn argv daemon")
+    # Wait for the last line the fake ravn prints; argv arrives first, and the
+    # env lines can still be in flight when it does.
+    ravn_messages = await _log_messages(controller, runtime, "ravn env EXTRA_INHERITED")
     assert (
         f"[ravn] ravn argv daemon --config {root / 'config' / 'ravn.yaml'} "
         "--persona product-steward"
     ) in ravn_messages
-    assert "[ravn] ravn env RAVN__GATEWAY__PLATFORM__PAT_TOKEN local-mini" in ravn_messages
+    assert "[ravn] ravn env RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN local-mini" in ravn_messages
     assert f"[ravn] ravn env RAVN_STATE_DIR {root / 'workspace' / '.ravn'}" in ravn_messages
     only_ravn = await controller.logs(runtime, lines=5, sources=("ravn",), min_level="")
     assert {entry.source for entry in only_ravn.entries} == {"ravn"}
@@ -740,11 +742,17 @@ async def test_stop_does_not_wait_forever_on_an_escaped_descendant(
     runtime = runtime.model_copy(update={"backend_ref": deployed.backend_ref})
     messages = await _log_messages(controller, runtime, "ravn escaped")
     escaped = int(next(m for m in messages if "ravn escaped" in m).rsplit(" ", 1)[1])
+    processes = controller._residents[runtime.id].processes
+    output_pipes = [
+        item.process._transport.get_pipe_transport(1).get_extra_info("pipe") for item in processes
+    ]
     try:
         await controller.suspend(runtime)
 
         assert "left its process group" in caplog.text
         assert _alive(escaped)
+        assert all(item.output.done() for item in processes)
+        assert all(pipe.closed for pipe in output_pipes)
     finally:
         os.kill(escaped, signal.SIGKILL)
 

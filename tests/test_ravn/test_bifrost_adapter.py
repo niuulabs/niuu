@@ -30,8 +30,7 @@ class TestBifrostAdapterInit:
     def test_defaults(self) -> None:
         adapter = BifrostAdapter()
         assert "bifrost" in adapter._base_url
-        assert adapter._default_max_tokens > 0
-        assert adapter._max_retries >= 0
+        assert adapter._gateway_outage_window_seconds >= 0
         assert adapter._agent_id == ""
         assert adapter._session_id == ""
 
@@ -260,7 +259,7 @@ async def test_generate_cache_tokens_parsed() -> None:
 
 @respx.mock
 async def test_generate_error_response() -> None:
-    adapter = BifrostAdapter(base_url=_BASE_URL, max_retries=0)
+    adapter = BifrostAdapter(base_url=_BASE_URL, gateway_outage_window_seconds=0)
 
     respx.post(_BIFROST_URL).mock(return_value=httpx.Response(400, text="Bad request"))
 
@@ -277,7 +276,7 @@ async def test_generate_error_response() -> None:
 
 
 @respx.mock
-async def test_generate_unknown_stop_reason_defaults_to_end_turn() -> None:
+async def test_generate_unknown_stop_reason_raises() -> None:
     adapter = BifrostAdapter(base_url=_BASE_URL)
 
     response_body = {
@@ -288,8 +287,8 @@ async def test_generate_unknown_stop_reason_defaults_to_end_turn() -> None:
 
     respx.post(_BIFROST_URL).mock(return_value=httpx.Response(200, json=response_body))
 
-    result = await adapter.generate([], tools=[], system="", model="m", max_tokens=100)
-    assert result.stop_reason == StopReason.END_TURN
+    with pytest.raises(LLMError, match="future_unknown_reason"):
+        await adapter.generate([], tools=[], system="", model="m", max_tokens=100)
 
 
 @respx.mock
@@ -322,7 +321,7 @@ def _sse(event: dict) -> str:
 
 
 def _text_block_sse(text: str, usage: dict | None = None) -> list[str]:
-    return [
+    lines = [
         _sse(
             {
                 "type": "content_block_start",
@@ -346,6 +345,8 @@ def _text_block_sse(text: str, usage: dict | None = None) -> list[str]:
             }
         ),
     ]
+    lines.append(_sse({"type": "message_stop"}))
+    return lines
 
 
 def _tool_block_sse(
@@ -380,6 +381,7 @@ def _tool_block_sse(
             }
         )
     )
+    lines.append(_sse({"type": "message_stop"}))
     return lines
 
 
@@ -449,7 +451,7 @@ class TestBifrostStreamParsing:
 
     @respx.mock
     async def test_stream_error_response(self) -> None:
-        adapter = BifrostAdapter(base_url=_BASE_URL, max_retries=0)
+        adapter = BifrostAdapter(base_url=_BASE_URL, gateway_outage_window_seconds=0)
 
         respx.post(_BIFROST_URL).mock(return_value=httpx.Response(500, text="server error"))
 
@@ -530,7 +532,9 @@ class TestBifrostStreamParsing:
 class TestBifrostRetry:
     @respx.mock
     async def test_retries_on_503(self) -> None:
-        adapter = BifrostAdapter(base_url=_BASE_URL, max_retries=1, retry_base_delay=0.0)
+        adapter = BifrostAdapter(
+            base_url=_BASE_URL, gateway_outage_window_seconds=5.0, retry_base_delay=0.001
+        )
 
         response_body = {
             "content": [{"type": "text", "text": "ok"}],
@@ -550,16 +554,13 @@ class TestBifrostRetry:
 
     @respx.mock
     async def test_raises_after_exhausted_retries(self) -> None:
-        adapter = BifrostAdapter(base_url=_BASE_URL, max_retries=1, retry_base_delay=0.0)
-
-        respx.post(_BIFROST_URL).mock(
-            side_effect=[
-                httpx.Response(503, text="unavailable"),
-                httpx.Response(503, text="unavailable"),
-            ]
+        adapter = BifrostAdapter(
+            base_url=_BASE_URL, gateway_outage_window_seconds=0.05, retry_base_delay=0.01
         )
 
-        with pytest.raises(LLMError):
+        respx.post(_BIFROST_URL).mock(return_value=httpx.Response(503, text="unavailable"))
+
+        with pytest.raises(LLMError, match="llm.gateway_outage_window_seconds"):
             await adapter.generate([], tools=[], system="", model="m", max_tokens=100)
 
 

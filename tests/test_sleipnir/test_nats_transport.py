@@ -69,6 +69,7 @@ from sleipnir.adapters.nats_transport import (
 )
 from sleipnir.adapters.serialization import deserialize, serialize
 from sleipnir.domain.events import SleipnirEvent
+from sleipnir.ports.events import StreamNotFoundError
 from tests.test_sleipnir.conftest import make_event
 
 # ---------------------------------------------------------------------------
@@ -456,7 +457,6 @@ async def test_publisher_start_creates_stream_when_missing(mock_nats):
 
 async def test_publisher_ensure_stream_logs_debug_on_stream_info_failure(mock_nats, caplog):
     """stream_info failure is logged at DEBUG before attempting creation."""
-    import logging
 
     mock_module, client, js, _ = mock_nats
     js.stream_info.side_effect = Exception("not found")
@@ -651,6 +651,40 @@ async def test_subscriber_subscribe_creates_nats_subscription(mock_nats):
     assert call_kwargs["stream"] == DEFAULT_STREAM_NAME
     assert "cb" in call_kwargs
     await handle.unsubscribe()
+    await sub.stop()
+
+
+async def test_subscriber_raises_stream_not_found_for_a_missing_stream(mock_nats):
+    _, _, js, _ = mock_nats
+    js.subscribe = AsyncMock(
+        side_effect=js_errors.NotFoundError(
+            code=404, err_code=10059, description="stream not found"
+        )
+    )
+    sub = NatsSubscriber(stream_name="obs-vanaheim-events", ensure_stream=False)
+    await sub.start()
+
+    with pytest.raises(StreamNotFoundError, match="'obs-vanaheim-events' does not exist"):
+        await sub.subscribe(["*"], AsyncMock())
+
+    assert sub._subscriptions == []
+    await sub.stop()
+
+
+async def test_subscriber_passes_other_not_found_errors_through(mock_nats):
+    _, _, js, _ = mock_nats
+    js.subscribe = AsyncMock(
+        side_effect=js_errors.NotFoundError(
+            code=404, err_code=10014, description="consumer not found"
+        )
+    )
+    sub = NatsSubscriber(ensure_stream=False)
+    await sub.start()
+
+    with pytest.raises(js_errors.NotFoundError) as raised:
+        await sub.subscribe(["*"], AsyncMock())
+
+    assert not isinstance(raised.value, StreamNotFoundError)
     await sub.stop()
 
 
@@ -2125,7 +2159,6 @@ async def test_watchdog_recovers_lost_consumer_in_the_background(mock_nats):
 
 
 async def test_unsubscribe_cancels_the_watchdog_task(mock_nats):
-    mock_module, client, js, nats_sub = mock_nats
     sub = NatsSubscriber()
     await sub.start()
     handle = await sub.subscribe(["test.*"], AsyncMock())
@@ -2743,7 +2776,6 @@ async def test_healthy_check_resets_consecutive_failures(mock_nats):
 
 
 async def test_watch_consumers_applies_the_configured_jitter(mock_nats, monkeypatch):
-    mock_module, client, js, nats_sub = mock_nats
     calls: list[tuple[float, float]] = []
 
     def _tracking_uniform(a: float, b: float) -> float:

@@ -39,14 +39,22 @@ from claude_agent_sdk.types import (
 
 from niuu.adapters.cli.runtime import filter_cli_event as _filter_event
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.claude_permission import (
+    DEFAULT_CLAUDE_PERMISSION_MODE,
+    resolve_claude_permission_mode,
+)
 from skuld.slash_commands import build_slash_command_catalog, compose_slash_command_text
 from skuld.transports.claude_env import claude_spawn_env
-from skuld.transports.mcp_config import build_sdk_mcp_servers, require_connected_mcp_servers
+from skuld.transports.mcp_config import (
+    build_claude_mcp_payload,
+    build_sdk_mcp_servers,
+    require_connected_mcp_servers,
+)
+from skuld.transports.session_tools import SessionTools, compose_prompt
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
 
-_DEFAULT_PERMISSION_MODE = "bypassPermissions"
 _TRANSIENT_ERROR_RE = re.compile(
     r"(internal server error|server-side issue|try again in a moment|"
     r"status\.claude\.com|overloaded)",
@@ -290,6 +298,7 @@ class SDKTransport(CLITransport):
         workspace_dir: str,
         model: str = "",
         skip_permissions: bool = False,
+        claude_permission_mode: str = DEFAULT_CLAUDE_PERMISSION_MODE,
         agent_teams: bool = False,
         system_prompt: str = "",
         initial_prompt: str = "",
@@ -297,6 +306,7 @@ class SDKTransport(CLITransport):
         turn_timeout_s: float = _DEFAULT_TURN_TIMEOUT_S,
         resume_session_id: str | None = None,
         ask_user_question_enabled: bool = False,
+        session_tools: SessionTools | None = None,
         model_gateway_url: str = "",
         model_gateway_token: str = "",
         read_only_mcp_only: bool = False,
@@ -313,12 +323,14 @@ class SDKTransport(CLITransport):
         self._mcp_startup_timeout_seconds = mcp_startup_timeout_seconds
         self._mcp_status_poll_interval_seconds = mcp_status_poll_interval_seconds
         self.workspace_dir = workspace_dir
+        self._session_tools = session_tools
         self._model = model
         self._model_gateway_url = model_gateway_url
         self._model_gateway_token = model_gateway_token
         self._read_only_mcp_only = read_only_mcp_only
         self._allowed_mcp_tools = list(allowed_mcp_tools or [])
         self._skip_permissions = skip_permissions and not read_only_mcp_only
+        self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
         self._agent_teams = agent_teams and not read_only_mcp_only
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
@@ -600,7 +612,16 @@ class SDKTransport(CLITransport):
         if subtype == "ask_user_answer":
             request_id = kwargs.get("request_id")
             answers = kwargs.get("answers")
-            self.resolve_question(str(request_id or ""), answers)
+            if not self.resolve_question(str(request_id or ""), answers):
+                raise ValueError("Unknown or already answered Claude question")
+            await self._emit(
+                {
+                    "type": "ask_user_resolved",
+                    "request_id": str(request_id),
+                    "decision": "answered",
+                    "accepted": True,
+                }
+            )
             return
 
         if subtype == "slash_command":
@@ -672,6 +693,15 @@ class SDKTransport(CLITransport):
             await client.interrupt()
             return
 
+    def _sdk_mcp_servers_option(self) -> dict[str, Any] | str:
+        """A 0600 ``--mcp-config`` file path with SessionTools; the SDK dict otherwise."""
+        if self._session_tools is None:
+            return self._mcp_servers
+        path = self._session_tools.write_claude_mcp_config(
+            build_claude_mcp_payload(self._raw_mcp_servers)
+        )
+        return str(path) if path else {}
+
     def _spawn_env(self) -> dict[str, str]:
         # Subscription auth by default (SKULD__CLAUDE_AUTH); the gateway when set.
         return claude_spawn_env(
@@ -683,18 +713,21 @@ class SDKTransport(CLITransport):
         env = self._spawn_env()
         if self._agent_teams:
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
+        tools = self._session_tools
         _, shim_env = ensure_codex_tool_shims(
             self.workspace_dir,
             mcp_servers=self._raw_mcp_servers,
+            session_env=tools.env if tools else None,
         )
         if shim_env:
             env.update(shim_env)
 
+        system_prompt = compose_prompt(tools.instructions if tools else "", self._system_prompt)
         option_kwargs = {
             "model": self._model or None,
-            "system_prompt": self._system_prompt or None,
+            "system_prompt": system_prompt or None,
             "cwd": self.workspace_dir,
-            "mcp_servers": self._mcp_servers,
+            "mcp_servers": self._sdk_mcp_servers_option(),
             "include_partial_messages": True,
             "thinking": {"type": "adaptive", "display": "summarized"},
             # Push new sessions to the highest sensible reasoning effort by model
@@ -705,6 +738,10 @@ class SDKTransport(CLITransport):
             "continue_conversation": False,
             "env": env,
         }
+        if tools and tools.claude_plugin_dirs:
+            option_kwargs["plugins"] = [
+                {"type": "local", "path": str(path)} for path in tools.claude_plugin_dirs
+            ]
         if self._read_only_mcp_only:
             option_kwargs.update(
                 {
@@ -723,7 +760,7 @@ class SDKTransport(CLITransport):
             # default (non-bypass) permission path.
             option_kwargs["can_use_tool"] = self._on_can_use_tool
         if self._skip_permissions:
-            option_kwargs["permission_mode"] = _DEFAULT_PERMISSION_MODE
+            option_kwargs["permission_mode"] = self._claude_permission_mode
         if self._resume_session_id:
             # Reload the prior conversation so the agent continues where it
             # left off. ClaudeAgentOptions.resume is supported by the pinned SDK.

@@ -719,3 +719,9 @@ def test_room_dir_layout_is_contained(tmp_path: Path, fake_broker: dict) -> None
         room_mod._log_path("desk", rooms).parent,
     ):
         assert os.path.commonpath([str(room_dir), str(path)]) == str(room_dir)
+
+
+def test_save_pid_creates_missing_room_directory(tmp_path: Path) -> None:
+    room_mod._save_pid("fresh-room", tmp_path, 4242)
+
+    assert room_mod._load_pid("fresh-room", tmp_path) == 4242

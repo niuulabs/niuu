@@ -25,17 +25,17 @@
     "dev": "tsup --watch"
   },
   "peerDependencies": {
-    "react": "^19.2.8",
-    "@tanstack/react-router": "^1.170.33"
+    "react": "^19.3.1",
+    "@tanstack/react-router": "^1.170.46"
   },
   "dependencies": {
-    "zod": "^4.5.4"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@tanstack/react-router": "^1.170.33",
-    "@types/react": "^19.2.18",
-    "react": "^19.2.8",
-    "tsup": "^8.3.5",
+    "@tanstack/react-router": "^1.170.46",
+    "@types/react": "^19.3.0",
+    "react": "^19.3.1",
+    "tsup": "^9.0.0",
     "typescript": "^6.0.3"
   }
 }

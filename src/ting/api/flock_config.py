@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from niuu.domain.models import Principal
-from ting.adapters.inbound.auth import extract_principal
+from ting.adapters.inbound.auth import extract_principal, require_shared_settings_admin
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ def create_flock_config_router() -> APIRouter:
     async def patch_flock_config(
         request: Request,
         body: PatchFlockConfigRequest,
-        _principal: Principal = Depends(extract_principal),
+        _principal: Principal = Depends(require_shared_settings_admin),
     ) -> FlockConfigResponse:
         """Update flock configuration in-memory.
 

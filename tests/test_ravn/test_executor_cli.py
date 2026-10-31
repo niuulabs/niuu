@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -16,6 +16,7 @@ from ravn.adapters.executors.cli import (
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.events import RavnEvent
 from ravn.domain.models import Message, Session, ToolResult
+from ravn.domain.notification_channel import current_notification_channel
 from ravn.ports.tool import ToolPort
 
 
@@ -507,7 +508,7 @@ async def test_cli_transport_agent_records_durable_tool_metrics(monkeypatch) -> 
     from opentelemetry.sdk.metrics.export import InMemoryMetricReader
     from opentelemetry.sdk.trace import TracerProvider
 
-    import niuu.observability as observability_module
+    from niuu import observability as observability_module
     from niuu.observability import Observability
 
     metric_reader = InMemoryMetricReader()
@@ -811,7 +812,7 @@ def test_cli_executor_adds_ravn_tools_mcp_server_when_tools_are_preloaded() -> N
 
 
 def test_cli_executor_propagates_active_trace_to_ravn_tool_mcp(monkeypatch) -> None:
-    import ravn.adapters.executors.cli as cli_module
+    from ravn.adapters.executors import cli as cli_module
 
     telemetry = MagicMock()
     telemetry.inject.return_value = {
@@ -840,6 +841,40 @@ def test_cli_executor_propagates_active_trace_to_ravn_tool_mcp(monkeypatch) -> N
     args = agent._transport_kwargs["mcp_servers"][0]["args"]
     assert args[args.index("--traceparent") + 1] == telemetry.inject.return_value["traceparent"]
     assert args[args.index("--tracestate") + 1] == "vendor=value"
+
+
+@pytest.mark.parametrize("permission_mode", ["workspace_write", "read_only"])
+def test_cli_executor_names_the_turns_notification_channel_to_ravn_tool_mcp(
+    permission_mode: str,
+) -> None:
+    def ravn_tools_args() -> list[str]:
+        agent = CliTransportExecutor(
+            transport_adapter="skuld.transports.codex_ws.CodexWebSocketTransport"
+        ).build(
+            channel=_CollectingChannel(),
+            system_prompt="Reside.",
+            session=Session(),
+            model="gpt-5.5",
+            max_iterations=3,
+            checkpoint_port=None,
+            task_id="task-notify-channel",
+            persona="resident-codex",
+            workspace_dir="/tmp/workspace",
+            permission_mode=permission_mode,
+            tools=[DummyTool()],
+            mcp_servers=[],
+        )
+        (server,) = agent._transport_kwargs["mcp_servers"]
+        return server["args"]
+
+    token = current_notification_channel.set("room-7")
+    try:
+        args = ravn_tools_args()
+    finally:
+        current_notification_channel.reset(token)
+
+    assert args[args.index("--notification-channel") + 1] == "room-7"
+    assert "--notification-channel" not in ravn_tools_args()
 
 
 def test_cli_executor_allows_ravn_tool_mcp_timeout_override() -> None:
@@ -1140,3 +1175,226 @@ def test_cli_executor_requires_permission_mode() -> None:
             tools=[DummyTool()],
             mcp_servers=[],
         )
+
+
+_SDK = "skuld.transports.sdk.SDKTransport"
+_CODEX_WS = "skuld.transports.codex_ws.CodexWebSocketTransport"
+_FAKE_GATEWAY = "tests.test_ravn.test_executor_cli.FakeGatewayTransport"
+_GATEWAY_URL = "http://gateway.test/api/v1/bifrost"
+_GATEWAY_TOKEN = "gateway-token"
+_SELF_HOSTED_MODEL = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+
+
+class FakeGatewayTransport(FakeStatelessTransport):
+    """Answers with the route it was built for, taking the gateway as the
+    Claude and Codex transports do."""
+
+    def __init__(
+        self,
+        workspace_dir: str,
+        *,
+        model: str = "",
+        model_gateway_url: str = "",
+        model_gateway_token: str = "",
+    ) -> None:
+        super().__init__(workspace_dir, model=model)
+        self._route = (
+            f"{model_gateway_url} with {model_gateway_token}" if model_gateway_url else "vendor"
+        )
+
+    async def send_message(self, content: str) -> None:
+        self._last_result = {
+            "type": "result",
+            "result": f"{self.model} via {self._route}",
+            "stop_reason": "end_turn",
+            "modelUsage": {},
+        }
+        await self._emit(self._last_result)
+
+
+def _build_coder(executor: CliTransportExecutor, model: str) -> CliTransportAgent:
+    return executor.build(
+        channel=_CollectingChannel(),
+        system_prompt="Implement the requested change.",
+        session=Session(),
+        model=model,
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-coder",
+        persona="coder",
+        workspace_dir="/tmp/workspace",
+        permission_mode="workspace_write",
+        tools=[],
+        mcp_servers=[],
+    )
+
+
+async def test_cli_executor_routes_a_gateway_persona_through_the_session_gateway() -> None:
+    executor = CliTransportExecutor(
+        transport_adapter=_FAKE_GATEWAY,
+        model_gateway=True,
+        model_gateway_url=f" {_GATEWAY_URL} ",
+        model_gateway_token=_GATEWAY_TOKEN,
+    )
+
+    result = await _build_coder(executor, _SELF_HOSTED_MODEL).run_turn("Implement it")
+
+    assert result.response == f"{_SELF_HOSTED_MODEL} via {_GATEWAY_URL} with {_GATEWAY_TOKEN}"
+
+
+async def test_cli_executor_cloud_persona_ignores_the_session_gateway() -> None:
+    """The session carries the gateway whatever its personas run; a cloud
+    persona still reaches its vendor with its own credential."""
+    executor = CliTransportExecutor(
+        transport_adapter=_FAKE_GATEWAY,
+        model_gateway_url=_GATEWAY_URL,
+        model_gateway_token=_GATEWAY_TOKEN,
+    )
+
+    result = await _build_coder(executor, "claude-sonnet-4-6").run_turn("Review it")
+
+    assert result.response == "claude-sonnet-4-6 via vendor"
+
+
+def test_cli_executor_gateway_persona_spawns_claude_against_the_gateway() -> None:
+    executor = CliTransportExecutor(
+        transport_adapter=_SDK,
+        model_gateway=True,
+        model_gateway_url=_GATEWAY_URL,
+        model_gateway_token=_GATEWAY_TOKEN,
+    )
+
+    # The real Claude transport, short of spawning the CLI.
+    transport = _build_coder(executor, _SELF_HOSTED_MODEL)._create_transport()
+    with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
+        env = transport._spawn_env()
+
+    assert env["ANTHROPIC_BASE_URL"] == _GATEWAY_URL
+    assert env["ANTHROPIC_AUTH_TOKEN"] == _GATEWAY_TOKEN
+
+
+def test_cli_executor_gateway_persona_points_codex_at_the_gateway() -> None:
+    from skuld.transports.codex_ws import codex_gateway_overrides
+
+    executor = CliTransportExecutor(
+        transport_adapter=_CODEX_WS,
+        model_gateway=True,
+        model_gateway_url=_GATEWAY_URL,
+        model_gateway_token=_GATEWAY_TOKEN,
+    )
+
+    # The real Codex transport, short of spawning the app-server.
+    transport = _build_coder(executor, _SELF_HOSTED_MODEL)._create_transport()
+
+    assert transport._gateway_overrides == codex_gateway_overrides(_GATEWAY_URL)
+    assert transport._model_gateway_token == _GATEWAY_TOKEN
+
+
+@pytest.mark.parametrize(
+    ("url", "token", "match"),
+    [
+        ("", "", "no gateway URL"),
+        ("  ", _GATEWAY_TOKEN, "no gateway URL"),
+        (_GATEWAY_URL, " ", "gateway token is blank"),
+    ],
+)
+def test_cli_executor_refuses_a_gateway_persona_without_a_usable_gateway(
+    url: str, token: str, match: str
+) -> None:
+    """Never the subscription or the vendor API in place of the gateway."""
+    executor = CliTransportExecutor(
+        transport_adapter=_SDK,
+        model_gateway=True,
+        model_gateway_url=url,
+        model_gateway_token=token,
+    )
+
+    with pytest.raises(ValueError, match=match):
+        _build_coder(executor, _SELF_HOSTED_MODEL)
+
+
+def test_cli_executor_refuses_a_gateway_persona_on_a_transport_without_gateway_support() -> None:
+    """A hand-written binding cannot quietly drop the gateway on a transport
+    that would then call its vendor."""
+    executor = CliTransportExecutor(
+        transport_adapter="tests.test_ravn.test_executor_cli.FakeResumableTransport",
+        model_gateway=True,
+        model_gateway_url=_GATEWAY_URL,
+        model_gateway_token=_GATEWAY_TOKEN,
+    )
+
+    with pytest.raises(ValueError, match="FakeResumableTransport cannot be routed through one"):
+        _build_coder(executor, _SELF_HOSTED_MODEL)
+
+
+def test_ravn_tools_server_inherits_the_workload_identity_bootstrap(monkeypatch) -> None:
+    """Codex gives MCP servers a minimal environment. The builder's publisher
+    lost NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL, so its mimir_write to the shared
+    Mímir failed and the capability was reported blocked."""
+    monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", "https://forge.example/exchange")
+    monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_TOKEN_FILE", "/var/run/secrets/niuu-workload/token")
+    executor = CliTransportExecutor(
+        transport_adapter="tests.test_ravn.test_executor_cli.FakeResumableTransport"
+    )
+    agent = executor.build(
+        channel=_CollectingChannel(),
+        system_prompt="You publish capabilities.",
+        session=Session(),
+        model="fake-model",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-publish",
+        persona="capability-publisher",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read_only",
+        tools=[DummyTool()],
+        mcp_servers=[],
+    )
+
+    (server,) = agent._transport_kwargs["mcp_servers"]
+    assert server["env"]["NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL"] == "https://forge.example/exchange"
+    assert server["env"]["NIUU_WORKLOAD_IDENTITY_TOKEN_FILE"] == (
+        "/var/run/secrets/niuu-workload/token"
+    )
+
+
+def _ravn_tools_server() -> dict:
+    executor = CliTransportExecutor(
+        transport_adapter="tests.test_ravn.test_executor_cli.FakeResumableTransport"
+    )
+    agent = executor.build(
+        channel=_CollectingChannel(),
+        system_prompt="You review code.",
+        session=Session(),
+        model="fake-model",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-review",
+        persona="reviewer",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read_only",
+        tools=[DummyTool()],
+        mcp_servers=[],
+    )
+    (server,) = agent._transport_kwargs["mcp_servers"]
+    return server
+
+
+def test_ravn_tools_server_receives_the_platform_bearer_by_name_only(monkeypatch) -> None:
+    """An OpenShell persona's platform bearer lives in its own env. Codex gives
+    MCP servers a minimal environment, so without a pass-through the server's
+    platform tools fell back to a projected token file the sandbox lacks. The
+    name is passed, never the value: a value would reach Codex's command line,
+    and off-cluster this is a PAT."""
+    monkeypatch.setenv("RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN", "secret-bearer")
+
+    server = _ravn_tools_server()
+
+    assert server["env_vars"] == ["RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN"]
+    assert "secret-bearer" not in repr(server)
+
+
+def test_ravn_tools_server_passes_no_bearer_name_when_none_is_set(monkeypatch) -> None:
+    monkeypatch.delenv("RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN", raising=False)
+
+    assert "env_vars" not in _ravn_tools_server()

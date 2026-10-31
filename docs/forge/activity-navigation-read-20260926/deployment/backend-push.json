@@ -1,0 +1,13 @@
+{
+  "backend_source": "4b44432fec51b521c5d2d40ce6de2bd5d5650c8a",
+  "branch": "xteo/activity-navigation-read-20260926",
+  "GitHub_readback": "4b44432fec51b521c5d2d40ce6de2bd5d5650c8a\trefs/heads/xteo/activity-navigation-read-20260926",
+  "gates": [
+    "web-next build",
+    "typecheck",
+    "test and coverage",
+    "format check"
+  ],
+  "passed": true,
+  "initial_push_attempt": "missing dependencies; no hook bypass; own web-next pnpm frozen install, then normal hooks passed"
+}

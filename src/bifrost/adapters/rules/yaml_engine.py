@@ -13,8 +13,12 @@ Supported conditions
 * ``agent_budget_pct``      — numeric comparison on remaining budget % (e.g. ``'>= 80'``).
 * ``provider``              — resolved primary provider name equals this value.
 * ``has_tools``             — request includes tool definitions (bool).
-* ``content_matches``       — regex applied to full concatenated message content.
-* ``system_prompt_matches`` — regex applied to the system prompt text.
+* ``content_matches``       — regex applied to full concatenated message content,
+                              including the text of ``role: system`` messages sent
+                              after the conversation's first turn.
+* ``system_prompt_matches`` — regex applied to the system prompt text: the top-level
+                              ``system`` plus any ``role: system`` messages that open
+                              the conversation.
 * ``message_count``         — numeric comparison on the number of messages.
 * ``has_image``             — request contains image blocks (bool).
 * ``agent_id``              — fnmatch pattern on the X-Ravn-Agent-Id header (e.g. ``'reviewer*'``).
@@ -28,6 +32,7 @@ A plain number is treated as an equality check (``== N``).
 from __future__ import annotations
 
 import fnmatch
+import math
 import re
 
 from bifrost.config import BifrostConfig, RuleCondition, RuleConfig
@@ -198,7 +203,9 @@ class YamlRuleEngine(RuleEnginePort):
                 return False
 
         if condition.max_tokens is not None:
-            if not _compare_numeric(request.max_tokens, condition.max_tokens):
+            # An uncapped request may run to the model's full output.
+            requested = math.inf if request.max_tokens is None else request.max_tokens
+            if not _compare_numeric(requested, condition.max_tokens):
                 return False
 
         if condition.has_tools is not None:

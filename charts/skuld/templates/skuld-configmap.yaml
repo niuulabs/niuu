@@ -1,3 +1,4 @@
+{{- if not (include "skuld.roomGatewayEnabled" .) }}
 {{- if .Values.wsAuth.enforce_ownership }}
 {{- if not (or (and .Values.envoy.enabled .Values.envoy.jwt.enabled) (and .Values.gateway.enabled .Values.gateway.jwt.enabled)) }}
 {{- fail "WebSocket ownership enforcement requires a JWT-verifying Envoy sidecar or Gateway" }}
@@ -96,6 +97,8 @@ data:
     conversation_snapshot_max_bytes: {{ .Values.broker.conversationSnapshotMaxBytes | toJson }}
     live_frame_max_bytes: {{ .Values.broker.liveFrameMaxBytes | toJson }}
     codex_receive_max_bytes: {{ .Values.broker.codexReceiveMaxBytes | toJson }}
+    event_log_enabled: {{ .Values.broker.eventLogEnabled | toJson }}
+    activity_reporting_enabled: {{ .Values.broker.activityReportingEnabled | toJson }}
     history_hydration_enabled: {{ .Values.broker.historyHydrationEnabled | toJson }}
     history_hydration_timeout_seconds: {{ .Values.broker.historyHydrationTimeoutSeconds | toJson }}
     history_hydration_page_size: {{ .Values.broker.historyHydrationPageSize | toJson }}
@@ -132,9 +135,7 @@ data:
     # NIUU_WORKLOAD_IDENTITY_* env vars on the broker container).
     workload_identity:
       token_file: "/var/run/secrets/niuu-workload/token"
-      {{- if .Values.volundr.apiUrl }}
-      exchange_url: {{ printf "%s/api/v1/tokens/workload/exchange" (.Values.volundr.apiUrl | trimSuffix "/") | quote }}
-      {{- end }}
+      exchange_url: {{ include "skuld.residentWorkloadExchangeUrl" . | quote }}
     {{- end }}
     {{- if include "skuld.residentEnabled" . }}
     {{- $persona := include "skuld.residentPersona" . }}
@@ -176,3 +177,4 @@ data:
               consumes_event_types: []
               emits_event_types: []
     {{- end }}
+{{- end }}

@@ -48,8 +48,8 @@ system_prompt_template: |
        - `./.skuld-tools/bin/tracker_issue update-status "<issue-uuid>" "In Progress"`
      - Resolve the real ticket first, then move it to `In Progress`
      - In tracker-driven delivery workflows, if you were triggered by
-       `review.changes_requested`, read `deliveries/{slug}/20-review.md` before
-       starting the revision pass
+       `review.changes_requested`, read the Mímir page
+       `deliveries/{slug}/20-review.md` before starting the revision pass
 
   2. **Explore the codebase**
      - Find related code (grep for similar patterns)
@@ -84,10 +84,15 @@ system_prompt_template: |
       - In tracker-driven delivery workflows, create or update a PR/MR when the
         repository host supports it; if the repository is local-only or lacks a
         hosted forge, record that explicitly instead of pretending a PR exists
-      - In tracker-driven delivery workflows, update the durable handoff
-        artifacts before reporting success:
+      - In tracker-driven delivery workflows, write the durable handoff
+        records before reporting success, as Mímir pages:
         - `deliveries/{slug}/00-ticket.md`
         - `deliveries/{slug}/10-implementation.md`
+        Delivery records are Mímir pages, never repository files: read them with
+        `mimir_read <path>` and write them with `mimir_write <path> --content-file <file>`
+        (in Codex sessions: `./.skuld-tools/bin/mimir_read` / `./.skuld-tools/bin/mimir_write`),
+        keeping the draft file outside the repository. Never create or commit a
+        `deliveries/` directory in the repository: its diff is the change only.
 
   7. **Report**
       - Summarize what was changed and why
@@ -166,7 +171,7 @@ system_prompt_template: |
   - [ ] No debug code or print statements left
   - [ ] Changes are minimal and focused
 
-allowed_tools: [mimir_query, file, git, terminal, web, todo, ravn, tracker_issue]
+allowed_tools: [mimir_query, mimir_read, mimir_write, file, git, terminal, web, todo, ravn, tracker_issue]
 forbidden_tools: [cascade, volundr]
 permission_mode: workspace_write
 

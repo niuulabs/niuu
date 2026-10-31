@@ -73,6 +73,12 @@ data:
         signature_algorithms: {{ .Values.directory.signatureAlgorithms | toJson }}
         authenticated_card_origins: {{ .Values.directory.authenticatedCardOrigins | toJson }}
 
+    {{- if .Values.guild.url }}
+
+    guild:
+      url: {{ .Values.guild.url | quote }}
+    {{- end }}
+
     workload_identity:
       enabled: {{ .Values.workloadIdentity.enabled | default false }}
       issuer: {{ .Values.workloadIdentity.issuer | default "" | quote }}

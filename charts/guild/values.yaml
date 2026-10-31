@@ -146,6 +146,12 @@ envoy:
   extraHttpFilters: []
   extraClusters: []
 
+guild:
+  # -- This Guild's own public origin, e.g. https://yggdrasil.niuu.world. Served at
+  # GET /api/v1/forge/guild with the node this Guild targets by default; empty
+  # answers 404 there.
+  url: ""
+
 workloadIdentity:
   enabled: false
   issuer: ""

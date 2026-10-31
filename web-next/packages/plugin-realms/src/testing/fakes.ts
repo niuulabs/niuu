@@ -34,6 +34,9 @@ export function fakeRealmService(log: CallLog, seed: RealmSummary[] = []): IReal
   const realms = [...seed];
   const grants = new Map<string, RealmTrustGrant[]>();
   return {
+    subscribeRealmDetail() {
+      return () => {};
+    },
     async listRealms() {
       log.calls.push('listRealms');
       return realms;

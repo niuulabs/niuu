@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
+from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -27,8 +28,12 @@ def create_telegram_setup_router(
     telegram_bot_username: str = "TingBot",
     telegram_hmac_key: str = "",
     telegram_hmac_sig_length: int = 32,
+    clock: Callable[[], float] = time.time,
 ) -> APIRouter:
-    """Create router for the Telegram deeplink setup endpoint."""
+    """Create router for the Telegram deeplink setup endpoint.
+
+    ``clock`` supplies the token timestamp; tests inject a fixed one.
+    """
     router = APIRouter(
         prefix="/api/v1/ting",
         tags=["Ting Telegram"],
@@ -49,7 +54,7 @@ def create_telegram_setup_router(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Telegram HMAC key not configured",
             )
-        ts = str(int(time.time()))
+        ts = str(int(clock()))
         payload = f"{principal.user_id}:{ts}"
         key = telegram_hmac_key.encode()
         sig = hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()[:telegram_hmac_sig_length]

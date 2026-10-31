@@ -8,7 +8,7 @@ from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
 
-from identity.adapters.http_auth import extract_principal as extract_principal
+from identity.adapters.http_auth import extract_principal as _extract_identity_principal
 from volundr.domain.models import Principal, User
 from volundr.domain.ports import (
     AuthorizationPort,
@@ -60,6 +60,32 @@ async def check_session_or_resident_access(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"Session or resident runtime not found: {subject_id}",
     )
+
+
+async def extract_principal(request: Request) -> Principal:
+    """FastAPI dependency: validate identity and extract Principal.
+
+    A Forge session token is verified by ForgeSessionAuthMiddleware in every
+    identity mode and wins over headers and the anonymous dev principal. One
+    that reached here unverified (no middleware on this app) is refused rather
+    than silently treated as anonymous. Everything else goes through the shared
+    identity extraction.
+    """
+    from volundr.adapters.inbound.forge_session_auth import (
+        forge_session_claims,
+        presents_unverified_session_token,
+    )
+
+    claims = forge_session_claims(request)
+    if claims is not None:
+        return claims.principal()
+    if presents_unverified_session_token(request):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Forge session token was not verified by this service",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return await _extract_identity_principal(request)
 
 
 async def get_current_user(

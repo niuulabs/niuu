@@ -84,11 +84,11 @@ async def test_same_project_is_noop_and_keeps_coordinator_context(rig):
         )
     )
     assert await service.assign_session(session.id, project.id, 0, None) == session
-    another = await service.register(
-        ForgeProject(name="Other", slug="other", repo_url="https://example.test/other"), None
-    )
-    with pytest.raises(ProjectConflictError, match="Create a coordinator"):
-        await service.assign_session(session.id, another.id, 0, None)
+    another = await service.register(ForgeProject(name="Other"), None)
+    moved = await service.assign_session(session.id, another.id, 0, None)
+    assert (moved.coordination.project_id, moved.coordination.role) == (another.id, "coordinator")
+    assert moved.coordination.context_revision == ""
+    assert "project_context" not in moved.workload_config
 
 
 async def test_two_competing_assignments_cannot_silently_overwrite(rig):
@@ -130,8 +130,10 @@ async def test_api_reports_missing_archived_stale_and_unknown_fields(rig):
         state = (await api.get(path)).json()
         assert state == {"session_id": str(session.id), "revision": 0, "coordination": None}
         body = {"project_id": str(project.id), "expected_revision": 0}
-        assert (await api.put(path, json={**body, "parent": None})).status_code == 422
-        assert (await api.put(path, json={**body, "project_id": None})).status_code == 422
+        assert (await api.put(path, json={**body, "unknown": None})).status_code == 422
+        assert (await api.put(path, json={**body, "role": "Lead"})).status_code == 422
+        detached = await api.put(path, json={**body, "project_id": None})
+        assert detached.status_code == 200 and detached.json()["coordination"] is None
         assert (await api.put(path, json={**body, "project_id": str(uuid4())})).status_code == 404
         assert (await api.get(f"/api/v1/forge/sessions/{uuid4()}/project")).status_code == 404
         assigned = await api.put(path, json=body)

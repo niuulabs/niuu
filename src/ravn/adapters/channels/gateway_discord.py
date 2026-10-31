@@ -26,8 +26,10 @@ import httpx
 import websockets
 
 from ravn.adapters.channels._http_mixin import GatewayHttpMixin
+from ravn.adapters.channels._message_split import split_message
 from ravn.adapters.channels._slash_commands import GATEWAY_SLASH_PROMPTS
 from ravn.adapters.channels.gateway import RavnGateway
+from ravn.cap_telemetry import record_truncation
 from ravn.config import DiscordChannelConfig
 from ravn.ports.gateway_channel import GatewayChannelPort, MessageHandler
 
@@ -122,19 +124,23 @@ class DiscordGateway(GatewayHttpMixin, GatewayChannelPort):
     async def send_text(self, chat_id: str, text: str) -> None:
         """Send *text* to the Discord channel identified by *chat_id*."""
         channel_id = self._channel_id(chat_id)
-        limit = self._config.message_max_chars
-        if len(text) > limit:
-            text = text[: limit - 3] + "..."
-        await self._rest_post(
-            f"/channels/{channel_id}/messages",
-            json={"content": text},
-        )
+        for chunk in split_message(text, self._config.message_max_chars):
+            await self._rest_post(
+                f"/channels/{channel_id}/messages",
+                json={"content": chunk},
+            )
 
     async def send_image(self, chat_id: str, image: bytes, caption: str = "") -> None:
         """Send *image* bytes to *chat_id* as a multipart attachment."""
         channel_id = self._channel_id(chat_id)
         limit = self._config.message_max_chars
         if caption and len(caption) > limit:
+            record_truncation(
+                "gateway.channels.discord.message_max_chars",
+                what="an image caption",
+                kept=limit,
+                total=len(caption),
+            )
             caption = caption[: limit - 3] + "..."
         await self._rest_post_multipart(
             f"/channels/{channel_id}/messages",

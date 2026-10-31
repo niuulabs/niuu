@@ -1,0 +1,73 @@
+name: Attest container image
+description: >-
+  Resolve the digest a published tag points at and attach signed GitHub build
+  provenance to it (stored in GitHub's attestation API and pushed to the
+  registry). Runs inside the calling job, so the attestation's signing identity
+  is the calling job's workflow (the `job_workflow_ref` of the OIDC token): for
+  a job in a reusable workflow that is the reusable workflow, not its caller.
+  Platform verification (`niuu.adapters.outbound.sigstore_provenance`, configured
+  by `git.provenance.kwargs.workflow_paths`) pins exactly those workflow files;
+  a job in any other workflow that uses this action mints an attestation the
+  platform rejects.
+
+  The calling job needs `id-token: write`, `attestations: write` and
+  `packages: write`, and a checkout so this local action can be found.
+inputs:
+  registry:
+    description: Container registry host.
+    required: true
+  image:
+    description: Image repository path on the registry (e.g. `niuulabs/niuu`).
+    required: true
+  tag:
+    description: >-
+      Tag of the already-published multi-arch manifest to attest. The
+      attestation binds to the digest the tag resolves to when this runs.
+    required: true
+  username:
+    description: Registry user name.
+    required: true
+  token:
+    description: Registry token with packages write access (the job's GITHUB_TOKEN).
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Log in to Container Registry
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.token }}
+
+    # `docker buildx imagetools inspect` reads the manifest from the registry;
+    # nothing is pulled. Its `Digest:` line is the manifest list's own digest,
+    # which is what `dev-<sha>@sha256:<digest>` pins and what the platform is
+    # later asked about.
+    - name: Resolve manifest digest
+      id: digest
+      shell: bash
+      env:
+        IMAGE_REF: ${{ inputs.registry }}/${{ inputs.image }}:${{ inputs.tag }}
+      run: |
+        set -euo pipefail
+        # Read the whole output: an awk that exits at the first match closes the
+        # pipe while docker is still writing, docker exits 255 on the broken
+        # pipe, and pipefail fails the step depending on output length.
+        digest="$(docker buildx imagetools inspect "${IMAGE_REF}" | awk '$1 == "Digest:" && !found { print $2; found = 1 }')"
+        if ! [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+          echo "::error title=attest::${IMAGE_REF} resolved to '${digest}', not a sha256 digest"
+          exit 1
+        fi
+        echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+        echo "Attesting ${IMAGE_REF}@${digest}"
+
+    # create-storage-record is off: storage records need the extra
+    # `artifact-metadata: write` permission and are not what the platform reads.
+    - name: Attest build provenance
+      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      with:
+        subject-name: ${{ inputs.registry }}/${{ inputs.image }}
+        subject-digest: ${{ steps.digest.outputs.digest }}
+        push-to-registry: true
+        create-storage-record: false

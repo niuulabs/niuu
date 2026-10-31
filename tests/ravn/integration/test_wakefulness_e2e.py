@@ -39,6 +39,7 @@ from niuu.domain.mimir import ThreadState
 from ravn.adapters.triggers.recap import RecapTrigger
 from ravn.adapters.triggers.thread_queue import ThreadQueueTrigger
 from ravn.adapters.triggers.wakefulness import WakefulnessTrigger
+from ravn.cap_telemetry import cap_hit_counts
 from ravn.config import (
     InitiativeConfig,
     RecapConfig,
@@ -133,7 +134,6 @@ def _make_drive_loop(tmp_path: Path, mimir: MarkdownMimirAdapter) -> tuple[Drive
     cfg = InitiativeConfig(
         enabled=True,
         max_concurrent_tasks=2,
-        task_queue_max=20,
         queue_journal_path=str(tmp_path / "queue.json"),
     )
     settings = Settings()
@@ -170,6 +170,7 @@ class TestFullWakefulnessLoop:
             mimir=mimir,
             llm=reflection_llm,
             config=_wakefulness_config(),
+            transcript=lambda since, max_chars: "operator: please follow up on the API design",
             state_dir=tmp_path / "state",
         )
 
@@ -262,7 +263,6 @@ class TestFullWakefulnessLoop:
         cfg = InitiativeConfig(
             enabled=True,
             max_concurrent_tasks=1,
-            task_queue_max=10,
             queue_journal_path=str(tmp_path / "queue.json"),
         )
         settings = Settings()
@@ -316,7 +316,6 @@ class TestBudgetGate:
         cfg = InitiativeConfig(
             enabled=True,
             max_concurrent_tasks=1,
-            task_queue_max=10,
             queue_journal_path=str(tmp_path / "queue.json"),
         )
         settings = Settings()
@@ -348,6 +347,8 @@ class TestBudgetGate:
         assert factory_calls == []
         # Task is not persisted as complete — budget tracker unchanged.
         assert not exhausted_budget.can_spend()
+        # The hit is loud and counted, not an info line.
+        assert cap_hit_counts() == {"budget.daily_cap_usd": 1}
 
     @pytest.mark.asyncio
     async def test_within_cap_task_runs(self, tmp_path: Path) -> None:
@@ -363,7 +364,6 @@ class TestBudgetGate:
         cfg = InitiativeConfig(
             enabled=True,
             max_concurrent_tasks=1,
-            task_queue_max=10,
             queue_journal_path=str(tmp_path / "queue.json"),
         )
         settings = Settings()
@@ -488,6 +488,7 @@ class TestEmptyReflection:
             mimir=mimir,
             llm=reflection_llm,
             config=_wakefulness_config(),
+            transcript=lambda since, max_chars: "operator: please follow up on the API design",
             state_dir=tmp_path / "state",
         )
 
@@ -571,7 +572,6 @@ class TestThreadStateTransitions:
         cfg = InitiativeConfig(
             enabled=True,
             max_concurrent_tasks=1,
-            task_queue_max=10,
             queue_journal_path=str(tmp_path / "queue.json"),
         )
         loop = DriveLoop(
@@ -614,7 +614,6 @@ class TestThreadStateTransitions:
         cfg = InitiativeConfig(
             enabled=True,
             max_concurrent_tasks=1,
-            task_queue_max=10,
             queue_journal_path=str(tmp_path / "queue.json"),
         )
         loop = DriveLoop(

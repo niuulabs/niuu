@@ -63,6 +63,19 @@ describe('OAuth applications over HTTP', () => {
     });
   });
 
+  it('names the existing connection when a sign-in reconnects it', async () => {
+    const c = clients();
+    c.integrations.post.mockResolvedValueOnce({ id: 'e2', connection_id: 'codex-1' });
+    const adapter = buildSetupHttpAdapter(c);
+    await adapter.startEnrollment('codex', 'codex-work', 'default', 'codex-1');
+    expect(c.integrations.post).toHaveBeenLastCalledWith('/enrollments', {
+      slug: 'codex',
+      credential_name: 'codex-work',
+      oauth_app: 'default',
+      connection_id: 'codex-1',
+    });
+  });
+
   it('starts a named authorization-code account with its connection config', async () => {
     const c = clients();
     c.integrations.post.mockResolvedValueOnce({ url: 'https://auth.atlassian.com/authorize' });

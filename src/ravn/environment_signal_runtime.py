@@ -24,8 +24,16 @@ from ravn.domain.environment import (
     TopologyRef,
     apply_environment_metadata,
 )
-from ravn.domain.models import AgentTask, OutputMode
-from ravn.domain.valkyrie_contracts import resident_outcome_template
+from ravn.domain.models import (
+    DURABLE_SIGNAL_WINDOW_TRIGGER,
+    IDLE_TRIAGE_TRIGGER,
+    AgentTask,
+    OutputMode,
+)
+from ravn.domain.valkyrie_contracts import (
+    RESIDENT_ESCALATION_GUIDANCE,
+    resident_outcome_template,
+)
 from ravn.ports.signal_adapter import NormalizedSignal, SignalAdapter
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher
@@ -34,6 +42,11 @@ logger = logging.getLogger(__name__)
 
 EnqueueFn = Callable[[AgentTask], Awaitable[bool | None]]
 ResidentSignalFn = Callable[[SleipnirEvent], Awaitable[dict[str, Any] | None]]
+HomeWakeFn = Callable[[], None]
+
+#: The severity that has always jumped the resident's queue. Which events
+#: carry it is operator judgment (``critical_reasons`` on the adapter).
+CRITICAL_SEVERITY = "critical"
 
 
 def _import_class(dotted_path: str) -> type:
@@ -110,7 +123,16 @@ class EnvironmentSignalRuntime:
         owns_publisher: bool = False,
         durable_home_enabled: bool = False,
         resident_inbox: Any | None = None,
+        home_wake: HomeWakeFn | None = None,
     ) -> None:
+        if durable_home_enabled and enqueue is not None and home_wake is None:
+            # The inbox is then the only way an observation reaches a turn, and
+            # a critical one could only wait for the next routine home wake.
+            raise ValueError(
+                "durable home intake with a task queue needs the resident home wake; "
+                "pass ResidentRuntime.request_home_wake, or set "
+                "resident_inbox.environment_signals_enabled: false"
+            )
         self._settings = settings
         self._publisher = publisher
         self._enqueue = enqueue
@@ -119,6 +141,7 @@ class EnvironmentSignalRuntime:
         self._output_mode = output_mode
         self._owns_publisher = owns_publisher
         self._durable_home_enabled = durable_home_enabled
+        self._home_wake = home_wake
         # Where the dedupe set is kept between restarts. Optional: without
         # it the set is in-process only, which is the historical behaviour.
         self._resident_inbox = resident_inbox
@@ -166,6 +189,8 @@ class EnvironmentSignalRuntime:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        for adapter in self._adapters:
+            await adapter.close()
         if self._owns_publisher and hasattr(self._publisher, "stop"):
             await self._publisher.stop()  # type: ignore[attr-defined]
 
@@ -293,11 +318,11 @@ class EnvironmentSignalRuntime:
             with telemetry.span("ravn.signal.resident_projection") as projection_span:
                 resident_results = await self._process_resident_learning(
                     events,
-                    fail_on_error=adapter.requires_commit and self._durable_home_enabled,
+                    fail_on_error=self._durable_home_enabled,
                 )
                 projection_span.set_attribute(
                     "ravn.signal.resident_projection.required",
-                    adapter.requires_commit and self._durable_home_enabled,
+                    self._durable_home_enabled,
                 )
             with telemetry.span("ravn.signal.enqueue") as enqueue_span:
                 enqueued_count = await self._enqueue_signals(
@@ -374,13 +399,18 @@ class EnvironmentSignalRuntime:
     ) -> int:
         if not signals:
             return 0
+        if self._durable_home_enabled:
+            self._require_inbox_persistence(events, resident_results)
+            # ResidentHomeTrigger is the sole queue producer for inbox observations,
+            # whatever the source. The inbox folds repeats into one slot per shape
+            # while the resident has not looked yet, so intake never waits on the
+            # model and a flood of one pod's warnings is one slot, not one turn
+            # each. A per-observation task here would also claim the shared slot
+            # and, on acknowledging it, mark every observation folded into it as
+            # judged without the turn having seen them.
+            self._wake_home_for_critical(signals)
+            return 0
         if adapter.requires_commit:
-            if self._durable_home_enabled:
-                self._require_inbox_persistence(events, resident_results)
-                # ResidentHomeTrigger is the sole queue producer for durable inbox
-                # observations. It coalesces NEW records and keeps intake independent
-                # of model latency.
-                return 0
             if self._enqueue is None:
                 raise RuntimeError("durable signal transport requires a resident task queue")
             batch = [
@@ -401,17 +431,41 @@ class EnvironmentSignalRuntime:
             strict=True,
         ):
             if signal.severity in self._settings.environment.signal_task_severities:
-                await self._enqueue(
+                accepted = await self._enqueue(
                     self._task_from_signal(
                         signal,
                         event,
                         resident_learning_result=resident_result,
                     )
                 )
-                enqueued += 1
+                # Refused only as a duplicate of a queued or running task.
+                if accepted is not False:
+                    enqueued += 1
             elif not self._durable_home_enabled:
                 self._remember_untriaged(signal, event)
         return enqueued
+
+    def _wake_home_for_critical(self, signals: list[NormalizedSignal]) -> None:
+        """Let a critical observation be judged now, not at the next home interval.
+
+        The home turn already runs ahead of all signal work; what a critical
+        observation needs is not to wait for the routine cadence. If a home turn
+        is already queued or running, the wake is held until it finishes and the
+        next one then carries the critical slot.
+        """
+        critical = sum(signal.severity == CRITICAL_SEVERITY for signal in signals)
+        if not critical or self._home_wake is None:
+            return
+        self._home_wake()
+        get_observability().count(
+            "ravn.environment.home_wakes",
+            attributes={"ravn.environment.id": self._environment.id},
+            description="Resident home wakes requested by critical environment signals.",
+        )
+        logger.info(
+            "environment_signals: %d critical observation(s) recorded; waking the resident home",
+            critical,
+        )
 
     def _require_inbox_persistence(
         self,
@@ -435,29 +489,35 @@ class EnvironmentSignalRuntime:
         raise RuntimeError("durable signal transport requires every event in the resident inbox")
 
     def _remember_untriaged(self, signal: NormalizedSignal, event: SleipnirEvent) -> None:
+        # Every observation stays in the window until a window carrying it is
+        # queued. The prompt stays bounded by its announced sample, not by
+        # forgetting the oldest observations.
         self._untriaged.append(self._window_entry(signal, event))
-        max_signals = self._settings.environment.idle_triage_max_signals
-        if len(self._untriaged) > max_signals:
-            self._untriaged = self._untriaged[-max_signals:]
 
     async def _idle_triage_loop(self, interval: float) -> None:
-        """Periodically give the resident a bounded window of accumulated signals."""
+        """Periodically give the resident one window of the accumulated signals."""
         if self._enqueue is None:
             return
         while True:
             await asyncio.sleep(interval)
-            batch, self._untriaged = self._untriaged, []
-            if not batch:
-                continue
-            try:
-                await self._enqueue(self._triage_task(batch))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "environment_signals: idle triage enqueue failed: %s",
-                    exc,
-                )
+            await self.offer_idle_triage_window()
+
+    async def offer_idle_triage_window(self) -> bool:
+        """Queue one idle-triage window over everything not yet triaged.
+
+        At most one window is queued or running (the drive loop refuses a
+        second). A refused window is not lost: its observations stay and the
+        next offer carries them together with whatever arrived since. Enqueue
+        errors propagate to the runtime that awaits this loop.
+        """
+        if self._enqueue is None or not self._untriaged:
+            return False
+        batch = list(self._untriaged)
+        accepted = await self._enqueue(self._triage_task(batch))
+        if accepted is False:
+            return False
+        del self._untriaged[: len(batch)]
+        return True
 
     def _triage_task(self, batch: list[dict[str, Any]], *, durable: bool = False) -> AgentTask:
         env_cfg = self._settings.environment
@@ -516,7 +576,8 @@ class EnvironmentSignalRuntime:
             "Finish with exactly one `valkyrie.judgment.proposed` block:\n\n"
             "```text\n"
             f"{outcome_template}\n"
-            "```\n"
+            "```\n\n"
+            f"{RESIDENT_ESCALATION_GUIDANCE}\n"
         )
         digest = hashlib.sha256(
             "\n".join(sorted(str(entry["signal_ref"]) for entry in batch)).encode()
@@ -529,7 +590,7 @@ class EnvironmentSignalRuntime:
                 else f"Signal window: {len(batch)} observation(s)"
             ),
             initiative_context=context,
-            triggered_by="signal:durable_window" if durable else "signal:idle_triage",
+            triggered_by=DURABLE_SIGNAL_WINDOW_TRIGGER if durable else IDLE_TRIAGE_TRIGGER,
             output_mode=self._output_mode,
             persona=self._persona,
             priority=9,
@@ -751,7 +812,8 @@ class EnvironmentSignalRuntime:
             "between them, and no prose after it:\n\n"
             "```text\n"
             f"{outcome_template}\n"
-            "```\n"
+            "```\n\n"
+            f"{RESIDENT_ESCALATION_GUIDANCE}\n"
         )
         task_id = f"task_{int(datetime.now(UTC).timestamp() * 1000):x}_{uuid.uuid4().hex[:8]}"
         root_id = event.correlation_id or signal.correlation_id or task_id
@@ -765,7 +827,7 @@ class EnvironmentSignalRuntime:
             triggered_by=f"signal:{event.event_type}",
             output_mode=self._output_mode,
             persona=self._persona,
-            priority=3 if signal.severity == "critical" else 8,
+            priority=3 if signal.severity == CRITICAL_SEVERITY else 8,
             root_correlation_id=root_id,
             workflow_parent_event_id=event.event_id,
             resident_case_id=root_id if inbox_ref else "",

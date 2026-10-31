@@ -1,0 +1,16 @@
+{
+  "wheel": ".local/activities-read/dist/volundr-0.1.0-py3-none-any.whl",
+  "sha256": "482a1c552aa643409d27b807128f81f5929718be8f703328f4290f5d82694cf1",
+  "source_matches": {
+    "volundr/adapters/inbound/rest_notifications.py": true,
+    "volundr/adapters/outbound/postgres_notifications.py": true,
+    "niuu/domain/conversation_timeline.py": true,
+    "skuld/broker_api.py": true,
+    "niuu/adapters/inbound/rest_volundr.py": true,
+    "volundr/adapters/inbound/rest.py": true,
+    "cli/migrations/volundr/000071_forge_notification_reads.up.sql": true,
+    "cli/migrations/volundr/000071_forge_notification_reads.down.sql": true
+  },
+  "migrations_applied": false,
+  "server_deployed": false
+}

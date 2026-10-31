@@ -22,6 +22,7 @@ export function createFakeRenderer(): Scene3DRenderer {
 
 /** A complete palette with distinct values, for pure colour tests. */
 export const TEST_PALETTE: MemoryPalette = {
+  background: '#000000',
   kind: {
     topic: 'rgb(1, 0, 0)',
     entity: 'rgb(2, 0, 0)',

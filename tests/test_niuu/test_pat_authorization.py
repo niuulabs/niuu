@@ -60,7 +60,8 @@ def test_owner_can_create_list_and_revoke_under_cedar():
     client, repo, issuer, token = app_for(Principal("alice", "", "acme", ["volundr:developer"]))
     assert client.post("/api/v1/tokens", json={"name": "test"}).status_code == 201
     assert client.get("/api/v1/tokens").json()[0]["id"] == str(token.id)
-    assert client.delete(f"/api/v1/tokens/{token.id}").status_code == 204
+    response = client.delete(f"/api/v1/tokens/{token.id}")
+    assert response.status_code == 204
     repo.delete.assert_awaited_once_with(token.id, "alice")
     issuer.issue_token.assert_awaited_once()
 
@@ -68,7 +69,8 @@ def test_owner_can_create_list_and_revoke_under_cedar():
 def test_viewer_cannot_see_or_revoke_pat_metadata():
     client, repo, _, token = app_for(Principal("alice", "", "acme", ["volundr:viewer"]))
     assert client.get("/api/v1/tokens").json() == []
-    assert client.delete(f"/api/v1/tokens/{token.id}").status_code == 403
+    response = client.delete(f"/api/v1/tokens/{token.id}")
+    assert response.status_code == 403
     repo.delete.assert_not_called()
 
 

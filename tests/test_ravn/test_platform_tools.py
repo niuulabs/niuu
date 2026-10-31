@@ -22,6 +22,8 @@ from ravn.adapters.tools.platform_tools import (
 BASE_URL = "http://localhost:8080"
 FORGE_SESSIONS_URL = f"{BASE_URL}/api/v1/forge/sessions"
 FORGE_GIT_URL = f"{BASE_URL}/api/v1/forge/repos"
+NIUU_REPOS_URL = f"{BASE_URL}/api/v1/niuu/repos"
+NIUU_REPO = "https://github.com/niuulabs/niuu"
 TRACKER_ISSUES_URL = f"{BASE_URL}/api/v1/tracker/issues"
 TING_WORKFLOWS_URL = f"{BASE_URL}/api/v1/ting/workflows"
 TING_RESEARCH_URL = f"{BASE_URL}/api/v1/ting/research/campaigns"
@@ -213,15 +215,115 @@ class TestVolundrGitTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_list_branches(self):
-        respx.get(f"{FORGE_GIT_URL}/branches").mock(
-            return_value=httpx.Response(200, json=[{"name": "main"}])
+        # The canonical surface, which a Guild-hosted base_url serves; the Forge
+        # route is a single-instance legacy alias the aggregate does not expose.
+        route = respx.get(f"{NIUU_REPOS_URL}/branches").mock(
+            return_value=httpx.Response(200, json=["main", "dev"])
+        )
+        result = await self.tool.execute({"action": "list_branches", "repo_url": NIUU_REPO})
+        assert not result.is_error
+        assert json.loads(result.content) == ["main", "dev"]
+        assert route.calls.last.request.url.params["repo_url"] == NIUU_REPO
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_list_prs_reads_the_shared_repos_surface(self):
+        route = respx.get(f"{NIUU_REPOS_URL}/prs").mock(
+            return_value=httpx.Response(200, json=[{"number": 7}])
         )
         result = await self.tool.execute(
-            {"action": "list_branches", "repo_url": "https://github.com/org/repo"}
+            {"action": "list_prs", "repo_url": NIUU_REPO, "status": "merged"}
         )
         assert not result.is_error
-        data = json.loads(result.content)
-        assert data[0]["name"] == "main"
+        assert json.loads(result.content) == [{"number": 7}]
+        params = route.calls.last.request.url.params
+        assert params["repo_url"] == NIUU_REPO
+        assert params["status"] == "merged"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_list_prs_without_status_lets_the_server_default(self):
+        route = respx.get(f"{NIUU_REPOS_URL}/prs").mock(return_value=httpx.Response(200, json=[]))
+        result = await self.tool.execute({"action": "list_prs", "repo_url": NIUU_REPO})
+        assert not result.is_error
+        assert "status" not in route.calls.last.request.url.params
+
+    @pytest.mark.asyncio
+    async def test_list_prs_missing_repo_url(self):
+        result = await self.tool.execute({"action": "list_prs"})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_list_prs_failure_carries_the_servers_explanation(self):
+        respx.get(f"{NIUU_REPOS_URL}/prs").mock(
+            return_value=httpx.Response(
+                400, json={"detail": "No connected Git host serves 'x'. Connect the account"}
+            )
+        )
+        result = await self.tool.execute({"action": "list_prs", "repo_url": "x"})
+        assert result.is_error
+        assert "400 Bad Request" in result.content
+        assert "No connected Git host serves 'x'. Connect the account" in result.content
+
+    @pytest.mark.asyncio
+    @respx.mock
+    @pytest.mark.parametrize(
+        "response",
+        [
+            httpx.Response(502, text="<html>bad gateway</html>"),
+            httpx.Response(500, json=["not", "a", "dict"]),
+            httpx.Response(500, json={"error": "no detail key"}),
+        ],
+    )
+    async def test_failure_without_a_detail_still_reports_the_status(self, response):
+        respx.get(f"{NIUU_REPOS_URL}/branches").mock(return_value=response)
+        result = await self.tool.execute({"action": "list_branches", "repo_url": NIUU_REPO})
+        assert result.is_error
+        assert result.content.startswith("Failed to list branches: Server error")
+        assert " — " not in result.content
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_get_pr(self):
+        route = respx.get(f"{NIUU_REPOS_URL}/prs/7").mock(
+            return_value=httpx.Response(200, json={"number": 7, "status": "merged"})
+        )
+        result = await self.tool.execute(
+            {"action": "get_pr", "pr_number": 7, "repo_url": NIUU_REPO}
+        )
+        assert not result.is_error
+        assert json.loads(result.content)["status"] == "merged"
+        assert route.calls.last.request.url.params["repo_url"] == NIUU_REPO
+
+    @pytest.mark.asyncio
+    async def test_get_pr_missing_fields(self):
+        result = await self.tool.execute({"action": "get_pr", "pr_number": 7})
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_merge_pr(self):
+        route = respx.post(f"{NIUU_REPOS_URL}/prs/7/merge").mock(
+            return_value=httpx.Response(200, json={"merged": True})
+        )
+        result = await self.tool.execute(
+            {
+                "action": "merge_pr",
+                "pr_number": 7,
+                "repo_url": NIUU_REPO,
+                "merge_method": "merge",
+            }
+        )
+        assert not result.is_error
+        assert json.loads(result.content) == {"merged": True}
+        assert route.calls.last.request.url.params["repo_url"] == NIUU_REPO
+        assert json.loads(route.calls.last.request.content) == {"merge_method": "merge"}
+
+    @pytest.mark.asyncio
+    async def test_merge_pr_missing_fields(self):
+        result = await self.tool.execute({"action": "merge_pr", "repo_url": NIUU_REPO})
+        assert result.is_error
 
     @pytest.mark.asyncio
     async def test_list_branches_missing_repo_url(self):
@@ -253,7 +355,7 @@ class TestVolundrGitTool:
     @pytest.mark.asyncio
     @respx.mock
     async def test_ci_status(self):
-        respx.get(f"{FORGE_GIT_URL}/prs/42/ci").mock(
+        respx.get(f"{NIUU_REPOS_URL}/prs/42/ci").mock(
             return_value=httpx.Response(200, json={"status": "passing"})
         )
         result = await self.tool.execute(
@@ -388,6 +490,87 @@ class TestTrackerIssueTool:
     def test_required_permission(self):
         assert self.tool.required_permission == "platform:api"
 
+    def test_description_says_get_returns_the_issue_body(self):
+        description = self.tool.description
+        assert "get (issue_id) — full issue including its description" in description
+        assert "acceptance criteria" in description
+
+    def test_input_schema_offers_create(self):
+        schema = self.tool.input_schema
+        assert "create" in schema["properties"]["action"]["enum"]
+        for field in ("title", "description", "team", "labels", "priority", "connection_id"):
+            assert field in schema["properties"]
+        assert "create (title + description + team" in self.tool.description
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_create_issue_posts_the_body(self):
+        route = respx.post(TRACKER_ISSUES_URL).mock(
+            return_value=httpx.Response(201, json={"identifier": "NIU-2000"})
+        )
+        result = await self.tool.execute(
+            {
+                "action": "create",
+                "title": "Tracker API lacks create",
+                "description": "## Acceptance criteria",
+                "team": "NIU",
+                "labels": ["platform-defect"],
+                "priority": 2,
+                "connection_id": None,
+            }
+        )
+        assert not result.is_error
+        assert json.loads(result.content)["identifier"] == "NIU-2000"
+        assert json.loads(route.calls.last.request.content) == {
+            "title": "Tracker API lacks create",
+            "description": "## Acceptance criteria",
+            "team": "NIU",
+            "labels": ["platform-defect"],
+            "priority": 2,
+        }
+
+    @pytest.mark.asyncio
+    async def test_create_issue_requires_title_description_team(self):
+        result = await self.tool.execute({"action": "create", "title": "T"})
+        assert result.is_error
+        assert "description, team required for create action" in result.content
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_create_issue_error_includes_the_api_detail(self):
+        respx.post(TRACKER_ISSUES_URL).mock(
+            return_value=httpx.Response(400, json={"detail": "Linear team not found: NOPE"})
+        )
+        result = await self.tool.execute(
+            {"action": "create", "title": "T", "description": "B", "team": "NOPE"}
+        )
+        assert result.is_error
+        assert "400" in result.content
+        assert "Linear team not found: NOPE" in result.content
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_create_issue_transport_error(self):
+        respx.post(TRACKER_ISSUES_URL).mock(side_effect=httpx.ConnectError("refused"))
+        result = await self.tool.execute(
+            {"action": "create", "title": "T", "description": "B", "team": "NIU"}
+        )
+        assert result.is_error
+        assert "Failed to create issue: refused" in result.content
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_get_issue_returns_description(self):
+        respx.get(f"{TRACKER_ISSUES_URL}/NIU-1092").mock(
+            return_value=httpx.Response(
+                200,
+                json={"id": "NIU-1092", "description": "## Acceptance criteria\n- [ ] done"},
+            )
+        )
+        result = await self.tool.execute({"action": "get", "issue_id": "NIU-1092"})
+        assert not result.is_error
+        assert json.loads(result.content)["description"] == "## Acceptance criteria\n- [ ] done"
+
     @pytest.mark.asyncio
     @respx.mock
     async def test_search_issues(self):
@@ -407,6 +590,25 @@ class TestTrackerIssueTool:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_update_rewrites_the_ticket(self):
+        """Regin was told to change NIU-1116 from dev to regin and had no way to."""
+        route = respx.patch(f"{TRACKER_ISSUES_URL}/NIU-1116").mock(
+            return_value=httpx.Response(200, json={"id": "NIU-1116", "description": "regin"})
+        )
+        result = await self.tool.execute(
+            {"action": "update", "issue_id": "NIU-1116", "description": "Branch from regin."}
+        )
+        assert not result.is_error
+        assert json.loads(route.calls.last.request.content) == {"description": "Branch from regin."}
+
+    @pytest.mark.asyncio
+    async def test_update_needs_an_issue_and_a_change(self):
+        result = await self.tool.execute({"action": "update", "issue_id": "NIU-1116"})
+        assert result.is_error
+        assert "title and/or description" in result.content
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_update_status(self):
         respx.patch(f"{TRACKER_ISSUES_URL}/NIU-1").mock(
             return_value=httpx.Response(200, json={"id": "NIU-1", "status": "Done"})
@@ -417,6 +619,23 @@ class TestTrackerIssueTool:
         assert not result.is_error
         data = json.loads(result.content)
         assert data["status"] == "Done"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_update_status_failure_carries_the_server_detail(self):
+        """A resident must see why a write failed, not just the status code."""
+        detail = (
+            "Issue tracker connection conn-1 cannot update issue NIU-1: "
+            "Status 'Cancelled' not found. Available: Todo, Done, Canceled"
+        )
+        respx.patch(f"{TRACKER_ISSUES_URL}/NIU-1").mock(
+            return_value=httpx.Response(400, json={"detail": detail})
+        )
+        result = await self.tool.execute(
+            {"action": "update_status", "issue_id": "NIU-1", "status": "Cancelled"}
+        )
+        assert result.is_error
+        assert "Available: Todo, Done, Canceled" in result.content
 
     @pytest.mark.asyncio
     async def test_update_status_missing_fields(self):

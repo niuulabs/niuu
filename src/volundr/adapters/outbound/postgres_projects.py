@@ -107,7 +107,7 @@ class PostgresProjectRepository(ProjectRepository):
             project.id,
             project.owner_id,
             project.tenant_id,
-            project.model_dump_json(),
+            project.document_json(),
             project.updated_at,
         )
         if row:
@@ -123,7 +123,7 @@ class PostgresProjectRepository(ProjectRepository):
             "UPDATE forge_projects SET document=$2, revision=$3, updated_at=$4 "
             "WHERE id=$1 AND revision=$5 RETURNING document",
             project.id,
-            project.model_dump_json(),
+            project.document_json(),
             project.revision,
             project.updated_at,
             expected_revision,

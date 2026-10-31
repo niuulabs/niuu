@@ -50,7 +50,8 @@ def test_build_bundle_imports_through_existing_portable_contract():
     assert set(plan.persona_definitions) == {"author", "reviewer"}
     assert "repository" not in result.yaml
     packed = codec.write(result.yaml, result.files)
-    assert packed == codec.write(result.yaml, dict(reversed(list(result.files.items()))))
+    repacked = codec.write(result.yaml, dict(reversed(list(result.files.items()))))
+    assert packed == repacked
     with zipfile.ZipFile(io.BytesIO(packed)) as archive:
         assert {entry.date_time for entry in archive.infolist()} == {(1980, 1, 1, 0, 0, 0)}
 

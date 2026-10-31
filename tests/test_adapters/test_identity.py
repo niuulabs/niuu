@@ -146,3 +146,59 @@ async def test_explicit_header_no_auth_accepts_anonymous_requests():
             client.get("/identity", headers={"x-auth-user-id": "attacker"}).json()
             == response.json()
         )
+
+
+def _actor_app():
+    from fastapi import Depends, FastAPI
+
+    from identity.adapters.http_auth import extract_principal
+    from identity.adapters.identity import AllowAllHeaderAuthenticationAdapter
+
+    app = FastAPI()
+    app.state.identity = AllowAllHeaderAuthenticationAdapter()
+
+    @app.get("/identity")
+    async def who(principal: Principal = Depends(extract_principal)):
+        return {"user_id": principal.user_id, "actor": principal.actor}
+
+    return app
+
+
+def _bearer(claims: dict) -> str:
+    import jwt
+
+    return jwt.encode(claims, "test-only-hmac-key-at-least-32-bytes-long", algorithm="HS256")
+
+
+def test_principal_names_the_workload_acting_for_the_caller():
+    from fastapi.testclient import TestClient
+
+    token = _bearer({"sub": "owner-1", "act": {"sub": "system:serviceaccount:nats:regin"}})
+    with TestClient(_actor_app()) as client:
+        body = client.get("/identity", headers={"Authorization": f"Bearer {token}"}).json()
+
+    assert body["actor"] == "system:serviceaccount:nats:regin"
+
+
+def test_principal_has_no_actor_without_an_act_claim():
+    from fastapi.testclient import TestClient
+
+    token = _bearer({"sub": "owner-1"})
+    with TestClient(_actor_app()) as client:
+        body = client.get("/identity", headers={"Authorization": f"Bearer {token}"}).json()
+
+    assert body["actor"] == ""
+
+
+def test_principal_has_no_actor_when_several_tokens_are_presented():
+    """The actor is read from the one bearer the identity adapter accepted, never guessed."""
+    from fastapi.testclient import TestClient
+
+    header = _bearer({"sub": "owner-1", "act": {"sub": "workload-a"}})
+    query = _bearer({"sub": "owner-1", "act": {"sub": "workload-b"}})
+    with TestClient(_actor_app()) as client:
+        body = client.get(
+            "/identity", params={"token": query}, headers={"Authorization": f"Bearer {header}"}
+        ).json()
+
+    assert body["actor"] == ""

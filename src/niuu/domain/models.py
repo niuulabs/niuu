@@ -2,23 +2,39 @@
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
+from niuu.domain.delivery import CheckConclusion, CheckRecord
+
 LINEAR_API_URL = "https://api.linear.app/graphql"
 
 
 @dataclass(frozen=True)
 class Principal:
-    """Authenticated identity extracted from JWT."""
+    """Authenticated identity extracted from JWT.
+
+    ``token_use``, ``scopes`` and ``bound_session_id`` are set only for a scoped
+    credential (e.g. a Forge ``forge_session`` token): what it may do and the one
+    session it is bound to. Human and PAT principals leave them empty.
+
+    ``actor`` names the workload acting on behalf of ``user_id`` (the RFC 8693
+    ``act.sub`` of an exchanged workload token, e.g. a resident's ServiceAccount);
+    empty when the caller speaks for itself. It is attribution only: it grants nothing.
+    """
 
     user_id: str
     email: str
     tenant_id: str
     roles: list[str]
+    token_use: str = ""
+    scopes: tuple[str, ...] = ()
+    bound_session_id: str | None = None
+    actor: str = ""
 
 
 class IntegrationType(StrEnum):
@@ -78,6 +94,17 @@ class IntegrationConnection:
     created_at: datetime
     updated_at: datetime
     slug: str = ""  # references IntegrationDefinition.slug
+
+
+#: Slug of a registered push device (``volundr.adapters.outbound.integration_device_tokens``).
+#: A push device is a messaging connection only the push sink delivers to: it is not a
+#: Ting channel and never a session integration.
+PUSH_DEVICE_SLUG = "push-device"
+
+
+def is_push_device(connection: IntegrationConnection) -> bool:
+    """Whether ``connection`` is a registered push device rather than a channel."""
+    return getattr(connection, "slug", "") == PUSH_DEVICE_SLUG
 
 
 @dataclass(frozen=True)
@@ -274,6 +301,196 @@ class PullRequest:
 
 
 @dataclass(frozen=True)
+class ChangedFile:
+    """One file touched by a commit or a comparison, as the provider reports it.
+
+    ``additions`` / ``deletions`` are ``None`` when the provider did not say (for
+    example a GitLab diff it marked too large). ``patch`` is ``None`` when the
+    caller did not ask for patches *or* the provider omitted it; in the latter
+    case ``patch_omitted_reason`` says why, so a missing patch is never
+    mistaken for an empty change.
+    """
+
+    path: str
+    status: str
+    additions: int | None
+    deletions: int | None
+    previous_path: str | None = None
+    patch: str | None = None
+    patch_omitted_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class CommitSummary:
+    """A commit in a comparison's list: identity and subject line only."""
+
+    sha: str
+    subject: str
+    author_name: str
+    authored_at: datetime | None
+    url: str
+
+
+@dataclass(frozen=True)
+class CommitDetail:
+    """One commit with the files it changed.
+
+    ``files`` may be narrowed by a path filter; ``files_total`` is always the
+    number of files the commit changed, and ``unmatched_paths`` lists requested
+    paths that matched none of them. ``patch_included`` records whether the
+    patches were requested at all.
+    """
+
+    repo_url: str
+    sha: str
+    url: str
+    parents: tuple[str, ...]
+    author_name: str
+    author_email: str
+    authored_at: datetime | None
+    message: str
+    additions: int | None
+    deletions: int | None
+    files: tuple[ChangedFile, ...]
+    files_total: int
+    unmatched_paths: tuple[str, ...] = ()
+    patch_included: bool = True
+
+
+@dataclass(frozen=True)
+class RefComparison:
+    """``base...head`` as the provider reports it.
+
+    ``ahead_by`` is the number of commits on ``head`` that ``base`` lacks and
+    ``behind_by`` the reverse. ``files`` / ``files_total`` /
+    ``unmatched_paths`` / ``patch_included`` follow :class:`CommitDetail`.
+    """
+
+    repo_url: str
+    base: str
+    head: str
+    status: str
+    ahead_by: int
+    behind_by: int
+    merge_base_sha: str
+    url: str
+    commits: tuple[CommitSummary, ...]
+    files: tuple[ChangedFile, ...]
+    files_total: int
+    unmatched_paths: tuple[str, ...] = ()
+    patch_included: bool = True
+
+
+@dataclass(frozen=True)
+class RefChecks:
+    """CI / check results for a branch, tag or commit, with or without a PR.
+
+    ``sha`` is the commit the provider resolved ``ref`` to, so the answer stays
+    bound to that exact commit even if the branch moves afterwards.
+    """
+
+    repo_url: str
+    ref: str
+    sha: str
+    checks: tuple[CheckRecord, ...]
+
+    @property
+    def status(self) -> CIStatus:
+        """Aggregate verdict: one failing check fails the ref, none reported is unknown."""
+        conclusions = {check.conclusion for check in self.checks}
+        if not conclusions:
+            return CIStatus.UNKNOWN
+        if conclusions & {CheckConclusion.FAILING, CheckConclusion.CANCELED}:
+            return CIStatus.FAILING
+        if CheckConclusion.PENDING in conclusions:
+            return CIStatus.PENDING
+        if CheckConclusion.UNKNOWN in conclusions:
+            return CIStatus.UNKNOWN
+        return CIStatus.PASSING
+
+    def counts(self) -> dict[str, int]:
+        """Number of checks per conclusion, for a one-line summary."""
+        tally: dict[str, int] = {}
+        for check in self.checks:
+            tally[check.conclusion.value] = tally.get(check.conclusion.value, 0) + 1
+        return tally
+
+
+_SHA256_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+class InvalidImageDigestError(ValueError):
+    """An image digest that is not ``sha256:`` followed by 64 hex characters."""
+
+
+def normalize_image_digest(value: str) -> str:
+    """Return *value* as a lower-case ``sha256:<64 hex>`` digest, or raise.
+
+    Only SHA-256 is accepted: it is the algorithm GitHub attestation subjects and
+    OCI manifest digests use here, and a digest in another form (a bare hex
+    string, a tag, a truncated prefix) names no image, so it is rejected rather
+    than guessed at.
+
+    Raises:
+        InvalidImageDigestError: *value* is not a full SHA-256 digest.
+    """
+    digest = value.strip().lower()
+    if _SHA256_DIGEST.fullmatch(digest) is None:
+        raise InvalidImageDigestError(
+            f"{value!r} is not an image digest: expected 'sha256:' followed by 64 hex "
+            "characters (the manifest digest, e.g. from `docker buildx imagetools inspect`)"
+        )
+    return digest
+
+
+@dataclass(frozen=True)
+class ProvenanceAttestation:
+    """One Sigstore bundle a provider holds for an artifact digest, not yet verified.
+
+    ``bundle`` is the bundle's JSON text exactly as the provider stored it.
+    Nothing here has been checked: it becomes evidence only once a provenance
+    verifier accepts it.
+    """
+
+    bundle: str
+
+
+@dataclass(frozen=True)
+class VerifiedProvenance:
+    """What one cryptographically verified build attestation proves.
+
+    Every field comes from the verified signing certificate or from the signed
+    in-toto statement, never from the provider's response around the bundle.
+    ``workflow`` is the build signer URI: the workflow file and ref that ran the
+    signing job (for a reusable workflow, the reusable workflow's own file).
+    """
+
+    subject_name: str
+    subject_digest: str
+    source_repository: str
+    commit_sha: str
+    ref: str
+    workflow: str
+    run_url: str
+
+
+@dataclass(frozen=True)
+class ImageProvenance:
+    """The verified provenance of one image digest in one repository.
+
+    ``attestations`` holds every attestation that verified (at least one);
+    ``rejected`` holds the reason each attestation the provider returned but the
+    verifier refused, so a partially trusted set is visible rather than silently
+    reduced.
+    """
+
+    repo_url: str
+    digest: str
+    attestations: tuple[VerifiedProvenance, ...]
+    rejected: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class PersonalAccessToken:
     """A personal access token for API authentication."""
 
@@ -285,6 +502,30 @@ class PersonalAccessToken:
     tenant_id: str = ""
     scopes: tuple[str, ...] | None = None
     expires_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class WorkloadDelegation:
+    """A workload (e.g. a resident's ServiceAccount) allowed to act for one owner.
+
+    The workload exchange admits a caller through a mapping with
+    ``owner_from: delegation`` only while an active record names the caller's
+    verifier and subject: the token then speaks for ``owner_id`` with the workload
+    as its actor (``act.sub``). The verifier, not the issuer, keys the record:
+    several clusters can share one issuer string, but each verifier pins its own
+    cluster's signing keys.
+    """
+
+    id: UUID
+    verifier: str
+    subject: str
+    owner_id: str
+    tenant_id: str
+    created_by: str
+    created_at: datetime
+    name: str = ""
+    resident_id: str = ""
+    revoked_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -305,6 +546,7 @@ class Realm:
     created_at: datetime
     updated_at: datetime
     autonomy_profile: str = "balanced"
+    tenant_id: str = ""
 
 
 @dataclass(frozen=True)

@@ -42,10 +42,10 @@ class PostgresSessionRepository(SessionRepository):
                  launch_spec_id, archived_at, owner_id, tenant_id, workload_type,
                  origin, external_session_id, cli_session_id, session_definition,
                  activity_state, activity_metadata, activity_state_since,
-                 workload_config, turn_started_at, coordination)
+                 workload_config, turn_started_at, coordination, actor_id)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
                     $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-                    $22, $23, $24, $25, $26, $27, $28, $29, $30, $31)
+                    $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32)
             """,
             session.id,
             session.name,
@@ -78,6 +78,7 @@ class PostgresSessionRepository(SessionRepository):
             json.dumps(session.workload_config or {}),
             session.turn_started_at,
             session.coordination.model_dump_json() if session.coordination else None,
+            session.actor_id,
         )
         return session
 
@@ -216,7 +217,7 @@ class PostgresSessionRepository(SessionRepository):
         )
 
     async def update_coordination(
-        self, session: Session, coordination: SessionCoordination
+        self, session: Session, coordination: SessionCoordination | None
     ) -> Session | None:
         row = await self._pool.fetchrow(
             """UPDATE sessions SET coordination = $2::jsonb,
@@ -228,7 +229,7 @@ class PostgresSessionRepository(SessionRepository):
                  AND tenant_id IS NOT DISTINCT FROM $6
                RETURNING *""",
             session.id,
-            coordination.model_dump_json(),
+            coordination.model_dump_json() if coordination is not None else None,
             datetime.now(UTC),
             session.coordination_revision,
             session.owner_id,
@@ -376,6 +377,7 @@ class PostgresSessionRepository(SessionRepository):
             launch_spec_id=row.get("launch_spec_id"),
             archived_at=archived_at,
             owner_id=row.get("owner_id"),
+            actor_id=row.get("actor_id"),
             tenant_id=row.get("tenant_id"),
             workload_type=row.get("workload_type") or "session",
             workload_config=self._parse_json_dict(row.get("workload_config")),

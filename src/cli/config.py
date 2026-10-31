@@ -726,6 +726,15 @@ class GuildConfig(BaseModel):
     node_id: str = Field(
         default="", description="This host's node id, assigned by Guild at join time."
     )
+    instance_id: str = Field(
+        default="",
+        description=(
+            "This host's Forge instance id in that Guild, from the join or heartbeat "
+            "response. Forge serves it at GET /api/v1/forge/guild."
+        ),
+    )
+    instance_name: str = Field(default="", description="That instance's display name.")
+    instance_slug: str = Field(default="", description="That instance's slug.")
     heartbeat_interval_seconds: float = Field(
         default=60.0,
         gt=0,
@@ -806,10 +815,40 @@ def _merge_identity_trust(
     return candidate, None
 
 
+def guild_instance_fields(instances: Any) -> dict[str, str] | None:
+    """The ``instance_*`` fields of this host's Forge instance in a join or
+    heartbeat response's ``instances``, or ``None`` when it offered none."""
+    for item in instances or []:
+        if isinstance(item, dict) and item.get("kind") == "volundr" and item.get("id"):
+            return {
+                "instance_id": str(item["id"]),
+                "instance_name": str(item.get("name") or ""),
+                "instance_slug": str(item.get("slug") or ""),
+            }
+    return None
+
+
+def persist_guild_instance(instance: dict[str, str], *, config_file: Path | None = None) -> None:
+    """Record this host's Forge instance in the Guild it joined (``guild.instance_*``).
+
+    Forge reads the same file: it serves the instance at ``GET /api/v1/forge/guild``
+    and stamps it on every notification.
+    """
+    import yaml
+
+    target = config_file or config_paths()[0]
+    existing: dict[str, Any] = {}
+    if target.exists():
+        existing = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+    existing["guild"] = {**(existing.get("guild") or {}), **instance}
+    target.write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
+
+
 def persist_guild_join(
     *,
     url: str,
     node_id: str,
+    instance: dict[str, str] | None = None,
     current_host_auth: AuthConfig | None = None,
     identity_trust: dict[str, Any] | None = None,
     config_file: Path | None = None,
@@ -818,6 +857,9 @@ def persist_guild_join(
 
     Merges into whatever config already exists rather than overwriting it —
     `niuu join` must not discard unrelated operator configuration.
+
+    ``instance`` (from :func:`guild_instance_fields`) records this host's Forge
+    instance in that Guild alongside them.
 
     ``identity_trust`` (the join response's ``identity`` field — Guild's own
     ``{mode, issuers}``) is merged into ``host_auth`` via
@@ -835,7 +877,7 @@ def persist_guild_join(
     existing: dict[str, Any] = {}
     if target.exists():
         existing = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
-    existing["guild"] = {"url": url, "node_id": node_id}
+    existing["guild"] = {"url": url, "node_id": node_id, **(instance or {})}
 
     warning = None
     if identity_trust is not None:

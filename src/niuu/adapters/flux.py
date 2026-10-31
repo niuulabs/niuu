@@ -144,6 +144,21 @@ class FluxHelmReleases:
             _content_type="application/merge-patch+json",
         )
 
+    async def _replace_helmrelease(self, name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Replace a HelmRelease whole; its metadata.resourceVersion makes it a guarded write.
+
+        Unlike a merge patch, a replace drops values the new spec no longer sets.
+        """
+        api = await self._get_api()
+        return await api.replace_namespaced_custom_object(
+            group=HELMRELEASE_GROUP,
+            version=HELMRELEASE_VERSION,
+            namespace=self._namespace,
+            plural=HELMRELEASE_PLURAL,
+            name=name,
+            body=body,
+        )
+
     async def _delete_helmrelease(self, name: str) -> bool:
         api = await self._get_api()
         try:

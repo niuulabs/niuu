@@ -12,7 +12,6 @@ import pytest
 
 from ravn.domain.models import TokenUsage
 from ravn.domain.resident_continuation import (
-    ResidentBudgetLimits,
     ResidentBudgetSnapshot,
     ResidentMemoryEntry,
     ResidentPolicyDecisionRecord,
@@ -24,7 +23,6 @@ from ravn.domain.resident_continuation import (
 from ravn.resident_continuation import (
     LocalResidentMemory,
     NullResidentMemory,
-    ResidentRunBudget,
 )
 
 
@@ -168,16 +166,6 @@ async def test_null_memory_is_noop(tmp_path) -> None:
     assert await mem.read_operator_answer() is None
 
 
-def test_run_budget_snapshot_and_limits() -> None:
-    budget = ResidentRunBudget(ResidentBudgetLimits(max_turns=2, max_tokens=100))
-    assert budget.can_continue().allowed is True
-
-    budget.record_usage(TokenUsage(input_tokens=80, output_tokens=40))  # 120 > 100
-    snap = budget.snapshot()
-    assert snap.total_tokens == 120
-    assert budget.can_continue().allowed is False
-
-
 # ---------------------------------------------------------------------------
 # Case retention
 #
@@ -300,10 +288,10 @@ async def test_sweep_is_throttled_between_turns(tmp_path) -> None:
     sweeps = 0
     original = mem.prune_cases
 
-    async def _counting_prune() -> int:
+    async def _counting_prune(**kwargs) -> int:
         nonlocal sweeps
         sweeps += 1
-        return await original()
+        return await original(**kwargs)
 
     mem.prune_cases = _counting_prune  # type: ignore[method-assign]
     await mem.write_turn(_turn(2, case_id="one"))
@@ -510,3 +498,33 @@ def test_local_memory_sets_permissions_before_writing(tmp_path, monkeypatch) -> 
     finally:
         os.umask(old_umask)
     assert observed == [0o600]
+
+
+@pytest.mark.asyncio
+async def test_sweep_never_prunes_the_case_being_written(tmp_path) -> None:
+    """With more live cases than the cap, the sweep trims every unresumable
+    case — and the turn just written belongs to one. Pruning it made the
+    runtime's read-after-write fail and lost the turn (seen on Regin with 215
+    open operator questions against a cap of 200)."""
+    mem = _memory(tmp_path, retention_max_cases=2)
+    for idx in range(3):
+        await _waiting_case(mem, f"waiting-{idx}")
+    await _dead_case(mem, "stale")
+    mem._last_retention_sweep = None  # noqa: SLF001 — make the next write sweep
+
+    ref = await mem.write_turn(_turn(1, case_id="current"))
+
+    assert await mem.read(ref) is not None
+    assert "current" in _case_ids(tmp_path)
+    assert "stale" not in _case_ids(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_prune_cases_keeps_the_named_case(tmp_path) -> None:
+    mem = _memory(tmp_path, retention_max_cases=1)
+    for idx in range(3):
+        await _dead_case(mem, f"dead-{idx}")
+
+    await mem.prune_cases(keep_case_id="dead-0")
+
+    assert _case_ids(tmp_path) == {"dead-0"}

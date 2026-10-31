@@ -110,6 +110,8 @@ def command_for(lane: str, report: Path, *, coverage: bool = False) -> list[str]
             "tests/integration/volundr",
             "tests/test_adapters/test_pg_history_import.py",
             "tests/test_adapters/test_message_delivery_postgres_integration.py",
+            "tests/test_adapters/test_notifications_postgres_integration.py",
+            "tests/test_adapters/test_notification_dispatcher_postgres_integration.py",
             "tests/test_skuld/test_forge_nul_persistence.py::test_nul_entries_persist_to_real_pg_and_round_trip",
             "tests/test_skuld/test_forge_nul_persistence.py::test_real_pg_rejects_raw_nul_without_sanitization",
             "-m",

@@ -170,3 +170,22 @@ async def test_late_usage_write_cannot_restore_working_after_idle(isolated_pool)
     assert late.activity_state_since == finish and late.turn_started_at is None
     assert late.last_active == finish and late.tokens_used == 100
     assert (await repo.get(busy.id)).activity_state == SessionActivityState.IDLE
+
+
+async def test_lightweight_project_document_and_detach_roundtrip(isolated_pool):
+    repo, _ = await seed(isolated_pool)
+    garden = await repo.register(ForgeProject(slug="garden", name="Garden", brief="Grow."))
+    async with isolated_pool.acquire() as connection:
+        stored = await connection.fetchval(
+            "SELECT document::text FROM forge_projects WHERE id=$1", garden.id
+        )
+    assert '"brief": "Grow."' in stored and '"repo_url": ""' in stored
+    assert "home_instance_id" not in stored
+    assert (await PostgresProjectRepository(isolated_pool).get(garden.id)) == garden
+    sessions = PostgresSessionRepository(isolated_pool)
+    member = await sessions.create(
+        Session(name="member", coordination=SessionCoordination(project_id=garden.id))
+    )
+    detached = await sessions.update_coordination(member, None)
+    assert detached.coordination is None and detached.coordination_revision == 1
+    assert (await sessions.get(member.id)).coordination is None

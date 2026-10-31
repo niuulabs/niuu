@@ -1,5 +1,6 @@
-# Reusable: run Grype against container images and upload SARIF.
+# Reusable: catalog container images with Syft, match them with Grype, upload SARIF.
 # Called by ci.yaml and dev.yaml after container manifests are published.
+# Syft and Grype are pinned with checksums in containers/python-security/install-scanners.sh.
 name: Reusable — Container Scan
 
 on:
@@ -17,9 +18,6 @@ on:
         description: Container registry.
         type: string
         default: ghcr.io
-      grype-version:
-        type: string
-        default: "0.118.0"
 
 permissions:
   contents: read
@@ -38,7 +36,7 @@ jobs:
         container: ${{ fromJson(inputs.containers) }}
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -51,39 +49,89 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Grype
-        env:
-          GRYPE_VERSION: ${{ inputs.grype-version }}
+      - name: Install Syft and Grype
+        id: scanners
         run: |
           set -euo pipefail
+          bash containers/python-security/install-scanners.sh
+          echo "GRYPE_DB_CACHE_DIR=$RUNNER_TEMP/grype-db" >> "$GITHUB_ENV"
 
-          install_grype() {
-            curl --retry 5 --retry-all-errors --retry-delay 2 -sSfL \
-              https://raw.githubusercontent.com/anchore/grype/247f5d72abf2131aa37f3164a98495c121b29029/install.sh \
-              | sh -s -- -b /usr/local/bin "v${GRYPE_VERSION}"
-          }
+      # The DB is cached per Grype version (which fixes the schema) and saved
+      # under its own build time, so a new cache entry appears only when Anchore
+      # publishes a new DB, not once per run or hour. Restore takes the newest.
+      - name: Restore Grype DB
+        id: grype-db-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/grype-db
+          key: grype-db-${{ runner.os }}-${{ steps.scanners.outputs.grype-version }}-latest
+          restore-keys: grype-db-${{ runner.os }}-${{ steps.scanners.outputs.grype-version }}-
 
+      # Update once, explicitly, so the scan's Grype runs skip the check
+      # (GRYPE_DB_AUTO_UPDATE=false). The 5-day max-age validation stays on.
+      - name: Update Grype DB
+        id: grype-db
+        env:
+          GRYPE_VERSION: ${{ steps.scanners.outputs.grype-version }}
+        run: |
+          set -euo pipefail
           for attempt in 1 2 3; do
-            if install_grype; then
-              grype version
-              exit 0
+            if grype db update; then
+              break
             fi
-
             if [ "$attempt" -eq 3 ]; then
-              exit 1
+              # No reachable update: a restored DB still counts if it validates.
+              echo "::warning::Grype DB update check failed; scanning with the restored DB"
+              break
             fi
-
             sleep $((attempt * 5))
           done
+          grype db status
+          built=$(grype db status -o json | jq -r '(.schemaVersion | gsub("[^0-9.]"; "")) + "-" + (.built | gsub("[^0-9]"; ""))')
+          echo "key=grype-db-${RUNNER_OS}-${GRYPE_VERSION}-${built}" >> "$GITHUB_OUTPUT"
 
-          grype version
+      - name: Save Grype DB
+        if: strategy.job-index == 0 && steps.grype-db.outputs.key != steps.grype-db-restore.outputs.cache-matched-key
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/grype-db
+          key: ${{ steps.grype-db.outputs.key }}
 
-      - name: Scan container with Grype
-        run: |
-          grype "${{ inputs.registry }}/${{ github.repository_owner }}/${{ matrix.container }}:${{ inputs.tag }}" \
-            --only-fixed \
-            --fail-on critical \
-            -o sarif > "grype-${{ matrix.container }}.sarif"
+      - name: Scan container with Syft and Grype
+        env:
+          IMAGE: ${{ inputs.registry }}/${{ github.repository_owner }}/${{ matrix.container }}:${{ inputs.tag }}
+          CONTAINER: ${{ matrix.container }}
+          GRYPE_DB_AUTO_UPDATE: "false"
+        run: bash containers/python-security/scan.sh "$IMAGE" "$CONTAINER"
+
+      # FinalizeArtifact sometimes fails with ECONNRESET: retry once.
+      - name: Preserve scan and backport evidence
+        id: upload-evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: security-evidence-${{ matrix.container }}
+          path: |
+            grype-${{ matrix.container }}-*.json
+            python-security-${{ matrix.container }}*.json
+            sbom-${{ matrix.container }}.syft.json
+          retention-days: 30
+
+      - name: Wait before retrying the evidence upload
+        if: always() && steps.upload-evidence.outcome == 'failure'
+        run: sleep 15
+
+      - name: Retry scan and backport evidence upload
+        if: always() && steps.upload-evidence.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: security-evidence-${{ matrix.container }}
+          path: |
+            grype-${{ matrix.container }}-*.json
+            python-security-${{ matrix.container }}*.json
+          retention-days: 30
+          overwrite: true
 
       - name: Detect Grype results
         id: sarif
@@ -96,7 +144,7 @@ jobs:
           fi
 
       - name: Upload Grype results
-        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         if: always() && steps.sarif.outputs.present == 'true'
         with:
           sarif_file: grype-${{ matrix.container }}.sarif

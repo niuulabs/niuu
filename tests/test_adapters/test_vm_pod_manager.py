@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -12,7 +13,9 @@ from niuu.ports.session_proxy import SessionProxyTarget
 from tests.compute_fakes import LeaseRepository, Provider
 from volundr.adapters.outbound.vm_pod_manager import VmPodManager
 from volundr.domain.compute import (
+    ComputeCapacityError,
     ComputeLeaseBusyError,
+    ComputeProvisioningLimitError,
     LeaseState,
     MachineBootstrap,
     MachineProviderError,
@@ -298,7 +301,6 @@ def test_config_validation():
 
 
 async def test_cancel_before_guest_control_releases_without_touching_archive(setup):
-    import asyncio
 
     manager, _, repository, provider, runtime, _, session = setup
     entered = asyncio.Event()
@@ -323,7 +325,6 @@ async def test_cancel_before_guest_control_releases_without_touching_archive(set
 
 
 async def test_reconcile_resumes_cancelled_start_without_new_allocation(setup):
-    import asyncio
 
     manager, service, repository, provider, runtime, store, session = setup
     runtime.start.side_effect = asyncio.CancelledError
@@ -385,7 +386,6 @@ async def test_background_recovery_preserves_only_explicit_safe_runtime_stage(se
 
 
 async def test_stop_cancels_recovery_before_guest_data_is_touched(setup):
-    import asyncio
 
     manager, service, repository, provider, runtime, store, session = setup
     lease = await service.acquire(
@@ -587,3 +587,129 @@ async def test_unconfirmed_sandbox_deletion_keeps_vm_and_capacity(setup):
     assert len(provider.machines) == 1
     assert (await manager.capacity()).available == 0
     assert next(iter(repository.leases.values())).state == LeaseState.READY
+
+
+async def test_status_of_a_ready_session_never_fails_on_a_concurrent_lease_operation(setup):
+    manager, service, repository, provider, runtime, store, session = setup
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    assert await manager.wait_for_ready(session, 0.2) == SessionStatus.RUNNING
+    lease = next(iter(repository.leases.values()))
+    repository.leases[lease.id] = lease.model_copy(update={"state": LeaseState.READY})
+    busy = AsyncMock(side_effect=ComputeLeaseBusyError("in progress"))
+    service.mark_busy = busy
+    assert await manager.status(session) == SessionStatus.RUNNING
+    busy.assert_awaited_once()
+    repository.leases[lease.id] = lease.model_copy(update={"state": LeaseState.BUSY})
+    busy.reset_mock()
+    assert await manager.status(session) == SessionStatus.RUNNING
+    busy.assert_not_awaited()
+
+
+def _manager(setup, **kwargs):
+    _, service, repository, _, runtime, _, _ = setup
+    manager = VmPodManager(
+        profile="small", pool_id="pool", max_machines=1, poll_interval_seconds=0.001, **kwargs
+    )
+    manager.configure_compute(
+        service, repository, runtime, MachineBootstrap(), pool_id="pool", max_machines=1
+    )
+    return manager
+
+
+async def test_start_waits_behind_the_provisioning_limit_instead_of_failing(setup):
+    manager, service, repository, _, _, _, session = setup
+    acquire = service.acquire
+    refusals = 0
+
+    async def busy_pool(**claim):
+        nonlocal refusals
+        if refusals < 3:
+            refusals += 1
+            raise ComputeProvisioningLimitError("Compute pool provisioning limit reached")
+        return await acquire(**claim)
+
+    service.acquire = busy_pool
+    result = await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    assert refusals == 3
+    assert result.pod_name == str(next(iter(repository.leases)))
+
+
+async def test_a_full_pool_still_fails_at_once_and_a_stuck_queue_times_out(setup):
+    _, service, _, _, _, _, session = setup
+    manager = _manager(setup, provisioning_timeout_seconds=0.05)
+    spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+
+    async def full(**claim):
+        raise ComputeCapacityError("Compute pool pool has no unreserved slots")
+
+    service.acquire = full
+    with pytest.raises(ComputeCapacityError, match="no unreserved slots"):
+        await manager.start(session, spec)
+
+    async def limited(**claim):
+        raise ComputeProvisioningLimitError("Compute pool provisioning limit reached")
+
+    service.acquire = limited
+    with pytest.raises(ComputeProvisioningLimitError):
+        await manager.start(session, spec)
+
+
+async def test_an_unprepared_runtime_is_logged_surfaced_and_named_on_timeout(setup, caplog):
+    _, _, repository, _, runtime, _, session = setup
+    manager = _manager(
+        setup,
+        provisioning_timeout_seconds=0.2,
+        runtime_wait_log_every=1000,
+        runtime_wait_surface_after=2,
+    )
+    reason = "Runner has no Skuld venv at /home/horde/.niuu-runner/venv-bc174c8d/bin/python"
+    details: list[str | None] = []
+
+    async def unprepared(*_args, **_kwargs):
+        # Read the detail while the session is still provisioning: after the timeout the
+        # lease's own deadline may already have failed it, and a failed lease shows none.
+        if len(runtime.start.await_args_list) > 2 and not details:
+            details.append(await manager.status_detail(session))
+        raise VmRuntimeUnavailableError(reason)
+
+    runtime.start.side_effect = unprepared
+
+    with caplog.at_level("WARNING", logger="volundr.adapters.outbound.vm_pod_manager"):
+        with pytest.raises(RuntimeError, match="did not become ready within 0.2s: Runner has no"):
+            await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    warnings = [r for r in caplog.records if "VM runtime not ready" in r.getMessage()]
+    assert len(warnings) == 1 and reason in warnings[0].getMessage()
+    # The session showed why it was still provisioning; a stop clears the reason.
+    assert details == [f"Runtime not ready: {reason}"]
+    runtime.start.side_effect = None
+    assert await manager.stop(session)
+    assert session.id not in manager._wait_reasons
+
+
+async def test_a_lease_expiring_while_the_runtime_is_unprepared_still_names_it(setup):
+    """The durable lease deadline may fire before the wait's own timeout."""
+    _, _, repository, _, runtime, _, session = setup
+    manager = _manager(setup, provisioning_timeout_seconds=30)
+    reason = "Runner has no Skuld venv"
+
+    async def unprepared(*_args, **_kwargs):
+        # The lease's deadline passes while the guest is still unprepared.
+        for lease_id, lease in list(repository.leases.items()):
+            repository.leases[lease_id] = lease.model_copy(
+                update={"provision_deadline": datetime.now(UTC) - timedelta(seconds=1)}
+            )
+        raise VmRuntimeUnavailableError(reason)
+
+    runtime.start.side_effect = unprepared
+    with pytest.raises(RuntimeError) as raised:
+        await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    message = str(raised.value)
+    assert message.startswith(f"VM runtime did not become ready within 30s: {reason}. ")
+    assert message.endswith("Provisioning expired; preserve data and release the allocation")
+
+
+def test_runtime_wait_reporting_counts_must_be_positive():
+    with pytest.raises(ValueError, match="reporting counts"):
+        VmPodManager(profile="small", pool_id="pool", max_machines=1, runtime_wait_log_every=0)

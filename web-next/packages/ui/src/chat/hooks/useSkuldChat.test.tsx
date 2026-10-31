@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   formatOutcomeContent,
   getStorageKey,
+  insertBrokerTurn,
+  isNotificationTurn,
   parseEvent,
   parseParticipantMeta,
   pushOutcomeField,
@@ -1201,6 +1203,130 @@ page_path: council/demo/opinion-b.md
       answers: [{ answer: 'Staging' }, { answer: 'Canada' }],
     });
     expect(result.current.pendingInputRequests).toHaveLength(0);
+  });
+
+  it('restores an answered question when Skuld rejects the answer', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    const question = {
+      type: 'ask_user_question',
+      request_id: 'tty-1-abc',
+      questions: [{ question: 'Deliver how?', options: [{ label: 'Folio' }, { label: 'Tar' }] }],
+    };
+    act(() => {
+      wsHandlers.onMessage?.(JSON.stringify(question));
+    });
+    act(() => result.current.respondToInput('tty-1-abc', ['Folio']));
+    expect(result.current.pendingInputRequests).toHaveLength(0);
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'error',
+          code: 'question_answer_rejected',
+          request_id: 'tty-1-abc',
+          content: 'The live Claude menu does not match the pending question state',
+        }),
+      );
+    });
+    expect(result.current.pendingInputRequests).toEqual([
+      {
+        requestId: 'tty-1-abc',
+        questions: [{ prompt: 'Deliver how?', choices: ['Folio', 'Tar'] }],
+      },
+    ]);
+    expect(result.current.messages.at(-1)?.content).toContain('does not match');
+
+    act(() => result.current.respondToInput('tty-1-abc', ['Folio']));
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({ type: 'ask_user_resolved', request_id: 'tty-1-abc', decision: 'Folio' }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'error',
+          code: 'question_answer_rejected',
+          request_id: 'tty-1-abc',
+          content: 'late duplicate',
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({ type: 'error', code: 'turn_failed', request_id: 'other', content: 'x' }),
+      );
+    });
+    expect(result.current.pendingInputRequests).toHaveLength(0);
+  });
+
+  it('keeps questions Skuld cannot answer read-only, and dismissable', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    const card = (id: string, answerable?: boolean) => ({
+      type: 'ask_user_question',
+      request_id: id,
+      questions: [{ question: 'Pick one?', options: [{ label: 'A' }, { label: 'B' }] }],
+      ...(answerable === false ? { metadata: { answerable: false, recovery_required: true } } : {}),
+    });
+
+    act(() => {
+      wsHandlers.onMessage?.(JSON.stringify(card('tty-1', false)));
+      wsHandlers.onMessage?.(JSON.stringify(card('tty-2')));
+    });
+    expect(
+      result.current.pendingInputRequests.map((r) => [r.requestId, r.answerable !== false]),
+    ).toEqual([
+      ['tty-1', false],
+      ['tty-2', true],
+    ]);
+
+    // An answer the broker cannot deliver brings the card back read-only, never answerable.
+    act(() => result.current.respondToInput('tty-2', ['A']));
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'error',
+          code: 'question_recovery_required',
+          request_id: 'tty-2',
+          content: 'This question has no verifiable native tool identity',
+        }),
+      );
+    });
+    expect(
+      result.current.pendingInputRequests.map((r) => [r.requestId, r.answerable !== false]),
+    ).toEqual([
+      ['tty-1', false],
+      ['tty-2', false],
+    ]);
+
+    act(() => result.current.dismissInputRequest('tty-1'));
+    expect(result.current.pendingInputRequests.map((r) => r.requestId)).toEqual(['tty-2']);
+  });
+
+  it('marks typed text that is not an offered choice as free text', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'ask_user_question',
+          request_id: 'tty-2',
+          questions: [
+            { question: 'Which version?', options: [{ label: '1.0' }, { label: '2.0' }] },
+            { question: 'Why?', options: [] },
+          ],
+        }),
+      );
+    });
+    act(() => result.current.respondToInput('tty-2', ['try a different version', 'because']));
+    expect(sendJson).toHaveBeenCalledWith({
+      type: 'ask_user_answer',
+      request_id: 'tty-2',
+      answers: [
+        { answer: 'try a different version', free_text: 'try a different version' },
+        { answer: 'because' },
+      ],
+    });
   });
 
   it('ignores malformed clarification requests and clears pending input', async () => {
@@ -3058,5 +3184,92 @@ page_path: council/demo/opinion-b.md
 
     expect(result.current.messages).toHaveLength(1);
     expect(result.current.messages[0]?.id).toBe('done-message');
+  });
+});
+
+describe('live Forge notification turns', () => {
+  const notificationTurn = {
+    id: 'nt_abc',
+    role: 'assistant',
+    content: 'Deploy finished',
+    created_at: '2026-09-23T10:00:00Z',
+    parts: [
+      {
+        type: 'tool_use',
+        id: 'nt_abc',
+        name: 'forge_notification',
+        input: { notification_id: 'n-1', kind: 'milestone', title: 'Deploy finished' },
+      },
+    ],
+    metadata: { kind: 'notification' },
+  };
+
+  beforeEach(() => {
+    sendJson.mockReset();
+    wsHandlers = {};
+    sessionStorage.clear();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, json: async () => ({ turns: [] }) })),
+    );
+  });
+
+  it('recognises notification turns by metadata or by their card part', () => {
+    expect(isNotificationTurn(notificationTurn)).toBe(true);
+    expect(isNotificationTurn({ ...notificationTurn, metadata: {} })).toBe(true);
+    expect(isNotificationTurn({ ...notificationTurn, metadata: {}, parts: [] })).toBe(false);
+    expect(isNotificationTurn({ ...notificationTurn, id: '' })).toBe(false);
+    expect(isNotificationTurn(undefined)).toBe(false);
+  });
+
+  it('places a broker turn before the unflushed streaming turn and never duplicates it', () => {
+    const base = transformTurns([
+      { id: 'u1', role: 'user', content: 'go', created_at: '2026-09-23T09:59:00Z' },
+      { id: 'run', role: 'assistant', content: 'working', created_at: '2026-09-23T09:59:30Z' },
+    ]);
+    const [card] = transformTurns([notificationTurn]);
+    const placed = insertBrokerTurn(base, card!, 'run');
+    expect(placed.map((message) => message.id)).toEqual(['u1', 'nt_abc', 'run']);
+    expect(insertBrokerTurn(placed, card!, 'run')).toBe(placed);
+    expect(insertBrokerTurn(base, card!, null).map((message) => message.id)).toEqual([
+      'u1',
+      'run',
+      'nt_abc',
+    ]);
+    expect(insertBrokerTurn(base, card!, 'gone').at(-1)?.id).toBe('nt_abc');
+  });
+
+  it('renders a live notification turn without waiting for a history refresh', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'conversation.turn', turn: notificationTurn }));
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'conversation.turn', turn: notificationTurn }));
+    });
+
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0]).toMatchObject({
+      id: 'nt_abc',
+      role: 'assistant',
+      content: 'Deploy finished',
+      parts: notificationTurn.parts,
+    });
+  });
+
+  it('leaves other broker turns to the history refresh path', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'conversation.turn',
+          turn: { ...notificationTurn, id: 'file', metadata: { present_file: true }, parts: [] },
+        }),
+      );
+    });
+
+    expect(result.current.messages).toHaveLength(0);
   });
 });

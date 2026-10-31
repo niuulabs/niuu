@@ -29,6 +29,7 @@ from volundr.domain.models import (
     ResidentSession,
 )
 from volundr.domain.ports import (
+    ResidentLogsUnavailableError,
     ResidentRuntimeLogReader,
     ResidentRuntimeObservation,
     ResidentRuntimeProxyTargetResolver,
@@ -41,6 +42,7 @@ from volundr.domain.services.resident_runtime import (
     ResidentRuntimeDeploymentError,
     ResidentRuntimeNotFoundError,
     ResidentRuntimeService,
+    ResidentRuntimeStateError,
     ResidentRuntimeValidationError,
 )
 
@@ -103,11 +105,14 @@ class MemoryResidentRuntimeRepository:
         return self.items.pop(runtime_id, None) is not None
 
 
-class MemoryResidentRuntimeController:
+class LifecycleResidentRuntimeController:
+    """A backend with lifecycle only: no log reader, so it cannot back ``logs``."""
+
     backend = ResidentBackend.OPENSHELL
 
     def __init__(self) -> None:
         self.actions: list[str] = []
+        self.resumed_with = None
 
     def supports(self, profile) -> bool:
         return profile.backend is self.backend
@@ -139,8 +144,9 @@ class MemoryResidentRuntimeController:
         self.actions.append("suspend")
         return self._observation(runtime)
 
-    async def resume(self, runtime):
+    async def resume(self, runtime, profile=None):
         self.actions.append("resume")
+        self.resumed_with = profile
         return self._observation(runtime)
 
     async def delete(self, runtime):
@@ -149,6 +155,12 @@ class MemoryResidentRuntimeController:
 
     async def close(self):
         self.actions.append("close")
+
+
+class MemoryResidentRuntimeController(LifecycleResidentRuntimeController, ResidentRuntimeLogReader):
+    async def logs(self, runtime, *, lines, sources, min_level):
+        self.actions.append("logs")
+        return ResidentLogPage()
 
 
 class ProxyResidentRuntimeController(
@@ -431,7 +443,7 @@ async def test_create_record_persists_the_realm_binding(runtime_service) -> None
 
 async def test_create_record_rejects_unknown_realm_when_repository_is_configured() -> None:
     class _FakeRealmRepository:
-        async def get_realm(self, realm_ref):
+        async def get_tenant_realm(self, realm_ref, tenant_id):
             return None
 
     repository = MemoryResidentRuntimeRepository()
@@ -456,7 +468,7 @@ async def test_create_record_accepts_a_realm_the_repository_resolves() -> None:
     resolved_realm_id = uuid4()
 
     class _FakeRealmRepository:
-        async def get_realm(self, realm_ref):
+        async def get_tenant_realm(self, realm_ref, tenant_id):
             return object() if realm_ref == resolved_realm_id else None
 
     repository = MemoryResidentRuntimeRepository()
@@ -475,6 +487,29 @@ async def test_create_record_accepts_a_realm_the_repository_resolves() -> None:
         realm_id=resolved_realm_id,
     )
     assert runtime.realm_id == resolved_realm_id
+
+
+async def test_create_record_rejects_a_realm_in_another_tenant() -> None:
+    realm_id = uuid4()
+
+    class _FakeRealmRepository:
+        async def get_tenant_realm(self, realm_ref, tenant_id):
+            return object() if realm_ref == realm_id and tenant_id == "tenant-b" else None
+
+    service = ResidentRuntimeService(
+        MemoryResidentRuntimeRepository(),
+        _profiles(),
+        [MemoryResidentRuntimeController()],
+        realm_repository=_FakeRealmRepository(),
+    )
+
+    with pytest.raises(ResidentRuntimeValidationError, match="Realm not found"):
+        await service.create_record(
+            _principal(tenant_id="tenant-a"),
+            name="Realm resident",
+            profile_id="ravn-openshell",
+            realm_id=realm_id,
+        )
 
 
 async def test_create_deploys_and_persists_real_observation(runtime_service) -> None:
@@ -573,6 +608,32 @@ async def test_reconcile_resumes_unfinished_background_deployment(runtime_servic
     assert reconciled == runtime
     await asyncio.gather(*tuple(service._deployment_tasks.values()))
     assert repository.items[runtime.id].observed_state is ResidentObservedState.ACTIVE
+
+
+async def test_reconcile_redeploys_backend_the_controller_found_missing() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    controller = MemoryResidentRuntimeController()
+    controller.reconcile = AsyncMock(
+        return_value=ResidentRuntimeObservation(observed_state=ResidentObservedState.PENDING)
+    )
+    service = ResidentRuntimeService(repository, _profiles(), [controller])
+    runtime = await service.create_record(_principal(), name="Muninn", profile_id="ravn-openshell")
+    repository.items[runtime.id] = runtime.model_copy(
+        update={
+            "observed_state": ResidentObservedState.FAILED,
+            "backend_ref": {"kind": "Sandbox", "name": str(runtime.id)},
+        }
+    )
+
+    reconciled = await service.reconcile(runtime.id)
+
+    assert reconciled.observed_state is ResidentObservedState.PENDING
+    assert reconciled.backend_ref == {}
+    await asyncio.gather(*tuple(service._deployment_tasks.values()))
+    assert controller.actions == ["deploy"]
+    redeployed = repository.items[runtime.id]
+    assert redeployed.observed_state is ResidentObservedState.ACTIVE
+    assert redeployed.backend_ref == {"kind": "Sandbox", "name": str(runtime.id)}
 
 
 async def test_reconcile_all_records_unavailable_controller_and_continues() -> None:
@@ -708,6 +769,28 @@ async def test_lifecycle_observation_and_delete_use_one_record(runtime_service) 
     deleted = await service.delete(principal, runtime.id)
     assert deleted
     assert runtime.id not in repository.items
+
+
+async def test_resume_hands_the_controller_the_profile_to_render_it_on() -> None:
+    """A suspended resident is not upgraded asleep; it resumes on the current version."""
+    repository = MemoryResidentRuntimeRepository()
+    controller = MemoryResidentRuntimeController()
+    service = ResidentRuntimeService(repository, _profiles(), [controller])
+    principal = _principal()
+    runtime = await service.create_record(principal, name="Muninn", profile_id="ravn-openshell")
+    await service.update_observation(
+        runtime.id,
+        observed_state=ResidentObservedState.SUSPENDED,
+        capabilities=[ResidentCapability.CHAT, ResidentCapability.RUNTIME_SUSPEND],
+    )
+
+    await service.set_desired_state(principal, runtime.id, ResidentDesiredState.SUSPENDED)
+    assert controller.resumed_with is None
+    await service.set_desired_state(principal, runtime.id, ResidentDesiredState.RUNNING)
+
+    assert controller.actions[-1] == "resume"
+    assert controller.resumed_with is not None
+    assert controller.resumed_with.id == "ravn-openshell"
 
 
 async def test_delete_record_removes_resident_trace_spans() -> None:
@@ -876,6 +959,37 @@ async def test_logs_are_authorized_and_read_through_backend_port() -> None:
     )
 
     assert page.entries[0].message == "Muninn"
+
+
+def test_profile_advertising_logs_needs_a_backend_that_reads_them() -> None:
+    lifecycle_only = ResidentRuntimeService(
+        MemoryResidentRuntimeRepository(),
+        _profiles(),
+        [LifecycleResidentRuntimeController()],
+    )
+    with_logs = ResidentRuntimeService(
+        MemoryResidentRuntimeRepository(),
+        _profiles(),
+        [MemoryResidentRuntimeController()],
+    )
+
+    assert lifecycle_only.list_profiles() == []
+    with pytest.raises(ResidentProfileNotFoundError, match="not deployable"):
+        lifecycle_only._require_controller(_profiles().get("ravn-openshell"))
+    assert [profile.id for profile in with_logs.list_profiles()] == ["ravn-openshell"]
+
+
+async def test_logs_unavailable_in_the_resident_state_is_a_state_error() -> None:
+    class NoPodController(MemoryResidentRuntimeController):
+        async def logs(self, runtime, *, lines, sources, min_level):
+            raise ResidentLogsUnavailableError("resident 'Muninn' has no pod in namespace skuld")
+
+    repository = MemoryResidentRuntimeRepository()
+    service = ResidentRuntimeService(repository, _profiles(), [NoPodController()])
+    runtime = await service.create_record(_principal(), name="Muninn", profile_id="ravn-openshell")
+
+    with pytest.raises(ResidentRuntimeStateError, match="has no pod in namespace skuld"):
+        await service.logs(_principal(), runtime.id, lines=10)
 
 
 async def test_proxy_target_is_resolved_through_runtime_backend_port() -> None:
@@ -1058,12 +1172,159 @@ def test_duplicate_session_controllers_fail_at_composition_boundary() -> None:
         )
 
 
+class _BackendSessionController(MemoryResidentSessionController):
+    """An engine controller bound to one backend, as composition builds them."""
+
+    def __init__(self, backend: ResidentBackend) -> None:
+        super().__init__()
+        self._backend = backend
+
+    @property
+    def runtime_backend(self) -> ResidentBackend | None:
+        return self._backend
+
+
+def _plain_ravn_profiles() -> ConfigResidentDeploymentProfileProvider:
+    """A Ravn profile that lists no session capability: the wiring provides them."""
+    return ConfigResidentDeploymentProfileProvider(
+        [
+            ResidentProfileConfig(
+                id="ravn-plain",
+                display_name="Plain Ravn",
+                backend=ResidentBackend.OPENSHELL,
+                engine=ResidentEngine.RAVN,
+                capabilities=[ResidentCapability.CHAT, ResidentCapability.LOGS],
+                default_model="gpt-5.6",
+                allowed_models=["gpt-5.6"],
+                deployment={"image": "ghcr.io/niuulabs/niuu@sha256:real"},
+            )
+        ]
+    )
+
+
+_SESSION_API = [
+    ResidentCapability.SESSION_LIST,
+    ResidentCapability.SESSION_CREATE,
+    ResidentCapability.SESSION_DELETE,
+]
+
+
+async def test_session_capabilities_follow_from_the_wired_controller() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    wired = ResidentRuntimeService(
+        repository,
+        _plain_ravn_profiles(),
+        [MemoryResidentRuntimeController()],
+        [_BackendSessionController(ResidentBackend.OPENSHELL)],
+    )
+    unwired = ResidentRuntimeService(
+        repository,
+        _plain_ravn_profiles(),
+        [MemoryResidentRuntimeController()],
+        [_BackendSessionController(ResidentBackend.HELMRELEASE)],
+    )
+
+    [profile] = wired.list_profiles()
+    assert profile.capabilities == [
+        ResidentCapability.CHAT,
+        ResidentCapability.LOGS,
+        *_SESSION_API,
+    ]
+    [plain] = unwired.list_profiles()
+    assert plain.capabilities == [ResidentCapability.CHAT, ResidentCapability.LOGS]
+
+    runtime = await wired.create_record(_principal(), name="Heimdall", profile_id="ravn-plain")
+    assert set(_SESSION_API) <= set(runtime.capabilities)
+    assert await wired.list_sessions(_principal(), runtime.id) == []
+
+
+def test_a_controller_can_decline_a_profiles_sessions() -> None:
+    """Ravn: a profile that switches its shim off advertises no session API."""
+
+    class _Declines(_BackendSessionController):
+        def provides_sessions(self, profile) -> bool:
+            return False
+
+    service = ResidentRuntimeService(
+        MemoryResidentRuntimeRepository(),
+        _plain_ravn_profiles(),
+        [MemoryResidentRuntimeController()],
+        [_Declines(ResidentBackend.OPENSHELL)],
+    )
+    [profile] = service.list_profiles()
+    assert profile.capabilities == [ResidentCapability.CHAT, ResidentCapability.LOGS]
+
+
+async def test_reconcile_gives_existing_residents_the_wired_session_api() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    before = ResidentRuntimeService(
+        repository, _plain_ravn_profiles(), [MemoryResidentRuntimeController()]
+    )
+    runtime = await before.create_record(_principal(), name="Bragi", profile_id="ravn-plain")
+    assert not set(_SESSION_API) & set(runtime.capabilities)
+    await repository.update(
+        runtime.model_copy(
+            update={
+                "observed_state": ResidentObservedState.ACTIVE,
+                "backend_ref": {"kind": "Sandbox", "name": str(runtime.id)},
+            }
+        )
+    )
+
+    after = ResidentRuntimeService(
+        repository,
+        _plain_ravn_profiles(),
+        [MemoryResidentRuntimeController()],
+        [_BackendSessionController(ResidentBackend.OPENSHELL)],
+    )
+    reconciled = await after.reconcile(runtime.id)
+
+    assert set(_SESSION_API) <= set(reconciled.capabilities)
+
+
+def test_one_engine_has_a_session_controller_per_backend() -> None:
+    service = ResidentRuntimeService(
+        MemoryResidentRuntimeRepository(),
+        _plain_ravn_profiles(),
+        [MemoryResidentRuntimeController()],
+        [
+            _BackendSessionController(ResidentBackend.OPENSHELL),
+            _BackendSessionController(ResidentBackend.HELMRELEASE),
+        ],
+    )
+    assert [profile.id for profile in service.list_profiles()] == ["ravn-plain"]
+    with pytest.raises(ValueError, match="unique per backend"):
+        ResidentRuntimeService(
+            MemoryResidentRuntimeRepository(),
+            _plain_ravn_profiles(),
+            [MemoryResidentRuntimeController()],
+            [
+                _BackendSessionController(ResidentBackend.OPENSHELL),
+                _BackendSessionController(ResidentBackend.OPENSHELL),
+            ],
+        )
+
+
+async def test_session_api_names_engine_and_backend_when_unwired() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    service = ResidentRuntimeService(
+        repository, _plain_ravn_profiles(), [MemoryResidentRuntimeController()]
+    )
+    runtime = await service.create_record(_principal(), name="Kvasir", profile_id="ravn-plain")
+    await repository.update(
+        runtime.model_copy(update={"capabilities": [*runtime.capabilities, *_SESSION_API]})
+    )
+
+    with pytest.raises(ResidentRuntimeDeploymentError, match="ravn on openshell"):
+        await service.list_sessions(_principal(), runtime.id)
+
+
 async def test_optional_resident_ports_fail_closed() -> None:
     repository = MemoryResidentRuntimeRepository()
     service = ResidentRuntimeService(
         repository,
         _profiles(),
-        [MemoryResidentRuntimeController()],
+        [LifecycleResidentRuntimeController()],
     )
     principal = _principal()
     runtime = await service.create_record(

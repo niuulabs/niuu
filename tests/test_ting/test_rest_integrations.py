@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -9,13 +11,18 @@ from ting.adapters.inbound.rest_integrations import create_telegram_setup_router
 from ting.config import AuthConfig, Settings
 
 
-def _make_client(*, allow_anonymous_dev: bool = False) -> TestClient:
+def _make_client(
+    *,
+    allow_anonymous_dev: bool = False,
+    clock: Callable[[], float] | None = None,
+) -> TestClient:
     app = FastAPI()
     app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=allow_anonymous_dev))
     app.include_router(
         create_telegram_setup_router(
             telegram_bot_username="TestBot",
             telegram_hmac_key="test-secret",
+            **({"clock": clock} if clock is not None else {}),
         )
     )
     return TestClient(app)
@@ -48,7 +55,9 @@ class TestTelegramSetup:
         assert data["token"].startswith("user-42:")
 
     def test_integrations_alias_returns_same_payload(self) -> None:
-        client = _make_client()
+        # The token embeds the current second; freeze it so the two requests
+        # cannot straddle a second boundary.
+        client = _make_client(clock=lambda: 1_700_000_000.0)
 
         legacy = client.get("/api/v1/ting/telegram/setup", headers=_auth_headers())
         canonical = client.get("/api/v1/ting/integrations/telegram/setup", headers=_auth_headers())

@@ -8,7 +8,12 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from tracker.ports import TrackerRequestError
 from volundr.adapters.outbound.linear import (
+    _GET_ISSUE_QUERY,
+    _RECENT_ISSUES_QUERY,
+    _SEARCH_ISSUES_QUERY,
+    _UPDATE_ISSUE_STATUS_QUERY,
     LinearAdapter,
     LinearAPIError,
     _CacheEntry,
@@ -78,6 +83,23 @@ class TestNodeToIssue:
         assert issue.assignee == "Test User"
         assert issue.labels == ["bug"]
         assert issue.priority == 2
+        assert issue.description is None
+
+    def test_maps_description(self):
+        node = _issue_node(description="## Acceptance criteria\n- [ ] it works")
+        issue = LinearAdapter._node_to_issue(node)
+
+        assert issue.description == "## Acceptance criteria\n- [ ] it works"
+
+
+class TestQueryFields:
+    def test_single_issue_queries_request_description(self):
+        assert "description" in _GET_ISSUE_QUERY
+        assert "description" in _UPDATE_ISSUE_STATUS_QUERY
+
+    def test_list_queries_omit_description(self):
+        assert "description" not in _SEARCH_ISSUES_QUERY
+        assert "description" not in _RECENT_ISSUES_QUERY
 
     def test_handles_missing_assignee(self):
         node = _issue_node(assignee=None)
@@ -233,11 +255,14 @@ class TestGetIssue:
     async def test_get_existing(self):
         adapter = _make_adapter()
         adapter._gql._client = AsyncMock()
-        adapter._gql._client.post.return_value = _mock_response({"data": {"issue": _issue_node()}})
+        adapter._gql._client.post.return_value = _mock_response(
+            {"data": {"issue": _issue_node(description="Body with acceptance criteria")}}
+        )
 
         issue = await adapter.get_issue("issue-1")
         assert issue is not None
         assert issue.identifier == "TEST-1"
+        assert issue.description == "Body with acceptance criteria"
 
     async def test_get_missing(self):
         adapter = _make_adapter()
@@ -247,15 +272,25 @@ class TestGetIssue:
         issue = await adapter.get_issue("nonexistent")
         assert issue is None
 
-    async def test_get_api_error(self):
+    async def test_get_entity_not_found_error_returns_none(self):
         adapter = _make_adapter()
         adapter._gql._client = AsyncMock()
         adapter._gql._client.post.return_value = _mock_response(
-            {"errors": [{"message": "Not found"}]}
+            {"errors": [{"message": "Entity not found: Issue"}]}
         )
 
         issue = await adapter.get_issue("bad-id")
         assert issue is None
+
+    async def test_get_other_graphql_error_raises(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.return_value = _mock_response(
+            {"errors": [{"message": "Cannot query field 'bogus' on type 'Issue'"}]}
+        )
+
+        with pytest.raises(LinearAPIError, match="Cannot query field"):
+            await adapter.get_issue("issue-1")
 
 
 class TestUpdateIssueStatus:
@@ -331,7 +366,7 @@ class TestUpdateIssueStatus:
             ),
         ]
 
-        with pytest.raises(LinearAPIError, match="Status 'Invalid' not found"):
+        with pytest.raises(TrackerRequestError, match="Status 'Invalid' not found"):
             await adapter.update_issue_status("issue-1", "Invalid")
 
 
@@ -357,3 +392,198 @@ class TestClose:
         await adapter.close()
 
         adapter._gql._client.aclose.assert_called_once()
+
+
+class TestCreateIssue:
+    @staticmethod
+    def _posted(adapter, call: int) -> dict:
+        return adapter._gql._client.post.call_args_list[call].kwargs["json"]
+
+    async def test_create_resolves_team_and_labels(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.side_effect = [
+            _mock_response({"data": {"teams": {"nodes": [{"id": "team-niu", "key": "NIU"}]}}}),
+            _mock_response(
+                {
+                    "data": {
+                        "issueLabels": {
+                            "nodes": [
+                                {"id": "l-bug", "name": "Bug", "team": None},
+                                {
+                                    "id": "l-plat",
+                                    "name": "platform-defect",
+                                    "team": {"id": "team-niu"},
+                                },
+                                {"id": "l-other", "name": "Bug", "team": {"id": "team-other"}},
+                            ]
+                        }
+                    }
+                }
+            ),
+            _mock_response(
+                {
+                    "data": {
+                        "issueCreate": {
+                            "success": True,
+                            "issue": _issue_node(identifier="NIU-2000", description="Body"),
+                        }
+                    }
+                }
+            ),
+        ]
+        adapter._set_cached("search:x:None", [], ttl=60.0)
+
+        issue = await adapter.create_issue(
+            "Tracker API lacks create",
+            "Body",
+            team="niu",
+            labels=["bug", "platform-defect", "Bug"],
+            priority=2,
+        )
+
+        assert issue.identifier == "NIU-2000"
+        assert issue.description == "Body"
+        assert self._posted(adapter, 0)["variables"] == {"key": "niu"}
+        assert self._posted(adapter, 1)["variables"] == {
+            "filter": {
+                "or": [
+                    {"name": {"eqIgnoreCase": "bug"}},
+                    {"name": {"eqIgnoreCase": "platform-defect"}},
+                ]
+            }
+        }
+        create_vars = self._posted(adapter, 2)["variables"]["input"]
+        assert create_vars == {
+            "teamId": "team-niu",
+            "title": "Tracker API lacks create",
+            "description": "Body",
+            "labelIds": ["l-bug", "l-plat"],
+            "priority": 2,
+        }
+        assert adapter._get_cached("search:x:None") is None
+
+    async def test_create_without_labels_or_priority_skips_label_lookup(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.side_effect = [
+            _mock_response({"data": {"teams": {"nodes": [{"id": "team-niu", "key": "NIU"}]}}}),
+            _mock_response({"data": {"issueCreate": {"success": True, "issue": _issue_node()}}}),
+        ]
+
+        await adapter.create_issue("T", "B", team="NIU")
+
+        assert self._posted(adapter, 1)["variables"]["input"] == {
+            "teamId": "team-niu",
+            "title": "T",
+            "description": "B",
+        }
+
+    async def test_unknown_team_raises_request_error(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.return_value = _mock_response({"data": {"teams": {"nodes": []}}})
+
+        with pytest.raises(TrackerRequestError, match="Linear team not found: NOPE"):
+            await adapter.create_issue("T", "B", team="NOPE")
+
+    async def test_unknown_label_raises_request_error(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.side_effect = [
+            _mock_response({"data": {"teams": {"nodes": [{"id": "team-niu", "key": "NIU"}]}}}),
+            _mock_response(
+                {
+                    "data": {
+                        "issueLabels": {
+                            "nodes": [
+                                {"id": "l-x", "name": "missing", "team": {"id": "team-other"}}
+                            ]
+                        }
+                    }
+                }
+            ),
+        ]
+
+        with pytest.raises(TrackerRequestError, match="not found in team NIU.*: missing"):
+            await adapter.create_issue("T", "B", team="NIU", labels=["missing"])
+        assert adapter._gql._client.post.call_count == 2
+
+    async def test_ambiguous_label_raises_request_error(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.side_effect = [
+            _mock_response({"data": {"teams": {"nodes": [{"id": "team-niu", "key": "NIU"}]}}}),
+            _mock_response(
+                {
+                    "data": {
+                        "issueLabels": {
+                            "nodes": [
+                                {"id": "l-1", "name": "dup", "team": None},
+                                {"id": "l-2", "name": "Dup", "team": {"id": "team-niu"}},
+                            ]
+                        }
+                    }
+                }
+            ),
+        ]
+
+        with pytest.raises(TrackerRequestError, match="more than one label.*: dup"):
+            await adapter.create_issue("T", "B", team="NIU", labels=["dup"])
+
+    async def test_unsuccessful_create_raises(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.side_effect = [
+            _mock_response({"data": {"teams": {"nodes": [{"id": "team-niu", "key": "NIU"}]}}}),
+            _mock_response({"data": {"issueCreate": {"success": False, "issue": None}}}),
+        ]
+
+        with pytest.raises(LinearAPIError, match="did not create the issue in team NIU"):
+            await adapter.create_issue("T", "B", team="NIU")
+
+    async def test_update_rewrites_title_and_description(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.return_value = _mock_response(
+            {
+                "data": {
+                    "issueUpdate": {
+                        "success": True,
+                        "issue": _issue_node(
+                            title="Start from regin", description="Branch from regin."
+                        ),
+                    }
+                }
+            }
+        )
+        adapter._set_cached("search:test:None", [], ttl=60.0)
+
+        issue = await adapter.update_issue(
+            "NIU-1116", title="Start from regin", description="Branch from regin."
+        )
+
+        assert issue.title == "Start from regin"
+        assert issue.description == "Branch from regin."
+        sent = adapter._gql._client.post.call_args.kwargs["json"]["variables"]
+        assert sent == {
+            "issueId": "NIU-1116",
+            "input": {"title": "Start from regin", "description": "Branch from regin."},
+        }
+        assert adapter._get_cached("search:test:None") is None
+
+    async def test_update_sends_only_the_fields_given_and_rejects_nothing(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.side_effect = [
+            _mock_response({"data": {"issueUpdate": {"success": True, "issue": _issue_node()}}}),
+            _mock_response({"data": {"issueUpdate": {"success": False, "issue": None}}}),
+        ]
+
+        await adapter.update_issue("NIU-1", description="New body")
+        sent = adapter._gql._client.post.call_args.kwargs["json"]["variables"]["input"]
+        assert sent == {"description": "New body"}
+        with pytest.raises(LinearAPIError, match="did not update issue NIU-1"):
+            await adapter.update_issue("NIU-1", title="T")
+        with pytest.raises(TrackerRequestError, match="Nothing to update"):
+            await adapter.update_issue("NIU-1")

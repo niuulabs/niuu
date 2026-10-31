@@ -42,7 +42,10 @@ from ting.ports.volundr import (
 
 logger = logging.getLogger(__name__)
 
+_CI_PASSED = {"passing": True, "failing": False}
+
 FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
+REPO_PULL_REQUESTS_PATH = "/api/v1/niuu/repos/prs"
 INTEGRATIONS_PATH = "/api/v1/integrations"
 WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
 WORKFLOW_GATE_INTENT_RESOLVE = "resolve"
@@ -235,7 +238,11 @@ class VolundrHTTPAdapter(VolundrPort):
             )
             if resp.status_code >= 400:
                 logger.error("spawn_session %d: %s", resp.status_code, resp.text[:500])
-            resp.raise_for_status()
+                raise httpx.HTTPStatusError(
+                    f"Forge could not start the session: {_error_detail(resp)}",
+                    request=resp.request,
+                    response=resp,
+                )
             data = resp.json()
             source = data.get("source") or {}
             return VolundrSession(
@@ -458,6 +465,9 @@ class VolundrHTTPAdapter(VolundrPort):
                 workload_type=data.get("workload_type", "default"),
                 activity_state=data.get("activity_state"),
                 activity_metadata=data.get("activity_metadata") or {},
+                last_active=_parse_timestamp(data.get("last_active")),
+                activity_state_since=_parse_timestamp(data.get("activity_state_since")),
+                updated_at=_parse_timestamp(data.get("updated_at")),
             )
 
     async def list_sessions(
@@ -492,22 +502,35 @@ class VolundrHTTPAdapter(VolundrPort):
                 for s in resp.json()
             ]
 
-    async def get_pr_status(self, session_id: str) -> PRStatus:
+    async def get_pr_status(self, session_id: str) -> PRStatus | None:
+        """Ask the git provider for the newest pull request from a session's branch.
+
+        This reads the provider, not the session's workspace, so it answers for a
+        stopped session and on every deployment. ``None`` means no pull request.
+        """
+        session = await self.get_session(session_id)
+        if session is None or not session.repo or not session.branch:
+            return None
         client = await self._client(timeout=self._timeout)
         async with client:
             resp = await client.get(
-                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/pr",
+                f"{self._base_url}{REPO_PULL_REQUESTS_PATH}",
                 headers=self._headers(),
+                params={"repo_url": session.repo, "status": "all"},
             )
             resp.raise_for_status()
-            data = resp.json()
-            return PRStatus(
-                pr_id=data["pr_id"],
-                url=data.get("url", ""),
-                state=data["state"],
-                mergeable=data["mergeable"],
-                ci_passed=data.get("ci_passed"),
-            )
+            pull_requests = resp.json()
+        matching = [item for item in pull_requests if item["source_branch"] == session.branch]
+        if not matching:
+            return None
+        newest = max(matching, key=lambda item: item["number"])
+        return PRStatus(
+            pr_id=str(newest["number"]),
+            url=newest["url"],
+            state=newest["status"],
+            mergeable=False,
+            ci_passed=_CI_PASSED.get(newest.get("ci_status")),
+        )
 
     async def get_chronicle_summary(self, session_id: str) -> str:
         client = await self._client(timeout=self._timeout)
@@ -542,32 +565,78 @@ class VolundrHTTPAdapter(VolundrPort):
         target_peer_id: str,
         message: str,
         *,
+        metadata: dict[str, object] | None = None,
         auth_token: str | None = None,
         principal: Principal | None = None,
     ) -> None:
-        session = await self.get_session(
-            session_id,
-            auth_token=auth_token,
-            principal=principal,
-        )
-        if session is None or not session.chat_endpoint:
-            raise LookupError(f"Session {session_id} has no active room endpoint")
-
-        base_url = _session_chat_base_url(
-            session.chat_endpoint, gateway_base_url=self._base_url, session_id=session_id
-        )
         client = await self._client(timeout=self._timeout)
         async with client:
             resp = await client.post(
-                f"{base_url}/api/room/direct",
+                self._room_url(session_id, "direct"),
                 headers=self._headers(auth_token, principal),
                 json={
                     "target_peer_id": target_peer_id,
                     "content": message,
                     "source": "ting",
+                    "metadata": metadata or {},
                 },
             )
             resp.raise_for_status()
+
+    async def join_room(
+        self,
+        session_id: str,
+        *,
+        participant_id: str,
+        display_name: str,
+        member_session_id: str,
+        notice_context: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.post(
+                self._room_url(session_id, "join"),
+                headers=self._headers(auth_token, principal),
+                json={
+                    "participant_id": participant_id,
+                    "display_name": display_name,
+                    "environment_id": session_id,
+                    "participant_type": "ravn",
+                    "session_id": member_session_id,
+                    "notice_context": notice_context,
+                },
+            )
+            resp.raise_for_status()
+
+    async def leave_room(
+        self,
+        session_id: str,
+        participant_id: str,
+        *,
+        reason: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.post(
+                self._room_url(session_id, "leave"),
+                headers=self._headers(auth_token, principal),
+                json={"participant_id": participant_id, "reason": reason},
+            )
+            if resp.status_code == httpx.codes.NOT_FOUND:
+                raise LookupError(f"Session {session_id} has no room to leave")
+            resp.raise_for_status()
+
+    @property
+    def api_base_url(self) -> str:
+        return self._base_url
+
+    def _room_url(self, session_id: str, operation: str) -> str:
+        """A room operation, through Forge: a session's own origin may be browser-only."""
+        return f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/room/{operation}"
 
     async def publish_workflow_event(
         self,
@@ -580,20 +649,10 @@ class VolundrHTTPAdapter(VolundrPort):
         auth_token: str | None = None,
         principal: Principal | None = None,
     ) -> None:
-        session = await self.get_session(
-            session_id,
-            auth_token=auth_token,
-            principal=principal,
-        )
-        if session is None or not session.chat_endpoint:
-            raise LookupError(f"Session {session_id} has no active room endpoint")
-        base_url = _session_chat_base_url(
-            session.chat_endpoint, gateway_base_url=self._base_url, session_id=session_id
-        )
         client = await self._client(timeout=self._timeout)
         async with client:
             resp = await client.post(
-                f"{base_url}/api/room/workflow-events",
+                self._room_url(session_id, "workflow-events"),
                 headers=self._headers(auth_token, principal),
                 json={
                     "event_type": event_type,
@@ -691,6 +750,22 @@ class VolundrHTTPAdapter(VolundrPort):
             )
             resp.raise_for_status()
             return resp.json()
+
+    async def start_session(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.post(
+                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/start",
+                headers=self._headers(auth_token, principal),
+                json={},
+            )
+            resp.raise_for_status()
 
     async def stop_session(
         self,
@@ -924,10 +999,14 @@ class VolundrHTTPAdapter(VolundrPort):
                                 continue
                             status = data.get("status", "")
                             if status in ("stopped", "failed"):
+                                # Carry Völundr's reason: without it a session
+                                # that could not even be scheduled failed its
+                                # A2A task as a bare "Session failed".
+                                error = str(data.get("error") or "").strip()
                                 yield ActivityEvent(
                                     session_id=data.get("id", ""),
                                     state="",
-                                    metadata={},
+                                    metadata={"error": error} if error else {},
                                     owner_id=data.get("owner_id", ""),
                                     session_status=status,
                                 )
@@ -936,20 +1015,17 @@ class VolundrHTTPAdapter(VolundrPort):
                         event_type = ""
 
 
-def _session_chat_base_url(
-    chat_endpoint: str, *, gateway_base_url: str = "", session_id: str = ""
-) -> str:
-    normalized = chat_endpoint.replace("wss://", "https://", 1).replace("ws://", "http://", 1)
-    parsed = urlparse(normalized)
-    if not parsed.scheme or not parsed.netloc:
-        raise ValueError(f"Invalid chat endpoint: {chat_endpoint}")
-    # Gateway session paths belong to the same Forge connection that resolved
-    # the session. Its advertised browser origin need not be reachable from
-    # Ting (for example, a host address advertised by a Docker deployment).
-    # Direct Skuld endpoints keep their own origin and route.
-    if gateway_base_url and session_id and parsed.path == f"/s/{session_id}/session":
-        return f"{gateway_base_url.rstrip('/')}/s/{session_id}"
-    path = parsed.path
-    if path.endswith("/session"):
-        path = path[: -len("/session")]
-    return parsed._replace(path=path, params="", query="", fragment="").geturl().rstrip("/")
+def _error_detail(response: httpx.Response) -> str:
+    """The reason Forge gave for refusing a request."""
+    try:
+        detail = response.json().get("detail")
+    except (ValueError, AttributeError):
+        detail = None
+    return str(detail or response.text or f"HTTP {response.status_code}")
+
+
+def _parse_timestamp(value: object) -> datetime | None:
+    """Parse an ISO-8601 timestamp from Völundr; absent means not reported."""
+    if not value:
+        return None
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))

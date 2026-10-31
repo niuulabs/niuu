@@ -30,6 +30,7 @@ import json
 import os
 from contextlib import suppress
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
@@ -50,6 +51,10 @@ from ravn.domain.permission_mode import (
     PermissionMode,
     parse_optional_permission_mode,
     parse_permission_mode,
+)
+from ravn.domain.valkyrie_contracts import (
+    VALKYRIE_ATTENTION_TIER_ORDER,
+    VALKYRIE_DECISION_ORDER,
 )
 
 # ---------------------------------------------------------------------------
@@ -75,6 +80,33 @@ def _config_paths() -> tuple[Path, ...]:
 # ---------------------------------------------------------------------------
 
 
+#: LLM retry settings that were replaced by the gateway-outage window. A config that
+#: still sets one is refused (naming the replacement) rather than ignored: ignoring
+#: it would run the model calls on a bound the operator did not choose.
+_REMOVED_LLM_RETRY_KEYS: dict[str, str] = {
+    "max_retries": (
+        "model-call retries are now bounded by wall-clock time, not an attempt count: "
+        "set llm.gateway_outage_window_seconds (default 120) to the longest gateway "
+        "restart to survive, and drop max_retries"
+    ),
+    "stream_resume_window_seconds": (
+        "it was renamed because the window now bounds every retry of a model call, not "
+        "only a cut stream: use llm.gateway_outage_window_seconds"
+    ),
+    "stream_resume_max_backoff_seconds": (
+        "it was renamed: use llm.gateway_outage_max_backoff_seconds"
+    ),
+}
+
+
+def _refuse_removed_llm_retry_keys(where: str, values: object) -> None:
+    if not isinstance(values, dict):
+        return
+    for key, replacement in _REMOVED_LLM_RETRY_KEYS.items():
+        if key in values:
+            raise ValueError(f"{where}{key} is no longer supported: {replacement}")
+
+
 class LLMProviderConfig(BaseModel):
     """A single LLM provider entry in the fallback chain."""
 
@@ -90,6 +122,12 @@ class LLMProviderConfig(BaseModel):
         default_factory=dict,
         description="Maps kwarg names to env var names for credential injection.",
     )
+
+    @field_validator("kwargs")
+    @classmethod
+    def _refuse_removed_retry_kwargs(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _refuse_removed_llm_retry_keys("llm.provider.kwargs.", value)
+        return value
 
 
 class ExtendedThinkingConfig(BaseModel):
@@ -122,15 +160,61 @@ class LLMConfig(BaseModel):
     """LLM provider configuration: primary provider and optional fallback chain."""
 
     model: str = Field(default="claude-sonnet-4-6")
-    max_tokens: int = Field(default=8192)
-    max_retries: int = Field(default=3)
-    retry_base_delay: float = Field(default=1.0)
+    max_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Answer cap for every agent turn. null (the default) sends no cap: the "
+            "provider bounds the answer by the model's maximum output or the rest of "
+            "its context window, and the request timeout bounds the time. Adapters "
+            "whose protocol requires the parameter (Anthropic) read the model's "
+            "maximum output from the provider's catalog. Set a number only to spend "
+            "less than that; a turn that reaches it fails with OutputTruncatedError "
+            "and counts on ravn.cap.hits."
+        ),
+    )
+    retry_base_delay: float = Field(
+        default=1.0,
+        gt=0.0,
+        description=(
+            "Seconds before the first retry of a failed model call; doubles per attempt up "
+            "to gateway_outage_max_backoff_seconds."
+        ),
+    )
+    gateway_outage_window_seconds: float = Field(
+        default=120.0,
+        ge=0.0,
+        description=(
+            "How long one model call keeps being retried while the gateway or provider is "
+            "down (refused or reset connection, 429/500/502/503/504, or a stream cut or "
+            "ended without its terminator), before the response header or mid-answer. "
+            "Bounded by how long a gateway rollout takes: the time the call may spend "
+            "failing, counted from each failure until the gateway answers again (the first "
+            "event of a re-sent stream), so a stream that then runs long does not use it "
+            "up. A cut answer is discarded and the same request sent again, so no tool "
+            "call runs twice. Deterministic failures (other 4xx, truncation, a malformed "
+            "answer) are never retried. Exhausting it raises LLMError naming this knob and "
+            "counts on ravn.cap.hits; each retry logs at warning and counts on ravn.retries. "
+            "0 disables retrying: the first failure fails the call."
+        ),
+    )
+    gateway_outage_max_backoff_seconds: float = Field(
+        default=10.0,
+        gt=0.0,
+        description=("Ceiling for the delay between retries within gateway_outage_window_seconds."),
+    )
     timeout: float = Field(default=120.0)
     provider: LLMProviderConfig = Field(default_factory=LLMProviderConfig)
     extended_thinking: ExtendedThinkingConfig = Field(
         default_factory=ExtendedThinkingConfig,
         description="Extended thinking (deliberate reasoning budget) configuration.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed_retry_settings(cls, data: Any) -> Any:
+        _refuse_removed_llm_retry_keys("llm.", data)
+        return data
 
 
 class ToolAdapterConfig(BaseModel):
@@ -258,6 +342,16 @@ class KubernetesToolsConfig(BaseModel):
     kubeconfig_env: str = Field(default="KUBECONFIG")
     kubeconfig_path: str = Field(default="")
     max_log_lines: int = Field(default=120, ge=1)
+    max_configmap_value_chars: int = Field(
+        default=4000,
+        ge=1,
+        description="Characters of each ConfigMap value kubernetes_inspect returns.",
+    )
+    max_list_items: int = Field(
+        default=100,
+        ge=1,
+        description="Most objects a kubernetes_inspect listing (pods) returns.",
+    )
 
 
 class BashToolConfig(BaseModel):
@@ -396,6 +490,175 @@ class RerankerConfig(BaseModel):
     kwargs: dict[str, Any] = Field(
         default_factory=dict,
         description="Extra kwargs forwarded to the reranker adapter constructor.",
+    )
+
+
+class ResidentAttentionGateConfig(BaseModel):
+    """Let a routine inbox slot skip a turn of its own (``ravn.resident_attention``).
+
+    Off until calibrated (``docs/design/system-one-decision-models.md`` §5): fit
+    ``min_skip_probability`` on ``ravn resident attention-calibrate`` output first. A skipped slot
+    stays pending and appears as a receipt in the next turn that runs, which acknowledges it;
+    critical observations, operator messages, A2A updates and numerically novel slots are never
+    skipped.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Skip a turn for slots whose routine probability reaches min_skip_probability. "
+            "Requires decision.resident_first_opinion.enabled and a fitted threshold."
+        ),
+    )
+    skip_tiers: list[str] = Field(
+        default_factory=lambda: ["silent", "ambient"],
+        description="Attention tiers that count as routine for the skip probability.",
+    )
+    skip_decisions: list[str] = Field(
+        default_factory=lambda: ["ignore", "watch"],
+        description="Resident decisions that count as routine for the skip probability.",
+    )
+    min_skip_probability: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Probability mass on routine tier, routine decision and no investigation needed — "
+            "all three — at or above which a slot skips its turn. No default: fit it from "
+            "calibration. While unset, observe mode still records the skip probability."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> ResidentAttentionGateConfig:
+        unknown = [tier for tier in self.skip_tiers if tier not in VALKYRIE_ATTENTION_TIER_ORDER]
+        unknown += [d for d in self.skip_decisions if d not in VALKYRIE_DECISION_ORDER]
+        if unknown:
+            raise ValueError(f"unknown attention gate vocabulary: {unknown}")
+        if self.enabled and self.min_skip_probability is None:
+            raise ValueError(
+                "decision.resident_first_opinion.gate.enabled needs min_skip_probability, "
+                "fitted from `ravn resident attention-calibrate`"
+            )
+        return self
+
+
+class ResidentFirstOpinionConfig(BaseModel):
+    """Observe-only System One opinion on resident turns (``ravn.resident_first_opinion``).
+
+    Before each resident turn the decision model is asked for its tier and decision on the same
+    observation; after the turn both are recorded side by side in telemetry. The turn always runs
+    and its own outcome is the only one the ODIN court sees. Home turns are judged per inbox slot,
+    when the slot is selected (``ravn.resident_attention``); other resident turns as a whole.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Ask the decision model for a first opinion on every resident turn and record it "
+            "beside the turn's own judgment. Requires decision.enabled."
+        ),
+    )
+    max_observation_chars: int = Field(
+        default=4000,
+        gt=0,
+        description=(
+            "Characters of the slot or turn observation sent as decision state; longer "
+            "observations are cut and the cut is reported. A decision model judges small, "
+            "relevant state. The head survives the cut: identity, counts and ranges come first."
+        ),
+    )
+    max_mandate_chars: int = Field(
+        default=2000,
+        gt=0,
+        description=(
+            "Characters of the resident's charter or case mandate sent as decision state; "
+            "longer ones are cut and the cut is reported."
+        ),
+    )
+    max_working_state_chars: int = Field(
+        default=2000,
+        gt=0,
+        description=(
+            "Characters of the resident's working state sent with a slot opinion; a longer one "
+            "is cut and the cut is reported. These three bounds keep a request near 8000 "
+            "characters, about 3600 tokens on Kubernetes evidence (2.2 characters per token)."
+        ),
+    )
+    gate: ResidentAttentionGateConfig = Field(
+        default_factory=ResidentAttentionGateConfig,
+        description="Per-slot attention gate built on the slot opinions. Off until calibrated.",
+    )
+
+    @model_validator(mode="after")
+    def _gate_needs_opinions(self) -> ResidentFirstOpinionConfig:
+        if self.gate.enabled and not self.enabled:
+            raise ValueError(
+                "decision.resident_first_opinion.gate.enabled requires "
+                "decision.resident_first_opinion.enabled"
+            )
+        return self
+
+
+class DecisionCapabilityMatchingConfig(BaseModel):
+    """Let the decision model judge whether two learned tools are one capability.
+
+    It answers for ``build_tool`` and for learned-tool curation in place of the lesson judge.
+    Candidates are still shortlisted by embedding, so this needs
+    ``reflection.matching.mode: semantic`` as well as ``decision.enabled``. A decision that fails
+    stops that build or curation pass; it never falls back to the lesson judge.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Ask the decision model, not the lesson judge, whether tools are the same.",
+    )
+    min_same_probability: float = Field(
+        default=0.6,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "P(same capability) at or above which two tools count as one. Too low blocks new "
+            "tools and retires distinct ones; too high lets duplicates through."
+        ),
+    )
+
+
+class DecisionConfig(BaseModel):
+    """System One decision model (TypeSafe Jev, Cloudflare Clef, Ollama ``/v1/systemone``).
+
+    Off by default. ``adapter`` is a fully-qualified class path and ``kwargs`` its constructor
+    arguments, e.g. ``base_url`` and ``model`` (``jev-latest`` on ``https://api.typesafe.ai``,
+    or ``clef-flash`` on a local Ollama). The API key is never written in config: map it in
+    ``secret_kwargs_env`` and it is resolved from the environment at composition. When
+    enabled, a backend that cannot be built or reached raises; nothing carries on without it.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Build the decision model port for the features below that use it.",
+    )
+    adapter: str = Field(
+        default="ravn.adapters.decision.systemone.SystemOneDecisionAdapter",
+        description="Fully-qualified class path for the decision adapter.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extra kwargs forwarded to the decision adapter constructor.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Maps kwarg names to env var names for credential injection, e.g. "
+            "{api_key: TYPESAFE_API_KEY}. Empty for keyless local servers; a mapped variable "
+            "that is unset or empty is a startup error."
+        ),
+    )
+    resident_first_opinion: ResidentFirstOpinionConfig = Field(
+        default_factory=ResidentFirstOpinionConfig,
+    )
+    capability_matching: DecisionCapabilityMatchingConfig = Field(
+        default_factory=DecisionCapabilityMatchingConfig,
     )
 
 
@@ -553,9 +816,15 @@ class MemoryConfig(BaseModel):
             "reflection."
         ),
     )
-    reflection_max_tokens: int = Field(
-        default=512,
-        description="Maximum tokens for the reflection LLM call.",
+    reflection_max_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Answer cap for the post-task episode reflection and the ravn_reflect tool. "
+            "null (the default) sends no cap, so the model's own output limit (or the "
+            "rest of its context window) applies; a reasoning model spends part of any "
+            "cap thinking. A cut-off answer raises and counts on ravn.cap.hits."
+        ),
     )
     task_summary_max_chars: int = Field(
         default=200,
@@ -793,7 +1062,9 @@ class AgentConfig(BaseModel):
     """Core agent behaviour configuration."""
 
     model: str = Field(default="claude-sonnet-4-6")
-    max_tokens: int = Field(default=8192)
+    max_tokens: int | None = Field(
+        default=None, gt=0, description="Deprecated: use llm.max_tokens."
+    )
     max_iterations: int = Field(
         default=20,
         description="Max tool-call iterations per turn. Set 0 for no cap.",
@@ -835,16 +1106,45 @@ class IterationBudgetConfig(BaseModel):
     )
 
 
+class CompactionMode(StrEnum):
+    """Who compacts a model's context when it grows past the budget."""
+
+    RAVN = "ravn"
+    """Ravn's own ContextCompressor summarises older history client-side."""
+    NATIVE = "native"
+    """The provider compacts (OpenAI Responses / Anthropic compaction); Ravn never does."""
+    OFF = "off"
+    """Nobody compacts; the prompt budget check is the only guard."""
+
+
 class ContextManagementConfig(BaseModel):
     """Context compression and prompt-builder configuration."""
+
+    compaction: CompactionMode = Field(
+        default=CompactionMode.RAVN,
+        description=(
+            "Who compacts the context of models not listed in compaction_models: "
+            "'ravn' (Ravn's client-side compactor, the default), 'native' (the "
+            "provider's own compaction — the LLM adapter must support it, or startup "
+            "fails) or 'off'. Never both: with 'native' Ravn does not compact."
+        ),
+    )
+    compaction_models: dict[str, CompactionMode] = Field(
+        default_factory=dict,
+        description=(
+            "Per-model override of 'compaction', keyed by model id, e.g. "
+            "{'gpt-6-sol': 'native', 'Qwen/Qwen3.8-27B': 'ravn'}."
+        ),
+    )
 
     context_window_tokens: int = Field(
         default=0,
         ge=0,
         description=(
-            "Model context-window size in tokens. The runtime reserves the configured "
-            "maximum output before deriving the safe prompt budget. 0 means the model "
-            "window is unknown, so max_prompt_tokens must provide the prompt ceiling."
+            "Model context-window size in tokens: the real bound on a prompt. The prompt "
+            "ceiling is this window minus llm.max_tokens when an answer cap is set, else "
+            "the whole window (an answer that then does not fit comes back cut off and "
+            "raises OutputTruncatedError). 0 means the window is unknown."
         ),
     )
     token_estimate_safety_factor: float = Field(
@@ -879,9 +1179,16 @@ class ContextManagementConfig(BaseModel):
             "non-zero: protect_last = compact_recent_turns * 2."
         ),
     )
-    compression_max_tokens: int = Field(
-        default=1024,
-        description="Max tokens for compaction document generation.",
+    compression_max_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Answer cap for the compaction state document. A cut-off document never "
+            "replaces history: compaction raises ContextCompressionError. "
+            "null (the default) sends no cap, so the model's own output limit (or the "
+            "rest of its context window) applies; a reasoning model spends part of any "
+            "cap thinking. A cut-off answer raises and counts on ravn.cap.hits."
+        ),
     )
     prompt_cache_max_entries: int = Field(
         default=16,
@@ -893,15 +1200,31 @@ class ContextManagementConfig(BaseModel):
     )
     max_prompt_tokens: int = Field(
         default=0,
+        ge=0,
         description=(
-            "Hard per-call budget for the estimated prompt size (system prompt + "
-            "tool schemas + message history), in tokens. 0 disables the check. "
-            "When a turn's estimated prompt still exceeds this after context "
-            "compression, the LLM call is refused with PromptBudgetExceededError "
-            "and a per-section breakdown — fail loud instead of sending a request "
-            "that overflows the model's context window."
+            "Hard per-call ceiling for the estimated prompt size (system prompt + "
+            "tool schemas + message history), in tokens. 0 derives it from "
+            "context_window_tokens (and no check when that is unknown too). A prompt "
+            "still above it after compaction is refused with PromptBudgetExceededError, "
+            "and a single tool result is cut only where it alone would break it. Set it "
+            "below the window only for a real limit; for prompt-size latency use "
+            "compaction_target_tokens, which compacts history instead of cutting results."
         ),
     )
+    compaction_target_tokens: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Prompt size compaction keeps history under, for prefill latency: compaction "
+            "fires at compression_threshold x this. 0 uses the prompt ceiling. This "
+            "never cuts a tool result or refuses a turn; on self-hosted models a smaller "
+            "prompt mainly means a faster time to first token."
+        ),
+    )
+
+    def compaction_for(self, model: str) -> CompactionMode:
+        """The compaction mode configured for *model*."""
+        return self.compaction_models.get(model, self.compaction)
 
     def effective_protect_last(self) -> int:
         """Return the protect_last value to pass to ContextCompressor.
@@ -918,19 +1241,6 @@ class ContextManagementConfig(BaseModel):
 # ---------------------------------------------------------------------------
 # Legacy adapter config (kept for backwards compat with NIU-426 wiring)
 # ---------------------------------------------------------------------------
-
-
-class LLMAdapterConfig(BaseModel):
-    """Dynamic LLM adapter configuration (legacy; prefer llm.provider)."""
-
-    adapter: str = Field(
-        default="ravn.adapters.llm.anthropic.AnthropicAdapter",
-        description="Fully-qualified class path for the LLM adapter.",
-    )
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    max_retries: int = Field(default=3)
-    retry_base_delay: float = Field(default=1.0)
-    timeout: float = Field(default=120.0)
 
 
 class EvolutionConfig(BaseModel):
@@ -1015,7 +1325,7 @@ class TelegramChannelConfig(BaseModel):
     )
     message_max_chars: int = Field(
         default=4096,
-        description="Maximum characters per outbound Telegram message (API limit).",
+        description="Characters per outbound Telegram message (API limit); longer is split.",
     )
 
 
@@ -1173,12 +1483,12 @@ class PlatformToolsConfig(BaseModel):
     )
     base_url: str = Field(default="http://localhost:8080")
     timeout: float = Field(default=30.0)
-    pat_token: str = Field(
+    access_token: str = Field(
         default="",
         description=(
-            "Explicit external bearer token for platform API authentication. "
-            "In-cluster Ravn/Valkyrie callers should leave this empty and use "
-            "projected workload identity."
+            "Explicit bearer token for platform API authentication: a PAT for an "
+            "off-cluster resident, or the workload-bound token a sandbox runtime "
+            "mediates. Leave empty in-cluster to use projected workload identity."
         ),
     )
     anonymous_dev_mode: bool = Field(
@@ -1190,8 +1500,21 @@ class PlatformToolsConfig(BaseModel):
     )
     workload_token_file: str = Field(
         default="/var/run/secrets/kubernetes.io/serviceaccount/token",
-        description="Projected workload identity token file used when pat_token is not set.",
+        description="Projected workload identity token file used when access_token is not set.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_renamed_pat_token(cls, data: Any) -> Any:
+        """``pat_token`` was renamed; dropping it silently would drop the credential."""
+        if isinstance(data, dict) and "pat_token" in data:
+            raise ValueError(
+                "gateway.platform.pat_token was renamed to gateway.platform.access_token "
+                "(env RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN): it carries any platform "
+                "bearer, not only a PAT. Rename the key in this config."
+            )
+        return data
+
     workload_exchange_url: str = Field(
         default="",
         description=(
@@ -1225,6 +1548,13 @@ class PlatformToolsConfig(BaseModel):
     a2a_default_metadata: dict[str, Any] = Field(
         default_factory=dict,
         description="Default A2A launch metadata; explicit per-call metadata takes precedence.",
+    )
+    a2a_gate_decisions: bool = Field(
+        default=True,
+        description=(
+            "Whether this Ravn may answer workflow gates over A2A. Turned off for agents whose "
+            "gates belong to a person, so the refusal does not rest on the model's judgment."
+        ),
     )
     a2a_push_callback_url: str = Field(
         default="",
@@ -1267,7 +1597,7 @@ class DiscordChannelConfig(BaseModel):
     )
     message_max_chars: int = Field(
         default=2000,
-        description="Maximum characters per outbound Discord message (API limit).",
+        description="Characters per outbound Discord message (API limit); longer is split.",
     )
     retry_delay: float = Field(
         default=5.0,
@@ -1305,7 +1635,7 @@ class SlackChannelConfig(BaseModel):
     )
     message_max_chars: int = Field(
         default=3000,
-        description="Maximum characters per outbound Slack message before truncation.",
+        description="Maximum characters per outbound Slack message; longer text is split.",
     )
     retry_delay: float = Field(
         default=5.0,
@@ -1347,7 +1677,7 @@ class MatrixChannelConfig(BaseModel):
     )
     message_max_chars: int = Field(
         default=32000,
-        description="Maximum characters per outbound Matrix message.",
+        description="Maximum characters per outbound Matrix message; longer text is split.",
     )
 
 
@@ -1392,7 +1722,7 @@ class WhatsAppChannelConfig(BaseModel):
     )
     message_max_chars: int = Field(
         default=4096,
-        description="Maximum characters per outbound WhatsApp message.",
+        description="Maximum characters per outbound WhatsApp message; longer text is split.",
     )
     api_base: str = Field(
         default="https://graph.facebook.com/v18.0",
@@ -1424,6 +1754,14 @@ class OpenClawChannelConfig(BaseModel):
         description=(
             "TCP port for the OpenClaw-protocol server. Deliberately NOT 18789 "
             "— that is the real OpenClaw gateway's port."
+        ),
+    )
+    path: str = Field(
+        default="/",
+        description=(
+            "URL path of the WebSocket; GET <path>/health answers beside it. The app "
+            "connects at the root. Behind an ingress the resident shares with other "
+            "routes, give the shim its own prefix (e.g. /openclaw)."
         ),
     )
     token_env: str = Field(
@@ -1466,6 +1804,123 @@ class OpenClawChannelConfig(BaseModel):
             "history endpoint, so chat.history has nothing else to read."
         ),
     )
+    notifications_enabled: bool = Field(
+        default=True,
+        description=(
+            "Serve the resident's notification outbox (what it waits on its owner for, "
+            "and what its agent notifies on purpose) to Forge over this shim, and offer "
+            "the agent the `notify` tool. The outbox shares store_path's database."
+        ),
+    )
+    notifications_max_pending: int = Field(
+        default=1000,
+        ge=1,
+        description=(
+            "Most outbox entries kept while Forge has not acknowledged them. Past it the "
+            "oldest are dropped, with a warning: Forge has not reached this shim for long."
+        ),
+    )
+
+    @field_validator("path")
+    @classmethod
+    def _path_is_absolute(cls, value: str) -> str:
+        if not value.startswith("/"):
+            raise ValueError(f"gateway.channels.openclaw.path {value!r} must start with '/'")
+        return value
+
+
+class VoiceMinterConfig(BaseModel):
+    """One realtime provider's credential minter (dynamic adapter + kwargs)."""
+
+    adapter: str = Field(
+        description=(
+            "Fully-qualified class path implementing RealtimeCredentialMinterPort, e.g. "
+            "'ravn.adapters.voice.client_secrets.XaiRealtimeMinter'."
+        ),
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor keyword arguments (key_file, base_url, ttl_seconds, …).",
+    )
+
+
+class VoiceChannelConfig(BaseModel):
+    """Realtime voice channel — makes the resident the agent service of a voice client.
+
+    Serves the subset of the agent-service wire (a ``{type,id,payload}``
+    WebSocket at the root plus ``/api`` REST) that realtime voice clients use:
+    persona, prompt, short-lived provider credentials, the resident's tools, and
+    the call log. The phone's realtime model is the resident's voice; it calls
+    the persona's ``voice.tools`` directly. See ``ravn.adapters.channels.voice``.
+
+    Bind to loopback: the pod's nginx forwards ``/voice/`` here behind Envoy's
+    JWT and ownership checks.
+    """
+
+    enabled: bool = Field(default=False)
+    host: str = Field(default="127.0.0.1", description="Host/IP to bind the voice server.")
+    port: int = Field(default=18791, description="TCP port for the voice server.")
+    store_path: str = Field(
+        default="~/.ravn/voice/calls.db",
+        description="SQLite call store: the system of record for this resident's voice calls.",
+    )
+    display_name: str = Field(
+        default="",
+        description="Name the resident introduces itself by; defaults to the persona name.",
+    )
+    time_zone: str = Field(
+        default="UTC",
+        description="IANA time zone for the date and time in the call's prompt.",
+    )
+    models: dict[str, str] = Field(
+        default_factory=lambda: {"grok": "grok-voice-3.0", "gpt-realtime": "gpt-realtime-2.1"},
+        description="Realtime model per prompt provider (grok, gpt-realtime).",
+    )
+    minters: dict[str, VoiceMinterConfig] = Field(
+        default_factory=dict,
+        description=(
+            "Credential minter per mint provider (xai, openai). A provider without a "
+            "minter cannot be called; one with a minter that cannot start is fatal."
+        ),
+    )
+    tool_timeout_seconds: float = Field(
+        default=120.0,
+        gt=0,
+        description="Longest a voice tool call may run before it is answered as failed.",
+    )
+    history_default_limit: int = Field(
+        default=50, ge=1, description="Calls returned by call history without a limit."
+    )
+    history_max_limit: int = Field(
+        default=250, ge=1, description="Most calls one call-history request returns."
+    )
+    room_broker_url: str = Field(
+        default="",
+        description=(
+            "The resident's Skuld broker (e.g. http://127.0.0.1:8081). When set, each "
+            "call's speech is copied into the room transcript as commentary. Empty "
+            "means calls stay in the voice store only."
+        ),
+    )
+    room_participant_id: str = Field(
+        default="",
+        description="The resident's room participant id that agent speech is recorded under.",
+    )
+    room_timeout_seconds: float = Field(
+        default=10.0, gt=0, description="Timeout for one room copy request."
+    )
+    owner_id: str = Field(
+        default="",
+        description=(
+            "The resident's owner. Every request must carry this user in user_id_header "
+            "(projected by the gateway from the verified token's sub claim): voice mints the "
+            "owner's provider credentials and runs the resident's tools. Empty serves nobody."
+        ),
+    )
+    user_id_header: str = Field(
+        default="x-auth-user-id",
+        description="Header the gateway projects the verified caller's user id into.",
+    )
 
 
 class GatewayChannelsConfig(BaseModel):
@@ -1479,6 +1934,7 @@ class GatewayChannelsConfig(BaseModel):
     slack: SlackChannelConfig = Field(default_factory=SlackChannelConfig)
     matrix: MatrixChannelConfig = Field(default_factory=MatrixChannelConfig)
     whatsapp: WhatsAppChannelConfig = Field(default_factory=WhatsAppChannelConfig)
+    voice: VoiceChannelConfig = Field(default_factory=VoiceChannelConfig)
 
 
 class GatewayConfig(BaseModel):
@@ -1627,6 +2083,18 @@ class BudgetConfig(BaseModel):
 class InitiativeConfig(BaseModel):
     """Drive-loop initiative engine configuration (NIU-539)."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed_queue_cap(cls, data: Any) -> Any:
+        """A removed cap left in a config would read as enforced while doing nothing."""
+        if isinstance(data, dict) and "task_queue_max" in data:
+            raise ValueError(
+                "initiative.task_queue_max no longer exists: the queue no longer drops "
+                "tasks when full; a backlog shows as the queue depth and each queued "
+                "task's age. Remove the key"
+            )
+        return data
+
     enabled: bool = Field(
         default=False,
         description="Enable the drive loop / initiative engine.",
@@ -1634,10 +2102,6 @@ class InitiativeConfig(BaseModel):
     max_concurrent_tasks: int = Field(
         default=3,
         description="Maximum simultaneous initiative tasks.",
-    )
-    task_queue_max: int = Field(
-        default=50,
-        description="Maximum tasks in the priority queue.",
     )
     queue_journal_path: str = Field(
         default="~/.ravn/daemon/queue.json",
@@ -1951,14 +2415,6 @@ class MimirSourceTriggerConfig(BaseModel):
         default="mimir-curator",
         description="Persona to use for synthesis tasks.",
     )
-    max_tokens: int | None = Field(
-        default=4096,
-        description=(
-            "Maximum output tokens for synthesis tasks. "
-            "Set lower than the LLM default to leave room for large source documents "
-            "in the context window. None uses the LLM/settings default."
-        ),
-    )
     max_content_chars: int = Field(
         default=120_000,
         description=(
@@ -1996,12 +2452,6 @@ class MimirStalenessTriggerConfig(BaseModel):
         default="mimir-curator",
         description="Persona to use for refresh tasks.",
     )
-    max_tokens: int | None = Field(
-        default=4096,
-        description=(
-            "Maximum output tokens for staleness refresh tasks. None uses the LLM/settings default."
-        ),
-    )
 
 
 class MimirIngestConfig(BaseModel):
@@ -2015,9 +2465,25 @@ class MimirIngestConfig(BaseModel):
         default="claude-haiku-4-5-20251001",
         description="LLM model alias used for entity extraction (prefer cheap/fast).",
     )
-    entity_max_tokens: int = Field(
-        default=1024,
-        description="Maximum output tokens for the entity extraction LLM call.",
+    entity_max_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Answer cap for the entity extraction call. null (the default) sends none, "
+            "so the model's own output limit applies; a reasoning model spends part of "
+            "any cap thinking. A cut-off extraction fails the ingest's extraction step "
+            "and counts on ravn.cap.hits."
+        ),
+    )
+    entity_source_excerpt_chars: int = Field(
+        default=3000,
+        gt=0,
+        description=(
+            "Characters of a source's head the extractor reads (the prompt says so). "
+            "Raw sources reach megabytes, past any extraction model's window; entities "
+            "named only further down are not extracted, so a cut counts on "
+            "ravn.cap.hits."
+        ),
     )
 
 
@@ -2372,10 +2838,6 @@ class BuriConfig(BaseModel):
             "'observation' regardless of the inferred type."
         ),
     )
-    session_summary_max_tokens: int = Field(
-        default=400,
-        description="Maximum tokens for the proto-RWKV rolling session summary.",
-    )
     supersession_cosine_threshold: float = Field(
         default=0.85,
         description=(
@@ -2618,11 +3080,363 @@ class WakefulnessConfig(BaseModel):
         default=60,
         description="How often (seconds) the trigger checks for silence.",
     )
+    max_transcript_chars: int = Field(
+        default=12000,
+        gt=0,
+        description=(
+            "Upper bound on the characters of operator conversation put into a "
+            "reflection prompt.  The most recent exchange is kept; older text is "
+            "cut first."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
 # NIU-569: Recap trigger config
 # ---------------------------------------------------------------------------
+
+
+class LearningMatchingConfig(BaseModel):
+    """How a new reflection candidate is matched to lessons already recorded.
+
+    ``lexical`` compares word overlap and is all a Ravn without embeddings can
+    do; it never merges a paraphrase, so a resident that rediscovers a lesson
+    in new words collects one-observation candidates that never promote.
+    ``semantic`` shortlists recorded lessons by embedding similarity and asks a
+    small model judge whether the closest ones state the same lesson. It needs
+    ``embedding.enabled: true``; asking for it without embeddings is a startup
+    error, never a silent fall back to lexical matching.
+    """
+
+    mode: Literal["lexical", "semantic"] = Field(
+        default="lexical",
+        description="Candidate matching strategy: 'lexical' word overlap or 'semantic'.",
+    )
+    similarity_threshold: float = Field(
+        default=0.65,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum cosine similarity for a recorded lesson to be shown to the "
+            "judge as a possible match. Below it the lessons are treated as distinct "
+            "without a model call."
+        ),
+    )
+    max_related: int = Field(
+        default=5,
+        ge=1,
+        description=(
+            "Nearest learnings, and separately nearest candidates, above the threshold "
+            "that the judge compares one lesson with. Learnings get their own share so "
+            "a crowd of paraphrased candidates cannot push the trusted learning out of "
+            "view; this is the size of one judge prompt, not a cap on the work done."
+        ),
+    )
+    judge_llm_alias: str = Field(
+        default="",
+        description=(
+            "LLM alias for the same-lesson / contradiction / procedure judgments. "
+            "Empty uses reflection.llm_alias."
+        ),
+    )
+    judge_max_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Answer cap for one lesson-judge call. null (the default) sends no cap, so "
+            "the model's own output limit applies; a reasoning model spends part of any "
+            "cap thinking. A cut-off answer raises LessonJudgeError and counts on "
+            "ravn.cap.hits."
+        ),
+    )
+    embed_batch_size: int = Field(
+        default=64,
+        ge=1,
+        description=(
+            "Lessons embedded per request. The first comparison embeds every "
+            "recorded lesson, which on a long-running resident is hundreds."
+        ),
+    )
+    evidence_duplicate_similarity: float = Field(
+        default=0.9,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Cosine similarity at or above which a new evidence note restates one "
+            "already on the lesson. The same unchanged fact re-read in another session "
+            "is one observation repeated, not corroboration, and must not count toward "
+            "promotion. Word overlap cannot make this call: different observations of "
+            "one lesson share its hosts and tool names."
+        ),
+    )
+    judge_excerpt_chars: int = Field(
+        default=400,
+        ge=40,
+        description="Characters of each lesson's title and claim shown to the judge.",
+    )
+    judge_attempts: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "Judge calls made before an empty or malformed answer is a hard failure. "
+            "Local models occasionally emit broken JSON once."
+        ),
+    )
+
+
+class VerifiedPromotionConfig(BaseModel):
+    """Which first-hand evidence lets a candidate promote on its first observation.
+
+    A route recovery is a turn in which a tool call failed and a later call to
+    the same tool with different input succeeded. It is recorded from the
+    turn's own tool results, not from the model's account of them, so a lesson
+    that restates it is verified rather than speculative. Speculative lessons
+    still need ``candidate_min_repetitions`` independent observations.
+    """
+
+    route_recovery_promotes: bool = Field(
+        default=True,
+        description=(
+            "Promote a candidate on first observation when the reflection ties it to "
+            "a route recovery recorded in the same session's tool results."
+        ),
+    )
+    max_route_recoveries: int = Field(
+        default=5,
+        ge=0,
+        description="Route recoveries carried on ravn.session.ended per session; 0 records none.",
+    )
+    excerpt_chars: int = Field(
+        default=240,
+        ge=20,
+        description="Characters of tool input/result kept for each side of a route recovery.",
+    )
+
+
+class LearningCurationConfig(BaseModel):
+    """The dream pass that curates learnings and candidates themselves.
+
+    Runs inside the resident consolidation dream. It merges near-duplicate
+    lessons, lets stronger evidence supersede contradicted claims, prunes
+    candidates nobody ever confirmed, and rewrites promoted learnings into short
+    procedural form. Every change is recorded on a Mímir audit page. It needs
+    semantic matching; enabling it without embeddings is a startup error.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Curate learnings during resident consolidation dreams.",
+    )
+    min_interval_seconds: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "Minimum seconds between curation passes; dreams in between skip it. 0 runs "
+            "it in every consolidation dream, which is cheap: a pass judges only lessons "
+            "never consolidated before, one model call each, and marks them `curated`."
+        ),
+    )
+    prune_after_days: float = Field(
+        default=14.0,
+        gt=0.0,
+        description=(
+            "A single-observation, unverified candidate older than this is pruned as "
+            "never confirmed."
+        ),
+    )
+    audit_prefix: str = Field(
+        default="learning-curation",
+        min_length=1,
+        description="Mímir path prefix for curation audit pages.",
+    )
+
+
+class FrictionConfig(BaseModel):
+    """What a resident records about the walls it hits.
+
+    Friction is captured from each session's own record: tool calls that failed
+    and stayed failed, retries of the same call, timeouts, an exhausted
+    iteration budget, route recoveries (a workaround), and from the outcome
+    contract: operator escalations, declared capability gaps, and blocked
+    decisions. Signals are clustered by meaning into a ledger of Mímir pages so
+    "how often does this keep happening" has an answer. Needs semantic
+    matching; enabling it without embeddings is a startup error.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Record friction from every session into the friction ledger.",
+    )
+    max_signals: int = Field(
+        default=10,
+        ge=0,
+        description="Tool-level friction signals carried on ravn.session.ended per session.",
+    )
+    similarity_threshold: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Cosine similarity at or above which a new signal is another occurrence "
+            "of a recorded friction of the same kind."
+        ),
+    )
+    max_occurrences_kept: int = Field(
+        default=50,
+        ge=1,
+        description="Most recent occurrences kept on one friction record (the total is kept).",
+    )
+    ledger_prefix: str = Field(
+        default="friction",
+        min_length=1,
+        description="Mímir path prefix for friction records.",
+    )
+
+
+class SelfImprovementConfig(BaseModel):
+    """The proactive loop that acts on recorded friction without being asked.
+
+    Runs in the resident consolidation dream after learning curation. It
+    judges whether past improvements worked, then chooses at most
+    ``max_actions`` new ones for recurring friction, each with an explicit
+    expected benefit. Learning actions (promote, rewrite, retire) use Ravn's
+    evidence gates. A tool commission or a defect ticket is dispatched as an
+    ordinary resident task, so it passes the same persona tool permissions,
+    build_tool autonomy/review, and branch rules as any other turn — this loop
+    has no privileged path of its own. Needs friction capture and learning
+    curation.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Choose and take self-improvement actions during consolidation dreams.",
+    )
+    max_actions: int = Field(
+        default=2,
+        ge=1,
+        description="Most improvement actions one pass may take.",
+    )
+    min_occurrences: int = Field(
+        default=2,
+        ge=1,
+        description="Occurrences before a friction counts as recurring and is worth acting on.",
+    )
+    max_candidates: int = Field(
+        default=8,
+        ge=1,
+        description="Recurring frictions shown to the planner in one pass.",
+    )
+    allowed_actions: list[
+        Literal[
+            "promote_learning",
+            "rewrite_learning",
+            "retire_belief",
+            "commission_tool",
+            "file_defect",
+        ]
+    ] = Field(
+        default_factory=lambda: [
+            "promote_learning",
+            "rewrite_learning",
+            "retire_belief",
+            "commission_tool",
+            "file_defect",
+        ],
+        description="Improvement actions the planner may choose.",
+    )
+    evaluation_window_seconds: float = Field(
+        default=3 * 24 * 3600.0,
+        gt=0.0,
+        description="How long after an action its friction is watched before it is judged.",
+    )
+    recurrence_threshold: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "Recurrences inside the evaluation window that make an action ineffective. "
+            "Ineffective learnings are demoted and the action is never retried for that "
+            "friction."
+        ),
+    )
+    redirect_delay_seconds: float = Field(
+        default=60.0,
+        ge=0.0,
+        description=(
+            "When the resident asks the operator about friction it already addressed, "
+            "it is woken again this many seconds later with the known resolution instead; "
+            "asking again in the same case reaches the operator and counts against the fix."
+        ),
+    )
+    task_persona: str = Field(
+        default="",
+        description="Persona for dispatched improvement tasks; empty uses the resident's default.",
+    )
+    task_priority: int = Field(
+        default=10,
+        description="Drive-loop priority of dispatched improvement tasks.",
+    )
+    defect_team: str = Field(
+        default="NIU",
+        min_length=1,
+        description="Tracker team for platform-defect tickets.",
+    )
+    defect_labels: list[str] = Field(
+        default_factory=lambda: ["platform-defect"],
+        description="Labels for platform-defect tickets.",
+    )
+    audit_prefix: str = Field(
+        default="self-improvement",
+        min_length=1,
+        description="Mímir path prefix for the 'what I improved and why' records.",
+    )
+
+
+_CONTINUATION_TURN_BOUND = (
+    "resident case continuations are bounded by budget.daily_cap_usd, one turn per "
+    "scheduled wake, and repeated_decision_escalate_after"
+)
+_CONTINUATION_CONTENT_BOUND = (
+    "what a turn carries forward is bounded by the model's context window "
+    "(context_management.max_prompt_tokens and compaction), and the durable record by "
+    "resident_state.case_retention_max_cases / case_retention_max_age_days"
+)
+_REMOVED_RESIDENT_STATE_KEYS: dict[str, str] = {
+    "continuation_max_turns": _CONTINUATION_TURN_BOUND,
+    "continuation_max_tokens": _CONTINUATION_TURN_BOUND,
+    "continuation_context_max_chars": (
+        "the prior working state, A2A handles, open questions, turn handoff and "
+        "observation payloads reach the resident whole; " + _CONTINUATION_CONTENT_BOUND
+    ),
+    "continuation_tool_result_max_chars": (
+        "every tool result is persisted whole in the turn record; " + _CONTINUATION_CONTENT_BOUND
+    ),
+    "directed_message_context_max_chars": (
+        "a directed message and the room message it replies to reach the resident whole; "
+        "the prompt is bounded by context_management.max_prompt_tokens and compaction"
+    ),
+}
+_REMOVED_REFLECTION_KEYS: dict[str, str] = {
+    "context_max_chars": (
+        "the session's recorded work context is sent to the reflection model whole; "
+        "the reflection model's context window bounds it, and a prompt that does not fit "
+        "fails loudly"
+    ),
+}
+
+
+def _refuse_removed_keys(section: str, data: Any, removed_keys: dict[str, str]) -> Any:
+    """Refuse a config that still sets a removed key, naming what bounds the content now."""
+    if not isinstance(data, dict):
+        return data
+    present = sorted(set(removed_keys) & set(data))
+    if not present:
+        return data
+    raise ValueError(
+        "; ".join(
+            f"{section}.{key} no longer exists: {removed_keys[key]}; remove the key"
+            for key in present
+        )
+    )
 
 
 class PostSessionReflectionConfig(BaseModel):
@@ -2634,6 +3448,12 @@ class PostSessionReflectionConfig(BaseModel):
     Disabled by default — enable via ``reflection.enabled: true`` in the
     deployment YAML.
     """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed_caps(cls, data: Any) -> Any:
+        """A removed cap left in a config would read as enforced while doing nothing."""
+        return _refuse_removed_keys("reflection", data, _REMOVED_REFLECTION_KEYS)
 
     enabled: bool = Field(
         default=False,
@@ -2649,9 +3469,16 @@ class PostSessionReflectionConfig(BaseModel):
             "model in the LLM aliases map."
         ),
     )
-    max_tokens: int = Field(
-        default=1024,
-        description="Maximum tokens the reflection LLM call may produce.",
+    max_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Answer cap for the post-session reflection call. null (the default) "
+            "sends no cap, so the model's own output limit applies; 1024 was a "
+            "guess from non-reasoning models that Qwen3.8 spent thinking. A reply "
+            "cut off at a cap raises ReflectionError instead of reading as 'no "
+            "learning', and counts on ravn.cap.hits."
+        ),
     )
     inject_learnings: bool = Field(
         default=True,
@@ -2681,6 +3508,19 @@ class PostSessionReflectionConfig(BaseModel):
             "may be promoted to a reusable learning without stronger evidence."
         ),
     )
+    learning_entry_max_chars: int = Field(
+        default=600,
+        ge=80,
+        description=(
+            "Characters one injected learning may occupy, so a single long page "
+            "cannot spend the whole learning budget."
+        ),
+    )
+    matching: LearningMatchingConfig = Field(default_factory=LearningMatchingConfig)
+    verified_promotion: VerifiedPromotionConfig = Field(default_factory=VerifiedPromotionConfig)
+    curation: LearningCurationConfig = Field(default_factory=LearningCurationConfig)
+    friction: FrictionConfig = Field(default_factory=FrictionConfig)
+    self_improvement: SelfImprovementConfig = Field(default_factory=SelfImprovementConfig)
 
 
 class RecapConfig(BaseModel):
@@ -2878,6 +3718,15 @@ class ResidentWakefulnessConfig(BaseModel):
             "promoted to environment scope during a dream, policy permitting."
         ),
     )
+    dream_snapshot_interval_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description=(
+            "How often the last consolidation dream outcome is republished as "
+            "valkyrie.dream.snapshot, so a dashboard restarted without event replay "
+            "shows it within this interval instead of after the next dream."
+        ),
+    )
 
 
 class WorkflowSelectorConfig(BaseModel):
@@ -2976,12 +3825,40 @@ class LearnedToolKubernetesConfig(BaseModel):
         default=120.0,
         gt=0,
         description=(
-            "verify()-only: separate budget for a Job's pod to leave Pending and "
-            "start running (scheduling, image pull) before it is treated as an "
-            "infrastructure failure. Decoupled from the verify timeout, which only "
-            "starts counting once the container is actually running, so a slow "
-            "image pull is never confused with the tool's own code hanging. run() "
-            "has no separate pod-start budget and does not consult this field."
+            "Budget for a Job's pod to leave Pending and start running (scheduling, "
+            "image pull) before it is treated as an infrastructure failure, for both "
+            "run() and verify(). Decoupled from the tool and verify timeouts, which "
+            "only start counting once the container is actually running, so a slow "
+            "image pull is never confused with the tool's own code hanging."
+        ),
+    )
+    tool_service_account: str = Field(
+        default="",
+        description=(
+            "Service account a learned-tool Job runs as when its declared reach "
+            "includes the Kubernetes API; its token is mounted only for those runs. "
+            "Bind it to read-only RBAC no wider than the resident's own: it is the "
+            "only cluster identity a learned tool ever holds. Empty refuses every "
+            "tool that declares Kubernetes API reach."
+        ),
+    )
+    dns_service: str = Field(
+        default="",
+        description=(
+            "Cluster DNS Service as 'namespace/name' (e.g. "
+            "'kube-system/rke2-coredns-rke2-coredns'). A Job with targeted reach gets "
+            "egress to the pods behind it so it can resolve its targets. Empty refuses "
+            "every tool that declares targeted network reach."
+        ),
+    )
+    named_targets: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Words a learned tool's reach may use for an in-cluster Service, as "
+            "word -> 'namespace/service[:port]' (e.g. prometheus -> "
+            "'monitoring/kube-prom-kube-prometheus-prometheus:9090'). Matched as a "
+            "whole word in a grant's kind or target when it names no address; "
+            "nothing else is inferred from prose."
         ),
     )
     job_ttl_seconds_after_finished: int = Field(
@@ -2991,6 +3868,36 @@ class LearnedToolKubernetesConfig(BaseModel):
             "Kubernetes ttlSecondsAfterFinished on every learned-tool Job, as a backup "
             "sweep if the explicit post-run delete never executes (process crash). "
             "0 disables the TTL and relies solely on the explicit delete."
+        ),
+    )
+
+
+class LearnedToolCurationConfig(BaseModel):
+    """The consolidation-dream pass that retires learned tools.
+
+    Retires tools that another installed tool supersedes, that can never run,
+    that are named as debug probes and never succeeded, or that were never run
+    for longer than any tool on the resident waited before its first use. That
+    window is derived from the resident's lifecycle records, not configured.
+    Retirement moves the envelope into the ``_archive`` directory, removes the
+    code, and archives the lifecycle record with the reason; asking build_tool
+    for the capability again restores it.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Retire superseded, unrunnable, debug-leftover and never-used learned tools "
+            "during consolidation dreams. Needs resident_wakefulness. false keeps every "
+            "tool forever."
+        ),
+    )
+    leftover_name_prefixes: list[str] = Field(
+        default_factory=lambda: ["test", "debug", "tmp", "temp", "scratch"],
+        description=(
+            "First name tokens that mark a tool as a probe, not an instrument "
+            "(debug_input, test_tool). Such a tool is retired once it has no successful "
+            "run; one that succeeded is judged like any other."
         ),
     )
 
@@ -3064,8 +3971,11 @@ class ResidentEvolutionConfig(BaseModel):
         description=(
             "Execution backend for learned agent tools authored through build_tool. "
             "'container' runs each invocation in a fail-closed, least-reach OCI "
-            "container; 'local' is an explicit compatibility mode without hard "
-            "reach enforcement; 'k8s_job' creates one locked-down Job per invocation "
+            "container; 'local' runs a subprocess of the resident and enforces only "
+            "the network: a tool whose declared reach is entirely local runs with every "
+            "socket denied (a network namespace on Linux, a Seatbelt profile on macOS; "
+            "refused where the host cannot apply it), while a networked tool gets the resident's "
+            "whole network and filesystem; 'k8s_job' creates one locked-down Job per invocation "
             "after verifying its NetworkPolicies; 'forge'/'devrunner' select the "
             "legacy workspace-mounted persistent container path."
         ),
@@ -3073,6 +3983,10 @@ class ResidentEvolutionConfig(BaseModel):
     learned_tool_k8s: LearnedToolKubernetesConfig = Field(
         default_factory=LearnedToolKubernetesConfig,
         description="Pod-per-run Kubernetes execution and policy coordinates.",
+    )
+    tool_curation: LearnedToolCurationConfig = Field(
+        default_factory=LearnedToolCurationConfig,
+        description="Retirement of learned tools that no longer earn their catalog entry.",
     )
     learned_tool_injection_mode: Literal["dispatch", "bulk"] = Field(
         default="dispatch",
@@ -3225,8 +4139,11 @@ class ResidentInboxConfig(BaseModel):
     environment_signals_enabled: bool = Field(
         default=False,
         description=(
-            "Persist configured Environment signals through the resident inbox adapter. "
-            "Disabled by default so existing deployments opt into this delivery owner explicitly."
+            "Persist configured Environment signals through the resident inbox adapter, which "
+            "then becomes their only route to a turn: repeats coalesce into one slot per shape "
+            "and the resident home turn judges them together, with critical observations "
+            "waking it at once. Disabled by default so existing deployments opt into this "
+            "delivery owner explicitly."
         ),
     )
     directed_messages_enabled: bool = Field(
@@ -3328,6 +4245,12 @@ class ResidentStateConfig(BaseModel):
     reachable.
     """
 
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed_turn_caps(cls, data: Any) -> Any:
+        """A removed cap left in a config would read as enforced while doing nothing."""
+        return _refuse_removed_keys("resident_state", data, _REMOVED_RESIDENT_STATE_KEYS)
+
     adapter: str = Field(
         default="ravn.adapters.resident_state.mimir.LocalResidentState",
         description="Fully-qualified ResidentStatePort adapter class. No fallback.",
@@ -3339,26 +4262,6 @@ class ResidentStateConfig(BaseModel):
     secret_kwargs_env: dict[str, str] = Field(
         default_factory=dict,
         description="Maps adapter kwarg names to env var names for secret injection.",
-    )
-    continuation_max_turns: int = Field(
-        default=3,
-        ge=1,
-        description="Maximum model turns in one automatically continued resident case.",
-    )
-    continuation_max_tokens: int = Field(
-        default=0,
-        ge=0,
-        description="Cumulative resident-case token cap; 0 leaves the token cap disabled.",
-    )
-    continuation_context_max_chars: int = Field(
-        default=12000,
-        ge=1000,
-        description="Maximum durable prior-turn characters restored into a continuation.",
-    )
-    continuation_tool_result_max_chars: int = Field(
-        default=2000,
-        ge=100,
-        description="Maximum characters persisted from each resident tool result.",
     )
     case_retention_max_cases: int = Field(
         default=200,
@@ -3391,14 +4294,6 @@ class ResidentStateConfig(BaseModel):
             "the cases directory is rescanned."
         ),
     )
-    directed_message_context_max_chars: int = Field(
-        default=4000,
-        ge=200,
-        description=(
-            "Maximum characters of prior room content carried into a directed-message "
-            "task. The human's current message is never truncated by this setting."
-        ),
-    )
     home_wake_interval_seconds: float = Field(
         default=300.0,
         gt=0,
@@ -3410,6 +4305,17 @@ class ResidentStateConfig(BaseModel):
         description=(
             "Delay applied when a resident turn sleeps for a scheduled time without "
             "naming an explicit wake_at timestamp."
+        ),
+    )
+    failed_resume_retry_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description=(
+            "Seconds before a resident case whose resumed turn failed (a scheduled wake or "
+            "an operator answer) is resumed again. The wake or answer stays pending so the "
+            "case is not lost, but a failure that recurs on every attempt otherwise re-queued "
+            "the case the moment it was released: one resident retried a failing case about "
+            "twice a second."
         ),
     )
     repeated_decision_escalate_after: int = Field(
@@ -3837,6 +4743,18 @@ class EnvironmentTopologyConfig(BaseModel):
 class EnvironmentConfig(BaseModel):
     """Runtime environment identity for long-running resident Valkyries."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed_triage_cap(cls, data: Any) -> Any:
+        """A removed cap left in a config would read as enforced while doing nothing."""
+        if isinstance(data, dict) and "idle_triage_max_signals" in data:
+            raise ValueError(
+                "environment.idle_triage_max_signals no longer exists: an idle-triage "
+                "window keeps every untriaged observation instead of dropping the oldest; "
+                "the prompt is bounded by idle_triage_sample_signals. Remove the key"
+            )
+        return data
+
     id: str = Field(
         default="local",
         description="Stable environment id, for example a k8s cluster or host id.",
@@ -3919,7 +4837,12 @@ class EnvironmentConfig(BaseModel):
     )
     signal_task_severities: list[str] = Field(
         default_factory=lambda: ["warning", "critical"],
-        description="Signal severities that should enqueue autonomous Valkyrie tasks.",
+        description=(
+            "Signal severities that enqueue one autonomous Valkyrie task per observation. "
+            "Ignored when resident_inbox.environment_signals_enabled is set: the inbox then "
+            "coalesces every observation for the resident home turn, and a critical one wakes "
+            "that turn immediately."
+        ),
     )
     idle_triage_interval_seconds: float = Field(
         default=900.0,
@@ -3928,15 +4851,12 @@ class EnvironmentConfig(BaseModel):
             "signal_task_severities. 0 disables idle triage."
         ),
     )
-    idle_triage_max_signals: int = Field(
-        default=200,
-        description="Maximum below-threshold signals summarized in one idle triage task.",
-    )
     idle_triage_sample_signals: int = Field(
         default=15,
         description=(
-            "Maximum individual signal lines rendered in an idle triage prompt; "
-            "the rest of the batch is summarized by the severity breakdown and "
+            "Maximum individual signal lines rendered in an idle triage prompt, and "
+            "object lines in the window a restart folds a per-observation backlog into; "
+            "the rest of the batch is summarized by counts and "
             "an explicit overflow line so the prompt stays bounded."
         ),
     )
@@ -3946,7 +4866,10 @@ class EnvironmentConfig(BaseModel):
     )
     idle_triage_max_signal_refs: int = Field(
         default=25,
-        description="Maximum signal refs listed in the idle triage outcome template.",
+        description=(
+            "Maximum signal refs listed in the outcome template of an idle triage or "
+            "restored-backlog window."
+        ),
     )
     signal_subjects: list[str] = Field(
         default_factory=list,
@@ -4064,6 +4987,32 @@ class ResidentDiscoveryConfig(BaseModel):
         return self
 
 
+class ResidentLogsConfig(BaseModel):
+    """Where the logs of discovered and catalog residents are read from.
+
+    Managed residents' logs come from their control plane. Residents deployed
+    straight from infrastructure are read by placement through this dynamic
+    adapter (for example
+    ``ravn.adapters.resident_logs.loki.LokiResidentLogAdapter`` with
+    ``base_url``). With no adapter, asking for such a resident's logs answers
+    that no log source is configured.
+    """
+
+    adapter: str = Field(
+        default="",
+        description="Fully-qualified class path of the resident log adapter; empty for none.",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+    model_config = {"extra": "allow"}
+
+    def adapter_kwargs(self) -> dict[str, Any]:
+        """Return constructor kwargs from explicit kwargs plus extra fields."""
+        extras = self.__pydantic_extra__ or {}
+        return {**self.kwargs, **extras}
+
+
 class _LegacyAliasSettings(BaseSettings):
     """Settings base where legacy environment aliases override config input."""
 
@@ -4144,6 +5093,30 @@ class RuntimeExecutorConfig(_LegacyAliasSettings):
         ),
         description="Constructor kwargs for the Codex auth provider.",
     )
+    # The session's model gateway, read from the same env Skuld's own
+    # transport reads. It is the address only: a session carries it whatever
+    # its personas run, so it routes nothing by itself. A persona uses it only
+    # when its executor binding asks for the gateway (a self-hosted model).
+    model_gateway_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "model_gateway_url",
+            "SKULD__MODEL_GATEWAY__URL",
+        ),
+        description=(
+            "Model gateway base URL for personas whose executor binding sets "
+            "model_gateway. Empty means this runtime has no gateway, and such a "
+            "persona cannot run."
+        ),
+    )
+    model_gateway_token: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "model_gateway_token",
+            "SKULD__MODEL_GATEWAY__TOKEN",
+        ),
+        description="Bearer token presented to the model gateway alongside model_gateway_url.",
+    )
 
 
 class _ValkyrieTelemetryEnvSource(EnvSettingsSource):
@@ -4184,6 +5157,12 @@ class ValkyrieTelemetryConfig(_LegacyAliasSettings):
     )
     nats_streams: str = Field(
         default="",
+        description=(
+            "Comma-separated stream:subject_prefix:user:password_env entries the "
+            "dashboard reads telemetry from. Every listed stream must exist on the "
+            "server: one that does not fails the dashboard's startup, while one "
+            "that is only unreachable is retried every retry_seconds."
+        ),
         validation_alias=AliasChoices(
             "nats_streams",
             "RAVN_VALKYRIE_TELEMETRY_NATS_STREAMS",
@@ -4870,6 +5849,7 @@ class Settings(BaseSettings):
     # NIU-436: semantic memory
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
+    decision: DecisionConfig = Field(default_factory=DecisionConfig)
     skill: SkillConfig = Field(default_factory=SkillConfig)
 
     # NIU-501: self-improvement loop
@@ -4951,6 +5931,7 @@ class Settings(BaseSettings):
 
     # Standalone-resident discovery (helm-deployed residents outside Forge).
     resident_discovery: ResidentDiscoveryConfig = Field(default_factory=ResidentDiscoveryConfig)
+    resident_logs: ResidentLogsConfig = Field(default_factory=ResidentLogsConfig)
 
     # NIU-435: cascade coordinator / flock delegation / ephemeral spawn
     cascade: CascadeConfig = Field(default_factory=CascadeConfig)
@@ -5014,7 +5995,6 @@ class Settings(BaseSettings):
     )
 
     # Legacy — kept so existing CLI wiring (NIU-426) continues to work
-    llm_adapter: LLMAdapterConfig = Field(default_factory=LLMAdapterConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
 
@@ -5068,28 +6048,55 @@ class Settings(BaseSettings):
         return configured
 
     def effective_post_session_reflection_config(self) -> PostSessionReflectionConfig:
-        """Return post-session reflection config with any model fallback resolved."""
+        """Return post-session reflection config with model aliases resolved.
 
-        if not self._uses_effective_agent_model(self.reflection.llm_alias):
-            return self.reflection
-        return self.reflection.model_copy(update={"llm_alias": self.effective_model()})
-
-    def effective_max_tokens(self) -> int:
-        """Return the resolved max_tokens.
-
-        Same backward-compat logic as :meth:`effective_model`.
+        An empty ``matching.judge_llm_alias`` means "the reflection model", so it
+        resolves to the same alias the reflection call uses.
         """
-        _default = 8192
-        if self.llm.max_tokens != _default:
+
+        reflection = self.reflection
+        if self._uses_effective_agent_model(reflection.llm_alias):
+            reflection = reflection.model_copy(update={"llm_alias": self.effective_model()})
+        if reflection.matching.judge_llm_alias:
+            return reflection
+        matching = reflection.matching.model_copy(update={"judge_llm_alias": reflection.llm_alias})
+        return reflection.model_copy(update={"matching": matching})
+
+    def prompt_ceiling_tokens(self) -> int:
+        """The hard prompt ceiling: configured, else derived from the context window."""
+        cm = self.context_management
+        if cm.max_prompt_tokens > 0:
+            return cm.max_prompt_tokens
+        if cm.context_window_tokens <= 0:
+            return 0
+        output_cap = (
+            self.llm.max_tokens if self.llm.max_tokens is not None else self.agent.max_tokens
+        )
+        if output_cap is None:
+            return cm.context_window_tokens
+        return max(0, cm.context_window_tokens - output_cap)
+
+    def compaction_budget_tokens(self) -> int:
+        """The prompt size compaction aims under: the latency target, else the ceiling."""
+        target = self.context_management.compaction_target_tokens
+        return target if target > 0 else self.prompt_ceiling_tokens()
+
+    def effective_max_tokens(self) -> int | None:
+        """Return the resolved answer cap, or ``None`` for no cap.
+
+        ``llm.max_tokens`` wins; the deprecated ``agent.max_tokens`` is read
+        only when ``llm.max_tokens`` is unset.
+        """
+        if self.llm.max_tokens is not None:
             return self.llm.max_tokens
-        if self.agent.max_tokens != _default:
+        if self.agent.max_tokens is not None:
             import logging as _log
 
             _log.getLogger(__name__).warning(
                 "agent.max_tokens is deprecated — use llm.max_tokens instead",
             )
             return self.agent.max_tokens
-        return _default
+        return None
 
 
 # ---------------------------------------------------------------------------

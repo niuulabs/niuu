@@ -4,9 +4,10 @@ from dataclasses import asdict
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from pydantic import BaseModel, Field
 
+from niuu.domain.services.token_scope import FORGE_SESSION_READ_SCOPE, require_scope
 from volundr.adapters.inbound.auth import extract_principal
 from volundr.domain.message_delivery import MessageDeliveryConflictError, MessageDeliveryRepository
 from volundr.domain.services.session import SessionAccessDeniedError, SessionService
@@ -71,7 +72,10 @@ def create_message_delivery_router(
             raise HTTPException(404, str(exc)) from exc
         return asdict(result)
 
-    @router.get("/sessions/{session_id}/message-deliveries/{request_id}")
+    @router.get(
+        "/sessions/{session_id}/message-deliveries/{request_id}",
+        dependencies=[Depends(require_scope(FORGE_SESSION_READ_SCOPE))],
+    )
     async def get(request: Request, session_id: UUID, request_id: RequestId) -> dict:
         await check_access(request, session_id, "read")
         result = await repository.get(session_id, request_id)

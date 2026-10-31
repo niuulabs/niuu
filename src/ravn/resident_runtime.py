@@ -9,12 +9,28 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from niuu.domain.notifications import MAX_BODY_CHARS
+from niuu.domain.resident_notifications import AttentionInputKind
 from niuu.observability import get_observability
-from ravn.domain.models import AgentTask, OutputMode, TokenUsage, TurnResult
+from ravn.cap_telemetry import DEGRADED_TOTAL_KEY
+from ravn.cap_telemetry import HEALTH_TOTAL_KEY as CAP_HEALTH_TOTAL_KEY
+from ravn.cap_telemetry import health_counts as cap_health_counts
+from ravn.domain.a2a_status import a2a_status_text
+from ravn.domain.exceptions import UnboundOperatorReplyError
+from ravn.domain.models import (
+    RESIDENT_HOME_CASE_PREFIX,
+    RESIDENT_HOME_PRIORITY,
+    RESIDENT_HOME_TRIGGER,
+    AgentTask,
+    OutputMode,
+    TokenUsage,
+    TurnResult,
+)
 from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
     ResidentA2ATaskRecord,
@@ -29,8 +45,29 @@ from ravn.domain.resident_continuation import (
     validate_resident_working_state,
 )
 from ravn.domain.resident_state import ResidentStatePort
-from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
+from ravn.domain.valkyrie_contracts import (
+    VALKYRIE_DECISION_ESCALATE,
+    asks_operator,
+    operator_question_error,
+)
+from ravn.odin.review import (
+    ANSWERED_ELSEWHERE_OUTCOME,
+    OPERATOR_QUESTION_ACTION,
+    WITHDRAWN_OUTCOME,
+    ReviewItem,
+    ReviewKind,
+    ReviewRequester,
+)
+from ravn.ports.known_resolutions import KnownResolutionPort
+from ravn.ports.resident_notifications import ResidentNotificationOutboxPort
 from ravn.ports.trigger import TriggerPort
+from ravn.resident_attention import (
+    ResidentSlotAttention,
+    SlotOpinion,
+    opinion_mandate,
+    receipt_lines,
+    working_state_from_page,
+)
 from ravn.resident_continuation import (
     _parse_a2a_task,
     _scheduled_wake_at,
@@ -42,10 +79,17 @@ from ravn.resident_inbox import (
     ResidentInboxSignal,
     ResidentInboxStatus,
     aggregate_summary_lines,
+    observed_payload,
 )
 from ravn.resident_text import compact_line
 
 logger = logging.getLogger(__name__)
+
+_SCHEDULED_WAKE_TRIGGER = "resident:scheduled_wake"
+_OPERATOR_ANSWER_TRIGGER = "resident:operator_answer"
+#: Triggers that resume an existing case from a durable wake or answer, which stays pending
+#: when the resumed turn fails so the case can be resumed again.
+_RESUME_TRIGGERS = frozenset({_SCHEDULED_WAKE_TRIGGER, _OPERATOR_ANSWER_TRIGGER})
 
 
 def _log_health_refresh_failure(task: asyncio.Task[dict[str, int]]) -> None:
@@ -102,7 +146,13 @@ is required. Declare `next_action_timing` as `external_event` or `scheduled_time
 When you sleep with `scheduled_time`, also give `wake_at` as an ISO timestamp. The runtime
 persists it and wakes this same case at that time; without a usable `wake_at` it falls back to
 its configured default delay. Sleeping with `external_event` schedules nothing — the next
-observation is the wake source."""
+observation is the wake source.
+
+The open operator questions above are ones you already asked that are still waiting. Do not
+ask any of them again in other words; wait for the answer. When one no longer needs an answer
+— the work it waited on is done, it was decided another way, or a newer question replaces it —
+withdraw it: include `withdrawn_questions` as a list of `{case_id: <case_id>, reason: <why>}`.
+The runtime closes exactly those questions and nothing else."""
 
 
 @dataclass(frozen=True)
@@ -132,42 +182,56 @@ class ResidentRuntime:
         resident_id: str = "resident",
         resident_personality: str = "",
         charter: str = "",
-        max_turns: int = 3,
-        max_tokens: int = 0,
-        context_max_chars: int = 12000,
-        tool_result_max_chars: int = 2000,
         scheduled_wake_default_seconds: float = 3600.0,
+        failed_resume_retry_seconds: float = 300.0,
         repeated_decision_escalate_after: int = 5,
         health_refresh_interval_seconds: float = 300.0,
         stewardship_interval_seconds: float = 0.0,
         directed_messages_enabled: bool = True,
         environment_id: str = "",
         review_requester: ReviewRequester | None = None,
+        known_resolutions: KnownResolutionPort | None = None,
+        known_resolution_redirect_seconds: float = 60.0,
     ) -> None:
         self._state = state
+        self._known_resolutions = known_resolutions
+        self._known_resolution_redirect_seconds = max(0.0, float(known_resolution_redirect_seconds))
         self._inbox = inbox
         self._resident_id = resident_id.strip() or "resident"
         self._resident_personality = resident_personality.strip()
         self._charter = charter.strip()
-        self._max_turns = max(1, int(max_turns))
-        self._max_tokens = max(0, int(max_tokens))
-        self._context_max_chars = max(1000, int(context_max_chars))
-        self._tool_result_max_chars = max(100, int(tool_result_max_chars))
         self._scheduled_wake_default_seconds = max(1.0, float(scheduled_wake_default_seconds))
+        self._failed_resume_retry_seconds = float(failed_resume_retry_seconds)
+        # Cases whose resumed turn failed, with the earliest time they may be resumed again.
+        # Their wake or answer stays pending (the case is not lost); without this a failure
+        # that recurs on every attempt re-queued the case the moment it was released.
+        self._resume_not_before: dict[str, datetime] = {}
         self._repeated_decision_escalate_after = max(0, int(repeated_decision_escalate_after))
         self._health_refresh_interval_seconds = max(1.0, float(health_refresh_interval_seconds))
         self._stewardship_interval_seconds = max(0.0, float(stewardship_interval_seconds))
         self._directed_messages_enabled = directed_messages_enabled
         self._environment_id = environment_id.strip() or "unknown"
         self._review_requester = review_requester
+        self._notifications: ResidentNotificationOutboxPort | None = None
         self._enqueue: EnqueueResidentTask | None = None
         self._inflight_cases: set[str] = set()
         self._inflight_refs: set[str] = set()
+        # A home wake asked for ahead of the routine interval (a critical
+        # observation arrived). It stays pending while a home turn is queued
+        # or running and fires when that turn's case is released, so the
+        # next turn picks the observation up without waiting a full interval.
+        self._home_wake = asyncio.Event()
+        self._home_wake_pending = False
+        self._slot_attention: ResidentSlotAttention | None = None
+        # Opinions on slots the gate kept pending, keyed by ref with the archive
+        # position they judged, so an unchanged slot is not asked about again.
+        self._slot_opinion_cache: dict[str, SlotOpinion] = {}
         # Latest durable-health counts, refreshed off the hot path and
         # re-stated as gauges on every telemetry heartbeat so they never age
         # out of the metrics backend between refreshes.
         self._health_snapshot: dict[str, int] = {}
         self._health_refreshed_at: float | None = None
+        self._learned_tool_health: Callable[[], Mapping[str, int]] | None = None
 
     @property
     def state(self) -> ResidentStatePort:
@@ -187,13 +251,60 @@ class ResidentRuntime:
     def bind_review_requester(self, requester: ReviewRequester | None) -> None:
         self._review_requester = requester
 
+    def bind_learned_tool_health(self, counts: Callable[[], Mapping[str, int]] | None) -> None:
+        """Add the learned-tool library's counts (installed, unused, retired) to health."""
+        self._learned_tool_health = counts
+
+    def bind_slot_attention(self, attention: ResidentSlotAttention | None) -> None:
+        """Judge every inbox slot a home turn selects (and gate it, when that is enabled)."""
+        self._slot_attention = attention
+
+    def bind_notification_outbox(self, outbox: ResidentNotificationOutboxPort | None) -> None:
+        """Tell the owner (through Forge's notification feed) when a question waits on them."""
+        self._notifications = outbox
+
+    async def raise_pending_attention(self) -> int:
+        """Raise an attention notification for every operator question still waiting.
+
+        Run at startup: a question asked before the outbox existed, or while this
+        resident was down, still reaches its owner. A question already raised is
+        not raised again, so this is safe to repeat.
+        """
+        if self._notifications is None:
+            return 0
+        raised = 0
+        for entry in await self._state.list_operator_needed():
+            case_id = _metadata(entry.content, "case_id") or _case_from_path(entry.path)
+            raised += await self._raise_attention(
+                case_id=case_id,
+                turn_index=_metadata(entry.content, "turn"),
+                question=_metadata(entry.content, "question"),
+            )
+        return raised
+
+    async def _raise_attention(self, *, case_id: str, turn_index: str, question: str) -> bool:
+        if self._notifications is None or not case_id:
+            return False
+        return await self._notifications.attention(
+            request_id=operator_question_request_id(case_id, turn_index),
+            group=case_id,
+            input_kind=AttentionInputKind.QUESTION,
+            prompt=question[:MAX_BODY_CHARS],
+        )
+
     # ------------------------------------------------------------------
     # Health scorecard
     # ------------------------------------------------------------------
 
     def health_snapshot(self) -> dict[str, int]:
-        """Latest durable-health counts (possibly empty before first refresh)."""
-        return dict(self._health_snapshot)
+        """Latest durable-health counts plus configured limits hit since start.
+
+        The durable counts may be empty before the first refresh. The cap-hit
+        counts (``cap_hits_total`` and one ``cap_hits.<knob>`` per limit that was
+        reached) are live, so a resident running into a limit shows it here
+        rather than only in its logs.
+        """
+        return {**self._health_snapshot, **cap_health_counts()}
 
     async def refresh_health_snapshot(self) -> dict[str, int]:
         """Recount durable state and re-state the resident health gauges.
@@ -222,6 +333,9 @@ class ResidentRuntime:
 
         streak = await self._state.read_decision_streak(self._resident_id)
         snapshot["repeated_decision_streak"] = streak.count if streak is not None else 0
+
+        if self._learned_tool_health is not None:
+            snapshot.update(self._learned_tool_health())
 
         self._health_snapshot = snapshot
         self._health_refreshed_at = time.monotonic()
@@ -269,6 +383,18 @@ class ResidentRuntime:
                 "ravn.resident.inbox.pending",
                 "Resident inbox signals not yet triaged.",
             ),
+            "learned_tools_installed": (
+                "ravn.resident.learned_tools.installed",
+                "Learned tools installed and runnable by name.",
+            ),
+            "learned_tools_never_used": (
+                "ravn.resident.learned_tools.never_used",
+                "Installed learned tools with no recorded run.",
+            ),
+            "learned_tools_retired": (
+                "ravn.resident.learned_tools.retired",
+                "Learned tools retired by curation and not restored.",
+            ),
             "repeated_decision_streak": (
                 "ravn.resident.decision_streak",
                 "Consecutive resident turns reaching an unchanged conclusion.",
@@ -279,6 +405,21 @@ class ResidentRuntime:
             if value is None:
                 continue
             telemetry.gauge(name, value, attributes=attributes, description=description)
+        # The hits themselves are the ravn.cap.hits counter (cap_telemetry);
+        # this restates the resident's total next to the other scorecard gauges.
+        live = cap_health_counts()
+        telemetry.gauge(
+            "ravn.resident.cap_hits",
+            live[CAP_HEALTH_TOTAL_KEY],
+            attributes=attributes,
+            description="Configured Ravn limits reached since the resident started.",
+        )
+        telemetry.gauge(
+            "ravn.resident.degraded",
+            live[DEGRADED_TOTAL_KEY],
+            attributes=attributes,
+            description="Paths that continued without their durable work since start.",
+        )
 
     async def prepare_context(self, task: AgentTask) -> str:
         """Present the resident's exact prior working state to a new model turn."""
@@ -307,7 +448,7 @@ class ResidentRuntime:
             state_block = "(No prior resident working state exists yet.)"
             state_ref = "none"
         else:
-            state_block = _bounded(prior.content, self._context_max_chars)
+            state_block = prior.content
             state_ref = prior.path
             telemetry.event(
                 "ravn.resident.working_state_recalled",
@@ -319,12 +460,26 @@ class ResidentRuntime:
             )
         a2a_tasks = await self.find_a2a_tasks(
             active_only=True,
-            limit=10,
+            limit=None,
         )
         a2a_block = (
-            json.dumps(a2a_tasks, indent=2, sort_keys=True)
+            json.dumps(
+                [_a2a_handle_prompt_view(handle) for handle in a2a_tasks],
+                indent=2,
+                sort_keys=True,
+            )
             if a2a_tasks
             else "(No active durable A2A task handles.)"
+        )
+        open_questions = await self._state.list_operator_needed()
+        questions_block = (
+            json.dumps(
+                [_open_question_prompt_view(entry) for entry in open_questions],
+                indent=2,
+                sort_keys=True,
+            )
+            if open_questions
+            else "(No operator questions are waiting for an answer.)"
         )
         return (
             f"{task.initiative_context.rstrip()}\n\n"
@@ -333,6 +488,8 @@ class ResidentRuntime:
             f"{state_block}\n\n"
             "## Durable A2A task handles\n\n"
             f"{a2a_block}\n\n"
+            "## Open operator questions\n\n"
+            f"{questions_block}\n\n"
             f"{_WORKING_STATE_PROTOCOL}\n"
         )
 
@@ -416,9 +573,19 @@ class ResidentRuntime:
         query: str = "",
         case_id: str = "",
         active_only: bool = False,
-        limit: int = 10,
+        limit: int | None = 10,
     ) -> list[dict[str, Any]]:
-        """Find durable A2A handles, with bounded legacy-memory recovery."""
+        """Find durable A2A handles, with bounded legacy-memory recovery.
+
+        Handles come back without the launching case's mandate, which only
+        resuming that case reads.
+
+        ``limit=None`` returns every match. The tool-facing default stays 10
+        because the model chooses how many handles a search should return; the
+        resident prompt block passes ``None`` so no active task is left out of
+        what the resident judges. Legacy-memory recovery runs a ranked memory
+        search and so needs a numeric ``limit``.
+        """
         list_tasks = getattr(self._state, "list_a2a_tasks", None)
         entries = await list_tasks() if list_tasks is not None else []
         records = [record for entry in entries if (record := _parse_a2a_task(entry.content))]
@@ -446,9 +613,15 @@ class ResidentRuntime:
 
         found = [record for record in records if matches(record)]
         found.sort(key=lambda record: record.updated_at, reverse=True)
-        rendered = [_a2a_record_payload(record) for record in found[: max(1, limit)]]
+        selected = found if limit is None else found[: max(1, limit)]
+        rendered = [_a2a_handle(record) for record in selected]
         if rendered or not needle or active_only:
             return rendered
+        if limit is None:
+            raise ValueError(
+                "find_a2a_tasks: limit=None cannot be combined with a query that reaches "
+                "legacy memory recovery; pass an explicit limit"
+            )
 
         # Older turns predate the registry. Existing state search remains the
         # recovery path; only identifier envelopes are projected back out.
@@ -491,7 +664,7 @@ class ResidentRuntime:
         semantic_update = {
             "task_id": task_id,
             "state": state,
-            "status_message": status.get("message") or status.get("update") or "",
+            "status_message": a2a_status_text(status),
             "artifact": payload.get("artifactUpdate") or event.get("artifact") or {},
         }
         digest = hashlib.sha256(
@@ -620,6 +793,26 @@ class ResidentRuntime:
         )
         if outcome_valid is None:
             outcome_valid = getattr(episode, "outcome_valid", None) is not False
+        question_error = operator_question_error(fields) if outcome_valid else ""
+        if question_error:
+            # The drive loop rejects this before it gets here; a caller that
+            # skipped that validation must not get a question written for it
+            # (a placeholder asks the operator nothing they can answer) or a
+            # sleep that reads as "escalated". It is an invalid outcome,
+            # handled like any other.
+            logger.error(
+                "resident %s: turn asks the operator without a question and is treated "
+                "as an invalid outcome: %s",
+                self._resident_id,
+                question_error,
+            )
+            outcome_valid = False
+        if self._slot_attention is not None and task.resident_slot_opinions:
+            self._slot_attention.compare(
+                task.resident_slot_opinions,
+                fields if outcome_valid else None,
+                outcome_valid=bool(outcome_valid),
+            )
         action = selected_action_from_outcome(fields)
         telemetry.event(
             "ravn.resident.outcome_interpreted",
@@ -642,10 +835,7 @@ class ResidentRuntime:
             response=response_text or result.response,
             outcome_fields=fields,
             tool_names=tuple(dict.fromkeys(call.name for call in result.tool_calls)),
-            tool_results=_tool_result_summaries(
-                result,
-                max_chars=self._tool_result_max_chars,
-            ),
+            tool_results=_tool_result_summaries(result),
             usage=result.usage,
             cumulative_usage=cumulative,
             selected_next_action=action,
@@ -715,6 +905,9 @@ class ResidentRuntime:
                     attributes={"ravn.resident.id": self._resident_id},
                 )
 
+        if outcome_valid:
+            await self._withdraw_operator_questions(fields, case_id=case_id, turn_ref=turn_ref)
+
         snapshot = ResidentBudgetSnapshot(
             turns_used=turn_index,
             elapsed_seconds=_elapsed(task.resident_started_at or task.created_at.isoformat()),
@@ -747,7 +940,7 @@ class ResidentRuntime:
             # happened. Count it: a slot no turn can validly judge must stop
             # being retried forever and become visible to a human instead.
             await self._record_invalid_outcome(task, case_id=case_id, turn_index=turn_index)
-            self._inflight_cases.discard(case_id)
+            self._release_case(case_id)
             self._inflight_refs.difference_update(task.resident_inbox_refs)
             return ResidentTurnDisposition(
                 kind=ContinuationDecisionKind.STOP,
@@ -776,26 +969,43 @@ class ResidentRuntime:
             if answer is not None and answer.path == task.resident_answer_ref:
                 await self._state.consume_operator_answer(answer)
 
-        self._inflight_cases.discard(case_id)
+        self._release_case(case_id)
         self._inflight_refs.difference_update(task.resident_inbox_refs)
         control = str(fields.get("continuation") or "").strip().casefold()
-        if control == "sleep":
-            timing = str(fields.get("next_action_timing") or "").strip().casefold()
-            if timing == "scheduled_time":
-                budget_reason = _budget_stop_reason(
-                    turn_index=turn_index,
-                    total_tokens=cumulative.total_tokens,
-                    max_turns=self._max_turns,
-                    max_tokens=self._max_tokens,
-                )
-                if budget_reason:
-                    return ResidentTurnDisposition(
-                        kind=ContinuationDecisionKind.STOP,
-                        case_id=case_id,
-                        turn_ref=turn_ref,
-                        budget_ref=budget_ref,
-                        reason=budget_reason,
+        if _escalates(fields) or asks_operator(fields):
+            # Escalating, asking by continuation, and a help_needed verdict are
+            # all asking: whatever continuation the model also picked, a sleep
+            # or stop here would leave a case that believes it told a human,
+            # with no question anyone could answer. The question is guaranteed
+            # non-empty by the outcome contract. The continuation budget never
+            # swallows a question either: the human's answer is the only way
+            # the case continues.
+            return await self._hand_to_operator(
+                task=task,
+                record=record,
+                fields=fields,
+                case_id=case_id,
+                root_id=root_id,
+                turn_ref=turn_ref,
+                turn_index=turn_index,
+                mandate=mandate,
+                cumulative=cumulative,
+                budget_ref=budget_ref,
+                reason=str(
+                    fields.get("reason")
+                    or (
+                        "resident decided to escalate"
+                        if _escalates(fields)
+                        else "operator input required"
                     )
+                ),
+            )
+        if control == "sleep":
+            # No per-case turn or token cap: rechecks are bounded by the daily
+            # budget (budget.daily_cap_usd, which prices self-hosted tokens too),
+            # by one turn per scheduled wake, and by the repeated-decision guard
+            # below. A turn cap stopped cases mid-work — once on the turn that
+            # asked the operator a question, so the question was never saved.
             stuck_reason = await self._repeated_decision_reason(
                 fields, record=record, case_id=case_id
             )
@@ -853,30 +1063,6 @@ class ResidentRuntime:
                 reason="model selected stop",
             )
 
-        if _asks_operator(fields, control):
-            budget_reason = _budget_stop_reason(
-                turn_index=turn_index,
-                total_tokens=cumulative.total_tokens,
-                max_turns=self._max_turns,
-                max_tokens=self._max_tokens,
-            )
-            if budget_reason:
-                return ResidentTurnDisposition(
-                    kind=ContinuationDecisionKind.STOP,
-                    case_id=case_id,
-                    turn_ref=turn_ref,
-                    budget_ref=budget_ref,
-                    reason=budget_reason,
-                )
-            return await self._ask_operator(
-                task=task,
-                record=record,
-                fields=fields,
-                turn_ref=turn_ref,
-                budget_ref=budget_ref,
-                reason=str(fields.get("reason") or "operator input required"),
-            )
-
         if control == "continue":
             return ResidentTurnDisposition(
                 kind=ContinuationDecisionKind.STOP,
@@ -899,6 +1085,44 @@ class ResidentRuntime:
                 if action is not None
                 else "no selected next action"
             ),
+        )
+
+    async def _hand_to_operator(
+        self,
+        *,
+        task: AgentTask,
+        record: ResidentTurnRecord,
+        fields: dict[str, Any],
+        case_id: str,
+        root_id: str,
+        turn_ref: str,
+        turn_index: int,
+        mandate: str,
+        cumulative: TokenUsage,
+        budget_ref: str,
+        reason: str,
+    ) -> ResidentTurnDisposition:
+        """Put the turn's question to the operator, unless a known resolution answers it."""
+        redirected = await self._redirect_to_known_resolution(
+            task=task,
+            fields=fields,
+            case_id=case_id,
+            root_id=root_id,
+            turn_ref=turn_ref,
+            turn_index=turn_index,
+            mandate=mandate,
+            cumulative=cumulative,
+            budget_ref=budget_ref,
+        )
+        if redirected is not None:
+            return redirected
+        return await self._ask_operator(
+            task=task,
+            record=record,
+            fields=fields,
+            turn_ref=turn_ref,
+            budget_ref=budget_ref,
+            reason=reason,
         )
 
     async def _repeated_decision_reason(
@@ -1109,7 +1333,11 @@ class ResidentRuntime:
         )
         for wake in wakes:
             case_id = _metadata(wake.content, "case_id") or _case_from_path(wake.path)
-            if not case_id or case_id in self._inflight_cases:
+            if (
+                not case_id
+                or case_id in self._inflight_cases
+                or self._resume_deferred(case_id, now)
+            ):
                 continue
             wake_at = _scheduled_wake_at(wake.content)
             if wake_at is None:
@@ -1159,6 +1387,82 @@ class ResidentRuntime:
             queued += 1
         return queued
 
+    async def _redirect_to_known_resolution(
+        self,
+        *,
+        task: AgentTask,
+        fields: dict[str, Any],
+        case_id: str,
+        root_id: str,
+        turn_ref: str,
+        turn_index: int,
+        mandate: str,
+        cumulative: TokenUsage,
+        budget_ref: str,
+    ) -> ResidentTurnDisposition | None:
+        """Answer an escalation the resident already has a resolution for.
+
+        Once per case, the question goes back to the resident as a short
+        scheduled wake carrying what it already learned, commissioned, or
+        filed. Asking again in the same case reaches the operator, and that is
+        recorded against the resolution so an improvement that does not help
+        is found out and demoted.
+        """
+        if self._known_resolutions is None:
+            return None
+        question = _operator_question(fields)
+        resolution = await self._known_resolutions.resolution_for(question)
+        if resolution is None:
+            return None
+        telemetry = get_observability()
+        if not await self._known_resolutions.note_redirect(resolution.ref, case_id):
+            await self._known_resolutions.note_escalated_anyway(resolution.ref, case_id, question)
+            telemetry.count(
+                "ravn.resident.escalations_despite_resolution",
+                attributes={"ravn.resident.id": self._resident_id},
+                description="Escalations that reached the operator despite a known resolution.",
+            )
+            return None
+        wake_at = datetime.now(UTC) + timedelta(seconds=self._known_resolution_redirect_seconds)
+        # One line: it is stored as the wake's recorded reason and shown on waking.
+        instruction = " ".join(
+            f"Known resolution instead of asking the operator: {resolution.instruction}".split()
+        )
+        wake_ref, wake_at_text = await self._schedule_wake(
+            task=task,
+            fields={
+                **fields,
+                "next_action_timing": "scheduled_time",
+                "wake_at": wake_at.isoformat(),
+                "selected_next_action": instruction,
+            },
+            case_id=case_id,
+            root_id=root_id,
+            turn_ref=turn_ref,
+            turn_index=turn_index,
+            mandate=mandate,
+            cumulative=cumulative,
+        )
+        telemetry.count(
+            "ravn.resident.escalations_redirected",
+            attributes={"ravn.resident.id": self._resident_id},
+            description="Operator escalations answered by a resolution the resident already had.",
+        )
+        telemetry.event(
+            "ravn.resident.escalation_redirected",
+            attributes={"ravn.resident.case_id": case_id, "ravn.friction.ref": resolution.ref},
+            content={"question": question, "instruction": resolution.instruction},
+        )
+        return ResidentTurnDisposition(
+            kind=ContinuationDecisionKind.SLEEP,
+            case_id=case_id,
+            turn_ref=turn_ref,
+            budget_ref=budget_ref,
+            reason=f"known resolution ({resolution.ref}) instead of asking the operator",
+            wake_ref=wake_ref,
+            wake_at=wake_at_text,
+        )
+
     async def _ask_operator(
         self,
         *,
@@ -1169,7 +1473,7 @@ class ResidentRuntime:
         budget_ref: str,
         reason: str,
     ) -> ResidentTurnDisposition:
-        question = _operator_question(fields, record)
+        question = _operator_question(fields)
         telemetry = get_observability()
         with telemetry.span("ravn.port.resident_state.write_operator_needed") as span:
             operator_ref = await self._state.write_operator_needed(
@@ -1185,12 +1489,19 @@ class ResidentRuntime:
                 attributes={"ravn.resident.case_id": record.case_id},
                 content={"question": question, "reason": reason},
             )
+        await self._raise_attention(
+            case_id=record.case_id,
+            turn_index=str(record.turn_index),
+            question=question,
+        )
         await self._request_operator_review(
             case_id=record.case_id,
             question=question,
             reason=reason,
             operator_ref=operator_ref,
             root_correlation_id=record.root_correlation_id,
+            turn_ref=turn_ref,
+            new_question=True,
         )
         task.resident_case_id = record.case_id
         return ResidentTurnDisposition(
@@ -1203,16 +1514,144 @@ class ResidentRuntime:
             question=question,
         )
 
+    async def _withdraw_operator_questions(
+        self,
+        fields: Mapping[str, Any],
+        *,
+        case_id: str,
+        turn_ref: str,
+    ) -> None:
+        """Close the open questions this turn judged no longer need an answer.
+
+        The judgment is the resident's; this only applies it. A withdrawal naming
+        no open question is rejected visibly rather than guessed at.
+        """
+        requested = fields.get("withdrawn_questions")
+        if not requested:
+            return
+        telemetry = get_observability()
+        items = requested if isinstance(requested, list) else [requested]
+        for item in items:
+            target, reason = _withdrawal_request(item, fallback_reason=fields.get("rationale"))
+            pending = await self._state.read_operator_needed(target) if target else None
+            if pending is None or target == case_id:
+                telemetry.event(
+                    "ravn.resident.operator_question.withdraw_rejected",
+                    attributes={"ravn.resident.case_id": case_id},
+                    content={
+                        "requested": item,
+                        "reason": "its own question"
+                        if target == case_id
+                        else "no open question for that case",
+                    },
+                )
+                continue
+            operator_ref = await self._state.withdraw_operator_needed(
+                target, reason=reason, turn_ref=turn_ref
+            )
+            if self._notifications is not None:
+                # Its "needs your input" item must not keep asking the owner.
+                await self._notifications.resolve(group=target)
+            await self._settle_operator_review(
+                pending,
+                outcome=WITHDRAWN_OUTCOME,
+                detail=f"{self._resident_id} withdrew this question: {reason}",
+            )
+            telemetry.event(
+                "ravn.resident.operator_question.withdrawn",
+                attributes={
+                    "ravn.resident.case_id": case_id,
+                    "ravn.resident.withdrawn_case_id": target,
+                },
+                content={"reason": reason, "operator_ref": operator_ref},
+            )
+
     async def pending_questions(self) -> list[dict[str, str]]:
         return [_pending_view(item) for item in await self._state.list_operator_needed()]
 
     async def publish_pending_questions(self) -> int:
-        """File persisted operator questions into the shared review inbox."""
+        """File persisted operator questions into the shared review inbox.
+
+        First settles every review item this resident filed whose question is no
+        longer open, so a question that closed while this process was down (or
+        before closing settled its item) leaves the operator's queue on the next
+        start instead of waiting forever.
+        """
+        await self.settle_closed_operator_reviews()
         filed = 0
-        for pending in await self.pending_questions():
-            item = await self._request_operator_review(**pending)
+        for entry in await self._state.list_operator_needed():
+            pending = _pending_view(entry)
+            item = await self._request_operator_review(
+                **pending, turn_ref=_metadata(entry.content, "turn_ref")
+            )
             filed += item is not None
         return filed
+
+    async def settle_closed_operator_reviews(self) -> int:
+        """Settle the pending review items whose operator question is no longer open.
+
+        The review item must follow the question: whatever closed it (a withdrawal,
+        an answer that arrived outside the queue, a dropped case) this resident's
+        pending outbox items for it are retired as ``withdrawn``, with the reason
+        the operator reads in the queue. Items of other residents and items that
+        are not operator questions are left alone. Returns how many were settled.
+        """
+        if self._review_requester is None:
+            return 0
+        candidates = [
+            item
+            for item in self._review_requester.pending_items()
+            if item.requested_action == OPERATOR_QUESTION_ACTION
+            and item.valkyrie_id == self._resident_id
+        ]
+        if not candidates:
+            return 0
+        open_cases = {
+            _metadata(entry.content, "case_id") or _case_from_path(entry.path)
+            for entry in await self._state.list_operator_needed()
+        }
+        settled = 0
+        for item in candidates:
+            case_id = str(item.evidence.get("operator_question", {}).get("case_id") or "")
+            if not case_id or case_id in open_cases:
+                continue
+            outcome, detail = await self._closure_settlement(case_id)
+            if await self._review_requester.withdraw(item, outcome=outcome, detail=detail):
+                settled += 1
+        return settled
+
+    async def _closure_settlement(self, case_id: str) -> tuple[str, str]:
+        """How an operator question closed, as the outcome and sentence its review item gets."""
+        closure = await self._state.read_closed_operator_question(case_id)
+        status = _metadata(closure.content, "status") if closure is not None else ""
+        if status == "answered":
+            return ANSWERED_ELSEWHERE_OUTCOME, _answered_elsewhere_detail(self._resident_id)
+        if status == "withdrawn":
+            reason = _metadata(closure.content, "withdraw_reason") if closure else ""
+            return (
+                WITHDRAWN_OUTCOME,
+                f"{self._resident_id} withdrew this question: {reason or 'no reason recorded'}",
+            )
+        return (
+            WITHDRAWN_OUTCOME,
+            f"{self._resident_id} no longer has an open question for case {case_id}: "
+            "its record was removed",
+        )
+
+    async def _settle_operator_review(
+        self,
+        question: ResidentMemoryEntry,
+        *,
+        outcome: str,
+        detail: str,
+    ) -> None:
+        """Retire the review item of a question that has just closed on this side."""
+        if self._review_requester is None:
+            return
+        item = self._operator_review_item(
+            **_pending_view(question), turn_ref=_metadata(question.content, "turn_ref")
+        )
+        await self._review_requester.withdraw(item, outcome=outcome, detail=detail)
 
     async def _request_operator_review(
         self,
@@ -1222,14 +1661,64 @@ class ResidentRuntime:
         reason: str,
         operator_ref: str,
         root_correlation_id: str,
+        turn_ref: str,
+        new_question: bool = False,
     ) -> ReviewItem | None:
         if self._review_requester is None:
             return None
-        digest = hashlib.sha256(f"{self._resident_id}\0{case_id}".encode()).hexdigest()[:24]
-        item = ReviewItem(
+        item = self._operator_review_item(
+            case_id=case_id,
+            question=question,
+            reason=reason,
+            operator_ref=operator_ref,
+            root_correlation_id=root_correlation_id,
+            turn_ref=turn_ref,
+        )
+        settled = self._review_requester.settled_item(item.item_id)
+        if settled is not None and not new_question:
+            # Re-announcing a question the queue already settled (answered, the
+            # case has not consumed it yet): filing it again would flip the
+            # outbox copy back to pending for a request the queue ignores.
+            return None
+        if settled is not None:
+            # The queue keeps a settled id settled, so this request would be
+            # dropped there and the question would never reach the operator.
+            raise RuntimeError(
+                f"operator question for case {case_id!r} maps to review item "
+                f"{item.item_id!r}, which is already {settled.status}; the question "
+                "was saved but cannot be filed. Its turn_ref must be unique per question."
+            )
+        # A question nobody can see in the review queue is one the operator will
+        # never answer: fail the turn loudly. The question itself is already
+        # persisted and its attention raised before this, so nothing is lost.
+        return await self._review_requester.request(item)
+
+    def _operator_review_item(
+        self,
+        *,
+        case_id: str,
+        question: str,
+        reason: str,
+        operator_ref: str,
+        root_correlation_id: str,
+        turn_ref: str,
+    ) -> ReviewItem:
+        # One item per question: the turn record that asked is its identity, so a
+        # case that asks again files a new item the queue shows, instead of one it
+        # already holds as settled. The turn record path, not the turn number:
+        # long-lived cases such as a resident's operator room restart their turn
+        # numbering, and turn 1 of today collided with yesterday's answered turn 1.
+        if not turn_ref:
+            raise ValueError(
+                f"operator question for case {case_id!r} has no turn_ref; "
+                "its review item cannot be identified"
+            )
+        identity = f"{self._resident_id}\0{case_id}\0{turn_ref}"
+        digest = hashlib.sha256(identity.encode()).hexdigest()[:24]
+        return ReviewItem(
             item_id=f"review:{ReviewKind.COURT_ESCALATION.value}:operator:{digest}",
             kind=ReviewKind.COURT_ESCALATION.value,
-            requested_action="answer_operator_question",
+            requested_action=OPERATOR_QUESTION_ACTION,
             environment_id=self._environment_id,
             valkyrie_id=self._resident_id,
             title=f"{self._resident_id} asks: {question}",
@@ -1250,15 +1739,6 @@ class ResidentRuntime:
             requested_by=self._resident_id,
             correlation_id=root_correlation_id or case_id,
         )
-        try:
-            return await self._review_requester.request(item)
-        except Exception as exc:  # noqa: BLE001 — room/Telegram delivery must still proceed
-            get_observability().event(
-                "ravn.resident.operator_question_review_failed",
-                attributes={"ravn.resident.case_id": case_id},
-                content=str(exc),
-            )
-            return None
 
     async def submit_operator_answer(
         self,
@@ -1266,7 +1746,15 @@ class ResidentRuntime:
         case_id: str,
         answer: str,
         trace_context: dict[str, str] | None = None,
+        via_review: bool = False,
     ) -> dict[str, Any]:
+        """Record an operator's answer to a case's open question and resume the case.
+
+        ``via_review`` is set by the one caller that applies a decision made in the
+        review queue: that item is settled by its own resolution. An answer that
+        arrives any other way (a room or direct reply, the gateway) retires the
+        question's review item here, so it does not stay pending in the queue.
+        """
         case_id = case_id.strip()
         answer = answer.strip()
         if not case_id or not answer:
@@ -1279,9 +1767,20 @@ class ResidentRuntime:
         ):
             pending = await self._state.read_operator_needed(case_id)
             if pending is None:
-                raise LookupError(f"no pending operator question for case {case_id}")
+                raise LookupError(await self._closed_question_message(case_id))
             prior_turn_handoff = await self._read_parent_handoff(pending)
             answer_ref = await self._state.write_operator_answer(answer, case_id=case_id)
+            if self._notifications is not None:
+                # The owner answered: their "needs your input" item must not stay unread.
+                await self._notifications.resolve(group=case_id)
+            if not via_review:
+                # Settled before the resume is queued: a failure here leaves the
+                # durable answer for retry_unconsumed_answers to resume, not lost.
+                await self._settle_operator_review(
+                    pending,
+                    outcome=ANSWERED_ELSEWHERE_OUTCOME,
+                    detail=_answered_elsewhere_detail(self._resident_id),
+                )
             task = _operator_resume_task(
                 pending,
                 answer=answer,
@@ -1305,29 +1804,55 @@ class ResidentRuntime:
                 "queued": accepted,
             }
 
+    async def _closed_question_message(self, case_id: str) -> str:
+        """Why a case has no pending operator question: how it closed, when known."""
+        closure = await self._state.read_closed_operator_question(case_id)
+        base = f"no pending operator question for case {case_id}"
+        if closure is None:
+            return f"{base}: the case has no question record (it never asked, or was removed)"
+        status = _metadata(closure.content, "status")
+        if status == "answered":
+            when = _metadata(closure.content, "answered_at")
+            return f"{base}: it was already answered{f' at {when}' if when else ''}"
+        if status == "withdrawn":
+            reason = _metadata(closure.content, "withdraw_reason")
+            return f"{base}: it was withdrawn by the resident ({reason or 'no reason recorded'})"
+        return f"{base}: its record has status {status or 'unknown'!r}"
+
     async def consume_directed_message(
         self,
         content: str,
         metadata: dict[str, Any] | None,
     ) -> bool:
+        """Bind a human reply to the resident case whose question it answers.
+
+        A reply names its case through the help context its question carried:
+        the exact message the human replied to first, then the room's latest
+        question for this resident. A named case without an open question
+        raises — binding the reply elsewhere, or reading it as fresh chat, would
+        hide that the question and its answer came apart. A message that names
+        no case binds only when exactly one question is open.
+        """
         metadata = metadata or {}
-        context = metadata.get("help_context")
-        if not isinstance(context, dict):
-            context = {}
-        case_id = str(
-            metadata.get("resident_case_id")
-            or metadata.get("case_id")
-            or context.get("resident_case_id")
-            or context.get("case_id")
-            or ""
-        ).strip()
-        if not case_id:
+        case_id = _reply_case_id(metadata)
+        if case_id:
+            if await self._state.read_operator_needed(case_id) is None:
+                get_observability().event(
+                    "ravn.resident.operator_reply.unbound",
+                    attributes={
+                        "ravn.resident.id": self._resident_id,
+                        "ravn.resident.case_id": case_id,
+                    },
+                    content={"reply": content},
+                )
+                raise UnboundOperatorReplyError(case_id)
+        else:
             pending = await self._state.list_operator_needed()
             if len(pending) != 1:
                 return False
             case_id = _metadata(pending[0].content, "case_id")
-        if not case_id or await self._state.read_operator_needed(case_id) is None:
-            return False
+            if not case_id or await self._state.read_operator_needed(case_id) is None:
+                return False
         trace_context = metadata.get("trace_context")
         if not isinstance(trace_context, dict):
             trace_context = {}
@@ -1389,7 +1914,8 @@ class ResidentRuntime:
     ) -> AgentTask | None:
         if self._inbox is None:
             return None
-        if any(case_id.startswith("resident-home-") for case_id in self._inflight_cases):
+        if self._home_turn_in_flight():
+            # A requested wake stays pending; releasing this case fires it.
             return None
         rows = await self._inbox.list_signals(
             status=ResidentInboxStatus.NEW.value,
@@ -1397,21 +1923,37 @@ class ResidentRuntime:
         )
         rows = [(ref, signal) for ref, signal in rows if ref not in self._inflight_inbox_refs()]
         if not rows:
+            self._home_wake_pending = False
             return None
         origin = _a2a_signal_origin(rows[0][1])
         if origin.get("case_id"):
             rows = rows[:1]
+        opinions: dict[str, SlotOpinion] = {}
+        receipts: list[tuple[str, ResidentInboxSignal]] = []
+        if self._slot_attention is not None:
+            opinions = await self._slot_opinions(self._slot_attention, rows)
+            selection = self._slot_attention.select(rows, opinions)
+            if not selection.turn:
+                # Every slot is routine by the calibrated gate: no turn. They stay
+                # pending and ride along as receipts on the next turn that runs.
+                self._home_wake_pending = False
+                return None
+            receipts = selection.receipts
+            rows = [*selection.turn, *receipts]
+        turn_rows = rows[: len(rows) - len(receipts)]
         refs = [ref for ref, _signal in rows]
         digest = hashlib.sha256("\n".join(sorted(refs)).encode()).hexdigest()[:16]
-        case_id = str(origin.get("case_id") or f"resident-home-{digest}")
+        case_id = str(origin.get("case_id") or f"{RESIDENT_HOME_CASE_PREFIX}{digest}")
         if case_id in self._inflight_cases:
             return None
         now = datetime.now(UTC)
         context_lines = [
             "Resident home turn over durable, unconsumed observations.",
-            "Judge what these observations mean. Retrieve full evidence only when it can "
-            "improve the judgment. Investigate, research, collaborate, ask the operator, "
-            "act, schedule a recheck, or stop as appropriate.",
+            (
+                "Judge what these observations mean. Retrieve full evidence only when it can "
+                "improve the judgment. Investigate, research, collaborate, ask the operator, "
+                "act, schedule a recheck, or stop as appropriate."
+            ),
             "",
         ]
         if self._resident_personality or self._charter:
@@ -1422,33 +1964,26 @@ class ResidentRuntime:
                 context_lines.append(f"- Charter: {self._charter}")
             context_lines.append("")
         context_lines.append("Observations:")
-        payload_budget = max(
-            200,
-            min(4000, self._context_max_chars // (2 * max(1, len(rows)))),
-        )
-        for ref, signal in rows:
+        for ref, signal in turn_rows:
             evidence = signal.raw_ref or ", ".join(signal.evidence_refs) or "none"
             context_lines.append(
                 f"- inbox_ref={ref}; source={signal.source}; kind={signal.kind}; "
                 f"observed_at={signal.observed_at}; evidence_ref={evidence}; "
-                f"summary={compact_line(signal.summary, limit=280)}"
+                f"summary={_summary_line(signal)}"
             )
             context_lines.extend(_coalesced_evidence_lines(signal))
-            raw_payload = signal.payload.get("payload", signal.payload)
+            raw_payload = observed_payload(signal.payload.get("payload", signal.payload))
             context_lines.extend(
                 (
-                    "  Bounded raw payload:",
+                    "  Raw payload:",
                     "  ```json",
                     _indent(
-                        _bounded(
-                            json.dumps(
-                                raw_payload,
-                                indent=2,
-                                sort_keys=True,
-                                ensure_ascii=False,
-                                default=str,
-                            ),
-                            payload_budget,
+                        json.dumps(
+                            raw_payload,
+                            indent=2,
+                            sort_keys=True,
+                            ensure_ascii=False,
+                            default=str,
                         ),
                         "  ",
                     ),
@@ -1458,17 +1993,20 @@ class ResidentRuntime:
             context_lines.extend(
                 _extreme_payload_lines(
                     signal,
-                    payload_budget,
                     getattr(self._inbox, "archive", None),
                 )
             )
+        if self._slot_attention is not None:
+            context_lines.extend(receipt_lines(receipts, opinions, self._slot_attention.policy))
         task = AgentTask(
             task_id=_task_id("resident_home"),
             title=f"Resident home turn ({len(rows)} observations)",
             initiative_context="\n".join(context_lines),
-            triggered_by="resident:home",
+            recall_query="\n".join(_summary_line(signal) for _ref, signal in turn_rows),
+            triggered_by=RESIDENT_HOME_TRIGGER,
             output_mode=output_mode,
             persona=persona,
+            priority=RESIDENT_HOME_PRIORITY,
             root_correlation_id=str(origin.get("root_correlation_id") or case_id),
             resident_case_id=case_id,
             resident_turn_index=int(origin.get("turn_index") or 0) + 1,
@@ -1483,11 +2021,48 @@ class ResidentRuntime:
             ),
         )
         task.resident_mandate = str(origin.get("mandate") or task.initiative_context)
+        # Only slots the turn judged in full are compared with its outcome; a
+        # receipt line is not a judgment the label can be attributed to.
+        task.resident_slot_opinions = {
+            ref: opinions[ref].to_record() for ref, _signal in turn_rows if ref in opinions
+        }
+        for ref in refs:
+            self._slot_opinion_cache.pop(ref, None)
         task.resident_input_tokens = int(origin.get("case_input_tokens") or 0)
         task.resident_output_tokens = int(origin.get("case_output_tokens") or 0)
         self._inflight_cases.add(case_id)
         self._inflight_refs.update(refs)
+        self._home_wake_pending = False
         return task
+
+    async def _slot_opinions(
+        self,
+        attention: ResidentSlotAttention,
+        rows: list[tuple[str, ResidentInboxSignal]],
+    ) -> dict[str, SlotOpinion]:
+        """Judge the selected slots, reusing an opinion while its slot is unchanged."""
+        cached = {
+            ref: self._slot_opinion_cache[ref]
+            for ref, signal in rows
+            if ref in self._slot_opinion_cache
+            and self._slot_opinion_cache[ref].last_archive_ref == signal.last_archive_ref
+        }
+        fresh_rows = [(ref, signal) for ref, signal in rows if ref not in cached]
+        fresh: dict[str, SlotOpinion] = {}
+        if fresh_rows:
+            fresh = await attention.judge(
+                fresh_rows,
+                mandate=opinion_mandate(self._charter, self._resident_personality),
+                working_state=await self._working_state_mapping(),
+            )
+        self._slot_opinion_cache.update(fresh)
+        return {**cached, **fresh}
+
+    async def _working_state_mapping(self) -> dict[str, Any] | None:
+        entry = await self._state.read_working_state(self._resident_id)
+        if entry is None:
+            return None
+        return working_state_from_page(entry.content)
 
     async def next_stewardship_task(
         self,
@@ -1516,8 +2091,10 @@ class ResidentRuntime:
         telemetry = get_observability()
         case_id = f"resident-stewardship-{now.strftime('%Y%m%dT%H%M%SZ')}"
         context_lines = [
-            "Resident stewardship turn. No new observation prompted this; the "
-            "environment has simply gone unexamined for a while.",
+            (
+                "Resident stewardship turn. No new observation prompted this; the "
+                "environment has simply gone unexamined for a while."
+            ),
             "",
             f"Time since the resident last recorded working state: {_duration(quiet_seconds)}.",
             f"Last examined: {last_examined or 'never — this is the first stewardship turn'}.",
@@ -1543,6 +2120,12 @@ class ResidentRuntime:
                 "believe. The restraint below is about consequences, not about "
                 "curiosity — a turn that concludes without having looked has "
                 "grounded nothing.",
+                "",
+                "Your working state records what you were last focused on; it is "
+                "not the edge of your charter. Survey the charter's whole scope — "
+                "including any work queue it names — before you conclude. Something "
+                "you are watching that is progressing on its own and is not waiting "
+                "on you is not a reason to leave everything else untouched.",
                 "",
                 "Deciding that nothing warrants action is a correct and expected "
                 "outcome. Do not manufacture work to justify this turn. Prefer "
@@ -1595,10 +2178,18 @@ class ResidentRuntime:
         return max(0.0, (now - parsed).total_seconds()), updated_at
 
     async def retry_unconsumed_answers(self) -> int:
+        # An answer written outside this process (the CLI) is found here; its
+        # question is closed, so its review item is retired like any other.
+        await self.settle_closed_operator_reviews()
         queued = 0
+        now = datetime.now(UTC)
         for answer in await self._state.list_operator_answers():
             case_id = _metadata(answer.content, "case_id") or _case_from_path(answer.path)
-            if not case_id or case_id in self._inflight_cases:
+            if (
+                not case_id
+                or case_id in self._inflight_cases
+                or self._resume_deferred(case_id, now)
+            ):
                 continue
             pending = await self._state.read_operator_needed(case_id)
             if pending is not None:
@@ -1622,8 +2213,58 @@ class ResidentRuntime:
 
     def release_failed_task(self, task: AgentTask) -> None:
         if task.resident_case_id:
-            self._inflight_cases.discard(task.resident_case_id)
+            self._defer_failed_resume(task)
+            self._release_case(task.resident_case_id)
         self._inflight_refs.difference_update(task.resident_inbox_refs)
+
+    def _defer_failed_resume(self, task: AgentTask) -> None:
+        if task.triggered_by not in _RESUME_TRIGGERS:
+            return
+        retry_at = datetime.now(UTC) + timedelta(seconds=self._failed_resume_retry_seconds)
+        self._resume_not_before[task.resident_case_id] = retry_at
+        get_observability().count(
+            "ravn.resident.failed_resumes_deferred",
+            attributes={
+                "ravn.resident.id": self._resident_id,
+                "ravn.task.trigger": task.triggered_by,
+            },
+            description="Failed resumed resident turns held back before resuming the case again.",
+        )
+        logger.warning(
+            "resident: resumed case %s failed; resuming it again no sooner than %s",
+            task.resident_case_id,
+            retry_at.isoformat(),
+        )
+
+    def _resume_deferred(self, case_id: str, now: datetime) -> bool:
+        not_before = self._resume_not_before.get(case_id)
+        if not_before is None:
+            return False
+        if now < not_before:
+            return True
+        del self._resume_not_before[case_id]
+        return False
+
+    def request_home_wake(self) -> None:
+        """Judge the inbox now rather than at the next routine home interval."""
+        self._home_wake_pending = True
+        self._home_wake.set()
+
+    async def wait_for_home_wake(self, timeout: float) -> None:
+        """Return when a home wake is requested or ``timeout`` seconds pass."""
+        with suppress(TimeoutError):
+            await asyncio.wait_for(self._home_wake.wait(), timeout)
+        self._home_wake.clear()
+
+    def _home_turn_in_flight(self) -> bool:
+        return any(
+            case_id.startswith(RESIDENT_HOME_CASE_PREFIX) for case_id in self._inflight_cases
+        )
+
+    def _release_case(self, case_id: str) -> None:
+        self._inflight_cases.discard(case_id)
+        if self._home_wake_pending and not self._home_turn_in_flight():
+            self._home_wake.set()
 
     async def _enqueue_task(self, task: AgentTask) -> bool:
         if self._enqueue is None:
@@ -1638,7 +2279,7 @@ class ResidentRuntime:
         turn = await self._state.read(turn_ref)
         if turn is None:
             raise RuntimeError(f"resident parent turn is not readable: {turn_ref}")
-        return _bounded(_resident_turn_handoff(turn.content), self._context_max_chars)
+        return _resident_turn_handoff(turn.content)
 
     def _inflight_inbox_refs(self) -> set[str]:
         return set(self._inflight_refs)
@@ -1672,7 +2313,8 @@ class ResidentHomeTrigger(TriggerPort):
         await asyncio.sleep(self._interval)
         while True:
             await self.run_once(enqueue)
-            await asyncio.sleep(self._interval)
+            # A critical observation cuts the routine interval short.
+            await self._runtime.wait_for_home_wake(self._interval)
 
     async def run_once(self, enqueue: EnqueueResidentTask) -> bool:
         self._runtime.bind_enqueue(enqueue)
@@ -1725,7 +2367,7 @@ def _operator_resume_task(
         task_id=_task_id("resident_answer"),
         title=f"Resume resident case {case_id}",
         initiative_context=context,
-        triggered_by="resident:operator_answer",
+        triggered_by=_OPERATOR_ANSWER_TRIGGER,
         output_mode=OutputMode.SURFACE,
         persona=_metadata(pending.content, "persona") or None,
         priority=1,
@@ -1767,7 +2409,7 @@ def _scheduled_wake_task(
         task_id=_task_id("resident_wake"),
         title=f"Resume resident case {case_id}",
         initiative_context=context,
-        triggered_by="resident:scheduled_wake",
+        triggered_by=_SCHEDULED_WAKE_TRIGGER,
         output_mode=OutputMode.SURFACE,
         persona=_metadata(wake.content, "persona") or None,
         priority=1,
@@ -1784,50 +2426,49 @@ def _scheduled_wake_task(
     )
 
 
-def _asks_operator(fields: dict[str, Any], control: str) -> bool:
-    verdict = str(fields.get("verdict") or "").strip().casefold()
-    return control == "ask_operator" or verdict == "help_needed"
+def _escalates(fields: Mapping[str, Any]) -> bool:
+    return str(fields.get("decision") or "").strip().casefold() == VALKYRIE_DECISION_ESCALATE
 
 
-def _operator_question(fields: dict[str, Any], record: ResidentTurnRecord) -> str:
-    direct = str(fields.get("question") or "").strip()
-    if direct:
-        return direct
-    questions = fields.get("open_questions")
-    if isinstance(questions, list):
-        for item in questions:
-            text = str(item).strip()
-            if text:
-                return text
-    if record.selected_next_action is not None:
-        return f"May I proceed with: {record.selected_next_action.action}?"
-    return str(fields.get("recommendation") or "What information should I use to continue?")
+def _operator_question(fields: Mapping[str, Any]) -> str:
+    """Return the question the resident wrote; never one written on its behalf.
+
+    A turn that asks the operator is rejected by the outcome contract without a
+    `question`, and the runtime treats one that slipped past as invalid, so an
+    empty question here is a bug in the caller. A placeholder ("What
+    information should I use to continue?") would reach the operator as a
+    question they cannot answer, from a case that has no idea what it needs.
+    """
+    question = str(fields.get("question") or "").strip()
+    if question:
+        return question
+    raise ValueError(
+        "an operator question was requested but the turn has no 'question': the resident "
+        "must write one, or the caller must pass its own explicit question"
+    )
 
 
-def _budget_stop_reason(
-    *,
-    turn_index: int,
-    total_tokens: int,
-    max_turns: int,
-    max_tokens: int,
-) -> str:
-    if turn_index >= max_turns:
-        return f"resident continuation turn budget reached: {max_turns}"
-    if max_tokens > 0 and total_tokens >= max_tokens:
-        return f"resident continuation token budget reached: {max_tokens}"
+def _reply_case_id(metadata: Mapping[str, Any]) -> str:
+    """Return the resident case a directed reply names, most specific first."""
+    reply_context = metadata.get("reply_context")
+    replied_help = reply_context.get("help_context") if isinstance(reply_context, Mapping) else None
+    sources = (metadata, replied_help, metadata.get("help_context"))
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        case_id = str(source.get("resident_case_id") or source.get("case_id") or "").strip()
+        if case_id:
+            return case_id
     return ""
 
 
-def _tool_result_summaries(result: TurnResult, *, max_chars: int) -> tuple[str, ...]:
+def _tool_result_summaries(result: TurnResult) -> tuple[str, ...]:
     names = {call.id: call.name for call in result.tool_calls}
-    return tuple(
-        (
-            f"### {names.get(item.tool_call_id, item.tool_call_id or 'tool')} "
-            f"({'error' if item.is_error else 'ok'})\n\n"
-            f"{_bounded(item.content, max_chars)}"
-        )
-        for item in result.tool_results
-    )
+    summaries: list[str] = []
+    for item in result.tool_results:
+        name = names.get(item.tool_call_id, item.tool_call_id or "tool")
+        summaries.append(f"### {name} ({'error' if item.is_error else 'ok'})\n\n{item.content}")
+    return tuple(summaries)
 
 
 def _a2a_record_payload(record: ResidentA2ATaskRecord) -> dict[str, Any]:
@@ -1853,6 +2494,44 @@ def _a2a_record_payload(record: ResidentA2ATaskRecord) -> dict[str, Any]:
         "update_fingerprint": record.update_fingerprint,
         "updated_at": record.updated_at.isoformat(),
     }
+
+
+def _a2a_handle(record: ResidentA2ATaskRecord) -> dict[str, Any]:
+    """A handle for readers: the case mandate stays in the durable record.
+
+    A home case's mandate is its whole home prompt. Returned through
+    ``a2a_task find`` it put 2 MB into one tool result on Sigrun, for a lookup
+    that needed a task id; resuming the case reads it from the record.
+    """
+    handle = _a2a_record_payload(record)
+    del handle["mandate"]
+    return handle
+
+
+# What a turn needs to judge an in-flight A2A task. Each durable handle also
+# stores the full brief; rendered into every turn's context, a few active
+# handles alone pushed the first message past the prompt budget, where
+# compaction cannot reach. The brief stays available through a2a_task find/get.
+_A2A_HANDLE_PROMPT_FIELDS = (
+    "task_id",
+    "agent_id",
+    "skill_id",
+    "state",
+    "operation",
+    "status_message",
+    "question",
+    "case_id",
+    "push_registered",
+    "updated_at",
+)
+_A2A_HANDLE_BRIEF_CHARS = 280
+_OBSERVATION_SUMMARY_CHARS = 280
+
+
+def _a2a_handle_prompt_view(handle: dict[str, Any]) -> dict[str, Any]:
+    view = {key: handle[key] for key in _A2A_HANDLE_PROMPT_FIELDS if key in handle}
+    view["brief"] = compact_line(str(handle.get("prompt") or ""), limit=_A2A_HANDLE_BRIEF_CHARS)
+    return view
 
 
 def _legacy_a2a_handles(entry: ResidentMemoryEntry, *, query: str) -> list[dict[str, Any]]:
@@ -1893,6 +2572,10 @@ def _string_refs(value: Any) -> tuple[str, ...]:
     return tuple(str(item).strip() for item in value if str(item).strip())
 
 
+def _summary_line(signal: ResidentInboxSignal) -> str:
+    return compact_line(signal.summary, limit=_OBSERVATION_SUMMARY_CHARS)
+
+
 def _coalesced_evidence_lines(signal: ResidentInboxSignal) -> list[str]:
     """Say what a coalesced slot actually stands for.
 
@@ -1917,17 +2600,15 @@ def _coalesced_evidence_lines(signal: ResidentInboxSignal) -> list[str]:
 
 def _extreme_payload_lines(
     signal: ResidentInboxSignal,
-    budget: int,
     archive: Any | None,
 ) -> list[str]:
     """Attach the observation recorded at each numeric extreme.
 
     An excursion inside a large slot is exactly the observation a summary would
-    lose, so the whole payload travels rather than just its bound.  The slot
-    stores only an archive reference, so how much detail reaches the prompt is
-    decided here against the context budget rather than frozen at ingestion.
-    Every numeric path keeps its bounds either way; if the archive cannot be
-    read the reference itself is shown, never silently dropped.
+    lose, so the whole payload travels. The slot stores only an archive
+    reference; the payload is read from the archive here and reaches the prompt
+    whole, bounded only by the prompt budget. If the archive cannot be read the
+    reference itself is shown, never silently dropped.
     """
     extremes = signal.aggregate.extreme_refs
     if signal.observation_count <= 1 or not extremes:
@@ -1936,9 +2617,7 @@ def _extreme_payload_lines(
     keys_by_ref: dict[str, list[str]] = {}
     for key in sorted(extremes):
         keys_by_ref.setdefault(extremes[key], []).append(key)
-    # Several sensor extrema can refer to the same event. Include it once,
-    # and share this slot's payload budget across the distinct events.
-    payload_budget = max(1, budget // len(keys_by_ref))
+    # Several sensor extrema can refer to the same event. Include it once.
     for ref, keys in keys_by_ref.items():
         key = ", ".join(keys)
         record = archive.read(ref) if archive is not None else None
@@ -1946,20 +2625,18 @@ def _extreme_payload_lines(
         if payload is None:
             lines.append(f"  {key}: archive_ref={ref} (payload unavailable)")
             continue
+        payload = observed_payload(payload)
         lines.extend(
             (
                 f"  {key}: archive_ref={ref}",
                 "  ```json",
                 _indent(
-                    _bounded(
-                        json.dumps(
-                            payload,
-                            indent=2,
-                            sort_keys=True,
-                            ensure_ascii=False,
-                            default=str,
-                        ),
-                        payload_budget,
+                    json.dumps(
+                        payload,
+                        indent=2,
+                        sort_keys=True,
+                        ensure_ascii=False,
+                        default=str,
                     ),
                     "  ",
                 ),
@@ -1967,13 +2644,6 @@ def _extreme_payload_lines(
             )
         )
     return lines
-
-
-def _bounded(value: Any, max_chars: int) -> str:
-    text = str(value or "")
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars].rstrip() + "\n… (truncated)"
 
 
 def _indent(value: str, prefix: str) -> str:
@@ -2001,6 +2671,31 @@ def _evidence_refs(fields: dict[str, Any], task: AgentTask) -> tuple[str, ...]:
             if value:
                 refs.append(value)
     return tuple(dict.fromkeys(refs))
+
+
+def _open_question_prompt_view(entry: ResidentMemoryEntry) -> dict[str, str]:
+    return {
+        "case_id": _metadata(entry.content, "case_id") or _case_from_path(entry.path),
+        "asked_at": _metadata(entry.content, "created_at"),
+        "question": _metadata(entry.content, "question"),
+    }
+
+
+def _answered_elsewhere_detail(resident_id: str) -> str:
+    return (
+        f"answered outside the review queue: the answer reached {resident_id} directly, "
+        "so no reply is needed here"
+    )
+
+
+def _withdrawal_request(item: Any, *, fallback_reason: Any) -> tuple[str, str]:
+    if isinstance(item, Mapping):
+        target = str(item.get("case_id") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+    else:
+        target = str(item or "").strip()
+        reason = ""
+    return target, reason or str(fallback_reason or "").strip() or "withdrawn by the resident"
 
 
 def _pending_view(entry: ResidentMemoryEntry) -> dict[str, str]:
@@ -2057,6 +2752,15 @@ def _resident_turn_handoff(content: str) -> str:
 def _body(content: str) -> str:
     parts = re.split(r"\n\n", content, maxsplit=2)
     return parts[-1].strip() if parts else content.strip()
+
+
+def operator_question_request_id(case_id: str, turn_index: str) -> str:
+    """The attention request id of one operator question: its case and the turn that asked.
+
+    Stable across restarts (both are on the persisted question), and distinct for a
+    case that asks again on a later turn.
+    """
+    return f"operator:{case_id}:{turn_index or '0'}"
 
 
 def _case_from_path(path: str) -> str:

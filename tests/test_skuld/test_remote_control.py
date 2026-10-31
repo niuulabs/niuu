@@ -55,7 +55,7 @@ class TestCommandConstruction:
         bypass = RemoteControlTransport("/tmp", skip_permissions=True)._build_command()
         default = RemoteControlTransport("/tmp", skip_permissions=False)._build_command()
 
-        assert bypass[bypass.index("--permission-mode") + 1] == "bypassPermissions"
+        assert bypass[bypass.index("--permission-mode") + 1] == "auto"  # the node default
         assert default[default.index("--permission-mode") + 1] == "default"
 
     def test_permission_mode_override(self):

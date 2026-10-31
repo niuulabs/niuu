@@ -179,3 +179,26 @@ async def test_history_and_expansion_use_existing_authorization_adapter(monkeypa
         assert client.get(url + "/turns/0").status_code == 403
     assert captures == []
     archive.get_transcript.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mode", ["archive", "legacy_gateway", "gateway"])
+async def test_source_alias_resolves_exact_absolute_index_on_every_read_path(monkeypatch, mode):
+    from niuu.domain.conversation_timeline import project_timeline
+    from tests.test_niuu.test_conversation_timeline import _assistant, _part, _user
+
+    source = _assistant([_part(2), _part(6)])
+    source["id"] = "durable-final"
+    source["metadata"] = {"final_output": True}
+    source.pop("in_progress")
+    projected = project_timeline([_user(1), _user(5), source], "fixture")
+    app, session, _, _, _, _ = await setup_api(monkeypatch, mode=mode, source=projected)
+    with TestClient(app) as client:
+        url = f"/api/v1/forge/sessions/{session.id}/conversation"
+        reply = client.get(url + "/turns/durable-final")
+        assert reply.status_code == 200
+        anchor = reply.json()
+        assert anchor["requested_turn_id"] == "durable-final"
+        assert anchor["index"] == 3 and anchor["total_turns"] == 4
+        assert anchor["turn"]["id"] == projected[-1]["id"]
+        page = client.get(url, params={"detail": "shallow", "after": anchor["index"] - 1}).json()
+        assert page["turns"][0]["id"] == anchor["turn"]["id"]
