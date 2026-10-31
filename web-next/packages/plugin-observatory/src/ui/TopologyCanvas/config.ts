@@ -12,8 +12,8 @@ export const CANVAS = {
    * changing colour when you switch — so there is one pair of values and both
    * views read it.
    */
-  BACKDROP_CENTRE: '#0b1722',
-  BACKDROP_EDGE: '#071019',
+  BACKDROP_CENTRE: '#0a0c12',
+  BACKDROP_EDGE: '#050509',
 
   /** World-space dimensions. */
   WORLD_W: 4200,

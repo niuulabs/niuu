@@ -354,13 +354,13 @@
   font-size: 8px;
 }
 .niuu-shell__footer-chip-dot[data-state='ok'] {
-  color: var(--status-healthy, var(--state-ok));
+  color: var(--status-healthy, var(--niuu-ok, #10b981));
 }
 .niuu-shell__footer-chip-dot[data-state='warn'] {
-  color: var(--status-gated, var(--state-warn));
+  color: var(--status-gated, var(--niuu-warn, #f59e0b));
 }
 .niuu-shell__footer-chip-dot[data-state='err'] {
-  color: var(--status-failed, var(--color-critical));
+  color: var(--status-failed, var(--niuu-critical, #ef4444));
 }
 .niuu-shell__footer-chip-sep {
   color: var(--color-text-faint);

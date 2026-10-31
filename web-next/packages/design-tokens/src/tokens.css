@@ -1,6 +1,7 @@
 /* ============================================================
  * Niuu Design System — Base Tokens
- * Implements the NIUU brand system v0.4 (docs/design/brand/).
+ * Ported from the earlier prototype design tokens and kept as the shared source.
+ * The NIUU brand palette (docs/design/brand/) is the [data-theme='niuu'] block.
  * Source of truth for all design tokens across Niuu surfaces.
  * ============================================================ */
 
@@ -46,49 +47,39 @@
 }
 
 :root {
-  /* ── Background (NIUU v0.4: Ink, Panel, Raised, Divider) ── */
-  --color-bg-primary: #071019;
-  --color-bg-secondary: #10212d;
-  --color-bg-tertiary: #182b38;
-  --color-bg-elevated: #2b4351;
+  /* ── Background (Zinc scale) ────────────────────────── */
+  --color-bg-primary: #09090b;
+  --color-bg-secondary: #18181b;
+  --color-bg-tertiary: #27272a;
+  --color-bg-elevated: #3f3f46;
 
   /* ── Foreground ─────────────────────────────────────── */
-  --color-text-primary: #edf4f7;
-  --color-text-secondary: #a5b7c1;
-  --color-text-muted: #78909d;
-  --color-text-faint: #648090;
+  --color-text-primary: #fafafa;
+  --color-text-secondary: #a1a1aa;
+  --color-text-muted: #71717a;
+  --color-text-faint: #52525b;
 
   /* ── Borders ────────────────────────────────────────── */
-  --color-border: #2b4351;
-  --color-border-subtle: #182b38;
+  --color-border: #3f3f46;
+  --color-border-subtle: #27272a;
 
-  /* ── Surfaces the brand names but the ramps above don't ── */
-  --color-code-surface: #071019;
-  --color-panel-quiet: #0b1722;
-  --color-border-quiet: #182b38;
-  --color-selection-surface: #182b38;
-  --color-selection-edge: #2b4351;
-  --color-sent-surface: #182b38;
-  --color-accent-fill: var(--brand-500);
-  --color-accent-on-fill: #0b2937;
-
-  /* ── Orbit mark: fixed brand strokes, never themed by the ramp ── */
+  /* ── Orbit mark: fixed brand strokes, the same in every dark theme ── */
   --color-mark-front: #83d5ec;
   --color-mark-back: #5e92ac;
 
   /* ── Brand ramp (themeable) ───────────────────────────
-   * Default = ice, built around the NIUU Signal accent (single-brand policy).
+   * Default = ice (single-brand policy).
    * Override per [data-theme] attribute below.
    * ────────────────────────────────────────────────────── */
-  --brand-100: #eaf8fc;
-  --brand-200: #d3f1f8;
-  --brand-300: #a8e7f4;
-  --brand-400: #97dcee;
-  --brand-500: #86d0e8;
-  --brand-600: #5fb4d2;
-  --brand-700: #3a8baa;
-  --brand-800: #1d5a73;
-  --brand-900: #0b2937;
+  --brand-100: #f0f9ff;
+  --brand-200: #e0f2fe;
+  --brand-300: #bae6fd;
+  --brand-400: #7dd3fc;
+  --brand-500: #38bdf8;
+  --brand-600: #0ea5e9;
+  --brand-700: #0369a1;
+  --brand-800: #075985;
+  --brand-900: #0c4a6e;
   --color-brand: var(--brand-500);
 
   /* ── Brand aliases (color-brand-N → brand-N) ────────────
@@ -106,8 +97,8 @@
   --color-brand-900: var(--brand-900);
 
   /* ── Critical (reserved — red only) ───────────────────── */
-  --color-critical: #e78d94;
-  --color-text-on-critical: #0b2937;
+  --color-critical: #ef4444;
+  --color-text-on-critical: #ffffff;
 
   /*
    * Observatory accent hues, from docs/mockups/observatory/index.html.
@@ -122,11 +113,11 @@
    */
   --color-accent-spring: #8fd400;
   --color-accent-teal: #2dd4bf;
-  --color-accent-amber: #e4bd7e;
+  --color-accent-amber: #f59e0b;
   --color-accent-violet: #8b7cf0;
-  --color-critical-fg: #e78d94;
-  --color-critical-bg: color-mix(in srgb, var(--color-critical) 15%, transparent);
-  --color-critical-bo: color-mix(in srgb, var(--color-critical) 35%, transparent);
+  --color-critical-fg: #fca5a5;
+  --color-critical-bg: color-mix(in srgb, #ef4444 15%, transparent);
+  --color-critical-bo: color-mix(in srgb, #ef4444 35%, transparent);
 
   /* ── Danger (alias → critical) ──────────────────────────
    * web2 registry uses `--color-danger` for invalid drop states.
@@ -142,14 +133,14 @@
   --color-gate-bo: color-mix(in srgb, #a855f7 35%, transparent);
 
   /* ── Semantic indicators ─────────────────────────────── */
-  --color-delta-up: #76bfa7;
+  --color-delta-up: #10b981;
 
   /* ── Semantic status ─────────────────────────────────── */
-  --status-healthy: #76bfa7;
+  --status-healthy: var(--brand-200);
   --status-running: var(--brand-300);
   --status-observing: var(--brand-300);
-  --status-merged: #76bfa7;
-  --status-attention: #e4bd7e;
+  --status-merged: var(--brand-200);
+  --status-attention: var(--brand-400);
   --status-review: var(--brand-400);
   --status-queued: var(--brand-400);
   --status-processing: var(--brand-700);
@@ -166,23 +157,23 @@
    * feed labels). These do NOT flex with the brand theme — they
    * must stay distinguishable regardless of the active ramp.
    * ────────────────────────────────────────────────────── */
-  --status-emerald: #76bfa7;
-  --status-green: #76bfa7;
-  --status-amber: #e4bd7e;
+  --status-emerald: #10b981;
+  --status-green: #22c55e;
+  --status-amber: #f59e0b;
   --status-orange: #f97316;
   /* Harness identity remains stable when the user switches themes. */
   --color-harness-claude: #fb923c;
   --color-harness-codex: #60a5fa;
-  --status-red: #e78d94;
+  --status-red: #ef4444;
   --status-cyan: #06b6d4;
   --status-indigo: #6366f1;
   --status-purple: #a855f7;
 
   /* ── State tokens (ravn/budget components) ───────────── */
-  --state-ok: #76bfa7;
+  --state-ok: #10b981;
   --state-ok-bg: color-mix(in srgb, var(--state-ok) 15%, transparent);
   --state-mute: var(--color-text-muted);
-  --state-warn: #e4bd7e;
+  --state-warn: #f59e0b;
   --state-warn-bg: color-mix(in srgb, var(--state-warn) 15%, transparent);
   --state-err: var(--color-critical);
 
@@ -195,7 +186,7 @@
    * legend UI reads the same variables so swatches always match the
    * scene exactly.
    * ────────────────────────────────────────────────────── */
-  --color-memory-background: #071019;
+  --color-memory-background: #000000;
   --color-memory-kind-topic: #38bdf8;
   --color-memory-kind-entity: #a855f7;
   --color-memory-kind-decision: #f59e0b;
@@ -294,6 +285,85 @@
    * operational dashboards well. Keep that palette shared so
    * Forge, Ravn, and Guild can align without hard-coded drift.
    * ────────────────────────────────────────────────────── */
+  --ops-surface-1: #151a20;
+  --ops-surface-2: #1a1f26;
+  --ops-surface-3: #202733;
+  --ops-surface-accent: #1d2630;
+  --ops-surface-ink: #101318;
+  --ops-border-1: rgba(145, 154, 170, 0.16);
+  --ops-border-2: rgba(145, 154, 170, 0.22);
+  --ops-border-strong: rgba(105, 161, 205, 0.42);
+  --ops-border-soft: rgba(145, 154, 170, 0.12);
+  --ops-fill-muted: #2b2d33;
+  --ops-fill-brand: #8ecaf3;
+  --ops-text-strong: #eef2f6;
+  --ops-text-body: #c7d2de;
+  --ops-text-muted: #86909d;
+  --ops-text-faint: #6f7885;
+}
+
+/* ── Theme overrides ──────────────────────────────────── */
+
+[data-theme='ice'] {
+  --brand-100: #f0f9ff;
+  --brand-200: #e0f2fe;
+  --brand-300: #bae6fd;
+  --brand-400: #7dd3fc;
+  --brand-500: #38bdf8;
+  --brand-600: #0ea5e9;
+  --brand-700: #0369a1;
+  --brand-800: #075985;
+  --brand-900: #0c4a6e;
+}
+
+/* NIUU brand system v0.4 (docs/design/brand/), the default theme.
+ * The --niuu-* names exist only here. Hard-coded colours elsewhere read
+ * `var(--niuu-x, #original)`, which keeps every other theme on its original. */
+[data-theme='niuu'] {
+  --color-bg-primary: #071019;
+  --color-bg-secondary: #10212d;
+  --color-bg-tertiary: #182b38;
+  --color-bg-elevated: #2b4351;
+  --color-text-primary: #edf4f7;
+  --color-text-secondary: #a5b7c1;
+  --color-text-muted: #78909d;
+  --color-text-faint: #648090;
+  --color-border: #2b4351;
+  --color-border-subtle: #182b38;
+  --color-code-surface: #071019;
+  --color-panel-quiet: #0b1722;
+  --color-border-quiet: #182b38;
+  --color-selection-surface: #182b38;
+  --color-selection-edge: #2b4351;
+  --color-sent-surface: #182b38;
+  --color-accent-fill: var(--brand-500);
+  --color-accent-on-fill: #0b2937;
+  --brand-100: #eaf8fc;
+  --brand-200: #d3f1f8;
+  --brand-300: #a8e7f4;
+  --brand-400: #97dcee;
+  --brand-500: #86d0e8;
+  --brand-600: #5fb4d2;
+  --brand-700: #3a8baa;
+  --brand-800: #1d5a73;
+  --brand-900: #0b2937;
+  --color-critical: #e78d94;
+  --color-text-on-critical: #0b2937;
+  --color-critical-fg: #e78d94;
+  --color-critical-bg: color-mix(in srgb, var(--color-critical) 15%, transparent);
+  --color-critical-bo: color-mix(in srgb, var(--color-critical) 35%, transparent);
+  --color-accent-amber: #e4bd7e;
+  --color-delta-up: #76bfa7;
+  --color-memory-background: #071019;
+  --status-healthy: #76bfa7;
+  --status-merged: #76bfa7;
+  --status-attention: #e4bd7e;
+  --status-emerald: #76bfa7;
+  --status-green: #76bfa7;
+  --status-amber: #e4bd7e;
+  --status-red: #e78d94;
+  --state-ok: #76bfa7;
+  --state-warn: #e4bd7e;
   --ops-surface-1: var(--color-bg-secondary);
   --ops-surface-2: var(--color-bg-tertiary);
   --ops-surface-3: var(--color-bg-elevated);
@@ -309,20 +379,20 @@
   --ops-text-body: var(--color-text-secondary);
   --ops-text-muted: var(--color-text-muted);
   --ops-text-faint: var(--color-text-faint);
-}
-
-/* ── Theme overrides ──────────────────────────────────── */
-
-[data-theme='ice'] {
-  --brand-100: #eaf8fc;
-  --brand-200: #d3f1f8;
-  --brand-300: #a8e7f4;
-  --brand-400: #97dcee;
-  --brand-500: #86d0e8;
-  --brand-600: #5fb4d2;
-  --brand-700: #3a8baa;
-  --brand-800: #1d5a73;
-  --brand-900: #0b2937;
+  --niuu-bg-primary: var(--color-bg-primary);
+  --niuu-bg-secondary: var(--color-bg-secondary);
+  --niuu-bg-tertiary: var(--color-bg-tertiary);
+  --niuu-text-primary: var(--color-text-primary);
+  --niuu-text-secondary: var(--color-text-secondary);
+  --niuu-text-muted: var(--color-text-muted);
+  --niuu-brand-200: var(--brand-200);
+  --niuu-brand-300: var(--brand-300);
+  --niuu-brand-500: var(--brand-500);
+  --niuu-critical: var(--color-critical);
+  --niuu-warn: var(--state-warn);
+  --niuu-ok: var(--state-ok);
+  --niuu-backdrop-centre: #0b1722;
+  --niuu-backdrop-edge: #071019;
 }
 
 [data-theme='amber'] {
@@ -554,7 +624,6 @@ kbd {
   --color-emphasis: var(--color-accent-amber);
   --color-accent-fill: var(--color-brand);
   --color-accent-on-fill: #ffffff;
-  --color-text-on-critical: #ffffff;
   --color-mark-front: #1d718f;
   --color-mark-back: #7399aa;
 

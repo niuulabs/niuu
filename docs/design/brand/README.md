@@ -34,12 +34,20 @@ Prose says "Niuu". "NIUU" appears only as the logo and its accessible name.
 
 | Surface | File |
 |---|---|
-| Colours and themes | `web-next/packages/design-tokens/src/tokens.css` |
+| Colours and themes | The `niuu` theme in `web-next/packages/design-tokens/src/tokens.css` |
 | Mark and wordmark in the web UI | `web-next/packages/ui/src/primitives/NiuuMark/` |
 | Web favicon | `web-next/apps/niuu/public/favicon.svg` (copy of `niuu-favicon.svg`) |
 | Docs site | `docs/site/stylesheets/niuu.css`, `docs/site/images/niuu-mark.svg`, `docs/site/images/niuu-favicon.svg` |
 | Docs landing page | Copy in `docs/site/index.md`, markup in `docs/overrides/home.html`, styles in `docs/site/stylesheets/home.css` |
 | CLI TUI | `src/cli/tui/theme.py`, `src/cli/tui/theme.tcss` |
+
+## Themes
+
+`niuu` is the default. The other themes (`xteo`, `ice`, `amber`, `spring`) keep their
+own colours, so a brand change belongs in the `niuu` block and never in `:root`. The
+`light` theme uses the deep Signal accent. Hard-coded colours outside the tokens are
+written as `var(--niuu-x, #original)`: only `niuu` defines those names, so every other
+theme falls back to the original.
 
 ## Additions to the package
 

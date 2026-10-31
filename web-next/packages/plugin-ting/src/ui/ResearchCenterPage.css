@@ -2,7 +2,7 @@
   min-height: 100%;
   background:
     radial-gradient(circle at top center, rgba(90, 119, 147, 0.08), transparent 28%),
-    linear-gradient(180deg, #0c0d10 0%, var(--color-bg-primary) 100%);
+    linear-gradient(180deg, #0c0d10 0%, var(--niuu-bg-primary, #090a0d) 100%);
   color: var(--ops-text-strong);
 }
 

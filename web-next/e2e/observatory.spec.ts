@@ -723,7 +723,7 @@ test('Light mode covers both Observatory canvases and their controls', async ({ 
     )
     .toEqual([247, 247, 247]);
   await theme.click();
-  await page.getByRole('button', { name: 'NIUU', exact: true }).click();
+  await page.getByRole('button', { name: 'Native dark', exact: true }).click();
   await expect(page.getByTestId('camera-controls-3d')).toHaveCSS(
     'background-color',
     'rgba(9, 9, 11, 0.82)',
