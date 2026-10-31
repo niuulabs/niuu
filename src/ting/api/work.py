@@ -25,6 +25,7 @@ from ting.api.sagas import resolve_saga_repo
 from ting.api.tracker import resolve_trackers
 from ting.domain.models import WorkflowCampaignStatus
 from ting.domain.services.dispatch_service import DispatchService
+from ting.domain.services.review_list import ReviewKind, ReviewState, review_list
 from ting.domain.services.ticket_coordinator import (
     TicketCoordinatorService,
     TicketWorkflow,
@@ -337,6 +338,25 @@ class RunReviewResponse(_ResponseModel):
 class TicketReviewsResponse(_ResponseModel):
     reviews: list[RunReviewResponse]
     unreadable_runs: list[str]
+    plan_slug: str | None = None
+
+
+class ReviewItemResponse(_ResponseModel):
+    task_id: str
+    kind: ReviewKind
+    title: str
+    workflow_name: str
+    state: ReviewState
+    gate_label: str
+    updated_at: datetime
+    project_id: str | None = None
+    project_name: str | None = None
+    issue_id: str | None = None
+    identifier: str | None = None
+
+
+class ReviewListResponse(_ResponseModel):
+    items: list[ReviewItemResponse]
 
 
 async def resolve_work_execution_repo(
@@ -722,6 +742,17 @@ def create_work_router() -> APIRouter:
             coverage=[_coverage_response(item) for item in result.coverage],
         )
 
+    @router.get("/reviews", response_model=ReviewListResponse)
+    async def list_reviews(
+        principal: Principal = Depends(extract_principal),
+        saga_repo: SagaRepository = Depends(resolve_saga_repo),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+    ) -> ReviewListResponse:
+        """Every run a person reviews, across projects, from what campaigns already record."""
+        campaigns = await campaign_repo.list_campaign_summaries(owner_id=principal.user_id)
+        sagas = await saga_repo.list_sagas(owner_id=principal.user_id)
+        return ReviewListResponse.model_validate({"items": review_list(campaigns, sagas)})
+
     @router.get("/{kind}/{work_id}", response_model=WorkDetailResponse)
     async def get_work(
         kind: Literal["project", "campaign", "execution"],
@@ -939,7 +970,7 @@ def create_work_router() -> APIRouter:
             )
             reviews.extend(replace(item, chat_endpoint=session.chat_endpoint) for item in found)
         return TicketReviewsResponse.model_validate(
-            {"reviews": reviews, "unreadable_runs": unreadable}
+            {"reviews": reviews, "unreadable_runs": unreadable, "plan_slug": saga.plan_slug}
         )
 
     @router.post(
@@ -1019,6 +1050,8 @@ __all__ = [
     "GateDecisionResponse",
     "OperationalRunRefResponse",
     "RawWorkStateResponse",
+    "ReviewItemResponse",
+    "ReviewListResponse",
     "ReviewPanelResponse",
     "ReviewRevisionResponse",
     "RunReviewResponse",

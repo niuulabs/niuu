@@ -1,5 +1,5 @@
 import './TicketReviewPage.css';
-import { useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from '@tanstack/react-router';
 import { ExternalLink } from 'lucide-react';
 import { useOptionalService } from '@niuulabs/plugin-sdk';
@@ -14,6 +14,7 @@ import {
   addQuoteToNote,
   isPending,
   openingReview,
+  quotesIn,
   type ReviewRevision,
   type RunReview,
 } from '../../domain/review';
@@ -55,11 +56,13 @@ function ReviewWorkspace({
   task,
   board,
   reviews,
+  planSlug,
 }: {
   projectId: string;
   task: WorkTask;
   board: WorkBoardLayout | null;
   reviews: readonly RunReview[];
+  planSlug?: string | null;
 }) {
   const [chosenColumn, setChosenColumn] = useState<string | null>(null);
   const [chosenRevision, setChosenRevision] = useState<number | null>(null);
@@ -68,9 +71,20 @@ function ReviewWorkspace({
   const [note, setNote] = useState('');
   const [selection, setSelection] = useState('');
   const [asking, setAsking] = useState<string | null>(null);
+  const [chatQuotes, setChatQuotes] = useState<readonly string[]>([]);
+  const talk = useRef<HTMLElement>(null);
   const lineComments = useReviewComments();
   const decide = useGateDecision(projectId);
   const filesystem = useOptionalService<IFileSystemPort>('filesystem');
+
+  const marks = useMemo(() => [...new Set([...chatQuotes, ...quotesIn(note)])], [chatQuotes, note]);
+  const reportQuotes = useCallback((quotes: string[]) => {
+    setChatQuotes((current) => (current.join('\n') === quotes.join('\n') ? current : quotes));
+  }, []);
+  const openQuote = useCallback((quote: string) => {
+    const quoted = [...(talk.current?.querySelectorAll('blockquote') ?? [])].reverse();
+    quoted.find((item) => item.textContent?.includes(quote))?.scrollIntoView({ block: 'center' });
+  }, []);
 
   const review = reviews.find((item) => item.columnId === chosenColumn) ?? openingReview(reviews);
   const latest = review?.revisions[review.revisions.length - 1];
@@ -124,6 +138,8 @@ function ReviewWorkspace({
       sessionId={review.sessionId}
       filesystem={filesystem ?? null}
       review={decidable ? lineComments : undefined}
+      marks={marks}
+      onMarkClick={openQuote}
     />
   ) : null;
 
@@ -196,6 +212,9 @@ function ReviewWorkspace({
           <a href={task.source.url} target="_blank" rel="noreferrer">
             Open ticket <ExternalLink aria-hidden="true" />
           </a>
+          {planSlug ? (
+            <Link to={`/ting/plan/${planSlug}` as never}>Open the project plan</Link>
+          ) : null}
           <h2>Gate history</h2>
           <GateHistory revisions={review.revisions} />
         </aside>
@@ -253,7 +272,7 @@ function ReviewWorkspace({
           </div>
         </main>
 
-        <aside className="ting-review__talk" aria-label="Talk it through">
+        <aside ref={talk} className="ting-review__talk" aria-label="Talk it through">
           {decidable ? (
             <GateDecision
               title={review.title}
@@ -277,6 +296,7 @@ function ReviewWorkspace({
             name={task.source.identifier}
             quote={asking}
             onQuoteDone={() => setAsking(null)}
+            onQuotes={reportQuotes}
           />
         </aside>
       </div>
@@ -327,6 +347,7 @@ export function TicketReviewPage() {
           task={task}
           board={detail.data?.board ?? null}
           reviews={reviews}
+          planSlug={record.data?.planSlug}
         />
       ) : (
         <p className="ting-review__state">

@@ -234,6 +234,82 @@
   color: var(--color-brand);
 }
 
+.ting-review-panel mark {
+  border-bottom: 2px solid var(--color-brand);
+  background: var(--color-bg-tertiary);
+  color: inherit;
+  cursor: pointer;
+}
+
+.ting-reviews {
+  display: grid;
+  width: min(1120px, 100%);
+  gap: var(--space-5);
+  margin: 0 auto;
+  padding: var(--space-5);
+}
+
+.ting-reviews__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.ting-reviews__head h1 {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: 600;
+}
+
+.ting-reviews__head a {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-tertiary);
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text-primary);
+}
+
+.ting-reviews__group {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.ting-reviews__group h2 {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+
+.ting-reviews__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px 120px;
+  align-items: center;
+  gap: var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  padding: var(--space-3);
+  color: var(--color-text-primary);
+}
+
+.ting-reviews__row:hover {
+  border-color: var(--color-brand);
+}
+
+.ting-reviews__row small {
+  display: block;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.ting-reviews__row span:not(:first-child) {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
 .ting-review-panel__missing,
 .ting-review__error {
   color: var(--color-critical);
@@ -321,6 +397,12 @@
   margin: 0;
   padding: var(--space-5);
   color: var(--color-text-secondary);
+}
+
+@media (max-width: 760px) {
+  .ting-reviews__row {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 1100px) {

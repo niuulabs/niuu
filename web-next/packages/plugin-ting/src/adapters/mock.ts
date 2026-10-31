@@ -53,7 +53,7 @@ import type {
   WorkSummary,
   WorkTask,
 } from '../domain/work';
-import type { TicketReviews } from '../domain/review';
+import type { ReviewList, TicketReviews } from '../domain/review';
 import { serializePortableWorkflow } from '../domain/workflowPortable';
 
 // ---------------------------------------------------------------------------
@@ -2379,6 +2379,26 @@ function mockTicketReviews(task: WorkTask | undefined): TicketReviews {
   };
 }
 
+function mockReviewList(tasks: readonly WorkTask[]): ReviewList {
+  return {
+    items: tasks
+      .filter((task) => task.board?.gate)
+      .map((task) => ({
+        taskId: `demo-run-${task.source.issueId}`,
+        kind: 'ticket' as const,
+        title: task.title,
+        workflowName: 'Reviewed Delivery Flow',
+        state: 'waiting' as const,
+        gateLabel: task.board?.gate?.label ?? '',
+        updatedAt: task.board?.gate?.requestedAt ?? '',
+        projectId: 'demo-platform',
+        projectName: 'Platform reliability',
+        issueId: task.source.issueId,
+        identifier: task.source.identifier,
+      })),
+  };
+}
+
 export function createMockWorkService(): IWorkService {
   const tasks = MOCK_WORK_TASKS.map((task) => ({ ...task }));
   return {
@@ -2417,6 +2437,9 @@ export function createMockWorkService(): IWorkService {
         state: 'running',
         gate: null,
       };
+    },
+    async reviews() {
+      return mockReviewList(tasks);
     },
     async ticketReviews(_projectId, issueId) {
       return mockTicketReviews(tasks.find((entry) => entry.source.issueId === issueId));

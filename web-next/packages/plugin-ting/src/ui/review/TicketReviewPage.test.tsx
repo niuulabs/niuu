@@ -326,6 +326,19 @@ describe('TicketReviewPage', () => {
     expect(screen.getByText('This run has no pull request yet.')).toBeInTheDocument();
   });
 
+  it('marks what was quoted and links the project plan', async () => {
+    setup({ reviews: [planReview()], unreadableRuns: [], planSlug: 'plan-1' });
+    await screen.findByText('Trace every tick');
+
+    select('Trace every tick');
+    fireEvent.click(screen.getByRole('button', { name: 'Add to my note' }));
+
+    expect(screen.getByRole('region', { name: 'Plan' }).querySelector('mark')).toHaveTextContent(
+      'Trace every tick',
+    );
+    expect(screen.getByRole('link', { name: 'Open the project plan' })).toBeInTheDocument();
+  });
+
   it('says when a run can no longer be read', async () => {
     setup({ reviews: [], unreadableRuns: ['Ticket Planning Flow'] });
 

@@ -49,6 +49,15 @@ export function useWorkDetail(kind: WorkResourceKind | null, id: string | null) 
   });
 }
 
+export function useReviews() {
+  const service = useService<IWorkService>('ting.work');
+  return useQuery({
+    queryKey: ['ting', 'work', 'reviews'],
+    queryFn: () => service.reviews(),
+    refetchInterval: REVIEW_REFRESH_MS,
+  });
+}
+
 export function useTicketReviews(projectId: string, issueId: string) {
   const service = useService<IWorkService>('ting.work');
   return useQuery({

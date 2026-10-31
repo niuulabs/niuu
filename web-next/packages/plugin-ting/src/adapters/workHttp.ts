@@ -1,6 +1,6 @@
 import type { ApiClient } from '@niuulabs/query';
 import type { IWorkService } from '../ports';
-import type { TicketReviews } from '../domain/review';
+import type { ReviewList, TicketReviews } from '../domain/review';
 import type { WorkCollection, WorkDetail } from '../domain/work';
 
 /** The Work API already uses the public camelCase read contract. */
@@ -31,6 +31,9 @@ export function buildWorkHttpAdapter(client: ApiClient): IWorkService {
         `/work/project/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(issueId)}/start`,
         columnId ? { columnId } : {},
       );
+    },
+    reviews() {
+      return client.get<ReviewList>('/work/reviews');
     },
     ticketReviews(projectId, issueId) {
       return client.get<TicketReviews>(

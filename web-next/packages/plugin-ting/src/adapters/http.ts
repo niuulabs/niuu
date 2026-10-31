@@ -369,6 +369,8 @@ interface RawPlanSession {
   updated_at?: string | null;
   stage_state?: RawCampaignStageState[];
   questions?: { id: string; question: string; hint?: string; kind?: 'text' | 'workflow' }[];
+  saga_id?: string | null;
+  tickets?: { name: string; issue_id: string; identifier?: string; url?: string }[];
 }
 
 interface RawRunSpec {
@@ -717,6 +719,7 @@ function toCommitRequestBody(req: CommitSagaRequest): Record<string, unknown> {
     description: req.description,
     repos: req.repos,
     base_branch: req.baseBranch,
+    ...(req.planSlug ? { plan_slug: req.planSlug } : {}),
     phases: req.phases.map((p) => ({
       name: p.name,
       runs: p.runs.map((r) => ({
@@ -933,6 +936,13 @@ function toPlanSession(raw: RawPlanSession): PlanSession {
     updatedAt: raw.updated_at,
     stageState: (raw.stage_state ?? []).map(toCampaignStageState),
     questions: raw.questions ?? [],
+    sagaId: raw.saga_id,
+    tickets: (raw.tickets ?? []).map((ticket) => ({
+      name: ticket.name,
+      issueId: ticket.issue_id,
+      identifier: ticket.identifier,
+      url: ticket.url,
+    })),
   };
 }
 

@@ -71,8 +71,8 @@ export function PlanWizard() {
   );
 
   function handleNewPlan() {
-    // Navigate back to /ting/plan to start fresh (the wizard unmounts and remounts)
-    window.location.href = '/ting/plan';
+    // Navigate back to /ting/plan/new to start fresh (the wizard unmounts and remounts)
+    window.location.href = '/ting/plan/new';
   }
 
   async function handleCancelPlanSession(session: PlanSession) {

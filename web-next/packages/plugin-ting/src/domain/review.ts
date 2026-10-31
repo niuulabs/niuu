@@ -32,6 +32,58 @@ export interface TicketReviews {
   reviews: RunReview[];
   /** Runs whose session is gone, so their reviews cannot be read back. */
   unreadableRuns: string[];
+  /** The project plan this ticket's project was committed from. */
+  planSlug?: string | null;
+}
+
+export type ReviewState = 'waiting' | 'running' | 'done' | 'failed';
+
+/** One run a person reviews, as the Reviews list shows it across projects. */
+export interface ReviewItem {
+  taskId: string;
+  kind: 'ticket' | 'projectPlan';
+  title: string;
+  workflowName: string;
+  state: ReviewState;
+  gateLabel: string;
+  updatedAt: string;
+  projectId?: string | null;
+  projectName?: string | null;
+  issueId?: string | null;
+  identifier?: string | null;
+}
+
+export interface ReviewList {
+  items: ReviewItem[];
+}
+
+/** Where a review lives: a ticket's review page, or its project plan's. */
+export function reviewPath(item: ReviewItem): string {
+  return item.kind === 'ticket' && item.projectId && item.issueId
+    ? `/ting/review/${item.projectId}/${item.issueId}`
+    : `/ting/plan/${item.taskId}`;
+}
+
+/** A quote shorter than this would mark text that merely happens to match. */
+const MIN_QUOTE_LENGTH = 4;
+
+/** The passages a piece of text quotes, one per Markdown quote line. */
+export function quotesIn(text: string): string[] {
+  return text
+    .split('\n')
+    .filter((line) => line.startsWith('> '))
+    .map((line) => line.slice(2).trim())
+    .filter((line) => line.length >= MIN_QUOTE_LENGTH);
+}
+
+/** What a person has quoted to the coordinator, from the chat they already share. */
+export function quotesFromMessages(
+  messages: readonly { role: string; content: string }[],
+): string[] {
+  const quotes = messages
+    .filter((message) => message.role === 'user')
+    .flatMap((message) => quotesIn(message.content));
+  return [...new Set(quotes)];
 }
 
 export const REVISION_PENDING = 'pending';

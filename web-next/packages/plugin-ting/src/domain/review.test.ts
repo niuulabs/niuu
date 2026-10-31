@@ -5,6 +5,10 @@ import {
   isPending,
   openingReview,
   questionAboutQuote,
+  quotesFromMessages,
+  quotesIn,
+  reviewPath,
+  type ReviewItem,
   type ReviewRevision,
   type RunReview,
 } from './review';
@@ -100,5 +104,45 @@ describe('diffLines', () => {
       { kind: 'same', text: 'a' },
       { kind: 'removed', text: 'b' },
     ]);
+  });
+});
+
+describe('quotes', () => {
+  it('reads each quoted line, skipping ones too short to place', () => {
+    expect(quotesIn('> Trace every tick\n> ok\nSample instead.\n>not a quote')).toEqual([
+      'Trace every tick',
+    ]);
+  });
+
+  it('takes what the person quoted, once, from the chat', () => {
+    expect(
+      quotesFromMessages([
+        { role: 'user', content: '> Trace every tick\n\nWhy not sample?' },
+        { role: 'assistant', content: '> Something the agent quoted' },
+        { role: 'user', content: '> Trace every tick\n\nAnd now?' },
+      ]),
+    ).toEqual(['Trace every tick']);
+  });
+});
+
+describe('reviewPath', () => {
+  const item: ReviewItem = {
+    taskId: 'a2a-1',
+    kind: 'ticket',
+    title: 'Plan',
+    workflowName: 'Flow',
+    state: 'waiting',
+    gateLabel: '',
+    updatedAt: '',
+    projectId: 'p',
+    issueId: 'i',
+  };
+
+  it('opens a ticket on its review page', () => {
+    expect(reviewPath(item)).toBe('/ting/review/p/i');
+  });
+
+  it('opens a project plan on its plan page', () => {
+    expect(reviewPath({ ...item, kind: 'projectPlan', issueId: null })).toBe('/ting/plan/a2a-1');
   });
 });

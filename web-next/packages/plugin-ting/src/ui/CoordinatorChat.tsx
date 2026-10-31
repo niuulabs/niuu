@@ -1,7 +1,7 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useOptionalService } from '@niuulabs/plugin-sdk';
 import { SessionChat, type ISessionHistoryLocator, useSkuldChat } from '@niuulabs/ui';
-import { questionAboutQuote } from '../domain/review';
+import { questionAboutQuote, quotesFromMessages } from '../domain/review';
 import type { TicketCoordinatorRef } from '../domain/work';
 
 function QuotedQuestion({
@@ -44,11 +44,13 @@ function LiveCoordinatorChat({
   name,
   quote,
   onQuoteDone,
+  onQuotes,
 }: {
   chatEndpoint: string;
   name: string;
   quote?: string | null;
   onQuoteDone?: () => void;
+  onQuotes?: (quotes: string[]) => void;
 }) {
   const historyLocator = useOptionalService<ISessionHistoryLocator>('forge.history');
   const historyEndpoint = useMemo(
@@ -56,6 +58,9 @@ function LiveCoordinatorChat({
     [chatEndpoint, historyLocator],
   );
   const chat = useSkuldChat(chatEndpoint, { historyMode: 'session', historyEndpoint });
+  useEffect(() => {
+    onQuotes?.(quotesFromMessages(chat.messages));
+  }, [chat.messages, onQuotes]);
   return (
     <div className="ting-board-chat" data-testid="ticket-coordinator-chat">
       {quote ? (
@@ -108,11 +113,14 @@ export function CoordinatorChat({
   name,
   quote,
   onQuoteDone,
+  onQuotes,
 }: {
   coordinator: TicketCoordinatorRef | null | undefined;
   name: string;
   quote?: string | null;
   onQuoteDone?: () => void;
+  /** Reports what the person has quoted in this chat, which the review marks. */
+  onQuotes?: (quotes: string[]) => void;
 }) {
   if (!coordinator) {
     return (
@@ -135,6 +143,7 @@ export function CoordinatorChat({
       name={name}
       quote={quote}
       onQuoteDone={onQuoteDone}
+      onQuotes={onQuotes}
     />
   );
 }

@@ -228,7 +228,7 @@ function NewWorkDialog({
             </span>
           </div>
           <div className="ting-new-work-links">
-            <Link to="/ting/plan" onClick={() => onOpenChange(false)}>
+            <Link to="/ting/plan/new" onClick={() => onOpenChange(false)}>
               Plan delivery
             </Link>
             <Link

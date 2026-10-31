@@ -7,6 +7,18 @@ function client() {
 }
 
 describe('Work HTTP read adapter', () => {
+  it('reads reviews across projects and for one ticket', async () => {
+    const http = client();
+    http.get.mockResolvedValue({ items: [] });
+    const adapter = buildWorkHttpAdapter(http as never);
+
+    await adapter.reviews();
+    await adapter.ticketReviews('project/1', 'issue 1');
+
+    expect(http.get).toHaveBeenCalledWith('/work/reviews');
+    expect(http.get).toHaveBeenCalledWith('/work/project/project%2F1/tasks/issue%201/reviews');
+  });
+
   it('preserves independent source coverage and the execution continuation', async () => {
     const http = client();
     const collection = {

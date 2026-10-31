@@ -13,7 +13,7 @@ import type { SessionInfo } from './domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from './domain/tracker';
 import type { Workflow } from './domain/workflow';
 import type { GateDecision, WorkCollection, WorkDetail, WorkResourceKind } from './domain/work';
-import type { TicketReviews } from './domain/review';
+import type { ReviewList, TicketReviews } from './domain/review';
 
 export interface IWorkService {
   list(options?: { executionLimit?: number; executionCursor?: string }): Promise<WorkCollection>;
@@ -23,6 +23,8 @@ export interface IWorkService {
   startTicket(projectId: string, issueId: string, columnId?: string): Promise<void>;
   /** What this ticket's runs have put in front of a person, read from their session logs. */
   ticketReviews(projectId: string, issueId: string): Promise<TicketReviews>;
+  /** Every run a person reviews, across their projects. */
+  reviews(): Promise<ReviewList>;
 }
 import type {
   WorkflowExecutionTrace,
@@ -120,6 +122,8 @@ export type { ClarifyingQuestion } from './domain/plan';
 export interface CommitSagaRequest {
   name: string;
   slug: string;
+  /** The project plan this commit comes from, so each can reach the other. */
+  planSlug?: string | null;
   description: string;
   repos: string[];
   baseBranch: string;
@@ -137,6 +141,13 @@ export interface CommitSagaRequest {
   trackerConnectionId?: string;
 }
 
+export interface PlanTicket {
+  name: string;
+  issueId: string;
+  identifier?: string;
+  url?: string;
+}
+
 export interface PlanSession {
   sessionId: string;
   chatEndpoint: string | null;
@@ -148,6 +159,9 @@ export interface PlanSession {
   status?: string | null;
   activeStageId?: string | null;
   updatedAt?: string | null;
+  /** The project and tickets this plan became, once committed. */
+  sagaId?: string | null;
+  tickets?: PlanTicket[];
   stageState?: {
     stageId: string;
     label: string;

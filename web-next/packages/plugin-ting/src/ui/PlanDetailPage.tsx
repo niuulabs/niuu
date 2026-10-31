@@ -1,5 +1,5 @@
 import './PlanWizard.css';
-import { useNavigate, useParams } from '@tanstack/react-router';
+import { Link, useNavigate, useParams } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import { StateDot, type DotState } from '@niuulabs/ui';
@@ -60,7 +60,7 @@ export function PlanDetailPage() {
           className="ting-plan-detail__back"
           onClick={() => void navigate({ to: '/ting/plan' as never })}
         >
-          ← Plans
+          ← Reviews
         </button>
         <h1>{plan.name || structure?.name || slug}</h1>
         <span className="ting-plan-detail__status">
@@ -68,6 +68,19 @@ export function PlanDetailPage() {
           {plan.status || 'unknown'}
         </span>
       </header>
+
+      {plan.status && RESUMABLE_STATUSES.includes(plan.status.toLowerCase()) ? (
+        <section className="ting-plan-card" aria-label="Waiting">
+          <h2>In the planner</h2>
+          <button
+            type="button"
+            className="ting-plan-detail__back"
+            onClick={() => void navigate({ to: '/ting/plan/new' as never })}
+          >
+            Continue in the planner
+          </button>
+        </section>
+      ) : null}
 
       <section className="ting-plan-card" aria-label="Plan">
         <h2>Plan</h2>
@@ -95,6 +108,22 @@ export function PlanDetailPage() {
           </ul>
         </section>
       )}
+
+      {plan.sagaId && (plan.tickets?.length ?? 0) > 0 ? (
+        <section className="ting-plan-card" aria-label="Tickets from this plan">
+          <h2>Tickets from this plan</h2>
+          <ol>
+            {plan.tickets?.map((ticket) => (
+              <li key={ticket.issueId}>
+                <Link to={`/ting/review/${plan.sagaId}/${ticket.issueId}` as never}>
+                  {ticket.identifier || ticket.name}
+                </Link>
+                {ticket.identifier ? <span> {ticket.name}</span> : null}
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
 
       <section className="ting-plan-card" aria-label="Run breakdown">
         <div className="ting-plan-detail__runs-head">
@@ -132,6 +161,8 @@ export function PlanDetailPage() {
     </div>
   );
 }
+
+const RESUMABLE_STATUSES = ['pending', 'running', 'blocked'];
 
 function statusDot(status?: string | null): DotState {
   const value = (status ?? '').toLowerCase();

@@ -51,6 +51,11 @@ from ting.domain.models import (
     WorkflowDefinition,
     WorkflowScope,
 )
+from ting.domain.services.review_list import (
+    PLAN_SAGA_KEY,
+    PLAN_TICKETS_KEY,
+    PLANNING_WORKFLOW_NAME,
+)
 from ting.domain.tracker_routing import (
     TrackerRoutingError,
     select_tracker,
@@ -76,7 +81,7 @@ _ACTIVE_CAMPAIGN_STATUSES = frozenset(
         WorkflowCampaignStatus.BLOCKED,
     }
 )
-_PLANNING_WORKFLOW_NAME = "Saga Planning"
+_PLANNING_WORKFLOW_NAME = PLANNING_WORKFLOW_NAME
 _PLAN_BRIEF_GATE_NODE_ID = "plan-brief-gate"
 _PLAN_REVIEW_GATE_NODE_ID = "plan-review-gate"
 _PLAN_GATE_NODE_IDS = (_PLAN_BRIEF_GATE_NODE_ID, _PLAN_REVIEW_GATE_NODE_ID)
@@ -736,6 +741,10 @@ def _to_plan_session_response(
         updated_at=campaign.updated_at,
         stage_state=[_to_plan_stage_response(stage) for stage in campaign.stage_state],
         questions=_plan_questions_for_campaign(campaign, gates),
+        saga_id=campaign.metadata.get(PLAN_SAGA_KEY),
+        tickets=[
+            PlanTicketResponse(**ticket) for ticket in campaign.metadata.get(PLAN_TICKETS_KEY, [])
+        ],
     )
 
 
@@ -967,6 +976,15 @@ class PlanQuestionResponse(BaseModel):
     kind: str = "text"
 
 
+class PlanTicketResponse(BaseModel):
+    """A ticket a committed project plan became."""
+
+    name: str
+    issue_id: str
+    identifier: str = ""
+    url: str = ""
+
+
 class PlanSessionResponse(BaseModel):
     """Response from spawning a planning session."""
 
@@ -982,6 +1000,8 @@ class PlanSessionResponse(BaseModel):
     updated_at: datetime | None = None
     stage_state: list[PlanStageStateResponse] = Field(default_factory=list)
     questions: list[PlanQuestionResponse] = Field(default_factory=list)
+    saga_id: str | None = None
+    tickets: list[PlanTicketResponse] = Field(default_factory=list)
 
 
 class ExtractStructureRequest(BaseModel):
@@ -1008,6 +1028,7 @@ class CommitRequest(BaseModel):
     workflow_id: str | None = None
     workflow_version: str | None = Field(default=None, alias="workflowVersion")
     tracker_connection_id: str | None = None
+    plan_slug: str | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -2137,6 +2158,7 @@ def create_sagas_router() -> APIRouter:
         request: Request,
         principal: Principal = Depends(extract_principal),
         saga_repo: SagaRepository = Depends(resolve_saga_repo),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
         adapters: list[TrackerPort] = Depends(resolve_trackers),
         git: GitPort = Depends(_resolve_git_for_request),
     ) -> CommittedSagaResponse:
@@ -2151,6 +2173,15 @@ def create_sagas_router() -> APIRouter:
 
         Returns 409 if the slug already exists.
         """
+        if body.plan_slug and (
+            await campaign_repo.get_campaign_by_slug(body.plan_slug, owner_id=principal.user_id)
+            is None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Plan not found: {body.plan_slug}",
+            )
+
         # Idempotency: reject duplicate slugs
         existing = await saga_repo.get_saga_by_slug(body.slug)
         if existing is not None:
@@ -2210,6 +2241,7 @@ def create_sagas_router() -> APIRouter:
             workflow_id=workflow_id,
             workflow_version=workflow_version,
             workflow_snapshot=workflow_snapshot,
+            plan_slug=body.plan_slug,
         )
 
         from identity.adapters.http_auth import authorization_http_errors
@@ -2362,6 +2394,33 @@ def create_sagas_router() -> APIRouter:
                 await saga_repo.save_phase(phase, conn=conn)
             for run in runs:
                 await saga_repo.save_run(run, conn=conn)
+
+        # Read again: the plan's run may have moved on while the tracker was being filled.
+        plan_campaign = (
+            await campaign_repo.get_campaign_by_slug(body.plan_slug, owner_id=principal.user_id)
+            if body.plan_slug
+            else None
+        )
+        if plan_campaign is not None:
+            await campaign_repo.save_campaign(
+                replace(
+                    plan_campaign,
+                    metadata={
+                        **plan_campaign.metadata,
+                        PLAN_SAGA_KEY: str(saga.id),
+                        PLAN_TICKETS_KEY: [
+                            {
+                                "name": run.name,
+                                "issue_id": run.tracker_id,
+                                "identifier": run.identifier,
+                                "url": run.url,
+                            }
+                            for run in runs
+                        ],
+                    },
+                    updated_at=now,
+                )
+            )
 
         # 4. Create feature branch for each repo (best-effort — logged on failure)
         warnings: list[str] = []

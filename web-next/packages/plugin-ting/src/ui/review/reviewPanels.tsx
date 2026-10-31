@@ -1,4 +1,4 @@
-import type { ComponentType } from 'react';
+import { useLayoutEffect, useRef, type ComponentType } from 'react';
 import { ExternalLink } from 'lucide-react';
 import {
   MarkdownContent,
@@ -9,6 +9,9 @@ import {
 } from '@niuulabs/ui';
 import { diffLines, type ReviewRevision } from '../../domain/review';
 import type { ReviewPanel } from '../../domain/work';
+import { markQuotes } from './markQuotes';
+
+const NO_MARKS: readonly string[] = [];
 
 export interface ReviewPanelProps {
   panel: ReviewPanel;
@@ -22,9 +25,35 @@ export interface ReviewPanelProps {
   filesystem?: IFileSystemPort | null;
   /** Adds line comments where a panel can take them. */
   review?: ReviewControls;
+  /** Passages to mark, from the note and the chat. */
+  marks?: readonly string[];
+  /** Opens the conversation a mark came from. */
+  onMarkClick?: (quote: string) => void;
 }
 
-function DocumentPanel({ panel, revision, compareWith }: ReviewPanelProps) {
+function MarkedDocument({
+  text,
+  marks,
+  onMarkClick,
+}: {
+  text: string;
+  marks: readonly string[];
+  onMarkClick?: (quote: string) => void;
+}) {
+  const root = useRef<HTMLDivElement>(null);
+  useLayoutEffect(
+    () => (root.current ? markQuotes(root.current, marks, onMarkClick) : undefined),
+    [marks, onMarkClick, text],
+  );
+  return (
+    <div ref={root}>
+      {/* Marks split rendered text, so new text renders from scratch. */}
+      <MarkdownContent key={text} content={text} />
+    </div>
+  );
+}
+
+function DocumentPanel({ panel, revision, compareWith, marks, onMarkClick }: ReviewPanelProps) {
   const text = panel.field ? revision.fields[panel.field] : undefined;
   if (!text) {
     return (
@@ -34,7 +63,9 @@ function DocumentPanel({ panel, revision, compareWith }: ReviewPanelProps) {
     );
   }
   const before = panel.field ? compareWith?.fields[panel.field] : undefined;
-  if (before === undefined) return <MarkdownContent content={text} />;
+  if (before === undefined) {
+    return <MarkedDocument text={text} marks={marks ?? NO_MARKS} onMarkClick={onMarkClick} />;
+  }
   return (
     <pre className="ting-review-diff" aria-label={`Changes to ${panel.title}`}>
       {diffLines(before, text).map((line, index) => (

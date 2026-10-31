@@ -1362,7 +1362,7 @@ def test_another_tickets_runs_are_not_this_tickets_review() -> None:
 
     response = _reviews(client, saga, issue_id="issue-2")
 
-    assert response.json() == {"reviews": [], "unreadableRuns": []}
+    assert response.json() == {"reviews": [], "unreadableRuns": [], "planSlug": None}
     adapter.get_public_session_log_page.assert_not_awaited()
 
 
@@ -1376,6 +1376,7 @@ def test_a_run_whose_session_is_gone_is_named_not_dropped() -> None:
     assert _reviews(client, saga).json() == {
         "reviews": [],
         "unreadableRuns": ["Ticket Planning Flow"],
+        "planSlug": None,
     }
 
 
@@ -1404,3 +1405,34 @@ def test_board_columns_carry_their_panels() -> None:
 
     column = next(item for item in board["columns"] if item["id"] == "plan-review")
     assert column["panels"] == [{"widget": "document", "title": "Plan", "field": "plan"}]
+
+
+def test_reviews_list_runs_across_projects_from_their_campaigns() -> None:
+    saga = _planned_saga()
+    run = replace(
+        _run_of(saga, PLANNING, WorkflowCampaignStatus.BLOCKED),
+        metadata={
+            **_run_of(saga, PLANNING, WorkflowCampaignStatus.BLOCKED).metadata,
+            "pending_workflow_gates": [{"label": "Plan review"}],
+        },
+    )
+    adapter = _adapter([])
+    client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[run])
+    client.app.dependency_overrides[resolve_saga_repo]().list_sagas = AsyncMock(return_value=[saga])
+
+    response = client.get("/api/v1/ting/work/reviews", headers=HEADERS)
+
+    assert response.status_code == 200
+    (item,) = response.json()["items"]
+    assert item["state"] == "waiting"
+    assert item["identifier"] == "ISSUE-1"
+    assert item["projectName"] == saga.name
+    adapter.get_workflow_gates.assert_not_awaited()
+
+
+def test_a_ticket_review_names_the_plan_its_project_came_from() -> None:
+    saga = replace(_planned_saga(), plan_slug="plan-1")
+    adapter = _adapter([])
+    client = _client(saga, issues=[_issue()], runs=[], adapter=adapter, campaigns=[])
+
+    assert _reviews(client, saga).json()["planSlug"] == "plan-1"

@@ -10,6 +10,7 @@ import { DispatchView } from './ui/DispatchView';
 import { TingTopbar } from './ui/TingTopbar';
 import { TingFooter } from './ui/TingFooter';
 import { PlanWizard } from './ui/PlanWizard';
+import { ReviewsPage } from './ui/review/ReviewsPage';
 import { PlanDetailPage } from './ui/PlanDetailPage';
 import { TicketReviewPage } from './ui/review/TicketReviewPage';
 import { TingSubnav } from './ui/TingSubnav';
@@ -68,10 +69,11 @@ export const tingPlugin = definePlugin({
   title: 'Work',
   subtitle: 'run and oversee work',
   simple: {
-    tabs: ['work', 'workflows', 'builder'],
+    tabs: ['work', 'reviews', 'workflows', 'builder'],
   },
   tabs: [
     { id: 'work', label: 'Board', path: '/ting/work' },
+    { id: 'reviews', label: 'Reviews', path: '/ting/plan' },
     { id: 'workflows', label: 'Workflows', path: '/ting/workflows' },
     { id: 'builder', label: 'Builder', path: '/ting/workflows/build' },
   ],
@@ -186,6 +188,11 @@ export const tingPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting/plan',
+      component: ReviewsPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/plan/new',
       component: PlanWizard,
     }),
     createRoute({

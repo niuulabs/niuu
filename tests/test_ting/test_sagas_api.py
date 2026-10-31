@@ -1680,6 +1680,7 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: repo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: MagicMock()
         app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         recorder = _DispatchRecorder()
@@ -1724,6 +1725,7 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: repo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: MagicMock()
         app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         app.state.dispatch_service = _DispatchRecorder(should_fail=True)
@@ -1779,6 +1781,7 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: repo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: MagicMock()
         app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         client = TestClient(app)
@@ -1802,6 +1805,7 @@ class TestCommitSaga:
         app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: MagicMock()
         app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         client = TestClient(app)
@@ -1844,6 +1848,7 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [FailingTracker()]
         app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: MagicMock()
         app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         client = TestClient(app)
