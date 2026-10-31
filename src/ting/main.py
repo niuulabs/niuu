@@ -135,7 +135,10 @@ from ting.domain.services.resource_authorization import (
 )
 from ting.domain.services.review_engine import ReviewEngine
 from ting.domain.services.ticket_advance import TicketAdvancer
-from ting.domain.services.ticket_coordinator import TicketCoordinatorService
+from ting.domain.services.ticket_coordinator import (
+    TicketCoordinatorService,
+    coordinator_ravn_config,
+)
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.domain.services.workflow_execution import WorkflowExecutionService
 from ting.domain.services.workflow_migration import workflow_catalog_migration_is_current
@@ -1323,7 +1326,10 @@ def create_app(
                     session_definitions=settings.session_definitions,
                     configured_models=list(settings.bifrost.models),
                     cli_turn_timeout_seconds=settings.dispatch.workflow_cli_turn_timeout_seconds,
-                    ravn_config=settings.ticket_coordinator.ravn_config,
+                    ravn_config=coordinator_ravn_config(
+                        settings.dispatch.flock.ravn_config,
+                        settings.ticket_coordinator.ravn_config,
+                    ),
                     platform_origin=settings.a2a.public_base_url.rstrip("/"),
                     anonymous_platform=settings.auth.allow_anonymous_dev,
                 )

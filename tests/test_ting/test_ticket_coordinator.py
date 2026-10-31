@@ -17,6 +17,7 @@ from ting.domain.services.ticket_coordinator import (
     TicketCoordinatorService,
     TicketWorkflow,
     coordinator_brief,
+    coordinator_ravn_config,
     ticket_branch,
 )
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
@@ -126,6 +127,18 @@ async def test_a_coordinator_model_no_runtime_serves_refuses_to_start() -> None:
         await service.start_workflow(_saga(), _issue(), WORKFLOW)
 
     volundr.spawn_session.assert_not_awaited()
+
+
+def test_a_coordinator_inherits_the_deployments_platform_settings() -> None:
+    flock = {"gateway": {"platform": {"enabled": True, "base_url": "https://forge"}}, "a": 1}
+    own = {"gateway": {"platform": {"timeout": 5}}, "memory": {"reflection_model": "same"}}
+
+    assert coordinator_ravn_config(flock, own) == {
+        "gateway": {"platform": {"enabled": True, "base_url": "https://forge", "timeout": 5}},
+        "a": 1,
+        "memory": {"reflection_model": "same"},
+    }
+    assert "timeout" not in flock["gateway"]["platform"]
 
 
 def test_the_brief_names_the_ticket_and_the_workflow() -> None:

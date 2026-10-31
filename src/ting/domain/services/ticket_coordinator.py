@@ -44,6 +44,23 @@ class TicketWorkflow:
     name: str
 
 
+def coordinator_ravn_config(flock: dict[str, Any], own: dict[str, Any]) -> dict[str, Any]:
+    """A coordinator's Ravn config: the deployment's flock settings under its own.
+
+    The flock settings carry what a Ravn needs to reach the platform on a
+    cluster. Without them a coordinator has no platform tools, ``a2a_task``
+    among them, and cannot start a workflow.
+    """
+    merged = dict(flock)
+    for key, value in own.items():
+        inherited = merged.get(key)
+        if isinstance(inherited, dict) and isinstance(value, dict):
+            merged[key] = coordinator_ravn_config(inherited, value)
+            continue
+        merged[key] = value
+    return merged
+
+
 def ticket_branch(saga: Saga, issue: TrackerIssue) -> str:
     """A ticket's own branch, so no ticket can overwrite another's commits.
 
