@@ -3646,6 +3646,35 @@ def create_volundr_router(
         payload = response.json()
         return payload if isinstance(payload, dict) else {}
 
+    @router.post("/sessions/{session_id}/room/{operation}")
+    async def post_session_room(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        operation: str = Path(description="Room operation on the session's broker"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/room/{operation}",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return JSONResponse(
+            content=payload if isinstance(payload, dict) else {}, status_code=response.status_code
+        )
+
     @router.post("/sessions/{session_id}/messages")
     async def send_message(
         request: Request,
