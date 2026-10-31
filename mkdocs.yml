@@ -41,9 +41,14 @@ theme:
 
 extra_css:
   - stylesheets/niuu.css
+  - stylesheets/home.css
+
+extra_javascript:
+  - javascripts/home.js
 
 nav:
-  - Documentation: index.md
+  - Home: index.md
+  - Documentation: overview.md
   - Start here:
       - What is Niuu?: get-started/introduction.md
       - Install: get-started/install.md

@@ -38,6 +38,7 @@ Prose says "Niuu". "NIUU" appears only as the logo and its accessible name.
 | Mark and wordmark in the web UI | `web-next/packages/ui/src/primitives/NiuuMark/` |
 | Web favicon | `web-next/apps/niuu/public/favicon.svg` (copy of `niuu-favicon.svg`) |
 | Docs site | `docs/site/stylesheets/niuu.css`, `docs/site/images/niuu-mark.svg`, `docs/site/images/niuu-favicon.svg` |
+| Docs landing page | Copy in `docs/site/index.md`, markup in `docs/overrides/home.html`, styles in `docs/site/stylesheets/home.css` |
 | CLI TUI | `src/cli/tui/theme.py`, `src/cli/tui/theme.tcss` |
 
 ## Additions to the package
