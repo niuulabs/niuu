@@ -3,9 +3,10 @@
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from niuu.domain.services.token_scope import FORGE_SESSION_LIFECYCLE_SCOPE, require_scope
 from volundr.domain.execution_catalog import ExecutionSelectionError
 from volundr.domain.project_ports import ProjectConflictError
 from volundr.domain.projects import (
@@ -128,7 +129,10 @@ def create_projects_router(service: ProjectService, principal_for_request) -> AP
         principal = await principal_for_request(request)
         return await project_result(service.connect(data.workspace_path, data.name, principal))
 
-    @router.get("/{project_id}")
+    # A session credential reads a project only to create a session in it (lifecycle).
+    @router.get(
+        "/{project_id}", dependencies=[Depends(require_scope(FORGE_SESSION_LIFECYCLE_SCOPE))]
+    )
     async def get_project(request: Request, project_id: UUID) -> ForgeProject:
         principal = await principal_for_request(request)
         return await project_result(service.get(project_id, principal))

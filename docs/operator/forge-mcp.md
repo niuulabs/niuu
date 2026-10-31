@@ -248,6 +248,7 @@ session of the same owner.
 | `GET /sessions/{id}`, `/conversation`, `/conversation/turns/{turn}`, `/log`, `/log/head`, `/transcript`, `/transcript/download`, `/message-deliveries/{request_id}` | `forge:session:read` | owned |
 | `POST /sessions/{id}/messages` | `forge:session:message` | peer |
 | `POST /sessions` | `forge:session:lifecycle` | acts as the owner |
+| `GET /projects/{id}` | `forge:session:lifecycle` | the project a new session joins: the Guild facade reads it on the node before the create; the owner's access still applies, and listing, creating or changing projects stays denied |
 | `POST /sessions/{id}/start`, `/resume`, `/stop` | `forge:session:lifecycle` | peer |
 | `POST /sessions/{id}/log`, `/activity`, `/usage` | `forge:notify` | own |
 | `PUT /sessions/{id}/description` (never `PUT /sessions/{id}`) | `forge:notify` | own |

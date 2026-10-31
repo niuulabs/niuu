@@ -101,6 +101,15 @@ ROUTE_POLICIES: tuple[RoutePolicy, ...] = (
     # Lifecycle needs the `lifecycle` grant: create, start/resume and stop. No
     # delete or archive, and a session cannot start or stop itself.
     RoutePolicy("POST", f"{FORGE_PREFIX}/sessions", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.NONE),
+    # Creating a session in a project first reads that project on the node (the Guild
+    # facade checks it is known there). Volundr still enforces the owner's access; listing,
+    # creating and changing projects stay denied.
+    RoutePolicy(
+        "GET",
+        f"{FORGE_PREFIX}/projects/{{project_id}}",
+        FORGE_SESSION_LIFECYCLE_SCOPE,
+        Binding.NONE,
+    ),
     RoutePolicy("POST", f"{_S}/start", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.PEER),
     RoutePolicy("POST", f"{_S}/resume", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.PEER),
     RoutePolicy("POST", f"{_S}/stop", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.PEER),

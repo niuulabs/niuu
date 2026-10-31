@@ -72,6 +72,7 @@ class TestPolicyTable:
             ("GET", "/artifact-bursts/b-1", FORGE_SESSION_READ_SCOPE, Binding.NONE),
             ("POST", "/sessions/S/messages", FORGE_SESSION_MESSAGE_SCOPE, Binding.PEER),
             ("POST", "/sessions", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.NONE),
+            ("GET", "/projects/p-1", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.NONE),
             ("POST", "/sessions/S/start", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.PEER),
             ("POST", "/sessions/S/stop", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.PEER),
             ("POST", "/sessions/S/log", FORGE_NOTIFY_SCOPE, Binding.OWN),
@@ -114,6 +115,11 @@ class TestPolicyTable:
             ("POST", "/artifact-publications/backfill"),
             ("GET", "/instance"),
             ("GET", f"/sessions/S/files/presented/pf_{'a' * 32}"),
+            ("GET", "/projects"),
+            ("POST", "/projects"),
+            ("PATCH", "/projects/p-1"),
+            ("DELETE", "/projects/p-1"),
+            ("GET", "/projects/p-1/sessions"),
         ],
     )
     def test_everything_else_is_denied(self, method, path) -> None:
@@ -441,6 +447,17 @@ class TestRouteFamilies:
                 f"{PREFIX}{path}", json={"name": "child"}, headers=bearer(token)
             )
             assert response.status_code == 403, path
+
+    async def test_reading_a_project_to_join_it_needs_the_lifecycle_grant(self, forge) -> None:
+        project = f"{PREFIX}/projects/{uuid.uuid4()}"
+        _, _, plain = await self._pair(forge)
+        refused = forge.client.get(project, headers=bearer(plain))
+        assert refused.status_code == 403
+        assert "may not call" in refused.json()["detail"] or "scope" in refused.json()["detail"]
+
+        _, _, granted = await self._pair(forge, "lifecycle")
+        # Admitted: Volundr answers for the project itself (here: there is none).
+        assert forge.client.get(project, headers=bearer(granted)).status_code != 403
 
     async def test_lifecycle_with_the_grant(self, forge) -> None:
         own, peer, token = await self._pair(forge, "lifecycle")
