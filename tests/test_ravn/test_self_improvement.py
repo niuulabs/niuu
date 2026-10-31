@@ -384,6 +384,14 @@ def test_a_record_with_a_hand_written_field_names_the_page(field: str, value: ob
         parse_record("friction/x.md", edited)
 
 
+def test_a_record_rewritten_without_its_subject_names_the_page() -> None:
+    page = render_record(FrictionRecord(path="friction/x.md", kind="escalation", subject="s"))
+    edited = page.replace('  "subject": "s",\n', "")
+
+    with pytest.raises(ValueError, match=r"friction/x\.md.*subject is missing"):
+        parse_record("friction/x.md", edited)
+
+
 async def test_known_resolutions_answer_once_per_case(tmp_path: Path) -> None:
     mimir = MarkdownMimirAdapter(root=tmp_path)
     ledger = _ledger(mimir)

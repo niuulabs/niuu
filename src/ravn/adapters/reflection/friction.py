@@ -51,6 +51,7 @@ RESOLVED = "resolved"
 
 _STATE_BLOCK = re.compile(r"^```json\n(.*?)\n```$", re.MULTILINE | re.DOTALL)
 _URL_KEYS = ("url", "uri", "endpoint", "href")
+_REQUIRED_FIELDS = ("kind", "subject")
 _OBJECT_LIST_FIELDS = ("occurrences", "actions", "escalated_anyway")
 
 
@@ -372,6 +373,12 @@ def parse_record(path: str, content: str) -> FrictionRecord:
     if match is None:
         raise ValueError(f"friction record {path!r} has no ```json record block")
     state = json.loads(match.group(1))
+    for name in _REQUIRED_FIELDS:
+        if not state.get(name):
+            raise ValueError(
+                f"friction record {path!r}: {name} is missing; "
+                "repair the page's ```json record block"
+            )
     for name in _OBJECT_LIST_FIELDS:
         value = state.get(name, [])
         if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
