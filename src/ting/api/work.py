@@ -24,7 +24,11 @@ from ting.api.sagas import resolve_saga_repo
 from ting.api.tracker import resolve_trackers
 from ting.domain.models import WorkflowCampaignStatus
 from ting.domain.services.dispatch_service import DispatchService
-from ting.domain.services.ticket_coordinator import TicketCoordinatorService, TicketWorkflow
+from ting.domain.services.ticket_coordinator import (
+    TicketCoordinatorService,
+    TicketWorkflow,
+    coordinator_ravn_config,
+)
 from ting.domain.services.work_read import (
     CoverageError,
     CoverageStatus,
@@ -416,7 +420,9 @@ def _coordinator_service(
         cli_turn_timeout_seconds=(
             request.app.state.settings.dispatch.workflow_cli_turn_timeout_seconds
         ),
-        ravn_config=settings.ravn_config,
+        ravn_config=coordinator_ravn_config(
+            request.app.state.settings.dispatch.flock.ravn_config, settings.ravn_config
+        ),
         platform_origin=_public_origin(request),
         anonymous_platform=request.app.state.settings.auth.allow_anonymous_dev,
     )
