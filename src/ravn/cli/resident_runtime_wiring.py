@@ -315,6 +315,7 @@ def _build_resident_learning_runtime(
         learned_tool_runner_for_backend,
         learned_tool_venvs_dir,
     )
+    from ravn.valkyrie_evolution.peer_tools import PeerToolCatalog  # noqa: PLC0415
 
     resident_id = settings.mesh.own_peer_id or f"valkyrie:{settings.environment.id}"
     local_ravn_dir = _resident_ravn_state_dir(workspace, settings)
@@ -373,7 +374,11 @@ def _build_resident_learning_runtime(
         skill_inventory_interval_seconds=(
             settings.resident_evolution.skill_inventory_interval_seconds
         ),
+        flock_inventory_interval_seconds=(
+            settings.resident_evolution.flock_inventory_interval_seconds
+        ),
         learning_store=FlockLearningStore(local_ravn_dir / "flock_learning.json"),
+        peer_catalog=PeerToolCatalog(local_ravn_dir / "flock_peer_tools.json"),
         review_requester=review_requester,
         learned_tool_runner=learned_tool_runner_for_backend(
             settings.resident_evolution.learned_tool_execution_backend,

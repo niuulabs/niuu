@@ -13,6 +13,7 @@ from ravn.valkyrie_evolution.resident_learning import (
 from ravn.valkyrie_evolution.tool_runtime import tool_path_for_skill
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain import registry
+from sleipnir.domain.events import FLOCK_SCOPE_KEY, flock_scope
 from tests.ravn.fixtures.fakes import BusRecorder
 from tests.ravn.fixtures.skills import probe_skill_content
 
@@ -125,10 +126,8 @@ async def test_regressing_tool_is_rolled_back_after_threshold(tmp_path) -> None:
     assert payload["learning_id"] == "learn-oom"
     assert payload["canary_passed"] is False
     assert "consecutive failures" in payload["rationale"]
-    # Negative transfer fans out on the flock-scoped subject.
-    assert any(
-        subject.startswith("flock.") for subject in payload.get("additional_nats_subjects", [])
-    )
+    # Negative transfer is meant for the whole flock.
+    assert payload[FLOCK_SCOPE_KEY] == flock_scope("k8s", peer.identity.environment_id)
 
 
 async def test_transient_failures_do_not_roll_back(tmp_path) -> None:
