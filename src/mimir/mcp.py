@@ -716,6 +716,9 @@ class MimirMcpServer:
             ],
             "pages_checked": report.pages_checked,
             "issues_found": report.issues_found,
+            "complete": report.complete,
+            "mounts_checked": report.mounts_checked,
+            "mount_failures": report.mount_failures,
             "summary": report.summary,
         }
         return [{"type": "text", "text": json.dumps(result, indent=2)}]

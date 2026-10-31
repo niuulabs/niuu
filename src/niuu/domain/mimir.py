@@ -265,15 +265,29 @@ class MimirLintReport:
 
     ``issues`` contains all findings across the 12 check types.
     ``summary`` provides per-severity counts for quick filtering.
-    ``issues_found`` is True when any issue is present.
+    ``issues_found`` is True when any issue is present.  ``complete`` is
+    false when a composite could not lint one or more selected mounts; in
+    that case an empty issue list must not be interpreted as clean.
     """
 
     issues: list[LintIssue]
     pages_checked: int
+    mounts_checked: list[str] = field(default_factory=list)
+    mount_failures: dict[str, str] = field(default_factory=dict)
 
     @property
     def issues_found(self) -> bool:
         return bool(self.issues)
+
+    @property
+    def complete(self) -> bool:
+        """Whether lint covered every mount selected for this pass.
+
+        An empty issue list is a clean result only when every selected mount
+        was checked.  Composite adapters record any mount that could not run
+        lint here instead of presenting a partial pass as clean.
+        """
+        return not self.mount_failures
 
     @property
     def summary(self) -> dict[str, int]:

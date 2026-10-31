@@ -16,6 +16,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import respx
+from httpx import Response
 
 from niuu.domain.mimir import (
     LintIssue,
@@ -28,6 +30,7 @@ from niuu.domain.mimir import (
     compute_content_hash,
 )
 from ravn.adapters.mimir.composite import CompositeMimirAdapter
+from ravn.adapters.mimir.http import HttpMimirAdapter
 from ravn.domain.exceptions import MimirUnavailableError
 from ravn.domain.mimir import MimirMount, WriteRouting
 
@@ -670,6 +673,35 @@ async def test_lint_merges_all_mounts() -> None:
     assert any(i.id == "L02" and i.page_path == "b.md" for i in merged.issues)
     assert any(i.id == "L04" and "concept-x" in i.message for i in merged.issues)
     assert merged.pages_checked == 8
+    assert merged.complete is True
+    assert merged.mounts_checked == ["local", "shared"]
+    assert merged.mount_failures == {}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_lint_reports_http_501_as_incomplete_coverage() -> None:
+    unsupported = HttpMimirAdapter(base_url="http://unsupported.test")
+    respx.get("http://unsupported.test/mimir/lint").mock(return_value=Response(501))
+    checked = _make_mount(
+        "checked",
+        priority=1,
+        lint_report=MimirLintReport(issues=[], pages_checked=3),
+    )
+    adapter = CompositeMimirAdapter(
+        mounts=[
+            MimirMount(name="unsupported", port=unsupported, role="shared", read_priority=0),
+            checked,
+        ]
+    )
+
+    report = await adapter.lint()
+
+    assert report.complete is False
+    assert report.pages_checked == 3
+    assert report.mounts_checked == ["checked"]
+    assert "unsupported" in report.mount_failures
+    assert "501" in report.mount_failures["unsupported"]
 
 
 # ---------------------------------------------------------------------------
@@ -748,7 +780,8 @@ async def test_integration_two_markdown_adapters(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# A mount that fails fails the call — .claude/rules/no-fallbacks.md
+# A mount that fails fails the call, except lint which returns explicit
+# incomplete-coverage diagnostics rather than a partial result as clean.
 # ---------------------------------------------------------------------------
 
 
@@ -794,7 +827,6 @@ def _a_source() -> MimirSource:
         ("search", lambda a: a.search("query")),
         ("list_pages", lambda a: a.list_pages()),
         ("list_sources", lambda a: a.list_sources()),
-        ("lint", lambda a: a.lint()),
         ("list_threads", lambda a: a.list_threads()),
         ("get_thread_queue", lambda a: a.get_thread_queue()),
         ("summarize", lambda a: a.summarize()),

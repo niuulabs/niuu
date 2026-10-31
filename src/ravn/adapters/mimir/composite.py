@@ -450,24 +450,35 @@ class CompositeMimirAdapter(MimirPort):
         return results
 
     async def lint(self, fix: bool = False) -> MimirLintReport:
-        """Run lint on all mounts, merge issue lists.
+        """Run lint on all mounts, preserving any failed mount in the report.
 
-        A mount that could not be linted must not be silently dropped: the
-        merged report would read as a clean bill of health over a corpus that
-        was never checked.
+        Unlike corpus reads and writes, lint is a diagnostic operation: it can
+        report the healthy mounts while explicitly making incomplete coverage
+        visible to its caller.  This prevents one unsupported lint endpoint
+        from aborting the whole pass without ever making partial results look
+        like a clean report.
         """
         all_issues: list[LintIssue] = []
         pages_checked = 0
+        mounts_checked: list[str] = []
+        mount_failures: dict[str, str] = {}
 
         for mount in self._mounts:
             try:
                 report = await mount.port.lint(fix=fix)
             except Exception as exc:
-                raise _mount_failed("lint", mount.name, exc) from exc
+                mount_failures[mount.name] = str(_mount_failed("lint", mount.name, exc))
+                continue
             all_issues.extend(report.issues)
             pages_checked += report.pages_checked
+            mounts_checked.append(mount.name)
 
-        return MimirLintReport(issues=all_issues, pages_checked=pages_checked)
+        return MimirLintReport(
+            issues=all_issues,
+            pages_checked=pages_checked,
+            mounts_checked=mounts_checked,
+            mount_failures=mount_failures,
+        )
 
     async def list_threads(
         self,

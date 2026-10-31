@@ -389,6 +389,8 @@ class HttpMimirAdapter(MimirPort):
         return MimirLintReport(
             issues=issues,
             pages_checked=data.get("pages_checked", 0),
+            mounts_checked=data.get("mounts_checked", []),
+            mount_failures=data.get("mount_failures", {}),
         )
 
     async def read_source(self, source_id: str) -> MimirSource | None:
