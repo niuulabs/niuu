@@ -43,10 +43,9 @@ Prose says "Niuu". "NIUU" appears only as the logo and its accessible name.
 
 ## Themes
 
-`niuu` is the default. The other themes (`xteo`, `ice`, `amber`, `spring`) keep their
-own colours, so a brand change belongs in the `niuu` block and never in `:root`. The
-`light` theme uses the deep Signal accent. Hard-coded colours outside the tokens are
-written as `var(--niuu-x, #original)`: only `niuu` defines those names, so every other
+`niuu` is the default. The other themes (`xteo`, `ice`, `amber`, `spring`, `light`) keep
+their own colours, so a brand change belongs in the `niuu` block and never in `:root`.
+Only the logo strokes are shared. Hard-coded colours outside the tokens are written as `var(--niuu-x, #original)`: only `niuu` defines those names, so every other
 theme falls back to the original.
 
 ## Additions to the package

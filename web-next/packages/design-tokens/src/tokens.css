@@ -592,17 +592,17 @@ kbd {
   --radius-lg: 0.625rem;
   color-scheme: light;
 
-  /* Neutral surfaces with the deep Signal accent of the light-surface mark.
+  /* cho.sh-inspired neutral surfaces and restrained emerald accents.
    * Low-number brand tokens also serve as foregrounds in legacy plugins. */
-  --brand-100: #0b2937;
-  --brand-200: #0f4a60;
-  --brand-300: #16607a;
-  --brand-400: #1d718f;
-  --brand-500: #1d718f;
-  --brand-600: #1d718f;
-  --brand-700: #16607a;
-  --brand-800: #0f4a60;
-  --brand-900: #0b2937;
+  --brand-100: #064e3b;
+  --brand-200: #065f46;
+  --brand-300: #047857;
+  --brand-400: #047857;
+  --brand-500: #047857;
+  --brand-600: #047857;
+  --brand-700: #065f46;
+  --brand-800: #064e3b;
+  --brand-900: #022c22;
   --color-brand: var(--brand-500);
 
   --color-bg-primary: #f7f7f7;
