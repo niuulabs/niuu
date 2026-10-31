@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test';
 
+const VALHALLA_ACTIVITY = '/valkyrie/activity?environment=env-k8s-valhalla';
+
 test('odin review inbox lists pending decisions with full lineage', async ({ page }) => {
   await page.goto('/valkyrie/inbox');
 
@@ -51,24 +53,21 @@ test('console is the default valkyrie view', async ({ page }) => {
 
   await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
   await expect(page.getByTestId('valkyrie-roster')).toBeVisible();
-  await expect(page.getByTestId('valkyrie-signal-timeline')).toBeVisible();
+  await expect(page.getByTestId('valkyrie-evolution')).toBeVisible();
 });
 
-test('console explains the charter, decisions, and pending reviews', async ({ page }) => {
+test('console explains the charter and pending reviews', async ({ page }) => {
   await page.goto('/valkyrie');
   await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
 
   await expect(page.getByTestId('valkyrie-charter')).toContainText('Keep the Valhalla cluster');
-  // Decision rows lead with the record's own readable sentence.
-  await expect(page.getByTestId('valkyrie-decisions')).toContainText(
-    'OOMKilled pattern handled with learned probe',
-  );
   await expect(page.getByTestId('valkyrie-pending-reviews')).toBeVisible();
   await expect(page.getByTestId('valkyrie-learning')).toContainText('k8s_memory_pressure_probe');
 });
 
-test('console collapses re-judged decisions and never fakes approval', async ({ page }) => {
-  await page.goto('/valkyrie');
+test('activity collapses re-judged decisions and never fakes approval', async ({ page }) => {
+  await page.goto(VALHALLA_ACTIVITY);
+  await page.getByTestId('evolution-fold-decisions').click();
   const decisions = page.getByTestId('valkyrie-decisions');
   await expect(decisions).toContainText('OOMKilled pattern handled with learned probe');
 
@@ -95,8 +94,9 @@ test('console collapses re-judged decisions and never fakes approval', async ({ 
   await expect(pendingRow.getByTestId('decision-needs-approval')).toHaveText('Needs your approval');
 });
 
-test('console decision expands to rationale, lineage, and its skill viewer', async ({ page }) => {
-  await page.goto('/valkyrie');
+test('activity decision expands to rationale, lineage, and its skill viewer', async ({ page }) => {
+  await page.goto(VALHALLA_ACTIVITY);
+  await page.getByTestId('evolution-fold-decisions').click();
   await expect(page.getByTestId('valkyrie-decisions')).toContainText(
     'OOMKilled pattern handled with learned probe',
   );
@@ -119,9 +119,9 @@ test('console decision expands to rationale, lineage, and its skill viewer', asy
   await expect(dialog).not.toBeVisible();
 });
 
-test('console signal browser drills into observed signals', async ({ page }) => {
-  await page.goto('/valkyrie');
-  await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
+test('activity signal browser drills into observed signals', async ({ page }) => {
+  await page.goto(VALHALLA_ACTIVITY);
+  await expect(page.getByTestId('activity-page')).toBeVisible({ timeout: 5000 });
 
   await page.getByRole('button', { name: /browse observed signals/i }).click();
   await expect(page.getByTestId('valkyrie-signal-browser')).toContainText('pod/ravn-worker-77');

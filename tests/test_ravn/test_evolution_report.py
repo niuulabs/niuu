@@ -93,6 +93,25 @@ async def test_it_counts_what_the_resident_keeps() -> None:
     assert (report["runs"], report["successes"]) == (12, 11)
 
 
+async def test_most_used_tools_come_first_and_unused_ones_stay_out() -> None:
+    report = await _reporter(
+        [
+            _tool("rare", runs=2, successes=2),
+            _tool("busy", runs=27310, successes=27303),
+            _tool("never"),
+            _tool("gone", runs=900, retired_days_ago=20, reason="superseded"),
+        ]
+    ).report()
+
+    assert [(tool["tool"], tool["runs"]) for tool in report["most_used"]] == [
+        ("busy", 27310),
+        ("rare", 2),
+    ]
+    assert report["most_used"][0]["successes"] == 27303
+    assert report["most_used"][0]["last_used_at"] == _ago(1)
+    assert _dream_evolution(report)["mostUsed"][0]["lastUsedAt"] == _ago(1)
+
+
 async def test_changes_are_the_recent_ones_newest_first() -> None:
     report = await _reporter(
         [

@@ -14,6 +14,7 @@ import { useValkyrieDashboard } from '../application/useValkyrieDashboard';
 import { useReviewList } from '../application/useReviews';
 import { useValkyrieSkills } from '../application/useValkyrieSkills';
 import { ActivityDebugList, eventClasses } from './ActivityDebugList';
+import { ResidentHistory } from './ResidentHistory';
 import { SkillNameButton, SkillViewer } from './SkillViewer';
 import { timeAgo } from './reviewFormat';
 
@@ -191,7 +192,13 @@ function InvestigationStory({
 export function ActivityPage() {
   const dashboard = useValkyrieDashboard();
   const reviews = useReviewList();
-  const [filters, setFilters] = useState<ActivityStoryFilters>(DEFAULT_STORY_FILTERS);
+  // A resident's page links here with its environment already chosen.
+  const [filters, setFilters] = useState<ActivityStoryFilters>(() => ({
+    ...DEFAULT_STORY_FILTERS,
+    environmentId:
+      new URLSearchParams(window.location.search).get('environment') ??
+      DEFAULT_STORY_FILTERS.environmentId,
+  }));
   const [debugView, setDebugView] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [viewedSkill, setViewedSkill] = useState<{
@@ -308,44 +315,53 @@ export function ActivityPage() {
           </span>
         </div>
       </header>
-      {telemetryEvents.length === 0 && settled.length === 0 ? (
-        <div data-testid="activity-empty" className={`${PANEL} niuu:p-6 niuu:text-sm ${MUTED}`}>
-          No telemetry or decisions yet.
-        </div>
-      ) : debugView ? (
-        <ActivityDebugList events={telemetryEvents} settled={settled} />
-      ) : visibleStories.length === 0 ? (
-        <div
-          data-testid="activity-filtered-empty"
-          className={`${PANEL} niuu:p-6 niuu:text-sm ${MUTED}`}
-        >
-          {hiddenCount > 0
-            ? `${hiddenCount} stor${hiddenCount === 1 ? 'y is' : 'ies are'} hidden by the current filters.`
-            : 'No stories yet — settled decisions live in the debug view.'}
-        </div>
-      ) : (
-        <ol className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:flex-col niuu:gap-2 niuu:overflow-auto">
-          {visibleStories.map((story) =>
-            story.kind === 'idle_triage' ? (
-              <IdleTriageLine key={story.correlationId} story={story} />
-            ) : (
-              <InvestigationStory
-                key={story.correlationId}
-                story={story}
-                expanded={expandedId === story.correlationId}
-                onToggle={() =>
-                  setExpandedId((current) =>
-                    current === story.correlationId ? null : story.correlationId,
-                  )
-                }
-                onViewSkill={(environmentId, skillName) =>
-                  setViewedSkill({ environmentId, skillName })
-                }
-              />
-            ),
-          )}
-        </ol>
-      )}
+      <div className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:flex-col niuu:gap-3 niuu:overflow-auto">
+        {telemetryEvents.length === 0 && settled.length === 0 ? (
+          <div data-testid="activity-empty" className={`${PANEL} niuu:p-6 niuu:text-sm ${MUTED}`}>
+            No telemetry or decisions yet.
+          </div>
+        ) : debugView ? (
+          <ActivityDebugList events={telemetryEvents} settled={settled} />
+        ) : visibleStories.length === 0 ? (
+          <div
+            data-testid="activity-filtered-empty"
+            className={`${PANEL} niuu:p-6 niuu:text-sm ${MUTED}`}
+          >
+            {hiddenCount > 0
+              ? `${hiddenCount} stor${hiddenCount === 1 ? 'y is' : 'ies are'} hidden by the current filters.`
+              : 'No stories yet — settled decisions live in the debug view.'}
+          </div>
+        ) : (
+          <ol className="niuu:flex niuu:flex-col niuu:gap-2">
+            {visibleStories.map((story) =>
+              story.kind === 'idle_triage' ? (
+                <IdleTriageLine key={story.correlationId} story={story} />
+              ) : (
+                <InvestigationStory
+                  key={story.correlationId}
+                  story={story}
+                  expanded={expandedId === story.correlationId}
+                  onToggle={() =>
+                    setExpandedId((current) =>
+                      current === story.correlationId ? null : story.correlationId,
+                    )
+                  }
+                  onViewSkill={(environmentId, skillName) =>
+                    setViewedSkill({ environmentId, skillName })
+                  }
+                />
+              ),
+            )}
+          </ol>
+        )}
+        {debugView ? null : (
+          <ResidentHistory
+            environmentId={filters.environmentId}
+            operationalStates={dashboard.data?.operationalStates ?? []}
+            onViewSkill={(environmentId, skillName) => setViewedSkill({ environmentId, skillName })}
+          />
+        )}
+      </div>
       <SkillViewer
         environmentId={viewedSkill?.environmentId ?? ''}
         skillName={viewedSkill?.skillName ?? null}

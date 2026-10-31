@@ -87,6 +87,20 @@ class EvolutionReporter:
             and entry.lifecycle.run_count > 0
             and entry.lifecycle.success_count == 0
         ]
+        most_used = sorted(
+            (
+                {
+                    "tool": entry.name,
+                    "runs": entry.lifecycle.run_count,
+                    "successes": entry.lifecycle.success_count,
+                    "last_used_at": entry.lifecycle.last_used_at,
+                }
+                for entry in active
+                if entry.lifecycle is not None and entry.lifecycle.run_count > 0
+            ),
+            key=lambda tool: tool["runs"],
+            reverse=True,
+        )
         runs = sum(entry.lifecycle.run_count for entry in active if entry.lifecycle)
         successes = sum(entry.lifecycle.success_count for entry in active if entry.lifecycle)
         report: dict[str, Any] = {
@@ -96,6 +110,7 @@ class EvolutionReporter:
             "from_peers": sum(1 for entry in active if self._peer(entry)),
             "runs": runs,
             "successes": successes,
+            "most_used": most_used,
             "changes": changes,
             "attention": attention,
         }
