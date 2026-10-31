@@ -76,7 +76,9 @@ def _service(*, current: TicketCoordinator | None, session_status: str = "runnin
     repo.save = AsyncMock(side_effect=lambda item: item)
     repo.close = AsyncMock()
     volundr = MagicMock()
-    volundr.get_session = AsyncMock(return_value=SimpleNamespace(status=session_status, activity_state=None))
+    volundr.get_session = AsyncMock(
+        return_value=SimpleNamespace(status=session_status, activity_state=None)
+    )
     volundr.spawn_session = AsyncMock(return_value=SimpleNamespace(id="session-2"))
     volundr.send_directed_room_message = AsyncMock()
     volundr.start_session = AsyncMock()
