@@ -177,8 +177,12 @@ async def _run_daemon(
         resident_runtime.bind_review_requester(resident_learning_runtime.review_requester)
         resident_learning_runtime.bind_operator_answerer(resident_runtime.submit_operator_answer)
 
-    workflow_thread_store = CliThreadStore(
-        _resident_ravn_state_dir(workspace, settings) / "cli_threads.json"
+    # Only a workflow session: its state dir is on that session's own workspace and it
+    # runs one workflow. A long-lived process would carry threads from run to run.
+    workflow_thread_store = (
+        CliThreadStore(_resident_ravn_state_dir(workspace, settings) / "cli_threads.json")
+        if settings.workflow.graph
+        else None
     )
 
     def _agent_factory(
