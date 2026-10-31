@@ -120,7 +120,8 @@ class TestRemembered:
         second = client.get(f"/api/v1/forge/sessions/{SESSION}", headers=USER)
 
         assert first.json()["instance_id"] == second.json()["instance_id"] == "spark"
-        # Learned again from the search: the second read asks Spark alone.
+        # The mini entry is gone; a search is never learned from (the first node to
+        # answer may not be the only holder), so the next listing teaches it again.
         assert spark.call_count == 2
 
     @respx.mock
@@ -135,6 +136,57 @@ class TestRemembered:
         response = client.get(f"/api/v1/forge/sessions/{SESSION}", headers=USER)
 
         assert response.status_code == 200 and response.json()["instance_id"] == "spark"
+
+    @respx.mock
+    async def test_a_filtered_listing_teaches_nothing(self) -> None:
+        client = _client()
+        respx.get(f"{MINI}/api/v1/forge/sessions").mock(
+            return_value=Response(200, json=[{"id": SESSION}])
+        )
+        client.get("/api/v1/forge/sessions", params={"instance_id": "mini"}, headers=USER)
+        respx.get(f"{MINI}/api/v1/forge/sessions/{SESSION}").mock(
+            return_value=Response(200, json={"id": SESSION})
+        )
+        spark = respx.get(f"{SPARK}/api/v1/forge/sessions/{SESSION}").mock(
+            return_value=Response(404, json={"detail": "Session not found"})
+        )
+
+        client.get(f"/api/v1/forge/sessions/{SESSION}", headers=USER)
+
+        assert spark.called
+
+    @respx.mock
+    async def test_a_listing_that_sees_two_holders_forgets_the_pin(self) -> None:
+        client = _client()
+        _listed(client)
+        respx.get(f"{SPARK}/api/v1/forge/sessions").mock(
+            return_value=Response(200, json=[{"id": SESSION}])
+        )
+        client.get("/api/v1/forge/sessions", headers=USER)
+        respx.get(f"{MINI}/api/v1/forge/sessions/{SESSION}").mock(
+            return_value=Response(200, json={"id": SESSION})
+        )
+        spark = respx.get(f"{SPARK}/api/v1/forge/sessions/{SESSION}").mock(
+            return_value=Response(200, json={"id": SESSION})
+        )
+
+        client.get(f"/api/v1/forge/sessions/{SESSION}", headers=USER)
+
+        assert spark.called
+
+    @respx.mock
+    async def test_a_remembered_node_that_fails_keeps_its_answer_if_none_has_it(self) -> None:
+        client = _client()
+        _listed(client)
+        respx.get(f"{MINI}/api/v1/forge/sessions/{SESSION}").mock(return_value=Response(500))
+        spark = respx.get(f"{SPARK}/api/v1/forge/sessions/{SESSION}").mock(
+            return_value=Response(404, json={"detail": "Session not found"})
+        )
+
+        response = client.get(f"/api/v1/forge/sessions/{SESSION}", headers=USER)
+
+        assert response.status_code == 502
+        assert spark.call_count == 1
 
     @respx.mock
     async def test_a_failing_node_still_makes_the_search_partial(self) -> None:
@@ -182,9 +234,10 @@ class TestRemembered:
             return_value=Response(200, json={"id": SESSION})
         )
 
-        client.get(f"/api/v1/forge/sessions/{SESSION}", headers=USER)
+        for _ in range(2):
+            client.get(f"/api/v1/forge/sessions/{SESSION}", headers=USER)
 
-        assert mini.called and spark.called
+        assert mini.call_count == spark.call_count == 2
 
     @respx.mock
     async def test_without_a_ttl_every_node_is_asked(self) -> None:
@@ -205,7 +258,7 @@ class TestRemembered:
 class TestParentGuildId:
     @respx.mock
     async def test_a_stored_projects_id_is_reported_with_its_guild_id(self) -> None:
-        client = _client()
+        client = _client().__enter__()  # one event loop, so the background refresh runs
         respx.get(f"{MINI}/api/v1/forge/instance").mock(
             return_value=Response(200, json={"instance_id": "mini-m6"})
         )
@@ -233,8 +286,17 @@ class TestParentGuildId:
         )
         respx.get(f"{SPARK}/api/v1/forge/sessions").mock(return_value=Response(200, json=[]))
 
-        for _ in range(2):
+        first = client.get("/api/v1/forge/sessions", headers=USER).json()
+        # Never waited on: the first read has no Guild ids yet; the refresh learns them.
+        assert all(
+            "guild_instance_id" not in i["coordination"]["parent"] or i["id"] == "w-2"
+            for i in first
+        )
+        for _ in range(50):
             items = client.get("/api/v1/forge/sessions", headers=USER).json()
+            if "guild_instance_id" in items[0]["coordination"]["parent"]:
+                break
+        client.__exit__(None, None, None)
 
         parents = {item["id"]: item["coordination"]["parent"] for item in items}
         # The stored id stays; the Guild id is added beside it.

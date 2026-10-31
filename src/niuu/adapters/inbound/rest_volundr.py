@@ -1889,15 +1889,18 @@ def create_volundr_router(
                     seen.add(item["id"])
                     merged[f"{item.get('instance_id')}:{item['id']}"] = item
         sessions = [item for item in merged.values() if item.get("id")]
-        if session_owners is not None:
-            # A session id listed by two nodes is ambiguous: leave it to the full search.
+        if session_owners is not None and not selected:
+            # Only a whole-Guild listing shows every holder of an id. An id two nodes
+            # list is ambiguous: forgotten, and left to the full search.
             seen = Counter(str(item["id"]) for item in sessions)
+            for session_id, count in seen.items():
+                if count > 1:
+                    session_owners.forget(session_id)
             session_owners.learn(
                 (str(item["id"]), str(item.get("instance_id") or ""))
                 for item in sessions
                 if seen[str(item["id"])] == 1
             )
-            await _with_parent_guild_ids(request, principal, sessions)
         sessions.sort(
             key=lambda item: _normalize_timestamp(
                 item.get("last_active") or item.get("lastActive") or item.get("last_activity_at")
@@ -1907,6 +1910,12 @@ def create_volundr_router(
         if limit is not None:
             # Each node already returned at most `limit`; keep the newest across nodes.
             sessions = sessions[:limit]
+        if session_owners is not None:
+            _with_parent_guild_ids(
+                request,
+                instances if not selected else await _visible_instances(service, principal),
+                sessions,
+            )
         if not selected:
             set_source_health_header(
                 response, instance_source_failures(instances, results) + guild_failures
@@ -3933,20 +3942,15 @@ def create_volundr_router(
         SessionOwners(session_owner_ttl_seconds) if session_owner_ttl_seconds is not None else None
     )
     #: Each node's projects-domain id ("thor", "mini-m6"), which session coordination stores
-    #: for a parent: Guild id -> (projects id or None, monotonic expiry).
+    #: for a parent: Guild id -> (projects id, or None for an older Forge without
+    #: /instance; monotonic expiry). Refreshed in the background, never on a read.
     projects_ids: dict[str, tuple[str | None, float]] = {}
+    projects_id_refreshing: set[str] = set()
+    projects_id_failing: set[str] = set()
 
-    async def _projects_id_map(
-        request: Request, instances: list[RegisteredInstance]
-    ) -> dict[str, str]:
-        """Projects-domain id -> Guild id for the given nodes, asked once per TTL each."""
-        if session_owner_ttl_seconds is None:
-            return {}
-        now = time.monotonic()
-        stale = [i for i in instances if projects_ids.get(i.id, (None, 0.0))[1] <= now]
-
-        async def ask(instance: RegisteredInstance) -> str | None:
-            embedded = _uses_embedded_transport(instance)
+    async def _refresh_projects_id(request: Request, instance: RegisteredInstance) -> None:
+        embedded = _uses_embedded_transport(instance)
+        try:
             response = await _request_remote(
                 instance,
                 request,
@@ -3956,34 +3960,58 @@ def create_volundr_router(
                 node_relay=not embedded,
                 timeout=OWNER_HINT_TIMEOUT_SECONDS,
             )
-            if response.status_code != status.HTTP_200_OK:
-                return None  # an older Forge without /instance: nothing to map
-            payload = response.json()
-            value = payload.get("instance_id") if isinstance(payload, dict) else None
-            return value if isinstance(value, str) and value else None
-
-        answers = await asyncio.gather(*(ask(i) for i in stale), return_exceptions=True)
-        for instance, answer in zip(stale, answers, strict=True):
-            if isinstance(answer, httpx.RequestError | HTTPException | ValueError):
+            if response.status_code == status.HTTP_404_NOT_FOUND:
+                value = None  # an older Forge without /instance: nothing to map
+            else:
+                _ensure_remote_success(response)
+                payload = response.json()
+                raw = payload.get("instance_id") if isinstance(payload, dict) else None
+                value = raw if isinstance(raw, str) and raw else None
+        except (httpx.RequestError, HTTPException, ValueError) as exc:
+            # Not cached: the next read schedules another try. Said once per outage.
+            if instance.id not in projects_id_failing:
+                projects_id_failing.add(instance.id)
                 logger.warning(
-                    "Cannot read Forge instance %s's projects id: %s",
+                    "Cannot read Forge instance %s's projects id; its sessions' parents "
+                    "carry no guild_instance_id until it answers: %s",
                     instance.id,
-                    describe_remote_failure(answer),
+                    describe_remote_failure(exc),
                 )
-                continue  # not cached: asked again on the next read
-            if isinstance(answer, BaseException):
-                raise answer
-            projects_ids[instance.id] = (answer, now + session_owner_ttl_seconds)
-        return {
-            projects_id: guild_id
-            for guild_id, (projects_id, _) in projects_ids.items()
-            if projects_id is not None
-        }
+            return
+        finally:
+            projects_id_refreshing.discard(instance.id)
+        projects_id_failing.discard(instance.id)
+        projects_ids[instance.id] = (value, time.monotonic() + session_owner_ttl_seconds)
 
-    async def _with_parent_guild_ids(
-        request: Request, principal: Principal, items: list[dict[str, Any]]
+    def _projects_id_map(request: Request, instances: list[RegisteredInstance]) -> dict[str, str]:
+        """Projects-domain id -> Guild id for the caller's nodes, from what is known now.
+
+        Unknown or stale nodes are refreshed in the background (one try at a time per
+        node), so a read never waits on another node's identity.
+        """
+        if session_owner_ttl_seconds is None:
+            return {}
+        now = time.monotonic()
+        mapping: dict[str, str] = {}
+        for instance in instances:
+            projects_id, expires = projects_ids.get(instance.id, (None, 0.0))
+            if expires <= now and instance.id not in projects_id_refreshing:
+                projects_id_refreshing.add(instance.id)
+                background_tasks.add(
+                    task := asyncio.create_task(_refresh_projects_id(request, instance))
+                )
+                task.add_done_callback(background_tasks.discard)
+            if projects_id is not None:
+                mapping[projects_id] = instance.id
+        return mapping
+
+    def _with_parent_guild_ids(
+        request: Request, instances: list[RegisteredInstance], items: list[dict[str, Any]]
     ) -> None:
-        """Add ``guild_instance_id`` to each item's parent; the stored id stays as it is."""
+        """Add ``guild_instance_id`` to each item's parent; the stored id stays as it is.
+
+        Absent means not known (yet): an id this caller's nodes do not name.
+        """
         parents = [
             parent
             for item in items
@@ -3994,14 +4022,15 @@ def create_volundr_router(
         ]
         if not parents:
             return
-        instances = await _visible_instances(service, principal)
         guild_ids = {instance.id for instance in instances}
-        mapping = await _projects_id_map(request, instances)
+        mapping = _projects_id_map(request, instances)
         for parent in parents:
             stored = parent["instance_id"]
             guild_id = stored if stored in guild_ids else mapping.get(stored)
             if guild_id is not None:
                 parent["guild_instance_id"] = guild_id
+
+    background_tasks: set[asyncio.Task[None]] = set()
 
     #: Nodes known to lack a notification route: (route, instance id) -> monotonic recheck
     #: time. Per route, so one route missing never hides another the node does serve.
@@ -4067,29 +4096,41 @@ def create_volundr_router(
         **kwargs: Any,
     ) -> tuple[RegisteredInstance, dict[str, Any]]:
         remembered = await _remembered_owner(service, principal, request, session_id)
-        if remembered is not None:
-            remembered_instance, visible = remembered
+        if remembered is None:
+            return await _search_session_owner(principal, request, session_id, **kwargs)
+        owner, visible = remembered
+        try:
+            instance, payload = await _find_session_owner_anywhere(
+                service, principal, request, session_id, candidates=[owner], **kwargs
+            )
+        except HTTPException as exc:
+            session_owners.forget(session_id, owner.id)
+            others = [instance for instance in visible if instance is not owner]
+            if not others:  # a lone node: the usual search asks it, with the owner hint
+                return await _search_session_owner(principal, request, session_id, **kwargs)
+            # The others decide; when none has it, the remembered node's answer stands
+            # (its own 404, or the failure that keeps "not found" from being claimed).
             try:
-                instance, payload = await _find_session_owner_anywhere(
-                    service,
-                    principal,
-                    request,
-                    session_id,
-                    candidates=[remembered_instance],
-                    **kwargs,
+                return await _search_session_owner(
+                    principal, request, session_id, candidates=others, **kwargs
                 )
-            except HTTPException as exc:
-                # Not there, or not answering: the full search decides, as without the
-                # memory. A node that said "not here" is not asked again.
-                session_owners.forget(session_id, remembered_instance.id)
+            except HTTPException as elsewhere:
+                if elsewhere.status_code != status.HTTP_404_NOT_FOUND:
+                    raise
                 if exc.status_code == status.HTTP_404_NOT_FOUND:
-                    others = [i for i in visible if i is not remembered_instance]
-                    if others:  # a lone node is simply asked again by the usual search
-                        kwargs["candidates"] = others
-            else:
-                session_owners.learn([(session_id, instance.id)])
-                await _with_parent_guild_ids(request, principal, [payload])
-                return instance, payload
+                    raise elsewhere from exc  # not here, not there: with the owner hint
+                raise exc from elsewhere
+        session_owners.learn([(session_id, instance.id)])
+        _with_parent_guild_ids(request, visible, [payload])
+        return instance, payload
+
+    async def _search_session_owner(
+        principal: Principal, request: Request, session_id: str, **kwargs: Any
+    ) -> tuple[RegisteredInstance, dict[str, Any]]:
+        """Ask every node (or ``candidates``); a 404 names the owner when the Guild knows it.
+
+        Not learned from: the first node to answer may not be the only one holding the id.
+        """
         try:
             instance, payload = await _find_session_owner_anywhere(
                 service, principal, request, session_id, **kwargs
@@ -4111,8 +4152,7 @@ def create_volundr_router(
                 f"Session {session_id} is not on this node; it is {owner}. {how}",
             ) from exc
         if session_owners is not None:
-            session_owners.learn([(session_id, instance.id)])
-            await _with_parent_guild_ids(request, principal, [payload])
+            _with_parent_guild_ids(request, await _visible_instances(service, principal), [payload])
         return instance, payload
 
     async def _remembered_owner(

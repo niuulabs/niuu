@@ -48,10 +48,11 @@ class SessionOwners:
         for session_id in [s for s, (_, until) in self._owners.items() if until <= now]:
             del self._owners[session_id]
 
-    def forget(self, session_id: str, instance_id: str) -> None:
-        """Drop the entry, unless something newer has learned another owner meanwhile."""
+    def forget(self, session_id: str, instance_id: str | None = None) -> None:
+        """Drop the entry; with ``instance_id``, only while it still names that node
+        (something newer may have learned another owner meanwhile)."""
         entry = self._owners.get(session_id)
-        if entry is not None and entry[0] == instance_id:
+        if entry is not None and instance_id in (None, entry[0]):
             del self._owners[session_id]
 
     def __len__(self) -> int:
