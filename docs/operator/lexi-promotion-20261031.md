@@ -99,6 +99,12 @@ Activities, expected) and 2 widget tokens rejected `BadDeviceToken` at 12:35 and
 registered by a dev build as production. Package 2 counts registrations per environment; a
 sandbox token is routed correctly only when the app sends `sandbox` or `development`.
 
+**Package 2's live sandbox check is pending.** Its proof for landing is the unit tests plus the
+per-environment fields in Thor's `/push/status` on eleven (production: alert 1, Live Activity
+3, Live Activity start 1; no registration with a missing or unknown environment). The live
+check waits for the next sandbox token a Debug build registers on its own; then one sandbox
+test alert goes to that token alone and APNs' answer is recorded here.
+
 ## LEX-1738 live check (17:17, mini on eleven)
 
 From ios-release on the mini, using its own session credential, against niuu-consolidation
