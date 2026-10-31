@@ -138,6 +138,20 @@ describe('EvolutionPanel', () => {
     expect(screen.getByTestId('evolution-change-old_probe')).toHaveTextContent('Never used');
   });
 
+  it('keeps a long week short', () => {
+    const changes = Array.from({ length: 8 }, (_, index) => ({
+      ...REPORT.changes[0],
+      tool: `tool_${index}`,
+    }));
+    renderPanel(resident('valhalla', 'Valhalla', { evolution: { ...REPORT, changes } }));
+
+    expect(screen.getByTestId('evolution-fold-changes')).toHaveTextContent('3 older changes');
+    expect(screen.getByTestId('evolution-change-tool_7').closest('details')).not.toHaveAttribute(
+      'open',
+    );
+    expect(screen.getByTestId('evolution-change-tool_4').closest('details')).toBeNull();
+  });
+
   it('opens a tool that is still installed', () => {
     const { onViewSkill } = renderPanel(resident('valhalla', 'Valhalla', { evolution: REPORT }));
 

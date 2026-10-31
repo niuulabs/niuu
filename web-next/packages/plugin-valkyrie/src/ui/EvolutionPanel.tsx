@@ -12,6 +12,8 @@ import { timeAgo } from './reviewFormat';
 import { SkillNameButton } from './SkillViewer';
 
 const MUTED = 'niuu:text-text-muted';
+/** Enough to read the week at a glance; the rest stays one click away. */
+const CHANGE_PREVIEW_COUNT = 5;
 
 function worked(runs: number, successes: number): string {
   return runs > 0 ? `${Math.round((successes / runs) * 100)}%` : '—';
@@ -84,6 +86,27 @@ function ChangeRow({
   );
 }
 
+function ChangeList({
+  changes,
+  rows,
+}: {
+  changes: EvolutionChange[];
+  rows: { peerName: (id: string) => string; onViewSkill: (name: string) => void };
+}) {
+  return (
+    <ul className="niuu:mt-2">
+      {changes.map((change) => (
+        <ChangeRow
+          key={`${change.kind}:${change.tool}`}
+          change={change}
+          peerName={rows.peerName(change.peer)}
+          onViewSkill={rows.onViewSkill}
+        />
+      ))}
+    </ul>
+  );
+}
+
 function FlockTable({
   dashboard,
   valkyrie,
@@ -152,6 +175,8 @@ function Report({
   onViewSkill: (name: string) => void;
 }) {
   const peerName = (id: string) => dashboard.valkyries.find((entry) => entry.id === id)?.name ?? id;
+  const older = report.changes.slice(CHANGE_PREVIEW_COUNT, LIST_LIMIT);
+  const rowProps = { peerName, onViewSkill };
   return (
     <>
       <p
@@ -199,16 +224,12 @@ function Report({
       {report.changes.length > 0 ? (
         <div className="niuu:mt-4">
           <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">What changed</h3>
-          <ul className="niuu:mt-2">
-            {report.changes.slice(0, LIST_LIMIT).map((change) => (
-              <ChangeRow
-                key={`${change.kind}:${change.tool}`}
-                change={change}
-                peerName={peerName(change.peer)}
-                onViewSkill={onViewSkill}
-              />
-            ))}
-          </ul>
+          <ChangeList changes={report.changes.slice(0, CHANGE_PREVIEW_COUNT)} rows={rowProps} />
+          {older.length > 0 ? (
+            <EvolutionFold id="changes" label={`${older.length} older changes`}>
+              <ChangeList changes={older} rows={rowProps} />
+            </EvolutionFold>
+          ) : null}
         </div>
       ) : null}
     </>

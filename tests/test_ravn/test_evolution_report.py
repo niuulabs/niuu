@@ -149,8 +149,9 @@ async def test_jev_picks_among_sentences_code_wrote() -> None:
     ).report()
 
     assert report["headline"] == "Simpler now: 2 duplicate tools retired."
-    _, questions, purpose = decisions.calls[0]
+    state, questions, purpose = decisions.calls[0]
     assert purpose == "resident.evolution_headline"
+    assert state["period"]["changes"] == {"built": 1, "retired": 2}
     assert dict(questions["headline"].options) == {
         "tidied": "Simpler now: 2 duplicate tools retired.",
         "grew": "Built 1 new tool.",
