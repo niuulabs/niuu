@@ -38,6 +38,15 @@ class WorkflowCampaignRepository(ABC):
     async def list_campaigns(self, *, owner_id: str) -> list[WorkflowCampaign]:
         """List campaigns visible to the owner."""
 
+    async def list_campaign_summaries(self, *, owner_id: str) -> list[WorkflowCampaign]:
+        """List the owner's campaigns with only a summary of each workflow snapshot.
+
+        A snapshot carries every persona definition and the graph, and an owner can
+        hold hundreds of campaigns, so a page that lists them keeps just the
+        revision, the digest and the graph's tags.
+        """
+        return await self.list_campaigns(owner_id=owner_id)
+
     async def list_ticket_campaigns(
         self,
         *,

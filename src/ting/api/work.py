@@ -47,6 +47,7 @@ from ting.domain.services.work_read import (
 from ting.domain.ticket_coordinator import TicketCoordinatorStatus
 from ting.domain.workflow_board import (
     BACKLOG_COLUMN_ID,
+    SESSION_GONE_REASON,
     BoardColumnKind,
     BoardTicketState,
     BoardWorkflow,
@@ -505,7 +506,10 @@ def _session_gate_reader(
 
     async def read(session_id: str) -> SessionProgress:
         session = await adapter.get_session(session_id, auth_token=auth_token, principal=principal)
-        if session is not None and session.status in _SESSION_AWAY_REASONS:
+        if session is None:
+            # Forge answered, and the session is gone: that is known, not unreadable.
+            return SessionProgress(gates=[], failed=True, blocked_reason=SESSION_GONE_REASON)
+        if session.status in _SESSION_AWAY_REASONS:
             # Its broker is not listening, so its gates cannot be read right now.
             return SessionProgress(
                 gates=[],
@@ -522,8 +526,8 @@ def _session_gate_reader(
         )
         return SessionProgress(
             gates=gates,
-            failed=session is not None and session.activity_state == _SESSION_ERROR_STATE,
-            chat_endpoint=session.chat_endpoint if session is not None else None,
+            failed=session.activity_state == _SESSION_ERROR_STATE,
+            chat_endpoint=session.chat_endpoint,
             blocked_reason=_blocked_reason(session),
         )
 

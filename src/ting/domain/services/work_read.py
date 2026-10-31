@@ -310,7 +310,7 @@ class WorkReadService:
     ) -> WorkCollection:
         saga_result, campaign_result, tracker_result = await asyncio.gather(
             self._saga_repo.list_sagas(owner_id=self._principal.user_id),
-            self._campaign_repo.list_campaigns(owner_id=self._principal.user_id),
+            self._campaign_repo.list_campaign_summaries(owner_id=self._principal.user_id),
             self._read_tracker_projects(),
             return_exceptions=True,
         )
@@ -1288,6 +1288,7 @@ def _placement_starting(
                 issue_status_type=issue.status_type,
                 gates=[],
                 session_failed=True,
+                blocked_reason=progress.blocked_reason,
             ),
         )
     return BoardPlacement(column_id=workflow.board.first_column.id, state=BoardTicketState.STARTING)

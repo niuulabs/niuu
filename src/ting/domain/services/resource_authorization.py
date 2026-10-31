@@ -113,6 +113,10 @@ class AuthorizedCampaignRepository(_Policy, WorkflowCampaignRepository):
         items = await self.repo.list_campaigns(owner_id=owner_id)
         return [item for item in items if await self.visible(item, "campaign")]
 
+    async def list_campaign_summaries(self, *, owner_id):
+        items = await self.repo.list_campaign_summaries(owner_id=owner_id)
+        return [item for item in items if await self.visible(item, "campaign")]
+
     async def list_ticket_campaigns(self, *, owner_id, saga_id=None, issue_id=None):
         items = await self.repo.list_ticket_campaigns(
             owner_id=owner_id, saga_id=saga_id, issue_id=issue_id

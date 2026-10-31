@@ -84,6 +84,7 @@ def _service(*, current: TicketCoordinator | None, session_status: str = "runnin
     volundr.send_directed_room_message = AsyncMock()
     volundr.start_session = AsyncMock()
     volundr.stop_session = AsyncMock()
+    volundr.api_base_url = "https://forge.test/"
     service = TicketCoordinatorService(
         repo=repo,
         volundr=volundr,
@@ -127,6 +128,20 @@ async def test_a_coordinator_model_no_runtime_serves_refuses_to_start() -> None:
         await service.start_workflow(_saga(), _issue(), WORKFLOW)
 
     volundr.spawn_session.assert_not_awaited()
+
+
+async def test_a_coordinator_reaches_the_forge_that_launched_it() -> None:
+    service, _, volundr = _service(current=None)
+
+    await service.start_workflow(_saga(), _issue(), WORKFLOW)
+
+    config = volundr.spawn_session.await_args.args[0].workload_config["ravn_config"]
+    platform = config["gateway"]["platform"]
+    assert platform["enabled"] is True
+    assert platform["base_url"] == "https://forge.test"
+    assert platform["workload_exchange_url"] == (
+        "https://forge.test/api/v1/tokens/workload/exchange"
+    )
 
 
 def test_a_coordinator_inherits_the_deployments_platform_settings() -> None:

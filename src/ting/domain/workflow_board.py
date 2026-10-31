@@ -30,6 +30,7 @@ GATE_STATUS_PENDING = "pending"
 GATE_STATUS_APPROVED = "approved"
 GATE_STATUS_CHANGES_REQUESTED = "changes_requested"
 SESSION_FAILED_REASON = "The session's agent stopped with an error. Open the session to see why."
+SESSION_GONE_REASON = "This ticket's session no longer exists. Retry to start a new one."
 OFF_BOARD_REASON = "This ticket's run does not match the workflows on this board."
 
 _RESERVED_COLUMN_IDS = frozenset({BACKLOG_COLUMN_ID, DONE_COLUMN_ID})
@@ -291,7 +292,7 @@ def place_ticket(
         return BoardPlacement(
             column_id=resting,
             state=BoardTicketState.BLOCKED,
-            reason=SESSION_FAILED_REASON,
+            reason=blocked_reason or SESSION_FAILED_REASON,
         )
     pending = next((gate for gate in gates if gate.get("status") == GATE_STATUS_PENDING), None)
     if pending is None:
