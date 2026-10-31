@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { ContinuityField } from '@niuulabs/ui';
 import {
   WIZARD_STEPS,
   backendStepId,
@@ -189,6 +190,7 @@ export function SetupPage({ onNavigate, origin }: SetupPageProps = {}) {
   if (step === 'welcome') {
     return (
       <div className="setup-page setup-page--hero" data-testid="setup-page">
+        <ContinuityField />
         <WelcomeStep facts={host} loading={systemQuery.isLoading} onBegin={advance} />
       </div>
     );

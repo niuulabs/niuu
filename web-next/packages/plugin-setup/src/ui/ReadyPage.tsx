@@ -1,5 +1,5 @@
 import { useIntegrations, useSetupState, useStackStatus } from './hooks';
-import { NiuuMark } from '@niuulabs/ui';
+import { ContinuityField, NiuuMark } from '@niuulabs/ui';
 import { summarizeConnections } from './FinishStep';
 import { LocalModelCard } from './LocalModelCard';
 import './SetupPage.css';
@@ -56,8 +56,9 @@ export function ReadyPage() {
   const rows = summarizeConnections(integrationsQuery.data);
   return (
     <div className="setup-page setup-page--hero" data-testid="ready-page">
+      <ContinuityField />
       <div className="setup-hero">
-        <div className="setup-hero__kicker">níu · ready</div>
+        <div className="setup-hero__kicker">niuu · ready</div>
         <div className="setup-hero__mark">
           <NiuuMark size={56} />
         </div>

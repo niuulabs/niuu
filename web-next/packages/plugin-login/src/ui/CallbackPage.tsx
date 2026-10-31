@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useAuth } from '@niuulabs/auth';
+import { ContinuityField } from '@niuulabs/ui';
 import './CallbackPage.css';
 
 /**
@@ -23,6 +24,7 @@ export function CallbackPage() {
 
   return (
     <div className="callback-page" data-testid="callback-page">
+      <ContinuityField />
       <span className="callback-page__spinner" aria-label="Completing sign in…" />
       <p className="callback-page__label">Completing sign in…</p>
     </div>
