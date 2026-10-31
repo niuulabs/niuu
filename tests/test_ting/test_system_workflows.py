@@ -508,7 +508,7 @@ async def test_seed_system_workflows_preserves_authored_and_obsolete_entries() -
         "Developer Integration",
     }
 
-    current_catalog =await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
+    current_catalog = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
     assert {workflow.name for workflow in current_catalog} == names | {obsolete.name}
     assert len(current_catalog) == len(seeds) + len([duplicate, obsolete])
     assert obsolete in current_catalog
