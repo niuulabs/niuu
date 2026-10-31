@@ -357,8 +357,8 @@ already there: `find_installed_capability`, the `capability_id` version chain
   `reflection.matching.mode: semantic` — the same capability in other words
   (the lesson embedding shortlist and judge, asked "is this request the next
   version of that tool"; with `decision.capability_matching.enabled` the
-  decision model answers instead of the lesson judge, and a request that fails
-  builds nothing). Retired tools are candidates too. A healthy match
+  decision model answers instead of the lesson judge, here and in curation, and
+  a request that fails builds nothing). Retired tools are candidates too. A healthy match
   answers `already_installed`. A failing, unverified or rolled-back match, or
   `replace: true`, is rebuilt **as that tool's next version**: same name,
   `version` + 1, `supersedes` the previous artifact, `provenance.repair_of`

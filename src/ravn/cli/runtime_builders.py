@@ -823,56 +823,44 @@ def _build_capability_matcher(
     """Meaning-based learned-tool matching, on the lesson-matching machinery.
 
     Present exactly when lessons are matched semantically
-    (``reflection.matching.mode: semantic``): the same embedding shortlist,
-    threshold and judge decide whether two tools serve one capability. With
-    lexical matching only declared capability ids and names link tools, which
-    is what that setting asks for.
-    """
-    reflection = settings.effective_post_session_reflection_config()
-    if reflection.matching.mode != "semantic" or consolidation is None:
-        return None
-    from ravn.adapters.reflection.capability_matching import (  # noqa: PLC0415
-        SemanticCapabilityMatcher,
-    )
+    (``reflection.matching.mode: semantic``): the same embedding shortlist and
+    threshold pick the candidates, and the lesson judge decides whether two tools
+    serve one capability. With lexical matching only declared capability ids and
+    names link tools, which is what that setting asks for.
 
-    return SemanticCapabilityMatcher(
-        lessons=consolidation.lessons,
-        judge=consolidation.judge,
-        similarity_threshold=reflection.matching.similarity_threshold,
-        max_candidates=reflection.matching.max_related,
-        excerpt_chars=reflection.matching.judge_excerpt_chars,
-    )
-
-
-def _build_tool_gate_matcher(
-    settings: Settings,
-    consolidation: LearningConsolidation | None,
-) -> Any | None:
-    """The matcher ``build_tool`` asks whether a request duplicates an installed tool.
-
-    The decision model when ``decision.capability_matching.enabled`` says so, otherwise the same
-    matcher curation uses. The decision model keeps the embedding shortlist, so a resident that
-    enables it without semantic matching cannot start.
+    With ``decision.capability_matching.enabled`` the decision model judges instead
+    of the lesson judge. It keeps the embedding shortlist, so without semantic
+    matching a resident cannot start.
     """
     config = settings.decision.capability_matching
-    if not config.enabled:
-        return _build_capability_matcher(settings, consolidation)
     reflection = settings.effective_post_session_reflection_config()
-    if reflection.matching.mode != "semantic" or consolidation is None:
+    semantic = reflection.matching.mode == "semantic" and consolidation is not None
+    if config.enabled and not semantic:
         raise ConfigurationError(
             "decision.capability_matching.enabled is true but it shortlists tools by embedding, "
             "which needs reflection.matching.mode: semantic and embedding.enabled: true; "
             "set those, or turn capability matching off"
         )
+    if not semantic:
+        return None
     from ravn.adapters.reflection.capability_matching import (  # noqa: PLC0415
+        SemanticCapabilityMatcher,
         SystemOneCapabilityMatcher,
     )
 
-    return SystemOneCapabilityMatcher(
+    if config.enabled:
+        return SystemOneCapabilityMatcher(
+            lessons=consolidation.lessons,
+            decisions=build_decision_port(settings),
+            similarity_threshold=reflection.matching.similarity_threshold,
+            min_same_probability=config.min_same_probability,
+            excerpt_chars=reflection.matching.judge_excerpt_chars,
+        )
+    return SemanticCapabilityMatcher(
         lessons=consolidation.lessons,
-        decisions=build_decision_port(settings),
+        judge=consolidation.judge,
         similarity_threshold=reflection.matching.similarity_threshold,
-        min_same_probability=config.min_same_probability,
+        max_candidates=reflection.matching.max_related,
         excerpt_chars=reflection.matching.judge_excerpt_chars,
     )
 

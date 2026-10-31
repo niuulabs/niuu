@@ -181,7 +181,6 @@ from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _build_executor,
     _build_friction_ledger,
     _build_capability_matcher,
-    _build_tool_gate_matcher,
     _build_learning_consolidation,
     _build_learning_curator,
     _build_self_improvement,
@@ -1001,7 +1000,7 @@ def tool_mcp(
             # matching configured, a build is tied to the tool it repairs by
             # meaning, not only by name.
             capability_matcher=(
-                _build_tool_gate_matcher(
+                _build_capability_matcher(
                     settings, _build_learning_consolidation(settings, _build_llm(settings))
                 )
                 if build_tool_enabled

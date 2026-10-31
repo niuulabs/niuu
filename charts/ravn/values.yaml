@@ -103,7 +103,7 @@ config:
   #       # beside the turn's own tier/decision; the turn always runs.
   #       resident_first_opinion:
   #         enabled: true
-  #       # Judge whether a tool build duplicates an installed tool. Needs
+  #       # Judge whether two learned tools are one capability. Needs
   #       # reflection.matching.mode: semantic for the embedding shortlist.
   #       capability_matching:
   #         enabled: true

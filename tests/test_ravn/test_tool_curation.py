@@ -855,12 +855,13 @@ class TestSystemOneMatcher:
         await matcher.same_capability(_descriptor("pods"), [_descriptor("pods2")])
         await matcher.same_capability(_descriptor("pods"), [_descriptor("pods2")], as_revision=True)
 
-        stand_in = decisions.calls[0][1]["candidate_1"]
+        duplicate = decisions.calls[0][1]["candidate_1"]
         revision = decisions.calls[1][1]["candidate_1"]
-        assert "next version" not in stand_in.instructions["question"]
+        assert "built twice" in duplicate.instructions["question"]
+        assert "next version" not in duplicate.instructions["question"]
         assert "next version" in revision.instructions["question"]
         assert "only adds to it" in revision.criteria["true"]
-        assert stand_in.criteria["false"] == revision.criteria["false"]
+        assert "its own job" in duplicate.criteria["false"]
 
     async def test_nothing_close_enough_makes_no_request(self) -> None:
         decisions = _Decisions()
@@ -1421,7 +1422,7 @@ def test_the_capability_matcher_follows_lesson_matching() -> None:
     assert isinstance(_build_capability_matcher(semantic, consolidation), SemanticCapabilityMatcher)
 
 
-class TestToolGateMatcher:
+class TestDecisionCapabilityMatcher:
     @staticmethod
     def _settings(**capability_matching: Any) -> Any:
         from ravn.config import Settings
@@ -1441,32 +1442,27 @@ class TestToolGateMatcher:
 
         return SimpleNamespace(lessons=_Index({}), judge=_Judge({}))
 
-    def test_off_by_default_it_is_the_curation_matcher(self) -> None:
-        from ravn.cli.runtime_builders import _build_tool_gate_matcher
+    def test_off_by_default_it_is_the_lesson_judge(self) -> None:
+        from ravn.cli.runtime_builders import _build_capability_matcher
 
-        matcher = _build_tool_gate_matcher(self._settings(), self._consolidation())
+        matcher = _build_capability_matcher(self._settings(), self._consolidation())
 
         assert isinstance(matcher, SemanticCapabilityMatcher)
 
     def test_enabled_it_asks_the_observed_decision_port(self) -> None:
-        from ravn.cli.runtime_builders import _build_capability_matcher, _build_tool_gate_matcher
+        from ravn.cli.runtime_builders import _build_capability_matcher
         from ravn.decision_observability import ObservedDecisionPort
 
         settings = self._settings(enabled=True, min_same_probability=0.75)
-        consolidation = self._consolidation()
 
-        matcher = _build_tool_gate_matcher(settings, consolidation)
+        matcher = _build_capability_matcher(settings, self._consolidation())
 
         assert isinstance(matcher, SystemOneCapabilityMatcher)
         assert isinstance(matcher._decisions, ObservedDecisionPort)
         assert matcher._min_same_probability == 0.75
-        # Retiring installed tools stays with the lesson judge.
-        assert isinstance(
-            _build_capability_matcher(settings, consolidation), SemanticCapabilityMatcher
-        )
 
     def test_enabled_without_a_shortlist_is_a_configuration_error(self) -> None:
-        from ravn.cli.runtime_builders import _build_tool_gate_matcher
+        from ravn.cli.runtime_builders import _build_capability_matcher
         from ravn.config import Settings
         from ravn.domain.exceptions import ConfigurationError
 
@@ -1475,12 +1471,12 @@ class TestToolGateMatcher:
         )
 
         with pytest.raises(ConfigurationError, match="reflection.matching.mode: semantic"):
-            _build_tool_gate_matcher(lexical, self._consolidation())
+            _build_capability_matcher(lexical, self._consolidation())
         with pytest.raises(ConfigurationError, match="reflection.matching.mode: semantic"):
-            _build_tool_gate_matcher(self._settings(enabled=True), None)
+            _build_capability_matcher(self._settings(enabled=True), None)
 
     def test_enabled_without_a_decision_model_is_a_configuration_error(self) -> None:
-        from ravn.cli.runtime_builders import _build_tool_gate_matcher
+        from ravn.cli.runtime_builders import _build_capability_matcher
         from ravn.config import Settings
         from ravn.domain.exceptions import ConfigurationError
 
@@ -1490,7 +1486,7 @@ class TestToolGateMatcher:
         )
 
         with pytest.raises(ConfigurationError, match="decision.enabled is false"):
-            _build_tool_gate_matcher(settings, self._consolidation())
+            _build_capability_matcher(settings, self._consolidation())
 
 
 def test_the_curator_is_built_only_when_enabled(tmp_path: Path) -> None:
