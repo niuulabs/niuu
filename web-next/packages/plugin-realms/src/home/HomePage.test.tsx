@@ -113,6 +113,16 @@ describe('HomePage', () => {
     );
   });
 
+  it('points nowhere at Realms while the Realms plugin is off', async () => {
+    renderRealms('/home', withSessions, undefined, [homePlugin]);
+    await screen.findByTestId('home-choice-session');
+
+    expect(screen.queryByTestId('home-choice-realm')).toBeNull();
+    const inbox = await screen.findByRole('link', { name: 'inbox' });
+    expect(inbox).toHaveAttribute('href', '/valkyrie/inbox');
+    expect(document.querySelector('a[href^="/realms"]')).toBeNull();
+  });
+
   it('offers exactly three ways to start, each linking to the page that does it', async () => {
     renderRealms('/home', withSessions);
     await screen.findByTestId('home-choice-session');

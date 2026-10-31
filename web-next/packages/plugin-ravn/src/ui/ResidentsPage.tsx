@@ -10,6 +10,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { Bot, MessageSquare, Pause, Play, Plus, RotateCw } from 'lucide-react';
+import { usePluginEnabled } from '@niuulabs/shell';
 import {
   Chip,
   EmptyState,
@@ -127,6 +128,7 @@ function ResidentCard({
 }: ResidentCardProps) {
   const lifecycle = useResidentLifecycle();
   const createSession = useCreateResidentSession(ravn);
+  const realmsEnabled = usePluginEnabled('realms');
   const name = nameForRavn(ravn);
   const state = residentState(ravn, valkyrie);
   const canTalk = Boolean(session) || canCreateResidentSession(ravn);
@@ -157,7 +159,7 @@ function ResidentCard({
           <span className="niuu:truncate niuu:text-[15px] niuu:font-medium niuu:text-text-primary">
             {name}
           </span>
-          {realm ? (
+          {realm && realmsEnabled ? (
             <Link
               to={`/realms/${realm.slug}`}
               className="niuu:truncate niuu:text-[11px] niuu:text-brand-300"
@@ -165,6 +167,10 @@ function ResidentCard({
             >
               keeps {realm.name}
             </Link>
+          ) : realm ? (
+            <span className="niuu:truncate niuu:text-[11px] niuu:text-text-muted">
+              keeps {realm.name}
+            </span>
           ) : (
             <span className="niuu:truncate niuu:text-[11px] niuu:text-text-faint">
               keeps no realm yet
@@ -265,7 +271,7 @@ function ResidentCard({
           </button>
         ) : null}
 
-        {realm ? (
+        {realm && realmsEnabled ? (
           <Link
             to={`/realms/${realm.slug}`}
             className="niuu:ml-auto niuu:text-[11px] niuu:text-brand-300"

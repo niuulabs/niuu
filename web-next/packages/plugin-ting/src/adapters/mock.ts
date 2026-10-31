@@ -45,7 +45,14 @@ import type { DispatcherState } from '../domain/dispatcher';
 import type { SessionInfo } from '../domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from '../domain/tracker';
 import type { Workflow } from '../domain/workflow';
-import type { WorkCollection, WorkDetail, WorkSummary } from '../domain/work';
+import type {
+  BoardPlacement,
+  WorkBoardLayout,
+  WorkCollection,
+  WorkDetail,
+  WorkSummary,
+  WorkTask,
+} from '../domain/work';
 import { serializePortableWorkflow } from '../domain/workflowPortable';
 
 // ---------------------------------------------------------------------------
@@ -1199,6 +1206,14 @@ export function createMockTingService(): ITingService {
                   estimateHours: 8,
                   confidence: 78,
                 },
+                {
+                  name: 'Improve error handling',
+                  description: '',
+                  acceptanceCriteria: [],
+                  declaredFiles: [],
+                  estimateHours: 2,
+                  confidence: 40,
+                },
               ],
             },
           ],
@@ -1220,6 +1235,20 @@ export function createMockTingService(): ITingService {
       };
       sagas.set(sagaId, updated);
       return updated;
+    },
+
+    async setBoardWorkflows(sagaId: string, workflowIds: string[]) {
+      const saga = sagas.get(sagaId);
+      if (!saga) {
+        throw new Error(`Saga not found: ${sagaId}`);
+      }
+
+      const boardWorkflows = workflowIds.map((id) => {
+        const workflow = SEED_WORKFLOWS.find((entry) => entry.id === id);
+        return { id, name: workflow?.name ?? id };
+      });
+      sagas.set(sagaId, { ...saga, boardWorkflows });
+      return boardWorkflows;
     },
 
     async assignTarget(sagaId: string, target) {
@@ -2047,15 +2076,217 @@ const MOCK_WORK: WorkSummary[] = [
     links: { self: '/ting/work/campaign:demo-research', specialist: '/ting/research' },
     actions: [],
   },
+  {
+    id: 'campaign:demo-spec',
+    kind: 'specification',
+    title: 'Usage-based billing',
+    campaignSlug: 'usage-based-billing',
+    condition: 'needsAttention',
+    rawState: { source: 'campaign', status: 'blocked' },
+    currentStep: 'Review acceptance criteria',
+    attention: { kind: 'decision', message: 'Review the proposed acceptance criteria.' },
+    createdAt: '2026-01-05T08:00:00Z',
+    updatedAt: '2026-01-06T15:10:00Z',
+    source: null,
+    workflow: null,
+    session: null,
+    links: { self: '/ting/work/campaign:demo-spec', specialist: '/ting/specs' },
+    actions: ['open', 'review'],
+  },
+  {
+    id: 'execution:demo-delivery',
+    kind: 'workflowExecution',
+    title: 'Ship workspace invitations',
+    condition: 'completed',
+    rawState: { source: 'execution', status: 'completed' },
+    currentStep: null,
+    attention: null,
+    createdAt: '2026-01-03T09:00:00Z',
+    updatedAt: '2026-01-04T17:45:00Z',
+    source: null,
+    workflow: null,
+    session: null,
+    links: { self: '/ting/work/execution:demo-delivery', specialist: '/ting/workflows/runs' },
+    actions: ['open'],
+  },
+];
+
+function mockWorkTask(
+  number: number,
+  title: string,
+  status: string,
+  statusType: string,
+  overrides: Partial<Pick<WorkTask, 'operationalRun' | 'dispatch' | 'board'>> = {},
+): WorkTask {
+  return {
+    source: {
+      connectionId: 'demo-tracker',
+      provider: 'Linear',
+      projectId: 'demo-platform',
+      url: `https://linear.app/demo/issue/PLT-${number}`,
+      status,
+      issueId: `demo-issue-${number}`,
+      identifier: `PLT-${number}`,
+      statusType,
+    },
+    title,
+    operationalRun: null,
+    dispatch: null,
+    actions: [],
+    ...overrides,
+  };
+}
+
+const MOCK_PLANNING_WORKFLOW = {
+  workflowId: 'demo-ticket-planning',
+  workflowName: 'Ticket Planning Flow',
+};
+const MOCK_DELIVERY_WORKFLOW = {
+  workflowId: 'demo-reviewed-delivery',
+  workflowName: 'Reviewed Delivery Flow',
+};
+
+const MOCK_WORK_BOARD: WorkBoardLayout = {
+  columns: [
+    {
+      id: 'backlog',
+      title: 'Backlog',
+      kind: 'tracker',
+      review: null,
+      approveColumnId: null,
+      changesColumnId: null,
+    },
+    {
+      id: 'planning',
+      title: 'Planning',
+      kind: 'work',
+      review: null,
+      approveColumnId: null,
+      changesColumnId: null,
+      ...MOCK_PLANNING_WORKFLOW,
+    },
+    {
+      id: 'plan-review',
+      title: 'Plan review',
+      kind: 'gate',
+      review: 'plan',
+      approveColumnId: 'plan-record',
+      changesColumnId: 'planning',
+      ...MOCK_PLANNING_WORKFLOW,
+    },
+    {
+      id: 'plan-record',
+      title: 'Recording plan',
+      kind: 'work',
+      review: null,
+      approveColumnId: null,
+      changesColumnId: null,
+      ...MOCK_PLANNING_WORKFLOW,
+    },
+    {
+      id: 'building',
+      title: 'Building',
+      kind: 'work',
+      review: null,
+      approveColumnId: null,
+      changesColumnId: null,
+      ...MOCK_DELIVERY_WORKFLOW,
+    },
+    {
+      id: 'code-review',
+      title: 'Code review',
+      kind: 'gate',
+      review: 'code',
+      approveColumnId: 'merging',
+      changesColumnId: 'building',
+      ...MOCK_DELIVERY_WORKFLOW,
+    },
+    {
+      id: 'merging',
+      title: 'Merging',
+      kind: 'work',
+      review: null,
+      approveColumnId: null,
+      changesColumnId: null,
+      ...MOCK_DELIVERY_WORKFLOW,
+    },
+    {
+      id: 'done',
+      title: 'Done',
+      kind: 'tracker',
+      review: null,
+      approveColumnId: null,
+      changesColumnId: null,
+    },
+  ],
+};
+
+const MOCK_CODE_GATE: NonNullable<BoardPlacement['gate']> = {
+  id: 'demo-gate-207',
+  activationId: 'demo-activation-207',
+  nodeId: 'delivery-code-gate',
+  label: 'Code review',
+  condition: 'Merging lands the change on the target branch and closes the ticket.',
+  instructions: 'Read the pull request against the ticket.',
+  summary: '',
+  requestedAt: '2026-01-06T14:30:00Z',
+  attempt: 1,
+};
+
+const MOCK_WORK_TASKS: WorkTask[] = [
+  mockWorkTask(214, 'Add retry budget metrics to the dashboard', 'Backlog', 'backlog', {
+    board: { columnId: 'backlog', state: 'notStarted', gate: null },
+  }),
+  mockWorkTask(209, 'Cap dispatcher retries per run', 'Todo', 'unstarted', {
+    dispatch: {
+      sagaId: 'demo-platform',
+      issueId: 'demo-issue-209',
+      repo: 'niuulabs/niuu',
+      connectionId: null,
+      workflowId: null,
+    },
+    board: { columnId: 'backlog', state: 'notStarted', gate: null },
+  }),
+  mockWorkTask(207, 'Implement retry budget', 'In Review', 'started', {
+    operationalRun: {
+      id: 'demo-run-207',
+      status: 'review',
+      sessionId: 'demo-session-207',
+      reviewerSessionId: null,
+      branch: 'feat/retry-budget',
+      prUrl: 'https://github.com/niuulabs/niuu/pull/1042',
+      updatedAt: '2026-01-06T14:30:00Z',
+    },
+    board: {
+      columnId: 'code-review',
+      state: 'needsDecision',
+      gate: MOCK_CODE_GATE,
+      passedWorkflowIds: ['demo-ticket-planning'],
+    },
+  }),
+  mockWorkTask(212, 'Trace dispatcher queue depth', 'In Progress', 'started', {
+    board: {
+      columnId: 'building',
+      state: 'ready',
+      gate: null,
+      passedWorkflowIds: ['demo-ticket-planning'],
+    },
+  }),
+  mockWorkTask(201, 'Trace queue wait time', 'Done', 'completed', {
+    board: { columnId: 'done', state: 'done', gate: null },
+  }),
 ];
 
 export function createMockWorkService(): IWorkService {
+  const tasks = MOCK_WORK_TASKS.map((task) => ({ ...task }));
   return {
     async list(): Promise<WorkCollection> {
       return {
         projects: MOCK_WORK.filter((item) => item.kind === 'project'),
-        campaigns: MOCK_WORK.filter((item) => item.kind !== 'project'),
-        executions: [],
+        campaigns: MOCK_WORK.filter(
+          (item) => item.kind !== 'project' && item.kind !== 'workflowExecution',
+        ),
+        executions: MOCK_WORK.filter((item) => item.kind === 'workflowExecution'),
         executionNextCursor: null,
         coverage: [],
       };
@@ -2063,7 +2294,44 @@ export function createMockWorkService(): IWorkService {
     async get(kind, id): Promise<WorkDetail> {
       const item = MOCK_WORK.find((entry) => entry.id === `${kind}:${id}`);
       if (!item) throw new Error(`Work ${kind}:${id} not found`);
-      return { item, tasks: [], coverage: [] };
+      return {
+        item,
+        tasks: item.kind === 'project' ? tasks.map((task) => ({ ...task })) : [],
+        coverage: [
+          { source: 'operationalRuns', connectionId: null, status: 'complete', error: null },
+          { source: 'tracker', connectionId: 'demo-tracker', status: 'complete', error: null },
+        ],
+        board: item.kind === 'project' ? MOCK_WORK_BOARD : null,
+      };
+    },
+    async decideGate(_projectId, issueId, decision) {
+      const task = tasks.find((entry) => entry.source.issueId === issueId);
+      const gate = task?.board?.gate;
+      if (!task || gate?.id !== decision.gateId || gate.activationId !== decision.activationId) {
+        throw new Error('This gate changed after you opened it. Review it again.');
+      }
+      task.board = {
+        columnId: decision.decision === 'approve' ? 'merging' : 'building',
+        state: 'running',
+        gate: null,
+      };
+    },
+    async startTicket(_projectId, issueId, columnId) {
+      const task = tasks.find((entry) => entry.source.issueId === issueId);
+      if (!task) throw new Error(`Ticket ${issueId} not found`);
+      const ready = task.board?.state === 'ready' ? task.board.columnId : null;
+      task.dispatch = null;
+      task.coordinator = {
+        sessionId: `demo-coordinator-${issueId}`,
+        status: 'active',
+        connectionId: null,
+        chatEndpoint: null,
+      };
+      task.board = {
+        columnId: columnId ?? ready ?? 'planning',
+        state: 'starting',
+        gate: null,
+      };
     },
   };
 }

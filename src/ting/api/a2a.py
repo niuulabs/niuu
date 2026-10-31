@@ -16,10 +16,11 @@ import posixpath
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from time import monotonic
-from typing import Any
+from typing import Any, NoReturn
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
+import httpx
 from a2a.server.context import ServerCallContext
 from a2a.server.request_handlers.request_handler import RequestHandler
 from a2a.server.routes.jsonrpc_dispatcher import JsonRpcDispatcher
@@ -86,12 +87,14 @@ from ting.api.workflows import (
 from ting.domain.a2a_launch import A2ALaunchReservation
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.execution_snapshot import pinned_child_workflow
-from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
+from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus, WorkflowDefinition
 from ting.domain.services.workflow_campaign_lifecycle import (
     stop_terminal_campaign_session,
     terminal_session_cleanup_needed,
 )
+from ting.domain.ticket_coordinator import TICKET_METADATA_KEY, ticket_of
 from ting.domain.utils import _session_name
+from ting.domain.workflow_board import project_board
 from ting.domain.workflow_document import workflow_document_revision
 from ting.domain.workflow_execution import (
     ExecutionConflictError,
@@ -125,6 +128,7 @@ _CANCELED_KEY = "a2a_canceled"
 _CONTEXT_ID_KEY = "a2a_context_id"
 _MESSAGE_ID_KEY = "a2a_message_id"
 _WORKFLOW_SLUG_KEY = "a2a_workflow_slug"
+_ARTIFACTS_ERROR_KEY = "artifacts_error"
 
 
 def _launch_slug(reservation: A2ALaunchReservation) -> str:
@@ -307,6 +311,9 @@ class WorkflowTaskHandler(RequestHandler):
 
         existing = await self._campaign_for_message(message.message_id)
         workflow = await self._resolve_workflow(metadata)
+        guarded_ticket = (
+            await self._guard_ticket_launch(metadata, workflow) if existing is None else None
+        )
         now = datetime.now(UTC)
         reservation_id = uuid4()
         campaign_id = uuid4()
@@ -418,6 +425,12 @@ class WorkflowTaskHandler(RequestHandler):
                 _WORKFLOW_SLUG_KEY: _launch_slug(reservation),
                 **({"repo": str(metadata["repo"])} if metadata.get("repo") else {}),
                 **({"branch": str(metadata["branch"])} if metadata.get("branch") else {}),
+                # The ticket a coordinator launched this for.
+                **(
+                    {TICKET_METADATA_KEY: dict(metadata[TICKET_METADATA_KEY])}
+                    if isinstance(metadata.get(TICKET_METADATA_KEY), dict)
+                    else {}
+                ),
                 # The workload that sent this task for its owner (attribution only).
                 **({"actor_id": self._principal.actor} if self._principal.actor else {}),
             },
@@ -426,8 +439,21 @@ class WorkflowTaskHandler(RequestHandler):
             last_activity_at=now,
             connection_id=resolved_connection_id,
         )
-        if existing is None:
+        if existing is None and guarded_ticket is None:
             pending = await self._campaign_repo.save_campaign(pending)
+        elif existing is None:
+            active_run = await self._campaign_repo.save_ticket_campaign(
+                pending, saga_id=guarded_ticket[0], issue_id=guarded_ticket[1]
+            )
+            if active_run is not None:
+                await self._launch_repo.release(reservation.id, lease_token=lease_token)
+                self._refuse_ticket_launch(
+                    "active_run",
+                    f"{_ticket_key(metadata)} already has run {active_run} in progress, so "
+                    f"{workflow.name} was not started. Wait for that run to finish, and do "
+                    "not start another.",
+                )
+        if existing is None:
             _record_a2a_state_transition(pending)
 
         telemetry = get_observability()
@@ -595,6 +621,11 @@ class WorkflowTaskHandler(RequestHandler):
                 **({"repo": launch.repo} if launch.repo else {}),
                 **({"branch": launch.branch} if launch.branch else {}),
                 **(
+                    {TICKET_METADATA_KEY: pending.metadata[TICKET_METADATA_KEY]}
+                    if TICKET_METADATA_KEY in pending.metadata
+                    else {}
+                ),
+                **(
                     {"workflow_execution_id": str(parent_execution.id)}
                     if parent_execution is not None
                     else {}
@@ -630,6 +661,73 @@ class WorkflowTaskHandler(RequestHandler):
         await _emit_campaign_event(self._request, "workflow.campaign.created", saved)
         await self._queue_push(saved)
         return campaign_to_task(saved)
+
+    async def _guard_ticket_launch(
+        self,
+        metadata: dict[str, Any],
+        workflow: WorkflowDefinition,
+    ) -> tuple[UUID, str] | None:
+        """Hold a ticket's launch to its board; return the ticket if its run must be guarded.
+
+        Which workflow a ticket runs is Ting's to decide, never a model's. A
+        project with no board has nothing to hold the launch to.
+        """
+        ticket = ticket_of(metadata)
+        if ticket is None:
+            return None
+        key = _ticket_key(metadata)
+        try:
+            saga_id = UUID(ticket[0])
+        except ValueError:
+            self._refuse_ticket_launch("unknown_project", f"{key} names no valid project.")
+        state = self._request.app.state
+        saga = await state.saga_repo.get_saga(saga_id, owner_id=self._principal.user_id)
+        if saga is None:
+            self._refuse_ticket_launch(
+                "unknown_project", f"{key} names a project this user does not have."
+            )
+        project = project_board(saga)
+        if project is None:
+            return None
+        if project.workflow(str(workflow.id)) is None:
+            on_board = ", ".join(item.name for item in project.workflows)
+            self._refuse_ticket_launch(
+                "not_on_board",
+                f"{key} cannot run {workflow.name}: it is not on this project's board, which "
+                f"runs {on_board}. Start the workflow your brief names, or tell the person.",
+            )
+        requested = await self._outstanding_request(saga_id, ticket[1])
+        if requested is not None and requested != str(workflow.id):
+            asked = project.workflow(requested)
+            self._refuse_ticket_launch(
+                "not_requested",
+                f"{key} cannot run {workflow.name}: Ting asked for "
+                f"{asked.name if asked else requested}. Start that workflow instead.",
+            )
+        return saga_id, ticket[1]
+
+    async def _outstanding_request(self, saga_id: UUID, issue_id: str) -> str | None:
+        """The workflow Ting asked a ticket's coordinator to start, until a run answers it."""
+        coordinator = await self._request.app.state.ticket_coordinator_repo.get(saga_id, issue_id)
+        if coordinator is None or coordinator.requested_at is None:
+            return None
+        campaigns = await self._campaign_repo.list_campaigns(owner_id=self._principal.user_id)
+        answered = any(
+            ticket_of(campaign.metadata) == (str(saga_id), issue_id)
+            and campaign.status != WorkflowCampaignStatus.FAILED
+            and campaign.created_at >= coordinator.requested_at
+            for campaign in campaigns
+        )
+        return None if answered else coordinator.requested_workflow_id
+
+    def _refuse_ticket_launch(self, reason: str, message: str) -> NoReturn:
+        logger.error("a2a: refused a ticket launch (%s): %s", reason, message)
+        get_observability().count(
+            "ting_a2a_ticket_launches_refused_total",
+            attributes={"reason": reason},
+            description="A2A launches refused because they broke their ticket's board.",
+        )
+        raise InvalidParamsError(message)
 
     async def _reserve_durable_parent_execution(
         self,
@@ -695,7 +793,7 @@ class WorkflowTaskHandler(RequestHandler):
         task = campaign_to_task(campaign)
         try:
             if task.status.state == TaskState.TASK_STATE_COMPLETED:
-                await self._attach_artifacts(task, campaign)
+                await self._attach_readable_artifacts(task, campaign)
             if task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED:
                 await self._attach_pending_questions(task, campaign)
                 await self._attach_pending_gates(task, campaign)
@@ -703,6 +801,20 @@ class WorkflowTaskHandler(RequestHandler):
             if campaign.status in _TERMINAL_STATUSES:
                 await self._ensure_terminal_session_stopped(campaign)
         return task
+
+    async def _attach_readable_artifacts(self, task: Task, campaign: WorkflowCampaign) -> None:
+        """Attach a finished run's artifacts, or say why they could not be read.
+
+        The run's state is known without them, so a Mimir that refuses Ting must
+        not turn a progress check into an error. The task carries the reason.
+        """
+        try:
+            await self._attach_artifacts(task, campaign)
+        except httpx.HTTPError as exc:
+            logger.error(
+                "a2a: could not read the artifacts of task %s from Mimir: %s", campaign.slug, exc
+            )
+            task.metadata.update({_ARTIFACTS_ERROR_KEY: f"Artifacts could not be read: {exc}"})
 
     async def on_cancel_task(
         self,
@@ -961,6 +1073,7 @@ class WorkflowTaskHandler(RequestHandler):
         logged rather than propagated — mirroring the orphaned-session
         cleanup below, which follows the same shape for the same reason.
         """
+        logger.error("a2a: launch of campaign %s failed: %s", campaign.slug, reason)
         now = datetime.now(UTC)
         failed = WorkflowCampaign(
             **{
@@ -1723,6 +1836,12 @@ def _artifact_media_type(path: str) -> str:
 def _declares_artifact_paths(campaign: WorkflowCampaign) -> bool:
     graph = campaign.workflow_snapshot.get("graph")
     return isinstance(graph, dict) and ("artifactPaths" in graph or "artifact_paths" in graph)
+
+
+def _ticket_key(metadata: dict[str, Any]) -> str:
+    ticket = metadata.get(TICKET_METADATA_KEY)
+    identifier = ticket.get("identifier") if isinstance(ticket, dict) else None
+    return str(identifier or "This ticket")
 
 
 def _prompt_from_message(message: Message) -> str:

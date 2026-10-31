@@ -1121,6 +1121,23 @@ class A2AConfig(BaseModel):
     )
 
 
+class TicketCoordinatorConfig(BaseModel):
+    """The persistent session each ticket works through."""
+
+    persona: str = Field(
+        default="ticket-coordinator",
+        description="Ravn persona that coordinates a ticket.",
+    )
+    ravn_config: dict[str, Any] = Field(
+        default_factory=lambda: {"memory": {"reflection_model": "same-as-agent"}},
+        description=(
+            "Merged into the coordinator's Ravn configuration. The default keeps "
+            "episode reflection on the coordinator's own model, because a Forge "
+            "flock may run on an endpoint that serves no other model."
+        ),
+    )
+
+
 class WorkflowExecutionDeliveryConfig(BaseModel):
     """Code-delivery specialization settings layered over generic workflow execution.
 
@@ -1366,6 +1383,7 @@ class Settings(BaseSettings):
     event_bus: EventBusConfig = Field(default_factory=EventBusConfig)
     events: EventsConfig = Field(default_factory=EventsConfig)
     a2a: A2AConfig = Field(default_factory=A2AConfig)
+    ticket_coordinator: TicketCoordinatorConfig = Field(default_factory=TicketCoordinatorConfig)
     workflow_execution: WorkflowExecutionConfig = Field(default_factory=WorkflowExecutionConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)

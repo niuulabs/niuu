@@ -214,7 +214,7 @@ describe('SagaDetailPage', () => {
       wrapper: wrap({ ting: createMockTingService(), 'ting.dispatch': mockDispatchBus }),
     });
     await waitFor(() =>
-      expect(screen.getByRole('region', { name: /workflow/i })).toBeInTheDocument(),
+      expect(screen.getByRole('region', { name: 'Workflow' })).toBeInTheDocument(),
     );
     expect(screen.getByRole('region', { name: /stage progress/i })).toBeInTheDocument();
   });

@@ -19,5 +19,17 @@ export function buildWorkHttpAdapter(client: ApiClient): IWorkService {
     get(kind, id) {
       return client.get<WorkDetail>(`/work/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`);
     },
+    async decideGate(projectId, issueId, decision) {
+      await client.post(
+        `/work/project/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(issueId)}/gate-decision`,
+        decision,
+      );
+    },
+    async startTicket(projectId, issueId, columnId) {
+      await client.post(
+        `/work/project/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(issueId)}/start`,
+        columnId ? { columnId } : {},
+      );
+    },
   };
 }

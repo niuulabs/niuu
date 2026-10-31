@@ -42,7 +42,10 @@ from ting.ports.volundr import (
 
 logger = logging.getLogger(__name__)
 
+_CI_PASSED = {"passing": True, "failing": False}
+
 FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
+REPO_PULL_REQUESTS_PATH = "/api/v1/niuu/repos/prs"
 INTEGRATIONS_PATH = "/api/v1/integrations"
 WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
 WORKFLOW_GATE_INTENT_RESOLVE = "resolve"
@@ -235,7 +238,11 @@ class VolundrHTTPAdapter(VolundrPort):
             )
             if resp.status_code >= 400:
                 logger.error("spawn_session %d: %s", resp.status_code, resp.text[:500])
-            resp.raise_for_status()
+                raise httpx.HTTPStatusError(
+                    f"Forge could not start the session: {_error_detail(resp)}",
+                    request=resp.request,
+                    response=resp,
+                )
             data = resp.json()
             source = data.get("source") or {}
             return VolundrSession(
@@ -495,22 +502,35 @@ class VolundrHTTPAdapter(VolundrPort):
                 for s in resp.json()
             ]
 
-    async def get_pr_status(self, session_id: str) -> PRStatus:
+    async def get_pr_status(self, session_id: str) -> PRStatus | None:
+        """Ask the git provider for the newest pull request from a session's branch.
+
+        This reads the provider, not the session's workspace, so it answers for a
+        stopped session and on every deployment. ``None`` means no pull request.
+        """
+        session = await self.get_session(session_id)
+        if session is None or not session.repo or not session.branch:
+            return None
         client = await self._client(timeout=self._timeout)
         async with client:
             resp = await client.get(
-                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/pr",
+                f"{self._base_url}{REPO_PULL_REQUESTS_PATH}",
                 headers=self._headers(),
+                params={"repo_url": session.repo, "status": "all"},
             )
             resp.raise_for_status()
-            data = resp.json()
-            return PRStatus(
-                pr_id=data["pr_id"],
-                url=data.get("url", ""),
-                state=data["state"],
-                mergeable=data["mergeable"],
-                ci_passed=data.get("ci_passed"),
-            )
+            pull_requests = resp.json()
+        matching = [item for item in pull_requests if item["source_branch"] == session.branch]
+        if not matching:
+            return None
+        newest = max(matching, key=lambda item: item["number"])
+        return PRStatus(
+            pr_id=str(newest["number"]),
+            url=newest["url"],
+            state=newest["status"],
+            mergeable=False,
+            ci_passed=_CI_PASSED.get(newest.get("ci_status")),
+        )
 
     async def get_chronicle_summary(self, session_id: str) -> str:
         client = await self._client(timeout=self._timeout)
@@ -545,6 +565,7 @@ class VolundrHTTPAdapter(VolundrPort):
         target_peer_id: str,
         message: str,
         *,
+        metadata: dict[str, object] | None = None,
         auth_token: str | None = None,
         principal: Principal | None = None,
     ) -> None:
@@ -568,9 +589,70 @@ class VolundrHTTPAdapter(VolundrPort):
                     "target_peer_id": target_peer_id,
                     "content": message,
                     "source": "ting",
+                    "metadata": metadata or {},
                 },
             )
             resp.raise_for_status()
+
+    async def join_room(
+        self,
+        session_id: str,
+        *,
+        participant_id: str,
+        display_name: str,
+        member_session_id: str,
+        notice_context: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        base_url = await self._room_base_url(session_id, auth_token, principal)
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.post(
+                f"{base_url}/api/room/join",
+                headers=self._headers(auth_token, principal),
+                json={
+                    "participant_id": participant_id,
+                    "display_name": display_name,
+                    "environment_id": session_id,
+                    "participant_type": "ravn",
+                    "session_id": member_session_id,
+                    "notice_context": notice_context,
+                },
+            )
+            resp.raise_for_status()
+
+    async def leave_room(
+        self,
+        session_id: str,
+        participant_id: str,
+        *,
+        reason: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        base_url = await self._room_base_url(session_id, auth_token, principal)
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.post(
+                f"{base_url}/api/room/leave",
+                headers=self._headers(auth_token, principal),
+                json={"participant_id": participant_id, "reason": reason},
+            )
+            resp.raise_for_status()
+
+    async def _room_base_url(
+        self,
+        session_id: str,
+        auth_token: str | None,
+        principal: Principal | None,
+    ) -> str:
+        session = await self.get_session(session_id, auth_token=auth_token, principal=principal)
+        if session is None or not session.chat_endpoint:
+            raise LookupError(f"Session {session_id} has no active room endpoint")
+        return _session_chat_base_url(
+            session.chat_endpoint, gateway_base_url=self._base_url, session_id=session_id
+        )
 
     async def publish_workflow_event(
         self,
@@ -694,6 +776,22 @@ class VolundrHTTPAdapter(VolundrPort):
             )
             resp.raise_for_status()
             return resp.json()
+
+    async def start_session(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.post(
+                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/start",
+                headers=self._headers(auth_token, principal),
+                json={},
+            )
+            resp.raise_for_status()
 
     async def stop_session(
         self,
@@ -941,6 +1039,15 @@ class VolundrHTTPAdapter(VolundrPort):
                         event_type = ""
                     elif line == "":
                         event_type = ""
+
+
+def _error_detail(response: httpx.Response) -> str:
+    """The reason Forge gave for refusing a request."""
+    try:
+        detail = response.json().get("detail")
+    except (ValueError, AttributeError):
+        detail = None
+    return str(detail or response.text or f"HTTP {response.status_code}")
 
 
 def _session_chat_base_url(

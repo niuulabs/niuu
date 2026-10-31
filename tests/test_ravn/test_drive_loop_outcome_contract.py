@@ -1128,6 +1128,7 @@ findings: "[{severity: high}]"
         task.session_id = "sess-123"
         task.root_correlation_id = "root-123"
         task.workflow_parent_event_id = "code-task-123"
+        task.gate_feedback = "Rename the helper."
         response_text = """\
 ---outcome---
 verdict: needs_changes
@@ -1139,6 +1140,12 @@ comments: fix the null branch
         await dl._emit_mesh_outcome_event(task, response_text, success=True)
 
         assert mesh.publish.await_count == 2
+        assert mesh.publish.await_args_list[0].args[0].payload["gate_feedback"] == (
+            "Rename the helper."
+        )
+        assert mesh.publish.await_args_list[1].args[0].payload["gate_feedback"] == (
+            "Rename the helper."
+        )
 
         canonical_event = mesh.publish.await_args_list[0].args[0]
         canonical_topic = mesh.publish.await_args_list[0].kwargs["topic"]
@@ -2629,6 +2636,17 @@ summary: post-mortem source captured
             "source_id": "src_1",
             "mount_name": "tmp-mimir",
         }
+
+    @pytest.mark.asyncio
+    async def test_a_message_marked_queue_first_goes_ahead_of_waiting_messages(self) -> None:
+        dl = _make_drive_loop()
+        dl.enqueue = AsyncMock()
+
+        await dl.handle_directed_message("A notice")
+        await dl.handle_directed_message("Start the workflow", {"queue_first": True})
+
+        notice, brief = [call.args[0] for call in dl.enqueue.await_args_list]
+        assert brief.priority < notice.priority
 
     @pytest.mark.asyncio
     async def test_handle_directed_message_carries_workflow_metadata(self) -> None:

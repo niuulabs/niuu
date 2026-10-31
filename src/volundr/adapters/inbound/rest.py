@@ -4493,7 +4493,10 @@ def create_router(
                 response = await client.post(
                     proxy_url,
                     headers=headers,
-                    json=body.model_dump(),
+                    json={
+                        **body.model_dump(),
+                        "decided_by": principal.email or principal.user_id,
+                    },
                 )
                 response.raise_for_status()
                 return response.json()

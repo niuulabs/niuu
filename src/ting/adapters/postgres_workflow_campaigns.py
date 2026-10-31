@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -121,8 +122,49 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
             return None
         return self._row_to_campaign(row)
 
+    async def save_ticket_campaign(
+        self,
+        campaign: WorkflowCampaign,
+        *,
+        saga_id: UUID,
+        issue_id: str,
+    ) -> str | None:
+        # An advisory lock, not a unique index: existing data may already hold
+        # duplicates, and an index would refuse to build on it. It is released
+        # with the transaction, by which time the new row is visible.
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                    f"ticket-launch:{saga_id}:{issue_id}",
+                )
+                active = await connection.fetchval(
+                    """
+                    SELECT slug
+                    FROM workflow_campaigns
+                    WHERE owner_id = $1
+                      AND metadata->'ticket'->>'sagaId' = $2
+                      AND metadata->'ticket'->>'issueId' = $3
+                      AND status IN ('pending', 'running', 'blocked')
+                      AND id <> $4
+                    ORDER BY created_at
+                    LIMIT 1
+                    """,
+                    campaign.owner_id,
+                    str(saga_id),
+                    issue_id,
+                    campaign.id,
+                )
+                if active is not None:
+                    return str(active)
+                await self._save(connection, campaign)
+        return None
+
     async def save_campaign(self, campaign: WorkflowCampaign) -> WorkflowCampaign:
-        result = await self._pool.execute(
+        return await self._save(self._pool, campaign)
+
+    async def _save(self, executor: Any, campaign: WorkflowCampaign) -> WorkflowCampaign:
+        result = await executor.execute(
             """
             INSERT INTO workflow_campaigns (
                 id,
@@ -197,7 +239,7 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
             campaign.tenant_id,
         )
         if result == "INSERT 0 0":
-            stored = await self._pool.fetchval(
+            stored = await executor.fetchval(
                 "SELECT status FROM workflow_campaigns WHERE id = $1",
                 campaign.id,
             )

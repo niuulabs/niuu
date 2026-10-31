@@ -7,6 +7,7 @@ _resolve_tracker_adapters FastAPI dependency with a mock TrackerPort.
 from __future__ import annotations
 
 import contextlib
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
@@ -351,6 +352,11 @@ class MockSagaRepo(SagaRepository):
 
     async def update_saga_status(self, saga_id: UUID, status: SagaStatus) -> None:
         pass
+
+    async def update_saga_board_workflows(self, saga_id, *, board_workflows, owner_id=None):  # noqa: ANN001, ANN201
+        for index, saga in enumerate(self.sagas):
+            if saga.id == saga_id:
+                self.sagas[index] = replace(saga, board_workflows=board_workflows)
 
     async def update_saga_workflow(
         self,

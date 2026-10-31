@@ -16,6 +16,7 @@ import type {
   PlanSession,
   PlanRisk,
 } from '../ports';
+import type { PlanTicketFlag } from '../domain/planTicketCheck';
 import type { Saga } from '../domain/saga';
 import type { Workflow } from '../domain/workflow';
 import type { RepoRecord } from '@niuulabs/ui';
@@ -168,6 +169,7 @@ function wrap(svc: Partial<ITingService>, workflowSvc?: Partial<IWorkflowService
           services={{
             ting: svc,
             'ting.workflows': wfSvc,
+            'ting.tracker': { listIssues: vi.fn().mockResolvedValue([]) },
             'niuu.repos': { getRepos: vi.fn().mockResolvedValue(MOCK_REPOS) },
           }}
         >
@@ -428,6 +430,68 @@ describe('PlanRuns', () => {
 // ---------------------------------------------------------------------------
 // PlanDraft unit tests
 // ---------------------------------------------------------------------------
+
+describe('PlanDraft ticket check', () => {
+  const flag: PlanTicketFlag = {
+    kind: 'vague',
+    phaseIndex: 0,
+    runIndex: 0,
+    runName: 'Add login',
+    message: 'No acceptance criteria',
+  };
+
+  function renderDraft(overrides: Partial<React.ComponentProps<typeof PlanDraft>> = {}) {
+    render(
+      <PlanDraft
+        structure={MOCK_STRUCTURE}
+        loading={false}
+        error={null}
+        onApprove={vi.fn()}
+        onBack={vi.fn()}
+        onEditPhase={vi.fn()}
+        {...overrides}
+      />,
+    );
+  }
+
+  it('stays out of the way when nothing is flagged', () => {
+    renderDraft();
+
+    expect(screen.queryByTestId('plan-ticket-check')).not.toBeInTheDocument();
+  });
+
+  it('marks the flagged run and never blocks approval', () => {
+    renderDraft({ ticketFlags: [flag] });
+
+    expect(screen.getByTestId('plan-ticket-check')).toHaveTextContent('1 thing to review');
+    expect(screen.getByTestId('run-flags-0-0')).toHaveTextContent('No acceptance criteria');
+    expect(screen.queryByTestId('run-flags-0-1')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Approve & launch/ })).toBeEnabled();
+  });
+
+  it('sends the flags back for revision', () => {
+    const onRequestRevision = vi.fn();
+    renderDraft({ ticketFlags: [flag], onRequestRevision });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send back for revision' }));
+
+    expect(onRequestRevision).toHaveBeenCalledWith([flag]);
+  });
+
+  it('hides revision when the plan has no workflow to send it to', () => {
+    renderDraft({ ticketFlags: [flag] });
+
+    expect(
+      screen.queryByRole('button', { name: 'Send back for revision' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('reports a failed lookup even with no flags', () => {
+    renderDraft({ ticketCheckError: 'Could not compare with existing tickets: offline' });
+
+    expect(screen.getByRole('alert')).toHaveTextContent('offline');
+  });
+});
 
 describe('PlanDraft', () => {
   it('renders saga name', () => {

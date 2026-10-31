@@ -79,6 +79,12 @@ class WorkflowGateNode:
     artifact: dict[str, str] | None = None
 
 
+#: Durable log frame carrying a gate's state, which restores it after a restart.
+WORKFLOW_GATE_FRAME = "workflow_gate"
+#: Durable log frame for an agent from another session joining or leaving the room.
+ROOM_MEMBER_FRAME = "room_member"
+
+
 @dataclass
 class WorkflowGateState:
     id: str
@@ -101,6 +107,7 @@ class WorkflowGateState:
     notes: str = ""
     source: str = "workflow"
     summary: str = ""
+    decided_by: str = ""
 
 
 @dataclass(frozen=True)

@@ -1,4 +1,4 @@
-import { Server } from 'lucide-react';
+import { InfrastructureIcon } from '@niuulabs/ui';
 import { createElement } from 'react';
 import { createRoute } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
@@ -22,7 +22,7 @@ function GuildTopbar() {
 export const guildPlugin = definePlugin({
   id: 'guild',
   rune: 'G',
-  icon: createElement(Server, { size: 17, 'aria-hidden': true }),
+  icon: createElement(InfrastructureIcon),
   title: 'Infrastructure',
   subtitle: 'everything niuu runs on',
   tabs: [{ id: 'instances', label: 'Instances', path: '/guild' }],

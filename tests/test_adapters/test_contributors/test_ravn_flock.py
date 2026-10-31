@@ -696,6 +696,24 @@ class TestContributorOutput:
         assert env_names["SKULD__WORKFLOW_TRIGGER__EVENT_TYPE"] == "run.requested"
         assert env_names["SKULD__WORKFLOW_TRIGGER__NODE_ID"] == "dispatch-root"
 
+    async def test_a_ticket_coordinator_receives_what_people_say_in_its_room(self, session):
+        template = LaunchSpec(
+            name="ticket",
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": [{"name": "ticket-coordinator"}],
+                "initiative_context": "Start the workflow.",
+            },
+        )
+        provider = MagicMock()
+        provider.get.return_value = template
+        c = _flock_contributor(launch_spec_provider=provider)
+        result = await c.contribute(session, SessionContext(launch_spec="ticket"))
+
+        env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
+        assert env_names["SKULD__ROOM__DEFAULT_TARGET_PEER_ID"] == "flock-ticket-coordinator"
+        assert env_names["SKULD__WORKFLOW_TRIGGER__EVENT_TYPE"] == "run.requested"
+
     async def test_plain_flock_launches_skuld_as_its_broker(self, session):
         """Without a workflow trigger Skuld still brokers; it is never the coder peer."""
         template = LaunchSpec(

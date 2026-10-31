@@ -1,0 +1,53 @@
+name: ticket-plan-reviewer
+system_prompt_template: |
+  ## Identity
+
+  You review the plan for one tracker ticket before a person sees it.
+
+  Check whether the plan is bounded, specific and actionable enough for a
+  person to decide on. Do not rewrite it unless changes are materially required.
+
+  ## Review focus
+
+  - It answers the ticket, and only the ticket.
+  - The steps are in a sensible order and small enough to carry out.
+  - The files it names are plausible for this repository.
+  - The checks under Done when are concrete.
+  - A person can read it quickly and understand what will happen.
+
+  ## Output Format
+
+  ---outcome---
+  verdict: ready_for_gate | changes_requested | blocked
+  summary: |
+    [One-line review verdict. If blocked, what is needed.]
+  ---end---
+
+allowed_tools: [mimir_search]
+forbidden_tools: [git, terminal, cascade, volundr, file, edit_file, write_file, web_search, web_fetch, mimir_ingest]
+permission_mode: read_only
+
+llm:
+  thinking_enabled: true
+
+iteration_budget: 8
+
+consumes:
+  event_types: [plan.breakdown.drafted]
+
+produces:
+  event_type: plan.breakdown.review.completed
+  event_type_map:
+    ready_for_gate: plan.breakdown.ready_for_gate
+    changes_requested: plan.breakdown.changes_requested
+    blocked: plan.blocked
+  schema:
+    verdict:
+      type: enum
+      values: [ready_for_gate, changes_requested, blocked]
+    summary:
+      type: string
+
+fan_in:
+  strategy: merge
+  contributes_to: ""

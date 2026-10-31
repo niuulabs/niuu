@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { createRoute, redirect } from '@tanstack/react-router';
-import { Bot } from 'lucide-react';
+import { AgentsIcon } from '@niuulabs/ui';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { readUiMode } from '@niuulabs/shell';
 import { ResidentsPage } from './ui/ResidentsPage';
@@ -13,7 +13,7 @@ import { legacySessionSearch } from './ui/workbench/legacyRoutes';
 export const ravnPlugin = definePlugin({
   id: 'ravn',
   rune: 'R',
-  icon: createElement(Bot, { size: 17, 'aria-hidden': true }),
+  icon: createElement(AgentsIcon),
   title: 'Agents',
   subtitle: 'deployed agents and their personas',
   simple: {

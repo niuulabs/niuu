@@ -486,12 +486,12 @@
   width: 40px;
   height: 40px;
   margin: 4px;
-  border: 1px solid var(--color-border-subtle);
+  border: 1px solid transparent;
   border-radius: 9px;
 }
 .niuu-shell__rail-item--icon svg {
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  height: 20px;
 }
 
 @media (min-width: 761px) and (max-width: 1100px) {

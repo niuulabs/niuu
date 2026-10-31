@@ -261,7 +261,7 @@ class TransportLifecycleMixin:
         self._load_conversation_history()
         await self._hydrate_conversation_history()
 
-        # Evict participants whose heartbeats lapse (room mode only)
+        # Show participants whose heartbeats lapse as away (room mode only)
         if self._room_bridge is not None:
             self._room_bridge.start_presence_sweep()
 

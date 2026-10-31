@@ -19,6 +19,20 @@ class CampaignAlreadyTerminalError(RuntimeError):
 class WorkflowCampaignRepository(ABC):
     """Persistence interface for launched workflow campaigns."""
 
+    async def save_ticket_campaign(
+        self,
+        campaign: WorkflowCampaign,
+        *,
+        saga_id: UUID,
+        issue_id: str,
+    ) -> str | None:
+        """Save a ticket's new run unless another is active; return that other run's slug.
+
+        The check and the save are one atomic step, so two launches for the same
+        ticket cannot both pass.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot guard ticket launches")
+
     @abstractmethod
     async def list_campaigns(self, *, owner_id: str) -> list[WorkflowCampaign]:
         """List campaigns visible to the owner."""

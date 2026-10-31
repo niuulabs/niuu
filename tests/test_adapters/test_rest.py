@@ -1596,6 +1596,61 @@ class TestWorkflowGateProxy:
         assert "not resolved" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
+    async def test_resolve_workflow_gate_names_the_signed_in_person_whatever_the_body_says(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            f"file:///tmp/{session.id}",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+        request = httpx.Request(
+            "POST", f"http://localhost:8080/s/{session.id}/api/workflow/gates/g1/resolve"
+        )
+
+        with (
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user",
+                        email="dev@example.com",
+                        tenant_id="default",
+                        roles=[],
+                    )
+                ),
+            ),
+            patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.return_value = httpx.Response(
+                200, json={"status": "resolved"}, request=request
+            )
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/workflow/gates/g1/resolve",
+                json={
+                    "decision": "APPROVE",
+                    "notes": "",
+                    "source": "ting.board",
+                    "decided_by": "someone-else",
+                },
+            )
+
+        assert response.status_code == 200
+        sent = mock_client.post.await_args.kwargs["json"]
+        assert sent["decided_by"] == "dev@example.com"
+        assert sent["source"] == "ting.board"
+
+    @pytest.mark.asyncio
     async def test_resolve_workflow_gate_quotes_gate_id(
         self,
         client: TestClient,
@@ -1647,7 +1702,12 @@ class TestWorkflowGateProxy:
                 # succeeded — see ROOM_ROLE_HEADER in rest.py.
                 "x-niuu-room-role": "approver",
             },
-            json={"decision": "approved", "notes": "looks good", "source": "human"},
+            json={
+                "decision": "approved",
+                "notes": "looks good",
+                "source": "human",
+                "decided_by": "dev@example.com",
+            },
         )
 
     @pytest.mark.asyncio

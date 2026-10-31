@@ -128,6 +128,21 @@ describe('createMockTingService', () => {
     expect(messages.map((m) => m.content)).toEqual(['first', 'second']);
   });
 
+  it('setBoardWorkflows keeps the chosen order on the saga', async () => {
+    const svc = createMockTingService();
+    const id = '00000000-0000-0000-0000-000000000001';
+    const workflow = '00000000-0000-0000-0000-000000000a01';
+
+    const chosen = await svc.setBoardWorkflows(id, [workflow, 'unknown']);
+
+    expect(chosen).toEqual([
+      { id: workflow, name: 'ship — default release cycle' },
+      { id: 'unknown', name: 'unknown' },
+    ]);
+    expect((await svc.getSaga(id))?.boardWorkflows).toEqual(chosen);
+    await expect(svc.setBoardWorkflows('nope', [])).rejects.toThrow('Saga not found: nope');
+  });
+
   it('assignWorkflow throws for an unknown saga', async () => {
     const svc = createMockTingService();
     await expect(svc.assignWorkflow('nope', 'wf-1')).rejects.toThrow('Saga not found: nope');
@@ -1108,13 +1123,69 @@ describe('createMockAuditLogService', () => {
 });
 
 describe('createMockWorkService', () => {
-  it('lists projects and campaigns separately with no executions', async () => {
+  it('lists projects, campaigns and executions separately', async () => {
     const work = await createMockWorkService().list();
 
     expect(work.projects.map((item) => item.kind)).toEqual(['project']);
-    expect(work.campaigns.map((item) => item.kind)).toEqual(['research']);
-    expect(work.executions).toEqual([]);
+    expect(work.campaigns.map((item) => item.kind)).toEqual(['research', 'specification']);
+    expect(work.executions.map((item) => item.kind)).toEqual(['workflowExecution']);
     expect(work.executionNextCursor).toBeNull();
+  });
+
+  it('starts a ticket where it was dropped, or where it is waiting', async () => {
+    const service = createMockWorkService();
+
+    await service.startTicket('demo-platform', 'demo-issue-209', 'planning');
+    await service.startTicket('demo-platform', 'demo-issue-212');
+
+    const { tasks } = await service.get('project', 'demo-platform');
+    const placed = (id: string) => tasks.find((task) => task.source.issueId === id)?.board;
+    expect(placed('demo-issue-209')).toMatchObject({ columnId: 'planning', state: 'starting' });
+    expect(placed('demo-issue-212')).toMatchObject({ columnId: 'building', state: 'starting' });
+  });
+
+  it('returns tickets for a project only', async () => {
+    const service = createMockWorkService();
+
+    const project = await service.get('project', 'demo-platform');
+    const campaign = await service.get('campaign', 'demo-research');
+
+    expect(project.tasks.map((task) => task.source.statusType)).toEqual([
+      'backlog',
+      'unstarted',
+      'started',
+      'started',
+      'completed',
+    ]);
+    expect(campaign.tasks).toEqual([]);
+  });
+
+  it('moves a ticket on when its gate is answered', async () => {
+    const service = createMockWorkService();
+    const before = await service.get('project', 'demo-platform');
+    const gate = before.tasks.find((task) => task.board?.gate)?.board?.gate;
+
+    await service.decideGate('demo-platform', 'demo-issue-207', {
+      gateId: gate!.id,
+      activationId: gate!.activationId,
+      decision: 'approve',
+      notes: '',
+    });
+
+    const after = await service.get('project', 'demo-platform');
+    expect(after.tasks.find((task) => task.source.issueId === 'demo-issue-207')?.board).toEqual({
+      columnId: 'merging',
+      state: 'running',
+      gate: null,
+    });
+    await expect(
+      service.decideGate('demo-platform', 'demo-issue-207', {
+        gateId: gate!.id,
+        activationId: gate!.activationId,
+        decision: 'approve',
+        notes: '',
+      }),
+    ).rejects.toThrow('Review it again');
   });
 
   it('returns the detail of a listed item', async () => {

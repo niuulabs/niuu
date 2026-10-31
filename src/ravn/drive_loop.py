@@ -70,6 +70,7 @@ from ravn.domain.models import (
     TurnResult,
 )
 from ravn.domain.resident_continuation import validate_resident_working_state
+from ravn.domain.surface import strip_surface_marker
 from ravn.domain.valkyrie_contracts import (
     RESIDENT_ESCALATION_GUIDANCE,
     VALKYRIE_CONTINUATION_ORDER,
@@ -969,6 +970,19 @@ class FanInSlot:
     deadline: datetime
 
 
+#: Outcome payload key carrying a person's gate comment on through a run.
+GATE_FEEDBACK_KEY = "gate_feedback"
+_WORKFLOW_GATE_PERSONA = "workflow-gate"
+_GATE_FEEDBACK_HEADING = "Reviewer comment, which this work must address:"
+
+
+def gate_feedback_of(payload: dict) -> str:
+    """A person's gate comment, from the gate's own answer or the work done after it."""
+    if payload.get("persona") == _WORKFLOW_GATE_PERSONA:
+        return str((payload.get("fields") or {}).get("notes") or "").strip()
+    return str(payload.get(GATE_FEEDBACK_KEY) or "").strip()
+
+
 @dataclass
 class _FanInResult:
     """Returned by FanInBuffer when a slot completes."""
@@ -980,6 +994,7 @@ class _FanInResult:
     cycle_correlation_id: str
     triggered_by: str
     passed: bool = True
+    gate_feedback: str = ""
 
 
 class FanInBuffer:
@@ -1045,6 +1060,7 @@ class FanInBuffer:
                 root_correlation_id=root_correlation_id,
                 cycle_correlation_id=cycle_correlation_id or root_correlation_id,
                 triggered_by=f"mesh:outcome:{event_type}",
+                gate_feedback=gate_feedback_of(event_payload),
             )
 
         cycle_id = cycle_correlation_id or root_correlation_id
@@ -1315,6 +1331,10 @@ class FanInBuffer:
 
         if outcome:
             parts.append(f"Outcome: {json.dumps(outcome)}")
+
+        feedback = gate_feedback_of(payload)
+        if feedback:
+            parts.append(f"{_GATE_FEEDBACK_HEADING}\n{feedback}")
         return "\n".join(parts)
 
     @staticmethod
@@ -1357,6 +1377,20 @@ class FanInBuffer:
                 context_parts.append(json.dumps(outcome, indent=2))
             context_parts.append("")
 
+        feedback = next(
+            filter(
+                None,
+                (
+                    gate_feedback_of(payload)
+                    for payload in slot.received.values()
+                    if isinstance(payload, dict)
+                ),
+            ),
+            "",
+        )
+        if feedback:
+            context_parts.append(f"{_GATE_FEEDBACK_HEADING}\n{feedback}")
+
         triggered_by_types = list(slot.required_event_types)
         return _FanInResult(
             consumer_key=slot.group_key.split(":", 2)[1],
@@ -1366,6 +1400,7 @@ class FanInBuffer:
             cycle_correlation_id=slot.cycle_correlation_id,
             triggered_by=f"mesh:fan_in:{'+'.join(sorted(triggered_by_types))}",
             passed=strategy_ok,
+            gate_feedback=feedback,
         )
 
 
@@ -2613,7 +2648,9 @@ class DriveLoop:
             triggered_by="skuld:directed_message",
             output_mode=output_mode,
             persona=persona,
-            priority=0,  # user input precedes autonomous continuation work
+            # User input precedes autonomous continuation work, and a request to
+            # start something precedes notices already waiting.
+            priority=-1 if metadata and metadata.get("queue_first") else 0,
             human_initiated=True,
             resident_inbox_refs=[inbox_ref] if inbox_ref else [],
         )
@@ -4657,10 +4694,12 @@ class DriveLoop:
             base_payload["artifact_publish_error"] = artifact_publish_error
         if task.workflow_parent_event_id:
             base_payload["workflow_parent_event_id"] = task.workflow_parent_event_id
+        if task.gate_feedback:
+            base_payload[GATE_FEEDBACK_KEY] = task.gate_feedback
         if verdict:
             base_payload["verdict"] = verdict
         if summary:
-            base_payload["summary"] = summary
+            base_payload["summary"] = strip_surface_marker(str(summary))
         if isinstance(files_changed, list) and files_changed:
             base_payload["files_changed"] = files_changed
 
@@ -5239,7 +5278,7 @@ class DriveLoop:
         event = RavnEvent(
             type=RavnEventType.RESPONSE,
             source=self._source_id,
-            payload={"text": text, "surface_escalation": True},
+            payload={"text": strip_surface_marker(text), "surface_escalation": True},
             timestamp=datetime.now(UTC),
             urgency=0.7,
             correlation_id=task.task_id,
@@ -5425,6 +5464,7 @@ class DriveLoop:
             "workflow_review_source_node_id": task.workflow_review_source_node_id,
             "workflow_review_source_event_type": task.workflow_review_source_event_type,
             "workflow_allowed_outcome_topics": list(task.workflow_allowed_outcome_topics),
+            "gate_feedback": task.gate_feedback,
             "tool_outcomes": task.tool_outcomes,
             "human_initiated": task.human_initiated,
             "resident_case_id": task.resident_case_id,
@@ -5554,6 +5594,7 @@ class DriveLoop:
                     workflow_allowed_outcome_topics=list(
                         rec.get("workflow_allowed_outcome_topics") or []
                     ),
+                    gate_feedback=rec.get("gate_feedback", ""),
                     tool_outcomes=rec.get("tool_outcomes", {}) or {},
                     human_initiated=rec.get("human_initiated", False),
                     resident_case_id=rec.get("resident_case_id", ""),
