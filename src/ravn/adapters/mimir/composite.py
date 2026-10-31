@@ -471,7 +471,18 @@ class CompositeMimirAdapter(MimirPort):
                 continue
             all_issues.extend(report.issues)
             pages_checked += report.pages_checked
-            mounts_checked.append(mount.name)
+            if report.mounts_checked or report.mount_failures:
+                mounts_checked.extend(
+                    f"{mount.name}/{child_mount}" for child_mount in report.mounts_checked
+                )
+                mount_failures.update(
+                    {
+                        f"{mount.name}/{child_mount}": failure
+                        for child_mount, failure in report.mount_failures.items()
+                    }
+                )
+            else:
+                mounts_checked.append(mount.name)
 
         return MimirLintReport(
             issues=all_issues,

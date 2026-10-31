@@ -704,6 +704,34 @@ async def test_lint_reports_http_501_as_incomplete_coverage() -> None:
     assert "501" in report.mount_failures["unsupported"]
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_lint_propagates_nested_composite_failures() -> None:
+    unsupported = HttpMimirAdapter(base_url="http://unsupported.test")
+    respx.get("http://unsupported.test/mimir/lint").mock(return_value=Response(501))
+    federated = CompositeMimirAdapter(
+        mounts=[
+            MimirMount(name="unsupported", port=unsupported, role="shared", read_priority=0),
+            _make_mount(
+                "healthy",
+                priority=1,
+                lint_report=MimirLintReport(issues=[], pages_checked=3),
+            ),
+        ]
+    )
+    adapter = CompositeMimirAdapter(
+        mounts=[MimirMount(name="federated", port=federated, role="shared", read_priority=0)]
+    )
+
+    report = await adapter.lint()
+
+    assert report.complete is False
+    assert report.pages_checked == 3
+    assert report.mounts_checked == ["federated/healthy"]
+    assert list(report.mount_failures) == ["federated/unsupported"]
+    assert "501" in report.mount_failures["federated/unsupported"]
+
+
 # ---------------------------------------------------------------------------
 # CompositeMimirAdapter — ingest fan-out
 # ---------------------------------------------------------------------------
