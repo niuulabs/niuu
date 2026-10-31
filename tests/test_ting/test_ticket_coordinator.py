@@ -76,7 +76,7 @@ def _service(*, current: TicketCoordinator | None, session_status: str = "runnin
     repo.save = AsyncMock(side_effect=lambda item: item)
     repo.close = AsyncMock()
     volundr = MagicMock()
-    volundr.get_session = AsyncMock(return_value=SimpleNamespace(status=session_status))
+    volundr.get_session = AsyncMock(return_value=SimpleNamespace(status=session_status, activity_state=None))
     volundr.spawn_session = AsyncMock(return_value=SimpleNamespace(id="session-2"))
     volundr.send_directed_room_message = AsyncMock()
     volundr.start_session = AsyncMock()
@@ -272,6 +272,22 @@ async def test_a_deleted_session_is_replaced_keeping_its_start_time() -> None:
 
     coordinator = await service.start_workflow(saga, _issue(), WORKFLOW)
 
+    assert coordinator.session_id == "session-2"
+    assert coordinator.created_at == NOW
+
+
+async def test_a_coordinator_whose_agent_died_is_replaced() -> None:
+    saga = _saga()
+    earlier = replace(_coordinator(saga), created_at=NOW)
+    service, _, volundr = _service(current=earlier)
+    volundr.get_session.return_value = SimpleNamespace(status="running", activity_state="error")
+
+    coordinator = await service.start_workflow(saga, _issue(), WORKFLOW)
+
+    volundr.stop_session.assert_awaited_once()
+    assert volundr.stop_session.await_args.args[0] == earlier.session_id
+    volundr.spawn_session.assert_awaited_once()
+    volundr.send_directed_room_message.assert_not_awaited()
     assert coordinator.session_id == "session-2"
     assert coordinator.created_at == NOW
 

@@ -355,6 +355,14 @@ def _refuse_active_run(task: WorkTask) -> None:
     run = task.workflow_run
     if run is not None and run.status == WorkflowCampaignStatus.FAILED:
         return
+    if (
+        placement.state == BoardTicketState.BLOCKED
+        and run is None
+        and task.operational_run is None
+        and task.coordinator is not None
+    ):
+        # The coordinator died before any run began, so there is nothing to wait for.
+        return
     raise HTTPException(status_code=409, detail=f"{identifier} already has a run in progress")
 
 
