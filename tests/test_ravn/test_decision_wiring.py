@@ -35,6 +35,11 @@ def test_first_opinion_without_a_decision_model_is_a_configuration_error() -> No
         build_decision_port(_settings(resident_first_opinion={"enabled": True}))
 
 
+def test_evolution_headline_without_a_decision_model_is_a_configuration_error() -> None:
+    with pytest.raises(ConfigurationError, match="decision.enabled is false"):
+        build_decision_port(_settings(evolution_headline={"enabled": True}))
+
+
 def test_default_adapter_is_systemone_and_observed() -> None:
     port = build_decision_port(
         _settings(enabled=True, kwargs={"model": "clef-flash", "base_url": "http://ollama:11434"})

@@ -192,8 +192,8 @@ test('operator can open a learned skill from the console and read its code', asy
   await page.goto('/valkyrie');
   await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
 
+  await page.getByTestId('evolution-fold-tools').click();
   const panel = page.getByTestId('valkyrie-learned-skills');
-  await expect(panel).toContainText('Learned skills');
   await expect(panel).toContainText('k8s_memory_pressure_probe');
   await expect(panel).toContainText('Read-only probe that inspects');
 

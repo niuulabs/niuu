@@ -698,6 +698,11 @@ def build_decision_port(settings: Settings) -> Any:
                 "decision.capability_matching.enabled is true but decision.enabled is false; "
                 "enable and configure decision, or turn capability matching off"
             )
+        if config.evolution_headline.enabled:
+            raise ConfigurationError(
+                "decision.evolution_headline.enabled is true but decision.enabled is false; "
+                "enable and configure decision, or turn the evolution headline off"
+            )
         return None
     kwargs = dict(config.kwargs)
     for kwarg_name, env_var in config.secret_kwargs_env.items():

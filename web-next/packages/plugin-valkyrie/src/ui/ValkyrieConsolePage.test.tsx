@@ -571,6 +571,7 @@ describe('ValkyrieConsolePage', () => {
     expect(panel).toHaveTextContent('installed');
     expect(panel).toHaveTextContent('recorded use');
     expect(panel).toHaveTextContent('no recorded use');
+    await userEvent.setup().click(screen.getByTestId('evolution-fold-tools'));
     expect(within(panel).getByTestId('learned-skill-registry_token_refresh_check')).toBeVisible();
   });
 

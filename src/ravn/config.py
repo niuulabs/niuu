@@ -656,6 +656,18 @@ class DecisionCapabilityMatchingConfig(BaseModel):
         return self
 
 
+class DecisionEvolutionHeadlineConfig(BaseModel):
+    """Let the decision model pick the sentence that sums up a resident's recent changes."""
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Ask the decision model which true sentence best sums up the period. Off, the "
+            "first sentence is shown. A failed decision fails the dream that asked."
+        ),
+    )
+
+
 class DecisionConfig(BaseModel):
     """System One decision model (TypeSafe Jev, Cloudflare Clef, Ollama ``/v1/systemone``).
 
@@ -691,6 +703,9 @@ class DecisionConfig(BaseModel):
     )
     capability_matching: DecisionCapabilityMatchingConfig = Field(
         default_factory=DecisionCapabilityMatchingConfig,
+    )
+    evolution_headline: DecisionEvolutionHeadlineConfig = Field(
+        default_factory=DecisionEvolutionHeadlineConfig,
     )
 
 
@@ -3748,6 +3763,14 @@ class ResidentWakefulnessConfig(BaseModel):
         description=(
             "Successful runs (with zero failures) before a private skill is "
             "promoted to environment scope during a dream, policy permitting."
+        ),
+    )
+    evolution_window_seconds: float = Field(
+        default=604800.0,
+        gt=0,
+        description=(
+            "How far back a dream's evolution report looks when it lists what changed in the "
+            "resident's learned tools. The default is a week."
         ),
     )
     dream_snapshot_interval_seconds: float = Field(
