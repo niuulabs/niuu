@@ -600,6 +600,30 @@ class ResidentFirstOpinionConfig(BaseModel):
         return self
 
 
+class DecisionCapabilityMatchingConfig(BaseModel):
+    """Let the decision model judge whether a tool build duplicates an installed tool.
+
+    ``build_tool`` still shortlists candidates by embedding, so this needs
+    ``reflection.matching.mode: semantic`` as well as ``decision.enabled``. A decision that fails
+    stops the build; it never falls back to the lesson judge. Retiring installed tools stays with
+    the lesson judge.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Ask the decision model, not the lesson judge, at the build_tool gate.",
+    )
+    min_same_probability: float = Field(
+        default=0.6,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "P(same capability) at or above which a build request belongs to an installed tool. "
+            "Too low blocks new tools; too high lets duplicates through."
+        ),
+    )
+
+
 class DecisionConfig(BaseModel):
     """System One decision model (TypeSafe Jev, Cloudflare Clef, Ollama ``/v1/systemone``).
 
@@ -632,6 +656,9 @@ class DecisionConfig(BaseModel):
     )
     resident_first_opinion: ResidentFirstOpinionConfig = Field(
         default_factory=ResidentFirstOpinionConfig,
+    )
+    capability_matching: DecisionCapabilityMatchingConfig = Field(
+        default_factory=DecisionCapabilityMatchingConfig,
     )
 
 

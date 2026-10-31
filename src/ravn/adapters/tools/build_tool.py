@@ -17,7 +17,7 @@ from niuu.observability import get_observability
 from ravn.adapters.reflection.lesson_judge import LessonJudgeError
 from ravn.domain.models import ToolResult
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
-from ravn.ports.capability_matching import CapabilityMatcherPort
+from ravn.ports.capability_matching import CapabilityMatcherPort, CapabilityMatchError
 from ravn.ports.tool import ToolPort
 from ravn.ports.tool_build_backend import (
     ToolBuildError,
@@ -1005,7 +1005,7 @@ class BuildTool(ToolPort):
                 inputs=tuple(sorted(properties)) if isinstance(properties, dict) else (),
                 matcher=self._capability_matcher,
             )
-        except LessonJudgeError as exc:
+        except (LessonJudgeError, CapabilityMatchError) as exc:
             raise LearnedToolError(
                 "could not decide whether an installed tool already serves this "
                 f"capability, so nothing was built: {exc}"

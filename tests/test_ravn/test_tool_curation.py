@@ -19,12 +19,27 @@ from typing import Any
 
 import pytest
 
-from ravn.adapters.reflection.capability_matching import SemanticCapabilityMatcher
+from ravn.adapters.reflection.capability_matching import (
+    SemanticCapabilityMatcher,
+    SystemOneCapabilityMatcher,
+)
 from ravn.adapters.reflection.lesson_judge import LessonJudgeError
 from ravn.adapters.skill.file_registry import FileSkillRegistry
 from ravn.adapters.tools.build_tool import BuildTool
 from ravn.adapters.tools.capability_catalog import CapabilityListTool
-from ravn.ports.capability_matching import CapabilityDescriptor, CapabilityVerdict
+from ravn.ports.capability_matching import (
+    CapabilityDescriptor,
+    CapabilityMatchError,
+    CapabilityVerdict,
+)
+from ravn.ports.decision import (
+    ChoiceAnswer,
+    DecisionAnswer,
+    DecisionQuestion,
+    DecisionResult,
+    NoulAnswer,
+    NoulQuestion,
+)
 from ravn.ports.tool_build_backend import ToolBuildResult
 from ravn.skills.management import SkillLifecycle, SkillManagementRegistry
 from ravn.valkyrie_evolution.learned_tools import (
@@ -730,6 +745,181 @@ class TestSemanticMatcher:
             )
 
 
+class _Decisions:
+    """Answers each candidate question with the probability set for that tool's name."""
+
+    def __init__(
+        self, probabilities: dict[str, float] | None = None, *, error: Exception | None = None
+    ) -> None:
+        self.probabilities = probabilities or {}
+        self.error = error
+        self.calls: list[tuple[Any, dict[str, NoulQuestion], str]] = []
+
+    async def decide(
+        self, state: Any, questions: dict[str, DecisionQuestion], *, purpose: str
+    ) -> DecisionResult:
+        self.calls.append((state, questions, purpose))  # type: ignore[arg-type]
+        if self.error is not None:
+            raise self.error
+        answers: dict[str, DecisionAnswer] = {
+            question_id: NoulAnswer(
+                self.probabilities[question.instructions["candidate"]["name"]]  # type: ignore[index, union-attr]
+            )
+            for question_id, question in questions.items()
+        }
+        return DecisionResult(model="jev-test", answers=answers, input_tokens=600)
+
+
+class TestSystemOneMatcher:
+    def _matcher(
+        self, decisions: _Decisions, *, min_same_probability: float = 0.6
+    ) -> SystemOneCapabilityMatcher:
+        index = _Index(
+            {
+                "pods: pods": [1.0, 0.0],
+                "pods2: pods2": [0.9, 0.1],
+                "pods3: pods3": [0.8, 0.2],
+                "events: events": [0.0, 1.0],
+            }
+        )
+        return SystemOneCapabilityMatcher(
+            lessons=index,  # type: ignore[arg-type]
+            decisions=decisions,  # type: ignore[arg-type]
+            similarity_threshold=0.5,
+            min_same_probability=min_same_probability,
+            excerpt_chars=100,
+        )
+
+    async def test_each_shortlisted_tool_gets_its_own_question(self) -> None:
+        decisions = _Decisions({"pods2": 0.9, "pods3": 0.1})
+        verdicts = await self._matcher(decisions).same_capability(
+            _descriptor("pods"),
+            [_descriptor("pods3"), _descriptor("events"), _descriptor("pods2")],
+            as_revision=True,
+        )
+
+        assert [(v.candidate_key, v.same, v.probability) for v in verdicts] == [
+            ("pods2", True, 0.9),
+            ("pods3", False, 0.1),
+        ]
+        assert "0.90" in verdicts[0].reason
+        assert "jev-test" in verdicts[0].reason
+        assert len(decisions.calls) == 1
+        state, questions, purpose = decisions.calls[0]
+        assert state["request"] == {
+            "name": "pods",
+            "description": "pods",
+            "inputs": ["namespace"],
+        }
+        assert purpose == "learned_tool.same_capability"
+        assert [q.instructions["candidate"]["name"] for q in questions.values()] == [
+            "pods2",
+            "pods3",
+        ]
+
+    async def test_the_bar_is_inclusive_and_configured(self) -> None:
+        verdicts = await self._matcher(
+            _Decisions({"pods2": 0.7}), min_same_probability=0.7
+        ).same_capability(_descriptor("pods"), [_descriptor("pods2")])
+
+        assert verdicts[0].same is True
+
+        verdicts = await self._matcher(
+            _Decisions({"pods2": 0.69}), min_same_probability=0.7
+        ).same_capability(_descriptor("pods"), [_descriptor("pods2")])
+
+        assert verdicts[0].same is False
+
+    async def test_every_tool_over_the_threshold_is_judged(self) -> None:
+        names = [f"pods{number}" for number in range(2, 12)]
+        vectors = {f"{name}: {name}": [1.0, 0.0] for name in [*names, "pods"]}
+        decisions = _Decisions(dict.fromkeys(names, 0.1))
+        matcher = SystemOneCapabilityMatcher(
+            lessons=_Index(vectors),  # type: ignore[arg-type]
+            decisions=decisions,  # type: ignore[arg-type]
+            similarity_threshold=0.5,
+            min_same_probability=0.6,
+            excerpt_chars=100,
+        )
+
+        verdicts = await matcher.same_capability(
+            _descriptor("pods"), [_descriptor(name) for name in names]
+        )
+
+        assert len(verdicts) == len(names)
+
+    async def test_a_build_request_is_asked_as_a_revision(self) -> None:
+        decisions = _Decisions({"pods2": 0.1})
+        matcher = self._matcher(decisions)
+
+        await matcher.same_capability(_descriptor("pods"), [_descriptor("pods2")])
+        await matcher.same_capability(_descriptor("pods"), [_descriptor("pods2")], as_revision=True)
+
+        stand_in = decisions.calls[0][1]["candidate_1"]
+        revision = decisions.calls[1][1]["candidate_1"]
+        assert "next version" not in stand_in.instructions["question"]
+        assert "next version" in revision.instructions["question"]
+        assert "only adds to it" in revision.criteria["true"]
+        assert stand_in.criteria["false"] == revision.criteria["false"]
+
+    async def test_nothing_close_enough_makes_no_request(self) -> None:
+        decisions = _Decisions()
+
+        verdicts = await self._matcher(decisions).same_capability(
+            _descriptor("pods"), [_descriptor("events")]
+        )
+
+        assert verdicts == []
+        assert decisions.calls == []
+
+    async def test_a_failed_decision_raises(self) -> None:
+        matcher = self._matcher(_Decisions(error=TimeoutError("slow")))
+
+        with pytest.raises(CapabilityMatchError, match="slow"):
+            await matcher.same_capability(_descriptor("pods"), [_descriptor("pods2")])
+
+    async def test_a_mistyped_answer_raises(self) -> None:
+        class Mistyped(_Decisions):
+            async def decide(self, *_: Any, **__: Any) -> DecisionResult:
+                answer = ChoiceAnswer(choice="yes", confidence=1.0, probabilities={"yes": 1.0})
+                return DecisionResult(
+                    model="jev-test", answers={"candidate_1": answer}, input_tokens=None
+                )
+
+        with pytest.raises(CapabilityMatchError, match="candidate_1"):
+            await self._matcher(Mistyped()).same_capability(
+                _descriptor("pods"), [_descriptor("pods2")]
+            )
+
+    async def test_the_likeliest_tool_wins_the_lineage(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "pods2")
+        await _install(tmp_path, skills, "pods3")
+        code_dir, artifacts_dir = _dirs(tmp_path)
+
+        class Likelier:
+            async def same_capability(
+                self, _: CapabilityDescriptor, candidates: Sequence[CapabilityDescriptor], **__: Any
+            ) -> list[CapabilityVerdict]:
+                keys = {candidate.name: candidate.key for candidate in candidates}
+                return [
+                    CapabilityVerdict(keys["pods2"], True, 0.9, "", probability=0.61),
+                    CapabilityVerdict(keys["pods3"], True, 0.7, "", probability=0.95),
+                ]
+
+        found = await find_installed_capability(
+            tools_dir=code_dir,
+            artifacts_dir=artifacts_dir,
+            skills=skills,
+            capability_id="",
+            name="pods_new",
+            matcher=Likelier(),
+        )
+
+        assert found is not None
+        assert found.entry.name == "pods3"
+
+
 # ---------------------------------------------------------------------------
 # build_tool: repair over variant
 # ---------------------------------------------------------------------------
@@ -977,6 +1167,29 @@ class TestRepairOverVariant:
         assert "could not decide" in result.content
         assert backend.requests == []
 
+    async def test_a_decision_model_that_cannot_answer_builds_nothing(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "some_tool")
+
+        class BrokenMatcher:
+            async def same_capability(self, *_: Any, **__: Any) -> list[CapabilityVerdict]:
+                raise CapabilityMatchError("decision model could not answer: 503")
+
+        backend = RecordingBackend()
+        tool, _ = _build_tool(
+            tmp_path,
+            build_backend=backend,
+            skill_manager=skills,
+            capability_matcher=BrokenMatcher(),
+        )
+
+        result = await tool.execute(_request("brand_new_capability"))
+
+        assert result.is_error is True
+        assert "could not decide" in result.content
+        assert "503" in result.content
+        assert backend.requests == []
+
     async def test_a_failed_rebuild_never_replaces_the_working_envelope(
         self, tmp_path: Path
     ) -> None:
@@ -1206,6 +1419,78 @@ def test_the_capability_matcher_follows_lesson_matching() -> None:
     assert _build_capability_matcher(Settings(), consolidation) is None
     assert _build_capability_matcher(semantic, None) is None
     assert isinstance(_build_capability_matcher(semantic, consolidation), SemanticCapabilityMatcher)
+
+
+class TestToolGateMatcher:
+    @staticmethod
+    def _settings(**capability_matching: Any) -> Any:
+        from ravn.config import Settings
+
+        return Settings(
+            reflection={"matching": {"mode": "semantic"}},
+            decision={
+                "enabled": True,
+                "kwargs": {"base_url": "http://ollama:11434", "model": "clef-flash"},
+                "capability_matching": capability_matching,
+            },
+        )
+
+    @staticmethod
+    def _consolidation() -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(lessons=_Index({}), judge=_Judge({}))
+
+    def test_off_by_default_it_is_the_curation_matcher(self) -> None:
+        from ravn.cli.runtime_builders import _build_tool_gate_matcher
+
+        matcher = _build_tool_gate_matcher(self._settings(), self._consolidation())
+
+        assert isinstance(matcher, SemanticCapabilityMatcher)
+
+    def test_enabled_it_asks_the_observed_decision_port(self) -> None:
+        from ravn.cli.runtime_builders import _build_capability_matcher, _build_tool_gate_matcher
+        from ravn.decision_observability import ObservedDecisionPort
+
+        settings = self._settings(enabled=True, min_same_probability=0.75)
+        consolidation = self._consolidation()
+
+        matcher = _build_tool_gate_matcher(settings, consolidation)
+
+        assert isinstance(matcher, SystemOneCapabilityMatcher)
+        assert isinstance(matcher._decisions, ObservedDecisionPort)
+        assert matcher._min_same_probability == 0.75
+        # Retiring installed tools stays with the lesson judge.
+        assert isinstance(
+            _build_capability_matcher(settings, consolidation), SemanticCapabilityMatcher
+        )
+
+    def test_enabled_without_a_shortlist_is_a_configuration_error(self) -> None:
+        from ravn.cli.runtime_builders import _build_tool_gate_matcher
+        from ravn.config import Settings
+        from ravn.domain.exceptions import ConfigurationError
+
+        lexical = Settings(
+            decision={"enabled": True, "capability_matching": {"enabled": True}},
+        )
+
+        with pytest.raises(ConfigurationError, match="reflection.matching.mode: semantic"):
+            _build_tool_gate_matcher(lexical, self._consolidation())
+        with pytest.raises(ConfigurationError, match="reflection.matching.mode: semantic"):
+            _build_tool_gate_matcher(self._settings(enabled=True), None)
+
+    def test_enabled_without_a_decision_model_is_a_configuration_error(self) -> None:
+        from ravn.cli.runtime_builders import _build_tool_gate_matcher
+        from ravn.config import Settings
+        from ravn.domain.exceptions import ConfigurationError
+
+        settings = Settings(
+            reflection={"matching": {"mode": "semantic"}},
+            decision={"capability_matching": {"enabled": True}},
+        )
+
+        with pytest.raises(ConfigurationError, match="decision.enabled is false"):
+            _build_tool_gate_matcher(settings, self._consolidation())
 
 
 def test_the_curator_is_built_only_when_enabled(tmp_path: Path) -> None:

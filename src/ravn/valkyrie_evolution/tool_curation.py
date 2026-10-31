@@ -477,7 +477,11 @@ async def find_installed_capability(
         )
         same = sorted(
             (verdict for verdict in verdicts if verdict.same),
-            key=lambda verdict: (_preference(keyed[verdict.candidate_key]), verdict.similarity),
+            key=lambda verdict: (
+                _preference(keyed[verdict.candidate_key]),
+                verdict.probability or 0.0,
+                verdict.similarity,
+            ),
             reverse=True,
         )
         if same:

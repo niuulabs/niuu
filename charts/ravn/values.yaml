@@ -103,6 +103,10 @@ config:
   #       # beside the turn's own tier/decision; the turn always runs.
   #       resident_first_opinion:
   #         enabled: true
+  #       # Judge whether a tool build duplicates an installed tool. Needs
+  #       # reflection.matching.mode: semantic for the embedding shortlist.
+  #       capability_matching:
+  #         enabled: true
   settings: {}
 
 # database.enabled / persistence.enabled are general-purpose: they existed

@@ -686,6 +686,11 @@ def build_decision_port(settings: Settings) -> Any:
                 "decision.resident_first_opinion.enabled is true but decision.enabled is false; "
                 "enable and configure decision, or turn the first opinion off"
             )
+        if config.capability_matching.enabled:
+            raise ConfigurationError(
+                "decision.capability_matching.enabled is true but decision.enabled is false; "
+                "enable and configure decision, or turn capability matching off"
+            )
         return None
     kwargs = dict(config.kwargs)
     for kwarg_name, env_var in config.secret_kwargs_env.items():
@@ -835,6 +840,39 @@ def _build_capability_matcher(
         judge=consolidation.judge,
         similarity_threshold=reflection.matching.similarity_threshold,
         max_candidates=reflection.matching.max_related,
+        excerpt_chars=reflection.matching.judge_excerpt_chars,
+    )
+
+
+def _build_tool_gate_matcher(
+    settings: Settings,
+    consolidation: LearningConsolidation | None,
+) -> Any | None:
+    """The matcher ``build_tool`` asks whether a request duplicates an installed tool.
+
+    The decision model when ``decision.capability_matching.enabled`` says so, otherwise the same
+    matcher curation uses. The decision model keeps the embedding shortlist, so a resident that
+    enables it without semantic matching cannot start.
+    """
+    config = settings.decision.capability_matching
+    if not config.enabled:
+        return _build_capability_matcher(settings, consolidation)
+    reflection = settings.effective_post_session_reflection_config()
+    if reflection.matching.mode != "semantic" or consolidation is None:
+        raise ConfigurationError(
+            "decision.capability_matching.enabled is true but it shortlists tools by embedding, "
+            "which needs reflection.matching.mode: semantic and embedding.enabled: true; "
+            "set those, or turn capability matching off"
+        )
+    from ravn.adapters.reflection.capability_matching import (  # noqa: PLC0415
+        SystemOneCapabilityMatcher,
+    )
+
+    return SystemOneCapabilityMatcher(
+        lessons=consolidation.lessons,
+        decisions=build_decision_port(settings),
+        similarity_threshold=reflection.matching.similarity_threshold,
+        min_same_probability=config.min_same_probability,
         excerpt_chars=reflection.matching.judge_excerpt_chars,
     )
 
