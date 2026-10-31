@@ -13,6 +13,7 @@ either.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -146,7 +147,12 @@ class EvolutionReporter:
         if len(candidates) == 1 or self._decisions is None:
             return next(iter(candidates.values()))
         result = await self._decisions.decide(
-            {"period": {key: report[key] for key in ("window_seconds", "tools", "runs")}},
+            {
+                "period": {
+                    **{key: report[key] for key in ("window_seconds", "tools", "runs")},
+                    "changes": Counter(change["kind"] for change in report["changes"]),
+                }
+            },
             {
                 "headline": ChoiceQuestion(
                     instructions=_HEADLINE_QUESTION,
