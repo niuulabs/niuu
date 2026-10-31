@@ -119,6 +119,7 @@ class Saga:
     target_tags: list[str] = field(default_factory=list)
     target_match: str = "all"
     board_workflows: tuple[SagaBoardWorkflow, ...] = ()
+    plan_slug: str | None = None
 
 
 @dataclass(frozen=True)

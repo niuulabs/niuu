@@ -887,7 +887,7 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
     <div className="niuu:grid niuu:h-full niuu:min-h-0 niuu:grid-cols-[320px_minmax(0,1fr)] niuu:bg-bg-primary">
       <Roster dashboard={dashboard} selectedId={selected.id} onSelect={selectResident} />
       <main className="niuu:min-h-0 niuu:overflow-auto niuu:p-6">
-        <div className="niuu:mx-auto niuu:flex niuu:max-w-3xl niuu:flex-col niuu:gap-6">
+        <div className="niuu:flex niuu:max-w-3xl niuu:flex-col niuu:gap-6">
           <ResidentHeader
             dashboard={dashboard}
             valkyrie={selected}

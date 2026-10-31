@@ -15,14 +15,210 @@ from ting.domain.workflow_board import (
     BoardTicketState,
     BoardWorkflow,
     ProjectBoard,
+    ReviewPanel,
+    ReviewSource,
     WorkflowBoardError,
     board_from_snapshot,
+    module_widgets_of,
     parse_workflow_board,
     place_on_project,
     place_ticket,
 )
 from ting.domain.workflow_document import load_workflow_document
 from ting.system_workflows import BUNDLED_SYSTEM_WORKFLOWS_PATH, load_system_workflows
+
+
+def _gate_column(graph: dict[str, Any]) -> dict[str, Any]:
+    return graph["board"]["columns"][1]
+
+
+def test_a_review_kind_brings_its_usual_panels() -> None:
+    board = parse_workflow_board(_graph())
+
+    assert board is not None
+    assert board.columns[1].panels == (
+        ReviewPanel(widget="diff", title="Changes"),
+        ReviewPanel(widget="files", title="Files"),
+        ReviewPanel(widget="pullRequest", title="Pull request"),
+    )
+
+
+def test_a_workflow_declares_its_own_panels() -> None:
+    graph = _graph()
+    _gate_column(graph)["panels"] = [
+        {"widget": "document", "title": "Design", "source": {"outcome": "design"}},
+        {"widget": "file", "title": "Report", "source": {"file": "report/quality.pdf"}},
+        {"widget": "link", "title": "Camera", "source": {"url": "https://printer.local/cam"}},
+        {"widget": "summary", "title": "Checks"},
+    ]
+
+    board = parse_workflow_board(graph)
+
+    assert board is not None
+    assert board.columns[1].panels == (
+        ReviewPanel(
+            widget="document",
+            title="Design",
+            source=ReviewSource(kind="outcome", value="design"),
+        ),
+        ReviewPanel(
+            widget="file",
+            title="Report",
+            source=ReviewSource(kind="file", value="report/quality.pdf"),
+        ),
+        ReviewPanel(
+            widget="link",
+            title="Camera",
+            source=ReviewSource(kind="url", value="https://printer.local/cam"),
+        ),
+        ReviewPanel(widget="summary", title="Checks"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("panels", "reason"),
+    [
+        ([], "non-empty list"),
+        (["document"], "must be a mapping"),
+        ([{"widget": "hologram", "title": "Nope"}], "widget must be one of"),
+        ([{"widget": "document", "title": "Plan"}], "needs source"),
+        ([{"widget": "document", "title": "Plan", "source": {"file": "a.md"}}], "needs source"),
+        ([{"widget": "summary", "title": "Result", "source": {"outcome": "x"}}], "reads no source"),
+        (
+            [{"widget": "file", "title": "Log", "source": {"file": "/etc/passwd"}}],
+            "inside the work",
+        ),
+        ([{"widget": "file", "title": "Log", "source": {"file": "a/../../b"}}], "inside the work"),
+        ([{"widget": "link", "title": "Cam", "source": {"url": "file:///x"}}], "http or https"),
+        ([{"widget": "summary", "title": "Result", "colour": "red"}], "Unknown review panel"),
+    ],
+)
+def test_a_panel_that_cannot_be_shown_is_refused(panels: Any, reason: str) -> None:
+    graph = _graph()
+    _gate_column(graph)["panels"] = panels
+
+    with pytest.raises(WorkflowBoardError, match=reason):
+        parse_workflow_board(graph)
+
+
+def test_a_page_declares_the_files_it_may_read() -> None:
+    graph = _graph()
+    _gate_column(graph)["panels"] = [
+        {
+            "widget": "page",
+            "title": "Layers",
+            "source": {"file": "report/index.html"},
+            "files": ["report/unit-17.jpg"],
+        }
+    ]
+
+    board = parse_workflow_board(graph)
+
+    assert board is not None
+    assert board.columns[1].panels == (
+        ReviewPanel(
+            widget="page",
+            title="Layers",
+            source=ReviewSource(kind="file", value="report/index.html"),
+            files=("report/unit-17.jpg",),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("panel", "reason"),
+    [
+        (
+            {"widget": "file", "title": "R", "source": {"file": "a.pdf"}, "files": ["b.png"]},
+            "only a page",
+        ),
+        (
+            {"widget": "page", "title": "P", "source": {"file": "a.html"}, "files": "b.png"},
+            "must be a list",
+        ),
+        (
+            {"widget": "page", "title": "P", "source": {"file": "a.html"}, "files": ["../b"]},
+            "inside the workspace",
+        ),
+        (
+            {"widget": "page", "title": "P", "source": {"file": "a.html"}, "files": [""]},
+            "non-empty",
+        ),
+    ],
+)
+def test_a_page_cannot_reach_past_its_workspace(panel: dict[str, Any], reason: str) -> None:
+    graph = _graph()
+    _gate_column(graph)["panels"] = [panel]
+
+    with pytest.raises(WorkflowBoardError, match=reason):
+        parse_workflow_board(graph)
+
+
+def test_a_workflow_can_name_a_module_widget_with_any_source() -> None:
+    graph = _graph()
+    _gate_column(graph)["panels"] = [
+        {
+            "widget": "acme-print/print-quality",
+            "title": "Quality",
+            "source": {"outcome": "inspection"},
+            "files": ["stills/unit-17.jpg"],
+        },
+        {"widget": "acme-print/slicer", "title": "Slicer"},
+    ]
+
+    board = parse_workflow_board(graph)
+
+    assert board is not None
+    assert board.columns[1].panels == (
+        ReviewPanel(
+            widget="acme-print/print-quality",
+            title="Quality",
+            source=ReviewSource(kind="outcome", value="inspection"),
+            files=("stills/unit-17.jpg",),
+        ),
+        ReviewPanel(widget="acme-print/slicer", title="Slicer"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("panel", "reason"),
+    [
+        ({"widget": "Acme/Print", "title": "Q"}, "module/name"),
+        ({"widget": "a/b/c", "title": "Q"}, "module/name"),
+        ({"widget": "a/b", "title": "Q", "source": "plan"}, "source must be one of"),
+        ({"widget": "a/b", "title": "Q", "source": {"gate": "x"}}, "source must be one of"),
+        ({"widget": "a/b", "title": "Q", "source": {"file": "/etc/passwd"}}, "inside the work"),
+        ({"widget": "a/b", "title": "Q", "source": {"url": "ftp://x"}}, "http or https"),
+    ],
+)
+def test_a_module_widget_keeps_the_same_rules(panel: dict[str, Any], reason: str) -> None:
+    graph = _graph()
+    _gate_column(graph)["panels"] = [panel]
+
+    with pytest.raises(WorkflowBoardError, match=reason):
+        parse_workflow_board(graph)
+
+
+def test_a_board_says_which_module_widgets_it_needs() -> None:
+    graph = _graph()
+    _gate_column(graph)["panels"] = [
+        {"widget": "acme-print/print-quality", "title": "Quality"},
+        {"widget": "summary", "title": "Result"},
+    ]
+    board = parse_workflow_board(graph)
+    assert board is not None
+
+    project = ProjectBoard(workflows=(BoardWorkflow(id="w1", name="Print", board=board),))
+
+    assert module_widgets_of(project) == {"acme-print/print-quality"}
+
+
+def test_panels_need_a_gate() -> None:
+    graph = _graph()
+    graph["board"]["columns"][0]["panels"] = [{"widget": "summary", "title": "Result"}]
+
+    with pytest.raises(WorkflowBoardError, match="without a gate"):
+        parse_workflow_board(graph)
 
 
 def _graph() -> dict[str, Any]:

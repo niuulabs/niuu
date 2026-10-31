@@ -14,7 +14,6 @@ from typing import Protocol
 
 
 class WorkflowStep(Protocol):
-    root_correlation_id: str
     workflow_node_id: str
     persona: str | None
 
@@ -24,10 +23,14 @@ def workflow_thread_key(task: WorkflowStep | None) -> str:
 
     Scoped to the node, not just the persona: a persona's thread holds what it
     did for one piece of the run, and a different node is a different job.
+
+    The root correlation is deliberately not part of the key. Every gate decision
+    starts a new one, so a revision a person asked for would lose its thread. The
+    store is per session instead, which is one workflow run.
     """
-    if task is None or not task.root_correlation_id or not task.workflow_node_id:
+    if task is None or not task.workflow_node_id:
         return ""
-    return f"{task.root_correlation_id}/{task.persona or ''}/{task.workflow_node_id}"
+    return f"{task.persona or ''}/{task.workflow_node_id}"
 
 
 class CliThreadStore:

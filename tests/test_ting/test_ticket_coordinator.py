@@ -169,7 +169,9 @@ def test_the_brief_names_the_ticket_and_the_workflow() -> None:
 
 def test_ticket_metadata_round_trips() -> None:
     saga_id = uuid4()
-    metadata = {"ticket": ticket_metadata(saga_id=saga_id, issue_id="i", identifier="N-1")}
+    metadata = {
+        "ticket": ticket_metadata(saga_id=saga_id, issue_id="i", identifier="N-1", title="T")
+    }
 
     assert ticket_of(metadata) == (str(saga_id), "i")
 

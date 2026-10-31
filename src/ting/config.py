@@ -1129,6 +1129,23 @@ class A2AConfig(BaseModel):
     )
 
 
+class ReviewWidgetsConfig(BaseModel):
+    """Review widgets installed from external module packages."""
+
+    module_manifest_files: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Module manifests whose review_widgets workflows may name. Every widget is "
+            "read at startup, and one that cannot be read stops Ting."
+        ),
+    )
+    max_page_bytes: int = Field(
+        default=2 * 1024 * 1024,
+        ge=1,
+        description="Largest widget page Ting will serve. Large assets go through declared files.",
+    )
+
+
 class TicketCoordinatorConfig(BaseModel):
     """The persistent session each ticket works through."""
 
@@ -1399,6 +1416,7 @@ class Settings(BaseSettings):
     events: EventsConfig = Field(default_factory=EventsConfig)
     a2a: A2AConfig = Field(default_factory=A2AConfig)
     ticket_coordinator: TicketCoordinatorConfig = Field(default_factory=TicketCoordinatorConfig)
+    review_widgets: ReviewWidgetsConfig = Field(default_factory=ReviewWidgetsConfig)
     workflow_execution: WorkflowExecutionConfig = Field(default_factory=WorkflowExecutionConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
@@ -736,6 +737,23 @@ class TestBoardWorkflows:
         )
 
         assert response.status_code == 422
+
+    def test_a_board_needing_a_widget_not_installed_is_refused(
+        self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        planning = self._bundled("Ticket Planning Flow")[0]
+        graph = deepcopy(planning.graph)
+        column = next(item for item in graph["board"]["columns"] if item.get("gate"))
+        column["panels"] = [{"widget": "acme-print/print-quality", "title": "Quality"}]
+        client = self._client(mock_tracker, saga_repo, [replace(planning, graph=graph)])
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/board-workflows",
+            json={"workflow_ids": [str(planning.id)]},
+        )
+
+        assert response.status_code == 422
+        assert "acme-print/print-quality" in response.json()["detail"]
 
     def test_a_workflow_with_a_run_stays_on_the_board(
         self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
@@ -1669,6 +1687,15 @@ class _DispatchRecorder:
             raise RuntimeError("dispatch unavailable")
 
 
+def _no_plan_campaigns() -> MagicMock:
+    """A campaign repository for commits that come from no plan.
+
+    A FastAPI dependency, so it must take no arguments: MagicMock itself reads as
+    one that wants `args` and `kwargs` query parameters.
+    """
+    return MagicMock()
+
+
 class TestCommitSaga:
     def test_kicks_off_initial_dispatch_when_service_is_available(
         self,
@@ -1680,6 +1707,7 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: repo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plan_campaigns
         app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         recorder = _DispatchRecorder()
@@ -1724,6 +1752,7 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: repo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plan_campaigns
         app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         app.state.dispatch_service = _DispatchRecorder(should_fail=True)
@@ -1779,6 +1808,7 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: repo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plan_campaigns
         app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         client = TestClient(app)
@@ -1802,6 +1832,7 @@ class TestCommitSaga:
         app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plan_campaigns
         app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         client = TestClient(app)
@@ -1844,6 +1875,7 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [FailingTracker()]
         app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plan_campaigns
         app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         client = TestClient(app)

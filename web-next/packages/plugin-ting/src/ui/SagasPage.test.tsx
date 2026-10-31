@@ -259,7 +259,7 @@ describe('SagasPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Create new project/i }));
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Go to Plan →' }));
-    expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/plan' });
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/plan/new' });
   });
 
   it('adds repositories by typed reference when no repo catalog is available', async () => {

@@ -53,6 +53,7 @@ import type {
   WorkSummary,
   WorkTask,
 } from '../domain/work';
+import type { ReviewList, ReviewWidget, TicketReviews } from '../domain/review';
 import { serializePortableWorkflow } from '../domain/workflowPortable';
 
 // ---------------------------------------------------------------------------
@@ -2277,6 +2278,127 @@ const MOCK_WORK_TASKS: WorkTask[] = [
   }),
 ];
 
+const MOCK_PLAN_DECIDED = {
+  gateId: 'demo-plan-gate-1',
+  activationId: 'demo-plan-activation-1',
+  requestedAt: '2026-01-06T10:02:00Z',
+  summary: 'Bounded, and the files look right.',
+  decidedBy: 'you',
+  decidedAt: '2026-01-06T10:21:00Z',
+};
+
+const MOCK_PLAN_R1 = [
+  '## Approach',
+  'Count attempts per run and stop at a fixed limit of 3.',
+  '',
+  '## Steps',
+  '1. Add the limit to the dispatcher.',
+  '2. Escalate when it is reached.',
+  '',
+  '## Done when',
+  '- A run stops retrying after its limit.',
+].join('\n');
+
+const MOCK_PLAN_R2 = [
+  '## Changes since your note',
+  'The limit now lives on the saga, as you asked.',
+  '',
+  '## Approach',
+  'Give each saga a retry budget and stop a run when it is spent.',
+  '',
+  '## Steps',
+  '1. Add the budget to the saga model.',
+  '2. Check it in the dispatcher before each retry.',
+  '3. Escalate when it is spent.',
+  '',
+  '## Done when',
+  '- A run stops retrying after its limit.',
+].join('\n');
+
+function mockTicketReviews(task: WorkTask | undefined): TicketReviews {
+  const gate = task?.board?.gate;
+  if (!gate) return { reviews: [], unreadableRuns: [] };
+  return {
+    reviews: [
+      {
+        columnId: 'plan-review',
+        title: 'Plan review',
+        review: 'plan',
+        workflowName: 'Ticket Planning Flow',
+        taskId: `demo-plan-${task.source.issueId}`,
+        sessionId: `demo-plan-session-${task.source.issueId}`,
+        panels: [{ widget: 'document', title: 'Plan', source: { kind: 'outcome', value: 'plan' } }],
+        revisions: [
+          {
+            ...MOCK_PLAN_DECIDED,
+            number: 1,
+            status: 'changes_requested',
+            notes: '> fixed limit of 3\n\nThis belongs on the saga.',
+            fields: { plan: MOCK_PLAN_R1 },
+          },
+          {
+            ...MOCK_PLAN_DECIDED,
+            number: 2,
+            gateId: 'demo-plan-gate-2',
+            activationId: 'demo-plan-activation-2',
+            status: 'approved',
+            notes: '',
+            fields: { plan: MOCK_PLAN_R2 },
+          },
+        ],
+      },
+      {
+        columnId: task.board?.columnId ?? 'code-review',
+        title: gate.label,
+        review: 'code',
+        workflowName: 'Reviewed Delivery Flow',
+        taskId: `demo-run-${task.source.issueId}`,
+        sessionId: `demo-session-${task.source.issueId}`,
+        panels: [
+          { widget: 'diff', title: 'Changes' },
+          { widget: 'files', title: 'Files' },
+          { widget: 'pullRequest', title: 'Pull request' },
+        ],
+        revisions: [
+          {
+            number: 1,
+            gateId: gate.id,
+            activationId: gate.activationId,
+            requestedAt: gate.requestedAt,
+            status: 'pending',
+            summary: gate.summary,
+            decidedBy: '',
+            notes: '',
+            decidedAt: '',
+            fields: {},
+          },
+        ],
+      },
+    ],
+    unreadableRuns: [],
+  };
+}
+
+function mockReviewList(tasks: readonly WorkTask[]): ReviewList {
+  return {
+    items: tasks
+      .filter((task) => task.board?.gate)
+      .map((task) => ({
+        taskId: `demo-run-${task.source.issueId}`,
+        kind: 'ticket' as const,
+        title: task.title,
+        workflowName: 'Reviewed Delivery Flow',
+        state: 'waiting' as const,
+        gateLabel: task.board?.gate?.label ?? '',
+        updatedAt: task.board?.gate?.requestedAt ?? '',
+        projectId: 'demo-platform',
+        projectName: 'Platform reliability',
+        issueId: task.source.issueId,
+        identifier: task.source.identifier,
+      })),
+  };
+}
+
 export function createMockWorkService(): IWorkService {
   const tasks = MOCK_WORK_TASKS.map((task) => ({ ...task }));
   return {
@@ -2315,6 +2437,15 @@ export function createMockWorkService(): IWorkService {
         state: 'running',
         gate: null,
       };
+    },
+    async reviews() {
+      return mockReviewList(tasks);
+    },
+    async reviewWidget(module, name): Promise<ReviewWidget> {
+      throw new Error(`Review widget ${module}/${name} is not installed on this deployment`);
+    },
+    async ticketReviews(_projectId, issueId) {
+      return mockTicketReviews(tasks.find((entry) => entry.source.issueId === issueId));
     },
     async startTicket(_projectId, issueId, columnId) {
       const task = tasks.find((entry) => entry.source.issueId === issueId);

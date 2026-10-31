@@ -1,0 +1,1 @@
+ALTER TABLE sagas DROP COLUMN IF EXISTS plan_slug;

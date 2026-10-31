@@ -123,10 +123,11 @@ class PostgresSagaRepository(SagaRepository):
                 (id, tracker_id, tracker_type, slug, name,
                  repos, feature_branch, base_branch, status, created_at, owner_id,
                  workflow_id, workflow_version, workflow_snapshot, instance_id,
-                 repo_branches, target_tags, target_match, tenant_id, tracker_connection_id)
+                 repo_branches, target_tags, target_match, tenant_id, tracker_connection_id,
+                 plan_slug)
             VALUES
                 ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15::uuid,
-                 $16::jsonb, $17, $18, $19, $20)
+                 $16::jsonb, $17, $18, $19, $20, $21)
             ON CONFLICT (id) DO UPDATE SET
                 tracker_id = EXCLUDED.tracker_id,
                 tracker_type = EXCLUDED.tracker_type,
@@ -144,7 +145,8 @@ class PostgresSagaRepository(SagaRepository):
                 instance_id = EXCLUDED.instance_id,
                 repo_branches = EXCLUDED.repo_branches,
                 target_tags = EXCLUDED.target_tags,
-                target_match = EXCLUDED.target_match
+                target_match = EXCLUDED.target_match,
+                plan_slug = EXCLUDED.plan_slug
                 WHERE sagas.tenant_id = EXCLUDED.tenant_id
                   AND sagas.owner_id IS NOT DISTINCT FROM EXCLUDED.owner_id
             """,
@@ -168,6 +170,7 @@ class PostgresSagaRepository(SagaRepository):
             saga.target_match,
             saga.tenant_id,
             saga.tracker_connection_id,
+            saga.plan_slug,
         )
         if result == "INSERT 0 0":
             raise AuthorizationDeniedError("Resource ownership is immutable")
@@ -529,6 +532,7 @@ class PostgresSagaRepository(SagaRepository):
             instance_id=str(row["instance_id"]) if row.get("instance_id") is not None else None,
             target_tags=list(row.get("target_tags") or []),
             target_match=str(row.get("target_match") or "all"),
+            plan_slug=row.get("plan_slug"),
             board_workflows=PostgresSagaRepository._decode_board_workflows(
                 row.get("board_workflows")
             ),

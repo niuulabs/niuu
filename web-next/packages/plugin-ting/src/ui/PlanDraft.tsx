@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { GateDecision } from '@niuulabs/ui';
 import type { ExtractedStructure, PhaseSpec } from '../ports';
 import type { PlanTicketFlag } from '../domain/planTicketCheck';
 
@@ -32,6 +33,7 @@ interface PlanDraftProps {
   ticketFlags?: PlanTicketFlag[];
   ticketCheckError?: string | null;
   onRequestRevision?(flags: PlanTicketFlag[]): void;
+  onRequestChanges?(note: string): void;
 }
 
 interface PhaseEditorProps {
@@ -218,6 +220,7 @@ export function PlanDraft({
   ticketFlags = [],
   ticketCheckError = null,
   onRequestRevision,
+  onRequestChanges,
 }: PlanDraftProps) {
   const phases = structure.structure?.phases ?? [];
   const sagaName = structure.structure?.name ?? 'New project';
@@ -232,6 +235,7 @@ export function PlanDraft({
       : 0;
 
   const [draftSavedFeedback, setDraftSavedFeedback] = useState(false);
+  const [note, setNote] = useState('');
 
   useEffect(() => {
     if (!draftSavedFeedback) return;
@@ -393,15 +397,20 @@ export function PlanDraft({
             </button>
           </div>
         )}
-        <button
-          type="button"
-          onClick={onApprove}
-          disabled={loading || phases.length === 0}
-          className="ting-plan-primary-btn niuu:disabled:opacity-50 niuu:disabled:cursor-not-allowed"
-        >
-          {loading ? 'Launching…' : 'Approve & launch →'}
-        </button>
       </div>
+      <GateDecision
+        title="Plan review"
+        hint="Approving creates the project and its tickets. Changes go back to the planner in the same run."
+        note={note}
+        onNoteChange={setNote}
+        requireNote
+        approveLabel={loading ? 'Launching…' : 'Approve & launch →'}
+        changesLabel="Request changes"
+        busy={loading}
+        disabled={phases.length === 0}
+        onApprove={onApprove}
+        onRequestChanges={() => onRequestChanges?.(note.trim())}
+      />
     </div>
   );
 }

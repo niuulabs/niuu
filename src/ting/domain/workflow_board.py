@@ -8,6 +8,10 @@ where an answer sends a ticket is derived from the gate's own edges.
 A workflow without ``graph.board`` has no board. That is an authoring choice
 and the expected state of most workflows, not a degraded one.
 
+A gate column also says what a person reviews there, as panels. ``review`` names
+the kind of decision and brings that kind's usual panels; ``panels`` replaces them
+when a workflow reviews something else. The review page around them never changes.
+
 A project's board runs one or more such workflows in order. Each keeps its own
 columns and gates, and leaving one workflow leads to the first column of the
 next. A ticket with a coordinator starts it by itself (see ``ticket_advance``);
@@ -16,6 +20,7 @@ one without waits there until someone starts it.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -35,6 +40,33 @@ OFF_BOARD_REASON = "This ticket's run does not match the workflows on this board
 
 _RESERVED_COLUMN_IDS = frozenset({BACKLOG_COLUMN_ID, DONE_COLUMN_ID})
 _REVIEW_KINDS = frozenset({"plan", "code", "output"})
+SOURCE_OUTCOME = "outcome"
+SOURCE_FILE = "file"
+SOURCE_URL = "url"
+WIDGET_DOCUMENT = "document"
+WIDGET_FILE = "file"
+WIDGET_LINK = "link"
+WIDGET_PAGE = "page"
+WIDGET_DIFF = "diff"
+WIDGET_FILES = "files"
+WIDGET_PULL_REQUEST = "pullRequest"
+WIDGET_SUMMARY = "summary"
+# Where each widget reads from; None shows the run's own session and gate.
+_WIDGET_SOURCES: Mapping[str, str | None] = {
+    WIDGET_DOCUMENT: SOURCE_OUTCOME,
+    WIDGET_FILE: SOURCE_FILE,
+    WIDGET_LINK: SOURCE_URL,
+    WIDGET_PAGE: SOURCE_FILE,
+    WIDGET_DIFF: None,
+    WIDGET_FILES: None,
+    WIDGET_PULL_REQUEST: None,
+    WIDGET_SUMMARY: None,
+}
+_WEB_SCHEMES = ("https://", "http://")
+# A widget a module installed, named `module/name`. Whether it is installed is the
+# deployment's to answer: a pinned run must still parse after a module is removed.
+_MODULE_WIDGET = re.compile(r"^[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_-]*$")
+_SOURCE_KINDS = frozenset({SOURCE_OUTCOME, SOURCE_FILE, SOURCE_URL})
 _WORK_NODE_KINDS = frozenset({"stage", "wait", "subworkflow", "gate"})
 _CLOSED_STATUS_TYPES = frozenset({"completed", "canceled"})
 _STOPPED_RUN_STATUSES = frozenset({RunStatus.FAILED, RunStatus.ESCALATED})
@@ -63,6 +95,42 @@ class BoardTicketState(StrEnum):
 
 
 @dataclass(frozen=True)
+class ReviewSource:
+    """Where a panel's content comes from: an outcome field, a workspace file or a URL."""
+
+    kind: str
+    value: str
+
+
+@dataclass(frozen=True)
+class ReviewPanel:
+    """One thing a person reviews at a gate."""
+
+    widget: str
+    title: str
+    source: ReviewSource | None = None
+    # Workspace files a page may ask for; a page has no network of its own.
+    files: tuple[str, ...] = ()
+
+
+_KIND_PANELS: Mapping[str, tuple[ReviewPanel, ...]] = {
+    "plan": (
+        ReviewPanel(
+            widget=WIDGET_DOCUMENT,
+            title="Plan",
+            source=ReviewSource(kind=SOURCE_OUTCOME, value="plan"),
+        ),
+    ),
+    "code": (
+        ReviewPanel(widget=WIDGET_DIFF, title="Changes"),
+        ReviewPanel(widget=WIDGET_FILES, title="Files"),
+        ReviewPanel(widget=WIDGET_PULL_REQUEST, title="Pull request"),
+    ),
+    "output": (ReviewPanel(widget=WIDGET_SUMMARY, title="Result"),),
+}
+
+
+@dataclass(frozen=True)
 class BoardColumn:
     id: str
     title: str
@@ -70,6 +138,7 @@ class BoardColumn:
     node_ids: tuple[str, ...] = ()
     gate_node_id: str | None = None
     review: str | None = None
+    panels: tuple[ReviewPanel, ...] = ()
     approve_column_id: str | None = None
     changes_column_id: str | None = None
     workflow_id: str | None = None
@@ -401,7 +470,7 @@ def _nodes_by_id(graph: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
 def _parse_column(raw: object, nodes: Mapping[str, Mapping[str, Any]]) -> BoardColumn:
     if not isinstance(raw, Mapping):
         raise WorkflowBoardError("Each graph.board column must be a mapping")
-    unknown = set(raw) - {"id", "title", "nodes", "gate", "review"}
+    unknown = set(raw) - {"id", "title", "nodes", "gate", "review", "panels"}
     if unknown:
         raise WorkflowBoardError(f"Unknown board column field(s): {', '.join(sorted(unknown))}")
     column_id = _required_text(raw.get("id"), "id")
@@ -412,7 +481,7 @@ def _parse_column(raw: object, nodes: Mapping[str, Mapping[str, Any]]) -> BoardC
         raise WorkflowBoardError(f"Board column {column_id!r} needs exactly one of nodes or gate")
     if "gate" in raw:
         return _parse_gate_column(raw, column_id, title, nodes)
-    if "review" in raw:
+    if "review" in raw or "panels" in raw:
         raise WorkflowBoardError(f"Board column {column_id!r} sets review without a gate")
     return BoardColumn(
         id=column_id,
@@ -448,7 +517,108 @@ def _parse_gate_column(
         kind=BoardColumnKind.GATE,
         gate_node_id=gate_id,
         review=str(review),
+        panels=_review_panels(raw, column_id, str(review)),
     )
+
+
+def _review_panels(
+    raw: Mapping[str, Any],
+    column_id: str,
+    review: str,
+) -> tuple[ReviewPanel, ...]:
+    if "panels" not in raw:
+        return _KIND_PANELS[review]
+    panels = raw["panels"]
+    if not isinstance(panels, list) or not panels:
+        raise WorkflowBoardError(f"Board column {column_id!r} panels must be a non-empty list")
+    return tuple(_parse_panel(item, column_id) for item in panels)
+
+
+def _parse_panel(raw: object, column_id: str) -> ReviewPanel:
+    if not isinstance(raw, Mapping):
+        raise WorkflowBoardError(f"Each panel of board column {column_id!r} must be a mapping")
+    unknown = set(raw) - {"widget", "title", "source", "files"}
+    if unknown:
+        raise WorkflowBoardError(f"Unknown review panel field(s): {', '.join(sorted(unknown))}")
+    widget = raw.get("widget")
+    if widget not in _WIDGET_SOURCES and not is_module_widget(widget):
+        raise WorkflowBoardError(
+            f"Board column {column_id!r} panel widget must be one of "
+            f"{', '.join(sorted(_WIDGET_SOURCES))}, or a module's as module/name"
+        )
+    title = _required_text(raw.get("title"), f"{column_id} panel title")
+    return ReviewPanel(
+        widget=str(widget),
+        title=title,
+        source=_parse_source(raw.get("source"), str(widget), title),
+        files=_parse_files(raw.get("files"), str(widget), title),
+    )
+
+
+def is_module_widget(widget: object) -> bool:
+    return isinstance(widget, str) and _MODULE_WIDGET.match(widget) is not None
+
+
+def module_widgets_of(board: ProjectBoard) -> frozenset[str]:
+    """The module widgets a board needs a deployment to have installed."""
+    return frozenset(
+        panel.widget
+        for workflow in board.workflows
+        for column in workflow.board.columns
+        for panel in column.panels
+        if is_module_widget(panel.widget)
+    )
+
+
+def _parse_files(raw: object, widget: str, title: str) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if widget != WIDGET_PAGE and not is_module_widget(widget):
+        raise WorkflowBoardError(f"Review panel {title!r} takes no files; only a page does")
+    if not isinstance(raw, list):
+        raise WorkflowBoardError(f"Review panel {title!r} files must be a list")
+    files = tuple(_required_text(item, f"{title} file") for item in raw)
+    for path in files:
+        _require_workspace_path(path, title)
+    return files
+
+
+def _require_workspace_path(path: str, title: str) -> None:
+    if path.startswith("/") or ".." in path.split("/"):
+        raise WorkflowBoardError(f"Review panel {title!r} must name a file inside the workspace")
+
+
+def _parse_module_source(raw: object, title: str) -> ReviewSource | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping) or len(raw) != 1 or not set(raw) <= _SOURCE_KINDS:
+        raise WorkflowBoardError(
+            f"Review panel {title!r} source must be one of {', '.join(sorted(_SOURCE_KINDS))}"
+        )
+    kind, value = next(iter(raw.items()))
+    return _checked_source(str(kind), value, title)
+
+
+def _parse_source(raw: object, widget: str, title: str) -> ReviewSource | None:
+    if is_module_widget(widget):
+        return _parse_module_source(raw, title)
+    kind = _WIDGET_SOURCES[widget]
+    if kind is None:
+        if raw is not None:
+            raise WorkflowBoardError(f"Review panel {title!r} reads no source")
+        return None
+    if not isinstance(raw, Mapping) or set(raw) != {kind}:
+        raise WorkflowBoardError(f"Review panel {title!r} needs source {{{kind}: ...}}")
+    return _checked_source(kind, raw[kind], title)
+
+
+def _checked_source(kind: str, raw: object, title: str) -> ReviewSource:
+    value = _required_text(raw, f"{title} source")
+    if kind == SOURCE_FILE:
+        _require_workspace_path(value, title)
+    if kind == SOURCE_URL and not value.startswith(_WEB_SCHEMES):
+        raise WorkflowBoardError(f"Review panel {title!r} needs an http or https URL")
+    return ReviewSource(kind=kind, value=value)
 
 
 def _work_nodes(
@@ -501,12 +671,8 @@ def _with_gate_routes(
             continue
         gate = nodes[column.gate_node_id]
         routed.append(
-            BoardColumn(
-                id=column.id,
-                title=column.title,
-                kind=column.kind,
-                gate_node_id=column.gate_node_id,
-                review=column.review,
+            replace(
+                column,
                 approve_column_id=_route(gate, "approvalEvent", graph, nodes, by_node),
                 changes_column_id=_route(gate, "changesRequestedEvent", graph, nodes, by_node),
             )

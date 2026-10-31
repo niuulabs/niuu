@@ -273,6 +273,7 @@ function buildCommitRequest(state: PlanWizardState): CommitSagaRequest {
   return {
     name,
     slug,
+    planSlug: state.session?.campaignSlug,
     description: state.prompt,
     repos: state.repo ? [state.repo] : [],
     baseBranch: 'main',

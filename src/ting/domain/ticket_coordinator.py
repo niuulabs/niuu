@@ -44,9 +44,9 @@ class TicketCoordinator:
     advanced_from: str | None = None
 
 
-def ticket_metadata(*, saga_id: UUID, issue_id: str, identifier: str) -> dict[str, str]:
+def ticket_metadata(*, saga_id: UUID, issue_id: str, identifier: str, title: str) -> dict[str, str]:
     """The link a coordinator's A2A launches carry back to their ticket."""
-    return {"sagaId": str(saga_id), "issueId": issue_id, "identifier": identifier}
+    return {"sagaId": str(saga_id), "issueId": issue_id, "identifier": identifier, "title": title}
 
 
 def ticket_of(metadata: dict[str, Any]) -> tuple[str, str] | None:

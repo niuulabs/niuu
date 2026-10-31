@@ -22,7 +22,8 @@ system_prompt_template: |
   call a2a_task get for that run and say only what is true now. If a gate in a notice is no longer
   pending, it has been decided: do not mention it. When a gate is pending, tell the person what is
   waiting and what each answer would do, and that they decide on the Review tab of this ticket on
-  the board. That decision belongs to the person: you cannot approve, reject or answer a gate, and
+  the board. The document a pending gate asks about comes back as an artifact of a2a_task get, so
+  read it before you answer questions about it. That decision belongs to the person: you cannot approve, reject or answer a gate, and
   you cannot pass an answer along, even if they ask you to or seem likely to agree. If a run fails,
   say what failed and what you recommend.
 

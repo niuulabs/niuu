@@ -70,7 +70,7 @@ def _reset_transport() -> None:
     _ThreadTransport.fail_resume = False
 
 
-def _agent(store: CliThreadStore, key: str = "run-1/planner/draft", **executor_kwargs: object):
+def _agent(store: CliThreadStore, key: str = "planner/draft", **executor_kwargs: object):
     adapter = executor_kwargs.pop("adapter", _ThreadTransport)
     executor = CliTransportExecutor(
         transport_adapter=f"{adapter.__module__}.{adapter.__qualname__}",
@@ -92,14 +92,19 @@ async def _run_step(store: CliThreadStore, **kwargs: object) -> None:
     await agent.close()
 
 
-def test_key_names_the_run_persona_and_node() -> None:
-    assert workflow_thread_key(_Step()) == "run-1/ticket-planner/plan-draft"
+def test_key_names_the_persona_and_node() -> None:
+    assert workflow_thread_key(_Step()) == "ticket-planner/plan-draft"
 
 
-@pytest.mark.parametrize(
-    "task",
-    [None, _Step(root_correlation_id=""), _Step(workflow_node_id="")],
-)
+def test_a_gate_decision_keeps_the_key() -> None:
+    """Gates start a new root correlation; a revision they ask for keeps its thread."""
+    before = _Step(root_correlation_id="session-id")
+    after_gate = _Step(root_correlation_id="gate-activation-id")
+
+    assert workflow_thread_key(before) == workflow_thread_key(after_gate)
+
+
+@pytest.mark.parametrize("task", [None, _Step(workflow_node_id="")])
 def test_only_a_workflow_step_has_a_thread(task: _Step | None) -> None:
     assert workflow_thread_key(task) == ""
 
@@ -145,8 +150,8 @@ async def test_second_step_of_a_node_resumes_its_thread(tmp_path: Path) -> None:
 async def test_another_node_starts_its_own_thread(tmp_path: Path) -> None:
     store = CliThreadStore(tmp_path / "cli_threads.json")
 
-    await _run_step(store, key="run-1/reviewer/check")
-    await _run_step(store, key="run-1/planner/draft")
+    await _run_step(store, key="reviewer/check")
+    await _run_step(store, key="planner/draft")
 
     assert _ThreadTransport.started == ["", ""]
 
@@ -170,7 +175,7 @@ async def test_a_concurrent_step_leaves_the_held_thread_alone(tmp_path: Path) ->
     await holder.close()
 
     assert _ThreadTransport.started == ["", "thread-1", ""]
-    assert store.claim("run-1/planner/draft") == "thread-1"
+    assert store.claim("planner/draft") == "thread-1"
 
 
 async def test_operator_can_turn_resuming_off(tmp_path: Path) -> None:
@@ -190,6 +195,25 @@ async def test_transport_that_cannot_resume_is_left_alone(tmp_path: Path) -> Non
     assert not path.exists()
 
 
+async def test_no_store_means_no_resume(tmp_path: Path) -> None:
+    """A process that is not a workflow session is given no store."""
+    for _ in range(2):
+        agent = CliTransportExecutor(
+            transport_adapter=f"{__name__}._ThreadTransport",
+        ).build(
+            workspace_dir="/tmp/workspace",
+            session=Session(),
+            permission_mode="workspace-write",
+            channel=_Channel(),
+            workflow_thread_store=None,
+            workflow_thread_key=lambda: "planner/draft",
+        )
+        await agent._ensure_transport()
+        await agent.close()
+
+    assert _ThreadTransport.started == ["", ""]
+
+
 async def test_failed_resume_is_loud_and_names_the_remedy(tmp_path: Path) -> None:
     store = CliThreadStore(tmp_path / "cli_threads.json")
     await _run_step(store)
@@ -201,4 +225,4 @@ async def test_failed_resume_is_loud_and_names_the_remedy(tmp_path: Path) -> Non
     await agent.close()
 
     assert "thread-1" in str(failure.value)
-    assert store.claim("run-1/planner/draft") == "thread-1"
+    assert store.claim("planner/draft") == "thread-1"

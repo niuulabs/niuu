@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import type { ReviewControls } from '../../domain/reviewComments';
-import { ReviewableText } from '../ReviewComments';
+import type { ReviewControls } from './reviewModel';
+import { ReviewableText } from './ReviewComments';
 
 export interface FileViewerProps {
   /** Absolute path of the open file, displayed in the header. */

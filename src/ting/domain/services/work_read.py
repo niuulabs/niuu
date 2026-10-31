@@ -244,6 +244,7 @@ class WorkTask:
     board: BoardPlacement | None = None
     coordinator: TicketCoordinatorRef | None = None
     workflow_run: TicketWorkflowRun | None = None
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -1366,6 +1367,7 @@ def _task_from_issue(
             status_type=issue.status_type,
         ),
         title=issue.title,
+        description=issue.description,
         operational_run=operational,
         dispatch=dispatch,
         actions=tuple(actions),

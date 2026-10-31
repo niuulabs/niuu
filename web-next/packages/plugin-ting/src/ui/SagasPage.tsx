@@ -619,7 +619,7 @@ function SagasPageContent() {
               label: 'Go to Plan →',
               variant: 'primary',
               closes: true,
-              onClick: () => void navigate({ to: '/ting/plan' as never }),
+              onClick: () => void navigate({ to: '/ting/plan/new' as never }),
             },
           ]}
         >

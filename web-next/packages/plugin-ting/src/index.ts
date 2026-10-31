@@ -10,7 +10,9 @@ import { DispatchView } from './ui/DispatchView';
 import { TingTopbar } from './ui/TingTopbar';
 import { TingFooter } from './ui/TingFooter';
 import { PlanWizard } from './ui/PlanWizard';
+import { ReviewsPage } from './ui/review/ReviewsPage';
 import { PlanDetailPage } from './ui/PlanDetailPage';
+import { TicketReviewPage } from './ui/review/TicketReviewPage';
 import { TingSubnav } from './ui/TingSubnav';
 import { ResearchCenterPage } from './ui/ResearchCenterPage';
 import { ResearchNewPage } from './ui/ResearchNewPage';
@@ -27,6 +29,7 @@ export {
 export { buildWorkHttpAdapter } from './adapters/workHttp';
 export type { IWorkService, IWorkflowExecutionService, IDeliveryExecutionService } from './ports';
 export type * from './domain/work';
+export type * from './domain/review';
 export { WorkflowExecutionGraph } from './ui/WorkflowExecutionGraph';
 export type { WorkflowExecutionGraphProps } from './ui/WorkflowExecutionGraph';
 export type * from './domain/workflowExecutionGraph';
@@ -66,10 +69,11 @@ export const tingPlugin = definePlugin({
   title: 'Work',
   subtitle: 'run and oversee work',
   simple: {
-    tabs: ['work', 'workflows', 'builder'],
+    tabs: ['work', 'reviews', 'workflows', 'builder'],
   },
   tabs: [
     { id: 'work', label: 'Board', path: '/ting/work' },
+    { id: 'reviews', label: 'Reviews', path: '/ting/plan' },
     { id: 'workflows', label: 'Workflows', path: '/ting/workflows' },
     { id: 'builder', label: 'Builder', path: '/ting/workflows/build' },
   ],
@@ -91,6 +95,11 @@ export const tingPlugin = definePlugin({
       getParentRoute: () => rootRoute,
       path: '/ting/work/$workId',
       component: WorkPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/review/$projectId/$issueId',
+      component: TicketReviewPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -179,6 +188,11 @@ export const tingPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting/plan',
+      component: ReviewsPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/plan/new',
       component: PlanWizard,
     }),
     createRoute({
