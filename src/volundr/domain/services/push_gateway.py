@@ -68,6 +68,7 @@ from volundr.domain.push import (
     live_activity_content_state,
     live_activity_payload,
     shorten,
+    token_fingerprint,
     widget_payload,
 )
 from volundr.domain.push_ports import (
@@ -956,8 +957,10 @@ class PushGateway:
             await self._devices.delete_registration(device.id)
             self.stats.tokens_pruned += 1
             logger.info(
-                "Deleted a dead %s token of owner %s (APNs: %s)",
+                "Deleted a dead %s token %s (%s) of owner %s (APNs: %s)",
                 device.kind.value,
+                token_fingerprint(device.token),
+                device.environment or "registry default",
                 device.owner_id,
                 result.describe(),
             )

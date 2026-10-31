@@ -121,6 +121,7 @@ from volundr.domain.push import (
     PushEnvironment,
     PushTokenKind,
     UnsupportedTokenKindError,
+    token_fingerprint,
 )
 from volundr.domain.services import (
     ChronicleAccessDeniedError,
@@ -1058,7 +1059,10 @@ class DeviceRegistration(BaseModel):
     app_bundle_id: str | None = Field(default=None, description="APNs topic (bundle id) to target")
     kind: PushTokenKind = Field(
         default=PushTokenKind.ALERT,
-        description="alert, live_activity, live_activity_start or widget",
+        description=(
+            "alert, live_activity, live_activity_start, widget, or widget_fallback (a widget "
+            "token the app read itself; stored and counted, never pushed to)"
+        ),
     )
     environment: str | None = Field(
         default=None,
@@ -3344,6 +3348,14 @@ def create_router(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
             ) from exc
+        # A fingerprint, never the token: lets two registrations be compared (LEX-1186).
+        logger.info(
+            "Registered a %s push token %s (%s) for owner %s",
+            stored.kind.value,
+            token_fingerprint(stored.token),
+            stored.environment or "registry default",
+            _sanitize_log(principal.user_id),
+        )
         if on_device_registered is not None:
             await on_device_registered(principal.user_id)
         return DeviceResponse.from_device(stored)

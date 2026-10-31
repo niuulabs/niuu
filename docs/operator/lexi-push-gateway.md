@@ -45,6 +45,11 @@ push:
 **Devices.** The app registers its tokens through the Guild with
 `POST /api/v1/forge/devices`: alert, push-to-start, widget, and one Live Activity token per
 running activity. Alert tokens reach every node; the other kinds go to the gateway alone.
+A `widget_fallback` token (one the app read with `WidgetCenter.currentPushInfo` instead of
+getting it from the widget extension's handler) is stored and counted per environment in
+`/push/status`, and never pushed to: it tells the two sources apart (LEX-1186). Registration
+and prune log lines name each token by a 12-hex SHA-256 fingerprint, never by value, so two
+registrations can be compared.
 Check them on Thor:
 
 ```bash

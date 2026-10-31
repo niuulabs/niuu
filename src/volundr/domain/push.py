@@ -16,6 +16,7 @@ key names are constants here, not configuration. Everything in this module is pu
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -78,6 +79,20 @@ class PushTokenKind(StrEnum):
     LIVE_ACTIVITY_START = "live_activity_start"
     #: The widget extension's token: WidgetKit reloads.
     WIDGET = "widget"
+    #: A widget token the app read itself (WidgetCenter.currentPushInfo) instead of the
+    #: extension's handler. Stored and counted per environment so its source can be
+    #: told apart; never pushed to (LEX-1186).
+    WIDGET_FALLBACK = "widget_fallback"
+
+
+#: Hex digits of a token's SHA-256 shown in logs: enough to tell two tokens apart,
+#: never enough to recover one.
+TOKEN_FINGERPRINT_HEX = 12
+
+
+def token_fingerprint(token: str) -> str:
+    """A short SHA-256 prefix of a push token, for logs that must compare tokens."""
+    return hashlib.sha256(token.encode()).hexdigest()[:TOKEN_FINGERPRINT_HEX]
 
 
 class UnsupportedTokenKindError(ValueError):

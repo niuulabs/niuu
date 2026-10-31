@@ -17,7 +17,12 @@ from volundr.adapters.inbound.rest import (
 )
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
 from volundr.domain.models import EventType, RealtimeEvent
-from volundr.domain.push import PushEnvironment, PushTokenKind, UnsupportedTokenKindError
+from volundr.domain.push import (
+    PushEnvironment,
+    PushTokenKind,
+    UnsupportedTokenKindError,
+    token_fingerprint,
+)
 from volundr.domain.services import SessionService, StatsService
 
 
@@ -191,7 +196,31 @@ class TestDeviceEndpoints:
         assert device.activity_id == "ACT-1"
         assert device.owner_id == "user-1"
 
-    @pytest.mark.parametrize("kind", ["alert", "live_activity_start", "widget"])
+    def test_a_widget_fallback_token_is_stored_and_logged_by_fingerprint(
+        self, client, device_repo, caplog
+    ):
+        caplog.set_level("INFO", logger="volundr.adapters.inbound.rest")
+        resp = client.post(
+            "/api/v1/forge/devices",
+            json={
+                "platform": "ios",
+                "token": "fallback-secret",
+                "kind": "widget_fallback",
+                "environment": "production",
+            },
+            headers=self._AUTH,
+        )
+
+        assert resp.status_code == 201 and resp.json()["kind"] == "widget_fallback"
+        (device,) = device_repo.devices.values()
+        assert device.kind is PushTokenKind.WIDGET_FALLBACK
+        assert (
+            f"Registered a widget_fallback push token {token_fingerprint('fallback-secret')} "
+            "(production)" in caplog.text
+        )
+        assert "fallback-secret" not in caplog.text
+
+    @pytest.mark.parametrize("kind", ["alert", "live_activity_start", "widget", "widget_fallback"])
     def test_activity_id_belongs_to_live_activity_tokens_only(self, client, kind):
         resp = client.post(
             "/api/v1/forge/devices",

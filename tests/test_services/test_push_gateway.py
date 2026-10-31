@@ -32,6 +32,7 @@ from volundr.domain.push import (
     PushEnvironment,
     PushTestKind,
     PushTokenKind,
+    token_fingerprint,
 )
 from volundr.domain.push_ports import GuildFeedError, GuildNodeHasNoFeedError, PushDeliveryStatus
 from volundr.domain.services.push_gateway import (
@@ -1169,7 +1170,8 @@ class TestWidgets:
         await harness.gateway.run_once()
         assert harness.gateway.stats.widget_reloads == 1
 
-    async def test_a_dead_widget_token_is_deleted(self, harness):
+    async def test_a_dead_widget_token_is_deleted(self, harness, caplog):
+        caplog.set_level("INFO", logger="volundr.domain.services.push_gateway")
         harness.devices.add(device("widget-gone", PushTokenKind.WIDGET))
         harness.apns.answer("widget-gone", ApnsResult(400, "BadDeviceToken"))
         harness.feed.add(guild_notification("n-1"))
@@ -1179,6 +1181,21 @@ class TestWidgets:
 
         assert harness.devices.tokens() == []
         assert len(harness.apns.of_type("widgets")) == 1
+        # The prune line names the token by fingerprint, never by value.
+        assert f"widget token {token_fingerprint('widget-gone')}" in caplog.text
+        assert "widget-gone" not in caplog.text
+
+    async def test_a_widget_fallback_token_is_never_pushed_to(self, harness):
+        harness.devices.add(device("fallback-1", PushTokenKind.WIDGET_FALLBACK))
+        harness.feed.add(guild_notification("n-1"))
+        harness.feed.add(guild_notification("n-2", seq=2))
+
+        await harness.gateway.run_once()
+        harness.clock.advance(3600)
+        await harness.gateway.run_once()
+
+        assert not [push for push in harness.apns.sent if push.token == "fallback-1"]
+        assert harness.devices.tokens() == ["fallback-1"]
 
     async def test_disabled_widgets_send_none(self):
         settings = gateway_settings(
