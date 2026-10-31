@@ -594,11 +594,13 @@ class WorkReadService:
 
     async def _ticket_runs(self, saga: Saga) -> dict[str, list[WorkflowCampaign]]:
         """Return each ticket's workflow runs started through its coordinator, oldest first."""
-        campaigns = await self._campaign_repo.list_campaigns(owner_id=self._principal.user_id)
+        campaigns = await self._campaign_repo.list_ticket_campaigns(
+            owner_id=self._principal.user_id, saga_id=saga.id
+        )
         runs: dict[str, list[WorkflowCampaign]] = {}
-        for campaign in sorted(campaigns, key=lambda item: item.created_at):
+        for campaign in campaigns:
             ticket = ticket_of(campaign.metadata)
-            if ticket is not None and ticket[0] == str(saga.id):
+            if ticket is not None:
                 runs.setdefault(ticket[1], []).append(campaign)
         return runs
 

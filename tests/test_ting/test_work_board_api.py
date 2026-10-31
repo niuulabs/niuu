@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -240,6 +241,9 @@ def _client(
     app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
     campaign_repo = MagicMock(spec=WorkflowCampaignRepository)
     campaign_repo.list_campaigns = AsyncMock(return_value=campaigns or [])
+    campaign_repo.list_ticket_campaigns = partial(
+        WorkflowCampaignRepository.list_ticket_campaigns, campaign_repo
+    )
     app.state.ticket_coordinator_repo = coordinators or _Coordinators()
     app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaign_repo
     app.dependency_overrides[resolve_work_trackers] = lambda: TrackerResolution(adapters=(tracker,))

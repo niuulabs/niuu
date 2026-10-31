@@ -39,6 +39,29 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
         )
         return [self._row_to_campaign(row) for row in rows]
 
+    async def list_ticket_campaigns(
+        self,
+        *,
+        owner_id: str,
+        saga_id: UUID | None = None,
+        issue_id: str | None = None,
+    ) -> list[WorkflowCampaign]:
+        rows = await self._pool.fetch(
+            """
+            SELECT *
+            FROM workflow_campaigns
+            WHERE owner_id = $1
+              AND metadata ? 'ticket'
+              AND ($2::text IS NULL OR metadata->'ticket'->>'sagaId' = $2)
+              AND ($3::text IS NULL OR metadata->'ticket'->>'issueId' = $3)
+            ORDER BY created_at
+            """,
+            owner_id,
+            str(saga_id) if saga_id is not None else None,
+            issue_id,
+        )
+        return [self._row_to_campaign(row) for row in rows]
+
     async def list_active_campaigns(self) -> list[WorkflowCampaign]:
         rows = await self._pool.fetch(
             """

@@ -73,9 +73,9 @@ class TicketAdvancer:
 
     async def advance_finished(self, owner_id: str) -> None:
         """Catch up on runs that finished while nothing here was listening."""
-        campaigns = await self._campaign_repo.list_campaigns(owner_id=owner_id)
+        campaigns = await self._campaign_repo.list_ticket_campaigns(owner_id=owner_id)
         latest: dict[tuple[str, str], WorkflowCampaign] = {}
-        for campaign in sorted(campaigns, key=lambda item: item.created_at):
+        for campaign in campaigns:
             ticket = ticket_of(campaign.metadata)
             if ticket is not None:
                 latest[ticket] = campaign
@@ -139,10 +139,11 @@ class TicketAdvancer:
         """Whether someone started something for this ticket after the finished run began."""
         if coordinator.requested_at is not None and coordinator.requested_at > finished.created_at:
             return True
-        campaigns = await self._campaign_repo.list_campaigns(owner_id=finished.owner_id)
+        campaigns = await self._campaign_repo.list_ticket_campaigns(
+            owner_id=finished.owner_id, saga_id=UUID(ticket[0]), issue_id=ticket[1]
+        )
         return any(
-            ticket_of(campaign.metadata) == ticket
-            and campaign.id != finished.id
+            campaign.id != finished.id
             and (
                 campaign.status in _ACTIVE_CAMPAIGN_STATUSES
                 or campaign.created_at > finished.created_at
