@@ -53,7 +53,7 @@ import type {
   WorkSummary,
   WorkTask,
 } from '../domain/work';
-import type { ReviewList, ReviewWidget, TicketReviews } from '../domain/review';
+import type { ReviewList, ReviewWidget, RunReviews, TicketReviews } from '../domain/review';
 import { serializePortableWorkflow } from '../domain/workflowPortable';
 
 // ---------------------------------------------------------------------------
@@ -2379,28 +2379,89 @@ function mockTicketReviews(task: WorkTask | undefined): TicketReviews {
   };
 }
 
-function mockReviewList(tasks: readonly WorkTask[]): ReviewList {
+const MOCK_RUN_SLUG = 'demo-resident-run';
+const MOCK_RUN_PROMPT = 'Upgrade the ingress chart on every cluster.';
+
+function mockRunReviews(status: string): RunReviews {
   return {
-    items: tasks
-      .filter((task) => task.board?.gate)
-      .map((task) => ({
-        taskId: `demo-run-${task.source.issueId}`,
-        kind: 'ticket' as const,
-        title: task.title,
-        workflowName: 'Reviewed Delivery Flow',
-        state: 'waiting' as const,
-        gateLabel: task.board?.gate?.label ?? '',
-        updatedAt: task.board?.gate?.requestedAt ?? '',
-        projectId: 'demo-platform',
-        projectName: 'Platform reliability',
-        issueId: task.source.issueId,
-        identifier: task.source.identifier,
-      })),
+    run: {
+      slug: MOCK_RUN_SLUG,
+      title: MOCK_RUN_PROMPT,
+      workflowName: 'Infra Change Flow',
+      prompt: MOCK_RUN_PROMPT,
+      sessionId: 'demo-resident-session',
+      repo: 'https://github.com/example/infrastructure',
+      branch: 'ingress-upgrade',
+      startedBy: 'regin',
+    },
+    reviews: [
+      {
+        columnId: 'infra-change-merge-gate',
+        title: 'Approve the merge',
+        review: null,
+        workflowName: 'Infra Change Flow',
+        taskId: MOCK_RUN_SLUG,
+        sessionId: 'demo-resident-session',
+        panels: [{ widget: 'summary', title: 'Summary' }],
+        revisions: [
+          {
+            number: 1,
+            gateId: 'demo-run-gate-1',
+            activationId: 'demo-run-activation-1',
+            requestedAt: '2026-01-06T10:02:00Z',
+            status,
+            summary: 'The chart moves one minor version and touches two clusters.',
+            decidedBy: status === 'pending' ? '' : 'you',
+            notes: '',
+            decidedAt: '',
+            fields: {},
+          },
+        ],
+      },
+    ],
+    unreadableRuns: [],
+  };
+}
+
+function mockReviewList(tasks: readonly WorkTask[], runWaiting: boolean): ReviewList {
+  return {
+    items: [
+      ...tasks
+        .filter((task) => task.board?.gate)
+        .map((task) => ({
+          taskId: `demo-run-${task.source.issueId}`,
+          kind: 'ticket' as const,
+          title: task.title,
+          workflowName: 'Reviewed Delivery Flow',
+          state: 'waiting' as const,
+          gateLabel: task.board?.gate?.label ?? '',
+          updatedAt: task.board?.gate?.requestedAt ?? '',
+          projectId: 'demo-platform',
+          projectName: 'Platform reliability',
+          issueId: task.source.issueId,
+          identifier: task.source.identifier,
+        })),
+      ...(runWaiting
+        ? [
+            {
+              taskId: MOCK_RUN_SLUG,
+              kind: 'run' as const,
+              title: MOCK_RUN_PROMPT,
+              workflowName: 'Infra Change Flow',
+              state: 'waiting' as const,
+              gateLabel: 'Approve the merge',
+              updatedAt: '2026-01-06T10:02:00Z',
+              startedBy: 'regin',
+            },
+          ]
+        : []),
+    ],
   };
 }
 
 export function createMockWorkService(): IWorkService {
   const tasks = MOCK_WORK_TASKS.map((task) => ({ ...task }));
+  let runGateStatus = 'pending';
   return {
     async list(): Promise<WorkCollection> {
       return {
@@ -2439,7 +2500,17 @@ export function createMockWorkService(): IWorkService {
       };
     },
     async reviews() {
-      return mockReviewList(tasks);
+      return mockReviewList(tasks, runGateStatus === 'pending');
+    },
+    async runReviews(slug) {
+      if (slug !== MOCK_RUN_SLUG) throw new Error(`Run not found: ${slug}`);
+      return mockRunReviews(runGateStatus);
+    },
+    async decideRunGate(slug, decision) {
+      if (slug !== MOCK_RUN_SLUG || runGateStatus !== 'pending') {
+        throw new Error('This gate changed after you opened it. Review it again.');
+      }
+      runGateStatus = decision.decision === 'approve' ? 'approved' : 'changes_requested';
     },
     async reviewWidget(module, name): Promise<ReviewWidget> {
       throw new Error(`Review widget ${module}/${name} is not installed on this deployment`);

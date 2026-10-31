@@ -56,6 +56,10 @@ graph:
 - A panel that cannot be shown is refused when the board is read. It does not
   quietly disappear.
 
+A gate with no column still gets a review. It shows the summary the run left at
+the gate, under the label the workflow gives that node. Add a column to choose
+what it shows.
+
 `file`, `page` and `diff` read from the run's session. A session is up while its
 gate waits, so they work during a review. Once the session stops they cannot be
 read, while `document` outcomes stay readable.
@@ -171,3 +175,8 @@ review says which widget is missing.
    review**, or find it under **Reviews**.
 3. Select text in a document to ask the coordinator about it or quote it in your
    note. Changes go back to the agent in the same run.
+
+A run that belongs to no ticket, such as one a resident started, is listed under
+**Reviews** while its gate waits. It has no coordinator, so you decide on the
+review page and open the run's session to talk to its agent. On these pages,
+`niuu.review.context()` leaves `ticket` empty.

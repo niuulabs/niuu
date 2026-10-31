@@ -76,6 +76,24 @@ export function useTicketReviews(projectId: string, issueId: string) {
   });
 }
 
+export function useRunReviews(slug: string) {
+  const service = useService<IWorkService>('ting.work');
+  return useQuery({
+    queryKey: ['ting', 'work', 'reviews', 'run', slug],
+    queryFn: () => service.runReviews(slug),
+    refetchInterval: REVIEW_REFRESH_MS,
+  });
+}
+
+export function useRunGateDecision(slug: string) {
+  const service = useService<IWorkService>('ting.work');
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (decision: GateDecision) => service.decideRunGate(slug, decision),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ting', 'work'] }),
+  });
+}
+
 export function useGateDecision(projectId: string) {
   const service = useService<IWorkService>('ting.work');
   const queryClient = useQueryClient();
