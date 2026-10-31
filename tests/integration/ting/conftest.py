@@ -222,10 +222,10 @@ def create_ting_test_app(
     from ting.api.dispatcher import resolve_dispatcher_repo
     from ting.api.dispatcher import resolve_event_bus as dispatcher_resolve_event_bus
     from ting.api.events import resolve_event_bus
+    from ting.api.research import resolve_workflow_campaign_repo
     from ting.api.runs import resolve_git, resolve_run_repo
     from ting.api.runs import resolve_tracker as resolve_runs_tracker
     from ting.api.runs import resolve_volundr as resolve_runs_volundr
-    from ting.api.research import resolve_workflow_campaign_repo
     from ting.api.sagas import resolve_git as sagas_resolve_git
     from ting.api.sagas import resolve_llm, resolve_saga_repo
     from ting.api.sagas import resolve_volundr as sagas_resolve_volundr
