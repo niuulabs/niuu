@@ -206,6 +206,24 @@ async def test_stream_events_cover_missing_pending_and_failure_states() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_recorded_gate_carries_the_label_its_workflow_gives_it() -> None:
+    projector, repo, _ = _projector(_Adapter())
+    snapshot = {"graph": {"nodes": [{"id": "merge-gate", "label": "Approve the merge"}]}}
+    repo.get_active_campaign_by_session.return_value = replace(
+        _campaign(), workflow_snapshot=snapshot
+    )
+
+    await projector.record_help_needed(
+        {"summary": "help"}, "user-1", session_id="session-123", gate={"node_id": "merge-gate"}
+    )
+
+    saved = repo.save_campaign.await_args.args[0]
+    assert saved.metadata["pending_workflow_gates"] == [
+        {"node_id": "merge-gate", "label": "Approve the merge"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_missing_campaign_and_session_are_ignored() -> None:
     adapter = _Adapter()
     adapter.get_session = AsyncMock(return_value=None)

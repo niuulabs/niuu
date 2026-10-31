@@ -87,6 +87,30 @@ describe('ReviewsPage', () => {
     expect(screen.getByRole('region', { name: 'Stopped' })).toBeInTheDocument();
   });
 
+  it('opens a run with no ticket on its own page and says who started it', async () => {
+    setup(
+      vi.fn().mockResolvedValue({
+        items: [
+          item({
+            taskId: 'a2a-9',
+            kind: 'run',
+            title: 'Plan NIU-1125 only',
+            workflowName: 'Ticket Planning Flow',
+            identifier: null,
+            issueId: null,
+            projectId: null,
+            projectName: null,
+            startedBy: 'regin',
+          }),
+        ],
+      }),
+    );
+
+    const row = await screen.findByRole('link', { name: /Plan NIU-1125 only/ });
+    expect(row).toHaveAttribute('href', '/ting/review/run/a2a-9');
+    expect(row).toHaveTextContent('Ticket Planning Flow · started by regin');
+  });
+
   it('keeps the way to plan a project', async () => {
     setup(vi.fn().mockResolvedValue({ items: [] }));
 

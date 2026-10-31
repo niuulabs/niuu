@@ -1439,6 +1439,209 @@ def test_reviews_list_runs_across_projects_from_their_campaigns() -> None:
     adapter.get_workflow_gates.assert_not_awaited()
 
 
+def test_reviews_list_a_waiting_run_that_has_no_ticket() -> None:
+    saga = _planned_saga()
+    run = _ticketless_run(saga)
+    client = _client(saga, issues=[], runs=[], adapter=_adapter([]), campaigns=[run])
+    client.app.dependency_overrides[resolve_saga_repo]().list_sagas = AsyncMock(return_value=[saga])
+
+    (item,) = client.get("/api/v1/ting/work/reviews", headers=HEADERS).json()["items"]
+
+    assert item["kind"] == "run"
+    assert item["state"] == "waiting"
+    assert item["taskId"] == "a2a-run"
+    assert item["title"] == "Plan NIU-1125 only"
+    assert item["startedBy"] == "regin"
+
+
+def _ticketless_run(saga: Saga, **overrides: Any) -> WorkflowCampaign:
+    return replace(
+        _campaign(saga, status=WorkflowCampaignStatus.BLOCKED),
+        workflow_snapshot={},
+        metadata={
+            "prompt": "Plan NIU-1125 only",
+            "actor_id": "system:serviceaccount:nats:regin",
+            "repo": "https://github.com/niuulabs/niuu",
+            "branch": "regin",
+            "pending_workflow_gates": [{"node_id": "merge-gate"}],
+        },
+        **overrides,
+    )
+
+
+def _run_client(
+    run: WorkflowCampaign | None, adapter: MagicMock, saga: Saga | None = None
+) -> TestClient:
+    client = _client(saga or _planned_saga(), issues=[], runs=[], adapter=adapter)
+    repo = client.app.dependency_overrides[resolve_workflow_campaign_repo]()
+    repo.get_campaign_by_slug = AsyncMock(return_value=run)
+    return client
+
+
+def _decide_run(client: TestClient, **overrides: Any) -> httpx.Response:
+    return client.post(
+        "/api/v1/ting/work/runs/a2a-run/gate-decision",
+        headers={**HEADERS, "authorization": "Bearer token"},
+        json={
+            "gateId": "gate-1",
+            "activationId": "activation-1",
+            "decision": "approve",
+            **overrides,
+        },
+    )
+
+
+def test_a_run_with_no_ticket_shows_its_gate_for_review() -> None:
+    saga = _planned_saga()
+    adapter = _adapter([])
+    adapter.get_public_session_log_page = AsyncMock(
+        return_value=_log(
+            (
+                "workflow_gate",
+                {
+                    "gate": {
+                        "id": "gate-1",
+                        "activation_id": "activation-1",
+                        "node_id": "merge-gate",
+                        "status": "pending",
+                        "summary": "Ready to merge",
+                    }
+                },
+            )
+        )
+    )
+    client = _run_client(_ticketless_run(saga), adapter)
+
+    response = client.get(
+        "/api/v1/ting/work/runs/a2a-run/reviews",
+        headers={**HEADERS, "authorization": "Bearer token"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run"]["title"] == "Plan NIU-1125 only"
+    assert body["run"]["startedBy"] == "regin"
+    assert body["run"]["sessionId"] == "run-session"
+    (review,) = body["reviews"]
+    assert review["title"] == "merge-gate"
+    assert review["chatEndpoint"] == "ws://forge/s/session/session"
+    assert review["revisions"][0]["activationId"] == "activation-1"
+    assert body["unreadableRuns"] == []
+
+
+def test_another_owners_run_is_not_found() -> None:
+    client = _run_client(None, _adapter([]))
+    repo = client.app.dependency_overrides[resolve_workflow_campaign_repo]()
+
+    response = client.get("/api/v1/ting/work/runs/a2a-run/reviews", headers=HEADERS)
+
+    assert response.status_code == 404
+    assert _decide_run(client).status_code == 404
+    assert repo.get_campaign_by_slug.await_args.kwargs == {"owner_id": "owner-1"}
+
+
+def test_a_run_whose_session_is_gone_says_so() -> None:
+    saga = _planned_saga()
+    adapter = _adapter([])
+    adapter.get_session = AsyncMock(return_value=None)
+    client = _run_client(_ticketless_run(saga), adapter)
+
+    body = client.get("/api/v1/ting/work/runs/a2a-run/reviews", headers=HEADERS).json()
+
+    assert body["reviews"] == []
+    assert body["unreadableRuns"] == ["Reviewed Delivery Flow"]
+
+
+def test_a_run_with_no_session_has_nothing_to_read_or_answer() -> None:
+    saga = _planned_saga()
+    client = _run_client(_ticketless_run(saga, session_id=None), _adapter([]))
+
+    body = client.get("/api/v1/ting/work/runs/a2a-run/reviews", headers=HEADERS).json()
+
+    assert body["reviews"] == []
+    assert _decide_run(client).status_code == 409
+
+
+def test_approving_a_run_forwards_the_decision_to_its_session() -> None:
+    saga = _planned_saga()
+    adapter = _adapter([_pending_gate()])
+    client = _run_client(_ticketless_run(saga), adapter)
+
+    response = _decide_run(client)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "resolved",
+        "sessionId": "run-session",
+        "gateId": "gate-1",
+    }
+    args, kwargs = adapter.resolve_workflow_gate.await_args
+    assert args == ("run-session", "gate-1", "APPROVE")
+    assert kwargs["source"] == "ting.board"
+
+
+def test_asking_a_run_for_changes_needs_a_comment() -> None:
+    saga = _planned_saga()
+    adapter = _adapter([_pending_gate()])
+    client = _run_client(_ticketless_run(saga), adapter)
+
+    assert _decide_run(client, decision="request_changes", notes="  ").status_code == 422
+    adapter.resolve_workflow_gate.assert_not_awaited()
+
+    response = _decide_run(client, decision="request_changes", notes="Handle the empty case.")
+
+    assert response.status_code == 200
+    assert adapter.resolve_workflow_gate.await_args.kwargs["notes"] == "Handle the empty case."
+
+
+@pytest.mark.parametrize(
+    "gates",
+    [
+        [],
+        [{**_pending_gate(), "activation_id": "activation-0"}],
+        [{**_pending_gate(), "id": "gate-0"}],
+        [{**_pending_gate(), "status": "approved"}],
+    ],
+)
+def test_a_decision_on_a_run_gate_that_changed_is_refused(gates: list[dict[str, Any]]) -> None:
+    saga = _planned_saga()
+    adapter = _adapter(gates)
+    client = _run_client(_ticketless_run(saga), adapter)
+
+    response = _decide_run(client)
+
+    assert response.status_code == 409
+    assert "Review it again" in response.json()["detail"]
+    adapter.resolve_workflow_gate.assert_not_awaited()
+
+
+def test_a_stopped_run_says_why_its_gate_cannot_be_answered() -> None:
+    saga = _planned_saga()
+    adapter = _adapter([_pending_gate()])
+    adapter.get_session = AsyncMock(
+        return_value=SimpleNamespace(activity_state="idle", chat_endpoint=None, status="stopped")
+    )
+    client = _run_client(_ticketless_run(saga), adapter)
+
+    response = _decide_run(client)
+
+    assert response.status_code == 409
+    assert "stopped" in response.json()["detail"]
+    adapter.resolve_workflow_gate.assert_not_awaited()
+
+
+def test_a_run_gate_refused_by_its_session_stays_loud() -> None:
+    saga = _planned_saga()
+    adapter = _adapter([_pending_gate()])
+    failure = httpx.Response(409, request=httpx.Request("POST", "http://forge/gate"))
+    adapter.resolve_workflow_gate = AsyncMock(
+        side_effect=httpx.HTTPStatusError("refused", request=failure.request, response=failure)
+    )
+    client = _run_client(_ticketless_run(saga), adapter)
+
+    assert _decide_run(client).status_code == 409
+
+
 def test_a_ticket_review_names_the_plan_its_project_came_from() -> None:
     saga = replace(_planned_saga(), plan_slug="plan-1")
     adapter = _adapter([])

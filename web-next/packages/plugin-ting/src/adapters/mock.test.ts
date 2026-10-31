@@ -1188,6 +1188,35 @@ describe('createMockWorkService', () => {
     ).rejects.toThrow('Review it again');
   });
 
+  it('takes a run with no ticket off the reviews once it is decided', async () => {
+    const service = createMockWorkService();
+    const listed = (await service.reviews()).items.find((item) => item.kind === 'run');
+    expect(listed?.startedBy).toBe('regin');
+
+    const { reviews } = await service.runReviews(listed!.taskId);
+    const revision = reviews[0]!.revisions[0]!;
+    await service.decideRunGate(listed!.taskId, {
+      gateId: revision.gateId,
+      activationId: revision.activationId,
+      decision: 'approve',
+      notes: '',
+    });
+
+    expect((await service.reviews()).items.some((item) => item.kind === 'run')).toBe(false);
+    expect((await service.runReviews(listed!.taskId)).reviews[0]!.revisions[0]!.status).toBe(
+      'approved',
+    );
+    await expect(service.runReviews('another-run')).rejects.toThrow('Run not found');
+    await expect(
+      service.decideRunGate(listed!.taskId, {
+        gateId: revision.gateId,
+        activationId: revision.activationId,
+        decision: 'approve',
+        notes: '',
+      }),
+    ).rejects.toThrow('Review it again');
+  });
+
   it('returns the detail of a listed item', async () => {
     const detail = await createMockWorkService().get('campaign', 'demo-research');
 

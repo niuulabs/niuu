@@ -41,6 +41,11 @@
 }
 
 .ting-review__title h1 {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   margin: 0;
   font-size: var(--text-lg);
   font-weight: 600;
@@ -305,6 +310,14 @@
 
 .ting-reviews__row:hover {
   border-color: var(--color-brand);
+}
+
+.ting-reviews__title {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .ting-reviews__row small {
