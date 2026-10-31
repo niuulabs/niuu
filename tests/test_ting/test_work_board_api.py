@@ -476,6 +476,25 @@ def test_a_ticket_left_on_starting_can_be_asked_again() -> None:
     adapter.send_directed_room_message.assert_awaited_once()
 
 
+def test_a_coordinator_that_died_before_any_run_can_be_replaced() -> None:
+    saga = _saga(_snapshot())
+    adapter = _adapter([], activity_state="error")
+    client = _client(
+        saga,
+        issues=[_issue(status_type="unstarted")],
+        runs=[],
+        adapter=adapter,
+        coordinators=_Coordinators(_coordinator(saga)),
+    )
+
+    response = _start(client, saga)
+
+    assert response.status_code == 200
+    adapter.stop_session.assert_awaited_once()
+    adapter.spawn_session.assert_awaited_once()
+    adapter.send_directed_room_message.assert_not_awaited()
+
+
 def test_a_ticket_with_a_run_in_progress_cannot_start_again() -> None:
     saga = _planned_saga()
     adapter = _adapter([])

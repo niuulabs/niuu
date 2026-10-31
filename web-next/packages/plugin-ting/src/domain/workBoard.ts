@@ -164,13 +164,27 @@ function refuse(message: string): BoardMove {
   return { kind: 'refuse', message };
 }
 
+/** The coordinator stopped before any run began, so Ting can replace it. */
+function coordinatorDiedBeforeARun(task: WorkTask): boolean {
+  return (
+    task.board?.state === 'blocked' &&
+    Boolean(task.coordinator) &&
+    !task.workflowRun &&
+    !task.operationalRun
+  );
+}
+
 /** No run exists yet, so the coordinator can simply be asked again. */
 export function canRetryStart(task: WorkTask): boolean {
-  return task.board?.state === 'starting' || Boolean(task.coordinator?.startError);
+  return (
+    task.board?.state === 'starting' ||
+    Boolean(task.coordinator?.startError) ||
+    coordinatorDiedBeforeARun(task)
+  );
 }
 
 function hasActiveRun(task: WorkTask): boolean {
-  if (task.coordinator?.startError) return false;
+  if (task.coordinator?.startError || coordinatorDiedBeforeARun(task)) return false;
   const state = task.board?.state;
   if (state === 'blocked') return task.workflowRun?.status !== 'failed';
   return state === 'starting' || state === 'running' || state === 'needsDecision';

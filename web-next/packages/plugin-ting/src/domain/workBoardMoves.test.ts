@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardPlacement, WorkBoardColumn, WorkBoardLayout, WorkTask } from './work';
-import { groupTasksByBoardColumn, resolveBoardMove } from './workBoard';
+import { canRetryStart, groupTasksByBoardColumn, resolveBoardMove } from './workBoard';
 
 function column(
   id: string,
@@ -235,6 +235,31 @@ describe('resolveBoardMove', () => {
       kind: 'refuse',
       message: 'Ting cannot read where PLT-1 is right now.',
     });
+  });
+});
+
+describe('canRetryStart', () => {
+  const coordinator = { sessionId: 's', status: 'active', connectionId: null, chatEndpoint: null };
+
+  it('offers a retry when the coordinator died before any run began', () => {
+    const dead = task('planning', { coordinator, workflowRun: null });
+    dead.board = { ...dead.board!, state: 'blocked' };
+    expect(canRetryStart(dead)).toBe(true);
+  });
+
+  it('does not offer one while a blocked ticket has a run', () => {
+    const blocked = task('planning', {
+      coordinator,
+      workflowRun: {
+        taskId: 't',
+        workflowName: 'w',
+        status: 'running',
+        sessionId: 's',
+        currentStep: null,
+      },
+    });
+    blocked.board = { ...blocked.board!, state: 'blocked' };
+    expect(canRetryStart(blocked)).toBe(false);
   });
 });
 

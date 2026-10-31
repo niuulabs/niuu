@@ -33,6 +33,7 @@ _BRANCH_UNSAFE = re.compile(r"[^a-z0-9._-]+")
 _LISTENING_SESSION_STATUS = "running"
 _BOOTING_SESSION_STATUSES = frozenset({"starting", "provisioning", "created"})
 _RUNNING_SESSION_STATUSES = frozenset({"running", *_BOOTING_SESSION_STATUSES})
+_FAILED_ACTIVITY_STATE = "error"
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,15 @@ class TicketCoordinatorService:
 
         session = await self._session(current.session_id)
         if session is None:
+            return await self._spawn(saga, issue, brief, workflow, previous=current)
+        if session.activity_state == _FAILED_ACTIVITY_STATE:
+            # Its agent is dead, so a brief would reach nothing: replace it with one
+            # launched on today's settings.
+            await self._volundr.stop_session(
+                current.session_id,
+                auth_token=self._auth_token,
+                principal=self._principal,
+            )
             return await self._spawn(saga, issue, brief, workflow, previous=current)
         requested = replace(
             current,
