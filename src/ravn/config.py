@@ -46,6 +46,7 @@ from pydantic_settings import (
 from bifrost.config import PricingOverride
 from niuu.config_models import WorkloadIdentityVerifierConfig
 from niuu.domain.observability import ObservabilityConfig
+from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshNatsConfig
 from ravn.domain.permission_mode import (
     PermissionMode,
@@ -5999,6 +6000,13 @@ class Settings(BaseSettings):
     # Standalone-resident discovery (helm-deployed residents outside Forge).
     resident_discovery: ResidentDiscoveryConfig = Field(default_factory=ResidentDiscoveryConfig)
     resident_logs: ResidentLogsConfig = Field(default_factory=ResidentLogsConfig)
+    platform_tenant_id: str = Field(
+        default=DEFAULT_PLATFORM_TENANT_ID,
+        description=(
+            "The org that runs this deployment. It owns anything that names no org, "
+            "and it alone may use the Valkyrie dashboard API."
+        ),
+    )
 
     # NIU-435: cascade coordinator / flock delegation / ephemeral spawn
     cascade: CascadeConfig = Field(default_factory=CascadeConfig)

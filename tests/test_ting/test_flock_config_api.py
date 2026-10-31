@@ -10,7 +10,11 @@ from ting.api.flock_config import create_flock_config_router
 from ting.api.settings import create_settings_router
 from ting.config import AuthConfig, FlockConfig, PersonaOverride, Settings
 
-_ADMIN_HEADERS = {"x-auth-user-id": "dev-user", "x-auth-roles": "volundr:admin"}
+_ADMIN_HEADERS = {
+    "x-auth-user-id": "dev-user",
+    "x-auth-tenant": "default",
+    "x-auth-roles": "volundr:admin",
+}
 
 
 def _make_app(flock: FlockConfig | None = None) -> FastAPI:
@@ -143,10 +147,21 @@ class TestPatchFlockConfig:
 
 class TestFlockConfigIsAdminOnly:
     def test_a_developer_cannot_change_shared_flock_settings(self) -> None:
-        client = TestClient(_make_app(), headers={"x-auth-user-id": "alice"})
-        client.headers["x-auth-roles"] = "volundr:developer"
+        client = TestClient(_make_app(), headers=_ADMIN_HEADERS)
+        developer = {"x-auth-roles": "volundr:developer"}
 
-        resp = client.patch("/api/v1/ting/flock/config", json={"flock_enabled": True})
+        resp = client.patch(
+            "/api/v1/ting/flock/config", json={"flock_enabled": True}, headers=developer
+        )
 
         assert resp.status_code == 403
         assert client.get("/api/v1/ting/flock/config").json()["flock_enabled"] is False
+
+    def test_an_admin_of_another_org_cannot_read_or_change_them(self) -> None:
+        client = TestClient(_make_app(), headers={**_ADMIN_HEADERS, "x-auth-tenant": "org-a"})
+
+        assert client.get("/api/v1/ting/flock/config").status_code == 403
+        assert (
+            client.patch("/api/v1/ting/flock/config", json={"flock_enabled": True}).status_code
+            == 403
+        )

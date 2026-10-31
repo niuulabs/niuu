@@ -22,6 +22,9 @@ spec:
         {{- include "gbrain.labels" . | nindent 8 }}
         {{- include "gbrain.niuuLabels" . | nindent 8 }}
       annotations:
+        {{- with .Values.niuu.tenantId }}
+        niuu.world/tenant-id: {{ . | quote }}
+        {{- end }}
         checksum/config: {{ include (print $.Template.BasePath "/config.yaml") . | sha256sum }}
     spec:
       automountServiceAccountToken: false

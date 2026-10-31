@@ -28,6 +28,9 @@ spec:
       annotations:
         checksum/warden: {{ include (print $.Template.BasePath "/warden.yaml") . | sha256sum }}
         {{- include "mimir.checksumAnnotations" . | nindent 8 }}
+        {{- with .Values.niuu.tenantId }}
+        niuu.world/tenant-id: {{ . | quote }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

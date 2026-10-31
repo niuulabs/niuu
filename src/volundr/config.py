@@ -49,6 +49,7 @@ from niuu.config_models import (
 from niuu.domain.delivery import AcceptancePolicy
 from niuu.domain.notifications import MAX_BODY_CHARS, MAX_TITLE_CHARS
 from niuu.domain.observability import ObservabilityConfig
+from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.forge_mcp.models import ForgeMcpGrant
 from ravn.config import LLMConfig, PersonaSourceConfig
 from volundr.compute.config import ComputeConfig
@@ -2633,6 +2634,13 @@ class ObservatoryConfig(BaseModel):
     directory: AgentDirectoryConfig = Field(default_factory=AgentDirectoryConfig)
     fragments: ObservatoryFragmentInboxConfig = Field(
         default_factory=ObservatoryFragmentInboxConfig
+    )
+    platform_tenant_id: str = Field(
+        default=DEFAULT_PLATFORM_TENANT_ID,
+        description=(
+            "The org that runs this deployment. It owns anything that names no org, "
+            "so clusters, hosts and services are shown to it alone."
+        ),
     )
 
 

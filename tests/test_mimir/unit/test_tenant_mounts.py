@@ -82,7 +82,7 @@ def test_mount_discovery_reads_writes_and_credentials_are_tenant_scoped(tmp_path
                 m["name"]: m["access_scope"]
                 for m in client.get("/mounts", headers=identity(tenant)).json()
             }
-            assert scopes == {"local": "global", "brain": "tenant"}
+            assert scopes == {"brain": "tenant"}
             registry = client.get("/registry/mounts", headers=identity(tenant)).json()
             mount = next(m for m in registry if m["name"] == "brain")
             assert mount["kind"] == "remote"
