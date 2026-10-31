@@ -133,6 +133,62 @@ def _workflow_persona_model_conflicts(
     return {name: models for name, models in persona_models.items() if len(models) > 1}
 
 
+def _cli_executor(
+    transport_adapter: str,
+    model: str,
+    *,
+    workflow_cli_turn_timeout_seconds: float,
+    configured_models: list[Any] | None,
+) -> dict[str, Any]:
+    """The executor that runs a persona's turns on its session's CLI transport."""
+    executor_kwargs: dict[str, Any] = {"transport_adapter": transport_adapter}
+    if transport_adapter == "skuld.transports.sdk.SDKTransport":
+        executor_kwargs["transport_kwargs"] = {"turn_timeout_s": workflow_cli_turn_timeout_seconds}
+    elif transport_adapter == "skuld.transports.codex_ws.CodexWebSocketTransport":
+        executor_kwargs["transport_kwargs"] = {"skip_permissions": True}
+    if transport_adapter in _MODEL_GATEWAY_TRANSPORTS and is_self_hosted_model(
+        model, configured_models=configured_models
+    ):
+        # Only the persona can say its model is self-hosted: the
+        # session carries the gateway address whatever its personas
+        # run, and a cloud persona must keep its vendor's API.
+        executor_kwargs["model_gateway"] = True
+    return {"adapter": _CLI_TRANSPORT_EXECUTOR, "kwargs": executor_kwargs}
+
+
+def persona_on_model(
+    persona: dict[str, Any],
+    model: str,
+    *,
+    session_definitions: dict[str, Any],
+    workflow_cli_turn_timeout_seconds: float,
+    configured_models: list[Any] | None = None,
+) -> tuple[dict[str, Any], str | None]:
+    """Run a persona on a model, as a workflow stage does; return it and its session definition."""
+    definition, runtime_error = session_definition_for_model(
+        model,
+        session_definitions=session_definitions,
+        configured_models=configured_models,
+    )
+    if runtime_error:
+        raise ValueError(
+            f"Persona '{persona.get('name', 'unknown')}' model '{model}': {runtime_error}"
+        )
+    runtime_persona = {**persona, "llm": {**(persona.get("llm") or {}), "model": model}}
+    transport_adapter = transport_adapter_for_session_definition(
+        definition,
+        session_definitions=session_definitions,
+    )
+    if transport_adapter:
+        runtime_persona["executor"] = _cli_executor(
+            transport_adapter,
+            model,
+            workflow_cli_turn_timeout_seconds=workflow_cli_turn_timeout_seconds,
+            configured_models=configured_models,
+        )
+    return runtime_persona, definition
+
+
 def _resolve_workflow_execution(
     workflow_snapshot: dict[str, Any] | None,
     *,
@@ -211,24 +267,12 @@ def _resolve_workflow_execution(
             if resolved_definition:
                 resolved_definitions.add(resolved_definition)
             if transport_adapter:
-                executor_kwargs: dict[str, Any] = {"transport_adapter": transport_adapter}
-                if transport_adapter == "skuld.transports.sdk.SDKTransport":
-                    executor_kwargs["transport_kwargs"] = {
-                        "turn_timeout_s": workflow_cli_turn_timeout_seconds
-                    }
-                elif transport_adapter == "skuld.transports.codex_ws.CodexWebSocketTransport":
-                    executor_kwargs["transport_kwargs"] = {"skip_permissions": True}
-                if transport_adapter in _MODEL_GATEWAY_TRANSPORTS and is_self_hosted_model(
-                    model, configured_models=configured_models
-                ):
-                    # Only the persona can say its model is self-hosted: the
-                    # session carries the gateway address whatever its personas
-                    # run, and a cloud persona must keep its vendor's API.
-                    executor_kwargs["model_gateway"] = True
-                runtime_persona["executor"] = {
-                    "adapter": _CLI_TRANSPORT_EXECUTOR,
-                    "kwargs": executor_kwargs,
-                }
+                runtime_persona["executor"] = _cli_executor(
+                    transport_adapter,
+                    model,
+                    workflow_cli_turn_timeout_seconds=workflow_cli_turn_timeout_seconds,
+                    configured_models=configured_models,
+                )
         personas.append(runtime_persona)
 
     if len(resolved_definitions) == 1:
