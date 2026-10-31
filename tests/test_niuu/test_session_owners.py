@@ -308,3 +308,29 @@ class TestParentGuildId:
         assert parents["w-2"]["guild_instance_id"] == "spark"  # already a Guild id
         assert "guild_instance_id" not in parents["w-3"]  # unknown: nothing invented
         assert spark_identity.call_count == 1  # an older Forge is asked once per TTL
+
+    @respx.mock
+    async def test_an_unexpected_refresh_failure_is_logged_as_an_error(self, caplog) -> None:
+        client = _client().__enter__()
+        respx.get(f"{MINI}/api/v1/forge/instance").mock(side_effect=RuntimeError("boom"))
+        respx.get(f"{SPARK}/api/v1/forge/instance").mock(
+            return_value=Response(404, json={"detail": "Not Found"})
+        )
+        respx.get(f"{MINI}/api/v1/forge/sessions").mock(
+            return_value=Response(
+                200,
+                json=[{"id": "w-1", "coordination": {"parent": {"instance_id": "mini-m6"}}}],
+            )
+        )
+        respx.get(f"{SPARK}/api/v1/forge/sessions").mock(return_value=Response(200, json=[]))
+
+        for _ in range(20):
+            assert client.get("/api/v1/forge/sessions", headers=USER).status_code == 200
+            if "failed unexpectedly" in caplog.text:
+                break
+        client.__exit__(None, None, None)
+
+        assert any(
+            r.levelname == "ERROR" and "failed unexpectedly" in r.getMessage()
+            for r in caplog.records
+        )

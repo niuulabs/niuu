@@ -4000,7 +4000,7 @@ def create_volundr_router(
                 background_tasks.add(
                     task := asyncio.create_task(_refresh_projects_id(request, instance))
                 )
-                task.add_done_callback(background_tasks.discard)
+                task.add_done_callback(_refresh_done)
             if projects_id is not None:
                 mapping[projects_id] = instance.id
         return mapping
@@ -4031,6 +4031,18 @@ def create_volundr_router(
                 parent["guild_instance_id"] = guild_id
 
     background_tasks: set[asyncio.Task[None]] = set()
+
+    def _refresh_done(task: asyncio.Task[None]) -> None:
+        """A background refresh never fails unseen: anything unexpected is an error."""
+        background_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "Reading a Forge instance's projects id failed unexpectedly",
+                exc_info=(type(error), error, error.__traceback__),
+            )
 
     #: Nodes known to lack a notification route: (route, instance id) -> monotonic recheck
     #: time. Per route, so one route missing never hides another the node does serve.
