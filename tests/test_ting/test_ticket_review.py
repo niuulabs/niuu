@@ -187,17 +187,58 @@ def test_only_the_document_being_decided_is_pending() -> None:
     assert documents == (("Plan", "new"),)
 
 
-@pytest.mark.asyncio
-async def test_a_workflow_without_a_board_has_no_reviews_and_reads_no_log() -> None:
+def _log(*entries: PublicSessionLogEntry) -> MagicMock:
     forge = MagicMock()
-    forge.get_public_session_log_page = AsyncMock()
+    forge.get_public_session_log_page = AsyncMock(
+        return_value=PublicSessionLogPage(
+            entries=entries, scanned_through=len(entries), has_more=False
+        )
+    )
+    return forge
 
+
+@pytest.mark.asyncio
+async def test_a_gate_on_a_workflow_without_a_board_can_still_be_reviewed() -> None:
+    snapshot = {"graph": {"nodes": [{"id": "plan-review-gate", "label": "Approve the merge"}]}}
+
+    (review,) = await campaign_reviews(
+        _log(_gate(1, "g1", "pending", summary="Ready to merge")),
+        _campaign(snapshot),
+        page_size=50,
+        auth_token=None,
+        principal=MagicMock(),
+    )
+
+    assert review.column_id == "plan-review-gate"
+    assert review.title == "Approve the merge"
+    assert [panel.widget for panel in review.panels] == ["summary"]
+    assert [revision.summary for revision in review.revisions] == ["Ready to merge"]
+
+
+def test_a_gate_the_board_has_no_column_for_is_reviewed_after_the_board() -> None:
+    declared = _gate(1, "g1", "approved")
+    undeclared = _entry(
+        2,
+        "workflow_gate",
+        {"gate": {"id": "g2", "node_id": "delivery-blocked", "status": "pending"}},
+    )
+
+    reviews = run_reviews(WorkflowBoard(columns=(COLUMN,)), _campaign(None), (declared, undeclared))
+
+    assert [review.title for review in reviews] == ["Plan review", "delivery-blocked"]
+
+
+@pytest.mark.asyncio
+async def test_a_workflow_without_a_board_or_a_gate_has_no_reviews() -> None:
     reviews = await campaign_reviews(
-        forge, _campaign(None), page_size=50, auth_token=None, principal=MagicMock()
+        _log(_draft(1, "draft")),
+        _campaign(None),
+        page_size=50,
+        auth_token=None,
+        principal=MagicMock(),
     )
 
     assert reviews == ()
-    forge.get_public_session_log_page.assert_not_awaited()
 
 
 @pytest.mark.asyncio

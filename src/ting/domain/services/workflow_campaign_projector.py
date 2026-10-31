@@ -33,6 +33,7 @@ from ting.domain.ticket_coordinator import (
     TicketCoordinatorStatus,
     ticket_of,
 )
+from ting.domain.workflow_board import node_label
 from ting.ports.a2a_push import A2APushDispatcherPort
 from ting.ports.event_bus import EventBusPort, TingEvent
 from ting.ports.ticket_coordinator_repository import TicketCoordinatorRepository
@@ -491,7 +492,13 @@ class WorkflowCampaignProjector:
             return False
 
         metadata = await self._with_pull_request(campaign, dict(campaign.metadata))
-        metadata["pending_workflow_gates"] = [gate]
+        metadata["pending_workflow_gates"] = [
+            {
+                **gate,
+                "label": gate.get("label")
+                or node_label(campaign.workflow_snapshot, str(gate.get("node_id") or "")),
+            }
+        ]
         metadata["latest_help_needed"] = dict(payload)
         if not await self._save_transition(
             campaign,

@@ -831,6 +831,7 @@ class TestActivityEventHandling:
                 "summary": "Plan is ready for human review.",
                 "instructions": "Approve the draft if it is bounded.",
                 "reason": "needs_human_approval",
+                "label": "plan-review-gate",
             }
         ]
         bus_event = await asyncio.wait_for(q.get(), timeout=1.0)

@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import httpx
@@ -23,9 +24,9 @@ from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.research import resolve_workflow_campaign_repo
 from ting.api.sagas import resolve_saga_repo
 from ting.api.tracker import resolve_trackers
-from ting.domain.models import WorkflowCampaignStatus
+from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.dispatch_service import DispatchService
-from ting.domain.services.review_list import ReviewKind, ReviewState, review_list
+from ting.domain.services.review_list import ReviewKind, ReviewState, review_list, review_run
 from ting.domain.services.ticket_coordinator import (
     TicketCoordinatorService,
     TicketWorkflow,
@@ -50,6 +51,7 @@ from ting.domain.services.work_read import (
 from ting.domain.ticket_coordinator import TicketCoordinatorStatus, ticket_of
 from ting.domain.workflow_board import (
     BACKLOG_COLUMN_ID,
+    GATE_STATUS_PENDING,
     SESSION_GONE_REASON,
     BoardColumnKind,
     BoardTicketState,
@@ -347,6 +349,23 @@ class TicketReviewsResponse(_ResponseModel):
     plan_slug: str | None = None
 
 
+class ReviewRunResponse(_ResponseModel):
+    slug: str
+    title: str
+    workflow_name: str
+    prompt: str
+    session_id: str
+    repo: str
+    branch: str
+    started_by: str | None = None
+
+
+class RunReviewsResponse(_ResponseModel):
+    run: ReviewRunResponse
+    reviews: list[RunReviewResponse]
+    unreadable_runs: list[str]
+
+
 class ReviewItemResponse(_ResponseModel):
     task_id: str
     kind: ReviewKind
@@ -359,6 +378,7 @@ class ReviewItemResponse(_ResponseModel):
     project_name: str | None = None
     issue_id: str | None = None
     identifier: str | None = None
+    started_by: str | None = None
 
 
 class ReviewListResponse(_ResponseModel):
@@ -414,6 +434,91 @@ def _run_session_id(task: WorkTask) -> str | None:
     if task.workflow_run is not None:
         return task.workflow_run.session_id
     return task.operational_run.session_id if task.operational_run else None
+
+
+def _require_changes_note(body: GateDecisionRequest) -> None:
+    if body.decision == "request_changes" and not body.notes.strip():
+        raise HTTPException(status_code=422, detail="Say what should change")
+
+
+def _is_gate_shown(gate: Mapping[str, Any], body: GateDecisionRequest) -> bool:
+    """Whether a session's gate is still the pending one the reviewer decided on."""
+    return (
+        gate.get("status") == GATE_STATUS_PENDING
+        and gate.get("id") == body.gate_id
+        and gate.get("activation_id") == body.activation_id
+    )
+
+
+async def _owned_run(
+    campaign_repo: WorkflowCampaignRepository, slug: str, principal: Principal
+) -> WorkflowCampaign:
+    campaign = await campaign_repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail=f"Run not found: {slug}")
+    return campaign
+
+
+async def _read_reviews(
+    runs: list[WorkflowCampaign],
+    sessions: _ForgeSessions,
+    request: Request,
+    principal: Principal,
+) -> tuple[list[RunReview], list[str]]:
+    """Each run's reviews, and the runs whose session is gone."""
+    reviews: list[RunReview] = []
+    unreadable: list[str] = []
+    page_size = request.app.state.settings.workflow_execution.list_page_size
+    for campaign in runs:
+        try:
+            located = await sessions.locate(campaign.session_id, campaign.connection_id)
+        except ForgeSessionUnreadableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if located is None:
+            unreadable.append(campaign.workflow_name)
+            continue
+        forge, session = located
+        found = await campaign_reviews(
+            forge,
+            campaign,
+            page_size=page_size,
+            auth_token=extract_bearer_token(request),
+            principal=principal,
+        )
+        reviews.extend(replace(item, chat_endpoint=session.chat_endpoint) for item in found)
+    return reviews, unreadable
+
+
+async def _forward_gate_decision(
+    sessions: _ForgeSessions,
+    session_id: str,
+    gate_id: str,
+    body: GateDecisionRequest,
+    request: Request,
+    principal: Principal,
+) -> None:
+    # The gate lives on the Forge the session was found on, which is not always the primary.
+    forge = sessions.forge_of(session_id)
+    if forge is None:
+        raise HTTPException(
+            status_code=502, detail=f"The Forge of session {session_id} could not be found"
+        )
+    try:
+        await forge.resolve_workflow_gate(
+            session_id,
+            gate_id,
+            _GATE_DECISIONS[body.decision],
+            notes=body.notes.strip(),
+            source=_GATE_DECISION_SOURCE,
+            auth_token=extract_bearer_token(request),
+            principal=principal,
+        )
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        raise HTTPException(
+            status_code=status_code if status_code in _PASSED_THROUGH_GATE_STATUSES else 502,
+            detail=f"The session did not accept this decision: {exc}",
+        ) from exc
 
 
 def _refuse_active_run(task: WorkTask) -> None:
@@ -893,9 +998,7 @@ def create_work_router() -> APIRouter:
         tracker_resolution: TrackerResolution = Depends(resolve_work_trackers),
     ) -> GateDecisionResponse:
         """Answer the gate a ticket is waiting on, exactly as the reviewer saw it."""
-        notes = body.notes.strip()
-        if body.decision == "request_changes" and not notes:
-            raise HTTPException(status_code=422, detail="Say what should change")
+        _require_changes_note(body)
         sessions = _forge_sessions(request, principal)
         if sessions is None or await _forge_adapter(request, principal) is None:
             raise HTTPException(status_code=503, detail="No Forge connection is available")
@@ -925,28 +1028,7 @@ def create_work_router() -> APIRouter:
                 status_code=409,
                 detail="This gate changed after you opened it. Review it again.",
             )
-        # The gate lives on the Forge the session was found on, which is not always the primary.
-        forge = sessions.forge_of(session_id)
-        if forge is None:
-            raise HTTPException(
-                status_code=502, detail=f"The Forge of session {session_id} could not be found"
-            )
-        try:
-            await forge.resolve_workflow_gate(
-                session_id,
-                gate.id,
-                _GATE_DECISIONS[body.decision],
-                notes=notes,
-                source=_GATE_DECISION_SOURCE,
-                auth_token=extract_bearer_token(request),
-                principal=principal,
-            )
-        except httpx.HTTPStatusError as exc:
-            status_code = exc.response.status_code
-            raise HTTPException(
-                status_code=status_code if status_code in _PASSED_THROUGH_GATE_STATUSES else 502,
-                detail=f"The session did not accept this decision: {exc}",
-            ) from exc
+        await _forward_gate_decision(sessions, session_id, gate.id, body, request, principal)
         return GateDecisionResponse(status="resolved", session_id=session_id, gate_id=gate.id)
 
     @router.get(
@@ -978,29 +1060,56 @@ def create_work_router() -> APIRouter:
             and (ticket := ticket_of(campaign.metadata)) is not None
             and ticket[1] == issue_id
         ]
-        reviews: list[RunReview] = []
-        unreadable: list[str] = []
-        page_size = request.app.state.settings.workflow_execution.list_page_size
-        for campaign in runs:
-            try:
-                located = await sessions.locate(campaign.session_id, campaign.connection_id)
-            except ForgeSessionUnreadableError as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
-            if located is None:
-                unreadable.append(campaign.workflow_name)
-                continue
-            forge, session = located
-            found = await campaign_reviews(
-                forge,
-                campaign,
-                page_size=page_size,
-                auth_token=extract_bearer_token(request),
-                principal=principal,
-            )
-            reviews.extend(replace(item, chat_endpoint=session.chat_endpoint) for item in found)
+        reviews, unreadable = await _read_reviews(runs, sessions, request, principal)
         return TicketReviewsResponse.model_validate(
             {"reviews": reviews, "unreadable_runs": unreadable, "plan_slug": saga.plan_slug}
         )
+
+    @router.get("/runs/{slug}/reviews", response_model=RunReviewsResponse)
+    async def run_review(
+        slug: str,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+    ) -> RunReviewsResponse:
+        """What a run with no ticket has put in front of a person."""
+        sessions = _forge_sessions(request, principal)
+        if sessions is None:
+            raise HTTPException(status_code=503, detail="No Forge connection is available")
+        campaign = await _owned_run(campaign_repo, slug, principal)
+        runs = [campaign] if campaign.session_id else []
+        reviews, unreadable = await _read_reviews(runs, sessions, request, principal)
+        return RunReviewsResponse.model_validate(
+            {"run": review_run(campaign), "reviews": reviews, "unreadable_runs": unreadable}
+        )
+
+    @router.post("/runs/{slug}/gate-decision", response_model=GateDecisionResponse)
+    async def decide_run_gate(
+        slug: str,
+        body: GateDecisionRequest,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+    ) -> GateDecisionResponse:
+        """Answer the gate a run with no ticket is waiting on, exactly as the reviewer saw it."""
+        _require_changes_note(body)
+        sessions = _forge_sessions(request, principal)
+        if sessions is None:
+            raise HTTPException(status_code=503, detail="No Forge connection is available")
+        campaign = await _owned_run(campaign_repo, slug, principal)
+        session_id = campaign.session_id
+        if not session_id:
+            raise HTTPException(status_code=409, detail="This run has no session to answer")
+        progress = await sessions.read(session_id, campaign.connection_id)
+        if progress.away_reason:
+            raise HTTPException(status_code=409, detail=progress.away_reason)
+        if not any(_is_gate_shown(gate, body) for gate in progress.gates):
+            raise HTTPException(
+                status_code=409,
+                detail="This gate changed after you opened it. Review it again.",
+            )
+        await _forward_gate_decision(sessions, session_id, body.gate_id, body, request, principal)
+        return GateDecisionResponse(status="resolved", session_id=session_id, gate_id=body.gate_id)
 
     @router.post(
         "/project/{saga_id}/tasks/{issue_id}/start",
