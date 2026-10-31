@@ -714,12 +714,33 @@ def create_app(
         auth_headers, auth_params = forward_auth(request)
         return await resident_directory.list_profiles(auth_headers, auth_params)
 
-    @app.get("/api/v1/ravn/wardens", response_model=list[WardenSpec])
+    async def require_platform_org(
+        principal: Principal = Depends(extract_principal),
+    ) -> None:
+        """Keep the operator's Valkyrie fleet, and control of it, with the operator."""
+        if principal.tenant_id != loaded_settings.platform_tenant_id:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail="The Valkyrie API is limited to the org running this deployment",
+            )
+
+    platform_org_only = [Depends(require_platform_org)]
+
+    @app.get(
+        "/api/v1/ravn/wardens",
+        response_model=list[WardenSpec],
+        dependencies=platform_org_only,
+    )
     async def list_wardens_endpoint() -> list[WardenSpec]:
         """List known wardens from configured discovery adapters."""
         return await list_known_wardens()
 
-    @app.post("/api/v1/ravn/wardens", response_model=WardenSpec, status_code=201)
+    @app.post(
+        "/api/v1/ravn/wardens",
+        response_model=WardenSpec,
+        status_code=201,
+        dependencies=platform_org_only,
+    )
     async def create_warden_endpoint(body: WardenCreateRequest) -> WardenSpec:
         """Create and persist a new warden."""
         spec = WardenSpec(
@@ -759,7 +780,11 @@ def create_app(
         await publish_warden_update("warden.created", created)
         return created
 
-    @app.get("/api/v1/ravn/wardens/{warden_id}", response_model=WardenSpec)
+    @app.get(
+        "/api/v1/ravn/wardens/{warden_id}",
+        response_model=WardenSpec,
+        dependencies=platform_org_only,
+    )
     async def get_warden_endpoint(warden_id: str) -> WardenSpec:
         """Return one known warden."""
         warden = await get_known_warden(warden_id)
@@ -770,7 +795,11 @@ def create_app(
             )
         return warden
 
-    @app.get("/api/v1/ravn/wardens/{warden_id}/logs", response_model=list[WardenLogEntry])
+    @app.get(
+        "/api/v1/ravn/wardens/{warden_id}/logs",
+        response_model=list[WardenLogEntry],
+        dependencies=platform_org_only,
+    )
     async def get_warden_logs_endpoint(
         warden_id: str,
         stream: str = "stdout",
@@ -816,7 +845,11 @@ def create_app(
             detail="stream must be 'stdout', 'stderr', or 'all'",
         )
 
-    @app.get("/api/v1/ravn/wardens/{warden_id}/activity", response_model=list[WardenLogEntry])
+    @app.get(
+        "/api/v1/ravn/wardens/{warden_id}/activity",
+        response_model=list[WardenLogEntry],
+        dependencies=platform_org_only,
+    )
     async def get_warden_activity_endpoint(
         warden_id: str, limit: int = 200
     ) -> list[WardenLogEntry]:
@@ -847,7 +880,7 @@ def create_app(
         merged.sort(key=lambda entry: (entry.timestamp or "", entry.id))
         return merged[-limit:]
 
-    @app.get("/api/v1/ravn/wardens/{warden_id}/stream")
+    @app.get("/api/v1/ravn/wardens/{warden_id}/stream", dependencies=platform_org_only)
     async def stream_warden_endpoint(warden_id: str, request: Request) -> StreamingResponse:
         """Stream SSE updates for one known warden."""
         if await get_known_warden(warden_id) is None:
@@ -885,7 +918,11 @@ def create_app(
             },
         )
 
-    @app.post("/api/v1/ravn/wardens/{warden_id}/observe", response_model=WardenSpec)
+    @app.post(
+        "/api/v1/ravn/wardens/{warden_id}/observe",
+        response_model=WardenSpec,
+        dependencies=platform_org_only,
+    )
     async def observe_warden_endpoint(warden_id: str) -> WardenSpec:
         """Refresh live backend status for one persisted warden."""
         try:
@@ -905,7 +942,11 @@ def create_app(
         await publish_warden_update("warden.observed", observed)
         return observed
 
-    @app.post("/api/v1/ravn/wardens/{warden_id}/install", response_model=WardenSpec)
+    @app.post(
+        "/api/v1/ravn/wardens/{warden_id}/install",
+        response_model=WardenSpec,
+        dependencies=platform_org_only,
+    )
     async def install_warden_endpoint(warden_id: str) -> WardenSpec:
         """Generate local service artifacts and mark a warden as installed."""
         try:
@@ -920,7 +961,11 @@ def create_app(
         await publish_warden_update("warden.installed", warden)
         return warden
 
-    @app.post("/api/v1/ravn/wardens/{warden_id}/start", response_model=WardenSpec)
+    @app.post(
+        "/api/v1/ravn/wardens/{warden_id}/start",
+        response_model=WardenSpec,
+        dependencies=platform_org_only,
+    )
     async def start_warden_endpoint(warden_id: str) -> WardenSpec:
         """Mark an installed warden as started."""
         existing = store.get(warden_id)
@@ -943,7 +988,11 @@ def create_app(
         await publish_warden_update("warden.started", started)
         return started
 
-    @app.post("/api/v1/ravn/wardens/{warden_id}/stop", response_model=WardenSpec)
+    @app.post(
+        "/api/v1/ravn/wardens/{warden_id}/stop",
+        response_model=WardenSpec,
+        dependencies=platform_org_only,
+    )
     async def stop_warden_endpoint(warden_id: str) -> WardenSpec:
         """Stop an installed warden."""
         existing = store.get(warden_id)
@@ -966,7 +1015,11 @@ def create_app(
         await publish_warden_update("warden.stopped", stopped)
         return stopped
 
-    @app.post("/api/v1/ravn/wardens/{warden_id}/uninstall", response_model=WardenSpec)
+    @app.post(
+        "/api/v1/ravn/wardens/{warden_id}/uninstall",
+        response_model=WardenSpec,
+        dependencies=platform_org_only,
+    )
     async def uninstall_warden_endpoint(warden_id: str) -> WardenSpec:
         """Uninstall a warden deployment while keeping its persisted spec."""
         try:
@@ -1440,17 +1493,6 @@ def create_app(
 
     app.router.lifespan_context = lifespan
 
-    async def require_platform_org(
-        principal: Principal = Depends(extract_principal),
-    ) -> None:
-        """Keep the operator's Valkyrie fleet, and control of it, with the operator."""
-        if principal.tenant_id != loaded_settings.platform_tenant_id:
-            raise HTTPException(
-                status_code=http_status.HTTP_403_FORBIDDEN,
-                detail="The Valkyrie API is limited to the org running this deployment",
-            )
-
-    platform_org_only = [Depends(require_platform_org)]
     app.include_router(
         create_valkyrie_router(
             valkyrie_projection,
@@ -1473,7 +1515,8 @@ def create_app(
         create_odin_review_router(
             odin_review_service,
             room_client=build_skuld_room_client_from_env(loaded_settings.valkyrie.room),
-        )
+        ),
+        dependencies=platform_org_only,
     )
 
     return app

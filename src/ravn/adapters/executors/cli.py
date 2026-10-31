@@ -9,7 +9,7 @@ import logging
 import os
 import sys
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +20,7 @@ from niuu.adapters.cli import CliTurnRunner
 from niuu.observability import get_observability
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class
+from ravn.adapters.executors.cli_threads import CliThreadStore
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.events import RavnEvent
 from ravn.domain.harness_telemetry import HarnessStepTelemetryRecord
@@ -66,6 +67,7 @@ class _TransportBinding:
 
     cls: type[CLITransport]
     supports_system_prompt: bool
+    supports_resume: bool = False
 
 
 def _delegates_permission_config_to_cli(cls: type[CLITransport]) -> bool:
@@ -273,6 +275,8 @@ class CliTransportAgent(ExecutionAgentPort):
         persona: str,
         preloaded_tools: Iterable[object] = (),
         session_join_manager: Any | None = None,
+        thread_store: CliThreadStore | None = None,
+        thread_key: Callable[[], str] | None = None,
     ) -> None:
         self._transport_binding = transport_binding
         self._transport_kwargs = dict(transport_kwargs)
@@ -292,6 +296,10 @@ class CliTransportAgent(ExecutionAgentPort):
             getattr(tool, "name", f"tool_{idx}"): tool for idx, tool in enumerate(preloaded_tools)
         }
         self._session_join_manager = session_join_manager
+        self._thread_store = thread_store
+        self._thread_key = thread_key
+        self._held_thread_key = ""
+        self._resumed_thread = ""
         self._interrupt_reason: InterruptReason | None = None
         self._current_tool_names: dict[str, str] = {}
         self._tool_started_at: dict[str, float] = {}
@@ -366,8 +374,12 @@ class CliTransportAgent(ExecutionAgentPort):
         transport, self._transport = self._transport, None
         self._turn_runner = None
         self._started = False
-        if transport is not None:
-            await transport.stop()
+        if transport is None:
+            return
+        if self._thread_store is not None and self._held_thread_key:
+            self._thread_store.release(self._held_thread_key, transport.session_id or "")
+            self._held_thread_key = ""
+        await transport.stop()
 
     async def run_turn(self, user_input: str) -> TurnResult:
         if self._interrupt_reason is not None:
@@ -694,11 +706,35 @@ class CliTransportAgent(ExecutionAgentPort):
         self._turn_runner = CliTurnRunner(self._transport)
 
         if not self._started:
-            await self._transport.start()
+            try:
+                await self._transport.start()
+            except Exception as exc:
+                if not self._resumed_thread:
+                    raise
+                raise RuntimeError(
+                    f"Persona {self._persona!r} could not resume workflow thread "
+                    f"{self._resumed_thread}; set resume_workflow_threads: false on its "
+                    "executor to run each step on a new thread"
+                ) from exc
             self._started = True
+
+    def _claim_thread(self) -> str:
+        """Take this step's workflow thread, returning the one to resume ("" for none)."""
+        key = self._thread_key() if self._thread_key is not None else ""
+        if self._thread_store is None or not key:
+            return ""
+        thread = self._thread_store.claim(key)
+        if thread is None:
+            logger.info("cli: step of %s runs on its own thread; another step holds it", key)
+            return ""
+        self._held_thread_key = key
+        return thread
 
     def _create_transport(self) -> CLITransport:
         kwargs = dict(self._transport_kwargs)
+        self._resumed_thread = self._claim_thread()
+        if self._resumed_thread:
+            kwargs["resume_session_id"] = self._resumed_thread
         sig = inspect.signature(self._transport_binding.cls)
         filtered = {key: value for key, value in kwargs.items() if key in sig.parameters}
         return self._transport_binding.cls(**filtered)
@@ -1016,6 +1052,7 @@ class CliTransportExecutor(ExecutorPort):
         model_gateway: bool = False,
         model_gateway_url: str = "",
         model_gateway_token: str = "",
+        resume_workflow_threads: bool = True,
     ) -> None:
         self._transport_adapter = transport_adapter
         self._transport_kwargs = dict(transport_kwargs or {})
@@ -1024,6 +1061,8 @@ class CliTransportExecutor(ExecutorPort):
         self._model_gateway = model_gateway
         self._model_gateway_url = model_gateway_url
         self._model_gateway_token = model_gateway_token
+        # A workflow step returning to its node carries on that node's thread.
+        self._resume_workflow_threads = resume_workflow_threads
         self._ravn_tool_mcp_timeout_seconds = max(
             1.0,
             float(ravn_tool_mcp_timeout_seconds),
@@ -1033,6 +1072,7 @@ class CliTransportExecutor(ExecutorPort):
         self._binding = _TransportBinding(
             cls=cls,
             supports_system_prompt="system_prompt" in sig.parameters,
+            supports_resume="resume_session_id" in sig.parameters,
         )
 
     def build(self, **kwargs: Any) -> ExecutionAgentPort:
@@ -1134,6 +1174,12 @@ class CliTransportExecutor(ExecutorPort):
             persona=str(kwargs.get("persona", "")),
             preloaded_tools=tools,
             session_join_manager=kwargs.get("session_join_manager"),
+            thread_store=(
+                kwargs.get("workflow_thread_store")
+                if self._resume_workflow_threads and self._binding.supports_resume
+                else None
+            ),
+            thread_key=kwargs.get("workflow_thread_key"),
         )
 
     @staticmethod

@@ -3484,3 +3484,31 @@ def test_the_valkyrie_api_is_limited_to_the_platform_org(client: TestClient):
     assert client.get("/api/v1/ravn/valkyrie/dashboard", headers=other_org).status_code == 403
     assert client.get("/api/v1/ravn/valkyrie/flocks", headers=other_org).status_code == 403
     assert client.post("/api/v1/ravn/valkyrie/autonomy", headers=other_org).status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/api/v1/ravn/wardens"),
+        ("POST", "/api/v1/ravn/wardens"),
+        ("GET", "/api/v1/ravn/wardens/mimir-shared-warden"),
+        ("GET", "/api/v1/ravn/wardens/mimir-shared-warden/logs"),
+        ("GET", "/api/v1/ravn/wardens/mimir-shared-warden/activity"),
+        ("GET", "/api/v1/ravn/wardens/mimir-shared-warden/stream"),
+        ("POST", "/api/v1/ravn/wardens/mimir-shared-warden/observe"),
+        ("POST", "/api/v1/ravn/wardens/mimir-shared-warden/install"),
+        ("POST", "/api/v1/ravn/wardens/mimir-shared-warden/start"),
+        ("POST", "/api/v1/ravn/wardens/mimir-shared-warden/stop"),
+        ("POST", "/api/v1/ravn/wardens/mimir-shared-warden/uninstall"),
+        ("GET", "/api/v1/ravn/odin/reviews"),
+        ("GET", "/api/v1/ravn/odin/reviews/summary"),
+        ("GET", "/api/v1/ravn/odin/reviews/item-1"),
+        ("POST", "/api/v1/ravn/odin/reviews/item-1/decide"),
+    ],
+)
+def test_wardens_and_reviews_are_limited_to_the_platform_org(
+    client: TestClient, method: str, path: str
+):
+    other_org = {"x-auth-user-id": "alice", "x-auth-tenant": "org-a"}
+
+    assert client.request(method, path, headers=other_org).status_code == 403

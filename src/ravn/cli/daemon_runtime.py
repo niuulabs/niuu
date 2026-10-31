@@ -20,6 +20,10 @@ async def _run_daemon(
     from ravn.adapters.channels.gateway import RavnGateway
     from ravn.adapters.channels.gateway_http import HttpGateway
     from ravn.adapters.channels.gateway_telegram import TelegramGateway
+    from ravn.adapters.executors.cli_threads import (  # noqa: PLC0415
+        CliThreadStore,
+        workflow_thread_key,
+    )
     from ravn.cli.runtime_builders import require_tool_build_push  # noqa: PLC0415
     from ravn.drive_loop import DriveLoop
     from ravn.ports.channel import ChannelPort
@@ -172,6 +176,10 @@ async def _run_daemon(
         )
         resident_runtime.bind_review_requester(resident_learning_runtime.review_requester)
         resident_learning_runtime.bind_operator_answerer(resident_runtime.submit_operator_answer)
+
+    workflow_thread_store = CliThreadStore(
+        _resident_ravn_state_dir(workspace, settings) / "cli_threads.json"
+    )
 
     def _agent_factory(
         channel: ChannelPort,
@@ -397,6 +405,11 @@ async def _run_daemon(
             max_tool_result_chars=settings.tools.max_result_chars,
             session_join_manager=(
                 drive_loop._session_join_manager if drive_loop is not None else None
+            ),
+            workflow_thread_store=workflow_thread_store,
+            # Resolved when the turn starts: the task is not active while its agent is built.
+            workflow_thread_key=lambda: workflow_thread_key(
+                drive_loop.resolve_task_context(task_id) if drive_loop is not None else None
             ),
         )
         # Reviews and flock proposals must cross the mesh, not stay on the
