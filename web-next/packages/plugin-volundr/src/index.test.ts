@@ -21,8 +21,8 @@ describe('volundrPlugin', () => {
 
   it('is called Sessions, with only the sessions tab in Simple mode', () => {
     expect(volundrPlugin).toMatchObject({
-      title: 'Sessions',
-      subtitle: 'coding agents in sandboxes',
+      title: 'Forge',
+      subtitle: 'build and execute',
     });
     expect(volundrPlugin.simple).toMatchObject({ tabs: ['sessions'] });
   });

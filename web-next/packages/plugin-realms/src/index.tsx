@@ -17,8 +17,8 @@ export const realmsPlugin = definePlugin({
   rune: 'R',
   // A set of environments, each its own box.
   icon: <RealmsIcon />,
-  title: 'Realms',
-  subtitle: 'environments kept by residents',
+  title: 'Workspaces',
+  subtitle: 'where work happens',
   tabs: REALMS_TABS.map((tab) => ({ ...tab })),
   simple: {
     tabs: REALMS_TABS.map((tab) => tab.id),

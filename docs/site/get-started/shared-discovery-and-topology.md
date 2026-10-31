@@ -12,8 +12,8 @@ curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/niuu/instances
 curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/niuu/targets/volundr
 ```
 
-Open **Guild** in the UI and match the service instance, endpoint, and location to
-the workload you intend to use. Guild groups instances of the same service; it is
+Open **Platform** in the UI and match the service instance, endpoint, and location to
+the workload you intend to use. Platform groups instances of the same service; it is
 not the agent's tool or capability registry.
 
 An instance record is not proof that its endpoint can be reached by every caller.

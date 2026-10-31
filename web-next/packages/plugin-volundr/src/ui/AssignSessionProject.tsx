@@ -206,7 +206,7 @@ export function AssignSessionProject({
           )}
           {loading && <p role="status">Loading projects and session…</p>}
           {!loading && choices.length === 0 && (
-            <p>No active projects are available. Connect a project in Sessions first.</p>
+            <p>No active projects are available. Connect a project in Forge first.</p>
           )}
           {unavailable.length > 0 && (
             <p role="alert">

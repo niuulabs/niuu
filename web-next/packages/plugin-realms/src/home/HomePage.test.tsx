@@ -108,7 +108,7 @@ describe('HomePage', () => {
     expect(screen.getByTestId('home-chips')).toHaveTextContent(/models · \d+ providers/);
     await waitFor(() =>
       expect(screen.getByTestId('home-page')).toHaveTextContent(
-        /realms, two sessions running, .* you\./,
+        /workspaces, two sessions running, .* you\./,
       ),
     );
   });

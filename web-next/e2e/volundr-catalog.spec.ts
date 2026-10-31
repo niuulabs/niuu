@@ -44,9 +44,9 @@ test('/volundr/catalog identifies system-scope specs', async ({ page }) => {
 test('/volundr/clusters redirects to guild', async ({ page }) => {
   await page.goto('/volundr/clusters');
   await page.waitForURL('**/guild');
-  await expect(
-    page.getByRole('heading', { name: 'Infrastructure', exact: true, level: 1 }),
-  ).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByRole('heading', { name: 'Platform', exact: true, level: 1 })).toBeVisible({
+    timeout: 5_000,
+  });
 });
 
 // ---------------------------------------------------------------------------

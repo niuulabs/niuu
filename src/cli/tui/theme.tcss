@@ -5,26 +5,26 @@
  */
 
 /* ── Backgrounds ─────────────────────────────────────────────── */
-$bg-primary: #09090b;
-$bg-secondary: #18181b;
-$bg-tertiary: #27272a;
-$bg-elevated: #3f3f46;
+$bg-primary: #071019;
+$bg-secondary: #10212d;
+$bg-tertiary: #182b38;
+$bg-elevated: #2b4351;
 
 /* ── Text ────────────────────────────────────────────────────── */
-$text-primary: #fafafa;
-$text-secondary: #a1a1aa;
-$text-muted: #71717a;
+$text-primary: #edf4f7;
+$text-secondary: #a5b7c1;
+$text-muted: #78909d;
 
 /* ── Borders ─────────────────────────────────────────────────── */
-$border: #3f3f46;
-$border-subtle: #27272a;
+$border: #2b4351;
+$border-subtle: #182b38;
 
 /* ── Accents ─────────────────────────────────────────────────── */
-$accent-amber: #f59e0b;
-$accent-cyan: #06b6d4;
-$accent-emerald: #10b981;
+$accent-amber: #e4bd7e;
+$accent-cyan: #86d0e8;
+$accent-emerald: #76bfa7;
 $accent-purple: #a855f7;
-$accent-red: #ef4444;
+$accent-red: #e78d94;
 $accent-indigo: #6366f1;
 $accent-orange: #f97316;
 

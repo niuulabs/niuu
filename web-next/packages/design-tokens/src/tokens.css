@@ -1,6 +1,7 @@
 /* ============================================================
  * Niuu Design System — Base Tokens
  * Ported from the earlier prototype design tokens and kept as the shared source.
+ * The NIUU brand palette (docs/design/brand/) is the [data-theme='niuu'] block.
  * Source of truth for all design tokens across Niuu surfaces.
  * ============================================================ */
 
@@ -61,6 +62,10 @@
   /* ── Borders ────────────────────────────────────────── */
   --color-border: #3f3f46;
   --color-border-subtle: #27272a;
+
+  /* ── Orbit mark: fixed brand strokes, the same in every dark theme ── */
+  --color-mark-front: #83d5ec;
+  --color-mark-back: #5e92ac;
 
   /* ── Brand ramp (themeable) ───────────────────────────
    * Default = ice (single-brand policy).
@@ -311,6 +316,109 @@
   --brand-900: #0c4a6e;
 }
 
+/* NIUU brand system v0.4 (docs/design/brand/), the default theme.
+ * The --niuu-* names exist only here. Hard-coded colours elsewhere read
+ * `var(--niuu-x, #original)`, which keeps every other theme on its original. */
+[data-theme='niuu'] {
+  --color-bg-primary: #071019;
+  --color-bg-secondary: #10212d;
+  --color-bg-tertiary: #182b38;
+  --color-bg-elevated: #2b4351;
+  --color-text-primary: #edf4f7;
+  --color-text-secondary: #a5b7c1;
+  --color-text-muted: #78909d;
+  --color-text-faint: #648090;
+  --color-border: #2b4351;
+  --color-border-subtle: #182b38;
+  --color-code-surface: #071019;
+  --color-panel-quiet: #0b1722;
+  --color-border-quiet: #182b38;
+  --color-selection-surface: #182b38;
+  --color-selection-edge: #2b4351;
+  --color-sent-surface: #182b38;
+  --color-accent-fill: var(--brand-500);
+  --color-accent-on-fill: #0b2937;
+  --brand-100: #eaf8fc;
+  --brand-200: #d3f1f8;
+  --brand-300: #a8e7f4;
+  --brand-400: #97dcee;
+  --brand-500: #86d0e8;
+  --brand-600: #5fb4d2;
+  --brand-700: #3a8baa;
+  --brand-800: #1d5a73;
+  --brand-900: #0b2937;
+  --color-critical: #e78d94;
+  --color-text-on-critical: #0b2937;
+  --color-critical-fg: #e78d94;
+  --color-critical-bg: color-mix(in srgb, var(--color-critical) 15%, transparent);
+  --color-critical-bo: color-mix(in srgb, var(--color-critical) 35%, transparent);
+  --color-accent-amber: #e4bd7e;
+  --color-delta-up: #76bfa7;
+  --color-memory-background: #071019;
+  --status-healthy: #76bfa7;
+  --status-merged: #76bfa7;
+  --status-attention: #e4bd7e;
+  --status-emerald: #76bfa7;
+  --status-green: #76bfa7;
+  --status-amber: #e4bd7e;
+  --status-red: #e78d94;
+  --state-ok: #76bfa7;
+  --state-warn: #e4bd7e;
+  --ops-surface-1: var(--color-bg-secondary);
+  --ops-surface-2: var(--color-bg-tertiary);
+  --ops-surface-3: var(--color-bg-elevated);
+  --ops-surface-accent: var(--color-sent-surface);
+  --ops-surface-ink: var(--color-bg-primary);
+  --ops-border-1: var(--color-border-subtle);
+  --ops-border-2: var(--color-border);
+  --ops-border-strong: var(--brand-600);
+  --ops-border-soft: var(--color-border-subtle);
+  --ops-fill-muted: var(--color-bg-elevated);
+  --ops-fill-brand: var(--brand-500);
+  --ops-text-strong: var(--color-text-primary);
+  --ops-text-body: var(--color-text-secondary);
+  --ops-text-muted: var(--color-text-muted);
+  --ops-text-faint: var(--color-text-faint);
+  --color-accent: var(--color-brand);
+  --bg-primary: var(--color-bg-primary);
+  --bg-secondary: var(--color-bg-secondary);
+  --text-primary: var(--color-text-primary);
+  --text-secondary: var(--color-text-secondary);
+  --text-faint: var(--color-text-faint);
+  --border-subtle: var(--color-border-subtle);
+  --light-panel: var(--color-bg-secondary);
+  --light-border: var(--color-border);
+  --light-accent: var(--color-brand);
+  --volundr-label-background: var(--color-bg-tertiary);
+  --niuu-bg-primary: var(--color-bg-primary);
+  --niuu-bg-secondary: var(--color-bg-secondary);
+  --niuu-bg-tertiary: var(--color-bg-tertiary);
+  --niuu-text-primary: var(--color-text-primary);
+  --niuu-text-secondary: var(--color-text-secondary);
+  --niuu-text-muted: var(--color-text-muted);
+  --niuu-brand-100: var(--brand-100);
+  --niuu-brand-200: var(--brand-200);
+  --niuu-brand-300: var(--brand-300);
+  --niuu-brand-400: var(--brand-400);
+  --niuu-brand-500: var(--brand-500);
+  --niuu-brand-800: var(--brand-800);
+  --niuu-critical: var(--color-critical);
+  --niuu-warn: var(--state-warn);
+  --niuu-ok: var(--state-ok);
+  --niuu-rgb-ink: 11 23 34;
+  --niuu-rgb-raised: 24 43 56;
+  --niuu-rgb-line: 43 67 81;
+  --niuu-rgb-muted: 120 144 157;
+  --niuu-rgb-mist: 237 244 247;
+  --niuu-rgb-signal: 134 208 232;
+  --niuu-rgb-deep: 29 90 115;
+  --niuu-rgb-success: 118 191 167;
+  --niuu-rgb-warning: 228 189 126;
+  --niuu-rgb-danger: 231 141 148;
+  --niuu-backdrop-centre: #0b1722;
+  --niuu-backdrop-edge: #071019;
+}
+
 [data-theme='amber'] {
   --brand-100: #fef3c7;
   --brand-200: #fde68a;
@@ -540,6 +648,8 @@ kbd {
   --color-emphasis: var(--color-accent-amber);
   --color-accent-fill: var(--color-brand);
   --color-accent-on-fill: #ffffff;
+  --color-mark-front: #1d718f;
+  --color-mark-back: #7399aa;
 
   --color-warning: var(--color-accent-amber);
   --color-danger: var(--color-critical);

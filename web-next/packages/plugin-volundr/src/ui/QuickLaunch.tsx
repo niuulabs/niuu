@@ -238,9 +238,9 @@ export function QuickLaunch({
         )}
         <section className="vol-quick__section">
           <div className="vol-quick__actions">
-            <h2>Workspace</h2>
+            <h2>Session workspace</h2>
             <a href="/guild" className="vol-quick__link">
-              Manage hosts in Infrastructure
+              Manage hosts in Platform
             </a>
           </div>
           <div className="vol-quick__row">

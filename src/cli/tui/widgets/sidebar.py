@@ -35,8 +35,8 @@ class NiuuSidebar(Widget):
     NiuuSidebar {
         dock: left;
         width: 24;
-        background: #18181b;
-        border-right: solid #27272a;
+        background: #10212d;
+        border-right: solid #182b38;
         padding: 1 0;
     }
     NiuuSidebar.collapsed {
@@ -44,16 +44,16 @@ class NiuuSidebar(Widget):
     }
     NiuuSidebar .sidebar-item {
         padding: 0 1;
-        color: #a1a1aa;
+        color: #a5b7c1;
         height: 1;
     }
     NiuuSidebar .sidebar-item.active {
-        color: #f59e0b;
-        background: #27272a;
+        color: #e4bd7e;
+        background: #182b38;
         text-style: bold;
     }
     NiuuSidebar .sidebar-hint {
-        color: #71717a;
+        color: #78909d;
         padding: 0 1;
         height: 1;
     }

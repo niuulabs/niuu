@@ -178,7 +178,7 @@ function ConnectStep({
     queryFn: () => {
       if (!mimir.mounts.getDeployments) {
         throw new Error(
-          'This memory instance has no deployment target; realm memory cannot be created.',
+          'This memory instance has no deployment target; workspace memory cannot be created.',
         );
       }
       return mimir.mounts.getDeployments();
@@ -320,8 +320,8 @@ function ConnectStep({
       </SectionCard>
 
       <SectionCard
-        title="Realm memory"
-        description="A memory mount is created for this realm; the resident writes what it learns there."
+        title="Workspace memory"
+        description="A memory mount is created for this workspace; the resident writes what it learns there."
       >
         {deployments.error ? (
           <ErrorState message={String(deployments.error)} />
@@ -438,7 +438,7 @@ function CharterStep({
       </div>
       <SectionCard
         title="What it may do on its own"
-        description="Starts cautious. Trust ratchets up as it proves itself; loosen any rung later from the realm page."
+        description="Starts cautious. Trust ratchets up as it proves itself; loosen any rung later from the workspace page."
       >
         <div className="niuu:flex niuu:flex-col" data-testid="trust-ladder">
           {ACTION_CLASSES.map((actionClass) => (
@@ -508,7 +508,7 @@ function LaunchStep({
         </SectionCard>
       ) : null}
       <SectionCard
-        title="Realm draft"
+        title="Workspace draft"
         description="Every row is the same field the step-by-step setup shows."
       >
         <div className="niuu:flex niuu:flex-col">
@@ -715,11 +715,11 @@ export function NewRealmPage() {
 
   const titles: Record<Step, [string, string]> = {
     template: [
-      'What kind of realm is this?',
-      'A template is a starting point, not a script. The resident learns the realm and adjusts.',
+      'What kind of workspace is this?',
+      'A template is a starting point, not a script. The resident learns the workspace and adjusts.',
     ],
     connect: [
-      'Connect the realm to its world.',
+      'Connect the workspace to its world.',
       'Everything here is an integration you already have or add once. The resident reaches these through MCP; it never gets your raw credentials.',
     ],
     charter: [
@@ -737,7 +737,7 @@ export function NewRealmPage() {
       <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col">
         <div className="niuu:flex niuu:items-center niuu:justify-between niuu:border-b niuu:border-border-subtle niuu:px-8 niuu:py-3">
           <span className="niuu:text-[15px] niuu:font-medium niuu:text-text-primary">
-            New realm
+            New workspace
           </span>
           <StepIndicator current={step} steps={STEPS} labels={STEP_LABELS} />
           <span className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
@@ -753,7 +753,7 @@ export function NewRealmPage() {
           </div>
           {content}
           {step === 'launch' && (launching || progress.error) ? (
-            <SectionCard title="Starting the realm">
+            <SectionCard title="Starting the workspace">
               <RecipeChecklist progress={progress} />
             </SectionCard>
           ) : null}

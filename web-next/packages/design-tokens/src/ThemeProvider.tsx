@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 
-export type ThemeName = 'ice' | 'amber' | 'spring' | 'xteo' | 'light';
+export type ThemeName = 'niuu' | 'ice' | 'amber' | 'spring' | 'xteo' | 'light';
 
 interface ThemeContextValue {
   theme: ThemeName;
@@ -22,11 +22,12 @@ interface ThemeProviderProps {
   children: ReactNode;
 }
 
-export function ThemeProvider({ theme: initial = 'ice', children }: ThemeProviderProps) {
+export function ThemeProvider({ theme: initial = 'niuu', children }: ThemeProviderProps) {
   const [theme, updateTheme] = useState<ThemeName>(() => {
     try {
       const saved = localStorage.getItem('niuu.theme');
       if (
+        saved === 'niuu' ||
         saved === 'ice' ||
         saved === 'amber' ||
         saved === 'spring' ||

@@ -197,7 +197,7 @@
 
 .niuu-live-session__status-dot--connected {
   background: color-mix(in srgb, var(--color-brand) 86%, white);
-  box-shadow: 0 0 12px rgba(96, 165, 250, 0.2);
+  box-shadow: 0 0 12px rgb(var(--niuu-rgb-signal, 96 165 250) / 0.2);
 }
 
 .niuu-live-session__status-dot--disconnected {
@@ -537,7 +537,7 @@
 .niuu-live-telemetry-panel {
   scrollbar-gutter: stable both-edges;
   scrollbar-width: thin;
-  scrollbar-color: rgba(124, 132, 150, 0.82) rgba(255, 255, 255, 0.04);
+  scrollbar-color: rgb(var(--niuu-rgb-muted, 124 132 150) / 0.82) rgba(255, 255, 255, 0.04);
 }
 
 .niuu-live-telemetry-panel::-webkit-scrollbar {
@@ -551,12 +551,12 @@
 .niuu-live-telemetry-panel::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 999px;
-  background: rgba(124, 132, 150, 0.82);
+  background: rgb(var(--niuu-rgb-muted, 124 132 150) / 0.82);
   background-clip: padding-box;
 }
 
 .niuu-live-telemetry-panel::-webkit-scrollbar-thumb:hover {
-  background: rgba(146, 154, 175, 0.92);
+  background: rgb(var(--niuu-rgb-muted, 146 154 175) / 0.92);
   background-clip: padding-box;
 }
 
@@ -581,7 +581,7 @@
 
 .niuu-live-telemetry__section-label,
 .niuu-live-telemetry__metric-label {
-  color: rgba(151, 154, 170, 0.74);
+  color: rgb(var(--niuu-rgb-muted, 151 154 170) / 0.74);
   font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 700;
@@ -612,7 +612,7 @@
 }
 
 .niuu-live-telemetry__run-pill-divider {
-  color: rgba(123, 129, 145, 0.64);
+  color: rgb(var(--niuu-rgb-muted, 123 129 145) / 0.64);
 }
 
 .niuu-live-telemetry__legend {
@@ -636,25 +636,25 @@
 }
 
 .niuu-live-telemetry__swatch--active {
-  background: rgba(156, 205, 244, 0.95);
-  border-color: rgba(156, 205, 244, 0.95);
+  background: rgb(var(--niuu-rgb-signal, 156 205 244) / 0.95);
+  border-color: rgb(var(--niuu-rgb-signal, 156 205 244) / 0.95);
 }
 
 .niuu-live-telemetry__swatch--wait {
   background: repeating-linear-gradient(
     -45deg,
-    rgba(148, 151, 165, 0.16) 0 4px,
-    rgba(148, 151, 165, 0.34) 4px 8px
+    rgb(var(--niuu-rgb-muted, 148 151 165) / 0.16) 0 4px,
+    rgb(var(--niuu-rgb-muted, 148 151 165) / 0.34) 4px 8px
   );
 }
 
 .niuu-live-telemetry__swatch--blocked {
   background: repeating-linear-gradient(
     -45deg,
-    rgba(234, 92, 86, 0.28) 0 4px,
-    rgba(234, 92, 86, 0.9) 4px 8px
+    rgb(var(--niuu-rgb-danger, 234 92 86) / 0.28) 0 4px,
+    rgb(var(--niuu-rgb-danger, 234 92 86) / 0.9) 4px 8px
   );
-  border-color: rgba(234, 92, 86, 0.88);
+  border-color: rgb(var(--niuu-rgb-danger, 234 92 86) / 0.88);
 }
 
 .niuu-live-telemetry__shell {
@@ -677,7 +677,7 @@
 
 .niuu-live-telemetry__loading,
 .niuu-live-telemetry__empty-title {
-  color: rgba(240, 244, 255, 0.94);
+  color: rgb(var(--niuu-rgb-mist, 240 244 255) / 0.94);
   font-family: var(--font-mono);
   font-size: 18px;
   font-weight: 700;
@@ -686,7 +686,7 @@
 .niuu-live-telemetry__empty-copy {
   max-width: 520px;
   margin: 0;
-  color: rgba(155, 160, 178, 0.8);
+  color: rgb(var(--niuu-rgb-muted, 155 160 178) / 0.8);
   font-size: 13px;
   line-height: 1.6;
   text-align: center;
@@ -748,12 +748,12 @@
 
 .niuu-live-telemetry__delta-pill--slower {
   background: rgba(116, 42, 42, 0.68);
-  color: rgba(255, 195, 195, 0.96);
+  color: rgb(var(--niuu-rgb-danger, 255 195 195) / 0.96);
 }
 
 .niuu-live-telemetry__delta-pill--faster {
   background: rgba(39, 93, 64, 0.68);
-  color: rgba(193, 249, 215, 0.96);
+  color: rgb(var(--niuu-rgb-success, 193 249 215) / 0.96);
 }
 
 .niuu-live-telemetry__timeline-shell {
@@ -867,7 +867,7 @@
 }
 
 .niuu-live-telemetry__timeline-row--selected .niuu-live-telemetry__timeline-label-title {
-  color: rgba(240, 247, 255, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 240 247 255) / 0.98);
 }
 
 .niuu-live-telemetry__timeline-label {
@@ -884,16 +884,16 @@
 }
 
 .niuu-live-telemetry__timeline-label-dot--active {
-  background: rgba(156, 205, 244, 0.96);
+  background: rgb(var(--niuu-rgb-signal, 156 205 244) / 0.96);
 }
 
 .niuu-live-telemetry__timeline-label-dot--wait,
 .niuu-live-telemetry__timeline-label-dot--system {
-  background: rgba(123, 128, 142, 0.78);
+  background: rgb(var(--niuu-rgb-muted, 123 128 142) / 0.78);
 }
 
 .niuu-live-telemetry__timeline-label-dot--blocked {
-  background: rgba(234, 92, 86, 0.92);
+  background: rgb(var(--niuu-rgb-danger, 234 92 86) / 0.92);
 }
 
 .niuu-live-telemetry__timeline-label-title {
@@ -927,7 +927,7 @@
   min-width: 10px;
   border-radius: 6px;
   overflow: hidden;
-  background: rgba(140, 145, 158, 0.5);
+  background: rgb(var(--niuu-rgb-muted, 140 145 158) / 0.5);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
@@ -942,39 +942,39 @@
 .niuu-live-telemetry__timeline-bar-segment--wait {
   background: repeating-linear-gradient(
     -45deg,
-    rgba(148, 151, 165, 0.16) 0 4px,
-    rgba(148, 151, 165, 0.34) 4px 8px
+    rgb(var(--niuu-rgb-muted, 148 151 165) / 0.16) 0 4px,
+    rgb(var(--niuu-rgb-muted, 148 151 165) / 0.34) 4px 8px
   );
 }
 
 .niuu-live-telemetry__timeline-bar-segment--blocked {
   background: repeating-linear-gradient(
     -45deg,
-    rgba(234, 92, 86, 0.28) 0 4px,
-    rgba(234, 92, 86, 0.9) 4px 8px
+    rgb(var(--niuu-rgb-danger, 234 92 86) / 0.28) 0 4px,
+    rgb(var(--niuu-rgb-danger, 234 92 86) / 0.9) 4px 8px
   );
-  border-left: 1px solid rgba(234, 92, 86, 0.88);
-  border-right: 1px solid rgba(234, 92, 86, 0.88);
+  border-left: 1px solid rgb(var(--niuu-rgb-danger, 234 92 86) / 0.88);
+  border-right: 1px solid rgb(var(--niuu-rgb-danger, 234 92 86) / 0.88);
 }
 
 .niuu-live-telemetry__timeline-bar--hovered {
   overflow: visible;
   z-index: 3;
-  outline: 1px solid rgba(121, 202, 255, 0.88);
+  outline: 1px solid rgb(var(--niuu-rgb-signal, 121 202 255) / 0.88);
   outline-offset: 1px;
 }
 
 .niuu-live-telemetry__timeline-bar--active {
-  background: rgba(177, 217, 246, 0.98);
+  background: rgb(var(--niuu-rgb-signal, 177 217 246) / 0.98);
 }
 
 .niuu-live-telemetry__timeline-bar--wait,
 .niuu-live-telemetry__timeline-bar--system {
-  background: rgba(94, 99, 113, 0.72);
+  background: rgb(var(--niuu-rgb-muted, 94 99 113) / 0.72);
 }
 
 .niuu-live-telemetry__timeline-bar--blocked {
-  background: rgba(194, 70, 65, 0.92);
+  background: rgb(var(--niuu-rgb-danger, 194 70 65) / 0.92);
 }
 
 .niuu-live-telemetry__timeline-bar--hatched::after {
@@ -984,7 +984,7 @@
   background: repeating-linear-gradient(
     -45deg,
     rgba(255, 255, 255, 0.05) 0 6px,
-    rgba(11, 13, 18, 0.3) 6px 12px
+    rgb(var(--niuu-rgb-ink, 11 13 18) / 0.3) 6px 12px
   );
   pointer-events: none;
 }
@@ -996,7 +996,7 @@
   height: 100%;
   align-items: center;
   padding: 0 10px;
-  color: rgba(34, 38, 46, 0.95);
+  color: rgb(var(--niuu-rgb-raised, 34 38 46) / 0.95);
   font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 700;
@@ -1011,11 +1011,11 @@
   min-width: 280px;
   max-width: 340px;
   padding: 14px 16px 15px;
-  border: 1px solid rgba(116, 122, 142, 0.64);
+  border: 1px solid rgb(var(--niuu-rgb-muted, 116 122 142) / 0.64);
   border-radius: 14px;
-  background: rgba(66, 68, 79, 0.96);
+  background: rgb(var(--niuu-rgb-line, 66 68 79) / 0.96);
   box-shadow: 0 20px 38px rgba(0, 0, 0, 0.34);
-  color: rgba(242, 245, 255, 0.96);
+  color: rgb(var(--niuu-rgb-mist, 242 245 255) / 0.96);
 }
 
 .niuu-live-telemetry__timeline-tooltip--start {
@@ -1039,7 +1039,7 @@
 }
 
 .niuu-live-telemetry__timeline-tooltip-title {
-  color: rgba(248, 251, 255, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 248 251 255) / 0.98);
   font-family: var(--font-mono);
   font-size: 13px;
   font-weight: 700;
@@ -1049,7 +1049,7 @@
 
 .niuu-live-telemetry__timeline-tooltip-meta,
 .niuu-live-telemetry__timeline-tooltip-key {
-  color: rgba(173, 178, 194, 0.78);
+  color: rgb(var(--niuu-rgb-muted, 173 178 194) / 0.78);
   font-family: var(--font-mono);
   font-size: 8px;
   font-weight: 700;
@@ -1066,7 +1066,7 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: rgba(245, 247, 255, 0.96);
+  color: rgb(var(--niuu-rgb-mist, 245 247 255) / 0.96);
   font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 700;
@@ -1081,7 +1081,7 @@
 
 .niuu-live-telemetry__timeline-tooltip-breakdown-item {
   gap: 7px;
-  color: rgba(245, 247, 255, 0.96);
+  color: rgb(var(--niuu-rgb-mist, 245 247 255) / 0.96);
   font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 700;
@@ -1096,25 +1096,25 @@
 }
 
 .niuu-live-telemetry__timeline-tooltip-breakdown-swatch--active {
-  background: rgba(156, 205, 244, 0.96);
-  border-color: rgba(156, 205, 244, 0.96);
+  background: rgb(var(--niuu-rgb-signal, 156 205 244) / 0.96);
+  border-color: rgb(var(--niuu-rgb-signal, 156 205 244) / 0.96);
 }
 
 .niuu-live-telemetry__timeline-tooltip-breakdown-swatch--wait {
   background: repeating-linear-gradient(
     -45deg,
-    rgba(148, 151, 165, 0.16) 0 4px,
-    rgba(148, 151, 165, 0.34) 4px 8px
+    rgb(var(--niuu-rgb-muted, 148 151 165) / 0.16) 0 4px,
+    rgb(var(--niuu-rgb-muted, 148 151 165) / 0.34) 4px 8px
   );
 }
 
 .niuu-live-telemetry__timeline-tooltip-breakdown-swatch--blocked {
   background: repeating-linear-gradient(
     -45deg,
-    rgba(234, 92, 86, 0.28) 0 4px,
-    rgba(234, 92, 86, 0.9) 4px 8px
+    rgb(var(--niuu-rgb-danger, 234 92 86) / 0.28) 0 4px,
+    rgb(var(--niuu-rgb-danger, 234 92 86) / 0.9) 4px 8px
   );
-  border-color: rgba(234, 92, 86, 0.88);
+  border-color: rgb(var(--niuu-rgb-danger, 234 92 86) / 0.88);
 }
 
 .niuu-live-telemetry__detail-grid {
@@ -1162,7 +1162,7 @@
 }
 
 .niuu-live-telemetry__tools-title {
-  color: rgba(246, 249, 255, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 246 249 255) / 0.98);
   font-size: 15px;
   font-weight: 700;
   letter-spacing: -0.03em;
@@ -1172,7 +1172,7 @@
 .niuu-live-telemetry__tools-footnote,
 .niuu-live-telemetry__tools-tool-subtitle,
 .niuu-live-telemetry__tools-row-note {
-  color: rgba(132, 136, 151, 0.86);
+  color: rgb(var(--niuu-rgb-muted, 132 136 151) / 0.86);
   font-family: var(--font-mono);
   font-size: 8px;
 }
@@ -1202,8 +1202,8 @@
   padding: 0 10px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 7px;
-  background: rgba(8, 10, 14, 0.8);
-  color: rgba(224, 229, 240, 0.94);
+  background: rgb(var(--niuu-rgb-ink, 8 10 14) / 0.8);
+  color: rgb(var(--niuu-rgb-mist, 224 229 240) / 0.94);
   font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 700;
@@ -1217,51 +1217,51 @@
 }
 
 .niuu-live-telemetry__tools-filter--selected {
-  border-color: rgba(123, 192, 235, 0.9);
-  box-shadow: inset 0 0 0 1px rgba(123, 192, 235, 0.18);
+  border-color: rgb(var(--niuu-rgb-signal, 123 192 235) / 0.9);
+  box-shadow: inset 0 0 0 1px rgb(var(--niuu-rgb-signal, 123 192 235) / 0.18);
 }
 
 .niuu-live-telemetry__tools-filter-dot {
   width: 8px;
   height: 8px;
   border-radius: 999px;
-  background: rgba(153, 158, 173, 0.88);
+  background: rgb(var(--niuu-rgb-muted, 153 158 173) / 0.88);
   flex-shrink: 0;
 }
 
 .niuu-live-telemetry__tools-filter-dot--read {
-  background: rgba(172, 224, 255, 0.96);
+  background: rgb(var(--niuu-rgb-signal, 172 224 255) / 0.96);
 }
 
 .niuu-live-telemetry__tools-filter-dot--edit {
-  background: rgba(123, 210, 255, 0.96);
+  background: rgb(var(--niuu-rgb-signal, 123 210 255) / 0.96);
 }
 
 .niuu-live-telemetry__tools-filter-dot--write {
-  background: rgba(59, 180, 244, 0.96);
+  background: rgb(var(--niuu-rgb-signal, 59 180 244) / 0.96);
 }
 
 .niuu-live-telemetry__tools-filter-dot--shell {
-  background: rgba(0, 113, 184, 0.96);
+  background: rgb(var(--niuu-rgb-signal, 0 113 184) / 0.96);
 }
 
 .niuu-live-telemetry__tools-filter-dot--mcp {
-  background: rgba(116, 126, 150, 0.96);
+  background: rgb(var(--niuu-rgb-muted, 116 126 150) / 0.96);
 }
 
 .niuu-live-telemetry__tools-filter-dot--other {
-  background: rgba(96, 101, 115, 0.92);
+  background: rgb(var(--niuu-rgb-muted, 96 101 115) / 0.92);
 }
 
 .niuu-live-telemetry__tools-filter-count {
-  color: rgba(132, 136, 151, 0.92);
+  color: rgb(var(--niuu-rgb-muted, 132 136 151) / 0.92);
 }
 
 .niuu-live-telemetry__tools-columns {
   grid-template-columns: minmax(0, 1.6fr) 0.55fr 0.75fr 0.66fr 0.66fr 0.66fr 0.92fr;
   gap: 10px;
   padding: 0 10px;
-  color: rgba(141, 146, 162, 0.74);
+  color: rgb(var(--niuu-rgb-muted, 141 146 162) / 0.74);
   font-family: var(--font-mono);
   font-size: 8px;
   font-weight: 700;
@@ -1282,7 +1282,7 @@
   display: grid;
   gap: 0;
   padding: 0;
-  background: rgba(8, 10, 14, 0.8);
+  background: rgb(var(--niuu-rgb-ink, 8 10 14) / 0.8);
 }
 
 .niuu-live-telemetry__tools-row-main {
@@ -1315,8 +1315,8 @@
   justify-content: center;
   padding: 0 7px;
   border-radius: 5px;
-  background: rgba(54, 57, 67, 0.94);
-  color: rgba(200, 206, 221, 0.96);
+  background: rgb(var(--niuu-rgb-line, 54 57 67) / 0.94);
+  color: rgb(var(--niuu-rgb-mist, 200 206 221) / 0.96);
   font-family: var(--font-mono);
   font-size: 8px;
   font-weight: 700;
@@ -1328,7 +1328,7 @@
 .niuu-live-telemetry__tools-tool-title,
 .niuu-live-telemetry__tools-metric,
 .niuu-live-telemetry__tools-share-label {
-  color: rgba(246, 249, 255, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 246 249 255) / 0.98);
   font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 700;
@@ -1346,7 +1346,7 @@
 }
 
 .niuu-live-telemetry__tools-metric--muted {
-  color: rgba(168, 174, 190, 0.92);
+  color: rgb(var(--niuu-rgb-muted, 168 174 190) / 0.92);
 }
 
 .niuu-live-telemetry__tools-share-cell {
@@ -1365,19 +1365,19 @@
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: rgba(92, 166, 214, 0.96);
+  background: rgb(var(--niuu-rgb-signal, 92 166 214) / 0.96);
 }
 
 .niuu-live-telemetry__tools-row-note {
   padding: 0 10px 8px 58px;
-  color: rgba(255, 167, 164, 0.94);
+  color: rgb(var(--niuu-rgb-danger, 255 167 164) / 0.94);
 }
 
 .niuu-live-telemetry__tools-empty {
   min-height: 240px;
   display: grid;
   place-items: center;
-  color: rgba(132, 136, 151, 0.86);
+  color: rgb(var(--niuu-rgb-muted, 132 136 151) / 0.86);
   font-family: var(--font-mono);
   font-size: 9px;
 }
@@ -1412,7 +1412,7 @@
 }
 
 .niuu-live-telemetry__breakdown-title {
-  color: rgba(246, 249, 255, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 246 249 255) / 0.98);
   font-size: 15px;
   font-weight: 700;
   letter-spacing: -0.03em;
@@ -1422,7 +1422,7 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: rgba(132, 136, 151, 0.86);
+  color: rgb(var(--niuu-rgb-muted, 132 136 151) / 0.86);
   font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 600;
@@ -1437,7 +1437,7 @@
 
 .niuu-live-telemetry__breakdown-columns {
   padding: 0 10px;
-  color: rgba(141, 146, 162, 0.74);
+  color: rgb(var(--niuu-rgb-muted, 141 146 162) / 0.74);
   font-family: var(--font-mono);
   font-size: 8px;
   font-weight: 700;
@@ -1455,13 +1455,13 @@
   gap: 0;
   border: 1px solid rgba(255, 255, 255, 0.04);
   border-radius: 6px;
-  background: rgba(8, 10, 14, 0.8);
+  background: rgb(var(--niuu-rgb-ink, 8 10 14) / 0.8);
   overflow: hidden;
 }
 
 .niuu-live-telemetry__breakdown-stage--selected {
-  background: rgba(45, 57, 67, 0.96);
-  border-color: rgba(123, 192, 235, 0.24);
+  background: rgb(var(--niuu-rgb-line, 45 57 67) / 0.96);
+  border-color: rgb(var(--niuu-rgb-signal, 123 192 235) / 0.24);
 }
 
 .niuu-live-telemetry__breakdown-stage-row {
@@ -1488,7 +1488,7 @@
   margin-right: 8px;
   align-items: center;
   justify-content: center;
-  color: rgba(122, 128, 144, 0.88);
+  color: rgb(var(--niuu-rgb-muted, 122 128 144) / 0.88);
   border-radius: 4px;
 }
 
@@ -1506,21 +1506,21 @@
 }
 
 .niuu-live-telemetry__breakdown-dot--active {
-  background: rgba(156, 205, 244, 0.96);
+  background: rgb(var(--niuu-rgb-signal, 156 205 244) / 0.96);
 }
 
 .niuu-live-telemetry__breakdown-dot--wait,
 .niuu-live-telemetry__breakdown-dot--system {
-  background: rgba(123, 128, 142, 0.78);
+  background: rgb(var(--niuu-rgb-muted, 123 128 142) / 0.78);
 }
 
 .niuu-live-telemetry__breakdown-dot--blocked {
-  background: rgba(234, 92, 86, 0.92);
+  background: rgb(var(--niuu-rgb-danger, 234 92 86) / 0.92);
 }
 
 .niuu-live-telemetry__breakdown-stage-label,
 .niuu-live-telemetry__breakdown-total-label {
-  color: rgba(246, 249, 255, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 246 249 255) / 0.98);
   font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 700;
@@ -1530,7 +1530,7 @@
 
 .niuu-live-telemetry__breakdown-stage-meta {
   margin-left: 8px;
-  color: rgba(132, 136, 151, 0.86);
+  color: rgb(var(--niuu-rgb-muted, 132 136 151) / 0.86);
   font-family: var(--font-mono);
   font-size: 8px;
   text-transform: lowercase;
@@ -1539,7 +1539,7 @@
 .niuu-live-telemetry__breakdown-duration,
 .niuu-live-telemetry__breakdown-total-duration,
 .niuu-live-telemetry__breakdown-total-percent {
-  color: rgba(246, 249, 255, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 246 249 255) / 0.98);
   font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 700;
@@ -1561,12 +1561,12 @@
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: rgba(156, 205, 244, 0.96);
+  background: rgb(var(--niuu-rgb-signal, 156 205 244) / 0.96);
 }
 
 .niuu-live-telemetry__breakdown-percent span,
 .niuu-live-telemetry__breakdown-task-duration {
-  color: rgba(214, 220, 234, 0.94);
+  color: rgb(var(--niuu-rgb-mist, 214 220 234) / 0.94);
   font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 700;
@@ -1584,8 +1584,8 @@
   min-width: 52px;
   padding: 4px 8px 3px;
   border-radius: 5px;
-  background: rgba(54, 57, 67, 0.96);
-  color: rgba(168, 174, 190, 0.92);
+  background: rgb(var(--niuu-rgb-line, 54 57 67) / 0.96);
+  color: rgb(var(--niuu-rgb-muted, 168 174 190) / 0.92);
   font-family: var(--font-mono);
   font-size: 8px;
   font-weight: 700;
@@ -1618,29 +1618,29 @@
 }
 
 .niuu-live-telemetry__state-stack-segment--active {
-  background: rgba(156, 205, 244, 0.96);
+  background: rgb(var(--niuu-rgb-signal, 156 205 244) / 0.96);
 }
 
 .niuu-live-telemetry__state-stack-segment--wait {
   background: repeating-linear-gradient(
     -45deg,
-    rgba(148, 151, 165, 0.18) 0 4px,
-    rgba(148, 151, 165, 0.4) 4px 8px
+    rgb(var(--niuu-rgb-muted, 148 151 165) / 0.18) 0 4px,
+    rgb(var(--niuu-rgb-muted, 148 151 165) / 0.4) 4px 8px
   );
 }
 
 .niuu-live-telemetry__state-stack-segment--blocked {
   background: repeating-linear-gradient(
     -45deg,
-    rgba(234, 92, 86, 0.28) 0 4px,
-    rgba(234, 92, 86, 0.9) 4px 8px
+    rgb(var(--niuu-rgb-danger, 234 92 86) / 0.28) 0 4px,
+    rgb(var(--niuu-rgb-danger, 234 92 86) / 0.9) 4px 8px
   );
 }
 
 .niuu-live-telemetry__state-stack-meta {
   display: inline-flex;
   gap: 6px;
-  color: rgba(132, 136, 151, 0.86);
+  color: rgb(var(--niuu-rgb-muted, 132 136 151) / 0.86);
   font-family: var(--font-mono);
   font-size: 8px;
 }
@@ -1649,7 +1649,7 @@
   display: grid;
   gap: 2px;
   padding: 0 10px 6px;
-  background: rgba(5, 7, 10, 0.42);
+  background: rgb(var(--niuu-rgb-ink, 5 7 10) / 0.42);
 }
 
 .niuu-live-telemetry__breakdown-task-row {
@@ -1667,15 +1667,15 @@
   width: 12px;
   height: 12px;
   margin-right: 8px;
-  border-left: 1px solid rgba(125, 130, 145, 0.42);
-  border-bottom: 1px solid rgba(125, 130, 145, 0.42);
+  border-left: 1px solid rgb(var(--niuu-rgb-muted, 125 130 145) / 0.42);
+  border-bottom: 1px solid rgb(var(--niuu-rgb-muted, 125 130 145) / 0.42);
   flex-shrink: 0;
 }
 
 .niuu-live-telemetry__breakdown-task-label {
   min-width: 0;
   overflow: hidden;
-  color: rgba(171, 176, 191, 0.9);
+  color: rgb(var(--niuu-rgb-muted, 171 176 191) / 0.9);
   font-family: var(--font-mono);
   font-size: 8px;
   text-overflow: ellipsis;
@@ -1691,9 +1691,9 @@
   position: relative;
   height: 10px;
   overflow: hidden;
-  border: 1px solid rgba(125, 130, 145, 0.16);
+  border: 1px solid rgb(var(--niuu-rgb-muted, 125 130 145) / 0.16);
   border-radius: 999px;
-  background: rgba(12, 16, 24, 0.8);
+  background: rgb(var(--niuu-rgb-ink, 12 16 24) / 0.8);
 }
 
 .niuu-live-telemetry__breakdown-task-segment {
@@ -1704,29 +1704,33 @@
 }
 
 .niuu-live-telemetry__breakdown-task-segment--active {
-  background: linear-gradient(90deg, rgba(125, 211, 252, 0.82), rgba(56, 189, 248, 0.9));
+  background: linear-gradient(
+    90deg,
+    rgb(var(--niuu-rgb-signal, 125 211 252) / 0.82),
+    rgb(var(--niuu-rgb-signal, 56 189 248) / 0.9)
+  );
 }
 
 .niuu-live-telemetry__breakdown-task-segment--wait,
 .niuu-live-telemetry__breakdown-task-segment--system {
-  border: 1px dashed rgba(148, 163, 184, 0.68);
+  border: 1px dashed rgb(var(--niuu-rgb-muted, 148 163 184) / 0.68);
   background: repeating-linear-gradient(
     90deg,
-    rgba(148, 163, 184, 0.16) 0 5px,
-    rgba(148, 163, 184, 0.34) 5px 8px
+    rgb(var(--niuu-rgb-muted, 148 163 184) / 0.16) 0 5px,
+    rgb(var(--niuu-rgb-muted, 148 163 184) / 0.34) 5px 8px
   );
 }
 
 .niuu-live-telemetry__breakdown-task-segment--blocked {
   background: repeating-linear-gradient(
     135deg,
-    rgba(248, 113, 113, 0.78) 0 5px,
+    rgb(var(--niuu-rgb-danger, 248 113 113) / 0.78) 0 5px,
     rgba(127, 29, 29, 0.62) 5px 9px
   );
 }
 
 .niuu-live-telemetry__breakdown-task-warning {
-  color: rgba(255, 167, 164, 0.94);
+  color: rgb(var(--niuu-rgb-danger, 255 167 164) / 0.94);
   font-family: var(--font-mono);
   font-size: 8px;
   font-weight: 700;
@@ -1769,7 +1773,7 @@
 }
 
 .niuu-live-telemetry__turn-head-title-label {
-  color: rgba(246, 249, 255, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 246 249 255) / 0.98);
   font-size: 15px;
   font-weight: 700;
   letter-spacing: -0.03em;
@@ -1779,7 +1783,7 @@
 .niuu-live-telemetry__turn-legend,
 .niuu-live-telemetry__turn-detail-key,
 .niuu-live-telemetry__turn-reset {
-  color: rgba(141, 146, 162, 0.8);
+  color: rgb(var(--niuu-rgb-muted, 141 146 162) / 0.8);
   font-family: var(--font-mono);
   font-size: 8px;
   font-weight: 700;
@@ -1803,20 +1807,20 @@
 }
 
 .niuu-live-telemetry__turn-legend-swatch--model {
-  background: rgba(166, 215, 251, 0.96);
-  border-color: rgba(166, 215, 251, 0.96);
+  background: rgb(var(--niuu-rgb-signal, 166 215 251) / 0.96);
+  border-color: rgb(var(--niuu-rgb-signal, 166 215 251) / 0.96);
 }
 
 .niuu-live-telemetry__turn-legend-swatch--tool {
-  background: rgba(56, 121, 187, 0.96);
-  border-color: rgba(56, 121, 187, 0.96);
+  background: rgb(var(--niuu-rgb-signal, 56 121 187) / 0.96);
+  border-color: rgb(var(--niuu-rgb-signal, 56 121 187) / 0.96);
 }
 
 .niuu-live-telemetry__turn-legend-swatch--idle {
   background: repeating-linear-gradient(
     -45deg,
-    rgba(148, 151, 165, 0.18) 0 4px,
-    rgba(148, 151, 165, 0.4) 4px 8px
+    rgb(var(--niuu-rgb-muted, 148 151 165) / 0.18) 0 4px,
+    rgb(var(--niuu-rgb-muted, 148 151 165) / 0.4) 4px 8px
   );
 }
 
@@ -1831,7 +1835,7 @@
 .niuu-live-telemetry__turn-side {
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 11px;
-  background: rgba(6, 8, 12, 0.88);
+  background: rgb(var(--niuu-rgb-ink, 6 8 12) / 0.88);
 }
 
 .niuu-live-telemetry__turn-chart {
@@ -1852,7 +1856,7 @@
   display: flex;
   align-items: flex-start;
   justify-content: flex-end;
-  color: rgba(110, 116, 132, 0.82);
+  color: rgb(var(--niuu-rgb-muted, 110 116 132) / 0.82);
   font-family: var(--font-mono);
   font-size: 7px;
   line-height: 1;
@@ -1875,15 +1879,15 @@
 }
 
 .niuu-live-telemetry__turn-grid-line {
-  border-top: 1px dashed rgba(87, 95, 112, 0.3);
+  border-top: 1px dashed rgb(var(--niuu-rgb-muted, 87 95 112) / 0.3);
 }
 
 .niuu-live-telemetry__turn-stat-line {
-  border-top: 1px dashed rgba(122, 192, 235, 0.76);
+  border-top: 1px dashed rgb(var(--niuu-rgb-signal, 122 192 235) / 0.76);
 }
 
 .niuu-live-telemetry__turn-stat-line--p50 {
-  border-top-color: rgba(122, 192, 235, 0.54);
+  border-top-color: rgb(var(--niuu-rgb-signal, 122 192 235) / 0.54);
 }
 
 .niuu-live-telemetry__turn-stat-label {
@@ -1891,8 +1895,8 @@
   right: -4px;
   top: -8px;
   padding-left: 8px;
-  background: rgba(6, 8, 12, 0.88);
-  color: rgba(166, 215, 251, 0.96);
+  background: rgb(var(--niuu-rgb-ink, 6 8 12) / 0.88);
+  color: rgb(var(--niuu-rgb-signal, 166 215 251) / 0.96);
   font-family: var(--font-mono);
   font-size: 7px;
   font-weight: 700;
@@ -1937,14 +1941,14 @@
   min-height: 8px;
   flex-direction: column-reverse;
   overflow: hidden;
-  border: 1px solid rgba(51, 88, 120, 0.55);
+  border: 1px solid rgb(var(--niuu-rgb-signal, 51 88 120) / 0.55);
   border-radius: 6px 6px 3px 3px;
-  background: rgba(10, 16, 25, 0.64);
+  background: rgb(var(--niuu-rgb-ink, 10 16 25) / 0.64);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 .niuu-live-telemetry__turn-bar-col--selected .niuu-live-telemetry__turn-bar-stack {
-  outline: 1px solid rgba(124, 202, 252, 0.92);
+  outline: 1px solid rgb(var(--niuu-rgb-signal, 124 202 252) / 0.92);
   outline-offset: 2px;
 }
 
@@ -1953,23 +1957,23 @@
 }
 
 .niuu-live-telemetry__turn-bar-segment--model {
-  background: rgba(166, 215, 251, 0.96);
+  background: rgb(var(--niuu-rgb-signal, 166 215 251) / 0.96);
 }
 
 .niuu-live-telemetry__turn-bar-segment--tool {
-  background: rgba(56, 121, 187, 0.96);
+  background: rgb(var(--niuu-rgb-signal, 56 121 187) / 0.96);
 }
 
 .niuu-live-telemetry__turn-bar-segment--idle {
   background: repeating-linear-gradient(
     -45deg,
-    rgba(148, 151, 165, 0.18) 0 4px,
-    rgba(148, 151, 165, 0.4) 4px 8px
+    rgb(var(--niuu-rgb-muted, 148 151 165) / 0.18) 0 4px,
+    rgb(var(--niuu-rgb-muted, 148 151 165) / 0.4) 4px 8px
   );
 }
 
 .niuu-live-telemetry__turn-bar-label {
-  color: rgba(125, 131, 146, 0.9);
+  color: rgb(var(--niuu-rgb-muted, 125 131 146) / 0.9);
   font-family: var(--font-mono);
   font-size: 8px;
   font-weight: 700;
@@ -1987,7 +1991,7 @@
 }
 
 .niuu-live-telemetry__turn-side-title {
-  color: rgba(246, 249, 255, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 246 249 255) / 0.98);
   font-family: var(--font-mono);
   font-size: 14px;
   font-weight: 700;
@@ -2004,7 +2008,7 @@
   padding-top: 8px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   scrollbar-width: thin;
-  scrollbar-color: rgba(124, 132, 150, 0.82) rgba(255, 255, 255, 0.04);
+  scrollbar-color: rgb(var(--niuu-rgb-muted, 124 132 150) / 0.82) rgba(255, 255, 255, 0.04);
 }
 
 .niuu-live-telemetry__turn-list::-webkit-scrollbar,
@@ -2021,7 +2025,7 @@
 .niuu-live-telemetry__turn-detail-lines::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 999px;
-  background: rgba(124, 132, 150, 0.82);
+  background: rgb(var(--niuu-rgb-muted, 124 132 150) / 0.82);
   background-clip: padding-box;
 }
 
@@ -2046,7 +2050,7 @@
 
 .niuu-live-telemetry__turn-list-item-label,
 .niuu-live-telemetry__turn-detail-value {
-  color: rgba(246, 249, 255, 0.98);
+  color: rgb(var(--niuu-rgb-mist, 246 249 255) / 0.98);
   font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 700;
@@ -2054,14 +2058,14 @@
 }
 
 .niuu-live-telemetry__turn-list-item-meta {
-  color: rgba(130, 136, 151, 0.86);
+  color: rgb(var(--niuu-rgb-muted, 130 136 151) / 0.86);
   font-family: var(--font-mono);
   font-size: 8px;
   text-transform: lowercase;
 }
 
 .niuu-live-telemetry__turn-list-item-duration {
-  color: rgba(213, 220, 234, 0.94);
+  color: rgb(var(--niuu-rgb-mist, 213 220 234) / 0.94);
   font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 700;
@@ -2100,8 +2104,8 @@
   min-height: 22px;
   padding: 0 8px;
   border-radius: 5px;
-  background: rgba(54, 57, 67, 0.96);
-  color: rgba(246, 249, 255, 0.96);
+  background: rgb(var(--niuu-rgb-line, 54 57 67) / 0.96);
+  color: rgb(var(--niuu-rgb-mist, 246 249 255) / 0.96);
   font-family: var(--font-mono);
   font-size: 8px;
   font-weight: 700;

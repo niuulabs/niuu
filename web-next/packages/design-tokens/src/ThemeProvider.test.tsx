@@ -13,14 +13,14 @@ describe('ThemeProvider', () => {
     delete document.documentElement.dataset.theme;
   });
 
-  it('defaults to ice and sets data-theme on documentElement', () => {
+  it('defaults to niuu and sets data-theme on documentElement', () => {
     render(
       <ThemeProvider>
         <ThemeReader />
       </ThemeProvider>,
     );
-    expect(screen.getByTestId('theme').textContent).toBe('ice');
-    expect(document.documentElement.dataset.theme).toBe('ice');
+    expect(screen.getByTestId('theme').textContent).toBe('niuu');
+    expect(document.documentElement.dataset.theme).toBe('niuu');
   });
 
   it('respects initial theme prop', () => {

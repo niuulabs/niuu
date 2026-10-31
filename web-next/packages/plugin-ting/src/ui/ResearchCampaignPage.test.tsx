@@ -943,7 +943,7 @@ describe('ResearchCampaignPage', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: /Send back for revision/i }));
-    await waitFor(() => expect(screen.getByText(/Open in Sessions/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Open in Forge/i)).toBeInTheDocument());
     expect(screen.getByText(/Delete campaign/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Open manifest/i }));
@@ -986,7 +986,7 @@ describe('ResearchCampaignPage', () => {
     await waitFor(() => expect(screen.getByText(/Activity/i)).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /Resume after fix/i }));
-    await waitFor(() => expect(screen.getByText(/Open in Sessions/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Open in Forge/i)).toBeInTheDocument());
   });
 
   it('renders the failed state and can pivot between logs and run details', async () => {
@@ -1016,7 +1016,7 @@ describe('ResearchCampaignPage', () => {
     expect(screen.getByText(/valhalla/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Retry from stage/i }));
-    await waitFor(() => expect(screen.getByText(/Open in Sessions/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Open in Forge/i)).toBeInTheDocument());
   });
 
   it('deletes a campaign after confirmation and routes back to the index', async () => {
@@ -1207,9 +1207,9 @@ describe('ResearchCampaignPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Operator ▸/i }));
     fireEvent.click(screen.getByRole('button', { name: /^Actions$/i }));
-    await waitFor(() => expect(screen.getByText(/Open in Sessions/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Open in Forge/i)).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: /Open in Sessions/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Open in Forge/i }));
     expect(assign).toHaveBeenCalledWith(
       `/volundr/sessions/${encodeURIComponent(runningCampaign.sessionId)}`,
     );

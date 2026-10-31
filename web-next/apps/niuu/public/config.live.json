@@ -1,5 +1,5 @@
 {
-  "theme": "xteo",
+  "theme": "niuu",
   "plugins": {
     "setup": { "enabled": true, "order": 0 },
     "login": { "enabled": true, "order": 0 },

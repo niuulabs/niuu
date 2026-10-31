@@ -208,7 +208,7 @@ test('Git selection, errors, and the legacy runtime remain explicit choices', as
 test('connection management points to Guild without a duplicate Forge tab', async ({ page }) => {
   await fixture(page);
   await page.goto('/volundr/catalog');
-  await expect(page.getByRole('link', { name: 'Manage hosts in Infrastructure' })).toHaveAttribute(
+  await expect(page.getByRole('link', { name: 'Manage hosts in Platform' })).toHaveAttribute(
     'href',
     '/guild',
   );

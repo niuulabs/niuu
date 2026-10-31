@@ -25,7 +25,7 @@ export const mimirPlugin = definePlugin({
   rune: 'M',
   icon: <MemoryIcon />,
   title: 'Memory',
-  subtitle: 'what niuu knows, and how sure it is',
+  subtitle: 'what is known',
   // Memory: what the platform and its residents know. The Memory scene
   // (Explore/Focus/Ask/Replay) is the home for both Simple and Advanced mode.
   simple: {

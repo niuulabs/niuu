@@ -1,12 +1,12 @@
 # Inspect workflows and runs
 
 A workflow defines a process; a run records an execution of it. Start by inspecting
-these separately before enabling automatic dispatch. You need Ting enabled in the
-platform, and a configured executor before you can run real agent work.
+these separately before enabling automatic dispatch. You need the Work service
+enabled in the platform, and a configured executor before you can run real agent work.
 
 ## Find the definition and its executions
 
-Open **Ting** in the platform UI. Inspect a workflow's stages and transitions,
+Open **Work** in the platform UI. Inspect a workflow's stages and transitions,
 then inspect a run using that workflow. On an empty installation there may be no
 runs yet; an empty list is not a failed connection.
 
@@ -30,7 +30,7 @@ successful execution.
 
 ## Prepare a workflow in the editor
 
-Open **Ting → Workflows**. The **Templates** sidebar lists saved definitions;
+Open **Work → Workflows**. The **Templates** sidebar lists saved definitions;
 **+ new** creates a new user definition. A saved empty definition is not yet a
 runnable workflow.
 
@@ -63,7 +63,7 @@ Select the saved definition, choose **Launch…**, and complete:
 | Repo | The repository the workflow should change |
 | Branch | The branch to use for that repository |
 
-Choose **Launch**. Successful launch opens the returned Völundr session. This is
+Choose **Launch**. Successful launch opens the returned Forge session. This is
 a workflow-backed flock session, so verify the participating runtime and provider
 configuration first; it is not the same setup as the single Claude quick start.
 Inspect the session's actual output and repository diff, then confirm that the
@@ -90,4 +90,4 @@ next attempt addresses it.
 
 This page explains the inspection process. A complete workflow creation tutorial
 still requires validation against a configured executor; the local quick-start
-verification does not certify Ting execution.
+verification does not certify workflow execution.

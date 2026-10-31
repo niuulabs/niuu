@@ -334,7 +334,7 @@ export function ResearchCampaignDrawer({
                     )
                   }
                 >
-                  Open in Sessions
+                  Open in Forge
                 </button>
                 {manifestArtifact ? (
                   <button

@@ -159,7 +159,7 @@ describe('ResidentsPage', () => {
   it('leads with what a resident is and offers a new one', async () => {
     mount(valkyrieServices());
     expect(await screen.findByRole('heading', { name: 'Residents' })).toBeInTheDocument();
-    expect(screen.getByText(/A resident keeps one realm/)).toBeInTheDocument();
+    expect(screen.getByText(/A resident keeps one workspace/)).toBeInTheDocument();
     expect(screen.getByText(/A persona is the character it runs with/)).toBeInTheDocument();
     expect(screen.getByTestId('resident-deploy-open')).toBeInTheDocument();
   });
@@ -292,7 +292,7 @@ describe('ResidentsPage', () => {
       'resident-card-target-a:11111111-1111-4111-8111-111111111111',
     );
     expect(within(card).getByText('active')).toBeInTheDocument();
-    expect(within(card).getByText('keeps no realm yet')).toBeInTheDocument();
+    expect(within(card).getByText('keeps no workspace yet')).toBeInTheDocument();
     expect(within(card).queryByTestId('resident-open-realm')).not.toBeInTheDocument();
     expect(within(card).getByText('nothing waiting')).toBeInTheDocument();
   });

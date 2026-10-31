@@ -1,0 +1,204 @@
+{% extends "main.html" %}
+
+{# The landing page. All copy comes from the front matter of docs/site/index.md. #}
+
+{% block htmltitle %}<title>{{ page.meta.home.title }}</title>{% endblock %}
+
+{% block tabs %}{% endblock %}
+{% block site_nav %}{% endblock %}
+{% block container %}{% endblock %}
+{% block footer %}{% endblock %}
+
+{% block hero %}
+{% from "partials/niuu-home-icon.html" import icon %}
+{% set home = page.meta.home %}
+{% set orbit = "images/niuu-orbit-gradient.svg" | url %}
+{% set flat = "images/niuu-orbit-flat.svg" | url %}
+{% set wordmark = "images/niuu-wordmark.svg" | url %}
+{% set field = "images/niuu-continuity-field.svg" | url %}
+<div class="niuu-home"><div class="container">
+  <header class="site-head">
+    <a href="#top" class="brand" aria-label="NIUU home"><img class="orb" src="{{ orbit }}" alt=""><img class="word" src="{{ wordmark }}" alt="NIUU"></a>
+    <nav class="site-nav" aria-label="Products">
+      {% for product in home.products.family %}<a href="#products" aria-label="NIUU {{ product.name }}">{{ product.name }}</a>{% endfor %}
+    </nav>
+    <a class="site-action" href="{{ home.action.href }}">{{ home.action.label }}</a>
+  </header>
+
+  <div id="top" role="main">
+    <section class="hero">
+      <img class="wave" src="{{ field }}" alt="">
+      <div class="hero-content">
+        <div class="label">{{ home.hero.label }}</div>
+        <h1>{{ home.hero.title | join("<br>") }}</h1>
+        <p>{{ home.hero.body }}</p>
+        <div class="hero-cta">
+          {% for cta in home.hero.actions %}
+          <a class="btn {{ cta.style }}" href="{{ cta.href | url if cta.docs else cta.href }}">{{ cta.label }} <span>{{ cta.arrow }}</span></a>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="hero-bottom">
+        <div class="mini-features">
+          {% for feature in home.hero.features %}{% if not loop.first %}<b>·</b>{% endif %}<span>{{ feature }}</span>{% endfor %}
+        </div>
+        <span>{{ home.hero.tagline }}</span>
+      </div>
+    </section>
+
+    <section class="section intro" id="difference">
+      <div>
+        <div class="label">{{ home.principle.label }}</div>
+        <h2>{{ home.principle.title | join("<br>") }}</h2>
+        <p class="lede">{{ home.principle.body }}</p>
+      </div>
+      <div class="work-visual">
+        <div class="label">{{ home.principle.visual }}</div>
+        <div class="path"></div>
+        <div class="work-sequence">
+          {% for step in home.principle.steps %}<div><strong>{{ step.title }}</strong> {{ step.body }}</div>{% endfor %}
+        </div>
+      </div>
+    </section>
+
+    <section class="section products-section" id="products">
+      <div class="label">{{ home.products.label }}</div>
+      <div class="section-lead">
+        <h2>{{ home.products.title }}</h2>
+        <p class="lede">{{ home.products.body }}</p>
+      </div>
+      <div class="product-grid">
+        {% for product in home.products.family %}
+        <article class="product-card">
+          <div class="glyph">{{ icon(product.icon, 25) }}</div>
+          <div class="product-number">NIUU / {{ "%02d" | format(loop.index) }}</div>
+          <h3>{{ product.name }}</h3>
+          <div class="product-sub">{{ product.line }}</div>
+          <p>{{ product.body }}</p>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+
+    {% set demo = home.experience.demo %}
+    <section class="section product-demo" id="work">
+      <div class="label">{{ home.experience.label }}</div>
+      <h2>{{ home.experience.title }}</h2>
+      <p class="lede">{{ home.experience.body }}</p>
+      <div class="demo-frame">
+        <aside class="sidebar">
+          <div class="sb-logo"><img src="{{ flat }}" alt=""><img src="{{ wordmark }}" alt="NIUU"></div>
+          {% for product in home.products.family %}
+          <div class="side-item {{ 'selected' if product.icon == demo.selected }}">{{ icon(product.icon, 17) }}<span>{{ product.name }}</span></div>
+          {% endfor %}
+        </aside>
+        <div class="demo-main">
+          <div class="breadcrumb">{{ demo.breadcrumb | join(" &nbsp;/&nbsp; ") }}</div>
+          <div class="demo-title">
+            <div><h3>{{ demo.title }}</h3><p>{{ demo.body }}</p></div>
+            <button class="demo-btn" type="button" data-feedback="{{ demo.action.feedback }}">{{ demo.action.label }}</button>
+          </div>
+          <div class="kpi">
+            {% for kpi in demo.kpis %}<div><strong>{{ kpi.value }}</strong><small>{{ kpi.label }}</small></div>{% endfor %}
+          </div>
+          <div class="demo-tabs" role="tablist" aria-label="Workspace view">
+            {% for tab in demo.tabs %}
+            <button class="{{ 'active' if loop.first }}" type="button" data-tab="{{ tab.id }}" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ tab.label }}</button>
+            {% endfor %}
+          </div>
+          {% for tab in demo.tabs %}
+          <div class="panels" data-panels="{{ tab.id }}"{% if not loop.first %} hidden{% endif %}>
+            {% for panel in tab.panels %}
+            <article class="panel">
+              <p class="panel-head">{{ panel.title }}</p>
+              {% for row in panel.rows %}
+              <div class="work-row">
+                <div class="circle">{{ row.mark }}</div>
+                <div class="wrtext">
+                  <strong>{{ row.title }}</strong><small>{{ row.meta }}</small>
+                  {% if row.progress %}<div class="progress"><i style="width:{{ row.progress }}%"></i></div>{% endif %}
+                </div>
+              </div>
+              {% endfor %}
+              {% if panel.body %}<p class="attention">{{ panel.body }}</p>{% endif %}
+              {% if panel.decision %}
+              <div class="decision">
+                <b>{{ panel.decision.title }}</b>
+                <p class="attention" style="margin:8px 0 0">{{ panel.decision.body }}</p>
+                <a href="#work" data-feedback="{{ panel.decision.feedback }}">{{ panel.decision.link }}</a>
+              </div>
+              {% endif %}
+              {% if panel.note %}<p class="attention" style="margin-top:24px">{{ panel.note }}</p>{% endif %}
+            </article>
+            {% endfor %}
+          </div>
+          {% endfor %}
+          <div class="side-note">{{ demo.footnote }}</div>
+        </div>
+      </div>
+    </section>
+
+    {% set page_demo = home.documentation.demo %}
+    <section class="section docs-demo" id="docs">
+      <div class="label">{{ home.documentation.label }}</div>
+      <h2>{{ home.documentation.title }}</h2>
+      <p class="lede">{{ home.documentation.body }}</p>
+      <div class="docs-layout">
+        <aside class="docs-side">
+          <div style="color:#e9f5f8;margin-bottom:16px">{{ page_demo.label }}</div>
+          <div class="doc-link on">{{ page_demo.current }}</div>
+          {% for product in home.products.family %}<div class="doc-link">{{ product.name }}</div>{% endfor %}
+        </aside>
+        <article class="docs-view">
+          <div class="label">{{ page_demo.current }}</div>
+          <h3>{{ page_demo.title }}</h3>
+          <p>{{ page_demo.body }}</p>
+          <div class="code-line">{{ page_demo.code }}</div>
+          <p>{{ page_demo.note }}</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section brand-section" id="identity">
+      <div class="label">{{ home.identity.label }}</div>
+      <h2>{{ home.identity.title }}</h2>
+      <p class="lede">{{ home.identity.body }}</p>
+      <div class="brand-columns">
+        <div>
+          <div class="brand-display"><img src="{{ orbit }}" alt="NIUU orbital brand mark"><img src="{{ wordmark }}" alt="NIUU wordmark"></div>
+          <div class="card-label">{{ home.identity.lockup }}</div>
+        </div>
+        <div>
+          <div class="brand-icons"><img src="{{ orbit }}" alt="Large orbital mark"><img src="{{ flat }}" alt="Small mark"><img src="{{ flat }}" alt="Tiny mark"></div>
+          <div class="card-label">{{ home.identity.sizes }}</div>
+        </div>
+      </div>
+      <div class="label" style="margin-top:39px">{{ home.identity.color }}</div>
+      <div class="palette">
+        {% for swatch in home.identity.palette %}
+        <div class="sw"><div class="patch" style="background:{{ swatch.hex }}"></div><strong>{{ swatch.name }}</strong><small>{{ swatch.hex }}</small></div>
+        {% endfor %}
+      </div>
+      <div class="label" style="margin-top:47px">{{ home.identity.applications.label }}</div>
+      <div class="brand-application">
+        <div class="app">
+          <div class="app-visual"><img src="{{ field }}" alt=""><p>{{ home.identity.applications.site.body }}</p></div>
+          <div class="app-footer">{{ home.identity.applications.site.label }}</div>
+        </div>
+        <div class="app">
+          <div class="app-visual docsapp"><div class="label">{{ home.identity.applications.docs.kicker }}</div><p>{{ home.identity.applications.docs.body }}</p></div>
+          <div class="app-footer">{{ home.identity.applications.docs.label }}</div>
+        </div>
+        <div class="app">
+          <div class="app-visual appicon"><img src="{{ 'images/niuu-app-icon.svg' | url }}" alt="NIUU application icon"></div>
+          <div class="app-footer">{{ home.identity.applications.icon }}</div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    {% for line in home.footer %}<span>{{ line }}</span>{% endfor %}
+  </footer>
+</div><div class="feedback" id="feedback" role="status" aria-live="polite"></div></div>
+{% endblock %}

@@ -137,9 +137,9 @@ function glyphForRole(role: PersonaRole): string {
 function phaseDotClasses(status: Phase['status']): string {
   const base = 'niuu:w-3 niuu:h-3 niuu:rounded-full niuu:shrink-0';
   if (status === 'complete')
-    return `${base} niuu:bg-brand/90 niuu:shadow-[0_0_0_2px_rgba(125,211,252,0.14)]`;
+    return `${base} niuu:bg-brand/90 niuu:shadow-[0_0_0_2px_rgb(var(--niuu-rgb-signal,125_211_252)/0.14)]`;
   if (status === 'active')
-    return `${base} niuu:bg-brand niuu:shadow-[0_0_0_4px_rgba(125,211,252,0.10)]`;
+    return `${base} niuu:bg-brand niuu:shadow-[0_0_0_4px_rgb(var(--niuu-rgb-signal,125_211_252)/0.10)]`;
   if (status === 'gated') return `${base} niuu:bg-accent-amber`;
   return `${base} niuu:bg-text-muted/40`;
 }

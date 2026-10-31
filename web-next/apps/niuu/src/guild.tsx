@@ -23,8 +23,8 @@ export const guildPlugin = definePlugin({
   id: 'guild',
   rune: 'G',
   icon: createElement(InfrastructureIcon),
-  title: 'Infrastructure',
-  subtitle: 'everything niuu runs on',
+  title: 'Platform',
+  subtitle: 'your environment',
   tabs: [{ id: 'instances', label: 'Instances', path: '/guild' }],
   routes: (rootRoute) => [
     createRoute({

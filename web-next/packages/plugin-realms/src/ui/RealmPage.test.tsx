@@ -41,7 +41,7 @@ describe('RealmPage', () => {
     await screen.findByTestId('realm-page');
     expect(screen.getByText('Valhalla')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId('queue-intake')).toHaveTextContent('Intake1'));
-    expect(screen.getByRole('group', { name: 'Realm section' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Workspace section' })).toBeInTheDocument();
     expect(screen.getByText('observe · L2')).toBeInTheDocument();
     expect(screen.getByText('deploy · L1')).toBeInTheDocument();
     expect(screen.getByText(/board board-1/)).toBeInTheDocument();
@@ -87,7 +87,7 @@ describe('RealmPage', () => {
 
   it('explains when the realm does not exist', async () => {
     renderRealms('/realms/nowhere');
-    await screen.findByText('No such realm');
+    await screen.findByText('No such workspace');
   });
 
   it('opens the launch wizard and the workflow modal from the header in Advanced mode', async () => {
@@ -122,6 +122,6 @@ describe('RealmPage', () => {
     await user.click(screen.getByRole('button', { name: 'Standing jobs' }));
     expect(await screen.findByText(/Triggers that wake the resident/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Memory' }));
-    expect(await screen.findByText(/created with the realm/)).toBeInTheDocument();
+    expect(await screen.findByText(/created with the workspace/)).toBeInTheDocument();
   });
 });

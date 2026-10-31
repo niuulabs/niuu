@@ -16,7 +16,7 @@ describe('RealmsHomePage', () => {
     await screen.findByTestId('realm-card-valhalla');
     expect(screen.getByTestId('realm-cards').children.length).toBeGreaterThanOrEqual(3);
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
-      /realms, each kept by a resident/,
+      /workspaces, each kept by a resident/,
     );
   });
 
@@ -37,7 +37,7 @@ describe('RealmsHomePage', () => {
     );
     const toggle = await screen.findByTestId('realm-cards-toggle');
     expect(screen.getByTestId('realm-cards').children).toHaveLength(3);
-    expect(toggle).toHaveTextContent('Show all 6 realms');
+    expect(toggle).toHaveTextContent('Show all 6 workspaces');
     await user.click(toggle);
     expect(screen.getByTestId('realm-cards').children).toHaveLength(6);
     expect(screen.getByTestId('realm-cards-toggle')).toHaveTextContent('matter most');
@@ -46,7 +46,7 @@ describe('RealmsHomePage', () => {
   it('shows the empty state when there are no realms', async () => {
     const log = createCallLog();
     renderRealms('/realms', { 'valkyrie.realms': fakeRealmService(log, []) }, log);
-    await screen.findByText('No realms yet');
+    await screen.findByText('No workspaces yet');
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Start with one sentence');
   });
 
@@ -83,7 +83,7 @@ describe('RealmsHomePage', () => {
     const user = userEvent.setup();
     const { router } = renderRealms('/realms');
     await screen.findByTestId('realm-card-valhalla');
-    await user.click(screen.getByRole('button', { name: 'Clone a realm' }));
+    await user.click(screen.getByRole('button', { name: 'Clone a workspace' }));
     const picker = await screen.findByTestId('clone-picker');
     await user.click(picker.querySelector('button')!);
     await waitFor(() => expect(router.state.location.pathname).toBe('/realms/new'));

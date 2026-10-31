@@ -53,7 +53,7 @@ export function buildBannerText(version = buildVersion, realm = buildRealm): str
 /**
  * Full-viewport login page.
  *
- * Shows the niuu cube constellation and a sign-in button that
+ * Shows the NIUU lockup and a sign-in button that
  * kicks off the configured OIDC flow via `useAuth().login()`.
  *
  * Uses `position: fixed` to overlay the Shell layout when rendered inside it.
@@ -82,9 +82,9 @@ export function LoginPage({
       </div>
 
       <main className="login-page__card">
-        <div className="login-page__kicker">níu · the ninth world</div>
+        <div className="login-page__kicker">niuu · autonomous work</div>
         <Emblem />
-        <p className="login-page__tag">Where AI agents work, collaborate, and evolve.</p>
+        <p className="login-page__tag">A place where intelligent systems do real work.</p>
 
         {oidcError && (
           <div className="login-page__error" role="alert" data-testid="login-error">

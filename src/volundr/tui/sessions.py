@@ -51,7 +51,7 @@ class SessionRow(Widget):
 
     DEFAULT_CSS = """
     SessionRow { height: 3; padding: 0 1; }
-    SessionRow.selected { background: #27272a; }
+    SessionRow.selected { background: #182b38; }
     SessionRow .sr-line1 { height: 1; }
     SessionRow .sr-line2 { height: 1; }
     """
@@ -104,7 +104,7 @@ class SessionsPage(Widget):
     SessionsPage #sessions-search { height: auto; display: none; }
     SessionsPage #sessions-search.visible { display: block; }
     SessionsPage #sessions-list { height: 1fr; overflow-y: auto; }
-    SessionsPage #sessions-empty { color: #71717a; padding: 2 0; }
+    SessionsPage #sessions-empty { color: #78909d; padding: 2 0; }
     SessionsPage #sessions-search-input { width: 100%; }
     """
 
@@ -188,7 +188,7 @@ class SessionsPage(Widget):
         container.remove_children()
         if not self._filtered:
             message = self._unavailable_reason or "No sessions found"
-            container.mount(Static(f"[#71717a]  {message}[/]"))
+            container.mount(Static(f"[#78909d]  {message}[/]"))
             return
         for i, sess in enumerate(self._filtered):
             container.mount(SessionRow(sess, selected=(i == self.cursor)))

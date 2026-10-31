@@ -10,8 +10,8 @@ export const observatoryPlugin = definePlugin({
   id: 'observatory',
   rune: 'O',
   icon: <MonitoringIcon />,
-  title: 'Monitoring',
-  subtitle: 'a live map of what is running',
+  title: 'Observatory',
+  subtitle: 'what is happening',
   tabs: [
     { id: 'topology', label: 'Live map', path: '/observatory' },
     { id: 'registry', label: 'Component types', path: '/observatory/registry' },

@@ -143,7 +143,7 @@ function StopDialog({
     >
       <DialogContent
         title={`Stop ${nameForRavn(ravn)}`}
-        description="Its agent and chat room processes end. The session stays in Sessions, where it can be resumed."
+        description="Its agent and chat room processes end. The session stays in Forge, where it can be resumed."
       >
         {stop.isError && (
           <div className="rw-form-error" role="alert">

@@ -102,7 +102,7 @@ export function RuntimeStep({
     return normalizeRepoUrl(workspace.sourceUrl) === normalizeRepoUrl(form.repo);
   });
   const workspaceOptions = [
-    { value: NEW_WORKSPACE_VALUE, label: 'New workspace' },
+    { value: NEW_WORKSPACE_VALUE, label: 'New session workspace' },
     ...filteredWorkspaces.map((workspace) => ({
       value: workspace.id,
       label: workspaceLabel(workspace),
