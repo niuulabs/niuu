@@ -16,7 +16,7 @@ describe('RealmsHomePage', () => {
     await screen.findByTestId('realm-card-valhalla');
     expect(screen.getByTestId('realm-cards').children.length).toBeGreaterThanOrEqual(3);
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
-      /realms, each kept by a resident/,
+      /workspaces, each kept by a resident/,
     );
   });
 

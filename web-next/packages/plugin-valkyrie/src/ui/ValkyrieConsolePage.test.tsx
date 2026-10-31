@@ -336,7 +336,7 @@ describe('ValkyrieConsolePage', () => {
     );
     expect(screen.queryByTestId('valkyrie-configured-autonomy')).toBeNull();
     expect(screen.getByTestId('valkyrie-autonomy-provenance')).toHaveTextContent(
-      'No build grant on realm host-jozef yet',
+      'No build grant on workspace host-jozef yet',
     );
     expect(await screen.findByTestId('tool-builder-ungranted')).toBeInTheDocument();
   });

@@ -517,12 +517,12 @@ class TestStatusBadge:
         rendered = badge._render_badge()
         assert "●" in rendered
         assert "running" in rendered
-        assert "#10b981" in rendered
+        assert "#76bfa7" in rendered
 
     def test_render_error(self) -> None:
         badge = StatusBadge("error")
         rendered = badge._render_badge()
-        assert "#ef4444" in rendered
+        assert "#e78d94" in rendered
 
     def test_render_default(self) -> None:
         badge = StatusBadge("unknown")
@@ -545,7 +545,7 @@ class TestMetricCard:
         assert card.value == "99"
 
     def test_card_default_color(self) -> None:
-        assert DEFAULT_METRIC_COLOR == "#06b6d4"
+        assert DEFAULT_METRIC_COLOR == "#86d0e8"
 
     def test_card_custom_color(self) -> None:
         card = MetricCard(label="X", value="1", color="#ff0000")

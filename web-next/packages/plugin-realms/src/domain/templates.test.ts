@@ -32,6 +32,6 @@ describe('realm templates', () => {
   });
 
   it('fails loudly on an unknown template', () => {
-    expect(() => templateById('nope')).toThrow(/Unknown realm template/);
+    expect(() => templateById('nope')).toThrow(/Unknown workspace template/);
   });
 });
