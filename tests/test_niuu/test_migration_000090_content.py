@@ -1,8 +1,8 @@
 """Migration 000090 gives realms a tenant on both databases that hold them.
 
-Völundr's chart reads migrations/ itself, while the niuu-shared chart carries
-its own set and mini mode bootstraps niuu_shared from
-``NIUU_SHARED_BOOTSTRAP_SQL``, so those two are checked here.
+Völundr's chart reads migrations/ itself. The niuu-shared chart carries its own
+set, and mini mode bootstraps niuu_shared from ``NIUU_SHARED_BOOTSTRAP_SQL``.
+niuu_shared has no resident_runtimes, so both of those leave that step out.
 """
 
 from __future__ import annotations
@@ -36,10 +36,6 @@ def test_up_replaces_the_global_slug_constraint() -> None:
     assert "ON realms (tenant_id, slug)" in up
 
 
-def test_up_tolerates_a_database_without_resident_runtimes() -> None:
-    assert "to_regclass('resident_runtimes') IS NOT NULL" in _migration(UP)
-
-
 def test_backfill_only_fills_empty_tenants() -> None:
     up = _migration(UP)
 
@@ -55,9 +51,19 @@ def test_down_restores_the_global_slug_constraint() -> None:
     assert "DROP COLUMN IF EXISTS tenant_id" in down
 
 
-def test_shared_chart_carries_the_migration_identically() -> None:
-    for filename in (UP, DOWN):
-        assert _shared_chart_migration(filename).rstrip("\n") == _migration(filename).rstrip("\n")
+def test_shared_chart_carries_the_migration_without_the_resident_step() -> None:
+    up = _migration(UP)
+    resident_step = up[
+        up.index("-- A bound resident is the strongest evidence.") : up.index(
+            "-- An owner who belongs to exactly one tenant."
+        )
+    ]
+
+    shared_up = _shared_chart_migration(UP)
+
+    assert shared_up.rstrip("\n") == up.replace(resident_step, "").rstrip("\n")
+    assert "resident_runtimes" not in shared_up
+    assert _shared_chart_migration(DOWN).rstrip("\n") == _migration(DOWN).rstrip("\n")
 
 
 def test_shared_bootstrap_applies_it_after_memberships_exist() -> None:
