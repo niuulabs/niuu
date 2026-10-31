@@ -1128,6 +1128,13 @@ class TicketCoordinatorConfig(BaseModel):
         default="ticket-coordinator",
         description="Ravn persona that coordinates a ticket.",
     )
+    model: str = Field(
+        default="gpt-5.6-terra",
+        description=(
+            "Model a coordinator runs on. Its session definition and executor are worked "
+            "out as for a workflow stage, so a coordinator authenticates the same way."
+        ),
+    )
     ravn_config: dict[str, Any] = Field(
         default_factory=lambda: {"memory": {"reflection_model": "same-as-agent"}},
         description=(

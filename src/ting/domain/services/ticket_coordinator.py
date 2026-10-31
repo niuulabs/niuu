@@ -15,6 +15,7 @@ from typing import Any
 
 from niuu.domain.models import Principal
 from ting.domain.models import Saga, TrackerIssue
+from ting.domain.services.dispatch_service import persona_on_model
 from ting.domain.ticket_coordinator import (
     BRIEF_MESSAGE_METADATA,
     TICKET_METADATA_KEY,
@@ -88,6 +89,10 @@ class TicketCoordinatorService:
         principal: Principal,
         auth_token: str | None,
         persona: str,
+        model: str,
+        session_definitions: dict[str, Any],
+        configured_models: list[Any],
+        cli_turn_timeout_seconds: float,
         ravn_config: dict[str, Any],
         platform_origin: str,
         anonymous_platform: bool,
@@ -97,6 +102,10 @@ class TicketCoordinatorService:
         self._principal = principal
         self._auth_token = auth_token
         self._persona = persona
+        self._model = model
+        self._session_definitions = session_definitions
+        self._configured_models = configured_models
+        self._cli_turn_timeout_seconds = cli_turn_timeout_seconds
         self._ravn_config = ravn_config
         self._platform_origin = platform_origin
         self._anonymous_platform = anonymous_platform
@@ -198,24 +207,27 @@ class TicketCoordinatorService:
         return await self._repo.save(coordinator)
 
     def _spawn_request(self, saga: Saga, issue: TrackerIssue, brief: str) -> SpawnRequest:
+        persona, definition = persona_on_model(
+            {"name": self._persona, "system_prompt_extra": _standing_context(saga, issue)},
+            self._model,
+            session_definitions=self._session_definitions,
+            configured_models=self._configured_models,
+            workflow_cli_turn_timeout_seconds=self._cli_turn_timeout_seconds,
+        )
         return SpawnRequest(
             name=f"{_SESSION_NAME_PREFIX}-{issue.identifier.lower()}",
             repo=saga.repos[0],
             branch=saga.base_branch,
             base_branch=saga.base_branch,
-            model="",
+            model=self._model,
+            definition=definition,
             tracker_issue_id=issue.identifier,
             tracker_issue_url=issue.url,
             system_prompt="",
             initial_prompt=brief,
             workload_type="ravn_flock",
             workload_config={
-                "personas": [
-                    {
-                        "name": self._persona,
-                        "system_prompt_extra": _standing_context(saga, issue),
-                    }
-                ],
+                "personas": [persona],
                 "initiative_context": brief,
                 "ravn_config": self._launch_defaults(saga, issue),
             },
