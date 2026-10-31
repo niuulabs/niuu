@@ -959,6 +959,7 @@ def _session_summary(raw: dict[str, Any]) -> dict[str, Any]:
     summary = {
         "id": raw.get("id"),
         "instance_id": raw.get("instance_id"),
+        "instance_name": raw.get("instance_name"),
         "name": raw.get("name"),
         "status": raw.get("status"),
         "activity_state": raw.get("activity_state"),

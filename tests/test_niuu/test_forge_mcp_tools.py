@@ -38,6 +38,7 @@ def _session(session_id: str, **extra: Any) -> dict[str, Any]:
     return {
         "id": session_id,
         "instance_id": "node-a",
+        "instance_name": "Node A",
         "name": "peer",
         "status": "running",
         "model": "claude-opus-5",
@@ -309,6 +310,7 @@ class TestReads:
         assert result.structured["total"] == 5 and result.structured["returned"] == 2
         session = result.structured["sessions"][0]
         assert session["instance_id"] == "node-a"
+        assert session["instance_name"] == "Node A"
         assert session["project_id"] == "proj-1"
         assert "chat_endpoint" not in session
         assert "access_token" not in json.dumps(result.structured)
