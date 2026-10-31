@@ -1379,6 +1379,27 @@ def test_trace_routes_fall_back_to_resident_owner(suffix: str, payload: dict[str
 
 
 @respx.mock
+def test_room_operations_proxy_to_the_session_owner() -> None:
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2", "name": "Session 2"})
+    )
+    route = respx.post("http://beta/api/v1/forge/sessions/s2/room/direct").mock(
+        return_value=Response(200, json={"status": "sent"})
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions/s2/room/direct",
+        headers=_headers(),
+        json={"target_peer_id": "flock-coordinator", "content": "start"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "sent"}
+    assert route.called
+
+
+@respx.mock
 def test_answer_help_request_proxies_to_the_session_owner() -> None:
     client = _client([_instance("beta", base_url="http://beta")])
     respx.get("http://beta/api/v1/forge/sessions/s2").mock(

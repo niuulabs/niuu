@@ -3177,6 +3177,7 @@ def create_router(
         session_id: UUID,
         *path_segments: str,
         timeout: float = 30.0,
+        extra_headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         try:
             _, base_url = await forge.get_session_proxy_target(session_id)
@@ -3196,6 +3197,7 @@ def create_router(
             value = request.headers.get(name)
             if value:
                 headers[name] = value
+        headers.update(extra_headers or {})
         body = await request.body()
         try:
             proxy_url, routing_headers = _http_proxy_target(
@@ -3319,6 +3321,51 @@ def create_router(
         response = await _proxy_session_api(request, session_id, "files")
         payload = response.json()
         return payload if isinstance(payload, dict) else {}
+
+    @router.post(
+        "/sessions/{session_id}/room/{operation}",
+        dependencies=[Depends(require_scope(FORGE_SESSION_MESSAGE_SCOPE))],
+        tags=["Sessions"],
+        responses={
+            403: {"model": ErrorResponse},
+            404: {"model": ErrorResponse},
+            502: {"model": ErrorResponse},
+        },
+    )
+    async def post_session_room(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+        operation: Literal["direct", "join", "leave", "workflow-events"] = Path(
+            description="Room operation on the session's broker"
+        ),
+    ) -> Response:
+        """Reach a session's room through Forge, which can always route to its broker.
+
+        A session's advertised origin may serve browsers only, and on a cluster
+        the Forge host does not serve session paths, so services come through here.
+        """
+        principal = await extract_principal(request)
+        session = await forge.get_session(session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        if session.owner_id != principal.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to reach this session's room",
+            )
+        # Stamped only after the ownership check above, as the gate route stamps
+        # approver: the broker reads its caller's room role from this header.
+        response = await _proxy_session_api(
+            request, session_id, "room", operation, extra_headers={ROOM_ROLE_HEADER: "owner"}
+        )
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            media_type=response.headers.get("content-type"),
+        )
 
     @router.post(
         "/sessions/{session_id}/messages",

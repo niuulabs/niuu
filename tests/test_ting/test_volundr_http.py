@@ -790,18 +790,7 @@ class TestSendMessage:
     @pytest.mark.asyncio
     @respx.mock
     async def test_send_directed_room_message(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1").mock(
-            return_value=httpx.Response(
-                200,
-                json={
-                    "id": "ses-1",
-                    "name": "research-council",
-                    "status": "running",
-                    "chat_endpoint": "http://volundr.test:8000/s/ses-1/chat",
-                },
-            )
-        )
-        route = respx.post("http://volundr.test:8000/s/ses-1/chat/api/room/direct").mock(
+        route = respx.post(f"{SESSIONS_URL}/ses-1/room/direct").mock(
             return_value=httpx.Response(200, json={"ok": True})
         )
 
@@ -811,8 +800,7 @@ class TestSendMessage:
             "Please prefer the staged rollout option.",
         )
 
-        sent = route.calls[0].request
-        body = json.loads(sent.content)
+        body = json.loads(route.calls[0].request.content)
         assert body["target_peer_id"] == "flock-council-chair"
         assert body["content"] == "Please prefer the staged rollout option."
         assert body["source"] == "ting"
@@ -820,18 +808,7 @@ class TestSendMessage:
     @pytest.mark.asyncio
     @respx.mock
     async def test_publish_workflow_event(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1").mock(
-            return_value=httpx.Response(
-                200,
-                json={
-                    "id": "ses-1",
-                    "name": "developer-delivery",
-                    "status": "running",
-                    "chat_endpoint": "http://volundr.test:8000/s/ses-1/chat",
-                },
-            )
-        )
-        route = respx.post("http://volundr.test:8000/s/ses-1/chat/api/room/workflow-events").mock(
+        route = respx.post(f"{SESSIONS_URL}/ses-1/room/workflow-events").mock(
             return_value=httpx.Response(200, json={"status": "published"})
         )
 
@@ -853,47 +830,38 @@ class TestSendMessage:
         }
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("operation", ["workflow", "direct"])
     @respx.mock
-    async def test_room_control_uses_configured_gateway_origin(self, adapter, operation):
-        respx.get(f"{SESSIONS_URL}/ses-1").respond(
-            200,
-            json={
-                "id": "ses-1",
-                "name": "developer-delivery",
-                "status": "running",
-                "chat_endpoint": "wss://browser-only.example/s/ses-1/session",
-            },
+    async def test_joining_and_leaving_a_room_go_through_forge(self, adapter):
+        joined = respx.post(f"{SESSIONS_URL}/ses-1/room/join").respond(200, json={})
+        left = respx.post(f"{SESSIONS_URL}/ses-1/room/leave").respond(200, json={})
+
+        await adapter.join_room(
+            "ses-1",
+            participant_id="ticket-coordinator",
+            display_name="Coordinator",
+            member_session_id="ses-2",
+            notice_context="[Ticket NIU-1]",
         )
-        suffix = "workflow-events" if operation == "workflow" else "direct"
-        route = respx.post(f"{BASE_URL}/s/ses-1/api/room/{suffix}").respond(200, json={})
-        if operation == "workflow":
-            await adapter.publish_workflow_event(
-                "ses-1", "test.observed", "observation", request_id="continuation-1"
-            )
-        else:
-            await adapter.send_directed_room_message("ses-1", "flock-coordinator", "reply")
-        assert route.call_count == 1
+        await adapter.leave_room("ses-1", "ticket-coordinator", reason="run_finished")
+
+        assert joined.call_count == 1
+        assert left.call_count == 1
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_room_control_preserves_direct_skuld_origin(self, adapter):
-        respx.get(f"{SESSIONS_URL}/ses-1").respond(
-            200,
-            json={
-                "id": "ses-1",
-                "name": "direct-session",
-                "status": "running",
-                "chat_endpoint": "wss://session-ingress.example/session",
-            },
-        )
-        route = respx.post("https://session-ingress.example/api/room/workflow-events").respond(
-            200, json={}
-        )
-        await adapter.publish_workflow_event(
-            "ses-1", "test.observed", "observation", request_id="continuation-1"
-        )
-        assert route.call_count == 1
+    async def test_leaving_the_room_of_a_session_that_is_gone(self, adapter):
+        respx.post(f"{SESSIONS_URL}/ses-1/room/leave").respond(404, json={})
+
+        with pytest.raises(LookupError, match="no room to leave"):
+            await adapter.leave_room("ses-1", "ticket-coordinator", reason="run_finished")
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_refused_room_call_stays_loud(self, adapter):
+        respx.post(f"{SESSIONS_URL}/ses-1/room/direct").respond(403, json={})
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await adapter.send_directed_room_message("ses-1", "flock-coordinator", "reply")
 
 
 class TestStopSession:
