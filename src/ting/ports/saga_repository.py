@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
 
-from ting.domain.models import Phase, Run, RunStatus, Saga, SagaStatus
+from ting.domain.models import Phase, Run, RunStatus, Saga, SagaBoardWorkflow, SagaStatus
 
 
 class SagaRepository(ABC):
@@ -72,6 +72,18 @@ class SagaRepository(ABC):
     ) -> None:
         """Update the workflow assignment and snapshot for a saga."""
         raise NotImplementedError(f"{type(self).__name__}.update_saga_workflow not implemented")
+
+    async def update_saga_board_workflows(
+        self,
+        saga_id: UUID,
+        *,
+        board_workflows: tuple[SagaBoardWorkflow, ...],
+        owner_id: str | None = None,
+    ) -> None:
+        """Replace the ordered workflows a saga's board runs."""
+        raise NotImplementedError(
+            f"{type(self).__name__}.update_saga_board_workflows not implemented"
+        )
 
     async def update_saga_target(
         self,

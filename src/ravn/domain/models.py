@@ -454,6 +454,7 @@ class AgentTask:
     root_correlation_id: str = ""  # Propagated from triggering event for fan-in chain tracking
     workflow_parent_event_id: str = ""  # Direct upstream event ID for per-cycle joins
     workflow_node_id: str = ""  # Active workflow graph node for node-scoped contracts
+    gate_feedback: str = ""  # A person's gate comment, carried on through the run's next steps
     # A strict review join resolves one immutable upstream workflow cycle.  Keep
     # that causal identity separate from the last reviewer event so the runtime
     # can reject an outcome if a newer artifact supersedes it while queued or

@@ -908,6 +908,7 @@ def _wire_cascade(
                     title=f"Handle {result.triggered_by}",
                     initiative_context=initiative_context,
                     triggered_by=result.triggered_by,
+                    gate_feedback=result.gate_feedback,
                     # AMBIENT, not SILENT: work triggered by a peer's outcome is the
                     # visible work of a flock session, and the mesh activity stream is
                     # the only way it reaches the room — Skuld's collaboration bridge

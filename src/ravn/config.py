@@ -1522,6 +1522,13 @@ class PlatformToolsConfig(BaseModel):
         default_factory=dict,
         description="Default A2A launch metadata; explicit per-call metadata takes precedence.",
     )
+    a2a_gate_decisions: bool = Field(
+        default=True,
+        description=(
+            "Whether this Ravn may answer workflow gates over A2A. Turned off for agents whose "
+            "gates belong to a person, so the refusal does not rest on the model's judgment."
+        ),
+    )
     a2a_push_callback_url: str = Field(
         default="",
         description=("Public HTTPS callback registered for A2A tasks that advertise push support."),

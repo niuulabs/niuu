@@ -1257,6 +1257,14 @@ def test_get_mcp_server_proxies_to_credentials_surface() -> None:
         ),
         (
             "get",
+            "/sessions/s2/help/requests",
+            "/sessions/s2/help/requests",
+            {"requests": [{"id": "help-1"}]},
+            200,
+            {"requests": [{"id": "help-1"}]},
+        ),
+        (
+            "get",
             "/sessions/s2/trace",
             "/sessions/s2/trace",
             {"spans": [{"id": "span-1"}], "lanes": [{"key": "skuld"}]},
@@ -1367,6 +1375,27 @@ def test_trace_routes_fall_back_to_resident_owner(suffix: str, payload: dict[str
 
     assert response.status_code == 200
     assert response.json() == payload
+    assert route.called
+
+
+@respx.mock
+def test_answer_help_request_proxies_to_the_session_owner() -> None:
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2", "name": "Session 2"})
+    )
+    route = respx.post("http://beta/api/v1/forge/sessions/s2/help/requests/help%201/answer").mock(
+        return_value=Response(200, json={"status": "answered"})
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions/s2/help/requests/help%201/answer",
+        headers=_headers(),
+        json={"answer": "Yes"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "answered"}
     assert route.called
 
 

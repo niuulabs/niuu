@@ -98,6 +98,8 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         "Saga Planning",
         "Specification Stack",
         "Tracker Delivery Flow",
+        "Reviewed Delivery Flow",
+        "Ticket Planning Flow",
         "Code & Review Flow",
         "Infra Change Flow",
         "Tool & Skill Builder",
@@ -495,6 +497,8 @@ async def test_seed_system_workflows_preserves_authored_and_obsolete_entries() -
         "Saga Planning",
         "Specification Stack",
         "Tracker Delivery Flow",
+        "Reviewed Delivery Flow",
+        "Ticket Planning Flow",
         "Code & Review Flow",
         "Infra Change Flow",
         "Tool & Skill Builder",
@@ -504,7 +508,7 @@ async def test_seed_system_workflows_preserves_authored_and_obsolete_entries() -
         "Developer Integration",
     }
 
-    current_catalog = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
+    current_catalog =await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
     assert {workflow.name for workflow in current_catalog} == names | {obsolete.name}
     assert len(current_catalog) == len(seeds) + len([duplicate, obsolete])
     assert obsolete in current_catalog

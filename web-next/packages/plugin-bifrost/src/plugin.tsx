@@ -1,4 +1,4 @@
-import { Sparkles } from 'lucide-react';
+import { ModelsIcon } from '@niuulabs/ui';
 import { createRoute } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { BifrostPage } from './ui/BifrostPage';
@@ -6,7 +6,7 @@ import { BifrostPage } from './ui/BifrostPage';
 export const bifrostPlugin = definePlugin({
   id: 'bifrost',
   rune: 'B',
-  icon: <Sparkles size={17} aria-hidden="true" />,
+  icon: <ModelsIcon />,
   title: 'AI models',
   subtitle: 'models, providers and usage',
   tabs: [

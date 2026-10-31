@@ -1,4 +1,4 @@
-import { Radar } from 'lucide-react';
+import { ResidentsIcon } from '@niuulabs/ui';
 import { createRoute, redirect } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ActivityPage } from './ui/ActivityPage';
@@ -39,7 +39,7 @@ const createLegacyRedirect =
 export const valkyriePlugin = definePlugin({
   id: 'valkyrie',
   rune: 'V',
-  icon: <Radar size={17} aria-hidden="true" />,
+  icon: <ResidentsIcon />,
   title: 'Resident console',
   subtitle: 'what your residents are doing',
   tabs: [

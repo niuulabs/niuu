@@ -104,6 +104,25 @@ class _Client:
 
 
 @pytest.mark.asyncio
+async def test_a2a_task_refuses_to_answer_a_gate_when_gate_decisions_are_off() -> None:
+    client = _Client([])
+    tool = A2ATaskTool(agent_directory=_Directory(_agent()), client=client, gate_decisions=False)
+
+    result = await tool.execute(
+        {
+            "operation": "reply",
+            "agent_id": _agent().id,
+            "task_id": "task-1",
+            "metadata": {"gateId": "gate-1", "gateDecision": "approve"},
+        }
+    )
+
+    assert result.is_error
+    assert "Review tab" in result.content
+    assert client.posts == []
+
+
+@pytest.mark.asyncio
 async def test_a2a_task_uses_ledger_message_ids_for_start_and_reply() -> None:
     client = _Client(
         [
@@ -804,6 +823,70 @@ async def test_start_reuses_durable_request_identity_after_tool_restart(tmp_path
     await runtime.record_a2a_activity({"task_id": "task-1", "state": "TASK_STATE_FAILED"})
     assert not (await tool().execute(request)).is_error
     assert len(client.posts) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_ticket_launch_keeps_its_own_branch_whatever_the_model_asks(tmp_path) -> None:
+    from ravn.adapters.resident_state.mimir import LocalResidentState
+    from ravn.resident_runtime import ResidentRuntime
+
+    runtime = ResidentRuntime(state=LocalResidentState(tmp_path), resident_id="regin")
+    client = _Client([{"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}])
+    tool = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=client,
+        activity_emitter=runtime.record_a2a_activity,
+        activity_finder=runtime.find_a2a_tasks,
+        default_metadata={
+            "repo": "https://github.com/example/repo",
+            "branch": "feat/x-niu-1",
+            "baseBranch": "main",
+            "ticket": {"sagaId": "s", "issueId": "i"},
+        },
+    )
+
+    result = await tool.execute(
+        {
+            "operation": "start",
+            "agent_id": "agent-aggregate-1",
+            "skill_id": "review",
+            "prompt": "Review the change",
+            "metadata": {"branch": "feat/x", "model": "m"},
+        }
+    )
+
+    assert not result.is_error
+    sent = client.posts[0][1]["params"]["message"]["metadata"]
+    assert sent["branch"] == "feat/x-niu-1"
+    assert sent["model"] == "m"
+
+
+@pytest.mark.asyncio
+async def test_a_launch_for_no_ticket_can_still_choose_its_branch(tmp_path) -> None:
+    from ravn.adapters.resident_state.mimir import LocalResidentState
+    from ravn.resident_runtime import ResidentRuntime
+
+    runtime = ResidentRuntime(state=LocalResidentState(tmp_path), resident_id="regin")
+    client = _Client([{"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}])
+    tool = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=client,
+        activity_emitter=runtime.record_a2a_activity,
+        activity_finder=runtime.find_a2a_tasks,
+        default_metadata={"branch": "regin"},
+    )
+
+    await tool.execute(
+        {
+            "operation": "start",
+            "agent_id": "agent-aggregate-1",
+            "skill_id": "review",
+            "prompt": "Review the change",
+            "metadata": {"branch": "feat/other"},
+        }
+    )
+
+    assert client.posts[0][1]["params"]["message"]["metadata"]["branch"] == "feat/other"
 
 
 @pytest.mark.asyncio

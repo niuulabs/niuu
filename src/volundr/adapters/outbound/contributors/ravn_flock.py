@@ -882,7 +882,7 @@ def _default_flock_trigger_config(
         for persona in persona_dicts
         if isinstance(persona, dict)
     }
-    if not {"run-executor", "coordinator"} & persona_names:
+    if not {"run-executor", "coordinator", "ticket-coordinator"} & persona_names:
         return None
 
     return {
@@ -1426,6 +1426,15 @@ class RavnFlockContributor(SessionContributor):
                         "value": workflow_trigger["event_type"],
                     },
                 ]
+            )
+
+        if workflow is None and workflow_trigger is not None and len(persona_dicts) == 1:
+            # A coordinator-led flock of one: a person in the room is talking to it.
+            skuld_env.append(
+                {
+                    "name": "SKULD__ROOM__DEFAULT_TARGET_PEER_ID",
+                    "value": flock_peer_id(persona_dicts[0]["name"]),
+                }
             )
 
         if sleipnir_publish_urls:

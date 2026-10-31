@@ -10,6 +10,8 @@ import { PlanPrompt } from './PlanPrompt';
 import { PlanQuestions } from './PlanQuestions';
 import { PlanRuns } from './PlanRuns';
 import { PlanDraft } from './PlanDraft';
+import { usePlanTicketCheck } from './usePlanTicketCheck';
+import { buildRevisionRequest } from '../domain/planTicketCheck';
 import { PlanApproved } from './PlanApproved';
 import { PlanGuidanceRail } from './PlanGuidanceRail';
 import type { ITingService, PlanSession } from '../ports';
@@ -45,6 +47,7 @@ export function PlanWizard() {
     replan,
     saveDraft,
   } = usePlanWizard();
+  const ticketCheck = usePlanTicketCheck(state.repo, state.structure);
   const { data: workflows = [] } = useWorkflows();
   const { data: repos = [] } = useQuery({
     queryKey: ['ting-plan-repos'],
@@ -167,6 +170,13 @@ export function PlanWizard() {
               onSaveDraft={saveDraft}
               onEditPhase={editPhase}
               onRemoveRun={removeRun}
+              ticketFlags={ticketCheck.flags}
+              ticketCheckError={ticketCheck.error}
+              onRequestRevision={
+                state.session?.campaignSlug && ting.sendPlanFeedback
+                  ? (flags) => void submitAnswers({ 'draft-feedback': buildRevisionRequest(flags) })
+                  : undefined
+              }
             />
           )}
 

@@ -1,9 +1,11 @@
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import type { IWorkService } from '../ports';
-import type { WorkCollection, WorkResourceKind } from '../domain/work';
+import type { GateDecision, WorkCollection, WorkResourceKind } from '../domain/work';
 
 const EXECUTION_PAGE_SIZE = 50;
+/** A board follows runs it does not drive, so it refreshes while it is on screen. */
+const BOARD_REFRESH_MS = 5000;
 
 export function useWorkCollection() {
   const service = useService<IWorkService>('ting.work');
@@ -41,5 +43,26 @@ export function useWorkDetail(kind: WorkResourceKind | null, id: string | null) 
     queryKey: ['ting', 'work', kind, id],
     queryFn: () => service.get(kind as WorkResourceKind, id as string),
     enabled: Boolean(kind && id),
+    refetchInterval: (query) => (query.state.data?.board ? BOARD_REFRESH_MS : false),
+  });
+}
+
+export function useGateDecision(projectId: string) {
+  const service = useService<IWorkService>('ting.work');
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ issueId, decision }: { issueId: string; decision: GateDecision }) =>
+      service.decideGate(projectId, issueId, decision),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ting', 'work'] }),
+  });
+}
+
+export function useStartTicket(projectId: string) {
+  const service = useService<IWorkService>('ting.work');
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ issueId, columnId }: { issueId: string; columnId?: string }) =>
+      service.startTicket(projectId, issueId, columnId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ting', 'work'] }),
   });
 }

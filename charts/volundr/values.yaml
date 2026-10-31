@@ -2079,6 +2079,9 @@ webNext:
       login:
         enabled: true
         order: 0
+      # -- Hidden for now; a plugin left out of this list is enabled
+      realms:
+        enabled: false
       credentials:
         enabled: true
         order: 1

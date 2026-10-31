@@ -3561,6 +3561,58 @@ def create_volundr_router(
         payload = response.json()
         return payload if isinstance(payload, dict) else {"gates": []}
 
+    @router.get("/sessions/{session_id}/help/requests")
+    async def get_help_requests(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/help/requests",
+            params=_query_params(request),
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"requests": []}
+
+    @router.post("/sessions/{session_id}/help/requests/{request_id}/answer")
+    async def answer_help_request(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        request_id: str = Path(description="Help request identifier"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/help/requests/{quote(request_id, safe='')}/answer",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
     @router.post("/sessions/{session_id}/workflow/gates/{gate_id}/resolve")
     async def resolve_workflow_gate(
         request: Request,

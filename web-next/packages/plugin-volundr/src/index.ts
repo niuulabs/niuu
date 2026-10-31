@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { createRoute, redirect } from '@tanstack/react-router';
-import { SquareTerminal } from 'lucide-react';
+import { SessionsIcon } from '@niuulabs/ui';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { readUiMode } from '@niuulabs/shell';
 import { ForgePage } from './ui/ForgePage';
@@ -16,7 +16,7 @@ export const volundrPlugin = definePlugin({
   id: 'volundr',
   rune: 'V',
   // Coding sessions: a terminal an agent works in.
-  icon: createElement(SquareTerminal, { size: 17, 'aria-hidden': true }),
+  icon: createElement(SessionsIcon),
   title: 'Sessions',
   subtitle: 'coding agents in sandboxes',
   simple: {

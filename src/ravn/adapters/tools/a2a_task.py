@@ -26,6 +26,8 @@ _DEFAULT_RESULT_MAX_CHARS = 12_000
 _DEFAULT_MESSAGE_MAX_CHARS = 12_000
 _PERSISTED_MESSAGE_ID = object()
 _PERSISTED_AUTH_TOKEN = object()
+_TICKET_METADATA_KEY = "ticket"
+_TICKET_PINNED_METADATA = ("repo", "branch", "baseBranch", _TICKET_METADATA_KEY)
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +49,10 @@ class A2ATaskTool(ToolPort):
         activity_finder: A2AActivityFinder | None = None,
         default_connection_id: str = "",
         default_metadata: dict[str, Any] | None = None,
+        gate_decisions: bool = True,
         push_callback_url: str = "",
     ) -> None:
+        self._gate_decisions = gate_decisions
         self._directory = agent_directory
         self._client = client
         self._trusted_origins = frozenset(
@@ -148,6 +152,16 @@ class A2ATaskTool(ToolPort):
     def required_permission(self) -> str:
         return "a2a:task"
 
+    def _pinned_metadata(self) -> dict[str, Any]:
+        """What ties a launch to its ticket and branch is set for it, never by the model."""
+        if _TICKET_METADATA_KEY not in self._default_metadata:
+            return {}
+        return {
+            key: self._default_metadata[key]
+            for key in _TICKET_PINNED_METADATA
+            if key in self._default_metadata
+        }
+
     async def execute(self, input: dict) -> ToolResult:
         telemetry = get_observability()
         operation = str(input.get("operation") or "").strip().lower()
@@ -158,7 +172,12 @@ class A2ATaskTool(ToolPort):
         }
         with telemetry.span("ravn.a2a.task", attributes=attributes) as span:
             try:
-                if operation == "start":
+                if not self._gate_decisions and _answers_a_gate(input):
+                    result = _error(
+                        "This agent cannot answer workflow gates. The person decides them "
+                        "on the board's Review tab."
+                    )
+                elif operation == "start":
                     async with self._start_lock:
                         result = await self._execute_observed(input)
                 else:
@@ -331,6 +350,7 @@ class A2ATaskTool(ToolPort):
             metadata = {
                 **self._default_metadata,
                 **(supplied if isinstance(supplied, dict) else {}),
+                **self._pinned_metadata(),
             }
             input = {**input, "metadata": metadata}
             context_id = str(input.get("context_id") or "").strip()
@@ -799,6 +819,13 @@ def _bounded_item(value: Any, *, max_chars: int) -> Any:
 
 def _truncate(value: str, max_chars: int) -> str:
     return value if len(value) <= max_chars else f"{value[: max_chars - 1]}…"
+
+
+def _answers_a_gate(input: dict[str, Any]) -> bool:
+    metadata = input.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    return bool(metadata.get("gateDecision") or metadata.get("gateId"))
 
 
 def _error(message: str) -> ToolResult:

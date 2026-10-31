@@ -168,6 +168,22 @@ class InMemoryCampaignRepository(WorkflowCampaignRepository):
         self._campaigns[campaign.id] = campaign
         return campaign
 
+    async def save_ticket_campaign(
+        self, campaign: WorkflowCampaign, *, saga_id: UUID, issue_id: str
+    ) -> str | None:
+        ticket = {"sagaId": str(saga_id), "issueId": issue_id}
+        for other in self._campaigns.values():
+            link = other.metadata.get("ticket") or {}
+            if (
+                other.id != campaign.id
+                and {key: link.get(key) for key in ticket} == ticket
+                and other.status
+                not in (WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED)
+            ):
+                return other.slug
+        self._campaigns[campaign.id] = campaign
+        return None
+
     async def delete_campaign(self, campaign_id: UUID) -> bool:
         return self._campaigns.pop(campaign_id, None) is not None
 
@@ -208,6 +224,15 @@ class InMemoryA2ALaunchRepository:
             self.by_message[key] = claimed
             return claimed
         return None
+
+    async def release(self, reservation_id, *, lease_token):
+        from dataclasses import replace
+
+        for key, reservation in self.by_message.items():
+            if reservation.id == reservation_id and reservation.lease_token == lease_token:
+                self.by_message[key] = replace(
+                    reservation, state="reserved", lease_token=None, lease_expires_at=None
+                )
 
     async def mark_launched(self, reservation_id, *, lease_token, session_id):
         from dataclasses import replace
@@ -594,6 +619,8 @@ def _make_client(
     app.include_router(create_research_router())
     app.state.settings = settings or Settings(auth=AuthConfig(allow_anonymous_dev=False))
     app.state.a2a_push_dispatcher = push_dispatcher
+    app.state.saga_repo = SimpleNamespace(get_saga=AsyncMock(return_value=None))
+    app.state.ticket_coordinator_repo = SimpleNamespace(get=AsyncMock(return_value=None))
     launch_repo = launch_repo or InMemoryA2ALaunchRepository()
     app.dependency_overrides[resolve_workflow_repo] = lambda: workflow_repo
     app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaigns
@@ -859,6 +886,27 @@ class TestSendMessage:
 
         campaign = next(iter(campaigns._campaigns.values()))
         assert campaign.metadata["workflow_execution_id"] == str(ledger.execution.id)
+
+    def test_a_coordinators_launch_keeps_its_ticket(self) -> None:
+        """The link a coordinator's launch carries survives the session starting."""
+        workflow = _make_workflow()
+        client, campaigns, _ = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+        saga_id = uuid4()
+        client.app.state.saga_repo.get_saga.return_value = SimpleNamespace(
+            board_workflows=(), workflow_id=None, workflow_snapshot=None
+        )
+        ticket = {"sagaId": str(saga_id), "issueId": "issue-1", "identifier": "NIU-1"}
+        params = _send_params(str(workflow.id))
+        params["message"]["metadata"]["ticket"] = ticket
+
+        response = _rpc(client, "SendMessage", params)
+
+        assert response.status_code == 200, response.text
+        campaign = next(iter(campaigns._campaigns.values()))
+        assert campaign.session_id
+        assert campaign.metadata["ticket"] == ticket
 
     def test_campaign_names_the_workload_that_sent_the_task(self) -> None:
         """A resident's exchanged token (act.sub) is recorded on the campaign it launches."""

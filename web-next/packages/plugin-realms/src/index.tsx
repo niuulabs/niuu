@@ -1,5 +1,5 @@
 import { createRoute } from '@tanstack/react-router';
-import { Boxes } from 'lucide-react';
+import { RealmsIcon } from '@niuulabs/ui';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { RealmsHomePage } from './ui/RealmsHomePage';
 import { NewRealmPage } from './ui/NewRealmPage';
@@ -16,7 +16,7 @@ export const realmsPlugin = definePlugin({
   id: 'realms',
   rune: 'R',
   // A set of environments, each its own box.
-  icon: <Boxes size={17} aria-hidden="true" />,
+  icon: <RealmsIcon />,
   title: 'Realms',
   subtitle: 'environments kept by residents',
   tabs: REALMS_TABS.map((tab) => ({ ...tab })),

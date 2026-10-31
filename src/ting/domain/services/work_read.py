@@ -8,7 +8,8 @@ workflow executions keep their own identities and command surfaces.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
@@ -17,6 +18,7 @@ from uuid import UUID
 from niuu.domain.models import Principal
 from ting.domain.models import (
     Run,
+    RunStatus,
     Saga,
     SagaStatus,
     TrackerIssue,
@@ -24,11 +26,61 @@ from ting.domain.models import (
     WorkflowCampaign,
     WorkflowCampaignStatus,
 )
+from ting.domain.services.tracker_selection import tracker_for_saga
+from ting.domain.ticket_coordinator import (
+    PENDING_GATES_KEY,
+    PULL_REQUEST_KEY,
+    TicketCoordinator,
+    TicketCoordinatorStatus,
+    ticket_of,
+)
+from ting.domain.workflow_board import (
+    BACKLOG_COLUMN_ID,
+    DONE_COLUMN_ID,
+    GATE_STATUS_PENDING,
+    BoardPlacement,
+    BoardTicketState,
+    BoardWorkflow,
+    ProjectBoard,
+    WorkflowBoard,
+    board_from_snapshot,
+    last_board_decision,
+    off_board_placement,
+    place_on_project,
+    place_ticket,
+    project_board,
+    ticket_is_closed,
+)
 from ting.domain.workflow_execution import ExecutionState, WorkflowExecution
 from ting.ports.saga_repository import SagaRepository
+from ting.ports.ticket_coordinator_repository import TicketCoordinatorRepository
 from ting.ports.tracker import TrackerPort, TrackerResolutionFailure
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_execution import WorkflowExecutionRepository
+
+#: A campaign's status as the run status a board places a ticket by.
+_CAMPAIGN_RUN_STATUS = {
+    WorkflowCampaignStatus.PENDING: RunStatus.RUNNING,
+    WorkflowCampaignStatus.RUNNING: RunStatus.RUNNING,
+    WorkflowCampaignStatus.BLOCKED: RunStatus.RUNNING,
+    WorkflowCampaignStatus.COMPLETED: RunStatus.MERGED,
+    WorkflowCampaignStatus.FAILED: RunStatus.FAILED,
+}
+
+
+@dataclass(frozen=True)
+class SessionProgress:
+    """What a live session says about its run; gates are newest first."""
+
+    gates: list[dict[str, Any]]
+    failed: bool = False
+    chat_endpoint: str | None = None
+    blocked_reason: str | None = None
+    #: Why the session cannot answer right now, while it is stopped or starting.
+    away_reason: str | None = None
+
+
+SessionGateReader = Callable[[str], Awaitable[SessionProgress]]
 
 
 class WorkKind(StrEnum):
@@ -162,12 +214,34 @@ class DispatchRef:
 
 
 @dataclass(frozen=True)
+class TicketCoordinatorRef:
+    session_id: str
+    status: TicketCoordinatorStatus
+    connection_id: str | None
+    chat_endpoint: str | None
+    start_error: str | None = None
+
+
+@dataclass(frozen=True)
+class TicketWorkflowRun:
+    task_id: str
+    workflow_name: str
+    status: WorkflowCampaignStatus
+    session_id: str | None
+    current_step: str | None = None
+    pr_url: str | None = None
+
+
+@dataclass(frozen=True)
 class WorkTask:
     source: TrackerIssueRef
     title: str
     operational_run: OperationalRunRef | None
     dispatch: DispatchRef | None
     actions: tuple[str, ...] = ()
+    board: BoardPlacement | None = None
+    coordinator: TicketCoordinatorRef | None = None
+    workflow_run: TicketWorkflowRun | None = None
 
 
 @dataclass(frozen=True)
@@ -184,6 +258,7 @@ class WorkDetail:
     item: WorkSummary
     tasks: tuple[WorkTask, ...] = ()
     coverage: tuple[SourceCoverage, ...] = ()
+    board: ProjectBoard | None = None
 
 
 class WorkNotFoundError(LookupError):
@@ -214,6 +289,8 @@ class WorkReadService:
         execution_repo: WorkflowExecutionRepository | None,
         tracker_resolution_failures: tuple[TrackerResolutionFailure, ...] = (),
         campaign_lifecycle_available: bool = True,
+        session_gates: SessionGateReader | None = None,
+        coordinator_repo: TicketCoordinatorRepository | None = None,
     ) -> None:
         self._principal = principal
         self._saga_repo = saga_repo
@@ -222,6 +299,8 @@ class WorkReadService:
         self._execution_repo = execution_repo
         self._tracker_resolution_failures = tracker_resolution_failures
         self._campaign_lifecycle_available = campaign_lifecycle_available
+        self._session_gates = session_gates
+        self._coordinator_repo = coordinator_repo
 
     async def list_work(
         self,
@@ -332,7 +411,7 @@ class WorkReadService:
         if saga is None:
             raise WorkNotFoundError(f"Project work not found: {saga_id}")
 
-        tracker = _tracker_for_saga(self._trackers, saga)
+        tracker = tracker_for_saga(self._trackers, saga)
         if tracker is None:
             resolution_failure = next(
                 (
@@ -444,15 +523,44 @@ class WorkReadService:
                 )
             )
         runs_by_source = _operational_run_index(operational_runs)
+        issue_runs = [
+            (issue, runs_by_source.get(issue.id) or runs_by_source.get(issue.identifier))
+            for issue in issues
+        ]
+        board = project_board(saga)
+        coordinators = await self._ticket_coordinators(saga)
+        ticket_history = await self._ticket_runs(saga)
+        ticket_runs = {issue_id: runs[-1] for issue_id, runs in ticket_history.items()}
+        gates_by_session: dict[str, SessionProgress] = {}
+        if board is not None:
+            gates_by_session, gate_coverage = await self._read_session_gates(
+                _live_session_ids(issue_runs, coordinators, ticket_runs)
+            )
+            coverage.extend(gate_coverage)
         tasks = tuple(
             _task_from_issue(
                 saga,
                 tracker,
                 issue,
-                runs_by_source.get(issue.id) or runs_by_source.get(issue.identifier),
+                run,
                 ready=ready_issue_ids is not None and issue.id in ready_issue_ids,
+                placement=(
+                    _placement(
+                        board,
+                        saga,
+                        issue,
+                        run,
+                        ticket_history.get(issue.id, []),
+                        coordinators.get(issue.id),
+                        gates_by_session,
+                    )
+                    if board is not None
+                    else None
+                ),
+                coordinator=_coordinator_ref(coordinators.get(issue.id), gates_by_session),
+                workflow_run=_workflow_run(ticket_runs.get(issue.id)),
             )
-            for issue in issues
+            for issue, run in issue_runs
         )
         if dispatch_coverage is not None:
             coverage.append(dispatch_coverage)
@@ -461,7 +569,90 @@ class WorkReadService:
             project_index={(tracker.connection_id, saga.tracker_id): project},
             tracker_reads=(_TrackerRead(tracker, (project,)),),
         )
-        return WorkDetail(item=summary, tasks=tasks, coverage=tuple(coverage))
+        return WorkDetail(
+            item=summary,
+            tasks=tasks,
+            coverage=tuple(coverage),
+            board=board,
+        )
+
+    async def tracker_issue(self, saga: Saga, issue_id: str) -> TrackerIssue | None:
+        """Return one of a project's tracker issues."""
+        tracker = tracker_for_saga(self._trackers, saga)
+        if tracker is None:
+            raise WorkSourceUnavailableError("The linked tracker source is unavailable.")
+        issues = await tracker.list_issues(saga.tracker_id)
+        return next((issue for issue in issues if issue.id == issue_id), None)
+
+    async def _ticket_coordinators(self, saga: Saga) -> dict[str, TicketCoordinator]:
+        if self._coordinator_repo is None:
+            return {}
+        coordinators = await self._coordinator_repo.list_for_saga(
+            saga.id, owner_id=self._principal.user_id
+        )
+        return {coordinator.issue_id: coordinator for coordinator in coordinators}
+
+    async def _ticket_runs(self, saga: Saga) -> dict[str, list[WorkflowCampaign]]:
+        """Return each ticket's workflow runs started through its coordinator, oldest first."""
+        campaigns = await self._campaign_repo.list_campaigns(owner_id=self._principal.user_id)
+        runs: dict[str, list[WorkflowCampaign]] = {}
+        for campaign in sorted(campaigns, key=lambda item: item.created_at):
+            ticket = ticket_of(campaign.metadata)
+            if ticket is not None and ticket[0] == str(saga.id):
+                runs.setdefault(ticket[1], []).append(campaign)
+        return runs
+
+    async def _read_session_gates(
+        self,
+        session_ids: list[str],
+    ) -> tuple[dict[str, SessionProgress], tuple[SourceCoverage, ...]]:
+        if not session_ids:
+            return {}, (
+                SourceCoverage(
+                    source="workflowGates", connection_id=None, status=CoverageStatus.COMPLETE
+                ),
+            )
+        if self._session_gates is None:
+            return {}, (
+                SourceCoverage(
+                    source="workflowGates",
+                    connection_id=None,
+                    status=CoverageStatus.UNAVAILABLE,
+                    error=CoverageError(
+                        code="notConfigured",
+                        message="No Forge connection is available to read workflow gates.",
+                    ),
+                ),
+            )
+        results = await asyncio.gather(
+            *(self._session_gates(session_id) for session_id in session_ids),
+            return_exceptions=True,
+        )
+        gates: dict[str, SessionProgress] = {}
+        for session_id, result in zip(session_ids, results, strict=True):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if not isinstance(result, BaseException):
+                gates[session_id] = result
+        if len(gates) == len(session_ids):
+            return gates, (
+                SourceCoverage(
+                    source="workflowGates",
+                    connection_id=None,
+                    status=CoverageStatus.COMPLETE,
+                ),
+            )
+        return gates, (
+            SourceCoverage(
+                source="workflowGates",
+                connection_id=None,
+                status=CoverageStatus.PARTIAL if gates else CoverageStatus.UNAVAILABLE,
+                error=CoverageError(
+                    code="sourceReadFailed",
+                    message="Workflow gates could not be read for every running ticket.",
+                ),
+            ),
+        )
 
     async def get_campaign(self, campaign_id: UUID) -> WorkDetail:
         campaign = await self._campaign_repo.get_campaign(campaign_id)
@@ -683,17 +874,6 @@ def _project_for_saga(
     return "", None
 
 
-def _tracker_for_saga(trackers: list[TrackerPort], saga: Saga) -> TrackerPort | None:
-    if saga.tracker_connection_id:
-        matches = [
-            tracker for tracker in trackers if tracker.connection_id == saga.tracker_connection_id
-        ]
-        return matches[0] if len(matches) == 1 else None
-    if len(trackers) == 1:
-        return trackers[0]
-    return None
-
-
 def _workflow_ref(
     *,
     workflow_id: UUID | None,
@@ -876,6 +1056,256 @@ def _operational_run_index(runs: list[Run]) -> dict[str, Run]:
     return index
 
 
+def _live_session_ids(
+    issue_runs: list[tuple[TrackerIssue, Run | None]],
+    coordinators: dict[str, TicketCoordinator],
+    ticket_runs: dict[str, WorkflowCampaign],
+) -> list[str]:
+    """Sessions whose state decides where a ticket sits."""
+    session_ids = {
+        run.session_id
+        for _, run in issue_runs
+        if run is not None and run.session_id and run.status != RunStatus.MERGED
+    }
+    session_ids.update(
+        coordinator.session_id
+        for coordinator in coordinators.values()
+        if coordinator.status == TicketCoordinatorStatus.ACTIVE
+    )
+    session_ids.update(
+        campaign.session_id
+        for campaign in ticket_runs.values()
+        if campaign.session_id and campaign.status != WorkflowCampaignStatus.COMPLETED
+    )
+    return sorted(session_ids)
+
+
+def _coordinator_ref(
+    coordinator: TicketCoordinator | None,
+    sessions: dict[str, SessionProgress],
+) -> TicketCoordinatorRef | None:
+    if coordinator is None:
+        return None
+    progress = sessions.get(coordinator.session_id)
+    return TicketCoordinatorRef(
+        session_id=coordinator.session_id,
+        status=coordinator.status,
+        connection_id=coordinator.connection_id,
+        chat_endpoint=progress.chat_endpoint if progress is not None else None,
+        start_error=coordinator.start_error,
+    )
+
+
+def _workflow_run(campaign: WorkflowCampaign | None) -> TicketWorkflowRun | None:
+    if campaign is None:
+        return None
+    return TicketWorkflowRun(
+        task_id=campaign.slug,
+        workflow_name=campaign.workflow_name,
+        status=campaign.status,
+        session_id=campaign.session_id or None,
+        current_step=next(
+            (
+                stage.label
+                for stage in campaign.stage_state
+                if stage.stage_id == campaign.active_stage_id
+            ),
+            None,
+        ),
+        pr_url=_pull_request_url(campaign),
+    )
+
+
+def _pull_request_url(campaign: WorkflowCampaign) -> str | None:
+    pull_request = campaign.metadata.get(PULL_REQUEST_KEY)
+    return str(pull_request["url"]) if isinstance(pull_request, dict) else None
+
+
+def _placement(
+    project: ProjectBoard,
+    saga: Saga,
+    issue: TrackerIssue,
+    run: Run | None,
+    campaigns: list[WorkflowCampaign],
+    coordinator: TicketCoordinator | None,
+    sessions: dict[str, SessionProgress],
+) -> BoardPlacement:
+    """Place a ticket by its newest run, read through that run's own pinned workflow."""
+    placement = _ticket_placement(project, saga, issue, run, campaigns, coordinator, sessions)
+    session_id = campaigns[-1].session_id if campaigns else run.session_id if run else None
+    progress = sessions.get(session_id or "")
+    return replace(
+        placement,
+        passed_workflow_ids=_passed_workflows(saga, run, campaigns),
+        last_decision=last_board_decision(progress.gates) if progress is not None else None,
+    )
+
+
+def _ticket_placement(
+    project: ProjectBoard,
+    saga: Saga,
+    issue: TrackerIssue,
+    run: Run | None,
+    campaigns: list[WorkflowCampaign],
+    coordinator: TicketCoordinator | None,
+    sessions: dict[str, SessionProgress],
+) -> BoardPlacement:
+    if ticket_is_closed(issue.status_type):
+        return BoardPlacement(column_id=DONE_COLUMN_ID, state=BoardTicketState.DONE)
+    campaign = campaigns[-1] if campaigns else None
+    if run is not None and campaign is not None and run.created_at > campaign.created_at:
+        campaign = None
+    requested = _requested_workflow(project, coordinator, run, campaign)
+    if requested is not None:
+        return _placement_starting(project, issue, requested, coordinator, sessions)
+    if campaign is not None:
+        return _placement_of_run(
+            project,
+            issue,
+            workflow_id=str(campaign.workflow_id),
+            pinned=board_from_snapshot(campaign.workflow_snapshot),
+            run_status=_CAMPAIGN_RUN_STATUS[campaign.status],
+            session_id=campaign.session_id,
+            sessions=sessions,
+            remembered_gates=_remembered_gates(campaign),
+            failure_reason=str(campaign.metadata.get("failure_error") or "") or None,
+        )
+    if run is not None:
+        # A dispatched run has no pin of its own: it ran the saga's assigned workflow.
+        return _placement_of_run(
+            project,
+            issue,
+            workflow_id=str(saga.workflow_id),
+            pinned=board_from_snapshot(saga.workflow_snapshot),
+            run_status=run.status,
+            session_id=run.session_id,
+            sessions=sessions,
+        )
+    if coordinator is not None and coordinator.status == TicketCoordinatorStatus.ACTIVE:
+        return _placement_starting(project, issue, project.first_workflow, coordinator, sessions)
+    return BoardPlacement(column_id=BACKLOG_COLUMN_ID, state=BoardTicketState.NOT_STARTED)
+
+
+def _requested_workflow(
+    project: ProjectBoard,
+    coordinator: TicketCoordinator | None,
+    run: Run | None,
+    campaign: WorkflowCampaign | None,
+) -> BoardWorkflow | None:
+    """The workflow a coordinator was asked to start, until a newer run appears."""
+    if coordinator is None or coordinator.status != TicketCoordinatorStatus.ACTIVE:
+        return None
+    if coordinator.requested_workflow_id is None or coordinator.requested_at is None:
+        return None
+    newest = campaign or run
+    if newest is not None and newest.created_at >= coordinator.requested_at:
+        return None
+    return project.workflow(coordinator.requested_workflow_id)
+
+
+def _placement_of_run(
+    project: ProjectBoard,
+    issue: TrackerIssue,
+    *,
+    workflow_id: str,
+    pinned: WorkflowBoard | None,
+    run_status: RunStatus,
+    session_id: str | None,
+    sessions: dict[str, SessionProgress],
+    remembered_gates: tuple[dict[str, Any], ...] = (),
+    failure_reason: str | None = None,
+) -> BoardPlacement:
+    live = run_status != RunStatus.MERGED and bool(session_id)
+    if live and session_id not in sessions:
+        return BoardPlacement(column_id=None, state=BoardTicketState.UNKNOWN)
+    if pinned is None:
+        return off_board_placement()
+    progress = sessions.get(session_id or "", SessionProgress(gates=[]))
+    away = progress.away_reason is not None
+    placement = place_on_project(
+        project,
+        workflow_id,
+        place_ticket(
+            pinned,
+            run_status=run_status,
+            issue_status_type=issue.status_type,
+            gates=list(remembered_gates) if away else progress.gates,
+            session_failed=progress.failed,
+            blocked_reason=progress.blocked_reason or failure_reason,
+        ),
+    )
+    if (
+        away
+        and remembered_gates
+        and placement.state in {BoardTicketState.NEEDS_DECISION, BoardTicketState.BLOCKED}
+    ):
+        # Where the ticket is, without a decision the session could not take yet.
+        return replace(
+            placement,
+            state=BoardTicketState.BLOCKED,
+            gate=None,
+            reason=progress.away_reason,
+        )
+    return placement
+
+
+def _remembered_gates(campaign: WorkflowCampaign) -> tuple[dict[str, Any], ...]:
+    """The gate the run was last waiting on, kept for when its session cannot be asked."""
+    gates = campaign.metadata.get(PENDING_GATES_KEY)
+    if not isinstance(gates, list):
+        return ()
+    return tuple(
+        {**gate, "status": GATE_STATUS_PENDING} for gate in gates if isinstance(gate, dict)
+    )
+
+
+def _placement_starting(
+    project: ProjectBoard,
+    issue: TrackerIssue,
+    workflow: BoardWorkflow,
+    coordinator: TicketCoordinator,
+    sessions: dict[str, SessionProgress],
+) -> BoardPlacement:
+    """The coordinator was asked to start this workflow and its run has not appeared."""
+    if coordinator.start_error:
+        return BoardPlacement(
+            column_id=workflow.board.first_column.id,
+            state=BoardTicketState.BLOCKED,
+            reason=coordinator.start_error,
+        )
+    progress = sessions.get(coordinator.session_id)
+    if progress is None:
+        return BoardPlacement(column_id=None, state=BoardTicketState.UNKNOWN)
+    if progress.failed:
+        return place_on_project(
+            project,
+            workflow.id,
+            place_ticket(
+                workflow.board,
+                run_status=RunStatus.RUNNING,
+                issue_status_type=issue.status_type,
+                gates=[],
+                session_failed=True,
+            ),
+        )
+    return BoardPlacement(column_id=workflow.board.first_column.id, state=BoardTicketState.STARTING)
+
+
+def _passed_workflows(
+    saga: Saga,
+    run: Run | None,
+    campaigns: list[WorkflowCampaign],
+) -> tuple[str, ...]:
+    passed = [
+        str(campaign.workflow_id)
+        for campaign in campaigns
+        if campaign.status == WorkflowCampaignStatus.COMPLETED
+    ]
+    if run is not None and run.status == RunStatus.MERGED and saga.workflow_id is not None:
+        passed.append(str(saga.workflow_id))
+    return tuple(dict.fromkeys(passed))
+
+
 def _task_from_issue(
     saga: Saga,
     tracker: TrackerPort,
@@ -883,6 +1313,9 @@ def _task_from_issue(
     run: Run | None,
     *,
     ready: bool,
+    placement: BoardPlacement | None = None,
+    coordinator: TicketCoordinatorRef | None = None,
+    workflow_run: TicketWorkflowRun | None = None,
 ) -> WorkTask:
     operational = (
         OperationalRunRef(
@@ -927,4 +1360,7 @@ def _task_from_issue(
         operational_run=operational,
         dispatch=dispatch,
         actions=tuple(actions),
+        board=placement,
+        coordinator=coordinator,
+        workflow_run=workflow_run,
     )

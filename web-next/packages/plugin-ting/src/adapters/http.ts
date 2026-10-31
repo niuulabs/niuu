@@ -55,7 +55,7 @@ import type {
   WorkflowImportSource,
   WorkflowImportPreview,
 } from '../ports';
-import type { Saga, Phase, Run } from '../domain/saga';
+import type { Saga, SagaBoardWorkflow, Phase, Run } from '../domain/saga';
 import type { DispatcherState } from '../domain/dispatcher';
 import type { SessionInfo } from '../domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from '../domain/tracker';
@@ -83,6 +83,7 @@ interface RawSaga {
   workflow_id?: string | null;
   workflow?: string | null;
   workflow_version?: string | null;
+  board_workflows?: SagaBoardWorkflow[] | null;
   instance_id?: string | null;
   instance_name?: string | null;
   target_tags?: string[] | null;
@@ -545,6 +546,7 @@ function toSaga(raw: RawSaga): Saga {
     workflowId: raw.workflow_id ?? undefined,
     workflow: raw.workflow ?? undefined,
     workflowVersion: raw.workflow_version ?? undefined,
+    boardWorkflows: raw.board_workflows ?? [],
     instanceId: raw.instance_id ?? undefined,
     instanceName: raw.instance_name ?? undefined,
     targetTags: raw.target_tags ?? [],
@@ -1204,6 +1206,14 @@ export function buildTingHttpAdapter(client: ApiClient): ITingService {
         workflow_id: workflowId,
       });
       return toSaga(raw);
+    },
+
+    async setBoardWorkflows(sagaId: string, workflowIds: string[]) {
+      const raw = await client.put<{ board_workflows: SagaBoardWorkflow[] }>(
+        `/sagas/${encodeURIComponent(sagaId)}/board-workflows`,
+        { workflow_ids: workflowIds },
+      );
+      return raw.board_workflows;
     },
 
     async assignTarget(sagaId: string, target) {

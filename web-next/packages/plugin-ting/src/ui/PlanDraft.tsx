@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import type { ExtractedStructure, PhaseSpec } from '../ports';
+import type { PlanTicketFlag } from '../domain/planTicketCheck';
 
 const SIZE_CLASSES: Record<'S' | 'M' | 'L', string> = {
   S: 'niuu:bg-accent-emerald/20 niuu:text-accent-emerald niuu:border-accent-emerald/30',
@@ -28,16 +29,20 @@ interface PlanDraftProps {
   onSaveDraft?(): void;
   onEditPhase(phaseIndex: number, name: string): void;
   onRemoveRun?(phaseIndex: number, runIndex: number): void;
+  ticketFlags?: PlanTicketFlag[];
+  ticketCheckError?: string | null;
+  onRequestRevision?(flags: PlanTicketFlag[]): void;
 }
 
 interface PhaseEditorProps {
   phase: PhaseSpec;
   phaseIndex: number;
+  flags: PlanTicketFlag[];
   onSave(name: string): void;
   onRemoveRun?(runIndex: number): void;
 }
 
-function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProps) {
+function PhaseEditor({ phase, phaseIndex, flags, onSave, onRemoveRun }: PhaseEditorProps) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(phase.name);
 
@@ -175,6 +180,16 @@ function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProp
               ) : (
                 <span />
               )}
+
+              {flags.some((flag) => flag.runIndex === ri) && (
+                <ul className="ting-plan-run-flags" data-testid={`run-flags-${phaseIndex}-${ri}`}>
+                  {flags
+                    .filter((flag) => flag.runIndex === ri)
+                    .map((flag) => (
+                      <li key={flag.message}>{flag.message}</li>
+                    ))}
+                </ul>
+              )}
             </li>
           ))}
         </ul>
@@ -200,6 +215,9 @@ export function PlanDraft({
   onSaveDraft,
   onEditPhase,
   onRemoveRun,
+  ticketFlags = [],
+  ticketCheckError = null,
+  onRequestRevision,
 }: PlanDraftProps) {
   const phases = structure.structure?.phases ?? [];
   const sagaName = structure.structure?.name ?? 'New project';
@@ -283,6 +301,31 @@ export function PlanDraft({
         </div>
       )}
 
+      {(ticketFlags.length > 0 || ticketCheckError) && (
+        <div className="ting-plan-card ting-plan-ticket-check" data-testid="plan-ticket-check">
+          <div>
+            <h3>Ticket check</h3>
+            {ticketFlags.length > 0 && (
+              <p>
+                {ticketFlags.length} thing{ticketFlags.length === 1 ? '' : 's'} to review before
+                these become tickets. Titles are compared word by word, so a match can be wrong.
+              </p>
+            )}
+            {ticketCheckError && <p role="alert">{ticketCheckError}</p>}
+          </div>
+          {onRequestRevision && ticketFlags.length > 0 && (
+            <button
+              type="button"
+              onClick={() => onRequestRevision(ticketFlags)}
+              disabled={loading}
+              className="ting-plan-secondary-btn niuu:disabled:opacity-40"
+            >
+              Send back for revision
+            </button>
+          )}
+        </div>
+      )}
+
       {phases.length === 0 && (
         <p className="niuu:text-sm niuu:text-text-muted niuu:italic">
           No phases extracted — the agent couldn&apos;t decompose this goal. Try going back and
@@ -296,6 +339,7 @@ export function PlanDraft({
             key={idx}
             phase={phase}
             phaseIndex={idx}
+            flags={ticketFlags.filter((flag) => flag.phaseIndex === idx)}
             onSave={(name) => onEditPhase(idx, name)}
             onRemoveRun={onRemoveRun ? (ri) => onRemoveRun(idx, ri) : undefined}
           />

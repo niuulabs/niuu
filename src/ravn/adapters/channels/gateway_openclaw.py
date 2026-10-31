@@ -979,15 +979,11 @@ class _Connection:
     async def _on_room_send(
         self, req_id: str, room: openclaw_room.RoomClient, message: str
     ) -> None:
-        """Post a device's message into a room, as the operator's own seat.
-
-        The seat is (re)joined first: a room sweeps participants that stop sending presence, so a
-        phone that has been quiet since yesterday would otherwise post as a participant the room
-        no longer has, and be refused. Joining is idempotent and refreshes presence.
-        """
+        """Post a device's message into a room, as the operator's own seat."""
         identity = self._gw.room_identity
-        await room.join(participant_id=identity)
-        if not await room.post(message, participant_id=identity):
+        if not await room.seat(participant_id=identity) or not await room.post(
+            message, participant_id=identity
+        ):
             await self._send(
                 error_frame(
                     req_id,

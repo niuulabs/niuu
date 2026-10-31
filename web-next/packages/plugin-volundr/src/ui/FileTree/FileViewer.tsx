@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import type { ReviewControls } from '../../domain/reviewComments';
+import { ReviewableText } from '../ReviewComments';
 
 export interface FileViewerProps {
   /** Absolute path of the open file, displayed in the header. */
@@ -11,14 +13,18 @@ export interface FileViewerProps {
   isLoading?: boolean;
   /** Error message if loading failed. */
   error?: string;
+  /** Offers a review mode with comments on individual lines. */
+  review?: ReviewControls;
 }
 
 /**
  * Read-only file viewer with Shiki syntax highlighting.
  * Shiki is loaded lazily so the main bundle stays small.
  */
-export function FileViewer({ path, content, onClose, isLoading, error }: FileViewerProps) {
+export function FileViewer({ path, content, onClose, isLoading, error, review }: FileViewerProps) {
   const language = detectLanguage(path);
+  const [reviewing, setReviewing] = useState(false);
+  const canReview = Boolean(review && content && !isLoading && !error);
 
   const basename = path.split('/').at(-1) ?? path;
 
@@ -41,6 +47,16 @@ export function FileViewer({ path, content, onClose, isLoading, error }: FileVie
         <span className="niuu:shrink-0 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:px-2 niuu:py-0.5 niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
           {language}
         </span>
+        {canReview && (
+          <button
+            className="niuu:ml-1 niuu:shrink-0 niuu:rounded-md niuu:px-2 niuu:py-0.5 niuu:font-mono niuu:text-[11px] niuu:text-text-muted niuu:hover:bg-bg-elevated niuu:hover:text-text-primary"
+            onClick={() => setReviewing((current) => !current)}
+            aria-pressed={reviewing}
+            data-testid="file-viewer-review"
+          >
+            {reviewing ? 'done reviewing' : 'review'}
+          </button>
+        )}
         {onClose && (
           <button
             className="niuu:ml-1 niuu:shrink-0 niuu:rounded-md niuu:px-2 niuu:py-0.5 niuu:font-mono niuu:text-[11px] niuu:text-text-muted niuu:hover:bg-bg-elevated niuu:hover:text-text-primary"
@@ -75,8 +91,14 @@ export function FileViewer({ path, content, onClose, isLoading, error }: FileVie
           </div>
         )}
 
-        {!isLoading && !error && content && (
-          <HighlightedContent key={`${path}:${content}`} content={content} language={language} />
+        {canReview && reviewing && review ? (
+          <ReviewableText review={review} filePath={path} content={content} />
+        ) : (
+          !isLoading &&
+          !error &&
+          content && (
+            <HighlightedContent key={`${path}:${content}`} content={content} language={language} />
+          )
         )}
       </div>
     </div>

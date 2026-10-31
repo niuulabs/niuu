@@ -1,4 +1,4 @@
-import { Network } from 'lucide-react';
+import { MonitoringIcon } from '@niuulabs/ui';
 import { createRoute } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ObservatoryPage } from './ui/ObservatoryPage';
@@ -9,7 +9,7 @@ import { ObservatoryTopbar } from './ui/ObservatoryTopbar';
 export const observatoryPlugin = definePlugin({
   id: 'observatory',
   rune: 'O',
-  icon: <Network size={17} aria-hidden="true" />,
+  icon: <MonitoringIcon />,
   title: 'Monitoring',
   subtitle: 'a live map of what is running',
   tabs: [

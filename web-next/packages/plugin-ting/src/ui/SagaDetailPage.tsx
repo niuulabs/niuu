@@ -25,6 +25,7 @@ import type {
 import { useAssignSagaRepos, useAssignSagaTarget, useAssignSagaWorkflow, useSaga } from './useSaga';
 import { usePhases } from './usePhases';
 import { useSendRunMessage } from './useRunMessages';
+import { BoardWorkflowsCard } from './BoardWorkflowsCard';
 import { WorkflowCard } from './WorkflowCard';
 import { SagaWorkflowModal } from './SagaWorkflowModal';
 import { StageProgressRail } from './StageProgressRail';
@@ -869,6 +870,7 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
             onAssign={() => setShowWorkflowModal(true)}
             onClear={saga.workflowId ? () => handleAssignWorkflow(null) : undefined}
           />
+          <BoardWorkflowsCard saga={saga} />
           <StageProgressRail phases={allPhases} />
         </div>
       </div>

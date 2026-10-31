@@ -22,6 +22,7 @@ import {
   createMockDispatcherService,
   createMockTingSessionService,
   createMockTrackerService,
+  createMockWorkService,
   createMockWorkflowService,
   createMockResearchService,
   createMockSpecsService,
@@ -821,7 +822,7 @@ export function buildServiceBackendStatus(
   return Object.fromEntries(
     Object.entries(resolved).map(([serviceName, status]) => [
       serviceName,
-      status.mode === 'unavailable' && serviceName !== 'ting.work'
+      status.mode === 'unavailable'
         ? {
             ...status,
             mode: 'demo',
@@ -1620,10 +1621,12 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     ting: tingService,
     'ting.work': workClient
       ? buildWorkHttpAdapter(workClient)
-      : unavailableService<IWorkService>(
-          'ting.work',
-          'Configure a live work backend to view work.',
-        ),
+      : config.demoMode
+        ? createMockWorkService()
+        : unavailableService<IWorkService>(
+            'ting.work',
+            'Configure a live work backend to view work.',
+          ),
     'ting.workflowExecutions': tingClient
       ? buildWorkflowExecutionHttpAdapter(tingClient)
       : unavailableService<IWorkflowExecutionService>('ting.workflowExecutions'),

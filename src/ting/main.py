@@ -50,6 +50,7 @@ from ting.adapters.postgres_notification_subscriptions import (
     PostgresNotificationSubscriptionRepository,
 )
 from ting.adapters.postgres_sagas import PostgresSagaRepository
+from ting.adapters.postgres_ticket_coordinators import PostgresTicketCoordinatorRepository
 from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
 from ting.adapters.postgres_workflow_executions import PostgresWorkflowExecutionRepository
 from ting.adapters.tracker_factory import TrackerAdapterFactory
@@ -133,6 +134,8 @@ from ting.domain.services.resource_authorization import (
     AuthorizedWorkflowRepository,
 )
 from ting.domain.services.review_engine import ReviewEngine
+from ting.domain.services.ticket_advance import TicketAdvancer
+from ting.domain.services.ticket_coordinator import TicketCoordinatorService
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.domain.services.workflow_execution import WorkflowExecutionService
 from ting.domain.services.workflow_migration import workflow_catalog_migration_is_current
@@ -905,6 +908,7 @@ def create_app(
             app.state.workflow_campaign_repo = workflow_campaign_repo
             a2a_launch_repo = PostgresA2ALaunchReservationRepository(pool)
             app.state.a2a_launch_repo = a2a_launch_repo
+            app.state.ticket_coordinator_repo = PostgresTicketCoordinatorRepository(pool)
 
             async def _resolve_a2a_launch_repo():
                 return a2a_launch_repo
@@ -1304,6 +1308,22 @@ def create_app(
             app.dependency_overrides[dispatcher_resolve_event_bus] = _resolve_event_bus
 
             stale_campaigns = settings.a2a.stale_campaigns
+
+            def _background_coordinators(
+                adapter: VolundrPort, principal: Principal
+            ) -> TicketCoordinatorService:
+                # No request here: the adapter carries the owner's own connection credentials.
+                return TicketCoordinatorService(
+                    repo=app.state.ticket_coordinator_repo,
+                    volundr=adapter,
+                    principal=principal,
+                    auth_token=None,
+                    persona=settings.ticket_coordinator.persona,
+                    ravn_config=settings.ticket_coordinator.ravn_config,
+                    platform_origin=settings.a2a.public_base_url.rstrip("/"),
+                    anonymous_platform=settings.auth.allow_anonymous_dev,
+                )
+
             workflow_campaign_projector = WorkflowCampaignProjector(
                 repo=workflow_campaign_repo,
                 volundr_factory=app.state.volundr_factory,
@@ -1312,6 +1332,16 @@ def create_app(
                 sweep_interval_seconds=stale_campaigns.sweep_interval_seconds,
                 input_wait_timeout_seconds=stale_campaigns.input_wait_timeout_seconds,
                 idle_timeout_seconds=stale_campaigns.idle_timeout_seconds,
+                coordinator_repo=app.state.ticket_coordinator_repo,
+                coordinator_persona=settings.ticket_coordinator.persona,
+                ticket_advancer=TicketAdvancer(
+                    saga_repo=saga_repo,
+                    campaign_repo=workflow_campaign_repo,
+                    coordinator_repo=app.state.ticket_coordinator_repo,
+                    tracker_factory=app.state.tracker_factory,
+                    volundr_factory=app.state.volundr_factory,
+                    coordinators=_background_coordinators,
+                ),
             )
             app.state.workflow_campaign_projector = workflow_campaign_projector
             await workflow_campaign_projector.start()
