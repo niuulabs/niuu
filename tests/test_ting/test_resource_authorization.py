@@ -180,6 +180,17 @@ async def test_save_check_rejects_ownership_change_even_when_update_is_allowed(p
     repo.save_campaign.assert_not_called()
 
 
+async def test_campaign_summaries_are_filtered_by_visibility(principal):
+    campaign = SimpleNamespace(id=uuid4(), owner_id="alice", tenant_id="acme")
+    repo = AsyncMock()
+    repo.list_campaign_summaries.return_value = [campaign]
+    policy = AuthorizedCampaignRepository(repo, AllowAllAuthorizationAdapter(), principal)
+
+    assert await policy.list_campaign_summaries(owner_id="alice") == [campaign]
+
+    repo.list_campaigns.assert_not_called()
+
+
 async def test_ticket_campaigns_are_listed_through_the_narrow_query(principal):
     campaign = SimpleNamespace(id=uuid4(), owner_id="alice", tenant_id="acme")
     saga_id = uuid4()

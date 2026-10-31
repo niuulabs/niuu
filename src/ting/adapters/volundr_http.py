@@ -630,6 +630,10 @@ class VolundrHTTPAdapter(VolundrPort):
                 raise LookupError(f"Session {session_id} has no room to leave")
             resp.raise_for_status()
 
+    @property
+    def api_base_url(self) -> str:
+        return self._base_url
+
     def _room_url(self, session_id: str, operation: str) -> str:
         """A room operation, through Forge: a session's own origin may be browser-only."""
         return f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/room/{operation}"

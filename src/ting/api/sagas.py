@@ -51,7 +51,6 @@ from ting.domain.models import (
     WorkflowDefinition,
     WorkflowScope,
 )
-from ting.domain.ticket_coordinator import ticket_of
 from ting.domain.tracker_routing import (
     TrackerRoutingError,
     select_tracker,
@@ -454,13 +453,11 @@ async def _refuse_removing_active_workflows(
     owner_id: str,
 ) -> None:
     """Runs keep the workflow they started with, so it stays on the board until they finish."""
-    campaigns = await campaign_repo.list_campaigns(owner_id=owner_id)
+    campaigns = await campaign_repo.list_ticket_campaigns(owner_id=owner_id, saga_id=saga.id)
     busy = [
         campaign
         for campaign in campaigns
-        if campaign.workflow_id not in kept
-        and campaign.status in _ACTIVE_CAMPAIGN_STATUSES
-        and (ticket_of(campaign.metadata) or ("", ""))[0] == str(saga.id)
+        if campaign.workflow_id not in kept and campaign.status in _ACTIVE_CAMPAIGN_STATUSES
     ]
     if busy:
         names = ", ".join(sorted({campaign.workflow_name for campaign in busy}))
@@ -1256,7 +1253,7 @@ def create_sagas_router() -> APIRouter:
         principal: Principal = Depends(extract_principal),
         campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> list[PlanSessionResponse]:
-        campaigns = await campaign_repo.list_campaigns(owner_id=principal.user_id)
+        campaigns = await campaign_repo.list_campaign_summaries(owner_id=principal.user_id)
         # Every planning campaign, not only the resumable ones. Filtering to
         # PENDING/RUNNING/BLOCKED meant a plan vanished from the surface the
         # moment it finished: the campaign, its approved plan and its slug all

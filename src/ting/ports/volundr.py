@@ -156,6 +156,11 @@ class PublicSessionLogPage:
 
 
 class VolundrPort(ABC):
+    @property
+    def api_base_url(self) -> str:
+        """The Forge this adapter talks to, for a session it launches to reach back."""
+        raise NotImplementedError(f"{type(self).__name__} does not know its Forge's address")
+
     """Abstract interface for Volundr session management."""
 
     @property

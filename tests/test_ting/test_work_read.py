@@ -185,6 +185,9 @@ def _repositories(
     campaign_repo.list_ticket_campaigns = partial(
         WorkflowCampaignRepository.list_ticket_campaigns, campaign_repo
     )
+    campaign_repo.list_campaign_summaries = partial(
+        WorkflowCampaignRepository.list_campaign_summaries, campaign_repo
+    )
     campaign_repo.get_campaign = AsyncMock(
         side_effect=lambda campaign_id: next(
             (item for item in campaigns or [] if item.id == campaign_id), None

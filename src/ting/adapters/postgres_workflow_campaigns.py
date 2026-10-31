@@ -39,6 +39,26 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
         )
         return [self._row_to_campaign(row) for row in rows]
 
+    async def list_campaign_summaries(self, *, owner_id: str) -> list[WorkflowCampaign]:
+        rows = await self._pool.fetch(
+            """
+            SELECT id, slug, name, owner_id, workflow_id, workflow_version, workflow_name,
+                   jsonb_strip_nulls(jsonb_build_object(
+                       'workflow_revision', workflow_snapshot->'workflow_revision',
+                       'workflow_digest', workflow_snapshot->'workflow_digest',
+                       'graph', jsonb_build_object('tags', workflow_snapshot#>'{graph,tags}')
+                   )) AS workflow_snapshot,
+                   session_id, session_name, status, active_stage_id, stage_state, metadata,
+                   created_at, updated_at, last_activity_at, completed_at, connection_id,
+                   tenant_id
+            FROM workflow_campaigns
+            WHERE owner_id = $1
+            ORDER BY updated_at DESC, created_at DESC
+            """,
+            owner_id,
+        )
+        return [self._row_to_campaign(row) for row in rows]
+
     async def list_ticket_campaigns(
         self,
         *,

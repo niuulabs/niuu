@@ -32,6 +32,7 @@ from ting.domain.models import (
     WorkflowCampaignStatus,
 )
 from ting.domain.ticket_coordinator import TicketCoordinator, TicketCoordinatorStatus
+from ting.domain.workflow_board import SESSION_GONE_REASON
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.ticket_coordinator_repository import TicketCoordinatorRepository
 from ting.ports.tracker import TrackerPort, TrackerResolution
@@ -243,6 +244,9 @@ def _client(
     campaign_repo.list_campaigns = AsyncMock(return_value=campaigns or [])
     campaign_repo.list_ticket_campaigns = partial(
         WorkflowCampaignRepository.list_ticket_campaigns, campaign_repo
+    )
+    campaign_repo.list_campaign_summaries = partial(
+        WorkflowCampaignRepository.list_campaign_summaries, campaign_repo
     )
     app.state.ticket_coordinator_repo = coordinators or _Coordinators()
     app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaign_repo
@@ -478,6 +482,28 @@ def test_a_ticket_left_on_starting_can_be_asked_again() -> None:
     assert response.status_code == 200
     adapter.spawn_session.assert_not_awaited()
     adapter.send_directed_room_message.assert_awaited_once()
+
+
+def test_a_deleted_coordinator_session_reads_blocked_and_can_be_replaced() -> None:
+    saga = _saga(_snapshot())
+    adapter = _adapter([])
+    adapter.get_session.return_value = None
+    client = _client(
+        saga,
+        issues=[_issue(status_type="unstarted")],
+        runs=[],
+        adapter=adapter,
+        coordinators=_Coordinators(_coordinator(saga)),
+    )
+
+    board = _board_task(client, saga)["board"]
+    response = _start(client, saga)
+
+    assert board["state"] == "blocked"
+    assert board["reason"] == SESSION_GONE_REASON
+    assert response.status_code == 200
+    adapter.spawn_session.assert_awaited_once()
+    adapter.send_directed_room_message.assert_not_awaited()
 
 
 def test_a_coordinator_that_died_before_any_run_can_be_replaced() -> None:

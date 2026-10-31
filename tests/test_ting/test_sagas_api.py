@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -634,6 +635,9 @@ class TestBoardWorkflows:
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
         campaign_repo = MagicMock()
         campaign_repo.list_campaigns = AsyncMock(return_value=campaigns or [])
+        campaign_repo.list_ticket_campaigns = partial(
+            WorkflowCampaignRepository.list_ticket_campaigns, campaign_repo
+        )
         app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaign_repo
         app.state.settings = _dev_settings()
         app.state.workflow_repo = InMemoryWorkflowRepository(workflows)
@@ -743,6 +747,7 @@ class TestBoardWorkflows:
             workflow_name=planning.name,
             status=WorkflowCampaignStatus.RUNNING,
             metadata={"ticket": {"sagaId": str(saga.id), "issueId": "issue-1"}},
+            created_at=datetime.now(UTC),
         )
         client = self._client(mock_tracker, saga_repo, [planning, delivery], [running])
 

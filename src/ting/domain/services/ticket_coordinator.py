@@ -29,6 +29,7 @@ from ting.ports.volundr import SpawnRequest, VolundrPort, VolundrSession
 _SESSION_NAME_PREFIX = "coordinator"
 _FLOCK_PEER_PREFIX = "flock-"
 AGENT_CARD_PATH = "/.well-known/agent-card.json"
+WORKLOAD_EXCHANGE_PATH = "/api/v1/tokens/workload/exchange"
 _BRANCH_UNSAFE = re.compile(r"[^a-z0-9._-]+")
 _LISTENING_SESSION_STATUS = "running"
 _BOOTING_SESSION_STATUSES = frozenset({"starting", "provisioning", "created"})
@@ -275,12 +276,18 @@ class TicketCoordinatorService:
             ),
         }
         gateway = self._ravn_config.get("gateway", {})
+        forge = self._volundr.api_base_url.rstrip("/")
         return {
             **self._ravn_config,
             "gateway": {
                 **gateway,
                 "platform": {
                     **configured,
+                    # The Forge that launches the session, whichever connection that
+                    # is: its token exchanges there, and its platform tools live there.
+                    "enabled": True,
+                    "base_url": forge,
+                    "workload_exchange_url": f"{forge}{WORKLOAD_EXCHANGE_PATH}",
                     "a2a_default_metadata": metadata,
                     "a2a_gate_decisions": False,
                     "anonymous_dev_mode": self._anonymous_platform,
