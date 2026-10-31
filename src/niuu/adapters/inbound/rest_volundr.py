@@ -612,6 +612,7 @@ async def _sync_persona_to_instance(
 async def _sync_realm_to_instance(
     instance: RegisteredInstance,
     request: Request,
+    principal: Principal,
     realm_id: object,
     *,
     embedded_app: ASGIApp | None,
@@ -673,7 +674,7 @@ async def _sync_realm_to_instance(
                 "instance."
             ),
         )
-    realm = await realm_service.get_realm(parsed_id)
+    realm = await realm_service.get_realm(parsed_id, principal.tenant_id)
     if realm is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

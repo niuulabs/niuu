@@ -570,6 +570,7 @@ def create_ravn_router(
         await _sync_realm_to_instance(
             instance,
             request,
+            principal,
             body.get("realm_id") or body.get("realmId"),
             embedded_app=embedded_forge_app,
         )

@@ -274,7 +274,7 @@ class ResidentRuntimeService:
                 f"Resident profile {profile_id} does not support flock membership"
             )
         if realm_id is not None and self._realm_repository is not None:
-            realm = await self._realm_repository.get_realm(realm_id)
+            realm = await self._realm_repository.get_tenant_realm(realm_id, principal.tenant_id)
             if realm is None:
                 raise ResidentRuntimeValidationError(f"Realm not found: {realm_id}")
 

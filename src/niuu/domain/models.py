@@ -546,6 +546,7 @@ class Realm:
     created_at: datetime
     updated_at: datetime
     autonomy_profile: str = "balanced"
+    tenant_id: str = ""
 
 
 @dataclass(frozen=True)
