@@ -622,6 +622,38 @@ class DecisionCapabilityMatchingConfig(BaseModel):
             "tools and retires distinct ones; too high lets duplicates through."
         ),
     )
+    peer_min_same_probability: float = Field(
+        default=0.6,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "P(same capability) at or above which build_tool tries to adopt a flock peer's tool "
+            "instead of building. Set apart from min_same_probability because a false match "
+            "here installs a tool rather than blocking on one this resident already holds."
+        ),
+    )
+    peer_prior_art_probability: float = Field(
+        default=0.4,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "P(same capability) at or above which a flock peer's tool is handed to the builder "
+            "as prior art. Sits below peer_min_same_probability because it blocks nothing: the "
+            "build still runs, and a wrong match costs a few lines in its brief. Equal to it, "
+            "nothing is handed over short of the same capability."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _prior_art_sits_below_adoption(self) -> DecisionCapabilityMatchingConfig:
+        if self.peer_prior_art_probability > self.peer_min_same_probability:
+            raise ValueError(
+                "decision.capability_matching.peer_prior_art_probability "
+                f"({self.peer_prior_art_probability}) is above peer_min_same_probability "
+                f"({self.peer_min_same_probability}), so no peer tool could be prior art; "
+                "lower it, or set the two equal to hand over nothing short of a match"
+            )
+        return self
 
 
 class DecisionConfig(BaseModel):
@@ -3962,6 +3994,18 @@ class ResidentEvolutionConfig(BaseModel):
             "rollback) is what keeps the mirror populated with the skills a "
             "resident actively uses. 0 disables the heartbeat (startup and "
             "opportunistic snapshots still fire)."
+        ),
+    )
+    flock_inventory_interval_seconds: float = Field(
+        default=3600.0,
+        ge=0.0,
+        description=(
+            "How often the whole learned-tool inventory crosses to flock peers, on "
+            "flock.<domain>.<environment>.valkyrie.evolution.skill_inventory, so the "
+            "build_tool gate can see what they run. A changed tool crosses when it "
+            "changes, whatever this is. Every event carries the tool's code, so the "
+            "sweep has to stay small against the flock stream's byte limit. 0 keeps the "
+            "inventory on this cluster, and peers then never hear of this resident's tools."
         ),
     )
     learned_tool_execution_backend: Literal[

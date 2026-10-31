@@ -424,6 +424,8 @@ decision:
   capability_matching:
     enabled: true
     min_same_probability: 0.6           # the default
+    peer_min_same_probability: 0.6      # adopt a flock peer's tool instead of building
+    peer_prior_art_probability: 0.4     # hand a close peer tool to the builder
 ```
 
 All of these are startup errors rather than silent degradation: a mapped

@@ -181,6 +181,7 @@ from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _build_executor,
     _build_friction_ledger,
     _build_capability_matcher,
+    _build_peer_capability_matcher,
     _build_learning_consolidation,
     _build_learning_curator,
     _build_self_improvement,
