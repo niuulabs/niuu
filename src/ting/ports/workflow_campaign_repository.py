@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from uuid import UUID
 
 from ting.domain.models import WorkflowCampaign
+from ting.domain.ticket_coordinator import ticket_of
 
 
 class CampaignAlreadyTerminalError(RuntimeError):
@@ -36,6 +37,27 @@ class WorkflowCampaignRepository(ABC):
     @abstractmethod
     async def list_campaigns(self, *, owner_id: str) -> list[WorkflowCampaign]:
         """List campaigns visible to the owner."""
+
+    async def list_ticket_campaigns(
+        self,
+        *,
+        owner_id: str,
+        saga_id: UUID | None = None,
+        issue_id: str | None = None,
+    ) -> list[WorkflowCampaign]:
+        """List the owner's campaigns tied to a ticket, oldest first, narrowed when asked.
+
+        An owner can hold hundreds of campaigns, each with its workflow snapshot,
+        so a board read must not load them all.
+        """
+        campaigns = [
+            campaign
+            for campaign in await self.list_campaigns(owner_id=owner_id)
+            if (ticket := ticket_of(campaign.metadata)) is not None
+            and (saga_id is None or ticket[0] == str(saga_id))
+            and (issue_id is None or ticket[1] == issue_id)
+        ]
+        return sorted(campaigns, key=lambda campaign: campaign.created_at)
 
     @abstractmethod
     async def list_active_campaigns(self) -> list[WorkflowCampaign]:

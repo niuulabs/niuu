@@ -711,10 +711,11 @@ class WorkflowTaskHandler(RequestHandler):
         coordinator = await self._request.app.state.ticket_coordinator_repo.get(saga_id, issue_id)
         if coordinator is None or coordinator.requested_at is None:
             return None
-        campaigns = await self._campaign_repo.list_campaigns(owner_id=self._principal.user_id)
+        campaigns = await self._campaign_repo.list_ticket_campaigns(
+            owner_id=self._principal.user_id, saga_id=saga_id, issue_id=issue_id
+        )
         answered = any(
-            ticket_of(campaign.metadata) == (str(saga_id), issue_id)
-            and campaign.status != WorkflowCampaignStatus.FAILED
+            campaign.status != WorkflowCampaignStatus.FAILED
             and campaign.created_at >= coordinator.requested_at
             for campaign in campaigns
         )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -23,6 +24,7 @@ from ting.domain.ticket_coordinator import (
     TicketCoordinatorStatus,
     ticket_metadata,
 )
+from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.system_workflows import load_system_workflows
 
 NOW = datetime(2026, 10, 30, 12, 0, tzinfo=UTC)
@@ -134,9 +136,13 @@ def _advancer(
         return_value=[SimpleNamespace(id=ISSUE, status_type=status_type)]
     )
     tracker.get_run_progress_for_saga = AsyncMock(return_value=runs or [])
+    campaign_repo = SimpleNamespace(list_campaigns=AsyncMock(return_value=campaigns or []))
+    campaign_repo.list_ticket_campaigns = partial(
+        WorkflowCampaignRepository.list_ticket_campaigns, campaign_repo
+    )
     advancer = TicketAdvancer(
         saga_repo=SimpleNamespace(get_saga=AsyncMock(return_value=saga)),
-        campaign_repo=SimpleNamespace(list_campaigns=AsyncMock(return_value=campaigns or [])),
+        campaign_repo=campaign_repo,
         coordinator_repo=coordinators,
         tracker_factory=SimpleNamespace(for_owner=AsyncMock(return_value=[tracker])),
         volundr_factory=SimpleNamespace(

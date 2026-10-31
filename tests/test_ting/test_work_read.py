@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from hashlib import sha256
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -181,6 +182,9 @@ def _repositories(
     saga_repo.get_runs_by_phase = AsyncMock(return_value=[])
     campaign_repo = MagicMock(spec=WorkflowCampaignRepository)
     campaign_repo.list_campaigns = AsyncMock(return_value=campaigns or [])
+    campaign_repo.list_ticket_campaigns = partial(
+        WorkflowCampaignRepository.list_ticket_campaigns, campaign_repo
+    )
     campaign_repo.get_campaign = AsyncMock(
         side_effect=lambda campaign_id: next(
             (item for item in campaigns or [] if item.id == campaign_id), None
