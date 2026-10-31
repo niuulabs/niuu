@@ -91,8 +91,12 @@ TOKEN_FINGERPRINT_HEX = 12
 
 
 def token_fingerprint(token: str) -> str:
-    """A short SHA-256 prefix of a push token, for logs that must compare tokens."""
-    return hashlib.sha256(token.encode()).hexdigest()[:TOKEN_FINGERPRINT_HEX]
+    """A short SHA-256 prefix of a push token, for logs that must compare tokens.
+
+    The same recipe as the app's own log (LEX-1186): SHA-256 over the token's lowercase
+    hex string as UTF-8, first 12 hex characters.
+    """
+    return hashlib.sha256(token.lower().encode()).hexdigest()[:TOKEN_FINGERPRINT_HEX]
 
 
 class UnsupportedTokenKindError(ValueError):

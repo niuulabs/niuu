@@ -1669,3 +1669,8 @@ class TestEnvironmentCounts:
         status = harness.gateway.status()
         assert status["registrations_environment_missing"] == 1
         assert status["registrations_environment_unknown"] == 2
+
+
+def test_the_token_fingerprint_matches_the_apps_recipe():
+    assert token_fingerprint("abc") == "ba7816bf8f01"
+    assert token_fingerprint("ABC") == token_fingerprint("abc")
