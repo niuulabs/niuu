@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import { ExternalLink } from 'lucide-react';
 import { ApiClientError } from '@niuulabs/query';
+import { GateDecision } from '@niuulabs/ui';
 import type { BoardDecision, WorkBoardColumn, WorkBoardLayout, WorkTask } from '../domain/work';
 import { BOARD_STATE_LABEL } from '../domain/workBoard';
 import { CoordinatorChat } from './CoordinatorChat';
@@ -89,7 +90,6 @@ function ReviewTab({
   const gate = task.board?.gate;
   const decide = useGateDecision(projectId);
   const [notes, setNotes] = useState('');
-  const [needsNote, setNeedsNote] = useState(false);
   const noteField = useRef<HTMLTextAreaElement>(null);
   const approve = board.columns.find((item) => item.id === column.approveColumnId);
   const changes = board.columns.find((item) => item.id === column.changesColumnId);
@@ -111,12 +111,6 @@ function ReviewTab({
   const activeGate = gate;
 
   function submit(decision: 'approve' | 'request_changes') {
-    if (decision === 'request_changes' && !notes.trim()) {
-      setNeedsNote(true);
-      noteField.current?.focus();
-      return;
-    }
-    setNeedsNote(false);
     decide.mutate(
       {
         issueId: task.source.issueId,
@@ -133,17 +127,6 @@ function ReviewTab({
 
   return (
     <>
-      <div className="ting-board-decision">
-        <span className="ting-work-eyebrow">{gate.label} · waiting for you</span>
-        <h4>{column.review ? QUESTION[column.review] : gate.condition}</h4>
-        {column.review ? <p>{gate.condition}</p> : null}
-        <p className="ting-board-decision__routes">
-          {approve?.kind === 'tracker'
-            ? 'Approve closes the ticket.'
-            : `Approve continues to ${approve?.title}.`}{' '}
-          Changes go back to {changes?.title} in the same run. A new review needs a new decision.
-        </p>
-      </div>
       <OpenReview projectId={projectId} task={task} />
       {gate.instructions ? <p className="ting-board-panel__text">{gate.instructions}</p> : null}
       {gate.summary ? <p className="ting-board-panel__text">{gate.summary}</p> : null}
@@ -155,39 +138,27 @@ function ReviewTab({
           {approve?.title}.
         </p>
       ) : null}
-      <label className="ting-board-panel__notes">
-        <span>Comment</span>
-        <textarea
-          ref={noteField}
-          rows={2}
-          value={notes}
-          placeholder="What should change?"
-          onChange={(event) => setNotes(event.target.value)}
-        />
-      </label>
-      {needsNote ? (
-        <p className="ting-work-action-error" role="alert">
-          Say what should change first.
-        </p>
-      ) : null}
-      {decide.error ? (
-        <p className="ting-work-action-error" role="alert">
-          {decisionError(decide.error)}
-        </p>
-      ) : null}
-      <div className="ting-board-panel__actions">
-        <button type="button" disabled={decide.isPending} onClick={() => submit('request_changes')}>
-          Request changes → {changes?.title}
-        </button>
-        <button
-          type="button"
-          className="ting-board-panel__approve"
-          disabled={decide.isPending}
-          onClick={() => submit('approve')}
-        >
-          Approve → {approve?.title}
-        </button>
-      </div>
+      <GateDecision
+        eyebrow={`${gate.label} · waiting for you`}
+        title={column.review ? QUESTION[column.review] : gate.condition}
+        summary={column.review ? gate.condition : undefined}
+        hint={`${
+          approve?.kind === 'tracker'
+            ? 'Approve closes the ticket.'
+            : `Approve continues to ${approve?.title}.`
+        } Changes go back to ${changes?.title} in the same run. A new review needs a new decision.`}
+        note={notes}
+        onNoteChange={setNotes}
+        noteLabel="Comment"
+        noteRef={noteField}
+        requireNote
+        approveLabel={`Approve → ${approve?.title}`}
+        changesLabel={`Request changes → ${changes?.title}`}
+        busy={decide.isPending}
+        error={decide.error ? decisionError(decide.error) : null}
+        onApprove={() => submit('approve')}
+        onRequestChanges={() => submit('request_changes')}
+      />
     </>
   );
 }

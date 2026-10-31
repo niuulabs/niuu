@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { commentsOnLine, formatReviewMessage, type ReviewComment } from './reviewComments';
+import { commentsOnLine, formatReviewMessage, gateNotes, type ReviewComment } from './reviewModel';
 
 function comment(overrides: Partial<ReviewComment>): ReviewComment {
   return {
@@ -51,5 +51,22 @@ describe('commentsOnLine', () => {
     expect(commentsOnLine([newLine, oldLine, otherFile], 'src/auth.py', 'new', 5)).toEqual([
       newLine,
     ]);
+  });
+});
+
+describe('gateNotes', () => {
+  it('is the note alone without line comments', () => {
+    expect(gateNotes('  Sample instead. ', [])).toBe('Sample instead.');
+  });
+
+  it('puts line comments under the note', () => {
+    const notes = gateNotes('Sample instead.', [comment({ body: 'Rename this' })]);
+
+    expect(notes.startsWith('Sample instead.\n\nReview comments.')).toBe(true);
+    expect(notes).toContain('Rename this');
+  });
+
+  it('is only the line comments when no note was written', () => {
+    expect(gateNotes(' ', [comment({})]).startsWith('Review comments.')).toBe(true);
   });
 });

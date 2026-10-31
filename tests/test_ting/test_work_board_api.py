@@ -1350,6 +1350,7 @@ def test_a_ticket_review_is_read_back_from_its_runs_log() -> None:
     assert review["panels"] == [{"widget": "document", "title": "Plan", "field": "plan"}]
     assert review["revisions"][0]["fields"] == {"plan": "Trace every tick"}
     assert review["revisions"][0]["status"] == "pending"
+    assert review["chatEndpoint"] == "ws://forge/s/session/session"
 
 
 def test_another_tickets_runs_are_not_this_tickets_review() -> None:

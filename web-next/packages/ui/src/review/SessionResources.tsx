@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ConversationResourceProvider,
-  Dialog,
-  DialogContent,
   ExternalLinkPreview,
   ToolImagePreview,
   externalResource,
   type ConversationResource,
-} from '@niuulabs/ui';
-import type { IFileSystemPort } from '../ports/IFileSystemPort';
-import { resolveSessionResource } from '../domain/sessionResources';
+} from '../chat';
+import { Dialog, DialogContent } from '../primitives/Dialog';
+import type { IFileSystemPort } from './IFileSystemPort';
+import { resolveSessionResource } from './resourcePaths';
 import './SessionResources.css';
-import { classifyPreview, isTextPreview } from '../domain/filePreview';
+import { classifyPreview, isTextPreview } from './filePreview';
 import { ResourcePreviewContent, type LoadedPreview } from './ResourcePreviewContent';
 
 const INLINE_TEXT_LIMIT = 2 * 1024 * 1024;

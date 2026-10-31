@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { FileTreeNode } from '../ports/IFileSystemPort';
+import type { FileTreeNode } from './IFileSystemPort';
 import {
   buildBreadcrumbs,
   buildIndex,

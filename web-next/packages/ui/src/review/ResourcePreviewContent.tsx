@@ -7,8 +7,8 @@ import {
   MermaidDiagram,
   useCopyFeedback,
   type ConversationResource,
-} from '@niuulabs/ui';
-import { isTextPreview, type PreviewKind } from '../domain/filePreview';
+} from '../chat';
+import { isTextPreview, type PreviewKind } from './filePreview';
 
 export interface LoadedPreview {
   url: string;

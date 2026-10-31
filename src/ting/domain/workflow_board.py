@@ -40,10 +40,14 @@ OFF_BOARD_REASON = "This ticket's run does not match the workflows on this board
 _RESERVED_COLUMN_IDS = frozenset({BACKLOG_COLUMN_ID, DONE_COLUMN_ID})
 _REVIEW_KINDS = frozenset({"plan", "code", "output"})
 WIDGET_DOCUMENT = "document"
+WIDGET_DIFF = "diff"
+WIDGET_FILES = "files"
 WIDGET_PULL_REQUEST = "pullRequest"
 WIDGET_SUMMARY = "summary"
-# Only a document reads an outcome field; the others show what the gate already holds.
-_REVIEW_WIDGETS = frozenset({WIDGET_DOCUMENT, WIDGET_PULL_REQUEST, WIDGET_SUMMARY})
+# Only a document reads an outcome field; the others show the run's own session and gate.
+_REVIEW_WIDGETS = frozenset(
+    {WIDGET_DOCUMENT, WIDGET_DIFF, WIDGET_FILES, WIDGET_PULL_REQUEST, WIDGET_SUMMARY}
+)
 _WORK_NODE_KINDS = frozenset({"stage", "wait", "subworkflow", "gate"})
 _CLOSED_STATUS_TYPES = frozenset({"completed", "canceled"})
 _STOPPED_RUN_STATUSES = frozenset({RunStatus.FAILED, RunStatus.ESCALATED})
@@ -82,7 +86,11 @@ class ReviewPanel:
 
 _KIND_PANELS: Mapping[str, tuple[ReviewPanel, ...]] = {
     "plan": (ReviewPanel(widget=WIDGET_DOCUMENT, title="Plan", field="plan"),),
-    "code": (ReviewPanel(widget=WIDGET_PULL_REQUEST, title="Pull request"),),
+    "code": (
+        ReviewPanel(widget=WIDGET_DIFF, title="Changes"),
+        ReviewPanel(widget=WIDGET_FILES, title="Files"),
+        ReviewPanel(widget=WIDGET_PULL_REQUEST, title="Pull request"),
+    ),
     "output": (ReviewPanel(widget=WIDGET_SUMMARY, title="Result"),),
 }
 

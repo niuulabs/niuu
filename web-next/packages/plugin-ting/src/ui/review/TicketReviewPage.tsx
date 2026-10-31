@@ -2,6 +2,14 @@ import './TicketReviewPage.css';
 import { useState } from 'react';
 import { Link, useParams } from '@tanstack/react-router';
 import { ExternalLink } from 'lucide-react';
+import { useOptionalService } from '@niuulabs/plugin-sdk';
+import {
+  GateDecision,
+  SessionResources,
+  gateNotes,
+  useReviewComments,
+  type IFileSystemPort,
+} from '@niuulabs/ui';
 import {
   addQuoteToNote,
   isPending,
@@ -56,11 +64,13 @@ function ReviewWorkspace({
   const [chosenColumn, setChosenColumn] = useState<string | null>(null);
   const [chosenRevision, setChosenRevision] = useState<number | null>(null);
   const [showChanges, setShowChanges] = useState(false);
+  const [chosenPanel, setChosenPanel] = useState(0);
   const [note, setNote] = useState('');
-  const [needsNote, setNeedsNote] = useState(false);
   const [selection, setSelection] = useState('');
   const [asking, setAsking] = useState<string | null>(null);
+  const lineComments = useReviewComments();
   const decide = useGateDecision(projectId);
+  const filesystem = useOptionalService<IFileSystemPort>('filesystem');
 
   const review = reviews.find((item) => item.columnId === chosenColumn) ?? openingReview(reviews);
   const latest = review?.revisions[review.revisions.length - 1];
@@ -84,11 +94,6 @@ function ReviewWorkspace({
 
   function submit(decision: 'approve' | 'request_changes') {
     if (!gate) return;
-    if (decision === 'request_changes' && !note.trim()) {
-      setNeedsNote(true);
-      return;
-    }
-    setNeedsNote(false);
     decide.mutate(
       {
         issueId: task.source.issueId,
@@ -96,12 +101,31 @@ function ReviewWorkspace({
           gateId: gate.id,
           activationId: gate.activationId,
           decision,
-          notes: note.trim(),
+          notes: gateNotes(note, lineComments.comments),
         },
       },
-      { onSuccess: () => setNote('') },
+      {
+        onSuccess: () => {
+          setNote('');
+          lineComments.clear();
+        },
+      },
     );
   }
+
+  const panel = review.panels[chosenPanel] ?? review.panels[0];
+  const subject = panel ? (
+    <ReviewPanelSlot
+      panel={panel}
+      revision={revision}
+      compareWith={showChanges ? previous : null}
+      pullRequestUrl={pullRequestUrl}
+      chatEndpoint={review.chatEndpoint ?? null}
+      sessionId={review.sessionId}
+      filesystem={filesystem ?? null}
+      review={decidable ? lineComments : undefined}
+    />
+  ) : null;
 
   return (
     <div className="ting-review">
@@ -132,6 +156,7 @@ function ReviewWorkspace({
                 onClick={() => {
                   setChosenColumn(item.columnId);
                   setChosenRevision(null);
+                  setChosenPanel(0);
                 }}
               >
                 {item.title}
@@ -162,32 +187,7 @@ function ReviewWorkspace({
             {showChanges ? 'Hide changes' : `Show changes since r${previous.number}`}
           </button>
         ) : null}
-        {decidable ? (
-          <div className="ting-review__actions">
-            <button
-              type="button"
-              disabled={decide.isPending || !reading}
-              onClick={() => submit('request_changes')}
-            >
-              Request changes → {changes?.title}
-            </button>
-            <button
-              type="button"
-              className="ting-review__approve"
-              disabled={decide.isPending || !reading}
-              onClick={() => submit('approve')}
-            >
-              Approve → {approve?.title}
-            </button>
-          </div>
-        ) : null}
       </header>
-
-      {decide.error ? (
-        <p className="ting-review__error" role="alert">
-          {decisionError(decide.error)}
-        </p>
-      ) : null}
 
       <div className="ting-review__columns">
         <aside className="ting-review__ticket" aria-label="Ticket">
@@ -219,7 +219,6 @@ function ReviewWorkspace({
                   type="button"
                   onClick={() => {
                     setNote((current) => addQuoteToNote(current, selection));
-                    setNeedsNote(false);
                     setSelection('');
                   }}
                 >
@@ -228,35 +227,50 @@ function ReviewWorkspace({
               ) : null}
             </div>
           ) : null}
-          <div onMouseUp={readSelection} onKeyUp={readSelection}>
-            {review.panels.map((panel) => (
-              <ReviewPanelSlot
-                key={`${panel.widget}:${panel.title}`}
-                panel={panel}
-                revision={revision}
-                compareWith={showChanges ? previous : null}
-                pullRequestUrl={pullRequestUrl}
-              />
-            ))}
+          {review.panels.length > 1 ? (
+            <div className="ting-review__switch" role="tablist" aria-label="Panels">
+              {review.panels.map((item, index) => (
+                <button
+                  key={`${item.widget}:${item.title}`}
+                  type="button"
+                  role="tab"
+                  aria-selected={item === panel}
+                  onClick={() => setChosenPanel(index)}
+                >
+                  {item.title}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="ting-review__panel" onMouseUp={readSelection} onKeyUp={readSelection}>
+            {filesystem ? (
+              <SessionResources sessionId={review.sessionId} filesystem={filesystem}>
+                {subject}
+              </SessionResources>
+            ) : (
+              subject
+            )}
           </div>
         </main>
 
         <aside className="ting-review__talk" aria-label="Talk it through">
           {decidable ? (
-            <label className="ting-review__note">
-              <span>Your note</span>
-              <textarea
-                rows={6}
-                value={note}
-                placeholder="Anything you want changed. Goes with Request changes."
-                onChange={(event) => setNote(event.target.value)}
-              />
-            </label>
-          ) : null}
-          {needsNote ? (
-            <p className="ting-review__error" role="alert">
-              Say what should change first.
-            </p>
+            <GateDecision
+              title={review.title}
+              hint={`Approving continues to ${approve?.title}. Changes go back to ${changes?.title} in the same run.`}
+              note={note}
+              onNoteChange={setNote}
+              notePlaceholder="Anything you want changed."
+              commentCount={lineComments.comments.length}
+              requireNote
+              approveLabel={`Approve → ${approve?.title}`}
+              changesLabel={`Request changes → ${changes?.title}`}
+              busy={decide.isPending}
+              disabled={!reading}
+              error={decide.error ? decisionError(decide.error) : null}
+              onApprove={() => submit('approve')}
+              onRequestChanges={() => submit('request_changes')}
+            />
           ) : null}
           <CoordinatorChat
             coordinator={task.coordinator}

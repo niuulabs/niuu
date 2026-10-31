@@ -311,6 +311,21 @@ describe('TicketReviewPage', () => {
     expect(screen.getByText('Merged.')).toBeInTheDocument();
   });
 
+  it('moves between the panels a workflow declares', async () => {
+    const code: RunReview = {
+      ...planReview([revision()]),
+      panels: [
+        { widget: 'summary', title: 'Result' },
+        { widget: 'pullRequest', title: 'Pull request' },
+      ],
+    };
+    setup({ reviews: [code], unreadableRuns: [] });
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Pull request' }));
+
+    expect(screen.getByText('This run has no pull request yet.')).toBeInTheDocument();
+  });
+
   it('says when a run can no longer be read', async () => {
     setup({ reviews: [], unreadableRuns: ['Ticket Planning Flow'] });
 
@@ -338,6 +353,47 @@ describe('TicketReviewPage', () => {
 });
 
 describe('ReviewPanelSlot', () => {
+  it('says when a stopped session cannot show its changes', () => {
+    render(
+      <ReviewPanelSlot
+        panel={{ widget: 'diff', title: 'Changes' }}
+        revision={revision()}
+        compareWith={null}
+        pullRequestUrl={null}
+        chatEndpoint={null}
+      />,
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent('session of this run is stopped');
+  });
+
+  it('says when no file browser is connected', () => {
+    render(
+      <ReviewPanelSlot
+        panel={{ widget: 'files', title: 'Files' }}
+        revision={revision()}
+        compareWith={null}
+        pullRequestUrl={null}
+      />,
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent('no file browser');
+  });
+
+  it('mounts the shared diff for a running session', () => {
+    render(
+      <ReviewPanelSlot
+        panel={{ widget: 'diff', title: 'Changes' }}
+        revision={revision()}
+        compareWith={null}
+        pullRequestUrl={null}
+        chatEndpoint="ws://forge/s/run/session"
+      />,
+    );
+
+    expect(screen.getByTestId('diffs-tab')).toBeInTheDocument();
+  });
+
   it('names a panel this app does not have', () => {
     render(
       <ReviewPanelSlot

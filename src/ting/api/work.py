@@ -331,6 +331,7 @@ class RunReviewResponse(_ResponseModel):
     session_id: str
     panels: list[ReviewPanelResponse]
     revisions: list[ReviewRevisionResponse]
+    chat_endpoint: str | None = None
 
 
 class TicketReviewsResponse(_ResponseModel):
@@ -559,15 +560,6 @@ class _ForgeSessions:
         """The Forge a session was found on while the board was read."""
         return self._located.get(session_id)
 
-    async def locate(self, session_id: str, connection_id: str | None) -> VolundrPort | None:
-        """The Forge holding a session, or None once every Forge says it is gone."""
-        if connection_id:
-            adapter = await self._forge_for(connection_id)
-            session = await self._get_session(adapter, session_id)
-            return adapter if session is not None else None
-        adapter, session = await self._locate(session_id)
-        return adapter if session is not None else None
-
     async def read(self, session_id: str, connection_id: str | None) -> SessionProgress:
         if connection_id:
             adapter = await self._forge_for(connection_id)
@@ -599,6 +591,20 @@ class _ForgeSessions:
             chat_endpoint=session.chat_endpoint,
             blocked_reason=_blocked_reason(session),
         )
+
+    async def locate(
+        self, session_id: str, connection_id: str | None
+    ) -> tuple[VolundrPort, VolundrSession] | None:
+        """The Forge holding a session and the session, or None once every Forge says it is gone."""
+        if connection_id:
+            adapter = await self._forge_for(connection_id)
+            session = await self._get_session(adapter, session_id)
+        else:
+            found, session = await self._locate(session_id)
+            if found is None:
+                return None
+            adapter = found
+        return (adapter, session) if session is not None else None
 
     async def _forges_of_principal(self) -> tuple[list[VolundrPort], int]:
         if self._forges is None:
@@ -917,21 +923,21 @@ def create_work_router() -> APIRouter:
         page_size = request.app.state.settings.workflow_execution.list_page_size
         for campaign in runs:
             try:
-                forge = await sessions.locate(campaign.session_id, campaign.connection_id)
+                located = await sessions.locate(campaign.session_id, campaign.connection_id)
             except ForgeSessionUnreadableError as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
-            if forge is None:
+            if located is None:
                 unreadable.append(campaign.workflow_name)
                 continue
-            reviews.extend(
-                await campaign_reviews(
-                    forge,
-                    campaign,
-                    page_size=page_size,
-                    auth_token=extract_bearer_token(request),
-                    principal=principal,
-                )
+            forge, session = located
+            found = await campaign_reviews(
+                forge,
+                campaign,
+                page_size=page_size,
+                auth_token=extract_bearer_token(request),
+                principal=principal,
             )
+            reviews.extend(replace(item, chat_endpoint=session.chat_endpoint) for item in found)
         return TicketReviewsResponse.model_validate(
             {"reviews": reviews, "unreadable_runs": unreadable}
         )

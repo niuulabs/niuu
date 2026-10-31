@@ -1,6 +1,12 @@
 import type { ComponentType } from 'react';
 import { ExternalLink } from 'lucide-react';
-import { MarkdownContent } from '@niuulabs/ui';
+import {
+  MarkdownContent,
+  SessionDiffs,
+  SessionFilesWorkspace,
+  type IFileSystemPort,
+  type ReviewControls,
+} from '@niuulabs/ui';
 import { diffLines, type ReviewRevision } from '../../domain/review';
 import type { ReviewPanel } from '../../domain/work';
 
@@ -10,6 +16,12 @@ export interface ReviewPanelProps {
   /** The revision before this one, when the person wants to see what changed. */
   compareWith: ReviewRevision | null;
   pullRequestUrl: string | null;
+  /** The run's session, which diffs are read from; null once it has stopped. */
+  chatEndpoint?: string | null;
+  sessionId?: string;
+  filesystem?: IFileSystemPort | null;
+  /** Adds line comments where a panel can take them. */
+  review?: ReviewControls;
 }
 
 function DocumentPanel({ panel, revision, compareWith }: ReviewPanelProps) {
@@ -31,6 +43,36 @@ function DocumentPanel({ panel, revision, compareWith }: ReviewPanelProps) {
         </span>
       ))}
     </pre>
+  );
+}
+
+function DiffPanel({ chatEndpoint, review }: ReviewPanelProps) {
+  if (!chatEndpoint) {
+    return (
+      <p role="alert" className="ting-review-panel__missing">
+        The session of this run is stopped, so its changes cannot be read.
+      </p>
+    );
+  }
+  return (
+    <div className="ting-review-panel__workspace">
+      <SessionDiffs chatEndpoint={chatEndpoint} review={review} />
+    </div>
+  );
+}
+
+function FilesPanel({ filesystem, sessionId, review }: ReviewPanelProps) {
+  if (!filesystem || !sessionId) {
+    return (
+      <p role="alert" className="ting-review-panel__missing">
+        This app has no file browser connected.
+      </p>
+    );
+  }
+  return (
+    <div className="ting-review-panel__workspace">
+      <SessionFilesWorkspace sessionId={sessionId} filesystem={filesystem} review={review} />
+    </div>
   );
 }
 
@@ -56,6 +98,8 @@ function SummaryPanel({ revision }: ReviewPanelProps) {
 /** Panels a workflow can declare; a plugin adds a kind of review by adding one here. */
 export const REVIEW_WIDGETS: Readonly<Record<string, ComponentType<ReviewPanelProps>>> = {
   document: DocumentPanel,
+  diff: DiffPanel,
+  files: FilesPanel,
   pullRequest: PullRequestPanel,
   summary: SummaryPanel,
 };

@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
-import type { ReviewComment, ReviewCommentDraft, ReviewControls } from '../domain/reviewComments';
+import type { ReviewComment, ReviewCommentDraft, ReviewControls } from './reviewModel';
 
 export interface ReviewDraft extends ReviewControls {
   clear(): void;

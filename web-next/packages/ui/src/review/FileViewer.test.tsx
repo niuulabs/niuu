@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { ReviewControls } from '../../domain/reviewComments';
+import type { ReviewControls } from './reviewModel';
 import { FileViewer } from './FileViewer';
 
 vi.mock('shiki', () => ({

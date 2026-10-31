@@ -24,6 +24,8 @@ export interface RunReview {
   sessionId: string;
   panels: ReviewPanel[];
   revisions: ReviewRevision[];
+  /** The run's session while it is up; diffs are read from it. */
+  chatEndpoint?: string | null;
 }
 
 export interface TicketReviews {

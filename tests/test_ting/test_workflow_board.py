@@ -34,7 +34,11 @@ def test_a_review_kind_brings_its_usual_panels() -> None:
     board = parse_workflow_board(_graph())
 
     assert board is not None
-    assert board.columns[1].panels == (ReviewPanel(widget="pullRequest", title="Pull request"),)
+    assert board.columns[1].panels == (
+        ReviewPanel(widget="diff", title="Changes"),
+        ReviewPanel(widget="files", title="Files"),
+        ReviewPanel(widget="pullRequest", title="Pull request"),
+    )
 
 
 def test_a_workflow_declares_its_own_panels() -> None:

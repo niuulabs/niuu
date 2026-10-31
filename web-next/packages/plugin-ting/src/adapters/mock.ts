@@ -2354,7 +2354,11 @@ function mockTicketReviews(task: WorkTask | undefined): TicketReviews {
         workflowName: 'Reviewed Delivery Flow',
         taskId: `demo-run-${task.source.issueId}`,
         sessionId: `demo-session-${task.source.issueId}`,
-        panels: [{ widget: 'pullRequest', title: 'Pull request' }],
+        panels: [
+          { widget: 'diff', title: 'Changes' },
+          { widget: 'files', title: 'Files' },
+          { widget: 'pullRequest', title: 'Pull request' },
+        ],
         revisions: [
           {
             number: 1,

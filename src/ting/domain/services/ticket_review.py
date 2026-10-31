@@ -60,6 +60,7 @@ class RunReview:
     session_id: str
     panels: tuple[ReviewPanel, ...]
     revisions: tuple[ReviewRevision, ...]
+    chat_endpoint: str | None = None
 
 
 def _document_fields(column: BoardColumn) -> frozenset[str]:

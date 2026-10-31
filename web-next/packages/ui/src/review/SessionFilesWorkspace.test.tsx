@@ -2,9 +2,9 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SessionFilesWorkspace } from './SessionFilesWorkspace';
-import type { FileTreeNode, IFileSystemPort } from '../ports/IFileSystemPort';
+import type { FileTreeNode, IFileSystemPort } from './IFileSystemPort';
 
-vi.mock('./FileTree/FileViewer', () => ({
+vi.mock('./FileViewer', () => ({
   FileViewer: ({
     path,
     content,

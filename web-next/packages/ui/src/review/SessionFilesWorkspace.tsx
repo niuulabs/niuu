@@ -1,9 +1,10 @@
 import { useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { cn, useConversationResources } from '@niuulabs/ui';
-import type { IFileSystemPort, FileTreeNode } from '../ports/IFileSystemPort';
-import type { ReviewControls } from '../domain/reviewComments';
-import { FileViewer } from './FileTree/FileViewer';
+import { useConversationResources } from '../chat';
+import { cn } from '../utils/cn';
+import type { IFileSystemPort, FileTreeNode } from './IFileSystemPort';
+import type { ReviewControls } from './reviewModel';
+import { FileViewer } from './FileViewer';
 import './SessionFilesWorkspace.css';
 
 interface SessionFilesWorkspaceProps {
