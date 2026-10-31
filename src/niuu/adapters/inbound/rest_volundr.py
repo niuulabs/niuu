@@ -54,6 +54,7 @@ from niuu.adapters.inbound.remote_urls import (
 from niuu.adapters.inbound.remote_urls import (
     forward_websocket_identity_headers as _forward_websocket_headers,
 )
+from niuu.adapters.inbound.session_owners import SessionOwners
 from niuu.adapters.inbound.source_health import (
     SourceFailure,
     describe_remote_failure,
@@ -812,6 +813,7 @@ async def _find_runtime_owner(
     rebase_chat_endpoint: bool = True,
     local_scope: bool = False,
     extra_headers: dict[str, str] | None = None,
+    candidates: list[RegisteredInstance] | None = None,
 ) -> tuple[RegisteredInstance, dict[str, Any]]:
     async def probe(instance: RegisteredInstance) -> tuple[RegisteredInstance, httpx.Response]:
         response = await _request_remote(
@@ -826,7 +828,9 @@ async def _find_runtime_owner(
         return instance, response
 
     selected = request.query_params.get("instance_id")
-    if local_scope:
+    if candidates is not None:
+        instances = candidates  # the caller already knows where to look
+    elif local_scope:
         instances = [await _local_session_instance(service, principal, request)]
     elif selected:
         instances = [await _resolve_target_instance(service, principal, selected)]
@@ -894,6 +898,7 @@ async def _find_session_owner(
     *,
     embedded_app: ASGIApp | None = None,
     extra_headers: dict[str, str] | None = None,
+    candidates: list[RegisteredInstance] | None = None,
 ) -> tuple[RegisteredInstance, dict[str, Any]]:
     return await _find_runtime_owner(
         service,
@@ -904,6 +909,7 @@ async def _find_session_owner(
         embedded_app=embedded_app,
         local_scope=_local_session_scope(request),
         extra_headers=extra_headers,
+        candidates=candidates,
     )
 
 
@@ -1033,6 +1039,7 @@ def create_volundr_router(
     guild_membership: GuildMembership | None = None,
     presented_file_max_bytes: int = PRESENTED_FILE_DEFAULT_MAX_BYTES,
     feedless_recheck_seconds: float | None = None,
+    session_owner_ttl_seconds: float | None = None,
 ) -> APIRouter:
     """Create a registry-aware Forge runtime router.
 
@@ -1881,6 +1888,10 @@ def create_volundr_router(
                     seen.add(item["id"])
                     merged[f"{item.get('instance_id')}:{item['id']}"] = item
         sessions = [item for item in merged.values() if item.get("id")]
+        if session_owners is not None:
+            session_owners.learn(
+                (str(item["id"]), str(item.get("instance_id") or "")) for item in sessions
+            )
         sessions.sort(
             key=lambda item: _normalize_timestamp(
                 item.get("last_active") or item.get("lastActive") or item.get("last_activity_at")
@@ -3912,6 +3923,10 @@ def create_volundr_router(
         payload = response.json()
         return payload if isinstance(payload, dict) else {}
 
+    session_owners = (
+        SessionOwners(session_owner_ttl_seconds) if session_owner_ttl_seconds is not None else None
+    )
+
     #: Nodes known to lack a notification route: (route, instance id) -> monotonic recheck
     #: time. Per route, so one route missing never hides another the node does serve.
     feedless_until: dict[tuple[str, str], float] = {}
@@ -3975,8 +3990,18 @@ def create_volundr_router(
         session_id: str,
         **kwargs: Any,
     ) -> tuple[RegisteredInstance, dict[str, Any]]:
+        remembered = await _remembered_owner(service, principal, request, session_id)
+        if remembered is not None:
+            try:
+                return await _find_session_owner_anywhere(
+                    service, principal, request, session_id, candidates=[remembered], **kwargs
+                )
+            except HTTPException as exc:
+                if exc.status_code != status.HTTP_404_NOT_FOUND:
+                    raise  # the owner's own failure is the answer
+                session_owners.forget(session_id)  # moved or gone: search again
         try:
-            return await _find_session_owner_anywhere(
+            instance, payload = await _find_session_owner_anywhere(
                 service, principal, request, session_id, **kwargs
             )
         except HTTPException as exc:
@@ -3995,6 +4020,23 @@ def create_volundr_router(
                 status.HTTP_404_NOT_FOUND,
                 f"Session {session_id} is not on this node; it is {owner}. {how}",
             ) from exc
+        if session_owners is not None:
+            session_owners.learn([(session_id, instance.id)])
+        return instance, payload
+
+    async def _remembered_owner(
+        service: InstanceService, principal: Principal, request: Request, session_id: str
+    ) -> RegisteredInstance | None:
+        """The node remembered owning a session, if the caller may reach it there."""
+        if session_owners is None or "instance_id" in request.query_params:
+            return None
+        if _local_session_scope(request):
+            return None
+        owner = session_owners.owner_of(session_id)
+        if owner is None:
+            return None
+        visible = await _visible_instances(service, principal)
+        return next((instance for instance in visible if instance.id == owner), None)
 
     async def _guild_session_listing(
         request: Request,

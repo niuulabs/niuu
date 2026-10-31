@@ -3285,6 +3285,15 @@ class Settings(BaseSettings):
         gt=0,
         description="Delay before retrying a disconnected host in the merged session stream.",
     )
+    guild_session_owner_ttl_seconds: float = Field(
+        default=3600.0,
+        gt=0,
+        description=(
+            "How long the Guild facade remembers which node owns a session (learned from "
+            "Guild listings and owner lookups) and reads it there alone. A stale entry costs "
+            "one 404 from the old owner, then a full search; it never hides a session."
+        ),
+    )
     guild_feedless_recheck_seconds: float = Field(
         default=3600.0,
         gt=0,
