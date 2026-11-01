@@ -38,7 +38,7 @@ single shared reducer:
 
 - `src/niuu/domain/transcript_reducer.py` — `reduce_frames(...)` (the pure
   fold; the SINGLE folding contract, INV-4).
-- `src/volundr/domain/services/transcript_rebuild.py` — `rebuild_turns(...)`
+- `src/niuu/domain/transcript_rebuild.py` — `rebuild_turns(...)`
   (the rebuild path that drives the reducer over the durable log).
 
 This fold takes **only** `session_event_log` entries. It has no input from the

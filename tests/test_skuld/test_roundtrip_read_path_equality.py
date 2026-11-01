@@ -509,7 +509,7 @@ class TestRoundTripEqualityINV5:
         # is WHY excluding conversation.turn from the raw wire stream is safe
         # (FR-3/FR-10): the reduce/rebuild path consumes them as authoritative
         # sdk_turns, so the only place they ever mattered still sees them.
-        from volundr.domain.services.transcript_rebuild import rebuild_turns
+        from niuu.domain.transcript_rebuild import rebuild_turns
 
         broker, _live_ws, repo = driven
         entries = await repo.read_after(session_id, after_seq=0, limit=10_000)

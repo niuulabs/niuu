@@ -13,12 +13,12 @@ from starlette.websockets import WebSocket
 
 from niuu.domain.conversation_timeline import TIMELINE_KEY, project_timeline
 from niuu.domain.text_projection import projection_revision
+from niuu.domain.transcript_rebuild import rebuild_turns
 from niuu.domain.transcript_reducer import reduce_frames
 from skuld import broker_api
 from tests.test_skuld.test_broker_review_regressions import _broker, _finish_deliveries, _Ledger
 from tests.test_skuld.test_codex_ws_transport import _make_transport
 from volundr.domain.models import SessionLogEntry
-from volundr.domain.services.transcript_rebuild import rebuild_turns
 
 
 def _text(identity, text, *, complete=True):

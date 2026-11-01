@@ -72,7 +72,7 @@ Anchors are the files/lines a test author should read first.
   - cli event fold + durable log: `_handle_cli_event` (~2919–3012), `_enqueue_event_log` (~4428)
   - websocket + reconnect replay: `handle_websocket` (~5497–5630), replay (~5590–5614)
   - attention / lock-state: `_exit_attention` (~4987), `_pending_ask_user_questions` (~1065)
-- crash rebuild: `src/volundr/domain/services/transcript_rebuild.py` (`rebuild_turns`),
+- crash rebuild: `src/niuu/domain/transcript_rebuild.py` (`rebuild_turns`),
   `session_archive.py::_load_event_log_transcript`, `rest.py::get_conversation`.
 
 ## 3. The investment: three reusable harness components

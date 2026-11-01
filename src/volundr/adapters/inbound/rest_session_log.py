@@ -40,7 +40,7 @@ from niuu.domain.services.token_scope import (
     FORGE_SESSION_READ_SCOPE,
     require_scope,
 )
-from niuu.domain.transcript_reducer import is_read_path_excluded
+from niuu.domain.transcript_reducer import is_per_connect_ephemeral, is_read_path_excluded
 from skuld.channels import filter_internal_blocks
 from volundr.adapters.inbound.forge_session_auth import require_bound_session
 from volundr.domain.models import SessionLogEntry
@@ -456,10 +456,24 @@ def create_session_log_router(
                 "filter the live and replay paths apply (SRD FR-7 / INV-10)."
             ),
         ),
+        include_seeds: bool = Query(
+            default=False,
+            description=(
+                "Rebuild read, not a wire replay: also return the reducer seeds "
+                "(conversation.turn and friends) that rebuild_turns folds. Room "
+                "participant replies exist only as seeds. Requires show_internal=true."
+            ),
+        ),
     ) -> list[SessionLogEntryResponse]:
         """Replay the session transcript from a cursor (full fidelity), gated by the
         same internal-visibility filter as the live and replay read paths."""
         await _check_access(request, session_id, "read")
+        if include_seeds and not show_internal:
+            # The visibility filter reads wire frames; it cannot gate a turn inside a seed.
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="include_seeds requires show_internal=true",
+            )
         entries = await log_repository.read_after(session_id, after_seq=after, limit=limit)
         # Drop frames that were never on the canonical shared wire from the RAW
         # wire stream ALWAYS — independent of show_internal — so literal
@@ -468,8 +482,9 @@ def create_session_log_router(
         # never broadcast) AND per-connect handshakes (system welcome + capabilities,
         # broadcast to ONE socket only — a connecting client gets its own fresh pair).
         # They remain in the durable log (read_after) and still authoritatively drive
-        # the reduce/rebuild path.
-        streamable = [e for e in entries if not is_read_path_excluded(e.kind, e.payload)]
+        # the reduce/rebuild path, which is the one reader that asks for the seeds.
+        excluded = is_per_connect_ephemeral if include_seeds else is_read_path_excluded
+        streamable = [e for e in entries if not excluded(e.kind, e.payload)]
         gated = _gate_entries(streamable, show_internal=show_internal)
         return [SessionLogEntryResponse.from_entry(e) for e in gated]
 

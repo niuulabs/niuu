@@ -35,6 +35,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from niuu.domain.transcript_rebuild import rebuild_turns
 from tests.conftest import (
     InMemorySessionRepository,
     MockPodManager,
@@ -52,7 +53,6 @@ from volundr.domain.models import (
     SessionStatus,
 )
 from volundr.domain.services import SessionArchiveService, SessionService
-from volundr.domain.services.transcript_rebuild import rebuild_turns
 
 _CONV_PATH = "/api/v1/forge/sessions/{sid}/conversation"
 _ACTIVITY_PATH = "/api/v1/forge/sessions/{sid}/activity"

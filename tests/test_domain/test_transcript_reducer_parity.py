@@ -22,11 +22,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from niuu.domain.transcript_rebuild import rebuild_turns
 from skuld.broker import Broker
 from skuld.config import SkuldSettings
 from skuld.transports import TransportCapabilities
 from volundr.domain.models import SessionLogEntry
-from volundr.domain.services.transcript_rebuild import rebuild_turns
 
 SID = "test-session"
 # The reducer derives turn ids from ``str(session_id)``; the live broker uses ``self.session_id``

@@ -13,6 +13,7 @@ import pytest
 import pytest_asyncio
 
 from niuu.domain.text_projection import repair_legacy_turn, repair_marker
+from niuu.domain.transcript_rebuild import rebuild_turns
 from tests.test_domain.test_text_projection_repair import captured
 from volundr.adapters.outbound.pg_session_event_log import _INSERT_SQL, PostgresSessionEventLog
 from volundr.domain.history_import import (
@@ -21,7 +22,6 @@ from volundr.domain.history_import import (
     HistoryImportValidationError,
 )
 from volundr.domain.models import SessionLogEntry
-from volundr.domain.services.transcript_rebuild import rebuild_turns
 
 _NATIVE_TS = datetime(2026, 9, 8, 7, 43, 4, tzinfo=UTC)
 _SOURCE = "codex-native:original-thread"

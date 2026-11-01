@@ -357,7 +357,7 @@ def test_mid_cursor_history_union_tail_equals_full_replay():
     # INV-6: reconstructed history at after=N ∪ tail == replay from after=0.
     # We assert the reduced turn-set is identical whether reconstructed in one
     # shot (after=0, all frames are history) or split history+tail at after=N.
-    from volundr.domain.services.transcript_rebuild import rebuild_turns
+    from niuu.domain.transcript_rebuild import rebuild_turns
 
     sid = uuid4()
     app, repo = _app()

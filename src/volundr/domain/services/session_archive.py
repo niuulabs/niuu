@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from niuu.domain.text_projection import projection_revision
+from niuu.domain.transcript_rebuild import rebuild_turns
 from volundr.domain.models import LocalMountSource
-from volundr.domain.services.transcript_rebuild import rebuild_turns
 from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import (
     ArchivePathError,
