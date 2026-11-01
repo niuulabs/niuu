@@ -803,9 +803,7 @@ class TestSendMessage:
         assert port.spawned[0].name == "tool-builder-build-the-widget-tool"
 
     def test_saga_planning_brief_gate_is_reviewable_after_a2a_launch(self) -> None:
-        workflow = next(
-            item for item in load_system_workflows() if item.name == "Saga Planning"
-        )
+        workflow = next(item for item in load_system_workflows() if item.name == "Saga Planning")
         client, campaigns, port = _make_client(
             workflow_repo=InMemoryWorkflowRepository([workflow]),
         )
@@ -887,9 +885,7 @@ class TestSendMessage:
         assert "Acceptance: approval and requested changes" in gate["brief"]
 
     def test_saga_planning_missing_brief_fails_a2a_task(self) -> None:
-        workflow = next(
-            item for item in load_system_workflows() if item.name == "Saga Planning"
-        )
+        workflow = next(item for item in load_system_workflows() if item.name == "Saga Planning")
         client, campaigns, port = _make_client(
             workflow_repo=InMemoryWorkflowRepository([workflow]),
         )
@@ -2244,9 +2240,7 @@ class TestGetTask:
         workflow = next(
             item for item in load_system_workflows() if item.name == "Developer Planning"
         )
-        client, campaigns, port = _make_client(
-            workflow_repo=InMemoryWorkflowRepository([workflow])
-        )
+        client, campaigns, port = _make_client(workflow_repo=InMemoryWorkflowRepository([workflow]))
         launched = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
         task_id = launched.json()["result"]["task"]["id"]
         campaign = asyncio.run(campaigns.get_campaign_by_slug(task_id))
@@ -2302,9 +2296,7 @@ class TestGetTask:
         workflow = next(
             item for item in load_system_workflows() if item.name == "Developer Planning"
         )
-        client, campaigns, port = _make_client(
-            workflow_repo=InMemoryWorkflowRepository([workflow])
-        )
+        client, campaigns, port = _make_client(workflow_repo=InMemoryWorkflowRepository([workflow]))
         launched = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
         task_id = launched.json()["result"]["task"]["id"]
         campaign = asyncio.run(campaigns.get_campaign_by_slug(task_id))
@@ -2341,8 +2333,9 @@ class TestGetTask:
         assert task["metadata"]["failureDiagnostic"]["taskId"] == (
             "event_planning_analysis_f172f8bda59428bc"
         )
-        assert "no failure reason was supplied by the peer" in (
-            task["status"]["message"]["parts"][0]["text"]
+        assert (
+            "no failure reason was supplied by the peer"
+            in (task["status"]["message"]["parts"][0]["text"])
         )
         assert "no reason given" not in task["status"]["message"]["parts"][0]["text"]
 

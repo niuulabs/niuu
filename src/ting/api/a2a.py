@@ -205,11 +205,7 @@ def campaign_to_task(campaign: WorkflowCampaign) -> Task:
                 if campaign.metadata.get("branch")
                 else {}
             ),
-            **(
-                {"error": failure_message}
-                if campaign.metadata.get("failure_error")
-                else {}
-            ),
+            **({"error": failure_message} if campaign.metadata.get("failure_error") else {}),
             **({"failureDiagnostic": failure_diagnostic} if failure_diagnostic else {}),
         }
     )

@@ -348,9 +348,7 @@ def _peer_error_reason(frame: dict[str, Any]) -> tuple[str, bool]:
         if isinstance(raw_error, dict):
             message = str(raw_error.get("message") or raw_error.get("error") or "")
         else:
-            message = str(
-                raw_error or data.get("message") or data.get("content") or ""
-            )
+            message = str(raw_error or data.get("message") or data.get("content") or "")
     else:
         message = str(frame.get("error") or "")
     message = message.strip()

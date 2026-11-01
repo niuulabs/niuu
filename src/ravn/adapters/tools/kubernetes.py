@@ -611,10 +611,7 @@ def _is_http_not_found(exc: Exception) -> bool:
 
 def _route_description(route: dict[str, str]) -> str:
     cluster = route["cluster"] or "(this cluster)"
-    return (
-        f"{route['kind']} {route['namespace']}/{route['name']} "
-        f"on cluster {cluster}"
-    )
+    return f"{route['kind']} {route['namespace']}/{route['name']} on cluster {cluster}"
 
 
 async def _maybe_await(value: Any) -> Any:
