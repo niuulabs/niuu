@@ -50,6 +50,7 @@ def _saga(*names: str) -> Saga:
     return SimpleNamespace(
         id=uuid4(),
         tracker_id="project-1",
+        tracker_type="linear",
         tracker_connection_id="",
         board_workflows=tuple(_pin(name) for name in names),
         workflow_id=None,
@@ -134,6 +135,7 @@ def _advancer(
     service.start_workflow = AsyncMock(side_effect=start_error)
     tracker = MagicMock()
     tracker.connection_id = ""
+    tracker.provider = "linear"
     tracker.list_issues = AsyncMock(
         return_value=[SimpleNamespace(id=ISSUE, status_type=status_type)]
     )
@@ -359,7 +361,7 @@ async def test_a_tracker_that_cannot_be_reached_blocks_rather_than_reads_as_read
     await advancer.advance(finished)
 
     service.start_workflow.assert_not_awaited()
-    assert "tracker source is unavailable" in coordinators.row.start_error
+    assert "No tracker connection is configured" in coordinators.row.start_error
 
 
 async def test_an_owner_with_no_forge_connection_blocks_with_the_reason() -> None:

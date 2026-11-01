@@ -19,12 +19,12 @@ from niuu.domain.models import Principal
 from ting.domain.models import RunStatus, Saga, TrackerIssue, WorkflowCampaign
 from ting.domain.models import WorkflowCampaignStatus as CampaignStatus
 from ting.domain.services.ticket_coordinator import TicketCoordinatorService, TicketWorkflow
-from ting.domain.services.tracker_selection import tracker_for_saga
 from ting.domain.ticket_coordinator import (
     TicketCoordinator,
     TicketCoordinatorStatus,
     ticket_of,
 )
+from ting.domain.tracker_routing import TrackerRoutingError, select_tracker_for_saga
 from ting.domain.workflow_board import BoardWorkflow, project_board, ticket_is_closed
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.ticket_coordinator_repository import TicketCoordinatorRepository
@@ -159,11 +159,12 @@ class TicketAdvancer:
         coordinator: TicketCoordinator,
         claimed: TicketCoordinator,
     ) -> None:
-        tracker = tracker_for_saga(
-            await self._tracker_factory.for_owner(coordinator.owner_id), saga
-        )
-        if tracker is None:
-            raise LookupError("the project's tracker source is unavailable")
+        try:
+            tracker = select_tracker_for_saga(
+                await self._tracker_factory.for_owner(coordinator.owner_id), saga
+            )
+        except TrackerRoutingError as exc:
+            raise LookupError(str(exc)) from exc
         issue = await _tracker_issue(tracker, saga, issue_id)
         if ticket_is_closed(issue.status_type) or await _has_active_run(tracker, saga, issue_id):
             await self._coordinator_repo.save(
