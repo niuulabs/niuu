@@ -364,6 +364,7 @@ async def test_a_ticket_waiting_at_a_gate_never_expires() -> None:
     projector._input_wait_timeout = 1.0
     campaign = SimpleNamespace(
         status="blocked",
+        session_id="session-1",
         metadata={"ticket": {"sagaId": "s", "issueId": "i"}},
         last_activity_at=datetime(2026, 1, 1, tzinfo=UTC),
         updated_at=datetime(2026, 1, 1, tzinfo=UTC),
