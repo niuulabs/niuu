@@ -55,7 +55,7 @@ REJECTION = re.compile(
     r"|(?:APNs refused a \S+ push for owner \S+: (?P<refused>.+)$)"
 )
 ROLLOUT_LINE = re.compile(r"^(?P<at>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) (?P<text>.*)$")
-FIRST_WINDOW = timedelta(hours=24)
+GATEWAY_STARTED = "Push gateway started:"
 
 
 class SummaryError(RuntimeError):
@@ -65,18 +65,17 @@ class SummaryError(RuntimeError):
 # -- pure parts -----------------------------------------------------------------------
 
 
-def counter_moves(now: dict[str, Any], before: dict[str, Any] | None) -> tuple[dict, bool]:
-    """Counters moved since ``before``, and whether the gateway restarted in between.
+def counter_moves(
+    now: dict[str, Any], before: dict[str, Any] | None, restarted: bool
+) -> dict[str, int]:
+    """Counters moved since ``before``; after a restart (or with no ``before``), all of them.
 
-    A counter that went down means a restart: the current values are then the moves
-    since that restart.
+    ``restarted`` comes from the gateway's own "started" log line: counters that grew past
+    their previous values after a restart cannot tell it by themselves.
     """
-    if before is None:
-        return {key: now.get(key, 0) for key in PUSH_COUNTERS}, True
-    restarted = any(now.get(key, 0) < before.get(key, 0) for key in PUSH_COUNTERS)
-    if restarted:
-        return {key: now.get(key, 0) for key in PUSH_COUNTERS}, True
-    return {key: now.get(key, 0) - before.get(key, 0) for key in PUSH_COUNTERS}, False
+    if before is None or restarted:
+        return {key: now.get(key, 0) for key in PUSH_COUNTERS}
+    return {key: now.get(key, 0) - before.get(key, 0) for key in PUSH_COUNTERS}
 
 
 def environment_moves(
@@ -92,6 +91,10 @@ def environment_moves(
         }
         for env, counts in now.items()
     }
+
+
+def gateway_restarted(lines: list[str]) -> bool:
+    return any(GATEWAY_STARTED in line for line in lines)
 
 
 def rejection_reasons(lines: list[str]) -> Counter[str]:
@@ -171,7 +174,7 @@ def render(
     hosts: list[HostSnapshot],
     push: dict[str, Any] | None,
     previous_push: dict[str, Any] | None,
-    reasons: Counter[str],
+    gateway_log: list[str] | None,
     rolled: list[str],
     completed: list[str],
 ) -> str:
@@ -202,13 +205,18 @@ def render(
         lines.append("- **Push gateway**: status unreadable")
     else:
         stats = {key: push.get(key, 0) for key in PUSH_COUNTERS}
-        moves, restarted = counter_moves(stats, previous_push and previous_push.get("stats"))
+        before = previous_push and previous_push.get("stats")
+        restarted = gateway_log is not None and gateway_restarted(gateway_log)
+        moves = counter_moves(stats, before, restarted)
         envs = environment_moves(
             push.get("apns_by_environment") or {},
             previous_push and previous_push.get("apns_by_environment"),
-            restarted,
+            restarted or before is None,
         )
-        label = "since its restart" if restarted else "since the previous summary"
+        if restarted or before is None:
+            label = "since the gateway started"
+        else:
+            label = f"since {datetime.fromisoformat(previous_push['at']):%m-%d %H:%M}"
         moved = ", ".join(f"{key} {value}" for key, value in moves.items() if value) or "nothing"
         per_env = (
             "; ".join(
@@ -217,7 +225,14 @@ def render(
             )
             or "none"
         )
-        why = ", ".join(f"{reason} ×{n}" for reason, n in reasons.most_common()) or "none"
+        why = (
+            "gateway log unreadable"
+            if gateway_log is None
+            else ", ".join(
+                f"{reason} ×{n}" for reason, n in rejection_reasons(gateway_log).most_common()
+            )
+            or "none"
+        )
         tokens = "; ".join(
             f"{env}: " + ", ".join(f"{k} {v}" for k, v in sorted(kinds.items()))
             for env, kinds in sorted((push.get("tokens_by_environment") or {}).items())
@@ -245,9 +260,9 @@ def render(
 # -- gathering --------------------------------------------------------------------------
 
 
-def _get_json(url: str) -> Any:
+def _get_json(url: str, timeout: float) -> Any:
     opener = build_opener(ProxyHandler({}))
-    with opener.open(Request(url), timeout=20) as response:
+    with opener.open(Request(url), timeout=timeout) as response:
         return json.load(response)
 
 
@@ -256,9 +271,11 @@ def _run(command: list[str] | str, **kwargs: Any) -> str:
     return subprocess.run(argv, check=True, capture_output=True, text=True, **kwargs).stdout
 
 
-def _host(spec: dict[str, Any], since: datetime, state: dict[str, Any]) -> HostSnapshot:
+def _host(
+    spec: dict[str, Any], since: datetime, when: datetime, state: dict, timeout: float
+) -> HostSnapshot:
     try:
-        health = _get_json(spec["url"] + "/health")
+        health = _get_json(spec["url"] + "/health", timeout)
     except (URLError, OSError, ValueError) as exc:
         return HostSnapshot(
             spec["name"], f"UNREACHABLE ({exc})", "?", "?", None, [], "?", None, None, None
@@ -269,12 +286,12 @@ def _host(spec: dict[str, Any], since: datetime, state: dict[str, Any]) -> HostS
     except (subprocess.CalledProcessError, OSError) as exc:
         ledger = f"unreadable ({type(exc).__name__})"
     try:
-        listed = _get_json(spec["url"] + "/api/v1/forge/sessions?scope=local")
+        listed = _get_json(spec["url"] + "/api/v1/forge/sessions?scope=local", timeout)
         sessions = len(listed)
         running = sum(1 for item in listed if item.get("status") == "running")
     except (URLError, OSError, ValueError):
         sessions = running = None
-    errors, note = _server_errors(spec, since, state)
+    errors, note = _server_errors(spec, since, when, state)
     return HostSnapshot(
         spec["name"],
         str(health.get("status")),
@@ -291,7 +308,7 @@ def _host(spec: dict[str, Any], since: datetime, state: dict[str, Any]) -> HostS
 
 
 def _server_errors(
-    spec: dict[str, Any], since: datetime, state: dict[str, Any]
+    spec: dict[str, Any], since: datetime, when: datetime, state: dict[str, Any]
 ) -> tuple[int | None, str]:
     source = spec["errors"]
     try:
@@ -312,28 +329,31 @@ def _server_errors(
         size = int(_run(source["size_command"]).strip())
         offsets = state.setdefault("log_offsets", {})
         counted_from = state.setdefault("log_since", {})
-        first = spec["name"] not in offsets
-        start, end = new_log_bytes(size, offsets.get(spec["name"]))
-        offsets[spec["name"]] = end
-        if first:  # the log has no timestamps: count only what is written from now on
-            counted_from[spec["name"]] = datetime.now(UTC).isoformat()
+        if spec["name"] not in offsets:
+            # The log has no timestamps: count only what is written from now on.
+            offsets[spec["name"]] = size
+            counted_from[spec["name"]] = when.isoformat()
             return None, " (counted from this summary on)"
-        counted = _run(source["count_command"].format(start=start + 1, length=end - start))
-        note = ""
-        began = counted_from.get(spec["name"])
-        if began and datetime.fromisoformat(began) > since:
-            note = f" (since {datetime.fromisoformat(began):%m-%d %H:%M})"
-        counted_from[spec["name"]] = datetime.now(UTC).isoformat()
-        return int(counted.strip() or 0), note
+        start, end = new_log_bytes(size, offsets[spec["name"]])
+        counted = int(
+            _run(source["count_command"].format(start=start + 1, length=end - start)).strip() or 0
+        )
+        # Advanced only once counted: a failed count is retried over the same bytes.
+        offsets[spec["name"]] = end
+        began = datetime.fromisoformat(counted_from.get(spec["name"], since.isoformat()))
+        counted_from[spec["name"]] = when.isoformat()
+        return counted, (f" (since {began:%m-%d %H:%M})" if began > since else "")
     except (subprocess.CalledProcessError, OSError, ValueError) as exc:
         return None, f" ({type(exc).__name__})"
 
 
 def gather(config: dict[str, Any], state: dict[str, Any], when: datetime) -> tuple[str, dict]:
-    since = datetime.fromisoformat(state["at"]) if state.get("at") else when - FIRST_WINDOW
-    hosts = [_host(spec, since, state) for spec in config["hosts"]]
+    first_window = timedelta(hours=config["first_window_hours"])
+    timeout = config["http_timeout_seconds"]
+    since = datetime.fromisoformat(state["at"]) if state.get("at") else when - first_window
+    hosts = [_host(spec, since, when, state, timeout) for spec in config["hosts"]]
     try:
-        push = _get_json(config["push_status_url"])
+        push = _get_json(config["push_status_url"], timeout)
     except (URLError, OSError, ValueError):
         push = None
     try:
@@ -350,17 +370,16 @@ def gather(config: dict[str, Any], state: dict[str, Any], when: datetime) -> tup
             ]
         ).splitlines()
     except (subprocess.CalledProcessError, OSError):
-        log = []
+        log = None  # reported as unreadable, never as "no rejections"
     chains: list[tuple[str, str]] = []
     for chain in Path(os.path.expanduser(config["rollouts_dir"])).glob("*/chain.log"):
         folder = chain.parent.name
         chains += [(folder, line) for line in chain.read_text(errors="replace").splitlines()]
     rolled, completed = rollout_outcomes(chains, since)
-    text = render(
-        when, since, hosts, push, state.get("push"), rejection_reasons(log), rolled, completed
-    )
+    text = render(when, since, hosts, push, state.get("push"), log, rolled, completed)
     if push is not None:
         state["push"] = {
+            "at": when.isoformat(),
             "stats": {key: push.get(key, 0) for key in PUSH_COUNTERS},
             "apns_by_environment": push.get("apns_by_environment") or {},
         }
@@ -376,6 +395,8 @@ def append_to_doc(config: dict[str, Any], text: str, when: datetime) -> str:
     tree = os.path.expanduser(config["docs_worktree"])
     branch = config["branch"]
     git = ["git", "-C", tree]
+    if _run([*git, "status", "--porcelain"]).strip():
+        raise SummaryError(f"{tree} has local changes; it must be the summary's own clean worktree")
     _run([*git, "fetch", "-q", "origin", branch])
     _run([*git, "checkout", "-q", "-B", "guild-daily", f"origin/{branch}"])
     doc = Path(tree) / "docs/operator/guild-daily.md"
@@ -388,8 +409,9 @@ def append_to_doc(config: dict[str, Any], text: str, when: datetime) -> str:
         [*git, "push", "origin", f"HEAD:{branch}"], capture_output=True, text=True
     )
     if pushed.returncode != 0:
-        # Never forced: a refused push is reported and left for a person.
-        return f"NOT pushed ({pushed.stderr.strip().splitlines()[-1][:160]})"
+        # Never forced: a refused push is reported and left for a person. Git's own text
+        # is not passed on (it can name the remote with credentials); the journal has it.
+        return f"NOT pushed (git push exit {pushed.returncode}; see guild-daily.service)"
     return _run([*git, "rev-parse", "--short", "HEAD"]).strip()
 
 
@@ -400,7 +422,7 @@ def send(config: dict[str, Any], text: str, when: datetime) -> str:
     url = f"{config['forge_url']}/api/v1/forge/sessions/{config['coordinator_session']}/messages"
     opener = build_opener(ProxyHandler({}))
     request = Request(url, data=body, headers={"content-type": "application/json"})
-    with opener.open(request, timeout=60) as response:
+    with opener.open(request, timeout=config["http_timeout_seconds"]) as response:
         return json.load(response).get("delivery", "?")
 
 
@@ -419,7 +441,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "prime":
         for spec in config["hosts"]:
             if "size_command" in spec["errors"]:
-                _server_errors(spec, datetime.now(UTC), state)
+                now = datetime.now(UTC).replace(microsecond=0)
+                _server_errors(spec, now, now, state)
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps(state, indent=2))
         print("primed:", ", ".join(sorted(state.get("log_offsets", {}))) or "nothing")
@@ -430,10 +453,11 @@ def main(argv: list[str] | None = None) -> int:
         print(text)
         return 0
     commit = append_to_doc(config, text, when)
-    message = f"{text}\nRecorded in docs/operator/guild-daily.md: {commit}."
-    delivery = send(config, message, when)
+    # Saved once the section exists, so a failed message never repeats a window.
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(state, indent=2))
+    message = f"{text}\nRecorded in docs/operator/guild-daily.md: {commit}."
+    delivery = send(config, message, when)
     print(f"summary sent ({delivery}); doc {commit}")
     return 0 if not commit.startswith("NOT") else 1
 

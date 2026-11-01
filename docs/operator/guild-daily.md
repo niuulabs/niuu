@@ -11,10 +11,10 @@ Each section reports:
   migration ledger count, local sessions (and how many run), and 5xx answers in the window.
   Thor's are counted from its journal. The mini's log has no timestamps, so they are counted
   in what the log gained since the previous summary.
-- **Push gateway:** the counters moved since the previous summary (or since a restart, when one
-  went down), APNs answers per environment, rejections by reason from the gateway's log
-  (prune lines and refusals), registered tokens per environment and kind, and feedless and
-  unreachable nodes.
+- **Push gateway:** the counters moved since the previous summary (or since the gateway
+  started, when its log shows a start in the window), APNs answers per environment,
+  rejections by reason from the gateway's log (prune lines and refusals), registered tokens
+  per environment and kind, and feedless and unreachable nodes.
 - **Promotions:** cutovers rolled back and completed in the window, from the rollout folders'
   `chain.log` files, each named by its folder and host.
 
@@ -25,7 +25,8 @@ message and left for a person, never forced.
 
 Configuration (`~/.config/guild-daily/config.json`, mode 600, outside the repository): the
 coordinator's session id, the Forge and push status URLs, the gateway's journal unit, the
-rollout folder, the state file, the docs worktree and branch, and per host a URL, a ledger
-command (`{build}` is the served build) and how to read its errors (a journal unit, or a
-size command and a count command for a log without timestamps). To pause it, run
+rollout folder, the state file, the docs worktree (the job's own, kept clean) and branch,
+`first_window_hours` (the first run's window), `http_timeout_seconds`, and per host a URL,
+a ledger command (`{build}` is the served build) and how to read its errors (a journal
+unit, or a size command and a count command for a log without timestamps). To pause it, run
 `systemctl --user disable --now guild-daily.timer`.

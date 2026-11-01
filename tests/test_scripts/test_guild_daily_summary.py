@@ -25,13 +25,18 @@ def stats(**values):
 
 
 def test_counters_move_since_the_previous_summary():
-    moves, restarted = daily.counter_moves(stats(alerts_sent=9), stats(alerts_sent=4))
-    assert (moves["alerts_sent"], restarted) == (5, False)
+    moves = daily.counter_moves(stats(alerts_sent=9), stats(alerts_sent=4), restarted=False)
+    assert moves["alerts_sent"] == 5
 
 
-def test_a_counter_that_went_down_means_a_restart():
-    moves, restarted = daily.counter_moves(stats(alerts_sent=2), stats(alerts_sent=40))
-    assert (moves["alerts_sent"], restarted) == (2, True)
+def test_after_a_restart_every_counter_counts_even_one_that_grew_past_before():
+    moves = daily.counter_moves(stats(alerts_sent=10), stats(alerts_sent=4), restarted=True)
+    assert moves["alerts_sent"] == 10
+
+
+def test_a_restart_is_read_from_the_gateways_own_log():
+    assert daily.gateway_restarted(["x", "Push gateway started: alerts=True ..."])
+    assert not daily.gateway_restarted(["APNs refused a alert push for owner o: HTTP 429"])
 
 
 def test_environment_answers_move_like_the_counters():
@@ -100,20 +105,26 @@ def test_the_text_names_hosts_push_and_promotions_without_tokens():
         "feedless_nodes": {"spark": "no feed"},
         "unreachable_nodes": {},
     }
-    previous = {"stats": stats(alerts_sent=1), "apns_by_environment": {}}
-    text = daily.render(
-        WHEN,
-        SINCE,
-        [host],
-        push,
-        previous,
-        Counter({"HTTP 410 ExpiredToken (token pruned)": 1}),
-        [],
-        ["11-01 19:02 Thor forge-b"],
-    )
+    previous = {
+        "at": SINCE.isoformat(),
+        "stats": stats(alerts_sent=1),
+        "apns_by_environment": {},
+    }
+    log = [
+        "Deleted a dead live_activity token 0123456789ab (production) of owner o "
+        "(APNs: HTTP 410 ExpiredToken)"
+    ]
+    text = daily.render(WHEN, SINCE, [host], push, previous, log, [], ["11-01 19:02 Thor forge-b"])
     assert "## Guild summary 2026-11-02" in text
     assert "**Thor**: ok, forge-x (4cd719bad, not dirty); ledger 118; 70 sessions" in text
-    assert "since the previous summary: alerts_sent 4, tokens_pruned 1" in text
+    assert "since 11-01 06:30: alerts_sent 4, tokens_pruned 1" in text
     assert "HTTP 410 ExpiredToken (token pruned) ×1" in text
     assert "Feedless nodes: spark; unreachable: none" in text
     assert "rolled back 0; completed 1 (11-01 19:02 Thor forge-b)" in text
+
+
+def test_an_unreadable_gateway_log_is_said_not_read_as_no_rejections():
+    push = {"running": True, **stats(), "apns_by_environment": {}}
+    text = daily.render(WHEN, SINCE, [], push, None, None, [], [])
+    assert "Rejections by reason in this window (gateway log): gateway log unreadable" in text
+    assert "since the gateway started" in text
