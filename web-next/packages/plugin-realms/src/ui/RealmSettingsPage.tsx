@@ -262,7 +262,7 @@ export function RealmSettingsPage() {
     'charter',
   );
   const ravens = useRavens();
-  const ravn = ravnForRealm(ravens.data, slug);
+  const ravn = ravnForRealm(ravens.data, slug, data.realm?.id);
 
   if (data.isLoading) return <LoadingState label="Loading workspace…" />;
   if (data.error)

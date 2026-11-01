@@ -1886,6 +1886,27 @@ def test_event_log_proxies_forward_to_owner() -> None:
 
 
 @respx.mock
+def test_event_log_proxies_reach_a_resident_runtime_owner() -> None:
+    """A resident broker keeps its event log under its runtime id, not a session id."""
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/r1").mock(
+        return_value=Response(404, json={"detail": "not found"})
+    )
+    respx.get("http://beta/api/v1/forge/resident-runtimes/r1").mock(
+        return_value=Response(200, json={"id": "r1"})
+    )
+    head = respx.get("http://beta/api/v1/forge/sessions/r1/log/head").mock(
+        return_value=Response(200, json={"latest_seq": 7})
+    )
+
+    response = client.get("/api/v1/forge/sessions/r1/log/head", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()["latest_seq"] == 7
+    assert head.called
+
+
+@respx.mock
 def test_event_log_replay_passes_list_through_verbatim() -> None:
     """The replay endpoint returns a LIST — coercing it to a dict previously
     discarded the entire transcript."""

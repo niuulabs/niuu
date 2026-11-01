@@ -311,6 +311,16 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
         )
     );
     """,
+    # Matches migration 000041, for databases this bootstrap created first.
+    """
+    ALTER TABLE niuu_instances
+        DROP CONSTRAINT IF EXISTS niuu_instances_kind_check;
+    """,
+    """
+    ALTER TABLE niuu_instances
+        ADD CONSTRAINT niuu_instances_kind_check
+        CHECK (kind IN ('volundr', 'ting', 'mimir', 'bifrost', 'ravn', 'observatory', 'generic'));
+    """,
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_niuu_instances_scope_slug
         ON niuu_instances(kind, slug, COALESCE(owner_id, ''), COALESCE(tenant_id, ''));

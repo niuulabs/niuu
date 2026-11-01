@@ -546,3 +546,59 @@ class TestInboxHints:
             assert response.json()["conflicts"] == [1]
             service.notify_read_state_changed.assert_not_called()
         client.close()
+
+
+def test_resident_runtime_can_use_its_own_event_log() -> None:
+    from unittest.mock import AsyncMock
+
+    from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
+
+    repo = AsyncMock(spec=SessionEventLogRepository)
+    repo.latest_seq.return_value = 3
+    repo.append.return_value = 1
+    repo.detect_conflicts.return_value = []
+    sessions = AsyncMock()
+    sessions.get_session.return_value = None
+    residents = AsyncMock()
+    app = FastAPI()
+    app.state.identity = EnvoyHeaderAuthenticationAdapter()
+    app.include_router(
+        create_session_log_router(
+            repo, session_service=sessions, resident_runtime_service=residents
+        )
+    )
+    headers = {"x-auth-user-id": "alice", "x-auth-tenant": "acme"}
+
+    with TestClient(app) as client:
+        path = f"/api/v1/forge/sessions/{uuid4()}/log"
+        assert client.get(path + "/head", headers=headers).json()["latest_seq"] == 3
+        assert client.post(path, headers=headers, json={"entries": [_frame(1)]}).status_code == 201
+
+    repo.append.assert_awaited_once()
+
+
+def test_unknown_runtime_is_not_found_with_resident_lookup() -> None:
+    from unittest.mock import AsyncMock
+
+    from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
+    from volundr.domain.services.resident_runtime import ResidentRuntimeNotFoundError
+
+    repo = AsyncMock(spec=SessionEventLogRepository)
+    sessions = AsyncMock()
+    sessions.get_session.return_value = None
+    residents = AsyncMock()
+    residents.get.side_effect = ResidentRuntimeNotFoundError("gone")
+    app = FastAPI()
+    app.state.identity = EnvoyHeaderAuthenticationAdapter()
+    app.include_router(
+        create_session_log_router(
+            repo, session_service=sessions, resident_runtime_service=residents
+        )
+    )
+    headers = {"x-auth-user-id": "alice", "x-auth-tenant": "acme"}
+
+    with TestClient(app) as client:
+        path = f"/api/v1/forge/sessions/{uuid4()}/log/head"
+        assert client.get(path, headers=headers).status_code == 404
+
+    repo.latest_seq.assert_not_called()

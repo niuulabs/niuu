@@ -4,7 +4,7 @@
     "setup": { "enabled": true, "order": 0 },
     "login": { "enabled": true, "order": 0 },
     "home": { "enabled": true, "order": 1 },
-    "realms": { "enabled": false, "order": 2 },
+    "realms": { "enabled": true, "order": 2 },
     "credentials": { "enabled": true, "order": 3 },
     "integrations": { "enabled": true, "order": 4 },
     "volundr": { "enabled": true, "order": 5 },

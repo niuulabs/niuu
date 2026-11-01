@@ -13,6 +13,7 @@ export interface RealmTemplate {
   blurb: string;
   keepsDoing: string[];
   needs: string[];
+  needsRepo: boolean;
   needsBoard: boolean;
   needsBugBoard: boolean;
   recommended?: boolean;
@@ -70,6 +71,7 @@ export const REALM_TEMPLATES: RealmTemplate[] = [
       'write what it learns to workspace memory',
     ],
     needs: ['repository', 'tracker board', 'CI', 'bug board (optional)'],
+    needsRepo: true,
     needsBoard: true,
     needsBugBoard: false,
     recommended: true,
@@ -93,6 +95,7 @@ export const REALM_TEMPLATES: RealmTemplate[] = [
       'keep the regression suite green',
     ],
     needs: ['repository', 'bug board'],
+    needsRepo: true,
     needsBoard: true,
     needsBugBoard: true,
     jobs: [
@@ -110,6 +113,7 @@ export const REALM_TEMPLATES: RealmTemplate[] = [
       'Keeps docs, runbooks and workspace memory in step with the code. Flags stale pages, drafts updates, never touches production code.',
     keepsDoing: ['detect drift between code and docs', 'draft doc updates as pull requests'],
     needs: ['repository', 'workspace memory'],
+    needsRepo: true,
     needsBoard: false,
     needsBugBoard: false,
     jobs: [{ kind: 'cron', spec: '0 3 * * *', label: 'nightly drift check' }],
@@ -124,6 +128,7 @@ export const REALM_TEMPLATES: RealmTemplate[] = [
       'Only a charter. Good when the environment is not a codebase: a lab, a home, a shop floor.',
     keepsDoing: ['whatever the charter says'],
     needs: ['a charter'],
+    needsRepo: false,
     needsBoard: false,
     needsBugBoard: false,
     jobs: [],

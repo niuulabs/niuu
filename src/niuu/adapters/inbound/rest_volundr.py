@@ -2973,7 +2973,7 @@ def create_volundr_router(
         body: dict[str, Any] = Body(default_factory=dict),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        instance, _ = await _find_session_owner(
+        instance = await _find_trace_owner(
             service, principal, request, session_id, embedded_app=embedded_forge_app
         )
         response = await _request_remote(
@@ -2994,7 +2994,7 @@ def create_volundr_router(
         session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        instance, _ = await _find_session_owner(
+        instance = await _find_trace_owner(
             service, principal, request, session_id, embedded_app=embedded_forge_app
         )
         response = await _request_remote(
@@ -3015,7 +3015,7 @@ def create_volundr_router(
         session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        instance, _ = await _find_session_owner(
+        instance = await _find_trace_owner(
             service, principal, request, session_id, embedded_app=embedded_forge_app
         )
         response = await _request_remote(
@@ -3036,7 +3036,7 @@ def create_volundr_router(
         session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> Any:
-        instance, _ = await _find_session_owner(
+        instance = await _find_trace_owner(
             service, principal, request, session_id, embedded_app=embedded_forge_app
         )
         response = await _request_remote(

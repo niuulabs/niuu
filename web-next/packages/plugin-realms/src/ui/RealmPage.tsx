@@ -399,7 +399,7 @@ export function RealmPage() {
   const navigate = useNavigate();
   const data = useRealmView(slug);
   const ravens = useRavens();
-  const ravn = ravnForRealm(ravens.data, slug);
+  const ravn = ravnForRealm(ravens.data, slug, data.realm?.id);
   const walkthrough = useWalkthrough(FIRST_REALM_WALKTHROUGH);
   const ctx = usePluginCtx();
   const mode = useUiMode();

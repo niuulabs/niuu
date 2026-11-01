@@ -137,7 +137,7 @@ export function useCreateRealm() {
       };
 
       await step('validate', async () => {
-        const problem = requiredDraftError(draft, template.needsBoard);
+        const problem = requiredDraftError(draft, template.needsBoard, template.needsRepo);
         if (problem) throw new Error(problem);
       });
 
@@ -198,7 +198,7 @@ export function useCreateRealm() {
       await step('trust', async () => {
         await realms.createTrustGrant(draft.slug, {
           action_class: 'observe',
-          target: draft.repo,
+          target: draft.repo || '*',
           level: 2,
           limits: {
             template: template.id,

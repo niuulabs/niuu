@@ -81,7 +81,7 @@ export function useRealmsHome() {
   // per-render array useQueries hands back.
   const cards: RealmHomeCard[] = (realms.data ?? []).map((realm, index) => {
     const resident = residentForRealm(dashboard.data, realm.slug);
-    const ravn = ravnForRealm(ravens.data, realm.slug);
+    const ravn = ravnForRealm(ravens.data, realm.slug, realm.id);
     const realmSessions = sessionsForRealm(sessions.data, realm.slug);
     const pending = reviewsForRealm(reviews.data, resident);
     return {
