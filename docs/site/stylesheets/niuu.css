@@ -19,11 +19,11 @@
   --md-typeset-a-color: #1d718f;
 }
 .md-header { box-shadow: none; border-bottom: 1px solid #2b4351; }
-.md-header__title { font-weight: 650; }
+.md-header__title { font-weight: 500; }
 .md-typeset { font-size: .82rem; line-height: 1.7; }
-.md-typeset h1 { color: var(--md-default-fg-color); font-weight: 500; letter-spacing: -.035em; }
-.md-typeset h2 { font-weight: 650; letter-spacing: -.02em; margin-top: 2em; }
-.md-typeset h3 { font-weight: 650; }
+.md-typeset h1 { color: var(--md-default-fg-color); font-weight: 300; letter-spacing: -.035em; }
+.md-typeset h2 { font-weight: 400; letter-spacing: -.02em; margin-top: 2em; }
+.md-typeset h3 { font-weight: 500; }
 .md-typeset code { font-size: .83em; }
 .md-typeset pre > code { line-height: 1.65; }
 .md-typeset a:hover { text-decoration: underline; text-underline-offset: .2em; }

@@ -1,33 +1,20 @@
-/* Landing page interactions: the demo's view tabs and its concept notes. */
-const FEEDBACK_VISIBLE_MS = 3800;
+/* Landing page interaction: copy the start commands. */
+const COPY_CONFIRM_MS = 1800;
 
 function initHome() {
   const home = document.querySelector(".niuu-home");
   if (!home) return;
 
-  const tabs = home.querySelectorAll("[data-tab]");
-  tabs.forEach((tab) => {
-    tab.addEventListener("click", () => {
-      tabs.forEach((other) => {
-        const active = other === tab;
-        other.classList.toggle("active", active);
-        other.setAttribute("aria-selected", String(active));
-      });
-      home.querySelectorAll("[data-panels]").forEach((panels) => {
-        panels.hidden = panels.dataset.panels !== tab.dataset.tab;
-      });
-    });
-  });
-
-  const note = home.querySelector("#feedback");
-  let timer;
-  home.querySelectorAll("[data-feedback]").forEach((control) => {
-    control.addEventListener("click", (event) => {
-      event.preventDefault();
-      note.textContent = control.dataset.feedback;
-      note.classList.add("show");
+  home.querySelectorAll("[data-copy]").forEach((button) => {
+    const label = button.textContent;
+    let timer;
+    button.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(home.querySelector(button.dataset.copy).textContent);
+      button.textContent = button.dataset.done;
       clearTimeout(timer);
-      timer = setTimeout(() => note.classList.remove("show"), FEEDBACK_VISIBLE_MS);
+      timer = setTimeout(() => {
+        button.textContent = label;
+      }, COPY_CONFIRM_MS);
     });
   });
 }
