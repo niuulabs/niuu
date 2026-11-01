@@ -145,6 +145,7 @@ html:has(.niuu-home) { scroll-behavior:smooth }
 .niuu-home .show-split .thumbs img { aspect-ratio:16/8.4 }
 .niuu-home .commission { display:grid;grid-template-columns:minmax(0,3.4fr) minmax(0,8.6fr);gap:48px;align-items:start;margin-top:clamp(64px,7vw,96px);padding-top:clamp(40px,4vw,56px);border-top:1px solid #223846 }
 .niuu-home .commission h4 { font:300 clamp(22px,1.9vw,28px)/1.22 'Inter Display',Inter,sans-serif;letter-spacing:-.026em;margin:0 }
+.niuu-home .commission > div > p { font-size:14px;line-height:1.6;color:#a8bbc6;margin:8px 0 0 }
 .niuu-home .evolution { list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:28px }
 .niuu-home .evolution p { font-size:14px;line-height:1.6;color:#a8bbc6;margin:8px 0 0 }
 

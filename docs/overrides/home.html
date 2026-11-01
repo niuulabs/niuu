@@ -203,7 +203,10 @@
         </div>
         {% set commission = four.commission %}
         <div class="commission">
-          <h4>{{ commission.title }}</h4>
+          <div>
+            <h4>{{ commission.title }}</h4>
+            <p>{{ commission.subtitle }}</p>
+          </div>
           <ol class="evolution">
             {% for step in commission.steps %}
             <li>

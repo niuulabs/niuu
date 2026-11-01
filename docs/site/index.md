@@ -72,7 +72,7 @@ home:
         step: Workflows
         label: Workflows and graphs
         title: Work becomes a process.
-        body: The path is fixed in advance, with stages, reviews and gates. Agents do the work inside it, across models and harnesses.
+        body: The path is fixed in advance, with stages, reviews and gates. Agents do the work inside it, across models and harnesses. Your graph becomes the board.
         body_more: This is one example. Build your own workflows, and create personas with their own tools to do the work.
         link:
           label: Workflows and teams
@@ -180,6 +180,7 @@ home:
             alt: The Tool and Skill Builder workflow as a graph of framing, building, reviewing and publishing stages
         commission:
           title: A resident commissions the work it needs.
+          subtitle: Reusing the same workflows and tooling a person can.
           steps:
             - name: Notices
               body: It records what keeps getting in its way.
@@ -188,7 +189,7 @@ home:
             - name: Verifies
               body: It runs the tests itself. A tool that keeps failing is rolled back.
             - name: Evolves
-              body: A peer can adopt the tested tool, and duplicates are retired.
+              body: Residents can mesh to share tested tools and knowledge, and duplicates are retired.
       - id: scale
         step: Scale
         label: Distributed execution
@@ -295,7 +296,7 @@ home:
     built:
       title: We extend the best tools. We don't rebuild them.
       body: Keep your agents, models, tracker and infrastructure. NIUU builds on them.
-      body_more: Missing an integration? NIUU is an extensible platform with a plugin architecture, so bring your own tools and integrations.
+      body_more: Missing an integration? NIUU is an extensible platform with a plugin architecture. Bring your own tools and integrations.
       groups:
         - name: Agent harnesses
           entries: Claude Code, OpenAI Codex, OpenCode, Pi, OpenClaw, Hermes, NemoClaw, xAI Grok Build, Meta Muse Code, DeepSeek Harness
