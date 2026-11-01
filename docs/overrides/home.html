@@ -201,24 +201,24 @@
           {{ show_main(four) }}
           {{ show_thumbs(four) }}
         </div>
-        {% set commission = four.commission %}
-        <div class="commission">
-          <div>
-            <h4>{{ commission.title }}</h4>
-            <p>{{ commission.subtitle }}</p>
-          </div>
-          <ol class="evolution">
-            {% for step in commission.steps %}
-            <li>
-              <div class="label">{{ step.name }}</div>
-              <p>{{ step.body }}</p>
-            </li>
-            {% endfor %}
-          </ol>
-        </div>
       </article>
 
-      {% set five = gallery.chapters[4] %}
+      {% set auto = gallery.chapters[4] %}
+      <article class="act autonomy" id="{{ auto.id }}" data-views>
+        {{ act_head(auto) }}
+        <ol class="evolution">
+          {% for step in auto.steps %}
+          <li>
+            <h4>{{ step.name }}</h4>
+            <p>{{ step.body }}</p>
+          </li>
+          {% endfor %}
+        </ol>
+        {{ show_main(auto) }}
+        {{ show_thumbs(auto) }}
+      </article>
+
+      {% set five = gallery.chapters[5] %}
       <article class="act side right quiet" id="{{ five.id }}" data-views>
         <div class="side-text">
           {{ act_head(five) }}
@@ -227,7 +227,7 @@
         {{ show_main(five) }}
       </article>
 
-      {% set six = gallery.chapters[5] %}
+      {% set six = gallery.chapters[6] %}
       <article class="act environment" id="{{ six.id }}" data-views>
         <img class="wave" src="{{ field }}" alt="">
         {{ act_head(six) }}

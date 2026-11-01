@@ -154,12 +154,6 @@ home:
             height: 1007
             caption: Every belief keeps the evidence behind it.
             alt: A Memory page with What we believe, the pages around it and an append-only Evidence list
-          - name: Resident
-            image: resident
-            width: 2000
-            height: 1220
-            caption: A resident keeps a responsibility, with no prompt needed. A schedule, an event, a ticket, a message or a reading from a machine can set it off.
-            alt: The Resident console, with a roster of residents and Sigrun's report, reading Simpler now, 2 duplicate tools retired
           - name: Inbox
             image: inbox
             width: 2000
@@ -172,24 +166,36 @@ home:
             height: 1220
             caption: A Workspace gives ongoing work a home.
             alt: The Workspaces home with three Workspaces, each kept by a resident, and a list of decisions that need you
+      - id: autonomy
+        step: Autonomy
+        label: Autonomy
+        title: A resident commissions the work it needs.
+        body: Reusing the same workflows and tooling a person can.
+        link:
+          label: Agents and residents
+          doc: concepts/agents-and-personas/
+        steps:
+          - name: Notices
+            body: It records what keeps getting in its way.
+          - name: Commissions
+            body: A team of agents builds the tool it lacks, within the limits you set.
+          - name: Verifies
+            body: It runs the tests itself. A tool that keeps failing is rolled back.
+          - name: Evolves
+            body: Residents can mesh to share tested tools and knowledge, and duplicates are retired.
+        views:
           - name: Tool builder
             image: toolbuilder
             width: 1700
             height: 455
             caption: The workflow a resident commissions to build a missing tool.
             alt: The Tool and Skill Builder workflow as a graph of framing, building, reviewing and publishing stages
-        commission:
-          title: A resident commissions the work it needs.
-          subtitle: Reusing the same workflows and tooling a person can.
-          steps:
-            - name: Notices
-              body: It records what keeps getting in its way.
-            - name: Commissions
-              body: A team of agents builds the tool it lacks, within the limits you set.
-            - name: Verifies
-              body: It runs the tests itself. A tool that keeps failing is rolled back.
-            - name: Evolves
-              body: Residents can mesh to share tested tools and knowledge, and duplicates are retired.
+          - name: Resident
+            image: resident
+            width: 2000
+            height: 1220
+            caption: A resident keeps a responsibility, with no prompt needed. A schedule, an event, a ticket, a message or a reading from a machine can set it off.
+            alt: The Resident console, with a roster of residents and Sigrun's report, reading Simpler now, 2 duplicate tools retired
       - id: scale
         step: Scale
         label: Distributed execution

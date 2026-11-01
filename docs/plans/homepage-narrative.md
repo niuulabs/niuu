@@ -16,7 +16,7 @@ The page states selling points in a line each. Detail goes to the docs;
 | # | Section | Heading | Job |
 |---|---|---|---|
 | - | Hero | A place where intelligent systems do real work. | What NIUU is. Headline and supporting copy unchanged. |
-| 1 | Gallery | One agent is a starting point. Not the limit. | The centre of the page: Agent, Workflows, Collaboration, Continuity, Scale, Environment. |
+| 1 | Gallery | One agent is a starting point. Not the limit. | The centre of the page: Agent, Workflows, Collaboration, Continuity, Autonomy, Scale, Environment. |
 | 2 | What NIUU builds on | We extend the best tools. We don't rebuild them. | Harnesses, models, connections and runtimes. |
 | 3 | Use cases | Not just for code. | The range of work, ending on Add your own. |
 | 4 | Get started | Try it on your own machine. | Docker first, from source second, in tabs. |
@@ -34,7 +34,8 @@ Thumbnails swap it, and clicking a screen enlarges it. Phones get focused crops 
 | Agent | Session | Running now | Text left, screen off the right edge. |
 | Workflows | Run Flow graph with a run moving through it | Gates, Tickets, Decision | Full width on a lifted ground. |
 | Collaboration | Room | Coordinator | Screen off the left edge, handoffs beside it. |
-| Continuity | Memory map | Evidence, Resident, Inbox, Workspaces, Tool builder | Large screen with a column of thumbnails, then how a resident commissions work. |
+| Continuity | Memory map | Evidence, Inbox, Workspaces | Large screen with a column of thumbnails. |
+| Autonomy | Tool builder | Resident | A lifted ground and a large heading: the four steps, then the workflow a resident commissions. |
 | Scale | Your hosts | Add a host | Smaller heading, screen off the right edge. |
 | Environment | The six-part drawing, then the Observatory live map | Trace | The largest heading, the lightest ground and the brand line returning. |
 
