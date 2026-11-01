@@ -50,6 +50,7 @@ from ting.domain.services.workflow_campaign_projector import WorkflowCampaignPro
 from ting.domain.workflow_snapshot import build_workflow_snapshot
 from ting.ports.volundr import (
     ActivityEvent,
+    ForgeProjectRef,
     PublicSessionLogEntry,
     PublicSessionLogPage,
     SpawnRequest,
@@ -305,6 +306,49 @@ class RecordingVolundrPort(VolundrPort):
         self.help_requests: list[dict] = []
         self.answered_help: list[tuple[str, str, str, str]] = []
         self.auth_calls: list[tuple[str, str | None, Principal | None]] = []
+        self.session_projects: dict[str, str] = {}
+        self.ensured_projects: list[tuple[str, str]] = []
+        self.joined_projects: list[tuple[str, str, str]] = []
+
+    async def get_project(
+        self,
+        project_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> ForgeProjectRef | None:
+        return ForgeProjectRef(id=project_id, name="Home", instance_id=f"{self._name}-host")
+
+    async def ensure_project(
+        self,
+        project_id: str,
+        name: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> ForgeProjectRef:
+        self.ensured_projects.append((project_id, name))
+        return ForgeProjectRef(id=project_id, name=name, instance_id=f"{self._name}-host")
+
+    async def session_project(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> str | None:
+        return self.session_projects.get(session_id)
+
+    async def join_project(
+        self,
+        session_id: str,
+        project_id: str,
+        *,
+        role: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        self.joined_projects.append((session_id, project_id, role))
 
     @property
     def name(self) -> str:
@@ -898,12 +942,20 @@ class TestSendMessage:
     def test_a_coordinators_launch_keeps_its_ticket(self) -> None:
         """The link a coordinator's launch carries survives the session starting."""
         workflow = _make_workflow()
-        client, campaigns, _ = _make_client(
+        client, campaigns, port = _make_client(
             workflow_repo=InMemoryWorkflowRepository([workflow]),
         )
         saga_id = uuid4()
         client.app.state.saga_repo.get_saga.return_value = SimpleNamespace(
-            board_workflows=(), workflow_id=None, workflow_snapshot=None
+            id=saga_id,
+            forge_project_id=saga_id,
+            name="Platform",
+            board_workflows=(),
+            workflow_id=None,
+            workflow_snapshot=None,
+        )
+        client.app.state.ticket_coordinator_repo.get.return_value = SimpleNamespace(
+            session_id="coordinator-session", requested_at=None
         )
         ticket = {"sagaId": str(saga_id), "issueId": "issue-1", "identifier": "NIU-1"}
         params = _send_params(str(workflow.id))
@@ -915,6 +967,23 @@ class TestSendMessage:
         campaign = next(iter(campaigns._campaigns.values()))
         assert campaign.session_id
         assert campaign.metadata["ticket"] == ticket
+        assert port.ensured_projects == [(str(saga_id), "Platform")]
+        assert port.joined_projects == [("coordinator-session", str(saga_id), "coordinator")]
+        membership = port.spawned[0].membership
+        assert membership.project_id == str(saga_id)
+        assert membership.role == "worker"
+        assert membership.parent_session_id == "coordinator-session"
+        assert membership.parent_instance_id == "local-host"
+        assert membership.objective == workflow.name
+
+    def test_a_launch_with_no_ticket_or_parent_joins_no_project(self) -> None:
+        workflow = _make_workflow()
+        client, _, port = _make_client(workflow_repo=InMemoryWorkflowRepository([workflow]))
+
+        response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
+
+        assert response.status_code == 200, response.text
+        assert port.spawned[0].membership is None
 
     def test_campaign_names_the_workload_that_sent_the_task(self) -> None:
         """A resident's exchanged token (act.sub) is recorded on the campaign it launches."""
@@ -1293,6 +1362,8 @@ class TestSendMessage:
             owner_id="user-1",
             tenant_id="",
             parent_node_id="delivery-workstreams",
+            parent_session_id="parent-session",
+            connection_id="",
             policy=SimpleNamespace(
                 coordinator_id="developer-coordinator",
                 result_schema=result_schema,
@@ -1341,9 +1412,15 @@ class TestSendMessage:
             }
         )
 
+        port.session_projects["parent-session"] = "project-1"
+
         response = _rpc(client, "SendMessage", params, headers=_headers(token=token))
 
         assert response.status_code == 200, response.text
+        membership = port.spawned[0].membership
+        assert membership.project_id == "project-1"
+        assert membership.parent_session_id == "parent-session"
+        assert membership.role == "worker"
         assert port.spawned[0].workload_config["workflow_result_schema"] == result_schema
         developer_runtime = port.spawned[0].workload_config["ravn_config"]["workflow_execution"]
         assert "result_schema" not in developer_runtime

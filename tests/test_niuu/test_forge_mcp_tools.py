@@ -413,13 +413,17 @@ class TestGrants:
         }
         explicit = await created({"parent_session_id": PEER, "parent_instance_id": "node-b"})
         assert explicit["coordination"]["parent"] == {"instance_id": "node-b", "session_id": PEER}
-        client.fail = ForgeApiError("down", status=503)
-        with_unknown_caller = await toolbox._launch_coordination(
-            toolbox._specs["create_session"].args_model.model_validate({"name": "w"})
-        )
-        assert with_unknown_caller is None
         invalid = await toolbox.call("create_session", {"name": "w", "role": "Lead"})
         assert invalid.is_error
+
+    async def test_create_session_refuses_when_its_own_membership_cannot_be_read(self) -> None:
+        toolbox, client, _ = _toolbox(ForgeMcpGrant.LIFECYCLE)
+        client.fail = ForgeApiError("down", status=503)
+
+        refused = await toolbox.call("create_session", {"name": "w"})
+
+        assert refused.is_error
+        assert not [name for name, _ in client.calls if name == "create_session"]
 
     async def test_list_sessions_filters_by_role_and_parent(self) -> None:
         toolbox, client, _ = _toolbox()

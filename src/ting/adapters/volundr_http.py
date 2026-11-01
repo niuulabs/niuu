@@ -33,8 +33,10 @@ from ting.domain.models import PRStatus
 from ting.ports.volundr import (
     ActivityEvent,
     ActivityStreamConnected,
+    ForgeProjectRef,
     PublicSessionLogEntry,
     PublicSessionLogPage,
+    SessionMembership,
     SpawnRequest,
     VolundrPort,
     VolundrSession,
@@ -45,6 +47,8 @@ logger = logging.getLogger(__name__)
 _CI_PASSED = {"passing": True, "failing": False}
 
 FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
+FORGE_PROJECTS_PATH = "/api/v1/forge/projects"
+FORGE_FEATURE_FLAGS_PATH = "/api/v1/forge/feature-flags"
 REPO_PULL_REQUESTS_PATH = "/api/v1/niuu/repos/prs"
 INTEGRATIONS_PATH = "/api/v1/integrations"
 WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
@@ -62,6 +66,21 @@ def _local_mount_path(value: str) -> str | None:
     if not _looks_like_local_path(value):
         return None
     return str(Path(value).expanduser().resolve())
+
+
+def _coordination_payload(membership: SessionMembership) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "project_id": membership.project_id,
+        "role": membership.role,
+        "objective": membership.objective,
+        "labels": list(membership.labels),
+    }
+    if membership.parent_session_id:
+        payload["parent"] = {
+            "instance_id": membership.parent_instance_id,
+            "session_id": membership.parent_session_id,
+        }
+    return payload
 
 
 def _public_chat_endpoint(chat_endpoint: str | None, base_url: str) -> str | None:
@@ -234,6 +253,11 @@ class VolundrHTTPAdapter(VolundrPort):
                     "launch_spec": request.profile,
                     "integration_ids": request.integration_ids,
                     "credential_names": request.credential_names,
+                    **(
+                        {"coordination": _coordination_payload(request.membership)}
+                        if request.membership is not None
+                        else {}
+                    ),
                 },
             )
             if resp.status_code >= 400:
@@ -633,6 +657,121 @@ class VolundrHTTPAdapter(VolundrPort):
     @property
     def api_base_url(self) -> str:
         return self._base_url
+
+    async def _project_host_id(self, client: httpx.AsyncClient, headers: dict[str, str]) -> str:
+        resp = await client.get(f"{self._base_url}{FORGE_FEATURE_FLAGS_PATH}", headers=headers)
+        resp.raise_for_status()
+        instance_id = resp.json().get("project_instance_id")
+        if not instance_id:
+            raise httpx.HTTPError(
+                f"Forge {self._name} serves no projects, so it cannot hold this project's "
+                "sessions; give it a database, or run this project on another Forge"
+            )
+        return str(instance_id)
+
+    async def get_project(
+        self,
+        project_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> ForgeProjectRef | None:
+        headers = self._headers(auth_token, principal)
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.get(
+                f"{self._base_url}{FORGE_PROJECTS_PATH}/{project_id}", headers=headers
+            )
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+            return ForgeProjectRef(
+                id=str(data["id"]),
+                name=str(data["name"]),
+                instance_id=await self._project_host_id(client, headers),
+            )
+
+    async def ensure_project(
+        self,
+        project_id: str,
+        name: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> ForgeProjectRef:
+        known = await self.get_project(project_id, auth_token=auth_token, principal=principal)
+        if known is not None:
+            return known
+        headers = self._headers(auth_token, principal)
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            # The id comes from Work, so a retry finds this same project.
+            resp = await client.post(
+                f"{self._base_url}{FORGE_PROJECTS_PATH}",
+                headers=headers,
+                json={"id": project_id, "name": name},
+            )
+            if resp.status_code >= 400:
+                logger.error("ensure_project %d: %s", resp.status_code, resp.text[:500])
+                raise httpx.HTTPStatusError(
+                    f"Forge could not create the project: {_error_detail(resp)}",
+                    request=resp.request,
+                    response=resp,
+                )
+            data = resp.json()
+            return ForgeProjectRef(
+                id=str(data["id"]),
+                name=str(data["name"]),
+                instance_id=await self._project_host_id(client, headers),
+            )
+
+    async def session_project(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> str | None:
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.get(
+                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/project",
+                headers=self._headers(auth_token, principal),
+            )
+            resp.raise_for_status()
+            coordination = resp.json().get("coordination")
+            return str(coordination["project_id"]) if coordination else None
+
+    async def join_project(
+        self,
+        session_id: str,
+        project_id: str,
+        *,
+        role: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        headers = self._headers(auth_token, principal)
+        url = f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/project"
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            current = await client.get(url, headers=headers)
+            current.raise_for_status()
+            membership = current.json()
+            coordination = membership.get("coordination")
+            if coordination and str(coordination["project_id"]) == project_id:
+                return
+            resp = await client.put(
+                url,
+                headers=headers,
+                json={
+                    "project_id": project_id,
+                    "expected_revision": membership["revision"],
+                    "role": role,
+                },
+            )
+            resp.raise_for_status()
 
     def _room_url(self, session_id: str, operation: str) -> str:
         """A room operation, through Forge: a session's own origin may be browser-only."""

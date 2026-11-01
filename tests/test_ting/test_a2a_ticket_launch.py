@@ -57,6 +57,9 @@ class _Board:
             workflow_repo=workflows, campaign_repo=self.campaigns, launch_repo=self.launches
         )
         self.saga = SimpleNamespace(
+            id=self.saga_id,
+            forge_project_id=self.saga_id,
+            name="Platform",
             board_workflows=(_pin(PLANNING), _pin(DELIVERY)) if pins is None else pins,
             workflow_id=None,
             workflow_snapshot=None,
@@ -70,6 +73,7 @@ class _Board:
 
     def request(self, workflow_id: Any = None, *, requested_at: datetime = NOW) -> None:
         self.client.app.state.ticket_coordinator_repo.get.return_value = SimpleNamespace(
+            session_id="coordinator-session",
             requested_workflow_id=str(workflow_id) if workflow_id else None,
             requested_at=requested_at,
         )

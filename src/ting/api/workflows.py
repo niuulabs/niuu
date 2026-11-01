@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -73,7 +74,13 @@ from ting.domain.workflow_snapshot import (
     workflow_uses_isolated_branch,
 )
 from ting.domain.workflow_versioning import WorkflowVersionBump
-from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrPort, VolundrSession
+from ting.ports.volundr import (
+    SessionMembership,
+    SpawnRequest,
+    VolundrFactory,
+    VolundrPort,
+    VolundrSession,
+)
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
 
@@ -756,6 +763,7 @@ async def launch_workflow_execution(
     pinned_workflow_snapshot: dict[str, Any] | None = None,
     trusted_workflow_execution: bool = False,
     launch_slug: str | None = None,
+    session_membership: Callable[[VolundrPort], Awaitable[SessionMembership | None]] | None = None,
 ) -> WorkflowLaunchExecution:
     raw_execution_context = launch.provenance.get("workflow_execution")
     if raw_execution_context and not trusted_workflow_execution:
@@ -907,6 +915,7 @@ async def launch_workflow_execution(
                 request_base_url=str(request.base_url),
             ),
         )
+    membership = await session_membership(target_adapter) if session_membership else None
     session = await target_adapter.spawn_session(
         SpawnRequest(
             name=session_name,
@@ -914,6 +923,7 @@ async def launch_workflow_execution(
             branch=session_branch,
             base_branch=base_branch,
             model=resolved_model,
+            membership=membership,
             tracker_issue_id=f"workflow:{launch_slug}",
             tracker_issue_url="",
             system_prompt="",

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from hashlib import sha256
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -577,6 +579,54 @@ async def test_project_without_a_stored_connection_reads_from_its_provider() -> 
     assert tracker_coverage.status == CoverageStatus.COMPLETE
     assert tracker_coverage.connection_id == "linear-a"
     native.list_issues.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("workflow_id", "graph", "offered"),
+    [
+        (uuid4(), {"requiresRepository": False}, True),
+        (uuid4(), {}, False),
+        (None, {"requiresRepository": False}, False),
+    ],
+    ids=["needs-none", "needs-one", "no-workflow"],
+)
+async def test_a_project_without_a_repository_offers_only_workflows_it_can_run(
+    workflow_id: UUID | None, graph: dict[str, Any], offered: bool
+) -> None:
+    saga = replace(
+        _saga(),
+        repos=[],
+        workflow_id=workflow_id,
+        workflow_snapshot={"name": "Work", "graph": graph},
+    )
+    issue = TrackerIssue(
+        id="issue-1",
+        identifier="ENG-1",
+        title="Write the launch note",
+        description="",
+        status="Todo",
+        status_type="unstarted",
+    )
+    project = TrackerProject(
+        id="project-1",
+        name="Platform",
+        description="",
+        status="started",
+        url="",
+        milestone_count=0,
+        issue_count=1,
+    )
+    saga_repo, campaign_repo = _repositories(sagas=[saga])
+
+    detail = await _service(
+        saga_repo=saga_repo,
+        campaign_repo=campaign_repo,
+        trackers=[_tracker("linear-a", projects=[project], issues=[issue])],
+    ).get_project(saga.id, ready_issue_ids={"issue-1"})
+
+    dispatch = detail.tasks[0].dispatch
+    assert (dispatch is not None) is offered
+    assert dispatch is None or dispatch.repo == ""
 
 
 async def test_project_says_why_its_tracker_cannot_be_chosen() -> None:

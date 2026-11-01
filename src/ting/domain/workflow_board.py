@@ -306,6 +306,31 @@ def _snapshot_name(snapshot: Mapping[str, Any] | None) -> str:
     return str((snapshot or {}).get("name") or "")
 
 
+def workflow_requires_repository(snapshot: Mapping[str, Any] | None) -> bool:
+    """Whether a workflow works on code. It does unless ``graph.requiresRepository`` says not."""
+    graph = snapshot.get("graph") if isinstance(snapshot, Mapping) else None
+    return not isinstance(graph, Mapping) or graph.get("requiresRepository", True) is not False
+
+
+def repository_gap(saga: Saga) -> str | None:
+    """Why a project's workflows cannot run: they need a repository it does not have."""
+    if saga.repos:
+        return None
+    if saga.board_workflows:
+        snapshots = [pin.workflow_snapshot for pin in saga.board_workflows]
+    elif saga.workflow_id is not None:
+        snapshots = [saga.workflow_snapshot]
+    else:
+        return None
+    names = [_snapshot_name(item) for item in snapshots if workflow_requires_repository(item)]
+    if not names:
+        return None
+    return (
+        f"{', '.join(names)} needs a repository: add one to this project, or choose a "
+        "workflow that declares requiresRepository: false"
+    )
+
+
 def ticket_is_closed(issue_status_type: str) -> bool:
     return issue_status_type.strip().lower() in _CLOSED_STATUS_TYPES
 

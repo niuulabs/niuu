@@ -16,9 +16,11 @@ from ting.domain.models import Saga, SagaStatus, TrackerIssue
 from ting.domain.services.ticket_coordinator import (
     TicketCoordinatorService,
     TicketWorkflow,
+    child_membership,
     coordinator_brief,
     coordinator_ravn_config,
     ticket_branch,
+    ticket_membership,
 )
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.domain.ticket_coordinator import (
@@ -27,8 +29,10 @@ from ting.domain.ticket_coordinator import (
     ticket_metadata,
     ticket_of,
 )
+from ting.ports.volundr import ForgeProjectRef
 
 NOW = datetime(2026, 10, 30, 12, tzinfo=UTC)
+PRINCIPAL = Principal(user_id="owner-1", email="", tenant_id="tenant-1", roles=[])
 WORKFLOW = TicketWorkflow(id="workflow-1", name="Reviewed Delivery Flow")
 
 
@@ -71,6 +75,10 @@ def _coordinator(saga: Saga, *, status=TicketCoordinatorStatus.ACTIVE) -> Ticket
     )
 
 
+def _project(project_id: str, name: str, **_: object) -> ForgeProjectRef:
+    return ForgeProjectRef(id=project_id, name=name, instance_id="forge-host")
+
+
 def _service(*, current: TicketCoordinator | None, session_status: str = "running"):
     repo = MagicMock()
     repo.get = AsyncMock(return_value=current)
@@ -81,6 +89,8 @@ def _service(*, current: TicketCoordinator | None, session_status: str = "runnin
         return_value=SimpleNamespace(status=session_status, activity_state=None)
     )
     volundr.spawn_session = AsyncMock(return_value=SimpleNamespace(id="session-2"))
+    volundr.ensure_project = AsyncMock(side_effect=_project)
+    volundr.join_project = AsyncMock()
     volundr.send_directed_room_message = AsyncMock()
     volundr.start_session = AsyncMock()
     volundr.stop_session = AsyncMock()
@@ -360,3 +370,148 @@ async def test_a_ticket_waiting_at_a_gate_never_expires() -> None:
     )
 
     assert await projector._stale_expiry(campaign, now=NOW) is None
+
+
+async def test_a_ticket_without_a_repository_launches_no_checkout() -> None:
+    saga = replace(_saga(), repos=[], base_branch="")
+    service, _, volundr = _service(current=None)
+
+    await service.start_workflow(saga, _issue(), WORKFLOW)
+
+    request = volundr.spawn_session.await_args.args[0]
+    assert request.repo == ""
+    assert "Repository:" not in request.initial_prompt
+    assert "Repository:" not in request.workload_config["personas"][0]["system_prompt_extra"]
+    platform = request.workload_config["ravn_config"]["gateway"]["platform"]
+    metadata = platform["a2a_default_metadata"]
+    assert not {"repo", "branch", "baseBranch"} & set(metadata)
+    assert metadata["ticket"]["identifier"] == "NIU-1"
+
+
+async def test_a_new_coordinator_leads_its_project_in_forge() -> None:
+    saga = _saga()
+    service, _, volundr = _service(current=None)
+
+    await service.start_workflow(saga, _issue(), WORKFLOW)
+
+    volundr.ensure_project.assert_awaited_once_with(
+        str(saga.id), saga.name, auth_token="token", principal=PRINCIPAL
+    )
+    membership = volundr.spawn_session.await_args.args[0].membership
+    assert membership.project_id == str(saga.id)
+    assert membership.role == "coordinator"
+    assert membership.parent_session_id == ""
+    assert membership.objective == "NIU-1: Ship it"
+    assert membership.labels == (f"work-project:{saga.id}",)
+
+
+async def test_a_coordinator_that_cannot_join_its_project_does_not_start() -> None:
+    saga = _saga()
+    service, repo, volundr = _service(current=None)
+    volundr.ensure_project.side_effect = RuntimeError("Forge refused the project")
+
+    with pytest.raises(RuntimeError, match="Forge refused the project"):
+        await service.start_workflow(saga, _issue(), WORKFLOW)
+
+    volundr.spawn_session.assert_not_awaited()
+    repo.save.assert_not_awaited()
+
+
+async def test_a_workflow_session_joins_under_the_tickets_coordinator() -> None:
+    saga = _saga()
+    _, _, volundr = _service(current=None)
+
+    membership = await ticket_membership(
+        volundr, saga, _coordinator(saga), "Delivery", auth_token="token", principal=PRINCIPAL
+    )
+
+    volundr.join_project.assert_awaited_once_with(
+        _coordinator(saga).session_id,
+        str(saga.id),
+        role="coordinator",
+        auth_token="token",
+        principal=PRINCIPAL,
+    )
+    assert membership.role == "worker"
+    assert membership.parent_instance_id == "forge-host"
+    assert membership.parent_session_id == _coordinator(saga).session_id
+    assert membership.objective == "Delivery"
+    assert membership.labels == (f"work-project:{saga.id}",)
+
+
+async def test_a_ticket_with_no_coordinator_joins_its_project_without_a_parent() -> None:
+    saga = _saga()
+    _, _, volundr = _service(current=None)
+
+    membership = await ticket_membership(
+        volundr, saga, None, "Delivery", auth_token=None, principal=PRINCIPAL
+    )
+
+    volundr.join_project.assert_not_awaited()
+    assert membership.project_id == str(saga.id)
+    assert membership.parent_session_id == ""
+    assert membership.labels == (f"work-project:{saga.id}",)
+
+
+def _parent_forge(project_id: str | None, *, known: bool = True) -> MagicMock:
+    forge = MagicMock()
+    forge.session_project = AsyncMock(return_value=project_id)
+    forge.get_project = AsyncMock(
+        return_value=(
+            ForgeProjectRef(id=project_id or "", name="Home name", instance_id="parent-host")
+            if known
+            else None
+        )
+    )
+    return forge
+
+
+async def test_a_child_of_a_session_outside_any_project_joins_none() -> None:
+    target = MagicMock()
+
+    membership = await child_membership(
+        target, _parent_forge(None), "parent-1", "Work", auth_token=None, principal=PRINCIPAL
+    )
+
+    assert membership is None
+
+
+async def test_a_child_on_another_forge_links_back_to_its_parents_host() -> None:
+    _, _, target = _service(current=None)
+
+    membership = await child_membership(
+        target, _parent_forge("project-1"), "parent-1", "Work", auth_token=None, principal=PRINCIPAL
+    )
+
+    target.ensure_project.assert_awaited_once_with(
+        "project-1", "Home name", auth_token=None, principal=PRINCIPAL
+    )
+    assert membership.project_id == "project-1"
+    assert membership.parent_instance_id == "parent-host"
+    assert membership.parent_session_id == "parent-1"
+
+
+async def test_a_parent_naming_a_vanished_project_stops_the_launch() -> None:
+    with pytest.raises(LookupError, match="project-1"):
+        await child_membership(
+            MagicMock(),
+            _parent_forge("project-1", known=False),
+            "parent-1",
+            "Work",
+            auth_token=None,
+            principal=PRINCIPAL,
+        )
+
+
+async def test_a_tracker_that_joined_a_project_launches_into_that_project() -> None:
+    project_id = uuid4()
+    saga = replace(_saga(), project_id=project_id)
+    service, _, volundr = _service(current=None)
+
+    await service.start_workflow(saga, _issue(), WORKFLOW)
+
+    assert volundr.spawn_session.await_args.args[0].membership.project_id == str(project_id)
+    membership = await ticket_membership(
+        volundr, saga, _coordinator(saga), "Delivery", auth_token=None, principal=PRINCIPAL
+    )
+    assert membership.project_id == str(project_id)
