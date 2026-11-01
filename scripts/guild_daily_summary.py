@@ -391,20 +391,30 @@ def gather(config: dict[str, Any], state: dict[str, Any], when: datetime) -> tup
 # -- delivery ---------------------------------------------------------------------------
 
 
+def unlanded_sections(landed: str, local: str) -> str:
+    """What the local copy appended beyond the landed one (a section that never landed)."""
+    return local[len(landed) :] if local.startswith(landed) else ""
+
+
 def append_to_doc(config: dict[str, Any], text: str, when: datetime) -> str:
-    """Append the section on the integration branch: docs only, a plain push."""
+    """Append the section on the integration branch: docs only, a plain push.
+
+    A section a previous run could not commit or push is carried into this commit, ahead
+    of today's, so no day goes missing from the document.
+    """
     tree = os.path.expanduser(config["docs_worktree"])
     branch = config["branch"]
     git = ["git", "-C", tree]
     changed = {line[3:] for line in _run([*git, "status", "--porcelain"]).splitlines()}
     if changed - {DOC}:
         raise SummaryError(f"{tree} has local changes; it must be the summary's own clean worktree")
-    if changed:  # a previous run's section that was never committed: this run rewrites it
-        _run([*git, "reset", "-q", "--hard"])
     _run([*git, "fetch", "-q", "origin", branch])
+    landed = _run([*git, "show", f"origin/{branch}:{DOC}"])
+    carried = unlanded_sections(landed, (Path(tree) / DOC).read_text())
+    _run([*git, "reset", "-q", "--hard"])
     _run([*git, "checkout", "-q", "-B", "guild-daily", f"origin/{branch}"])
     doc = Path(tree) / DOC
-    doc.write_text(doc.read_text() + "\n" + text)
+    doc.write_text(landed + carried + "\n" + text)
     _run([*git, "add", DOC])
     _run(
         [*git, "commit", "-q", "-m", f"docs: Guild summary {when:%Y-%m-%d}\n\n{config['trailer']}"]
@@ -413,8 +423,8 @@ def append_to_doc(config: dict[str, Any], text: str, when: datetime) -> str:
         [*git, "push", "origin", f"HEAD:{branch}"], capture_output=True, text=True
     )
     if pushed.returncode != 0:
-        # Never forced: a refused push is reported and left for a person. Git's own text
-        # is not passed on (it can name the remote with credentials); the journal has it.
+        # Never forced: a refused push is reported; the next run carries this section.
+        # Git's own text is not passed on (it can name the remote with credentials).
         return f"NOT pushed (git push exit {pushed.returncode}; see guild-daily.service)"
     return _run([*git, "rev-parse", "--short", "HEAD"]).strip()
 
@@ -477,7 +487,7 @@ def record(config: dict[str, Any], text: str, when: datetime) -> str:
         step = exc.cmd[3] if isinstance(exc.cmd, list) and len(exc.cmd) > 3 else "git"
         return (
             f"NOT recorded in docs/operator/guild-daily.md (git {step} exit {exc.returncode}; "
-            "see guild-daily.service); the next run rewrites the section"
+            "see guild-daily.service); the next run carries this section"
         )
     except (SummaryError, OSError) as exc:
         return f"NOT recorded in docs/operator/guild-daily.md ({exc})"

@@ -173,3 +173,11 @@ def test_a_failed_message_saves_nothing(monkeypatch, tmp_path):
     except OSError:
         pass
     assert not (tmp_path / "state.json").exists()  # the window is sent next time
+
+
+def test_a_section_that_never_landed_is_carried():
+    landed = "# Guild daily summary\n"
+    local = landed + "\n## Guild summary 2026-11-01\n- day one\n"
+    assert daily.unlanded_sections(landed, local) == "\n## Guild summary 2026-11-01\n- day one\n"
+    assert daily.unlanded_sections(landed, landed) == ""
+    assert daily.unlanded_sections("something else\n", local) == ""

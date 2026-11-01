@@ -22,7 +22,8 @@ The window runs from the previous summary to this one (24 hours on the first run
 here holds a secret: build names, counts, token fingerprints at most, never a token, DSN or
 key. The message goes first; then the job commits only this file, with a plain push. A
 failed commit or a refused push is sent as a short second message and never forced; the
-next run rewrites a section that was never committed. The service's PATH includes
+next run carries a section that never landed (uncommitted, or committed but not pushed)
+ahead of its own. The service's PATH includes
 `~/.local/bin`, where the repository's pre-commit hooks (the TruffleHog secret scan) live:
 without it the hook fails and git refuses the commit (the first run, 2026-11-01 06:30).
 
