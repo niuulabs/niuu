@@ -387,7 +387,7 @@ home:
     label: Get started
     title: Try it on your own machine.
     body: The shortest way in is a local install and a coding agent. Add workflows, Memory and residents as your work calls for them.
-    needs: You need Git, a C toolchain, uv, Node.js, pnpm, and Claude Code with a working login. This mode has no login of its own, so keep NIUU on 127.0.0.1, its default.
+    needs: You need Git, a C toolchain, uv, Node.js and pnpm. This mode has no login of its own, so keep NIUU on 127.0.0.1, its default.
     code_title: From source
     code: |-
       git clone https://github.com/niuulabs/niuu.git
