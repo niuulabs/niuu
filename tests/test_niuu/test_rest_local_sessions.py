@@ -10,7 +10,6 @@ from httpx import Response
 
 from tests.test_niuu.test_rest_volundr import _client, _headers, _instance
 
-
 _LOCAL_SESSION_ID = "543dc339-d1b9-4267-9b19-b33190d380e6"
 _REMOTE_SESSION_ID = "a6d44070-a0d9-42d0-a7e4-551c3ebd34cf"
 _UNKNOWN_SESSION_ID = "00000000-0000-4000-8000-000000000000"
