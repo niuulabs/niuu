@@ -218,3 +218,25 @@ def test_the_trend_line_compares_this_window_with_the_previous_one():
     assert daily.window_trend(stats(alerts_sent=5), None) is None
     assert daily.window_trend(stats(alerts_sent=5), stats(alerts_sent=2)) == "alerts_sent 2 → 5"
     assert daily.window_trend(stats(), stats()) == "the same"
+
+
+def test_journal_times_with_or_without_a_colon_in_the_offset():
+    line = '2026-11-01T09:00:00+0000 h e[1]: INFO: 1:2 - "GET /x HTTP/1.1" 502 Bad Gateway'
+    cutovers = [
+        (
+            daily.datetime(2026, 11, 1, 8, 59, tzinfo=daily.UTC),
+            daily.datetime(2026, 11, 1, 9, 1, tzinfo=daily.UTC),
+        )
+    ]
+    assert daily.classify_server_errors([line], cutovers, [])[0] == 1
+
+
+def test_a_storm_without_an_offset_is_a_config_error():
+    line = '2026-11-01T09:00:00+00:00 h e[1]: INFO: 1:2 - "GET /x HTTP/1.1" 502 Bad Gateway'
+    storms = [{"name": "s", "from": "2026-11-01T08:00:00", "to": "2026-11-01T10:00:00"}]
+    try:
+        daily.classify_server_errors([line], [], storms)
+    except daily.SummaryError as exc:
+        assert "UTC offset" in str(exc)
+    else:
+        raise AssertionError("a naive storm time must be refused")

@@ -59,7 +59,7 @@ CUTOVER_SPAN = re.compile(
     r"end=(?P<end>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)"
 )
 JOURNAL_ERROR = re.compile(
-    r"^(?P<at>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d) .*\"(?P<method>[A-Z]+) "
+    r"^(?P<at>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:?\d\d) .*\"(?P<method>[A-Z]+) "
     r"(?P<path>\S+) HTTP/1\.[01]\" 5\d\d"
 )
 UUID_SEGMENT = re.compile(r"/[0-9a-fA-F]{8}-[0-9a-fA-F-]{27}(?=/|$)")
@@ -184,6 +184,16 @@ def cutover_windows(chain_lines: list[tuple[str, str]], margin: timedelta) -> li
     return windows
 
 
+def _aware(stamp: str) -> datetime:
+    """A time with its offset (``+00:00`` or ``+0000``); one without is a config error."""
+    if re.search(r"[+-]\d\d\d\d$", stamp):
+        stamp = f"{stamp[:-2]}:{stamp[-2:]}"
+    moment = datetime.fromisoformat(stamp)
+    if moment.tzinfo is None:
+        raise SummaryError(f"{stamp!r} has no UTC offset; known_storms times need one")
+    return moment
+
+
 def route_of(method: str, path: str) -> str:
     """``GET /api/v1/forge/sessions/{id}``: query dropped, ids folded."""
     return f"{method} {UUID_SEGMENT.sub('/{id}', path.split('?', 1)[0])}"
@@ -197,10 +207,7 @@ def classify_server_errors(
     Returns the cutover count, the storm count, the remaining routes, and lines whose
     time could not be read (counted with the rest).
     """
-    storm_spans = [
-        (datetime.fromisoformat(storm["from"]), datetime.fromisoformat(storm["to"]))
-        for storm in storms
-    ]
+    storm_spans = [(_aware(storm["from"]), _aware(storm["to"])) for storm in storms]
     during_cutovers = during_storms = unread = 0
     rest: Counter[str] = Counter()
     for line in lines:
@@ -211,7 +218,7 @@ def classify_server_errors(
             unread += 1
             rest["(unparsed line)"] += 1
             continue
-        at = datetime.fromisoformat(found["at"])
+        at = _aware(found["at"])
         if any(start <= at <= end for start, end in cutovers):
             during_cutovers += 1
         elif any(start <= at <= end for start, end in storm_spans):
