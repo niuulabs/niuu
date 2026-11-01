@@ -54,6 +54,15 @@ REJECTION = re.compile(
     r"(?:Deleted a dead \S+ token .*\(APNs: (?P<dead>[^)]+)\))"
     r"|(?:APNs refused a \S+ push for owner \S+: (?P<refused>.+)$)"
 )
+CUTOVER_SPAN = re.compile(
+    r"(?:restart|stop)=(?P<start>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) "
+    r"end=(?P<end>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)"
+)
+JOURNAL_ERROR = re.compile(
+    r"^(?P<at>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d) .*\"(?P<method>[A-Z]+) "
+    r"(?P<path>\S+) HTTP/1\.[01]\" 5\d\d"
+)
+UUID_SEGMENT = re.compile(r"/[0-9a-fA-F]{8}-[0-9a-fA-F-]{27}(?=/|$)")
 ROLLOUT_LINE = re.compile(r"^(?P<at>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) (?P<text>.*)$")
 GATEWAY_STARTED = "Push gateway started:"
 DOC = "docs/operator/guild-daily.md"
@@ -92,6 +101,18 @@ def environment_moves(
         }
         for env, counts in now.items()
     }
+
+
+def window_trend(moves: dict[str, int], previous: dict[str, int] | None) -> str | None:
+    """One line on how this window's moves compare with the previous window's."""
+    if previous is None:
+        return None
+    changed = [
+        f"{key} {previous.get(key, 0)} → {moves.get(key, 0)}"
+        for key in PUSH_COUNTERS
+        if moves.get(key, 0) != previous.get(key, 0)
+    ]
+    return ", ".join(changed) or "the same"
 
 
 def gateway_restarted(lines: list[str]) -> bool:
@@ -147,6 +168,59 @@ def rollout_outcomes(
     return [w for _, w in sorted(rolled)], [w for _, w in sorted(completed)]
 
 
+def _at(stamp: str) -> datetime:
+    return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+
+
+def cutover_windows(chain_lines: list[tuple[str, str]], margin: timedelta) -> list[tuple]:
+    """(start, end) of every cutover or rollback, widened by ``margin`` on both sides."""
+    windows = []
+    for _, line in chain_lines:
+        if "CUTOVER_OK" not in line and "ROLLED_BACK" not in line:
+            continue
+        found = CUTOVER_SPAN.search(line)
+        if found is not None:
+            windows.append((_at(found["start"]) - margin, _at(found["end"]) + margin))
+    return windows
+
+
+def route_of(method: str, path: str) -> str:
+    """``GET /api/v1/forge/sessions/{id}``: query dropped, ids folded."""
+    return f"{method} {UUID_SEGMENT.sub('/{id}', path.split('?', 1)[0])}"
+
+
+def classify_server_errors(
+    lines: list[str], cutovers: list[tuple], storms: list[dict[str, str]]
+) -> tuple[int, int, Counter[str], int]:
+    """5xx answers split into (during cutovers, during known storms, the rest by route).
+
+    Returns the cutover count, the storm count, the remaining routes, and lines whose
+    time could not be read (counted with the rest).
+    """
+    storm_spans = [
+        (datetime.fromisoformat(storm["from"]), datetime.fromisoformat(storm["to"]))
+        for storm in storms
+    ]
+    during_cutovers = during_storms = unread = 0
+    rest: Counter[str] = Counter()
+    for line in lines:
+        if not SERVER_ERROR.search(line):
+            continue
+        found = JOURNAL_ERROR.search(line)
+        if found is None:
+            unread += 1
+            rest["(unparsed line)"] += 1
+            continue
+        at = datetime.fromisoformat(found["at"])
+        if any(start <= at <= end for start, end in cutovers):
+            during_cutovers += 1
+        elif any(start <= at <= end for start, end in storm_spans):
+            during_storms += 1
+        else:
+            rest[route_of(found["method"], found["path"])] += 1
+    return during_cutovers, during_storms, rest, unread
+
+
 def new_log_bytes(size: int, offset: int | None) -> tuple[int, int]:
     """Where to start reading a growing log, and the new offset (a shrink is a rotation)."""
     if offset is None or offset > size:
@@ -167,6 +241,7 @@ class HostSnapshot:
     running: int | None
     server_errors: int | None
     errors_note: str = ""
+    errors_breakdown: str = ""
 
 
 def render(
@@ -193,7 +268,7 @@ def render(
             else "sessions unreadable"
         )
         errors = (
-            f"5xx {host.server_errors}{host.errors_note}"
+            f"5xx {host.server_errors}{host.errors_note}{host.errors_breakdown}"
             if host.server_errors is not None
             else f"5xx n/a{host.errors_note}"
         )
@@ -238,9 +313,11 @@ def render(
             f"{env}: " + ", ".join(f"{k} {v}" for k, v in sorted(kinds.items()))
             for env, kinds in sorted((push.get("tokens_by_environment") or {}).items())
         )
+        trend = window_trend(moves, previous_push and previous_push.get("moves"))
         lines += [
             f"- **Push gateway** ({'running' if push.get('running') else 'NOT running'}), "
             f"{label}: {moved}",
+            *([f"  - Against the previous window: {trend}"] if trend is not None else []),
             f"  - APNs answers per environment, {label}: {per_env}",
             f"  - Rejections by reason in this window (gateway log): {why}",
             f"  - Registered tokens: {tokens or 'none'}",
@@ -273,7 +350,12 @@ def _run(command: list[str] | str, **kwargs: Any) -> str:
 
 
 def _host(
-    spec: dict[str, Any], since: datetime, when: datetime, state: dict, timeout: float
+    spec: dict[str, Any],
+    since: datetime,
+    when: datetime,
+    state: dict,
+    timeout: float,
+    context: dict[str, Any],
 ) -> HostSnapshot:
     try:
         health = _get_json(spec["url"] + "/health", timeout)
@@ -292,7 +374,7 @@ def _host(
         running = sum(1 for item in listed if item.get("status") == "running")
     except (URLError, OSError, ValueError):
         sessions = running = None
-    errors, note = _server_errors(spec, since, when, state)
+    errors, note, breakdown = _server_errors(spec, since, when, state, context)
     return HostSnapshot(
         spec["name"],
         str(health.get("status")),
@@ -305,12 +387,29 @@ def _host(
         running,
         errors,
         note,
+        breakdown,
+    )
+
+
+def _breakdown(lines: list[str], context: dict[str, Any]) -> tuple[int, str]:
+    cutovers, storms, rest, _ = classify_server_errors(
+        lines, context["cutovers"], context["storms"]
+    )
+    total = cutovers + storms + sum(rest.values())
+    top = ", ".join(f"{route} ×{n}" for route, n in rest.most_common(context["top_routes"]))
+    return total, (
+        f" ({cutovers} during cutovers or rollbacks, {storms} in known storms, "
+        f"{sum(rest.values())} other" + (f": {top}" if top else "") + ")"
     )
 
 
 def _server_errors(
-    spec: dict[str, Any], since: datetime, when: datetime, state: dict[str, Any]
-) -> tuple[int | None, str]:
+    spec: dict[str, Any],
+    since: datetime,
+    when: datetime,
+    state: dict[str, Any],
+    context: dict[str, Any],
+) -> tuple[int | None, str, str]:
     source = spec["errors"]
     try:
         if "journal_unit" in source:
@@ -321,12 +420,13 @@ def _server_errors(
                     "-u",
                     source["journal_unit"],
                     "-o",
-                    "cat",
+                    "short-iso",
                     "--since",
                     since.strftime("%Y-%m-%d %H:%M:%S UTC"),
                 ]
             ).splitlines()
-            return server_errors(lines), ""
+            total, breakdown = _breakdown(lines, context)
+            return total, "", breakdown
         size = int(_run(source["size_command"]).strip())
         offsets = state.setdefault("log_offsets", {})
         counted_from = state.setdefault("log_since", {})
@@ -334,7 +434,7 @@ def _server_errors(
             # The log has no timestamps: count only what is written from now on.
             offsets[spec["name"]] = size
             counted_from[spec["name"]] = when.isoformat()
-            return None, " (counted from this summary on)"
+            return None, " (counted from this summary on)", ""
         start, end = new_log_bytes(size, offsets[spec["name"]])
         counted = int(
             _run(source["count_command"].format(start=start + 1, length=end - start)).strip() or 0
@@ -343,16 +443,25 @@ def _server_errors(
         offsets[spec["name"]] = end
         began = datetime.fromisoformat(counted_from.get(spec["name"], since.isoformat()))
         counted_from[spec["name"]] = when.isoformat()
-        return counted, (f" (since {began:%m-%d %H:%M})" if began > since else "")
+        return counted, (f" (since {began:%m-%d %H:%M})" if began > since else ""), ""
     except (subprocess.CalledProcessError, OSError, ValueError) as exc:
-        return None, f" ({type(exc).__name__})"
+        return None, f" ({type(exc).__name__})", ""
 
 
 def gather(config: dict[str, Any], state: dict[str, Any], when: datetime) -> tuple[str, dict]:
     first_window = timedelta(hours=config["first_window_hours"])
     timeout = config["http_timeout_seconds"]
     since = datetime.fromisoformat(state["at"]) if state.get("at") else when - first_window
-    hosts = [_host(spec, since, when, state, timeout) for spec in config["hosts"]]
+    chains: list[tuple[str, str]] = []
+    for chain in Path(os.path.expanduser(config["rollouts_dir"])).glob("*/chain.log"):
+        folder = chain.parent.name
+        chains += [(folder, line) for line in chain.read_text(errors="replace").splitlines()]
+    context = {
+        "cutovers": cutover_windows(chains, timedelta(seconds=config["cutover_margin_seconds"])),
+        "storms": config["known_storms"],
+        "top_routes": config["top_routes"],
+    }
+    hosts = [_host(spec, since, when, state, timeout, context) for spec in config["hosts"]]
     try:
         push = _get_json(config["push_status_url"], timeout)
     except (URLError, OSError, ValueError):
@@ -372,16 +481,16 @@ def gather(config: dict[str, Any], state: dict[str, Any], when: datetime) -> tup
         ).splitlines()
     except (subprocess.CalledProcessError, OSError):
         log = None  # reported as unreadable, never as "no rejections"
-    chains: list[tuple[str, str]] = []
-    for chain in Path(os.path.expanduser(config["rollouts_dir"])).glob("*/chain.log"):
-        folder = chain.parent.name
-        chains += [(folder, line) for line in chain.read_text(errors="replace").splitlines()]
     rolled, completed = rollout_outcomes(chains, since)
     text = render(when, since, hosts, push, state.get("push"), log, rolled, completed)
     if push is not None:
+        stats = {key: push.get(key, 0) for key in PUSH_COUNTERS}
+        before = (state.get("push") or {}).get("stats")
+        restarted = log is not None and gateway_restarted(log)
         state["push"] = {
             "at": when.isoformat(),
-            "stats": {key: push.get(key, 0) for key in PUSH_COUNTERS},
+            "stats": stats,
+            "moves": counter_moves(stats, before, restarted),
             "apns_by_environment": push.get("apns_by_environment") or {},
         }
     state["at"] = when.isoformat()
@@ -456,7 +565,9 @@ def main(argv: list[str] | None = None) -> int:
         for spec in config["hosts"]:
             if "size_command" in spec["errors"]:
                 now = datetime.now(UTC).replace(microsecond=0)
-                _server_errors(spec, now, now, state)
+                _server_errors(
+                    spec, now, now, state, {"cutovers": [], "storms": [], "top_routes": 0}
+                )
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps(state, indent=2))
         print("primed:", ", ".join(sorted(state.get("log_offsets", {}))) or "nothing")

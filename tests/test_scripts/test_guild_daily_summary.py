@@ -181,3 +181,40 @@ def test_a_section_that_never_landed_is_carried():
     assert daily.unlanded_sections(landed, local) == "\n## Guild summary 2026-11-01\n- day one\n"
     assert daily.unlanded_sections(landed, landed) == ""
     assert daily.unlanded_sections("something else\n", local) == ""
+
+
+def test_5xx_split_into_cutovers_storms_and_routes():
+    chains = [
+        (
+            "r",
+            "2026-11-01T01:01:19Z mini: CUTOVER_OK build=x stop=2026-11-01T01:00:45Z "
+            "end=2026-11-01T01:00:53Z ledger=1",
+        ),
+    ]
+    cutovers = daily.cutover_windows(chains, daily.timedelta(seconds=60))
+    storms = [
+        {"name": "loop", "from": "2026-10-31T17:30:00+00:00", "to": "2026-10-31T17:50:00+00:00"}
+    ]
+    line = '{at} thor-host env[1]: INFO:     1.2.3.4:5 - "GET {path} HTTP/1.1" 502 Bad Gateway'
+    lines = [
+        line.format(at="2026-11-01T01:00:46+00:00", path="/api/v1/forge/notifications?x=1"),
+        line.format(at="2026-10-31T17:41:37+00:00", path="/api/v1/forge/sessions/0000"),
+        line.format(
+            at="2026-11-01T09:00:00+00:00",
+            path="/api/v1/forge/sessions/0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b/status",
+        ),
+        line.format(
+            at="2026-11-01T09:05:00+00:00",
+            path="/api/v1/forge/sessions/5d62a3a5-d697-435e-90c9-2dad8b9453fb/status",
+        ),
+        'no time "GET /x HTTP/1.1" 500 Error',
+    ]
+    during, stormy, rest, unread = daily.classify_server_errors(lines, cutovers, storms)
+    assert (during, stormy, unread) == (1, 1, 1)
+    assert rest["GET /api/v1/forge/sessions/{id}/status"] == 2
+
+
+def test_the_trend_line_compares_this_window_with_the_previous_one():
+    assert daily.window_trend(stats(alerts_sent=5), None) is None
+    assert daily.window_trend(stats(alerts_sent=5), stats(alerts_sent=2)) == "alerts_sent 2 → 5"
+    assert daily.window_trend(stats(), stats()) == "the same"

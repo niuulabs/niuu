@@ -9,10 +9,14 @@ Each section reports:
 
 - **Per host:** the build and revision served (and whether the tree is dirty), health, the
   migration ledger count, local sessions (and how many run), and 5xx answers in the window.
-  Thor's are counted from its journal. The mini's log has no timestamps, so they are counted
-  in what the log gained since the previous summary.
+  Thor's are counted from its journal and split into those during cutover or rollback
+  windows (from the rollouts' `restart=`/`stop=` … `end=`, widened by
+  `cutover_margin_seconds`), those in `known_storms` (named spans in the config), and the
+  rest, with their top `top_routes` routes (ids folded). The mini's log has no timestamps, so
+  its 5xx are counted, not split, in what the log gained since the previous summary.
 - **Push gateway:** the counters moved since the previous summary (or since the gateway
-  started, when its log shows a start in the window), APNs answers per environment,
+  started, when its log shows a start in the window), one line comparing those moves with
+  the previous window's, APNs answers per environment,
   rejections by reason from the gateway's log (prune lines and refusals), registered tokens
   per environment and kind, and feedless and unreachable nodes.
 - **Promotions:** cutovers rolled back and completed in the window, from the rollout folders'
