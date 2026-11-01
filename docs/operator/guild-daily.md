@@ -34,3 +34,16 @@ rollout folder, the state file, the docs worktree (the job's own, kept clean) an
 a ledger command (`{build}` is the served build) and how to read its errors (a journal
 unit, or a size command and a count command for a log without timestamps). To pause it, run
 `systemctl --user disable --now guild-daily.timer`.
+
+## Guild summary 2026-11-01 (2026-10-31 06:33 to 2026-11-01 06:33 UTC)
+
+- **Thor**: ok, forge-projects-4cd719ba (4cd719bad, not dirty); ledger 118; 71 sessions (15 running); 5xx 482
+- **mini-m6**: ok, forge-m6-projects-4cd719ba (4cd719bad, not dirty); ledger 140|44; 15 sessions (6 running); 5xx 0 (since 11-01 01:08)
+
+- **Push gateway** (running), since the gateway started: alerts_sent 8, alerts_suppressed 2, live_activity_updates 53, background_wakes 9, apns_rejections 8, tokens_pruned 8, node_failures 3, loop_errors 1
+  - APNs answers per environment, since the gateway started: production: accepted 70, rejected 8
+  - Rejections by reason in this window (gateway log): HTTP 410 ExpiredToken (token pruned) ×23, HTTP 400 BadDeviceToken (token pruned) ×4
+  - Registered tokens: production: alert 1, live_activity 3, live_activity_start 1, widget_fallback 1
+  - Feedless nodes: 582bf8d0-41fb-4c5d-ad4c-e5cdbbdeb0c8; unreachable: none
+
+- **Promotions**: rolled back 2 (10-31 16:09 Thor forge-guild-b25aec7f; 10-31 17:42 Thor forge-owners-28e97992); completed 13 (10-31 07:36 mini forge-relay-58debfa5; 10-31 07:44 Thor forge-names-39ab05da; 10-31 12:32 Thor forge-attn-c42970e6; 10-31 15:33 mini forge-attn-c42970e6; 10-31 16:13 Thor forge-guild-b25aec7f; 10-31 16:27 Thor forge-env-5aac51a5; 10-31 17:16 mini forge-env-5aac51a5; 10-31 18:58 mini forge-owners-ec03df0c; 10-31 19:02 Thor forge-owners-ec03df0c; 10-31 19:09 Thor forge-fallback-6ff003fb; 10-31 22:50 mini forge-fallback-6ff003fb; 10-31 23:05 Thor forge-projects-4cd719ba; 11-01 01:01 mini forge-projects-4cd719ba)
