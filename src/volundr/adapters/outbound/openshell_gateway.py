@@ -199,7 +199,7 @@ RAVN_PERSISTED_HOME_DIR = ".ravn-home"
 #: gateway drops its own /sandbox volume (seeded from the image, and writable
 #: through the pod's fsGroup), and /sandbox is the image's directory, owned by the
 #: image's ``sandbox`` user rather than the UID the gateway runs the sandbox as
-#: (1000). Völundr then cannot write ``/sandbox/.volundr`` or link ``~/.ravn``.
+#: (10001). Völundr then cannot write ``/sandbox/.volundr`` or link ``~/.ravn``.
 RESIDENT_WORKSPACE_VOLUME_PATH = "/resident-workspace"
 RESIDENT_WORKSPACE_VOLUME_NAME = "resident-workspace"
 #: What the workspace path of a claim-backed sandbox can be (_workspace_link_state_script).
