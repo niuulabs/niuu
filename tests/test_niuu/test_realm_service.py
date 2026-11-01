@@ -396,3 +396,25 @@ async def test_upsert_realm_refuses_an_id_in_another_tenant(service: RealmServic
 
     stored = await service.get_realm(realm.id, "tenant-a")
     assert stored is not None and stored.name == "Forge"
+
+
+async def test_a_sync_that_names_no_project_keeps_the_realms_project() -> None:
+    service = RealmService(InMemoryRealmRepository())
+    project_id = uuid4()
+    realm = await service.create_realm("copy", "Copy", tenant_id="t", project_id=project_id)
+
+    synced = await service.upsert_realm(realm.id, "copy", "Copy", tenant_id="t")
+
+    assert synced.project_id == project_id
+
+
+async def test_set_project_moves_only_the_tenants_realm() -> None:
+    service = RealmService(InMemoryRealmRepository())
+    await service.create_realm("copy", "Copy", tenant_id="t")
+    project_id = uuid4()
+
+    moved = await service.set_project("copy", "t", project_id)
+
+    assert moved.project_id == project_id
+    with pytest.raises(RealmNotFoundError):
+        await service.set_project("copy", "other", project_id)

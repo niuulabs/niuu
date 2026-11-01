@@ -56,6 +56,7 @@ class RealmResponse(BaseModel):
     instance_id: str | None
     autonomy_profile: str
     tenant_id: str
+    project_id: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -70,6 +71,7 @@ class RealmResponse(BaseModel):
             instance_id=realm.instance_id,
             autonomy_profile=realm.autonomy_profile,
             tenant_id=realm.tenant_id,
+            project_id=str(realm.project_id) if realm.project_id else None,
             created_at=realm.created_at,
             updated_at=realm.updated_at,
         )
@@ -89,6 +91,13 @@ class CreateRealmRequest(BaseModel):
     owner_id: str | None = None
     instance_id: str | None = None
     autonomy_profile: str = "balanced"
+    project_id: UUID | None = None
+
+
+class SetRealmProjectRequest(BaseModel):
+    """Request model for moving a realm into a project, or out of one with null."""
+
+    project_id: UUID | None
 
 
 class UpsertRealmRequest(BaseModel):
@@ -112,6 +121,7 @@ class UpsertRealmRequest(BaseModel):
     owner_id: str | None = None
     instance_id: str | None = None
     autonomy_profile: str = "balanced"
+    project_id: UUID | None = None
 
 
 class TrustGrantResponse(BaseModel):
@@ -366,6 +376,7 @@ def create_realms_router(
             owner_id=owner_id,
             instance_id=body.instance_id,
             autonomy_profile=body.autonomy_profile,
+            project_id=body.project_id,
         )
         return RealmResponse.from_domain(realm)
 
@@ -409,9 +420,22 @@ def create_realms_router(
                 owner_id=owner_id,
                 instance_id=body.instance_id,
                 autonomy_profile=body.autonomy_profile,
+                project_id=body.project_id,
             )
         except RealmNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        return RealmResponse.from_domain(realm)
+
+    @router.patch("/{slug}/project", response_model=RealmResponse)
+    async def set_realm_project(
+        request: Request,
+        slug: str,
+        body: SetRealmProjectRequest,
+        principal: Principal = Depends(extract_principal),
+    ) -> RealmResponse:
+        """Move a realm into a project, or out of one."""
+        await _require_realm(request, principal, slug, "update")
+        realm = await _service(request).set_project(slug, _tenant_id(principal), body.project_id)
         return RealmResponse.from_domain(realm)
 
     @router.get("/{slug}", response_model=RealmResponse)

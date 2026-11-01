@@ -526,4 +526,12 @@ data:
     DROP INDEX IF EXISTS idx_realms_tenant_slug;
     ALTER TABLE realms ADD CONSTRAINT realms_slug_key UNIQUE (slug);
     ALTER TABLE realms DROP COLUMN IF EXISTS tenant_id;
+  000091_realm_project.up.sql: |
+    -- The Forge project a realm belongs to. Several realms can share one; a realm
+    -- without one stands alone.
+    ALTER TABLE realms ADD COLUMN IF NOT EXISTS project_id UUID;
+    CREATE INDEX IF NOT EXISTS idx_realms_project_id ON realms (project_id);
+  000091_realm_project.down.sql: |
+    DROP INDEX IF EXISTS idx_realms_project_id;
+    ALTER TABLE realms DROP COLUMN IF EXISTS project_id;
 {{- end }}
