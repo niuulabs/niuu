@@ -487,7 +487,7 @@ function SagaReposCard({
   const cleanRefs = selectedRefs
     .map((entry) => ({ repo: entry.repo.trim(), branch: entry.branch.trim() || 'main' }))
     .filter((entry) => entry.repo);
-  const canSave = cleanRefs.length > 0 && !isUpdating;
+  const canSave = (cleanRefs.length > 0 || currentRefs.length > 0) && !isUpdating;
 
   return (
     <section className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-4 niuu:space-y-3">

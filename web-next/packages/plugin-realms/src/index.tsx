@@ -5,6 +5,7 @@ import { RealmsHomePage } from './ui/RealmsHomePage';
 import { NewRealmPage } from './ui/NewRealmPage';
 import { RealmPage } from './ui/RealmPage';
 import { RealmSettingsPage } from './ui/RealmSettingsPage';
+import { ProjectPage } from './ui/ProjectPage';
 
 export const REALMS_TABS = [
   { id: 'all', label: 'All', path: '/realms' },
@@ -36,6 +37,11 @@ export const realmsPlugin = definePlugin({
       component: () => <RealmsHomePage view="templates" />,
     }),
     createRoute({ getParentRoute: () => rootRoute, path: '/realms/new', component: NewRealmPage }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/realms/projects/$projectId',
+      component: ProjectPage,
+    }),
     createRoute({ getParentRoute: () => rootRoute, path: '/realms/$slug', component: RealmPage }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -51,6 +57,7 @@ export { RealmsHomePage } from './ui/RealmsHomePage';
 export { NewRealmPage } from './ui/NewRealmPage';
 export { RealmPage } from './ui/RealmPage';
 export { RealmSettingsPage } from './ui/RealmSettingsPage';
+export { ProjectPage } from './ui/ProjectPage';
 export { REALM_TEMPLATES, templateById, type RealmTemplate } from './domain/templates';
 export { parseSentence, type SentenceDraft } from './domain/sentence';
 export {

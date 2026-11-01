@@ -453,10 +453,15 @@ export {
 export { WorkflowStrip, gateWaitsForPerson, type WorkflowStripProps } from './ui/WorkflowStrip';
 export { SimpleWorkflowsPage } from './ui/SimpleWorkflowsPage';
 export { BoardWorkflowsCard } from './ui/BoardWorkflowsCard';
+export { TrackerBoard, useTrackerBoard } from './ui/TrackerBoard';
+export { TrackerWorkImportDialog } from './ui/TrackerWorkImportDialog';
+export { mergeWorkPages, useReviews, useWorkCollection } from './ui/useWork';
+export { reviewPath } from './domain/review';
 export { WorkflowCard } from './ui/WorkflowCard';
 export { StageProgressRail } from './ui/StageProgressRail';
 export { StepDots } from './ui/StepDots';
 export { useSagas } from './ui/useSagas';
+export { useSaga } from './ui/useSaga';
 export {
   useWorkflows,
   useWorkflow,

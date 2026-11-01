@@ -26,7 +26,7 @@ class PostgresRealmRepository(RealmRepository):
         rows = await self._pool.fetch(
             """
             SELECT id, slug, name, sleipnir_domain, owner_id, instance_id,
-                   autonomy_profile, created_at, updated_at, tenant_id
+                   autonomy_profile, created_at, updated_at, tenant_id, project_id
             FROM realms
             WHERE tenant_id = $1
             ORDER BY created_at DESC
@@ -40,7 +40,7 @@ class PostgresRealmRepository(RealmRepository):
         row = await self._pool.fetchrow(
             """
             SELECT id, slug, name, sleipnir_domain, owner_id, instance_id,
-                   autonomy_profile, created_at, updated_at, tenant_id
+                   autonomy_profile, created_at, updated_at, tenant_id, project_id
             FROM realms
             WHERE id = $1
             """,
@@ -56,7 +56,7 @@ class PostgresRealmRepository(RealmRepository):
             row = await self._pool.fetchrow(
                 """
                 SELECT id, slug, name, sleipnir_domain, owner_id, instance_id,
-                       autonomy_profile, created_at, updated_at, tenant_id
+                       autonomy_profile, created_at, updated_at, tenant_id, project_id
                 FROM realms
                 WHERE id = $1 AND tenant_id = $2
                 """,
@@ -70,7 +70,7 @@ class PostgresRealmRepository(RealmRepository):
         row = await self._pool.fetchrow(
             """
             SELECT id, slug, name, sleipnir_domain, owner_id, instance_id,
-                   autonomy_profile, created_at, updated_at, tenant_id
+                   autonomy_profile, created_at, updated_at, tenant_id, project_id
             FROM realms
             WHERE slug = $1 AND tenant_id = $2
             """,
@@ -87,8 +87,8 @@ class PostgresRealmRepository(RealmRepository):
             """
             INSERT INTO realms
                 (id, slug, name, sleipnir_domain, owner_id, instance_id,
-                 autonomy_profile, created_at, updated_at, tenant_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 autonomy_profile, created_at, updated_at, tenant_id, project_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (id) DO UPDATE SET
                 slug = EXCLUDED.slug,
                 name = EXCLUDED.name,
@@ -96,7 +96,8 @@ class PostgresRealmRepository(RealmRepository):
                 owner_id = EXCLUDED.owner_id,
                 instance_id = EXCLUDED.instance_id,
                 autonomy_profile = EXCLUDED.autonomy_profile,
-                updated_at = EXCLUDED.updated_at
+                updated_at = EXCLUDED.updated_at,
+                project_id = EXCLUDED.project_id
             WHERE realms.tenant_id = EXCLUDED.tenant_id
             """,
             realm.id,
@@ -109,6 +110,7 @@ class PostgresRealmRepository(RealmRepository):
             realm.created_at,
             realm.updated_at,
             realm.tenant_id,
+            realm.project_id,
         )
         return realm
 
@@ -258,6 +260,7 @@ class PostgresRealmRepository(RealmRepository):
             instance_id=row["instance_id"],
             autonomy_profile=row["autonomy_profile"],
             tenant_id=row["tenant_id"],
+            project_id=row["project_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

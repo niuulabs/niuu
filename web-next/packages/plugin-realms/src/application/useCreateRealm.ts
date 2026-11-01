@@ -26,6 +26,7 @@ import {
   type RealmDraft,
 } from '../domain/realm';
 import { templateById } from '../domain/templates';
+import { PROJECTS_QUERY_KEY, resolveProjectChoice } from './useProjects';
 
 /** One step of the create recipe, in the order it runs. */
 export interface RecipeStep {
@@ -38,6 +39,7 @@ export interface RecipeStep {
 export const RECIPE_STEPS: RecipeStep[] = [
   { id: 'validate', label: 'check the draft', advancedPath: '/realms' },
   { id: 'connections', label: 'test connections', advancedPath: '/settings/integrations' },
+  { id: 'project', label: 'set up the project', advancedPath: '/volundr' },
   { id: 'realm', label: 'create the workspace', advancedPath: '/valkyrie' },
   { id: 'memory', label: 'create workspace memory', advancedPath: '/mimir/registry' },
   { id: 'routing', label: 'route memory writes', advancedPath: '/mimir/registry' },
@@ -137,7 +139,7 @@ export function useCreateRealm() {
       };
 
       await step('validate', async () => {
-        const problem = requiredDraftError(draft, template.needsBoard, template.needsRepo);
+        const problem = requiredDraftError(draft, template.needsRepo);
         if (problem) throw new Error(problem);
       });
 
@@ -150,6 +152,10 @@ export function useCreateRealm() {
         }
       });
 
+      const projectId = await step('project', () =>
+        resolveProjectChoice(volundr, draft, draft.name, draft.instanceId || undefined),
+      );
+
       const realm = await step('realm', () =>
         realms.createRealm({
           slug: draft.slug,
@@ -157,6 +163,7 @@ export function useCreateRealm() {
           sleipnir_domain: 'code',
           instance_id: draft.instanceId || null,
           autonomy_profile: 'balanced',
+          project_id: projectId,
         }),
       );
       setProgress((current) => ({ ...current, realm }));
@@ -249,12 +256,14 @@ export function useCreateRealm() {
       });
 
       await step('board', async () => {
-        if (!template.needsBoard || !draft.trackerBoard) return;
+        if (!draft.trackerBoard) return;
         await tracker.importProject(
           draft.trackerBoard,
-          [draft.repo],
+          draft.repo ? [draft.repo] : [],
           draft.branch || undefined,
-          draft.instanceId || null,
+          // A project stays on the Forge that holds it, wherever the resident runs.
+          projectId ? null : draft.instanceId || null,
+          projectId ? { forgeProjectId: projectId } : undefined,
         );
       });
 
@@ -296,6 +305,7 @@ export function useCreateRealm() {
 
       await queryClient.invalidateQueries({ queryKey: REALMS_QUERY_KEY });
       await queryClient.invalidateQueries({ queryKey: ['ravn'] });
+      await queryClient.invalidateQueries({ queryKey: PROJECTS_QUERY_KEY });
       return realm;
     },
     [mimir, personas, queryClient, realms, residents, tracker, triggers, volundr],

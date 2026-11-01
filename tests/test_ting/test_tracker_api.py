@@ -9,7 +9,8 @@ from __future__ import annotations
 import contextlib
 from dataclasses import replace
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -39,6 +40,7 @@ from ting.domain.models import (
 )
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.tracker import TrackerPort
+from ting.ports.volundr import ForgeProjectRef
 from ting.ports.workflow_repository import WorkflowRepository
 
 # ---------------------------------------------------------------------------
@@ -1063,3 +1065,151 @@ class TestImportProject:
 
         assert response.status_code == 200
         assert "Failed to kick off initial dispatch" in response.json()["warnings"][0]
+
+
+class TestImportWithoutRepository:
+    def test_a_project_imports_with_no_repository(self, client: TestClient):
+        response = client.post("/api/v1/ting/tracker/import", json={"project_id": "proj-1"})
+
+        assert response.status_code == 200
+        assert response.json()["repos"] == []
+
+    def test_a_repository_still_needs_a_branch(self, client: TestClient):
+        response = client.post(
+            "/api/v1/ting/tracker/import",
+            json={"project_id": "proj-1", "repos": ["org/repo"]},
+        )
+
+        assert response.status_code == 422
+        assert "branch" in response.json()["detail"]
+
+
+FORGE_PROJECT_ID = "5c3115f1-0b77-44c3-a4a6-ae4eca22239a"
+FORGE_A = "1f6a1c52-3f0e-4f7f-9a5e-6d1f0f6b1a11"
+FORGE_B = "2e7b2d63-401f-4a80-8b6f-7e2a1a7c2b22"
+
+
+def _attachable_forge(*, known: bool = True, target_id: str = FORGE_A) -> MagicMock:
+    forge = MagicMock()
+    forge.target_id = target_id
+    forge.name = "Forge A"
+    forge.get_project = AsyncMock(
+        return_value=(
+            ForgeProjectRef(id=FORGE_PROJECT_ID, name="Shop", instance_id="host-a")
+            if known
+            else None
+        )
+    )
+    return forge
+
+
+def _attach(client: TestClient, **overrides: object):
+    return client.post(
+        "/api/v1/ting/tracker/import",
+        json={"project_id": "proj-1", "forge_project_id": FORGE_PROJECT_ID, **overrides},
+    )
+
+
+class TestAttachTrackerToForgeProject:
+    def _client(self, client: TestClient, *forges: MagicMock) -> TestClient:
+        client.app.state.volundr_factory = SimpleNamespace(
+            for_principal=AsyncMock(return_value=list(forges))
+        )
+        return client
+
+    def test_a_tracker_joins_the_forge_project(self, client: TestClient):
+        response = _attach(self._client(client, _attachable_forge()))
+
+        assert response.status_code == 200
+        assert response.json()["project_id"] == FORGE_PROJECT_ID
+        saved = client.app.state.saga_repo.sagas[0]
+        assert str(saved.forge_project_id) == FORGE_PROJECT_ID
+        assert str(saved.id) != FORGE_PROJECT_ID
+        assert saved.name == "Alpha"
+        assert saved.tracker_id == "proj-1"
+        assert saved.instance_id == FORGE_A
+
+    def test_tags_never_move_it_off_the_forge_that_holds_it(self, client: TestClient):
+        response = _attach(self._client(client, _attachable_forge()), target_tags=["gpu"])
+
+        assert response.status_code == 200
+        saved = client.app.state.saga_repo.sagas[0]
+        assert saved.instance_id == FORGE_A
+        assert saved.target_tags == []
+
+    def test_a_local_forge_has_no_registry_id_to_pin(self, client: TestClient):
+        """The column is a UUID, and the only local Forge is simply named local."""
+        response = _attach(self._client(client, _attachable_forge(target_id="local")))
+
+        assert response.status_code == 200
+        assert client.app.state.saga_repo.sagas[0].instance_id is None
+
+    def test_the_project_is_found_on_whichever_forge_holds_it(self, client: TestClient):
+        forges = (_attachable_forge(known=False), _attachable_forge(target_id=FORGE_B))
+
+        assert _attach(self._client(client, *forges)).status_code == 200
+        assert client.app.state.saga_repo.sagas[0].instance_id == FORGE_B
+
+    def test_a_named_instance_limits_the_search(self, client: TestClient):
+        response = _attach(self._client(client, _attachable_forge()), instance_id=FORGE_B)
+
+        assert response.status_code == 404
+
+    def test_an_unknown_project_is_not_found(self, client: TestClient):
+        response = _attach(self._client(client, _attachable_forge(known=False)))
+
+        assert response.status_code == 404
+        assert client.app.state.saga_repo.sagas == []
+
+    def test_an_invalid_id_is_refused(self, client: TestClient):
+        response = _attach(self._client(client), forge_project_id="not-a-uuid")
+
+        assert response.status_code == 422
+
+    def test_no_forge_connection_is_unavailable(self, client: TestClient):
+        assert _attach(client).status_code == 503
+
+    def test_reimporting_the_same_tracker_is_allowed(self, client: TestClient):
+        self._client(client, _attachable_forge())
+
+        assert _attach(client).status_code == 200
+        assert _attach(client).status_code == 200
+        assert len(client.app.state.saga_repo.sagas) == 1
+
+    def test_a_project_takes_a_second_tracker(self, client: TestClient):
+        self._client(client, _attachable_forge())
+        assert _attach(client).status_code == 200
+
+        response = _attach(client, project_id="proj-2")
+
+        assert response.status_code == 200
+        links = client.app.state.saga_repo.sagas
+        assert [saga.tracker_id for saga in links] == ["proj-1", "proj-2"]
+        assert {str(saga.forge_project_id) for saga in links} == {FORGE_PROJECT_ID}
+        assert links[0].id != links[1].id
+
+    def test_a_plain_reimport_stays_in_its_project(self, client: TestClient):
+        self._client(client, _attachable_forge())
+        assert _attach(client).status_code == 200
+
+        response = client.post(
+            "/api/v1/ting/tracker/import",
+            json={"project_id": "proj-1", "repos": ["org/repo"], "base_branch": "main"},
+        )
+
+        assert response.status_code == 200
+        assert str(client.app.state.saga_repo.sagas[0].forge_project_id) == FORGE_PROJECT_ID
+
+    def test_a_tracker_project_belongs_to_one_project(self, client: TestClient):
+        assert (
+            client.post(
+                "/api/v1/ting/tracker/import",
+                json={"project_id": "proj-1", "repos": ["org/repo"], "base_branch": "main"},
+            ).status_code
+            == 200
+        )
+
+        response = _attach(self._client(client, _attachable_forge()))
+
+        assert response.status_code == 409
+        assert "another project" in response.json()["detail"]

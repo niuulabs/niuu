@@ -342,6 +342,8 @@ def workflow_document_revision(document: WorkflowDocument | WorkflowDefinition) 
 
 
 def _validate_workflow_board(graph: dict[str, Any]) -> None:
+    if not isinstance(graph.get("requiresRepository", True), bool):
+        raise WorkflowDocumentError("Workflow requiresRepository must be true or false")
     try:
         parse_workflow_board(graph)
     except WorkflowBoardError as exc:

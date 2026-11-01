@@ -1,0 +1,116 @@
+schema_version: 1
+id: 9a41d7c6-3e52-5b08-a7f4-6c1e0d2b8f37
+name: Ticket Work Flow
+description: Does the work one tracker ticket asks for, with or without a repository, then waits for
+  a person to approve the result. For tickets that are not about code.
+version: 1.0.1
+persona_dependencies:
+  ticket-worker:
+    id: ticket-worker
+    revision: content-e1100ac6818dd5a7
+    digest: sha256:e1100ac6818dd5a7251bc93e4174cc4a496977ce3ea5c6dd973321ef2c0c2655
+    path: personas/ticket-worker.yaml
+graph:
+  tags:
+  - tracker
+  requiresRepository: false
+  board:
+    version: 1
+    columns:
+    - id: working
+      title: Working
+      nodes:
+      - ticket-work
+    - id: result-review
+      title: Review
+      gate: result-review-gate
+      review: output
+      panels:
+      - widget: document
+        title: Result
+        source:
+          outcome: result
+  nodes:
+  - id: work-request
+    kind: trigger
+    label: Start the ticket
+    source: tracker work
+    dispatchEvent: ticket.work.requested
+    position:
+      x: 96
+      y: 280
+  - id: ticket-work
+    kind: stage
+    label: Do the work
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: ticket-worker
+      budget: 18
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - ticket.work.requested
+      - ticket.work.changes_requested
+    position:
+      x: 352
+      y: 280
+  - id: result-review-gate
+    kind: gate
+    label: Review the result
+    condition: The approved result finishes the ticket.
+    mode: human_approval
+    pendingBehavior: help_needed
+    approvalEvent: ticket.work.completed
+    changesRequestedEvent: ticket.work.changes_requested
+    instructions: Read the result against the ticket. Approve it if it does what the ticket asks.
+      Otherwise request changes with specifics, and the work continues in this same run.
+    position:
+      x: 704
+      y: 280
+  - id: work-blocked
+    kind: gate
+    label: Work blocked
+    condition: The worker needs something it cannot get for itself.
+    mode: human_approval
+    pendingBehavior: help_needed
+    approvalEvent: ticket.work.changes_requested
+    changesRequestedEvent: ticket.work.changes_requested
+    instructions: Read what is needed. Say how to carry on and the work continues in this same run,
+      or stop the run if the ticket cannot be done as written.
+    position:
+      x: 704
+      y: 480
+  - id: work-complete
+    kind: end
+    label: Ticket work complete
+    joinMode: all
+    completionEvent: ticket.work.completed
+    position:
+      x: 1056
+      y: 280
+  edges:
+  - id: edge-work-request-to-work
+    source: work-request
+    target: ticket-work
+    label: ticket.work.requested -> ticket.work.requested
+  - id: edge-work-to-gate
+    source: ticket-work
+    target: result-review-gate
+    label: ticket.work.ready_for_gate -> ticket.work.ready_for_gate
+  - id: edge-work-to-blocked
+    source: ticket-work
+    target: work-blocked
+    label: ticket.work.blocked -> ticket.work.blocked
+  - id: edge-blocked-to-work
+    source: work-blocked
+    target: ticket-work
+    label: ticket.work.changes_requested -> ticket.work.changes_requested
+  - id: edge-gate-to-work
+    source: result-review-gate
+    target: ticket-work
+    label: ticket.work.changes_requested -> ticket.work.changes_requested
+  - id: edge-gate-to-complete
+    source: result-review-gate
+    target: work-complete
+    label: ticket.work.completed -> ticket.work.completed
+  resourceBindings: []

@@ -2,6 +2,7 @@
  * Mock adapters for Völundr ports — used in tests and dev mode.
  */
 import type { IVolundrService, ResolveWorkflowGateRequest } from '../ports/IVolundrService';
+import type { ForgeProject } from '../models/volundr.model';
 import type { IClusterAdapter } from '../ports/IClusterAdapter';
 import type { ISessionStore } from '../ports/ISessionStore';
 import type { IPtyStream } from '../ports/IPtyStream';
@@ -1224,8 +1225,21 @@ const SEED_EXTERNAL_SESSIONS: ExternalSession[] = [
   },
 ];
 
+const SEED_PROJECTS: ForgeProject[] = [
+  {
+    id: 'project-yggdrasil',
+    name: 'Yggdrasil',
+    slug: 'yggdrasil',
+    status: 'active',
+    brief: 'The residents that keep the clusters.',
+    repo_url: '',
+    revision: 1,
+  },
+];
+
 export function createMockVolundrService(): IVolundrService {
   const sessions = [...SEED_SESSIONS];
+  const projects = SEED_PROJECTS.map((project) => ({ ...project }));
   const projectRevisions = new Map<string, number>();
   const externalSessions = SEED_EXTERNAL_SESSIONS.map((session) => ({ ...session }));
   const credentials = new Map(SEED_CREDENTIALS.map((credential) => [credential.name, credential]));
@@ -1258,7 +1272,26 @@ export function createMockVolundrService(): IVolundrService {
     deleteUserHomePath: async () => {
       throw new Error('Home storage requires a live cluster');
     },
-    getProjects: async () => [],
+    getProjects: async () => projects.map((project) => ({ ...project })),
+    createProject: async (name) => {
+      const project: ForgeProject = {
+        id: `project-${projects.length + 1}`,
+        name,
+        slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+        status: 'active',
+        brief: '',
+        repo_url: '',
+        revision: 1,
+      };
+      projects.push(project);
+      return { ...project };
+    },
+    updateProject: async (project, changes) => {
+      const stored = projects.find((item) => item.id === project.id);
+      if (!stored) throw new Error('Project not found');
+      Object.assign(stored, changes, { revision: (stored.revision ?? 1) + 1 });
+      return { ...stored };
+    },
     getSessionProject: async (id) => {
       const session = sessions.find((item) => item.id === id);
       if (!session) throw new Error('Session not found');

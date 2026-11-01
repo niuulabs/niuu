@@ -1,83 +1,33 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { useDecideReview, reviewKindLabel, type ReviewItem } from '@niuulabs/plugin-valkyrie';
 import { SectionCard } from '@niuulabs/plugin-volundr';
-import { Chip, EmptyState, ErrorState, LoadingState, Modal } from '@niuulabs/ui';
-import { orderCards, useRealmsHome, type RealmHomeCard } from '../application/useRealmsHome';
+import { Chip, EmptyState, ErrorState, LoadingState, Modal, ProjectIcon } from '@niuulabs/ui';
+import { useForgeProjects } from '../application/useProjects';
+import { orderCards, useRealmsHome } from '../application/useRealmsHome';
 import { FIRST_REALM_WALKTHROUGH, useWalkthrough } from '../application/useWalkthrough';
 import { countWords } from '../domain/homeCopy';
+import { groupByProject } from '../domain/projects';
 import { REALM_TEMPLATES } from '../domain/templates';
+import { AdoptResidents } from './AdoptResidents';
 import { TemplateIcon } from './icons';
+import { NeedsYouRow } from './NeedsYouRow';
 import { RealmCard } from './RealmCard';
 import { SentenceComposer } from './SentenceComposer';
+import { NeedsYouError, TicketReviewRow } from './TicketReviewRow';
 
 export type RealmsHomeView = 'all' | 'needs-you' | 'templates';
+
+/** The panel is a prompt, not the inbox: the rest is one click away. */
+const NEEDS_YOU_PREVIEW = 5;
 
 const BUTTON =
   'niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:font-medium niuu:text-text-primary';
 const PRIMARY =
   'niuu:rounded-md niuu:border niuu:border-brand/50 niuu:bg-brand/10 niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:font-medium niuu:text-brand-300';
 const LINK = 'niuu:text-[11px] niuu:text-brand-300';
-const FIRST_ROW = 3;
 
-function NeedsYouRow({ item, card }: { item: ReviewItem; card: RealmHomeCard | null }) {
-  const decide = useDecideReview();
-  const busy = decide.isPending;
-  return (
-    <div
-      className="niuu:flex niuu:items-center niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:py-2.5"
-      data-testid={`needs-you-${item.itemId}`}
-    >
-      <span className="niuu:flex niuu:h-7 niuu:w-7 niuu:shrink-0 niuu:items-center niuu:justify-center niuu:rounded-full niuu:border niuu:border-brand/40 niuu:bg-brand/10 niuu:text-brand">
-        <TemplateIcon templateId={card?.binding?.template} size={13} />
-      </span>
-      <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col">
-        {card ? (
-          <Link
-            to="/realms/$slug"
-            params={{ slug: card.realm.slug }}
-            className="niuu:truncate niuu:text-sm niuu:text-text-primary"
-            title={`Open ${card.realm.name}`}
-          >
-            {item.title}
-          </Link>
-        ) : (
-          <Link
-            to={'/valkyrie/inbox' as never}
-            className="niuu:truncate niuu:text-sm niuu:text-text-primary"
-            title="Open in the inbox"
-          >
-            {item.title}
-          </Link>
-        )}
-        <span className="niuu:truncate niuu:text-xs niuu:text-text-muted">
-          {card ? `${card.realm.name} · ` : ''}
-          {item.summary}
-        </span>
-      </div>
-      <Chip tone="muted">{reviewKindLabel(item.kind)}</Chip>
-      <button
-        type="button"
-        className={PRIMARY}
-        disabled={busy}
-        onClick={() => decide.mutate({ itemId: item.itemId, decision: 'approved' })}
-      >
-        Approve
-      </button>
-      <button
-        type="button"
-        className={`${BUTTON} niuu:px-2.5 niuu:py-1`}
-        disabled={busy}
-        onClick={() => decide.mutate({ itemId: item.itemId, decision: 'rejected' })}
-      >
-        Reject
-      </button>
-      {decide.error ? (
-        <span className="niuu:text-xs niuu:text-critical-fg">{String(decide.error)}</span>
-      ) : null}
-    </div>
-  );
-}
+const GROUP_TITLE =
+  'niuu:m-0 niuu:flex niuu:items-center niuu:gap-1.5 niuu:text-sm niuu:font-semibold niuu:text-text-primary';
 
 function TemplatesView() {
   return (
@@ -144,12 +94,22 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
   const home = useRealmsHome();
   const walkthrough = useWalkthrough(FIRST_REALM_WALKTHROUGH);
   const [cloneOpen, setCloneOpen] = useState(false);
-  const [showAll, setShowAll] = useState(false);
-
-  const ordered = orderCards(home.cards);
-  const shown = showAll ? ordered : ordered.slice(0, FIRST_ROW);
+  const projects = useForgeProjects();
+  const groups = useMemo(
+    () => groupByProject(orderCards(home.cards), projects.data ?? []),
+    [home.cards, projects.data],
+  );
   const cardFor = (environmentId: string) =>
     home.cards.find((card) => card.resident?.environmentId === environmentId) ?? null;
+  const waiting = home.pendingReviews.length + home.waitingTickets.length;
+  const needsYouRows = [
+    ...home.waitingTickets.map(({ item, card }) => (
+      <TicketReviewRow key={item.taskId} item={item} workspace={card.realm.name} />
+    )),
+    ...home.pendingReviews.map((item) => (
+      <NeedsYouRow key={item.itemId} item={item} card={cardFor(item.environmentId)} />
+    )),
+  ];
 
   return (
     <div
@@ -169,9 +129,9 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
                 : `${countWords(home.cards.length)} workspace${home.cards.length === 1 ? '' : 's'}, each kept by a resident.`}
           </h1>
           <p className="niuu:m-0 niuu:text-[15px] niuu:text-text-secondary">
-            A workspace is an environment a resident keeps: it reads your tracker, works the tickets
-            in sessions, checks quality, watches health and keeps learning. You review what it asks
-            you to.
+            A workspace is one resident and the job you give it, grouped by the project it serves.
+            It works its tickets in sessions, watches health and keeps learning. You review what it
+            asks you to.
           </p>
         </div>
         <div className="niuu:flex niuu:gap-2">
@@ -193,16 +153,15 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
       ) : view === 'templates' ? (
         <TemplatesView />
       ) : view === 'needs-you' ? (
-        <SectionCard title="Needs you" description="Every open question from every resident.">
-          {home.pendingReviews.length === 0 ? (
+        <SectionCard title="Needs you" description="Every open question from every workspace.">
+          <NeedsYouError error={home.needsYouError} />
+          {waiting === 0 ? (
             <EmptyState
               title="Nothing waiting on you"
-              description="Residents ask here when a grant says so."
+              description="Residents ask here when a grant says so, and tickets stop here at a gate."
             />
           ) : (
-            home.pendingReviews.map((item) => (
-              <NeedsYouRow key={item.itemId} item={item} card={cardFor(item.environmentId)} />
-            ))
+            needsYouRows
           )}
         </SectionCard>
       ) : (
@@ -218,35 +177,62 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
               }
             />
           ) : (
-            <div className="niuu:flex niuu:flex-col niuu:gap-2">
-              <div className="niuu:grid niuu:grid-cols-3 niuu:gap-4" data-testid="realm-cards">
-                {shown.map((card) => (
-                  <RealmCard
-                    key={card.realm.slug}
-                    realm={card.realm}
-                    resident={card.resident}
-                    ravn={card.ravn}
-                    environment={card.environment}
-                    binding={card.binding}
-                    pendingReviews={card.pendingReviews}
-                    runningSessions={card.runningSessions}
-                  />
-                ))}
-              </div>
-              {ordered.length > FIRST_ROW ? (
-                <button
-                  type="button"
-                  className={`${LINK} niuu:self-start`}
-                  onClick={() => setShowAll((current) => !current)}
-                  data-testid="realm-cards-toggle"
-                >
-                  {showAll
-                    ? `Show the ${FIRST_ROW} that matter most`
-                    : `Show all ${ordered.length} workspaces`}
-                </button>
-              ) : null}
+            <div className="niuu:flex niuu:flex-col niuu:gap-5" data-testid="realm-cards">
+              {groups.map((group) => {
+                const only = group.cards.length === 1 ? group.cards[0] : null;
+                return (
+                  <section
+                    key={group.id ?? 'none'}
+                    className="niuu:flex niuu:flex-col niuu:gap-2"
+                    aria-label={group.name}
+                    data-testid={`project-group-${group.id ?? 'none'}`}
+                  >
+                    <div className="niuu:flex niuu:items-baseline niuu:justify-between niuu:gap-3">
+                      {group.id === null ? (
+                        <h2 className={GROUP_TITLE}>{group.name}</h2>
+                      ) : (
+                        <h2 className={GROUP_TITLE}>
+                          <ProjectIcon size={14} className="niuu:text-brand-300" />
+                          {only ? (
+                            <Link to="/realms/$slug" params={{ slug: only.realm.slug }}>
+                              {group.name}
+                            </Link>
+                          ) : (
+                            <Link
+                              to={'/realms/projects/$projectId' as never}
+                              params={{ projectId: group.id } as never}
+                            >
+                              {group.name}
+                            </Link>
+                          )}
+                        </h2>
+                      )}
+                      <span className="niuu:text-xs niuu:text-text-muted">
+                        {group.cards.length} workspace{group.cards.length === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                    <div className="niuu:grid niuu:grid-cols-3 niuu:gap-4">
+                      {group.cards.map((card) => (
+                        <RealmCard
+                          key={card.realm.slug}
+                          realm={card.realm}
+                          resident={card.resident}
+                          ravn={card.ravn}
+                          environment={card.environment}
+                          binding={card.binding}
+                          boardName={card.boardName}
+                          pendingReviews={card.pendingReviews}
+                          waitingTickets={card.waitingTickets.length}
+                          runningSessions={card.runningSessions}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                );
+              })}
             </div>
           )}
+          <AdoptResidents residents={home.unclaimedResidents} />
           <div className="niuu:grid niuu:min-h-0 niuu:flex-1 niuu:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] niuu:gap-4">
             <div className="niuu:flex niuu:min-h-0 niuu:flex-col niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:pb-1.5 niuu:pt-3.5">
               <div className="niuu:flex niuu:items-center niuu:justify-between niuu:pb-1">
@@ -254,27 +240,20 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
                   Needs you
                 </span>
                 <span className="niuu:text-xs niuu:text-text-muted">
-                  {home.pendingReviews.length} open ·{' '}
+                  {waiting} open ·{' '}
                   <Link to="/realms/needs-you" className={LINK}>
                     inbox
                   </Link>
                 </span>
               </div>
+              <NeedsYouError error={home.needsYouError} />
               <div className="niuu:min-h-0 niuu:overflow-auto">
-                {home.pendingReviews.length === 0 ? (
+                {waiting === 0 ? (
                   <span className="niuu:block niuu:py-3 niuu:text-xs niuu:text-text-faint">
                     Nothing waiting on you.
                   </span>
                 ) : (
-                  home.pendingReviews
-                    .slice(0, 5)
-                    .map((item) => (
-                      <NeedsYouRow
-                        key={item.itemId}
-                        item={item}
-                        card={cardFor(item.environmentId)}
-                      />
-                    ))
+                  needsYouRows.slice(0, NEEDS_YOU_PREVIEW)
                 )}
               </div>
             </div>
@@ -290,11 +269,7 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
                   <Figure value={home.cards.length} label="workspaces" />
                   <Figure value={home.residentsOnline} label="residents online" />
                   <Figure value={home.sessionsRunning} label="sessions running" />
-                  <Figure
-                    value={home.pendingReviews.length}
-                    label="awaiting you"
-                    attention={home.pendingReviews.length > 0}
-                  />
+                  <Figure value={waiting} label="awaiting you" attention={waiting > 0} />
                 </div>
               </div>
               <div className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:flex-col niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4">

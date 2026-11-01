@@ -120,6 +120,12 @@ class Saga:
     target_match: str = "all"
     board_workflows: tuple[SagaBoardWorkflow, ...] = ()
     plan_slug: str | None = None
+    project_id: UUID | None = None
+
+    @property
+    def forge_project_id(self) -> UUID:
+        """The Forge project this work belongs to: the one it joined, else its own."""
+        return self.project_id or self.id
 
 
 @dataclass(frozen=True)

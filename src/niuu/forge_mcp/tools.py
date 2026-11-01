@@ -1034,10 +1034,8 @@ class ForgeMcpToolbox:
         session_id = self._host.session_id
         if not session_id:
             return None
-        try:
-            own = await self._client.get_session(session_id, instance_id=None)
-        except ForgeApiError:
-            return None
+        # A session that cannot read its own membership must not launch outside its project.
+        own = await self._client.get_session(session_id, instance_id=None)
         coordination = own.get("coordination") if isinstance(own, dict) else None
         if not isinstance(coordination, dict):
             return {"session_id": session_id, "instance_id": own.get("instance_id")}

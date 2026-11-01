@@ -9,6 +9,7 @@ grant that P3/P4 read to decide which Ting workflow a Valkyrie may commission.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -48,6 +49,7 @@ class RealmService:
         owner_id: str | None = None,
         instance_id: str | None = None,
         autonomy_profile: str = "balanced",
+        project_id: UUID | None = None,
     ) -> Realm:
         """Create a new realm."""
         now = datetime.now(UTC)
@@ -60,6 +62,7 @@ class RealmService:
             instance_id=instance_id,
             autonomy_profile=autonomy_profile,
             tenant_id=tenant_id,
+            project_id=project_id,
             created_at=now,
             updated_at=now,
         )
@@ -78,6 +81,7 @@ class RealmService:
         owner_id: str | None = None,
         instance_id: str | None = None,
         autonomy_profile: str = "balanced",
+        project_id: UUID | None = None,
     ) -> Realm:
         """Create or replace a realm at a caller-supplied id.
 
@@ -103,11 +107,26 @@ class RealmService:
             instance_id=instance_id,
             autonomy_profile=autonomy_profile,
             tenant_id=tenant_id,
+            # A sync that does not know the project must not detach the realm from it.
+            project_id=project_id or (existing.project_id if existing is not None else None),
             created_at=existing.created_at if existing is not None else now,
             updated_at=now,
         )
         saved = await self._repo.save_realm(realm)
         logger.info("realm synced: id=%s slug=%s", saved.id, saved.slug)
+        return saved
+
+    async def set_project(
+        self, realm_ref: UUID | str, tenant_id: str, project_id: UUID | None
+    ) -> Realm:
+        """Move the tenant's realm into a project, or out of one."""
+        realm = await self._repo.get_tenant_realm(realm_ref, tenant_id)
+        if realm is None:
+            raise RealmNotFoundError(f"Realm not found: {realm_ref}")
+        saved = await self._repo.save_realm(
+            replace(realm, project_id=project_id, updated_at=datetime.now(UTC))
+        )
+        logger.info("realm project set: id=%s project_id=%s", saved.id, project_id)
         return saved
 
     async def delete_realm(self, realm_ref: UUID | str, tenant_id: str) -> Realm | None:

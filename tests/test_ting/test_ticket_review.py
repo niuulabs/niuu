@@ -241,6 +241,26 @@ async def test_a_workflow_without_a_board_or_a_gate_has_no_reviews() -> None:
     assert reviews == ()
 
 
+def test_the_bundled_ticket_work_flow_reviews_the_workers_result() -> None:
+    workflow = next(item for item in load_system_workflows() if item.name == "Ticket Work Flow")
+    board = board_from_snapshot({"name": workflow.name, "graph": workflow.graph})
+    assert board is not None
+    column = board.gate_column("result-review-gate")
+    assert column is not None
+    gate = {"id": "g1", "node_id": "result-review-gate", "status": "pending"}
+    fields = {"verdict": "done", "summary": "Three lines done.", "result": "The three lines"}
+
+    (revision,) = column_revisions(
+        column,
+        [
+            _entry(1, "room_outcome", {"fields": fields}),
+            _entry(2, "workflow_gate", {"gate": gate}),
+        ],
+    )
+
+    assert revision.fields == {"result": "The three lines"}
+
+
 @pytest.mark.asyncio
 async def test_the_bundled_planning_flow_reviews_its_plan() -> None:
     workflow = next(item for item in load_system_workflows() if item.name == "Ticket Planning Flow")

@@ -649,6 +649,51 @@ class TestBoardWorkflows:
         by_name = {workflow.name: workflow for workflow in load_system_workflows()}
         return [by_name[name] for name in names]
 
+    def test_a_project_without_a_repository_refuses_a_workflow_that_needs_one(
+        self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        [delivery] = self._bundled("Reviewed Delivery Flow")
+        saga_repo.sagas[0] = replace(saga_repo.sagas[0], repos=[], repo_branches={})
+        client = self._client(mock_tracker, saga_repo, [delivery])
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/board-workflows",
+            json={"workflow_ids": [str(delivery.id)]},
+        )
+
+        assert response.status_code == 422
+        assert "needs a repository" in response.json()["detail"]
+
+    def test_a_project_without_a_repository_takes_a_workflow_that_needs_none(
+        self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        [work] = self._bundled("Ticket Work Flow")
+        saga_repo.sagas[0] = replace(saga_repo.sagas[0], repos=[], repo_branches={})
+        client = self._client(mock_tracker, saga_repo, [work])
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/board-workflows",
+            json={"workflow_ids": [str(work.id)]},
+        )
+
+        assert response.status_code == 200
+        assert saga_repo.sagas[0].board_workflows[0].workflow_id == work.id
+
+    def test_assigning_a_workflow_that_needs_a_repository_is_refused_without_one(
+        self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        [delivery] = self._bundled("Reviewed Delivery Flow")
+        saga_repo.sagas[0] = replace(saga_repo.sagas[0], repos=[], repo_branches={})
+        client = self._client(mock_tracker, saga_repo, [delivery])
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/workflow",
+            json={"workflow_id": str(delivery.id)},
+        )
+
+        assert response.status_code == 422
+        assert "needs a repository" in response.json()["detail"]
+
     def test_orders_and_pins_the_workflows(
         self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
     ):
@@ -1136,13 +1181,34 @@ class TestAssignRepos:
         client: TestClient,
         saga_repo: MockSagaRepo,
     ) -> None:
+        saga_repo.sagas[0] = replace(
+            saga_repo.sagas[0],
+            workflow_id=uuid4(),
+            workflow_snapshot={"name": "Delivery", "graph": {}},
+        )
+
         response = client.put(
             f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/repos",
             json={"repo_refs": []},
         )
 
         assert response.status_code == 422
-        assert response.json()["detail"] == "At least one repository is required"
+        assert "Delivery needs a repository" in response.json()["detail"]
+        assert saga_repo.sagas[0].repos
+
+    def test_clears_the_repositories_of_a_project_that_needs_none(
+        self,
+        client: TestClient,
+        saga_repo: MockSagaRepo,
+    ) -> None:
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/repos",
+            json={"repo_refs": []},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["repos"] == []
+        assert saga_repo.sagas[0].repos == []
 
 
 class TestSpawnPlanSession:

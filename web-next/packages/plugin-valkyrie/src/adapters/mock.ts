@@ -1702,6 +1702,7 @@ export function createSeedRealms(): RealmSummary[] {
       owner_id: 'human:operator',
       instance_id: 'instance-valhalla',
       autonomy_profile: 'balanced',
+      project_id: 'project-yggdrasil',
       created_at: '2026-05-01T09:00:00Z',
       updated_at: '2026-06-03T12:00:00Z',
     },
@@ -1724,6 +1725,7 @@ export function createSeedRealms(): RealmSummary[] {
       owner_id: null,
       instance_id: null,
       autonomy_profile: 'guarded',
+      project_id: 'project-yggdrasil',
       created_at: '2026-05-12T09:00:00Z',
       updated_at: '2026-06-01T08:00:00Z',
     },
@@ -1834,11 +1836,17 @@ export function createMockRealmGovernanceService(
         owner_id: request.owner_id ?? null,
         instance_id: request.instance_id ?? null,
         autonomy_profile: request.autonomy_profile ?? 'balanced',
+        project_id: request.project_id ?? null,
         created_at: now,
         updated_at: now,
       };
       realms.push(realm);
       grants.set(realm.slug, []);
+      return { ...realm };
+    },
+    async setRealmProject(slug: string, projectId: string | null) {
+      const realm = requireRealm(slug);
+      realm.project_id = projectId;
       return { ...realm };
     },
     async deleteRealm(slug: string) {

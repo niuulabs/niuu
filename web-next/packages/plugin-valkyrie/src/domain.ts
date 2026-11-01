@@ -1316,6 +1316,8 @@ export interface RealmSummary {
   owner_id: string | null;
   instance_id: string | null;
   autonomy_profile: string;
+  /** The Forge project this realm belongs to. */
+  project_id?: string | null;
   created_at: string;
   updated_at: string;
 }

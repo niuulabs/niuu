@@ -2271,6 +2271,27 @@ describe('buildTrackerHttpAdapter', () => {
     });
   });
 
+  it('names the Forge project a tracker joins', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({ ...rawSaga, project_id: 'forge-1' });
+
+    const saga = await buildTrackerHttpAdapter(client).importProject(
+      'proj-1',
+      [],
+      undefined,
+      null,
+      {
+        forgeProjectId: 'forge-1',
+      },
+    );
+
+    expect(client.post).toHaveBeenCalledWith(
+      '/tracker/import',
+      expect.objectContaining({ forge_project_id: 'forge-1', repos: [] }),
+    );
+    expect(saga.projectId).toBe('forge-1');
+  });
+
   it('sends repo refs and tag target selectors when importing a project', async () => {
     const client = makeClient();
     client.post.mockResolvedValue(rawSaga);

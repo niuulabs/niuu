@@ -339,6 +339,8 @@ export interface ImportProjectOptions {
   repoRefs?: { repo: string; branch: string }[];
   target?: SagaTargetSelection;
   trackerConnectionId?: string;
+  /** Existing Forge project this tracker joins. */
+  forgeProjectId?: string;
   /** Saved workflow to assign to the imported project. */
   workflowId?: string;
   /** Exact immutable workflow version to assign. */

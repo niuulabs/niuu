@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 import pytest
+import yaml
 
 from ting.domain.exceptions import WorkflowDocumentError
-from ting.domain.models import RunStatus, WorkflowScope
+from ting.domain.models import RunStatus, Saga, SagaBoardWorkflow, SagaStatus, WorkflowScope
 from ting.domain.workflow_board import (
     BoardColumnKind,
     BoardPlacement,
@@ -23,6 +27,8 @@ from ting.domain.workflow_board import (
     parse_workflow_board,
     place_on_project,
     place_ticket,
+    repository_gap,
+    workflow_requires_repository,
 )
 from ting.domain.workflow_document import load_workflow_document
 from ting.system_workflows import BUNDLED_SYSTEM_WORKFLOWS_PATH, load_system_workflows
@@ -622,3 +628,77 @@ def test_a_coordinator_can_start_every_workflow_that_has_a_board() -> None:
 
     assert {item.name for item in boarded} >= {"Ticket Planning Flow", "Reviewed Delivery Flow"}
     assert {item.scope for item in boarded} == {WorkflowScope.SYSTEM}
+
+
+def _repo_less_saga(**overrides: Any) -> Saga:
+    return Saga(
+        id=uuid4(),
+        tracker_id="project-1",
+        tracker_type="linear",
+        slug="shop",
+        name="Shop",
+        repos=[],
+        feature_branch="feat/shop",
+        status=SagaStatus.ACTIVE,
+        created_at=datetime(2026, 11, 1, tzinfo=UTC),
+        base_branch="",
+        **overrides,
+    )
+
+
+def test_a_workflow_needs_a_repository_unless_it_says_otherwise() -> None:
+    assert workflow_requires_repository(None) is True
+    assert workflow_requires_repository({"graph": {}}) is True
+    assert workflow_requires_repository({"graph": {"requiresRepository": False}}) is False
+
+
+def test_the_ticket_work_flow_is_the_bundled_workflow_that_needs_no_repository() -> None:
+    needing_none = [
+        workflow.name
+        for workflow in load_system_workflows()
+        if not workflow_requires_repository({"graph": workflow.graph})
+    ]
+
+    assert needing_none == ["Ticket Work Flow"]
+
+
+def test_requires_repository_must_be_a_boolean() -> None:
+    document = yaml.safe_load((BUNDLED_SYSTEM_WORKFLOWS_PATH / "ticket-work-flow.yaml").read_text())
+    document["graph"]["requiresRepository"] = "no"
+
+    with pytest.raises(WorkflowDocumentError, match="requiresRepository"):
+        load_workflow_document(yaml.safe_dump(document))
+
+
+def test_a_project_with_a_repository_has_no_gap() -> None:
+    saga = replace(_repo_less_saga(), repos=["jve/repo"], workflow_id=uuid4())
+
+    assert repository_gap(saga) is None
+
+
+def test_a_project_without_a_workflow_has_no_gap() -> None:
+    assert repository_gap(_repo_less_saga()) is None
+
+
+def test_a_project_without_a_repository_names_the_workflow_that_needs_one() -> None:
+    saga = _repo_less_saga(workflow_id=uuid4(), workflow_snapshot={"name": "Delivery", "graph": {}})
+
+    assert "Delivery needs a repository" in (repository_gap(saga) or "")
+
+
+def test_only_board_workflows_that_need_a_repository_are_named() -> None:
+    pins = (
+        SagaBoardWorkflow(
+            workflow_id=uuid4(),
+            workflow_version="1.0.0",
+            workflow_snapshot={"name": "Work", "graph": {"requiresRepository": False}},
+        ),
+        SagaBoardWorkflow(
+            workflow_id=uuid4(),
+            workflow_version="1.0.0",
+            workflow_snapshot={"name": "Delivery", "graph": {}},
+        ),
+    )
+
+    assert repository_gap(_repo_less_saga(board_workflows=pins)).startswith("Delivery needs")
+    assert repository_gap(_repo_less_saga(board_workflows=pins[:1])) is None

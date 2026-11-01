@@ -27,6 +27,27 @@ from ting.domain.models import PRStatus
 
 
 @dataclass(frozen=True)
+class ForgeProjectRef:
+    """A Forge project, and the host's own id for links to sessions on that host."""
+
+    id: str
+    name: str
+    instance_id: str
+
+
+@dataclass(frozen=True)
+class SessionMembership:
+    """Where a new session joins a Forge project. A parent needs both of its fields."""
+
+    project_id: str
+    role: str
+    parent_instance_id: str = ""
+    parent_session_id: str = ""
+    objective: str = ""
+    labels: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SpawnRequest:
     """Everything needed to spawn a Volundr session for a run.
 
@@ -70,6 +91,7 @@ class SpawnRequest:
     profile: str | None = None
     integration_ids: list[str] = field(default_factory=list)
     credential_names: list[str] = field(default_factory=list)
+    membership: SessionMembership | None = None
 
 
 @dataclass(frozen=True)
@@ -192,6 +214,49 @@ class VolundrPort(ABC):
         principal: Principal | None = None,
     ) -> VolundrSession:
         raise NotImplementedError
+
+    async def get_project(
+        self,
+        project_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> ForgeProjectRef | None:
+        """The project as this Forge knows it; None when it does not."""
+        raise NotImplementedError(f"{type(self).__name__} does not hold Forge projects")
+
+    async def ensure_project(
+        self,
+        project_id: str,
+        name: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> ForgeProjectRef:
+        """Make this Forge know the project, under the id Work already uses for it."""
+        raise NotImplementedError(f"{type(self).__name__} does not hold Forge projects")
+
+    async def session_project(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> str | None:
+        """The project a session belongs to; None when it belongs to none."""
+        raise NotImplementedError(f"{type(self).__name__} does not hold Forge projects")
+
+    async def join_project(
+        self,
+        session_id: str,
+        project_id: str,
+        *,
+        role: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        """Put a running session in a project, unless it is already there."""
+        raise NotImplementedError(f"{type(self).__name__} does not hold Forge projects")
 
     async def start_session(
         self,

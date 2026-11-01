@@ -637,3 +637,55 @@ def test_failed_authorization_evaluation_is_a_503(owner_client: TestClient) -> N
     )
 
     assert owner_client.get("/api/v1/realms/forge").status_code == 503
+
+
+PROJECT_ID = "5c3115f1-0b77-44c3-a4a6-ae4eca22239a"
+
+
+def test_create_realm_in_a_project() -> None:
+    client = _make_client()
+
+    response = client.post(
+        "/api/v1/realms", json={"slug": "copy", "name": "Copy", "project_id": PROJECT_ID}
+    )
+
+    assert response.status_code == 201
+    assert response.json()["project_id"] == PROJECT_ID
+    assert client.get("/api/v1/realms/copy").json()["project_id"] == PROJECT_ID
+
+
+def test_a_realm_stands_alone_until_it_joins_a_project() -> None:
+    client = _make_client()
+    client.post("/api/v1/realms", json={"slug": "copy", "name": "Copy"})
+
+    assert client.get("/api/v1/realms/copy").json()["project_id"] is None
+
+
+def test_move_a_realm_into_and_out_of_a_project() -> None:
+    client = _make_client()
+    client.post("/api/v1/realms", json={"slug": "copy", "name": "Copy"})
+
+    moved = client.patch("/api/v1/realms/copy/project", json={"project_id": PROJECT_ID})
+    assert moved.status_code == 200
+    assert moved.json()["project_id"] == PROJECT_ID
+
+    left = client.patch("/api/v1/realms/copy/project", json={"project_id": None})
+    assert left.status_code == 200
+    assert left.json()["project_id"] is None
+
+
+def test_moving_an_unknown_realm_is_not_found() -> None:
+    client = _make_client()
+
+    response = client.patch("/api/v1/realms/ghost/project", json={"project_id": PROJECT_ID})
+
+    assert response.status_code == 404
+
+
+def test_a_project_must_be_a_uuid() -> None:
+    client = _make_client()
+    client.post("/api/v1/realms", json={"slug": "copy", "name": "Copy"})
+
+    response = client.patch("/api/v1/realms/copy/project", json={"project_id": "not-a-uuid"})
+
+    assert response.status_code == 422

@@ -10,6 +10,7 @@ import { orderCards, useRealmsHome, type RealmHomeCard } from '../application/us
 import { greeting, stateSentence } from '../domain/homeCopy';
 import { continueSessions, isLive, needsYouSessions, sessionLabel } from '../domain/homeSessions';
 import { TemplateIcon, agoLabel } from '../ui/icons';
+import { NeedsYouError, TicketReviewRow } from '../ui/TicketReviewRow';
 
 const CARD =
   'niuu:flex niuu:flex-col niuu:gap-3.5 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-5';
@@ -284,6 +285,8 @@ export function HomePage() {
   const live = (sessions.data ?? []).filter(isLive).length;
   // With Realms off its pages have no routes, so nothing here may point at them.
   const realmCards = realmsEnabled ? home.cards : [];
+  const tickets = realmsEnabled ? home.waitingTickets : [];
+  const waiting = pending.length + blocked.length + tickets.length;
   const choices = realmsEnabled ? CHOICES : CHOICES.filter((choice) => choice.id !== 'realm');
   const wakefulRealms = orderCards(realmCards)
     .filter((card) => WAKEFUL.has(card.resident?.wakefulness ?? ''))
@@ -324,7 +327,7 @@ export function HomePage() {
               : stateSentence({
                   realms: realmCards.length,
                   running: live,
-                  needsYou: pending.length + blocked.length,
+                  needsYou: waiting,
                 })}
           </p>
         </div>
@@ -356,7 +359,7 @@ export function HomePage() {
             testId="home-needs-you"
             aside={
               <span className="niuu:text-xs niuu:text-text-muted">
-                {pending.length + blocked.length} open ·{' '}
+                {waiting} open ·{' '}
                 <Link
                   to={(realmsEnabled ? '/realms/needs-you' : '/valkyrie/inbox') as never}
                   className={LINK}
@@ -366,12 +369,16 @@ export function HomePage() {
               </span>
             }
           >
-            {pending.length + blocked.length === 0 ? (
+            <NeedsYouError error={home.needsYouError} />
+            {waiting === 0 ? (
               <span className="niuu:py-3 niuu:text-xs niuu:text-text-faint">
                 Nothing is waiting on you.
               </span>
             ) : (
               <>
+                {tickets.slice(0, NEEDS_YOU_LIMIT).map(({ item, card }) => (
+                  <TicketReviewRow key={item.taskId} item={item} workspace={card.realm.name} />
+                ))}
                 {pending.slice(0, NEEDS_YOU_LIMIT).map((item) => (
                   <ReviewRow
                     key={item.itemId}

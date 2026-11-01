@@ -552,6 +552,7 @@ class Realm:
     updated_at: datetime
     autonomy_profile: str = "balanced"
     tenant_id: str = ""
+    project_id: UUID | None = None
 
 
 @dataclass(frozen=True)

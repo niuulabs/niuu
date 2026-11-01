@@ -2690,6 +2690,40 @@ describe('session resource byte downloads', () => {
 });
 
 describe('Forge project grouping contract', () => {
+  it('creates a project by name, on a chosen host when one is given', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({ id: 'new' });
+    const service = buildVolundrHttpAdapter(client);
+    await service.createProject('Shop');
+    expect(client.post).toHaveBeenLastCalledWith('/projects', { name: 'Shop' });
+    await service.createProject('Shop', { instanceId: 'ymir' });
+    expect(client.post).toHaveBeenLastCalledWith('/projects', {
+      name: 'Shop',
+      instance_id: 'ymir',
+    });
+  });
+
+  it('updates a project at its revision on the host that holds it', async () => {
+    const client = makeClient();
+    client.patch.mockResolvedValue({ id: 'lexi' });
+    const service = buildVolundrHttpAdapter(client);
+    const project = {
+      id: 'lexi',
+      name: 'Lexi',
+      slug: 'lexi',
+      status: 'active' as const,
+      revision: 4,
+      instance_id: 'ymir',
+    };
+    await service.updateProject(project, { brief: 'New brief' });
+    expect(client.patch).toHaveBeenCalledWith('/projects/lexi?instance_id=ymir', {
+      brief: 'New brief',
+      revision: 4,
+    });
+    await service.updateProject({ ...project, instance_id: undefined }, { repo_url: '' });
+    expect(client.patch).toHaveBeenLastCalledWith('/projects/lexi', { repo_url: '', revision: 4 });
+  });
+
   it('loads projects from Forge and preserves coordination and parent references on sessions', async () => {
     const client = makeClient();
     const project = { id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' };
@@ -2707,12 +2741,14 @@ describe('Forge project grouping contract', () => {
         project_id: 'lexi',
         role: 'worker',
         parent: { instance_id: 'thor', session_id: 'coordinator' },
+        labels: ['work-project:p1'],
       },
     });
     expect(normalized.coordination).toEqual({
       projectId: 'lexi',
       role: 'worker',
       parent: { instanceId: 'thor', sessionId: 'coordinator' },
+      labels: ['work-project:p1'],
     });
     client.get.mockRejectedValue(new Error('host offline'));
     await expect(service.getProjects()).rejects.toThrow('host offline');

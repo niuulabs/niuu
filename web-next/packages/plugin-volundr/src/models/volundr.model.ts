@@ -166,6 +166,14 @@ export interface ForgeProject {
   instance_id?: string;
   instance_name?: string;
   workspace_path?: string;
+  brief?: string;
+  repo_url?: string;
+  revision?: number;
+}
+export interface ForgeProjectChanges {
+  name?: string;
+  brief?: string;
+  repo_url?: string;
 }
 export interface SessionProjectMembership {
   sessionId: string;
@@ -177,6 +185,7 @@ export interface SessionCoordination {
   projectId: string;
   role: string;
   parent?: { instanceId: string; sessionId: string } | null;
+  labels?: string[];
 }
 
 export interface VolundrSession {

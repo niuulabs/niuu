@@ -98,6 +98,16 @@ describe('RealmCard', () => {
     expect(screen.getByText('2 open signals')).toBeInTheDocument();
   });
 
+  it('names the board, and counts tickets waiting with the questions', async () => {
+    mount({
+      binding: { template: 'blank', repo: '', branch: '', trackerBoard: 'uuid' } as never,
+      boardName: 'Spring board',
+      waitingTickets: 2,
+    });
+    expect(await screen.findByText('board Spring board')).toBeInTheDocument();
+    expect(screen.getByText('Review 2')).toBeInTheDocument();
+  });
+
   it('falls back to an unknown dot for an unexpected wakefulness value', async () => {
     mount({ resident: { wakefulness: 'odd', toolCount: 0 } as unknown as ValkyrieResident });
     expect(await screen.findByTestId('realm-card-lexi-api')).toBeInTheDocument();
