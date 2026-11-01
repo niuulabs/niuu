@@ -662,6 +662,28 @@ def test_list_campaigns_tolerates_runtime_refresh_failure(tmp_path: Path) -> Non
     assert body[0]["sessionName"] == "stale-research"
 
 
+def test_list_campaigns_asks_forge_nothing_for_a_run_with_no_session(tmp_path: Path) -> None:
+    workflow = _research_workflow(tmp_path)
+    campaign = replace(
+        _campaign_for_workflow(workflow, slug="a2a-launching"),
+        session_id="",
+        session_name="",
+        status=WorkflowCampaignStatus.PENDING,
+    )
+    volundr_port = RecordingVolundrPort()
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]),
+        InMemoryWorkflowCampaignRepository([campaign]),
+        RecordingVolundrFactory(volundr_port),
+    )
+
+    response = client.get("/api/v1/ting/research/campaigns", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()[0]["slug"] == "a2a-launching"
+    assert volundr_port.get_session_principals == []
+
+
 def test_create_campaign_normalizes_long_session_names_for_volundr(tmp_path: Path) -> None:
     workflow = _research_workflow(tmp_path)
     workflow_repo = InMemoryWorkflowRepository([workflow])

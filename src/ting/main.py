@@ -1347,6 +1347,7 @@ def create_app(
                 sweep_interval_seconds=stale_campaigns.sweep_interval_seconds,
                 input_wait_timeout_seconds=stale_campaigns.input_wait_timeout_seconds,
                 idle_timeout_seconds=stale_campaigns.idle_timeout_seconds,
+                launch_lease_seconds=settings.a2a.launch_lease_seconds,
                 coordinator_repo=app.state.ticket_coordinator_repo,
                 coordinator_persona=settings.ticket_coordinator.persona,
                 ticket_advancer=TicketAdvancer(

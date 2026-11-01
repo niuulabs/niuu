@@ -224,7 +224,7 @@ a2a:
   agentDescription: ""
   # -- Cache-Control max-age for the served agent card. Leave empty for built-in default.
   cardMaxAgeSeconds: ""
-  # -- Lease duration for idempotent A2A workflow launch reservations.
+  # -- Lease duration for idempotent A2A workflow launch reservations. Keep it above the longest launch: past it a run with no session fails as launch_abandoned.
   launchLeaseSeconds: 60
   # -- Artifacts at or under this size (chars) inline on A2A tasks. Leave empty for built-in default.
   inlineArtifactMaxChars: ""

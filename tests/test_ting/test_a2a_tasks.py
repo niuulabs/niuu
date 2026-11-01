@@ -47,6 +47,7 @@ from ting.domain.models import (
     WorkflowScope,
 )
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
+from ting.domain.workflow_execution import ExecutionConflictError
 from ting.domain.workflow_snapshot import build_workflow_snapshot
 from ting.ports.volundr import (
     ActivityEvent,
@@ -277,6 +278,11 @@ class RecordingExecutionRepository:
             connection_id=connection_id,
         )
         return self.execution
+
+
+class _ConflictingExecutionRepository:
+    async def reserve_parent_launch(self, execution):
+        raise ExecutionConflictError("launch key already reserved for another request")
 
 
 class RecordingVolundrPort(VolundrPort):
@@ -1670,6 +1676,159 @@ class TestSendMessage:
         assert campaign.status == WorkflowCampaignStatus.FAILED
         assert "spawn failed" in campaign.metadata["failure_error"]
 
+    @pytest.mark.parametrize(
+        ("ledger", "status_code", "reason"),
+        [
+            (None, 503, "workflow_execution.enabled"),
+            (_ConflictingExecutionRepository(), 409, "launch key already reserved"),
+        ],
+        ids=["durable-executions-disabled", "parent-reservation-conflict"],
+    )
+    def test_a_refused_parent_reservation_fails_the_campaign(
+        self, ledger: Any, status_code: int, reason: str
+    ) -> None:
+        """On ymir four Research Campaign rows sat PENDING with no session. A
+        fan-out workflow reserves its parent execution after the row is saved,
+        and that reservation sat outside the block that fails the row."""
+        import asyncio
+
+        workflow = next(
+            item for item in load_system_workflows() if item.name == "Research Campaign"
+        )
+        client, campaigns, port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+        client.app.state.persona_source = FilesystemPersonaAdapter(
+            persona_dirs=[], include_builtin=True
+        )
+        client.app.state.workflow_execution_repo = ledger
+
+        response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
+
+        assert response.status_code == status_code
+        assert port.spawned == []
+        [campaign] = asyncio.run(campaigns.list_campaigns(owner_id="user-1"))
+        assert campaign.session_id == ""
+        assert campaign.status == WorkflowCampaignStatus.FAILED
+        assert reason in campaign.metadata["failure_error"]
+
+    def test_a_failed_launch_is_read_without_stopping_a_session_it_never_had(self) -> None:
+        """GetTask holds a terminal task back until its session is stopped, and
+        this one has none: it must answer, with no stop sent for an empty id."""
+        import asyncio
+
+        workflow = _make_workflow_with_placement({"tags": ["dgx-spark"]})
+        spark = RecordingVolundrPort(
+            name="spark-01", target_id="spark-01", tags=["dgx-spark"], spawn_failure=True
+        )
+        client, campaigns, _ = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([spark]),
+        )
+        _rpc(client, "SendMessage", _send_params(str(workflow.id)))
+        [campaign] = asyncio.run(campaigns.list_campaigns(owner_id="user-1"))
+
+        response = _rpc(client, "GetTask", {"id": campaign.slug})
+
+        assert response.json()["result"]["status"]["state"] == "TASK_STATE_FAILED"
+        assert spark.stop_attempts == []
+
+    def test_a_retry_of_a_failed_launch_returns_the_failure_without_spawning(self) -> None:
+        """A failed row is terminal, so a session spawned for it could never be
+        recorded: the launch would start one only to stop it again."""
+        import asyncio
+
+        workflow = _make_workflow_with_placement({"tags": ["dgx-spark"]})
+        spark = RecordingVolundrPort(
+            name="spark-01", target_id="spark-01", tags=["dgx-spark"], spawn_failure=True
+        )
+        client, campaigns, _ = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([spark]),
+        )
+        _rpc(client, "SendMessage", _send_params(str(workflow.id)))
+        assert len(spark.spawned) == 1
+        spark._spawn_failure = False
+
+        response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
+
+        assert response.json()["result"]["task"]["status"]["state"] == "TASK_STATE_FAILED"
+        assert len(spark.spawned) == 1
+        assert spark.stop_attempts == []
+        [campaign] = asyncio.run(campaigns.list_campaigns(owner_id="user-1"))
+        assert campaign.session_id == ""
+
+    def test_a_retry_restarts_the_lease_clock_on_its_pending_campaign(self) -> None:
+        """The projector closes a run with no session once its lease has passed,
+        so a retry that takes the launch over must not look like the dead attempt."""
+        import asyncio
+
+        workflow = _make_workflow_with_placement({"tags": ["dgx-spark"]})
+        spark = RecordingVolundrPort(name="spark-01", target_id="spark-01", tags=["dgx-spark"])
+        launch_repo = InMemoryA2ALaunchRepository()
+        client, campaigns, _ = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([spark]),
+            launch_repo=launch_repo,
+        )
+        prompt = "Build the widget tool"
+        metadata = {"skillId": str(workflow.id), "model": "gpt-5.5"}
+        reservation_id = uuid4()
+        campaign_id = uuid4()
+        task_id = f"a2a-{reservation_id.hex}"
+        long_ago = datetime.now(UTC) - timedelta(hours=1)
+        asyncio.run(
+            launch_repo.reserve(
+                A2ALaunchReservation(
+                    id=reservation_id,
+                    owner_id="user-1",
+                    tenant_id="",
+                    message_id="msg-1",
+                    request_digest=_launch_digest(prompt, metadata),
+                    workflow_id=workflow.id,
+                    task_id=task_id,
+                    campaign_id=campaign_id,
+                    created_at=long_ago,
+                    updated_at=long_ago,
+                )
+            )
+        )
+        asyncio.run(
+            campaigns.save_campaign(
+                replace(
+                    _make_campaign(
+                        status=WorkflowCampaignStatus.PENDING,
+                        metadata={"surface": "a2a", "a2a_message_id": "msg-1"},
+                    ),
+                    id=campaign_id,
+                    slug=task_id,
+                    workflow_id=workflow.id,
+                    workflow_snapshot=build_workflow_snapshot(workflow),
+                    session_id="",
+                    session_name="",
+                    connection_id="spark-01",
+                    created_at=long_ago,
+                    updated_at=long_ago,
+                    last_activity_at=long_ago,
+                )
+            )
+        )
+        saved: list[WorkflowCampaign] = []
+        save_campaign = campaigns.save_campaign
+
+        async def recording_save(campaign: WorkflowCampaign) -> WorkflowCampaign:
+            saved.append(campaign)
+            return await save_campaign(campaign)
+
+        campaigns.save_campaign = recording_save
+
+        response = _rpc(client, "SendMessage", _send_params(str(workflow.id), prompt=prompt))
+
+        assert response.status_code == 200, response.text
+        assert saved[0].session_id == ""
+        assert saved[0].status == WorkflowCampaignStatus.PENDING
+        assert saved[0].last_activity_at > long_ago + timedelta(minutes=59)
+
 
 class TestGateContinuation:
     @staticmethod
@@ -2290,6 +2449,17 @@ class TestCancelTask:
 
         followup = _rpc(client, "GetTask", {"id": campaign.slug})
         assert followup.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
+
+    def test_cancelling_a_launch_with_no_session_sends_no_stop(self) -> None:
+        campaign = replace(_make_campaign(status=WorkflowCampaignStatus.PENDING), session_id="")
+        client, _, port = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+        )
+
+        response = _rpc(client, "CancelTask", {"id": campaign.slug})
+
+        assert response.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
+        assert port.stop_attempts == []
 
     def test_cancel_is_recorded_before_the_session_stops(self) -> None:
         """Stopping the session emits events; a projector reading the campaign

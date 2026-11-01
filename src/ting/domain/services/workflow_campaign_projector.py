@@ -37,7 +37,7 @@ from ting.domain.workflow_board import node_label
 from ting.ports.a2a_push import A2APushDispatcherPort
 from ting.ports.event_bus import EventBusPort, TingEvent
 from ting.ports.ticket_coordinator_repository import TicketCoordinatorRepository
-from ting.ports.volundr import ActivityEvent, VolundrFactory, VolundrPort
+from ting.ports.volundr import ActivityEvent, VolundrFactory, VolundrPort, VolundrSession
 from ting.ports.workflow_campaign_repository import (
     CampaignAlreadyTerminalError,
     WorkflowCampaignRepository,
@@ -64,6 +64,7 @@ class WorkflowCampaignProjector:
         sweep_interval_seconds: float = 0.0,
         input_wait_timeout_seconds: float = 0.0,
         idle_timeout_seconds: float = 0.0,
+        launch_lease_seconds: float = 0.0,
         coordinator_repo: TicketCoordinatorRepository | None = None,
         coordinator_persona: str = "",
         ticket_advancer: TicketAdvancer | None = None,
@@ -78,6 +79,7 @@ class WorkflowCampaignProjector:
         self._sweep_interval = sweep_interval_seconds
         self._input_wait_timeout = input_wait_timeout_seconds
         self._idle_timeout = idle_timeout_seconds
+        self._launch_lease = launch_lease_seconds
         self._sweep_task: asyncio.Task[None] | None = None
         self._running = False
 
@@ -87,7 +89,9 @@ class WorkflowCampaignProjector:
 
     async def start(self) -> None:
         self._running = True
-        if self._sweep_interval > 0 and (self._input_wait_timeout > 0 or self._idle_timeout > 0):
+        if self._sweep_interval > 0 and (
+            self._input_wait_timeout > 0 or self._idle_timeout > 0 or self._launch_lease > 0
+        ):
             self._sweep_task = asyncio.create_task(self._sweep_forever())
         logger.info("Event-driven workflow campaign projector started")
 
@@ -116,8 +120,10 @@ class WorkflowCampaignProjector:
         """
         settled = 0
         for campaign in await self._repo.list_active_campaigns():
-            if campaign.status != WorkflowCampaignStatus.BLOCKED or not ticket_of(
-                campaign.metadata
+            if (
+                campaign.status != WorkflowCampaignStatus.BLOCKED
+                or not campaign.session_id
+                or not ticket_of(campaign.metadata)
             ):
                 continue
             try:
@@ -136,36 +142,14 @@ class WorkflowCampaignProjector:
         """Fail campaigns stuck waiting for input or making no progress; return how many.
 
         Events drive every other transition. Nothing emits an event for a
-        campaign nobody answers or a session that stops doing anything, so
-        those were never closed and their sessions held their nodes for good.
-        Each expiry is an error: it names the bound that was hit, is counted,
-        and reaches the caller through the task's failure and its A2A push.
+        campaign nobody answers, a session that stops doing anything or a
+        launch that died before it recorded a session, so those were never
+        closed and their sessions held their nodes for good.
         """
         expired = 0
         for campaign in await self._repo.list_active_campaigns():
             try:
-                expiry = await self._stale_expiry(campaign, now=now)
-                if expiry is None:
-                    continue
-                logger.error(
-                    "Expiring workflow campaign %s (session %s) at a2a.stale_campaigns.%s=%gs: "
-                    "%s Raise the bound if this work legitimately takes longer.",
-                    campaign.slug,
-                    campaign.session_id,
-                    expiry.knob,
-                    expiry.bound_seconds,
-                    expiry.reason,
-                )
-                get_observability().count(
-                    "ting_a2a_campaigns_expired_total",
-                    attributes={"reason": expiry.kind},
-                    description=(
-                        "Workflow campaigns (A2A tasks) failed by the stale-campaign sweep, "
-                        "by the bound that expired them."
-                    ),
-                )
-                await self._save_failure(campaign, {"error": expiry.reason})
-                expired += 1
+                expired += await self._expire_if_stale(campaign, now=now)
             except Exception:
                 logger.error(
                     "Could not check workflow campaign %s for expiry",
@@ -174,9 +158,45 @@ class WorkflowCampaignProjector:
                 )
         return expired
 
+    async def _expire_if_stale(self, campaign: WorkflowCampaign, *, now: datetime) -> bool:
+        """Fail one stale campaign; return whether it was.
+
+        Each expiry is an error: it names the bound that was hit, is counted,
+        and reaches the caller through the task's failure and its A2A push.
+        """
+        expiry = await self._stale_expiry(campaign, now=now)
+        if expiry is None:
+            return False
+        if expiry.session is not None:
+            # Recorded so that failing the run stops the session it left behind.
+            campaign = replace(
+                campaign, session_id=expiry.session.id, session_name=expiry.session.name
+            )
+        logger.error(
+            "Expiring workflow campaign %s (session %s) at %s=%gs: "
+            "%s Raise the bound if this work legitimately takes longer.",
+            campaign.slug,
+            campaign.session_id or "none",
+            expiry.knob,
+            expiry.bound_seconds,
+            expiry.reason,
+        )
+        get_observability().count(
+            "ting_a2a_campaigns_expired_total",
+            attributes={"reason": expiry.kind},
+            description=(
+                "Workflow campaigns (A2A tasks) failed by the stale-campaign sweep, "
+                "by the bound that expired them."
+            ),
+        )
+        await self._save_failure(campaign, {"error": expiry.reason})
+        return True
+
     async def _stale_expiry(
         self, campaign: WorkflowCampaign, *, now: datetime
     ) -> _CampaignExpiry | None:
+        if not campaign.session_id:
+            return await self._abandoned_launch_expiry(campaign, now=now)
         since = campaign.last_activity_at or campaign.updated_at
         if campaign.status == WorkflowCampaignStatus.BLOCKED:
             if ticket_of(campaign.metadata) is not None:
@@ -188,7 +208,7 @@ class WorkflowCampaignProjector:
                 return None
             return _CampaignExpiry(
                 kind="input_wait",
-                knob="input_wait_timeout_seconds",
+                knob="a2a.stale_campaigns.input_wait_timeout_seconds",
                 bound_seconds=self._input_wait_timeout,
                 reason=(
                     f"No answer to the input request within {_hours(wait)}; the task was "
@@ -232,10 +252,57 @@ class WorkflowCampaignProjector:
             f"closed and its session stopped.{_last_outcome_note(session)}",
         )
 
+    async def _abandoned_launch_expiry(
+        self, campaign: WorkflowCampaign, *, now: datetime
+    ) -> _CampaignExpiry | None:
+        """Expire a run whose launch ended without recording a session.
+
+        A launch saves its run before it spawns the session, so a retry cannot
+        launch twice. A launch that dies before it records the session leaves
+        the run PENDING with nothing to report on it, and no retry may come.
+        The launch lease is the bound: past it no attempt holds the launch.
+        """
+        lease = timedelta(seconds=self._launch_lease)
+        since = campaign.last_activity_at or campaign.updated_at
+        if self._launch_lease <= 0 or now - since <= lease:
+            return None
+        adapter = await self._campaign_adapter(campaign)
+        if adapter is None:
+            return self._launch_expiry(
+                f"The launch ended without recording a session, and Forge connection "
+                f"{campaign.connection_id!r} no longer resolves, so none could be looked up. "
+                "Start a new task to retry."
+            )
+        tracker_key = f"workflow:{campaign.slug}"
+        session = next(
+            (s for s in await adapter.list_sessions() if s.tracker_issue_id == tracker_key),
+            None,
+        )
+        if session is None:
+            return self._launch_expiry(
+                "The launch ended without starting a session. Start a new task to retry."
+            )
+        return self._launch_expiry(
+            f"The launch ended without recording session {session.id}, which nothing tracks; "
+            "the task was closed and its session stopped. Start a new task to retry.",
+            session=session,
+        )
+
+    def _launch_expiry(
+        self, reason: str, *, session: VolundrSession | None = None
+    ) -> _CampaignExpiry:
+        return _CampaignExpiry(
+            kind="launch_abandoned",
+            knob="a2a.launch_lease_seconds",
+            bound_seconds=self._launch_lease,
+            reason=reason,
+            session=session,
+        )
+
     def _idle_expiry(self, kind: str, reason: str) -> _CampaignExpiry:
         return _CampaignExpiry(
             kind=kind,
-            knob="idle_timeout_seconds",
+            knob="a2a.stale_campaigns.idle_timeout_seconds",
             bound_seconds=self._idle_timeout,
             reason=reason,
         )
@@ -545,6 +612,9 @@ class WorkflowCampaignProjector:
 
     async def _refresh_campaign(self, campaign: WorkflowCampaign) -> None:
         """One-shot reconnect reconciliation; never called on a timer."""
+        if not campaign.session_id:
+            await self._expire_if_stale(campaign, now=datetime.now(UTC))
+            return
         adapter = await self._campaign_adapter(campaign)
         if adapter is None:
             return
@@ -774,6 +844,7 @@ class _CampaignExpiry:
     knob: str
     bound_seconds: float
     reason: str
+    session: VolundrSession | None = None
 
 
 def _notice_context(campaign: WorkflowCampaign) -> str:

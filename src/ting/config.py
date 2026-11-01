@@ -1025,7 +1025,13 @@ class A2AConfig(BaseModel):
     launch_lease_seconds: float = Field(
         default=60.0,
         gt=0,
-        description="Lease duration for idempotent A2A workflow launch reservations.",
+        description=(
+            "Lease duration for idempotent A2A workflow launch reservations. Keep it above "
+            "the longest launch: past it a retry may take the launch over, and a run that "
+            "still has no session fails with reason launch_abandoned on the next sweep or "
+            "reconnect. Each such expiry is logged at error and counted on "
+            "ting_a2a_campaigns_expired_total{reason}."
+        ),
     )
     push_encryption_key: SecretStr = Field(
         default=SecretStr(""),

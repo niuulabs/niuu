@@ -18,8 +18,10 @@ _TERMINAL_STATUSES = frozenset({WorkflowCampaignStatus.COMPLETED, WorkflowCampai
 
 def terminal_session_cleanup_needed(campaign: WorkflowCampaign) -> bool:
     """Return whether a terminal A2A campaign still owns a runtime session."""
-    return campaign.status in _TERMINAL_STATUSES and not campaign.metadata.get(
-        TERMINAL_SESSION_STOPPED_KEY
+    return (
+        bool(campaign.session_id)
+        and campaign.status in _TERMINAL_STATUSES
+        and not campaign.metadata.get(TERMINAL_SESSION_STOPPED_KEY)
     )
 
 
