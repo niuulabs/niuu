@@ -369,6 +369,11 @@ def _build_tools(
                 workspace=workspace,
                 entity_extractor=entity_extractor,
                 event_emitter=mimir_event_emitter,
+                reserved_prefixes=(
+                    [settings.reflection.friction.ledger_prefix]
+                    if settings.reflection.friction.enabled
+                    else []
+                ),
             )
         )
 

@@ -16,7 +16,11 @@ from ting.ports.flock_flow import FlockFlowProvider
 
 
 def _auth_headers(user_id: str = "test-user") -> dict[str, str]:
-    return {"x-auth-user-id": user_id}
+    return {
+        "x-auth-user-id": user_id,
+        "x-auth-tenant": "default",
+        "x-auth-roles": "volundr:admin",
+    }
 
 
 def _make_app(
@@ -245,3 +249,17 @@ class TestFullCRUDCycle:
         # Verify gone
         resp = client.get("/api/v1/ting/flock_flows/lifecycle", headers=headers)
         assert resp.status_code == 404
+
+
+class TestFlowWritesAreAdminOnly:
+    def test_a_developer_cannot_change_shared_flows(self) -> None:
+        client = TestClient(_make_app())
+        headers = {**_auth_headers(), "x-auth-roles": "volundr:developer"}
+
+        created = client.post("/api/v1/ting/flock_flows", json=_flow_body(), headers=headers)
+        replaced = client.put(
+            "/api/v1/ting/flock_flows/test-flow", json=_flow_body(), headers=headers
+        )
+        deleted = client.delete("/api/v1/ting/flock_flows/test-flow", headers=headers)
+
+        assert [created.status_code, replaced.status_code, deleted.status_code] == [403] * 3

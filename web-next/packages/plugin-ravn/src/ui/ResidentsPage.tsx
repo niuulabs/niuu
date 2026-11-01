@@ -10,6 +10,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { Bot, MessageSquare, Pause, Play, Plus, RotateCw } from 'lucide-react';
+import { usePluginEnabled } from '@niuulabs/shell';
 import {
   Chip,
   EmptyState,
@@ -59,7 +60,7 @@ import { ResidentDeployDialog } from './ResidentDeployDialog';
 import { saveStorage } from './storage';
 
 const LEDE_FIRST =
-  'A resident keeps one realm: it reads the board, starts sessions, checks quality and asks you when it should.';
+  'A resident keeps one workspace: it reads the board, starts sessions, checks quality and asks you when it should.';
 const LEDE_SECOND = 'A persona is the character it runs with.';
 
 const PERSONA_STORAGE_KEY = 'ravn.persona';
@@ -127,6 +128,7 @@ function ResidentCard({
 }: ResidentCardProps) {
   const lifecycle = useResidentLifecycle();
   const createSession = useCreateResidentSession(ravn);
+  const realmsEnabled = usePluginEnabled('realms');
   const name = nameForRavn(ravn);
   const state = residentState(ravn, valkyrie);
   const canTalk = Boolean(session) || canCreateResidentSession(ravn);
@@ -157,7 +159,7 @@ function ResidentCard({
           <span className="niuu:truncate niuu:text-[15px] niuu:font-medium niuu:text-text-primary">
             {name}
           </span>
-          {realm ? (
+          {realm && realmsEnabled ? (
             <Link
               to={`/realms/${realm.slug}`}
               className="niuu:truncate niuu:text-[11px] niuu:text-brand-300"
@@ -165,9 +167,13 @@ function ResidentCard({
             >
               keeps {realm.name}
             </Link>
+          ) : realm ? (
+            <span className="niuu:truncate niuu:text-[11px] niuu:text-text-muted">
+              keeps {realm.name}
+            </span>
           ) : (
             <span className="niuu:truncate niuu:text-[11px] niuu:text-text-faint">
-              keeps no realm yet
+              keeps no workspace yet
             </span>
           )}
         </div>
@@ -265,13 +271,13 @@ function ResidentCard({
           </button>
         ) : null}
 
-        {realm ? (
+        {realm && realmsEnabled ? (
           <Link
             to={`/realms/${realm.slug}`}
             className="niuu:ml-auto niuu:text-[11px] niuu:text-brand-300"
             data-testid="resident-open-realm"
           >
-            Open realm ›
+            Open workspace ›
           </Link>
         ) : null}
       </div>
@@ -401,7 +407,7 @@ export function ResidentsPage() {
         <EmptyState
           icon={<Bot size={18} aria-hidden="true" />}
           title="No residents yet"
-          description="A resident keeps a realm for you. Deploy one and give it something to keep."
+          description="A resident keeps a workspace for you. Deploy one and give it something to keep."
           action={
             <button type="button" className={PRIMARY} onClick={() => setDeployOpen(true)}>
               <Plus size={13} aria-hidden="true" />

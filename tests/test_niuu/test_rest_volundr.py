@@ -1297,6 +1297,14 @@ def test_get_mcp_server_proxies_to_credentials_surface() -> None:
         ),
         (
             "get",
+            "/sessions/s2/help/requests",
+            "/sessions/s2/help/requests",
+            {"requests": [{"id": "help-1"}]},
+            200,
+            {"requests": [{"id": "help-1"}]},
+        ),
+        (
+            "get",
             "/sessions/s2/trace",
             "/sessions/s2/trace",
             {"spans": [{"id": "span-1"}], "lanes": [{"key": "skuld"}]},
@@ -1407,6 +1415,48 @@ def test_trace_routes_fall_back_to_resident_owner(suffix: str, payload: dict[str
 
     assert response.status_code == 200
     assert response.json() == payload
+    assert route.called
+
+
+@respx.mock
+def test_room_operations_proxy_to_the_session_owner() -> None:
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2", "name": "Session 2"})
+    )
+    route = respx.post("http://beta/api/v1/forge/sessions/s2/room/direct").mock(
+        return_value=Response(200, json={"status": "sent"})
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions/s2/room/direct",
+        headers=_headers(),
+        json={"target_peer_id": "flock-coordinator", "content": "start"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "sent"}
+    assert route.called
+
+
+@respx.mock
+def test_answer_help_request_proxies_to_the_session_owner() -> None:
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2", "name": "Session 2"})
+    )
+    route = respx.post("http://beta/api/v1/forge/sessions/s2/help/requests/help%201/answer").mock(
+        return_value=Response(200, json={"status": "answered"})
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions/s2/help/requests/help%201/answer",
+        headers=_headers(),
+        json={"answer": "Yes"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "answered"}
     assert route.called
 
 
@@ -1873,6 +1923,27 @@ def test_event_log_proxies_forward_to_owner() -> None:
         == 41
     )
     assert ingest.called and head.called
+
+
+@respx.mock
+def test_event_log_proxies_reach_a_resident_runtime_owner() -> None:
+    """A resident broker keeps its event log under its runtime id, not a session id."""
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/r1").mock(
+        return_value=Response(404, json={"detail": "not found"})
+    )
+    respx.get("http://beta/api/v1/forge/resident-runtimes/r1").mock(
+        return_value=Response(200, json={"id": "r1"})
+    )
+    head = respx.get("http://beta/api/v1/forge/sessions/r1/log/head").mock(
+        return_value=Response(200, json={"latest_seq": 7})
+    )
+
+    response = client.get("/api/v1/forge/sessions/r1/log/head", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()["latest_seq"] == 7
+    assert head.called
 
 
 @respx.mock

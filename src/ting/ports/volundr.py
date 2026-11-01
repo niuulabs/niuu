@@ -156,6 +156,11 @@ class PublicSessionLogPage:
 
 
 class VolundrPort(ABC):
+    @property
+    def api_base_url(self) -> str:
+        """The Forge this adapter talks to, for a session it launches to reach back."""
+        raise NotImplementedError(f"{type(self).__name__} does not know its Forge's address")
+
     """Abstract interface for Volundr session management."""
 
     @property
@@ -187,6 +192,16 @@ class VolundrPort(ABC):
         principal: Principal | None = None,
     ) -> VolundrSession:
         raise NotImplementedError
+
+    async def start_session(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        """Start a stopped session again, keeping its workspace."""
+        raise NotImplementedError("This Volundr adapter does not support restarting sessions")
 
     async def resolve_delivery_ref(
         self,
@@ -291,7 +306,7 @@ class VolundrPort(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_pr_status(self, session_id: str) -> PRStatus:
+    async def get_pr_status(self, session_id: str) -> PRStatus | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -316,6 +331,7 @@ class VolundrPort(ABC):
         target_peer_id: str,
         message: str,
         *,
+        metadata: dict[str, object] | None = None,
         auth_token: str | None = None,
         principal: Principal | None = None,
     ) -> None:
@@ -356,6 +372,32 @@ class VolundrPort(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not expose caller-scoped portable personas"
         )
+
+    async def join_room(
+        self,
+        session_id: str,
+        *,
+        participant_id: str,
+        display_name: str,
+        member_session_id: str,
+        notice_context: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        """Seat an agent from another session in this session's room."""
+        raise NotImplementedError
+
+    async def leave_room(
+        self,
+        session_id: str,
+        participant_id: str,
+        *,
+        reason: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        """End a participant's membership of this session's room."""
+        raise NotImplementedError
 
     async def get_workflow_gates(
         self,
@@ -531,6 +573,17 @@ class VolundrFactory(Protocol):
 
     async def for_principal(self, principal: Principal) -> list[VolundrPort]:
         """Return all visible adapters for a fully scoped principal."""
+        raise NotImplementedError
+
+    async def for_principal_with_unresolved(
+        self, principal: Principal
+    ) -> tuple[list[VolundrPort], int]:
+        """Like ``for_principal``, but also reports how many registered instances
+        could not be resolved into a usable adapter this call.
+
+        Looking for a session across a principal's Forges needs this: a session
+        absent from the Forges that resolved is only gone when none was skipped.
+        """
         raise NotImplementedError
 
     async def primary_for_principal(self, principal: Principal) -> VolundrPort | None:

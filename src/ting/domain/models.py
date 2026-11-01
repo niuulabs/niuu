@@ -88,6 +88,15 @@ def validate_transition(current: RunStatus, target: RunStatus) -> None:
 
 
 @dataclass(frozen=True)
+class SagaBoardWorkflow:
+    """A workflow on a project's board, pinned to the version the board shows."""
+
+    workflow_id: UUID
+    workflow_version: str
+    workflow_snapshot: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class Saga:
     id: UUID
     tracker_id: str
@@ -109,6 +118,8 @@ class Saga:
     instance_id: str | None = None
     target_tags: list[str] = field(default_factory=list)
     target_match: str = "all"
+    board_workflows: tuple[SagaBoardWorkflow, ...] = ()
+    plan_slug: str | None = None
 
 
 @dataclass(frozen=True)
@@ -320,6 +331,9 @@ class WorkflowCampaign:
     connection_id: str | None = None
 
     tenant_id: str = ""
+
+
+PR_STATE_MERGED = "merged"
 
 
 @dataclass(frozen=True)

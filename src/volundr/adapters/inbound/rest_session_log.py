@@ -52,6 +52,7 @@ from volundr.domain.session_read_state import is_final_output
 if TYPE_CHECKING:
     from volundr.domain.models import Session
     from volundr.domain.services.notifications import NotificationService
+    from volundr.domain.services.resident_runtime import ResidentRuntimeService
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +278,7 @@ def create_session_log_router(
     prefix: str = "/api/v1/forge",
     default_show_internal: bool = DEFAULT_SHOW_INTERNAL,
     notification_service: NotificationService | None = None,
+    resident_runtime_service: ResidentRuntimeService | None = None,
 ) -> APIRouter:
     """Create the FastAPI router for the durable session event log.
 
@@ -290,15 +292,29 @@ def create_session_log_router(
     """
     router = APIRouter(prefix=prefix)
 
-    async def _check_access(request: Request, session_id: UUID, action: str) -> Session:
+    async def _check_access(request: Request, session_id: UUID, action: str) -> Session | None:
+        """Authorize a session, or the resident runtime whose broker owns this log."""
         if session_service is None:
             raise HTTPException(status_code=503, detail="Session authorization unavailable")
-        from volundr.adapters.inbound.auth import extract_principal
+        from volundr.adapters.inbound.auth import (
+            check_session_or_resident_access,
+            extract_principal,
+        )
 
         principal = await extract_principal(request)
         session = await session_service.get_session(session_id)
         if session is None:
-            raise HTTPException(status_code=404, detail="Session not found")
+            if resident_runtime_service is None:
+                raise HTTPException(status_code=404, detail="Session not found")
+            await check_session_or_resident_access(
+                request,
+                session_id,
+                session_service=None,
+                resident_runtime_service=resident_runtime_service,
+                action=action,
+                resource_name="the event log",
+            )
+            return None
         try:
             await session_service._check_access(session, principal, action)
         except SessionAccessDeniedError:
@@ -355,7 +371,7 @@ def create_session_log_router(
                 log_repository, session_id=session_id, conflicting_seqs=conflicts, ts=now
             )
         # Notifications are projected from the stored rows before the ack.
-        if notification_service is not None:
+        if notification_service is not None and session is not None:
             await _project_notifications_before_ack(
                 notification_service, log_repository, session, entries, conflicts
             )

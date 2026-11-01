@@ -56,7 +56,7 @@ export function OverviewTab({ session }: OverviewTabProps) {
           <dd className="niuu:font-mono niuu:text-text-primary">{session.id}</dd>
           <dt className="niuu:text-text-muted">Persona</dt>
           <dd className="niuu:text-text-primary">{session.personaName}</dd>
-          <dt className="niuu:text-text-muted">Ravn</dt>
+          <dt className="niuu:text-text-muted">Agent</dt>
           <dd className="niuu:font-mono niuu:text-text-primary">{session.ravnId}</dd>
           <dt className="niuu:text-text-muted">Cluster</dt>
           <dd className="niuu:font-mono niuu:text-text-primary">{session.clusterId}</dd>

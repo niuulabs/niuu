@@ -140,10 +140,10 @@ function SessionActivity({ ravn }: { ravn: Ravn }) {
   const activity = useRavnActivity(ravn.id);
   if (activity.isLoading) return <LoadingState label="Loading activity…" />;
   if (activity.data.length === 0) {
-    return <p className="rw-muted rw-muted--pad">No recorded activity for this ravn.</p>;
+    return <p className="rw-muted rw-muted--pad">No recorded activity for this agent.</p>;
   }
   return (
-    <div className="rw-transcript" role="log" aria-label="Ravn activity">
+    <div className="rw-transcript" role="log" aria-label="Agent activity">
       {activity.data.map((message) => (
         <MessageRow key={message.id} message={message} />
       ))}
@@ -157,7 +157,7 @@ function ForgeSessionLogs({ ravn }: { ravn: Ravn }) {
     return (
       <ErrorState
         title="No session logs here"
-        message="This host wires no Forge service, and a session-backed ravn's logs live in Forge."
+        message="This app has no sessions service, and a session-backed agent's logs live in Sessions."
       />
     );
   }

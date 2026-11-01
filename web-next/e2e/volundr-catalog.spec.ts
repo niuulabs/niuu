@@ -44,7 +44,9 @@ test('/volundr/catalog identifies system-scope specs', async ({ page }) => {
 test('/volundr/clusters redirects to guild', async ({ page }) => {
   await page.goto('/volundr/clusters');
   await page.waitForURL('**/guild');
-  await expect(page.getByRole('heading', { name: 'Guild' })).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByRole('heading', { name: 'Platform', exact: true, level: 1 })).toBeVisible({
+    timeout: 5_000,
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -68,9 +70,9 @@ test('/volundr/history shows outcome chips', async ({ page }) => {
 
 test('/volundr/history shows filter controls', async ({ page }) => {
   await page.goto('/volundr/history');
-  await expect(page.getByLabel(/raven id/i)).toBeVisible();
+  await expect(page.getByLabel(/agent id/i)).toBeVisible();
   await expect(page.getByLabel(/persona/i)).toBeVisible();
-  await expect(page.getByLabel(/saga/i)).toBeVisible();
+  await expect(page.getByLabel(/project/i)).toBeVisible();
 });
 
 test('/volundr/history — filter by outcome (failed)', async ({ page }) => {
@@ -108,7 +110,7 @@ test('/volundr/history — shows clear filters button after filter applied', asy
   await page.goto('/volundr/history');
   await expect(page.getByRole('button', { name: /clear filters/i })).not.toBeVisible();
 
-  await page.getByLabel(/raven id/i).fill('r1');
+  await page.getByLabel(/agent id/i).fill('r1');
   await expect(page.getByRole('button', { name: /clear filters/i })).toBeVisible({
     timeout: 3_000,
   });

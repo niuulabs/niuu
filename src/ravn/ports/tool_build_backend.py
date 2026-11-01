@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 
@@ -99,6 +100,17 @@ class ToolBuildRequest:
     continuation: dict[str, Any] = field(default_factory=dict)
 
 
+class ToolBuildTaskStatus(StrEnum):
+    """Where a suspended remote build stands."""
+
+    #: Still running, or waiting for input.
+    ACTIVE = "active"
+    #: Finished with an artifact to collect.
+    COMPLETED = "completed"
+    #: Failed, cancelled or rejected: nothing to collect or resume.
+    ENDED = "ended"
+
+
 @dataclass(frozen=True)
 class ToolBuildResult:
     """The produced artifact: a learned-tool manifest + its Python code.
@@ -137,3 +149,29 @@ class ToolBuildBackend(ABC):
         Raises :class:`ToolBuildError` on failure — there is no silent
         fallback to a stub tool.
         """
+
+    async def task_status(self, task_id: str) -> ToolBuildTaskStatus:
+        """Where the suspended remote build *task_id* stands.
+
+        build_tool asks before it commissions another build of the same tool,
+        so a build that finished while the resident was elsewhere is collected
+        instead of built again. Only a backend that suspends builds has any.
+        """
+        raise ToolBuildError(
+            f"the {self.name} build backend suspends no builds, so it has no task "
+            f"{task_id!r} to report on"
+        )
+
+    async def cancel(self, task_id: str) -> str:
+        """End the suspended remote build *task_id*; return its final task state.
+
+        build_tool calls this when a newer request for the same tool replaces
+        a build that suspended (:class:`ToolBuildPendingError` or
+        :class:`ToolBuildInputRequiredError`). A task that already ended is
+        left as it is and its state returned. Only a backend that suspends
+        builds has any to cancel.
+        """
+        raise ToolBuildError(
+            f"the {self.name} build backend suspends no builds, so it has no task "
+            f"{task_id!r} to cancel"
+        )

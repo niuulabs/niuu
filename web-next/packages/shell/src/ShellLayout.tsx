@@ -316,6 +316,7 @@ export function ShellLayout() {
               <PopoverContent align="end" className="niuu-shell__theme-options">
                 {(
                   [
+                    ['niuu', 'NIUU'],
                     ['xteo', 'blue'],
                     ['ice', 'Native dark'],
                     ['amber', 'Amber'],
@@ -365,8 +366,6 @@ export function ShellLayout() {
 
         <footer className="niuu-shell__footer">
           <div className="niuu-shell__footer-left">
-            {active && <code>plugin:{active.id}</code>}
-            <span className="niuu-shell__footer-sep">·</span>
             <span>niuu.world</span>
           </div>
           <div className="niuu-shell__footer-center" data-testid="footer-status">

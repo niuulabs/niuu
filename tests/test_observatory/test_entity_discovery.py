@@ -3225,3 +3225,25 @@ async def test_flock_session_mimir_mounts_are_discovered(tmp_path, monkeypatch) 
         ("reads", "https://mimir.yggdrasil.niuu.world/api/v1", "mimir-yggdrasil"),
         ("writes", "https://mimir.yggdrasil.niuu.world/api/v1", "mimir-yggdrasil"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_resident_discovery_asks_only_for_residents_every_member_may_see() -> None:
+    """The topology is one shared picture; it must not carry any user's own residents."""
+    seen: list[httpx.URL] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url)
+        return httpx.Response(200, json=[])
+
+    adapter = RavnResidentsDiscoveryAdapter(
+        base_url="http://ravn.test",
+        cluster="ymir",
+        transport=httpx.MockTransport(handler),
+    )
+
+    await adapter.discover()
+
+    assert [(url.path, dict(url.params)) for url in seen] == [
+        ("/api/v1/ravn/ravens", {"visibility": "system"})
+    ]

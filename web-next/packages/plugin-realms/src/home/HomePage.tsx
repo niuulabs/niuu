@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { Boxes, MessageCircleQuestion, Terminal, Workflow } from 'lucide-react';
-import { useSetUiMode } from '@niuulabs/shell';
+import { usePluginEnabled, useSetUiMode } from '@niuulabs/shell';
 import { reviewKindLabel, useDecideReview, type ReviewItem } from '@niuulabs/plugin-valkyrie';
 import type { Session } from '@niuulabs/plugin-volundr';
 import { Chip, EmptyState, ErrorState, LoadingState, StateDot } from '@niuulabs/ui';
@@ -73,11 +73,11 @@ const CHOICES: Choice[] = [
     id: 'realm',
     step: '3',
     icon: <Boxes size={18} aria-hidden="true" />,
-    title: 'Set up a realm',
+    title: 'Set up a workspace',
     blurb:
       'A resident that keeps an environment: the board, the sessions, the quality, the health.',
     bullets: ['Starts from a template', 'Works while you are away', 'Asks you only what it must'],
-    action: 'Set up a realm',
+    action: 'Set up a workspace',
     to: '/realms/new',
   },
 ];
@@ -269,6 +269,7 @@ function Panel({
  */
 export function HomePage() {
   const home = useRealmsHome();
+  const realmsEnabled = usePluginEnabled('realms');
   const status = useHomeStatus();
   const sessions = useDomainSessions();
   const decide = useDecideReview();
@@ -281,11 +282,14 @@ export function HomePage() {
   const blocked = needsYouSessions(sessions.data);
   const recent = continueSessions(sessions.data, CONTINUE_LIMIT);
   const live = (sessions.data ?? []).filter(isLive).length;
-  const wakefulRealms = orderCards(home.cards)
+  // With Realms off its pages have no routes, so nothing here may point at them.
+  const realmCards = realmsEnabled ? home.cards : [];
+  const choices = realmsEnabled ? CHOICES : CHOICES.filter((choice) => choice.id !== 'realm');
+  const wakefulRealms = orderCards(realmCards)
     .filter((card) => WAKEFUL.has(card.resident?.wakefulness ?? ''))
     .slice(0, CONTINUE_LIMIT);
   const cardFor = (environmentId: string) =>
-    home.cards.find((card) => card.resident?.environmentId === environmentId) ?? null;
+    realmCards.find((card) => card.resident?.environmentId === environmentId) ?? null;
 
   function answer(item: ReviewItem, decision: 'approved' | 'rejected') {
     setDecided((ids) => [...ids, item.itemId]);
@@ -318,7 +322,7 @@ export function HomePage() {
             {home.error
               ? 'Could not read what is running.'
               : stateSentence({
-                  realms: home.cards.length,
+                  realms: realmCards.length,
                   running: live,
                   needsYou: pending.length + blocked.length,
                 })}
@@ -333,14 +337,16 @@ export function HomePage() {
         />
       </header>
 
-      <div className="niuu:grid niuu:grid-cols-3 niuu:gap-5">
-        {CHOICES.map((choice) => (
+      <div
+        className={`niuu:grid niuu:gap-5 ${realmsEnabled ? 'niuu:grid-cols-3' : 'niuu:grid-cols-2'}`}
+      >
+        {choices.map((choice) => (
           <ChoiceCard key={choice.id} choice={choice} />
         ))}
       </div>
 
       {home.error ? (
-        <ErrorState title="Could not load your realms" message={String(home.error)} />
+        <ErrorState title="Could not load your workspaces" message={String(home.error)} />
       ) : home.isLoading ? (
         <LoadingState label="Looking at what is running…" />
       ) : (
@@ -351,7 +357,10 @@ export function HomePage() {
             aside={
               <span className="niuu:text-xs niuu:text-text-muted">
                 {pending.length + blocked.length} open ·{' '}
-                <Link to="/realms/needs-you" className={LINK}>
+                <Link
+                  to={(realmsEnabled ? '/realms/needs-you' : '/valkyrie/inbox') as never}
+                  className={LINK}
+                >
                   inbox
                 </Link>
               </span>

@@ -180,6 +180,58 @@ async def test_save_check_rejects_ownership_change_even_when_update_is_allowed(p
     repo.save_campaign.assert_not_called()
 
 
+async def test_campaign_summaries_are_filtered_by_visibility(principal):
+    campaign = SimpleNamespace(id=uuid4(), owner_id="alice", tenant_id="acme")
+    repo = AsyncMock()
+    repo.list_campaign_summaries.return_value = [campaign]
+    policy = AuthorizedCampaignRepository(repo, AllowAllAuthorizationAdapter(), principal)
+
+    assert await policy.list_campaign_summaries(owner_id="alice") == [campaign]
+
+    repo.list_campaigns.assert_not_called()
+
+
+async def test_ticket_campaigns_are_listed_through_the_narrow_query(principal):
+    campaign = SimpleNamespace(id=uuid4(), owner_id="alice", tenant_id="acme")
+    saga_id = uuid4()
+    repo = AsyncMock()
+    repo.list_ticket_campaigns.return_value = [campaign]
+    policy = AuthorizedCampaignRepository(repo, AllowAllAuthorizationAdapter(), principal)
+
+    assert await policy.list_ticket_campaigns(owner_id="alice", saga_id=saga_id) == [campaign]
+
+    repo.list_ticket_campaigns.assert_awaited_once_with(
+        owner_id="alice", saga_id=saga_id, issue_id=None
+    )
+    repo.list_campaigns.assert_not_called()
+
+
+async def test_a_guarded_ticket_launch_passes_through_authorization(principal):
+    campaign = SimpleNamespace(id=uuid4(), owner_id="alice", tenant_id="acme")
+    saga_id = uuid4()
+    repo = AsyncMock()
+    repo.get_campaign.return_value = None
+    repo.save_ticket_campaign.return_value = "other-run"
+    policy = AuthorizedCampaignRepository(repo, AllowAllAuthorizationAdapter(), principal)
+
+    assert await policy.save_ticket_campaign(campaign, saga_id=saga_id, issue_id="i") == "other-run"
+
+    repo.save_ticket_campaign.assert_awaited_once_with(campaign, saga_id=saga_id, issue_id="i")
+
+
+async def test_a_ticket_launch_cannot_change_a_campaigns_ownership(principal):
+    existing = SimpleNamespace(id=uuid4(), owner_id="alice", tenant_id="acme")
+    moved = SimpleNamespace(id=existing.id, owner_id="alice", tenant_id="other-tenant")
+    repo = AsyncMock()
+    repo.get_campaign.return_value = existing
+    policy = AuthorizedCampaignRepository(repo, AllowAllAuthorizationAdapter(), principal)
+
+    with pytest.raises(AuthorizationDeniedError, match="Resource ownership is immutable"):
+        await policy.save_ticket_campaign(moved, saga_id=uuid4(), issue_id="i")
+
+    repo.save_ticket_campaign.assert_not_called()
+
+
 async def test_authorized_workflow_repository_delegates_every_method(principal):
     repo = AsyncMock()
     workflow = SimpleNamespace(

@@ -6,7 +6,9 @@ import { test, expect } from '@playwright/test';
 test.describe('CommandPalette', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/volundr');
-    await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'Forge', exact: true, level: 1 })).toBeVisible({
+      timeout: 5000,
+    });
     await expect(page.getByTestId('forge-page')).toBeVisible({ timeout: 8_000 });
   });
 
@@ -38,10 +40,10 @@ test.describe('CommandPalette', () => {
 
   test('type to filter narrows results', async ({ page }) => {
     await page.keyboard.press('Control+k');
-    await page.getByPlaceholder('Search commands…').fill('ravn');
-    await expect(page.getByRole('option', { name: /ravn/i }).first()).toBeVisible();
+    await page.getByPlaceholder('Search commands…').fill('volundr');
+    await expect(page.getByRole('option', { name: /^Sessions/i }).first()).toBeVisible();
     // Items that don't match should be hidden
-    await expect(page.getByRole('option', { name: /mimir/i })).toBeHidden();
+    await expect(page.getByRole('option', { name: /^Memory/i })).toBeHidden();
   });
 
   test('shows empty state when nothing matches', async ({ page }) => {
@@ -53,16 +55,19 @@ test.describe('CommandPalette', () => {
   test('ArrowDown + Enter navigates to another plugin', async ({ page }) => {
     await page.keyboard.press('Control+k');
     await page.getByPlaceholder('Search commands…').fill('Ravn');
-    await expect(page.getByRole('option', { name: /ravn/i }).first()).toBeVisible();
-    await page.getByRole('option', { name: /ravn/i }).first().click();
+    await expect(page.getByRole('option', { name: /^Agents/i }).first()).toBeVisible();
+    await page
+      .getByRole('option', { name: /^Agents/i })
+      .first()
+      .click();
     await expect(page.getByRole('dialog')).toBeHidden();
     await expect(page).toHaveURL(/\/ravn/);
   });
 
-  test('Ting command opens the Work landing page', async ({ page }) => {
+  test('Work command opens the Work landing page, by its old name too', async ({ page }) => {
     await page.keyboard.press('Control+k');
     await page.getByPlaceholder('Search commands…').fill('Ting');
-    const ting = page.getByRole('option', { name: /Ting/i }).first();
+    const ting = page.getByRole('option', { name: /^Work/i }).first();
     await expect(ting).toBeVisible();
     await ting.click();
     await expect(page.getByRole('dialog')).toBeHidden();

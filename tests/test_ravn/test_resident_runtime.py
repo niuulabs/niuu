@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -11,7 +12,15 @@ from mimir.adapters.markdown import MarkdownMimirAdapter
 from ravn.adapters.resident_state.mimir import LocalResidentState
 from ravn.cap_telemetry import cap_hit_counts
 from ravn.config import InitiativeConfig, Settings
-from ravn.domain.models import AgentTask, OutputMode, TokenUsage, ToolCall, ToolResult, TurnResult
+from ravn.domain.models import (
+    RESIDENT_HOME_TRIGGER,
+    AgentTask,
+    OutputMode,
+    TokenUsage,
+    ToolCall,
+    ToolResult,
+    TurnResult,
+)
 from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
     ResidentA2ATaskRecord,
@@ -21,9 +30,16 @@ from ravn.domain.resident_continuation import (
     validate_resident_working_state,
 )
 from ravn.drive_loop import DriveLoop
-from ravn.odin.review import JsonReviewStore, ReviewRequester
+from ravn.odin.review import JsonReviewStore, ReviewItem, ReviewRequester
 from ravn.resident_continuation import _scheduled_wake_at
-from ravn.resident_inbox import LocalResidentInbox, MimirResidentInbox, ResidentInboxStatus
+from ravn.resident_inbox import (
+    LocalResidentInbox,
+    MimirResidentInbox,
+    ResidentInboxStatus,
+    ShapeAggregate,
+    observed_payload,
+    shape_key,
+)
 from ravn.resident_runtime import (
     ResidentHomeTrigger,
     ResidentRuntime,
@@ -131,6 +147,115 @@ async def test_a2a_push_is_persisted_and_immediately_wakes_resident(tmp_path) ->
     assert rows[0][1].classification == "status_update"
 
 
+async def _case_update(
+    runtime: ResidentRuntime,
+    task_id: str,
+    *,
+    mandate: str,
+    state: str,
+) -> AgentTask | None:
+    await runtime.record_a2a_activity(
+        {
+            "task_id": task_id,
+            "agent_id": "builder-1",
+            "skill_id": "research",
+            "state": "TASK_STATE_SUBMITTED",
+            "operation": "start",
+            "prompt": "Investigate",
+            "case_id": "resident-home-origin",
+            "root_correlation_id": "root",
+            "parent_task_id": "task-origin",
+            "mandate": mandate,
+            "turn_index": 2,
+            "case_input_tokens": 30,
+            "case_output_tokens": 12,
+            "case_started_at": "2026-08-03T10:00:00+00:00",
+            "push_registered": True,
+        }
+    )
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime.bind_enqueue(enqueue)
+    await runtime.submit_a2a_push({"task": {"id": task_id, "status": {"state": state}}})
+    return queued[0] if queued else None
+
+
+@pytest.mark.asyncio
+async def test_a_case_mandate_stays_out_of_the_prompt_built_from_its_update(tmp_path) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    inbox = LocalResidentInbox(tmp_path / "inbox")
+    runtime = ResidentRuntime(state=state, inbox=inbox, resident_id="ivaldi")
+    mandate = "the original home prompt\n" * 100
+
+    task = await _case_update(runtime, "w-1", mandate=mandate, state="TASK_STATE_FAILED")
+
+    assert task is not None
+    assert task.resident_mandate == mandate.strip()
+    assert "the original home prompt" not in task.initiative_context
+    assert "_resident" not in task.initiative_context
+    assert task.resident_case_id == "resident-home-origin"
+
+
+@pytest.mark.asyncio
+async def test_a_case_mandate_stays_out_of_the_slot_and_its_extremes(tmp_path) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    inbox = LocalResidentInbox(tmp_path / "inbox", novelty_min_observations=1000)
+    runtime = ResidentRuntime(state=state, inbox=inbox, resident_id="ivaldi")
+    for index in range(3):
+        task = await _case_update(
+            runtime,
+            "w-1",
+            mandate=f"generation {index} prompt",
+            state=f"TASK_STATE_{index}",
+        )
+        if task is not None:
+            runtime.release_failed_task(task)
+
+    rows = await inbox.list_signals(status=ResidentInboxStatus.NEW.value, limit=10)
+    signal = rows[0][1]
+    assert signal.observation_count == 3
+    aggregate = signal.aggregate
+    assert not [path for path in aggregate.numeric if path.startswith("_resident")]
+    assert not [path for path in aggregate.categorical if path.startswith("_resident")]
+    assert not [key for key in aggregate.extreme_refs if key.startswith("_resident")]
+
+    task = await runtime.next_home_task(limit=5, persona=None, output_mode=OutputMode.AMBIENT)
+
+    assert task is not None
+    assert "prompt" not in task.initiative_context.split("Observations:")[1]
+
+
+def test_slots_already_holding_routing_state_shed_it_when_read() -> None:
+    aggregate = ShapeAggregate.from_dict(
+        {
+            "numeric": {"_resident.turn_index": [1, 2], "task.count": [1, 2]},
+            "categorical": {"_resident.mandate": ["M" * 500], "task.state": ["FAILED"]},
+            "high_cardinality": ["_resident.case_id", "task.id"],
+            "extreme_refs": {"_resident.turn_index:max": "2026-10-30:1", "task.count:max": "r"},
+        }
+    )
+
+    assert list(aggregate.numeric) == ["task.count"]
+    assert list(aggregate.categorical) == ["task.state"]
+    assert aggregate.high_cardinality == ("task.id",)
+    assert list(aggregate.extreme_refs) == ["task.count:max"]
+
+
+def test_routing_state_does_not_change_an_observation_shape() -> None:
+    bare = {"task": {"id": "w-1"}}
+    routed = {**bare, "_resident": {"turn_index": 1, "mandate": "m"}}
+
+    assert observed_payload(bare) is bare
+    assert observed_payload(routed) == bare
+    assert shape_key(source="a2a", kind="k", payload=bare) == shape_key(
+        source="a2a", kind="k", payload=routed
+    )
+
+
 @pytest.mark.asyncio
 async def test_a2a_push_resumes_originating_case_and_coalesces_duplicate(tmp_path) -> None:
     state = LocalResidentState(tmp_path / "state")
@@ -182,6 +307,7 @@ async def test_a2a_push_resumes_originating_case_and_coalesces_duplicate(tmp_pat
     found = await runtime.find_a2a_tasks(query="Laevateinn")
     assert found[0]["task_id"] == "workflow-456"
     assert found[0]["state"] == "TASK_STATE_FAILED"
+    assert "mandate" not in found[0]
 
 
 @pytest.mark.asyncio
@@ -378,7 +504,7 @@ async def test_tool_result_is_durable_without_creating_a_followup_task(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_working_state_is_reused_by_a_new_runtime_after_restart(tmp_path) -> None:
+async def test_working_state_is_reused_by_a_new_runtime_after_review_runtime(tmp_path) -> None:
     first_state = LocalResidentState(tmp_path)
     first_runtime = ResidentRuntime(state=first_state, resident_id="resident-alpha")
     first_task = _task(root_correlation_id="event-a")
@@ -1193,6 +1319,7 @@ async def test_home_turn_carries_a_large_raw_payload_whole(tmp_path) -> None:
     assert detail in task.initiative_context
     assert "truncated" not in task.initiative_context
     assert cap_hit_counts() == {}
+    assert detail not in task.recall_query
 
 
 @pytest.mark.asyncio
@@ -1453,7 +1580,7 @@ async def test_a_due_wake_is_consumed_only_after_the_resumed_turn_succeeds(tmp_p
 @pytest.mark.asyncio
 async def test_a_failed_resumed_turn_leaves_the_wake_pending_for_retry(tmp_path) -> None:
     state = LocalResidentState(tmp_path)
-    runtime = ResidentRuntime(state=state)
+    runtime = ResidentRuntime(state=state, failed_resume_retry_seconds=0.05)
     queued: list[AgentTask] = []
 
     async def enqueue(task: AgentTask) -> bool:
@@ -1474,8 +1601,71 @@ async def test_a_failed_resumed_turn_leaves_the_wake_pending_for_retry(tmp_path)
     runtime.release_failed_task(queued[0])
 
     assert len(await state.list_scheduled_wakes()) == 1
+    # Not straight back: a failure that recurs on every attempt re-queued the case the
+    # moment it was released, about twice a second on one resident.
+    assert await runtime.resume_due_wakes() == 0
+    await asyncio.sleep(0.06)
     assert await runtime.resume_due_wakes() == 1
     assert len(queued) == 2
+    # Once resumed again the hold is gone, so a later failure starts a fresh one.
+    runtime.release_failed_task(queued[1])
+    assert await runtime.resume_due_wakes() == 0
+
+
+@pytest.mark.asyncio
+async def test_a_failed_answer_resume_is_held_back_before_retrying(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state, failed_resume_retry_seconds=0.05)
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime.bind_enqueue(enqueue)
+    await state.write_operator_answer("Only NIU-1107.", case_id="case-answer")
+
+    assert await runtime.retry_unconsumed_answers() == 1
+    runtime.release_failed_task(queued[0])
+
+    assert await runtime.retry_unconsumed_answers() == 0
+    await asyncio.sleep(0.06)
+    assert await runtime.retry_unconsumed_answers() == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_home_turn_is_not_held_back(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state, failed_resume_retry_seconds=60)
+    await state.write_scheduled_wake(
+        ResidentScheduledWakeRecord(
+            case_id="case-home",
+            root_correlation_id="root-home",
+            wake_at=datetime.now(UTC) - timedelta(minutes=1),
+            reason="recheck",
+        )
+    )
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime.bind_enqueue(enqueue)
+    home = AgentTask(
+        task_id="t-home",
+        title="Resident home turn",
+        initiative_context="observations",
+        triggered_by=RESIDENT_HOME_TRIGGER,
+        output_mode=OutputMode.SILENT,
+        resident_case_id="case-home",
+    )
+
+    runtime.release_failed_task(home)
+
+    # Only resumes hold their case back; the home turn's inbox slots stay pending and are
+    # picked up by the next home turn on its own interval.
+    assert await runtime.resume_due_wakes() == 1
 
 
 @pytest.mark.asyncio
@@ -1959,7 +2149,7 @@ async def test_a_timestamp_that_only_moves_the_clock_is_not_new_evidence(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_the_streak_survives_a_restart(tmp_path) -> None:
+async def test_the_streak_survives_a_review_runtime(tmp_path) -> None:
     runtime = ResidentRuntime(
         state=LocalResidentState(tmp_path),
         resident_id="regin",
@@ -2229,3 +2419,372 @@ async def test_prior_working_state_reaches_the_next_turn_whole() -> None:
     assert working_state in context
     assert "truncated" not in context
     assert cap_hit_counts() == {}
+
+
+# ---------------------------------------------------------------------------
+# The review item follows the question: whatever closes an operator question
+# without a queue decision also settles its item in the operator's queue.
+# ---------------------------------------------------------------------------
+
+
+def _review_runtime(tmp_path, *, resident_id: str = "regin"):
+    publisher = AsyncMock()
+    store = JsonReviewStore(tmp_path / "reviews.json")
+    runtime = ResidentRuntime(
+        state=LocalResidentState(tmp_path / "state"),
+        resident_id=resident_id,
+        review_requester=ReviewRequester(publisher=publisher, store=store, source=resident_id),
+    )
+    return runtime, publisher, store
+
+
+# A restart is the same factory again: fresh objects over the same durable state
+# directory and the same outbox file.
+
+
+def _published_resolved(publisher: AsyncMock) -> list[dict]:
+    return [
+        call.args[0].payload
+        for call in publisher.publish.await_args_list
+        if call.args[0].event_type == "odin.review.resolved"
+    ]
+
+
+def _outbox_status(store: JsonReviewStore, case_id: str) -> str:
+    [item] = [
+        item
+        for item in store.list()
+        if item.evidence.get("operator_question", {}).get("case_id") == case_id
+    ]
+    return item.status
+
+
+async def _withdraw_turn(runtime: ResidentRuntime, *, target: str) -> None:
+    await runtime.handle_completed_turn(
+        task=_task(task_id="task-steward", root_correlation_id="case-steward"),
+        prompt="prompt",
+        result=_result({}),
+        response_text="stewardship",
+        outcome_fields={
+            "continuation": "stop",
+            "next_action_timing": "none",
+            "withdrawn_questions": [{"case_id": target, "reason": "PR #1166 was merged"}],
+        },
+        outcome_valid=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_withdrawing_a_question_settles_its_review_item(tmp_path) -> None:
+    runtime, publisher, store = _review_runtime(tmp_path)
+    await _ask(runtime, "case-stale", "Should I merge PR #1166?")
+    await _ask(runtime, "case-live", "Which scope is authorized?")
+    publisher.reset_mock()
+
+    await _withdraw_turn(runtime, target="case-stale")
+
+    [resolved] = _published_resolved(publisher)
+    assert resolved["status"] == "withdrawn"
+    assert resolved["apply_outcome"] == "withdrawn"
+    assert resolved["evidence"]["operator_question"]["case_id"] == "case-stale"
+    assert "regin withdrew this question: PR #1166 was merged" in resolved["apply_detail"]
+    assert _outbox_status(store, "case-stale") == "withdrawn"
+    assert _outbox_status(store, "case-live") == "pending"
+
+
+@pytest.mark.asyncio
+async def test_an_answer_that_reaches_the_resident_directly_settles_the_item(tmp_path) -> None:
+    runtime, publisher, store = _review_runtime(tmp_path)
+    runtime.bind_enqueue(AsyncMock(return_value=True))
+    await _ask(runtime, "case-room", "May I restart the pod?")
+    publisher.reset_mock()
+
+    bound = await runtime.consume_directed_message("Yes, go ahead.", None)
+
+    assert bound is True
+    [resolved] = _published_resolved(publisher)
+    assert resolved["status"] == "withdrawn"
+    assert resolved["apply_outcome"] == "answered_elsewhere"
+    assert "answered outside the review queue" in resolved["apply_detail"]
+    assert _outbox_status(store, "case-room") == "withdrawn"
+
+
+@pytest.mark.asyncio
+async def test_an_answer_decided_in_the_queue_is_not_settled_as_withdrawn(tmp_path) -> None:
+    runtime, publisher, store = _review_runtime(tmp_path)
+    runtime.bind_enqueue(AsyncMock(return_value=True))
+    await _ask(runtime, "case-queue", "May I restart the pod?")
+    publisher.reset_mock()
+
+    await runtime.submit_operator_answer(case_id="case-queue", answer="Yes.", via_review=True)
+
+    assert _published_resolved(publisher) == []
+    assert _outbox_status(store, "case-queue") == "pending"
+
+
+@pytest.mark.asyncio
+async def test_restart_settles_items_whose_question_is_no_longer_open(tmp_path) -> None:
+    runtime, _publisher, _store = _review_runtime(tmp_path)
+    for case_id in ("case-withdrawn", "case-answered", "case-dropped", "case-open"):
+        await _ask(runtime, case_id, f"Question for {case_id}?")
+    # Each of these closes the question without touching its review item.
+    await runtime.state.withdraw_operator_needed(
+        "case-withdrawn", reason="decided another way", turn_ref="turn-1"
+    )
+    await runtime.state.write_operator_answer("Go ahead.", case_id="case-answered")
+    await runtime.state.delete_case("case-dropped")
+
+    restarted, publisher, store = _review_runtime(tmp_path)
+    filed = await restarted.publish_pending_questions()
+
+    assert filed == 0
+    by_case = {
+        item.evidence["operator_question"]["case_id"]: item
+        for item in store.list()
+        if item.status == "withdrawn"
+    }
+    assert set(by_case) == {"case-withdrawn", "case-answered", "case-dropped"}
+    assert by_case["case-withdrawn"].apply_outcome == "withdrawn"
+    assert "decided another way" in by_case["case-withdrawn"].apply_detail
+    assert by_case["case-answered"].apply_outcome == "answered_elsewhere"
+    assert by_case["case-dropped"].apply_outcome == "withdrawn"
+    assert "record was removed" in by_case["case-dropped"].apply_detail
+    assert _outbox_status(store, "case-open") == "pending"
+    assert len(_published_resolved(publisher)) == 3
+
+
+@pytest.mark.asyncio
+async def test_reconcile_leaves_other_residents_and_other_items_alone(tmp_path) -> None:
+    runtime, _publisher, store = _review_runtime(tmp_path, resident_id="regin")
+    await _ask(runtime, "case-open", "Still waiting?")
+    # Pending items this resident must not touch: another resident's question
+    # whose case this state knows nothing about, and an unrelated review kind.
+    foreign = ReviewItem.new(
+        kind="court_escalation",
+        requested_action="answer_operator_question",
+        environment_id="unknown",
+        valkyrie_id="fulla",
+        title="fulla asks",
+        summary="",
+        dedupe_key="operator-question:fulla:case-x",
+        evidence={"operator_question": {"case_id": "case-x"}},
+    )
+    unrelated = ReviewItem.new(
+        kind="evolution_build",
+        requested_action="install",
+        environment_id="unknown",
+        valkyrie_id="regin",
+        title="probe",
+        summary="",
+        dedupe_key="build:probe",
+    )
+    store.save(foreign)
+    store.save(unrelated)
+
+    restarted, publisher, store = _review_runtime(tmp_path)
+    assert await restarted.settle_closed_operator_reviews() == 0
+
+    assert store.get(foreign.item_id).status == "pending"
+    assert store.get(unrelated.item_id).status == "pending"
+    assert _outbox_status(store, "case-open") == "pending"
+    publisher.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_settlement_publish_is_raised_and_retried_on_the_next_start(
+    tmp_path,
+) -> None:
+    runtime, _publisher, _store = _review_runtime(tmp_path)
+    await _ask(runtime, "case-stale", "Should I merge?")
+    await runtime.state.withdraw_operator_needed("case-stale", reason="merged", turn_ref="t")
+
+    failing, publisher, store = _review_runtime(tmp_path)
+    publisher.publish.side_effect = RuntimeError("sleipnir unreachable")
+    with pytest.raises(RuntimeError, match="sleipnir unreachable"):
+        await failing.publish_pending_questions()
+    assert _outbox_status(store, "case-stale") == "pending"
+
+    healthy, publisher, store = _review_runtime(tmp_path)
+    await healthy.publish_pending_questions()
+    assert _outbox_status(store, "case-stale") == "withdrawn"
+
+
+@pytest.mark.asyncio
+async def test_an_answer_written_by_the_cli_settles_the_item_when_it_is_picked_up(
+    tmp_path,
+) -> None:
+    runtime, publisher, store = _review_runtime(tmp_path)
+    runtime.bind_enqueue(AsyncMock(return_value=True))
+    await _ask(runtime, "case-cli", "Which scope?")
+    publisher.reset_mock()
+    await runtime.state.write_operator_answer("Only NIU-1107.", case_id="case-cli")
+
+    assert await runtime.retry_unconsumed_answers() == 1
+
+    [resolved] = _published_resolved(publisher)
+    assert resolved["apply_outcome"] == "answered_elsewhere"
+    assert _outbox_status(store, "case-cli") == "withdrawn"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("close", "expected"),
+    [
+        ("answered", "it was already answered at "),
+        ("withdrawn", "it was withdrawn by the resident (merged elsewhere)"),
+        ("removed", "the case has no question record"),
+    ],
+)
+async def test_answering_a_closed_question_says_how_it_closed(tmp_path, close, expected) -> None:
+    runtime = ResidentRuntime(state=LocalResidentState(tmp_path))
+    await _ask(runtime, "case-closed", "Which scope?")
+    if close == "answered":
+        await runtime.state.write_operator_answer("Only NIU-1107.", case_id="case-closed")
+    elif close == "withdrawn":
+        await runtime.state.withdraw_operator_needed(
+            "case-closed", reason="merged elsewhere", turn_ref="t"
+        )
+    else:
+        await runtime.state.delete_case("case-closed")
+
+    with pytest.raises(LookupError) as raised:
+        await runtime.submit_operator_answer(case_id="case-closed", answer="late")
+
+    assert f"no pending operator question for case case-closed: {expected}" in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_a_case_that_asks_again_files_a_new_review_item(tmp_path) -> None:
+    runtime, publisher, store = _review_runtime(tmp_path)
+    runtime.bind_enqueue(AsyncMock(return_value=True))
+    await _ask(runtime, "case-again", "First question?")
+    await runtime.submit_operator_answer(case_id="case-again", answer="Yes.")
+    # The resumed case asks again on a later turn.
+    await runtime.handle_completed_turn(
+        task=_task(
+            task_id="task-again",
+            root_correlation_id="case-again",
+            resident_case_id="case-again",
+            resident_turn_index=2,
+        ),
+        prompt="prompt",
+        result=_result({}),
+        response_text="needs input again",
+        outcome_fields={
+            "continuation": "ask_operator",
+            "question": "Second question?",
+            "next_action_timing": "operator_input",
+        },
+        outcome_valid=True,
+    )
+
+    items = store.list()
+    assert len({item.item_id for item in items}) == 2
+    assert sorted(item.status for item in items) == ["pending", "withdrawn"]
+
+
+class _PinnedDatetime(datetime):
+    """``datetime`` whose ``now`` is set by the test: turn records stamp their path with it."""
+
+    pinned = datetime(2026, 10, 28, 13, 10, 41, tzinfo=UTC)
+
+    @classmethod
+    def now(cls, tz=None):  # noqa: ARG003 - the pinned instant is already UTC
+        return cls.pinned
+
+
+async def _ask_in_turn(runtime: ResidentRuntime, case_id: str, question: str, turn: int) -> None:
+    await runtime.handle_completed_turn(
+        task=_task(
+            task_id=f"task-{case_id}-{question}",
+            root_correlation_id=case_id,
+            resident_case_id=case_id,
+            resident_turn_index=turn,
+        ),
+        prompt="prompt",
+        result=_result({}),
+        response_text="needs input",
+        outcome_fields={
+            "continuation": "ask_operator",
+            "question": question,
+            "next_action_timing": "operator_input",
+        },
+        outcome_valid=True,
+    )
+
+
+def _settle_in_queue(store: JsonReviewStore, item_id: str) -> None:
+    item = store.get(item_id)
+    item.status = "applied"
+    store.save(item)
+
+
+@pytest.mark.asyncio
+async def test_a_room_case_whose_turns_restart_still_files_each_new_question(
+    tmp_path, monkeypatch
+) -> None:
+    """Regin's operator room is one long-lived case whose turn numbering restarts.
+
+    Its 15:21 question was turn 1 again, hashed to the id of the 13:10 turn-1
+    question the operator had already answered, and the queue dropped it.
+    """
+    monkeypatch.setattr("ravn.domain.resident_continuation.datetime", _PinnedDatetime)
+    runtime, publisher, store = _review_runtime(tmp_path)
+    runtime.bind_enqueue(AsyncMock(return_value=True))
+
+    await _ask_in_turn(runtime, "regin-operator-room", "Push test (Mac)?", turn=1)
+    [first] = store.list()
+    _settle_in_queue(store, first.item_id)
+    await runtime.submit_operator_answer(
+        case_id="regin-operator-room", answer="yes", via_review=True
+    )
+    publisher.reset_mock()
+
+    _PinnedDatetime.pinned = datetime(2026, 10, 28, 15, 21, 41, tzinfo=UTC)
+    await _ask_in_turn(runtime, "regin-operator-room", "Push test (iPhone)?", turn=1)
+
+    [second] = [item for item in store.list() if item.item_id != first.item_id]
+    assert second.status == "pending"
+    assert store.get(first.item_id).status == "applied"
+    requested = [
+        call.args[0].payload["item_id"]
+        for call in publisher.publish.await_args_list
+        if call.args[0].event_type == "odin.review.requested"
+    ]
+    assert requested == [second.item_id]
+
+
+@pytest.mark.asyncio
+async def test_a_new_question_onto_a_settled_review_item_fails_loudly(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("ravn.domain.resident_continuation.datetime", _PinnedDatetime)
+    _PinnedDatetime.pinned = datetime(2026, 10, 28, 13, 10, 41, tzinfo=UTC)
+    runtime, publisher, store = _review_runtime(tmp_path)
+    runtime.bind_enqueue(AsyncMock(return_value=True))
+    await _ask_in_turn(runtime, "case-collide", "First?", turn=1)
+    [first] = store.list()
+    _settle_in_queue(store, first.item_id)
+    await runtime.submit_operator_answer(case_id="case-collide", answer="yes", via_review=True)
+    publisher.reset_mock()
+
+    # Same instant, same turn number: the same turn record, so the same id.
+    with pytest.raises(RuntimeError, match="already applied"):
+        await _ask_in_turn(runtime, "case-collide", "Second?", turn=1)
+
+    assert store.get(first.item_id).status == "applied"
+    publisher.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_restart_re_announces_an_answered_question_without_raising(tmp_path) -> None:
+    """Between the queue's answer and the case consuming it, a restart must not crash."""
+    runtime, _publisher, store = _review_runtime(tmp_path)
+    await _ask(runtime, "case-window", "Which scope?")
+    [item] = store.list()
+    _settle_in_queue(store, item.item_id)
+
+    restarted, _publisher, store = _review_runtime(tmp_path)
+    await restarted.publish_pending_questions()
+
+    assert store.get(item.item_id).status == "applied"

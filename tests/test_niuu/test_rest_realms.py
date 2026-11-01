@@ -9,6 +9,8 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
+from identity.adapters.cedar import CedarAuthorizationAdapter
+from identity.ports import AuthorizationEvaluationError
 from niuu.adapters.inbound import rest_realms
 from niuu.adapters.inbound.rest_realms import create_realms_router
 from niuu.domain.models import Principal
@@ -21,7 +23,7 @@ def _make_principal() -> Principal:
         user_id="user-1",
         email="test@example.com",
         tenant_id="tenant-1",
-        roles=["user"],
+        roles=["volundr:developer"],
     )
 
 
@@ -29,10 +31,12 @@ def _make_client(
     *,
     with_service: bool = True,
     principal: Principal | None = None,
+    service: RealmService | None = None,
 ) -> TestClient:
     app = FastAPI()
+    app.state.authorization = CedarAuthorizationAdapter()
     if with_service:
-        app.state.realm_service = RealmService(InMemoryRealmRepository())
+        app.state.realm_service = service or RealmService(InMemoryRealmRepository())
 
     async def extract_principal() -> Principal:
         return principal or _make_principal()
@@ -327,9 +331,9 @@ def test_upsert_realm_by_id_allows_admin_to_override_another_owners_realm() -> N
             email="admin@example.com",
             tenant_id="tenant-1",
             roles=["volundr:admin"],
-        )
+        ),
+        service=client.app.state.realm_service,  # type: ignore[attr-defined]
     )
-    admin_client.app.state.realm_service = client.app.state.realm_service  # type: ignore[attr-defined]
 
     response = admin_client.put(
         f"/api/v1/realms/by-id/{realm_id}",
@@ -358,9 +362,10 @@ async def test_realm_detail_stream_emits_complete_named_snapshot(
 ) -> None:
     """The authenticated realm-detail stream starts with a usable snapshot."""
     app = FastAPI()
+    app.state.authorization = CedarAuthorizationAdapter()
     service = RealmService(InMemoryRealmRepository())
     app.state.realm_service = service
-    realm = await service.create_realm("forge", "Forge")
+    realm = await service.create_realm("forge", "Forge", tenant_id="tenant-1")
     await service.grant_trust(realm.id, "build", level=2)
     await service.record_capability(realm.id, "search", "tool", status="present")
 
@@ -376,7 +381,7 @@ async def test_realm_detail_stream_emits_complete_named_snapshot(
     )
     route = next(route for route in router.routes if route.path == "/api/v1/realms/{slug}/stream")
     request = Request({"type": "http", "app": app, "headers": []})
-    response = await route.endpoint(request, "forge")
+    response = await route.endpoint(request, "forge", _make_principal())
     frame = await anext(response.body_iterator)
     keepalive = await anext(response.body_iterator)
     await response.body_iterator.aclose()
@@ -399,9 +404,10 @@ async def test_realm_detail_stream_emits_changed_snapshot(
 ) -> None:
     """The stream emits a replacement frame after realm detail changes."""
     app = FastAPI()
+    app.state.authorization = CedarAuthorizationAdapter()
     service = RealmService(InMemoryRealmRepository())
     app.state.realm_service = service
-    realm = await service.create_realm("forge", "Forge")
+    realm = await service.create_realm("forge", "Forge", tenant_id="tenant-1")
 
     async def extract_principal() -> Principal:
         return _make_principal()
@@ -415,7 +421,7 @@ async def test_realm_detail_stream_emits_changed_snapshot(
     )
     route = next(route for route in router.routes if route.path == "/api/v1/realms/{slug}/stream")
     request = Request({"type": "http", "app": app, "headers": []})
-    response = await route.endpoint(request, "forge")
+    response = await route.endpoint(request, "forge", _make_principal())
     initial_frame = await anext(response.body_iterator)
 
     await service.record_capability(realm.id, "search", "tool", status="present")
@@ -429,3 +435,205 @@ async def test_realm_detail_stream_emits_changed_snapshot(
     detail = json.loads(payload)
     assert [capability["name"] for capability in detail["capabilities"]] == ["search"]
     sleep.assert_awaited_once_with(stream_interval_seconds)
+
+
+# ---------------------------------------------------------------------------
+# Tenant and ownership boundaries
+# ---------------------------------------------------------------------------
+
+
+def _principal(
+    user_id: str = "user-1",
+    *,
+    tenant_id: str = "tenant-1",
+    role: str = "volundr:developer",
+) -> Principal:
+    return Principal(
+        user_id=user_id,
+        email=f"{user_id}@example.com",
+        tenant_id=tenant_id,
+        roles=[role],
+    )
+
+
+@pytest.fixture
+def shared_service() -> RealmService:
+    return RealmService(InMemoryRealmRepository())
+
+
+@pytest.fixture
+def owner_client(shared_service: RealmService) -> TestClient:
+    client = _make_client(principal=_principal("owner"), service=shared_service)
+    created = client.post("/api/v1/realms", json={"slug": "forge", "name": "Forge"})
+    assert created.status_code == 201
+    return client
+
+
+def test_created_realm_belongs_to_the_callers_tenant_and_user(owner_client: TestClient) -> None:
+    body = owner_client.get("/api/v1/realms/forge").json()
+
+    assert body["tenant_id"] == "tenant-1"
+    assert body["owner_id"] == "owner"
+
+
+def test_other_tenant_cannot_see_a_realm(
+    owner_client: TestClient, shared_service: RealmService
+) -> None:
+    outsider = _make_client(
+        principal=_principal("outsider", tenant_id="tenant-2"), service=shared_service
+    )
+
+    assert outsider.get("/api/v1/realms").json() == []
+    assert outsider.get("/api/v1/realms/forge").status_code == 404
+    assert outsider.get("/api/v1/realms/forge/stream").status_code == 404
+    assert outsider.get("/api/v1/realms/forge/trust-grants").json() == []
+    assert outsider.get("/api/v1/realms/forge/capabilities").json() == []
+
+
+def test_other_tenant_admin_cannot_change_a_realm(
+    owner_client: TestClient, shared_service: RealmService
+) -> None:
+    outsider = _make_client(
+        principal=_principal("outsider", tenant_id="tenant-2", role="volundr:admin"),
+        service=shared_service,
+    )
+    grant = {"action_class": "build", "level": 5}
+    capability = {"name": "x", "kind": "tool"}
+
+    assert outsider.delete("/api/v1/realms/forge").status_code == 404
+    assert outsider.post("/api/v1/realms/forge/trust-grants", json=grant).status_code == 404
+    assert outsider.post("/api/v1/realms/forge/capabilities", json=capability).status_code == 404
+    assert owner_client.get("/api/v1/realms/forge/trust-grants").json() == []
+
+
+def test_other_tenant_cannot_overwrite_a_realm_by_its_id(
+    owner_client: TestClient, shared_service: RealmService
+) -> None:
+    realm_id = owner_client.get("/api/v1/realms/forge").json()["id"]
+    outsider = _make_client(
+        principal=_principal("outsider", tenant_id="tenant-2", role="volundr:admin"),
+        service=shared_service,
+    )
+
+    response = outsider.put(
+        f"/api/v1/realms/by-id/{realm_id}",
+        json={"slug": "forge", "name": "Hijacked"},
+    )
+
+    assert response.status_code == 404
+    assert owner_client.get("/api/v1/realms/forge").json()["name"] == "Forge"
+
+
+def test_two_tenants_can_create_the_same_slug(
+    owner_client: TestClient, shared_service: RealmService
+) -> None:
+    other = _make_client(
+        principal=_principal("other", tenant_id="tenant-2"), service=shared_service
+    )
+
+    response = other.post("/api/v1/realms", json={"slug": "forge", "name": "Other Forge"})
+
+    assert response.status_code == 201
+    assert other.get("/api/v1/realms/forge").json()["name"] == "Other Forge"
+    assert owner_client.get("/api/v1/realms/forge").json()["name"] == "Forge"
+
+
+def test_member_who_does_not_own_a_realm_cannot_change_it(
+    owner_client: TestClient, shared_service: RealmService
+) -> None:
+    member = _make_client(principal=_principal("member"), service=shared_service)
+
+    assert member.get("/api/v1/realms/forge").status_code == 200
+    assert (
+        member.post(
+            "/api/v1/realms/forge/trust-grants",
+            json={"action_class": "build", "level": 5},
+        ).status_code
+        == 403
+    )
+    assert member.delete("/api/v1/realms/forge").status_code == 403
+
+
+def test_tenant_admin_can_change_a_realm_they_do_not_own(
+    owner_client: TestClient, shared_service: RealmService
+) -> None:
+    admin = _make_client(
+        principal=_principal("admin", role="volundr:admin"), service=shared_service
+    )
+
+    granted = admin.post(
+        "/api/v1/realms/forge/trust-grants",
+        json={"action_class": "build", "level": 2},
+    )
+
+    assert granted.status_code == 201
+    assert admin.delete("/api/v1/realms/forge").status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_realm_without_an_owner_is_changed_only_by_an_admin(
+    shared_service: RealmService,
+) -> None:
+    await shared_service.create_realm("legacy", "Legacy", tenant_id="tenant-1")
+    member = _make_client(principal=_principal("member"), service=shared_service)
+    admin = _make_client(
+        principal=_principal("admin", role="volundr:admin"), service=shared_service
+    )
+
+    assert member.delete("/api/v1/realms/legacy").status_code == 403
+    assert admin.delete("/api/v1/realms/legacy").status_code == 204
+
+
+def test_resident_can_record_a_capability_without_owning_the_realm(
+    owner_client: TestClient, shared_service: RealmService
+) -> None:
+    resident = _make_client(principal=_principal("resident-runtime"), service=shared_service)
+
+    response = resident.post(
+        "/api/v1/realms/forge/capabilities",
+        json={"name": "grep-tool", "kind": "tool", "status": "present"},
+    )
+
+    assert response.status_code == 201
+
+
+def test_viewer_reads_but_cannot_write(
+    owner_client: TestClient, shared_service: RealmService
+) -> None:
+    viewer = _make_client(
+        principal=_principal("viewer", role="volundr:viewer"), service=shared_service
+    )
+
+    assert [realm["slug"] for realm in viewer.get("/api/v1/realms").json()] == ["forge"]
+    assert viewer.post("/api/v1/realms", json={"slug": "new", "name": "New"}).status_code == 403
+    assert (
+        viewer.post(
+            "/api/v1/realms/forge/capabilities",
+            json={"name": "x", "kind": "tool"},
+        ).status_code
+        == 403
+    )
+
+
+def test_caller_without_a_tenant_gets_no_realms(
+    owner_client: TestClient, shared_service: RealmService
+) -> None:
+    no_tenant = _make_client(principal=_principal("nobody", tenant_id=""), service=shared_service)
+
+    assert no_tenant.get("/api/v1/realms").status_code == 403
+    assert no_tenant.get("/api/v1/realms/forge").status_code == 403
+
+
+def test_missing_authorization_is_a_503() -> None:
+    client = _make_client()
+    del client.app.state.authorization  # type: ignore[attr-defined]
+
+    assert client.post("/api/v1/realms", json={"slug": "a", "name": "A"}).status_code == 503
+
+
+def test_failed_authorization_evaluation_is_a_503(owner_client: TestClient) -> None:
+    owner_client.app.state.authorization = AsyncMock(  # type: ignore[attr-defined]
+        filter_allowed=AsyncMock(side_effect=AuthorizationEvaluationError("boom"))
+    )
+
+    assert owner_client.get("/api/v1/realms/forge").status_code == 503

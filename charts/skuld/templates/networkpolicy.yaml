@@ -13,7 +13,7 @@ spec:
   ingress:
     - ports:
         - protocol: TCP
-          port: {{ if .Values.envoy.enabled }}{{ .Values.envoy.port }}{{ else }}{{ .Values.service.port }}{{ end }}
+          port: {{ if include "skuld.envoyEnabled" . }}{{ .Values.envoy.port }}{{ else }}{{ .Values.service.port }}{{ end }}
       {{- with .Values.networkPolicy.ingressFrom }}
       from:
         {{- toYaml . | nindent 8 }}

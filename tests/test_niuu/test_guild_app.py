@@ -266,6 +266,42 @@ class _RecordingInstanceService:
         self.upsert_calls.append(kwargs)
 
 
+async def test_local_mimir_seed_registers_a_mimir_instance() -> None:
+    service = _RecordingInstanceService()
+
+    await guild_app._seed_local_mimir_instance(service, "http://127.0.0.1:8080")
+
+    (call,) = service.upsert_calls
+    assert call["kind"] == guild_app.InstanceKind.MIMIR
+    assert call["slug"] == "local-memory"
+    assert call["base_url"] == "http://127.0.0.1:8080"
+    assert call["is_default"] is False
+
+
+@pytest.mark.parametrize(
+    ("url", "awaited"), [("http://127.0.0.1:8080", True), ("", False)], ids=["set", "unset"]
+)
+def test_create_app_seeds_local_mimir_only_when_configured(monkeypatch, url, awaited) -> None:
+    loaded_settings = Settings()
+    loaded_settings.niuu.local_mimir_url = url
+    seed_mimir = AsyncMock()
+    instance_repo = _DummyInstanceRepository()
+
+    monkeypatch.setattr(guild_app, "_load_settings", lambda: loaded_settings)
+    monkeypatch.setattr(guild_app, "database_pool", _fake_database_pool)
+    monkeypatch.setattr(guild_app, "PostgresInstanceRepository", lambda _pool: instance_repo)
+    monkeypatch.setattr(guild_app, "PostgresPATRepository", lambda _pool: object())
+    monkeypatch.setattr(guild_app, "create_pat_validator", lambda *_args: _DummyPATValidator())
+    monkeypatch.setattr(guild_app, "_seed_local_mimir_instance", seed_mimir)
+
+    app = guild_app.create_app()
+
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+
+    assert seed_mimir.await_count == int(awaited)
+
+
 class TestEmbeddedForgeDefaultOwnership:
     """Local Forge must not silently outrank an operator's configured
     default — list_visible sorts default-before-name, so an unconditional

@@ -55,7 +55,7 @@ import type {
   WorkflowImportSource,
   WorkflowImportPreview,
 } from '../ports';
-import type { Saga, Phase, Run } from '../domain/saga';
+import type { Saga, SagaBoardWorkflow, Phase, Run } from '../domain/saga';
 import type { DispatcherState } from '../domain/dispatcher';
 import type { SessionInfo } from '../domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from '../domain/tracker';
@@ -83,6 +83,7 @@ interface RawSaga {
   workflow_id?: string | null;
   workflow?: string | null;
   workflow_version?: string | null;
+  board_workflows?: SagaBoardWorkflow[] | null;
   instance_id?: string | null;
   instance_name?: string | null;
   target_tags?: string[] | null;
@@ -368,6 +369,8 @@ interface RawPlanSession {
   updated_at?: string | null;
   stage_state?: RawCampaignStageState[];
   questions?: { id: string; question: string; hint?: string; kind?: 'text' | 'workflow' }[];
+  saga_id?: string | null;
+  tickets?: { name: string; issue_id: string; identifier?: string; url?: string }[];
 }
 
 interface RawRunSpec {
@@ -545,6 +548,7 @@ function toSaga(raw: RawSaga): Saga {
     workflowId: raw.workflow_id ?? undefined,
     workflow: raw.workflow ?? undefined,
     workflowVersion: raw.workflow_version ?? undefined,
+    boardWorkflows: raw.board_workflows ?? [],
     instanceId: raw.instance_id ?? undefined,
     instanceName: raw.instance_name ?? undefined,
     targetTags: raw.target_tags ?? [],
@@ -715,6 +719,7 @@ function toCommitRequestBody(req: CommitSagaRequest): Record<string, unknown> {
     description: req.description,
     repos: req.repos,
     base_branch: req.baseBranch,
+    ...(req.planSlug ? { plan_slug: req.planSlug } : {}),
     phases: req.phases.map((p) => ({
       name: p.name,
       runs: p.runs.map((r) => ({
@@ -931,6 +936,13 @@ function toPlanSession(raw: RawPlanSession): PlanSession {
     updatedAt: raw.updated_at,
     stageState: (raw.stage_state ?? []).map(toCampaignStageState),
     questions: raw.questions ?? [],
+    sagaId: raw.saga_id,
+    tickets: (raw.tickets ?? []).map((ticket) => ({
+      name: ticket.name,
+      issueId: ticket.issue_id,
+      identifier: ticket.identifier,
+      url: ticket.url,
+    })),
   };
 }
 
@@ -1204,6 +1216,14 @@ export function buildTingHttpAdapter(client: ApiClient): ITingService {
         workflow_id: workflowId,
       });
       return toSaga(raw);
+    },
+
+    async setBoardWorkflows(sagaId: string, workflowIds: string[]) {
+      const raw = await client.put<{ board_workflows: SagaBoardWorkflow[] }>(
+        `/sagas/${encodeURIComponent(sagaId)}/board-workflows`,
+        { workflow_ids: workflowIds },
+      );
+      return raw.board_workflows;
     },
 
     async assignTarget(sagaId: string, target) {

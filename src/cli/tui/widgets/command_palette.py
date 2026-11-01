@@ -64,7 +64,7 @@ class CommandPalette(ModalScreen[PaletteItem | None]):
     CommandPalette #palette-container {
         width: 60;
         max-height: 70%;
-        background: #18181b;
+        background: #10212d;
         border: round #a855f7;
         padding: 1 2;
     }
@@ -72,7 +72,7 @@ class CommandPalette(ModalScreen[PaletteItem | None]):
         margin-bottom: 1;
     }
     CommandPalette .palette-section-header {
-        color: #71717a;
+        color: #78909d;
         text-style: bold;
         height: 1;
         margin-top: 1;
@@ -82,10 +82,10 @@ class CommandPalette(ModalScreen[PaletteItem | None]):
         padding: 0 1;
     }
     CommandPalette .palette-item.selected {
-        background: #27272a;
+        background: #182b38;
     }
     CommandPalette #palette-more {
-        color: #71717a;
+        color: #78909d;
         height: 1;
     }
     """

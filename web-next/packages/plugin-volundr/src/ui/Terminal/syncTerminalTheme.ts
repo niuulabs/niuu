@@ -4,12 +4,26 @@ import type { Terminal } from '@xterm/xterm';
 export function syncTerminalTheme(terminal: Terminal, element: HTMLElement): () => void {
   const darkTheme = terminal.options.theme;
   const update = () => {
-    if (element.closest('[data-theme]')?.getAttribute('data-theme') !== 'light') {
+    const activeTheme = element.closest('[data-theme]')?.getAttribute('data-theme');
+    const styles = getComputedStyle(element);
+    const color = (token: string) => styles.getPropertyValue(token).trim();
+    if (activeTheme === 'niuu') {
+      terminal.options.theme = {
+        ...darkTheme,
+        background: color('--color-bg-primary'),
+        foreground: color('--color-text-primary'),
+        cursorAccent: color('--color-bg-primary'),
+        selectionBackground: color('--color-bg-elevated'),
+        black: color('--color-bg-primary'),
+        white: color('--color-text-secondary'),
+        brightWhite: color('--color-text-primary'),
+      };
+      return;
+    }
+    if (activeTheme !== 'light') {
       terminal.options.theme = darkTheme;
       return;
     }
-    const styles = getComputedStyle(element);
-    const color = (token: string) => styles.getPropertyValue(token).trim();
     terminal.options.theme = {
       ...darkTheme,
       background: color('--color-bg-primary'),

@@ -79,6 +79,120 @@ helm install my-session ./charts/skuld \
   --set ingress.host=dev-session.example.com
 ```
 
+## Room Gateway Mode
+
+`roomGateway.enabled: true` turns a release into an **authenticated chat room** for a Ravn resident that runs elsewhere, possibly on another cluster. The release runs only the Skuld broker as a collaboration room. The resident connects to it over the network, and the operator opens it from Lexi or the web UI.
+
+```
+  Lexi / web UI ── wss://<host>/rooms/<routeId>/session ─────────┐
+  (operator IDP token)                                           │
+                                          ┌──────────────────────▼───────────────────┐
+  resident Ravn ── wss://<host>/rooms/    │  Ingress (Traefik strips /rooms/<id>)    │
+  <routeId>/ws/ravn/<peer>                │  Service :8080                           │
+  (platform workload token)               │   Envoy :8444  JWT, then Cedar ext_authz │
+                                          │   cedar-authz  127.0.0.1                 │
+                                          │   skuld broker 127.0.0.1:8081            │
+                                          └──────────────────────────────────────────┘
+```
+
+The pod is the broker, the Envoy sidecar and its Cedar ext_authz sidecar, and nothing else. There is no CLI transport or Codex auth, no resident Ravn sidecar, no IDE, nginx, devrunner or local services, no home volume, no git clone and no Forge session reporting, whatever the values for those features say. The broker never starts an agent of its own (`room.routed`): chat goes to the resident that connects to `/ws/ravn/<peer>`.
+
+### Authentication
+
+Authentication is mandatory in this mode and implied by it: the Envoy sidecar and ownership enforcement are on without `envoy.enabled` or `wsAuth.enforce_ownership`. The render fails, with the remedy in the message, when `envoy.jwt` is not fully configured.
+
+| Caller | Path | Token | Values |
+|--------|------|-------|--------|
+| Operator (Lexi, web UI) | `/session` | IDP (Keycloak) access token | `envoy.jwt.*` |
+| Resident Ravn | `/ws/ravn/<peer>` | Platform workload token | `envoy.jwt.workload.*` (optional, but without it the resident needs an IDP token) |
+
+- Envoy accepts the token in `Authorization: Bearer` (Lexi, Ravn) or the `token` query parameter (web-next); the IDP provider also accepts `access_token`.
+- Every path is authenticated: no `/health`, `/ready` or CORS-preflight bypass. The broker listens on `127.0.0.1`, the authorization service on `127.0.0.1`, and Envoy admin on `127.0.0.1`; only Envoy's port is exposed. Probes run inside the broker container.
+- After Envoy verifies the signature, issuer and audience, the Cedar service admits a caller only when its `tenant_id` claim is `session.tenantId` **and** its `sub` is `session.ownerId` with the `volundr:developer` or `volundr:admin` role, or it holds `volundr:admin` in that tenant. The broker repeats the same check on each WebSocket.
+- **The resident's workload token must therefore carry the operator's `sub`.** The platform workload exchange sets `sub` to the owner of the matching mapping or delegation, `tenant_id` to its tenant, and the roles to `resource_access.<audience>.roles`. Set `session.ownerId` and `session.tenantId` to those values, which are also the operator's Keycloak `sub` and `tenant_id`.
+- Request an **unscoped** workload token for the room. A token minted with `scopes` is admitted only at the entry points that name its scope, and the room names none, so it is refused.
+- Browsers on another origin can use the WebSocket but not the REST endpoints, because CORS preflight is not exempt. Path mode shares the UI's origin.
+
+### Exposure
+
+Many rooms share one host: each gets `/rooms/<routeId>`, and the Traefik `stripPrefix` Middleware removes it before the request reaches the broker. `roomGateway.ingress` replaces the top-level `ingress` in this mode, and its annotations default to none, so a TLS Secret the host already uses (for example `ymir-niuu-tls`) is not taken over by cert-manager. A second Ingress on the same host and a different path does not affect the first.
+
+Set the resident's `skuld.broker_url` to `wss://<host>/rooms/<routeId>/ws/ravn`; Ravn appends its peer id.
+
+### Example
+
+```yaml
+roomGateway:
+  enabled: true
+  routeId: regin
+  room:
+    environmentId: niuu
+    defaultTargetPeerId: regin
+  telegram:
+    enabled: true
+    secretName: regin-room-telegram   # keys bot-token and chat-id
+    topicMode: fixed_topic
+    messageThreadId: 0
+  ingress:
+    host: yggdrasil.niuu.world
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    tls:
+      secretName: ymir-niuu-tls
+
+session:
+  id: regin-operator-room
+  name: Regin operator room
+  ownerId: <operator Keycloak sub>
+  tenantId: niuu
+
+envoy:
+  jwt:
+    enabled: true
+    issuer: https://<keycloak>/realms/<realm>
+    audiences: [<client audience>]
+    jwksUri: https://<keycloak>/realms/<realm>/protocol/openid-connect/certs
+    keycloakHost: <keycloak>
+    keycloakPort: 443
+    keycloakTls: true
+    rolesClaim: resource_access.<client>.roles
+    workload:
+      enabled: true
+      issuer: https://yggdrasil.niuu.world/api/v1/tokens/workload
+      audiences: [volundr-api]
+      jwksUri: https://yggdrasil.niuu.world/api/v1/tokens/workload/jwks
+      jwksHost: yggdrasil.niuu.world
+```
+
+### Room gateway values
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `roomGateway.enabled` | bool | `false` | Deploy this release as a room gateway |
+| `roomGateway.routeId` | string | `""` | `/rooms/<routeId>` path segment and default session id (required) |
+| `roomGateway.room.environmentId` | string | `""` | Environment shared with the resident's Ravn (required) |
+| `roomGateway.room.defaultTargetPeerId` | string | `""` | Peer id of the resident that untargeted chat goes to (required) |
+| `roomGateway.dataPath` | string | `/var/lib/skuld` | Broker workspace (conversation history) directory |
+| `roomGateway.persistence.existingClaim` | string | `""` | PVC for `dataPath`; empty is an emptyDir |
+| `roomGateway.resources` | object | 64Mi/50m, 512Mi/500m | Broker container resources |
+| `roomGateway.probes` | object | see `values.yaml` | In-container readiness and liveness timings |
+| `roomGateway.telegram.enabled` | bool | `false` | Mirror the room to Telegram |
+| `roomGateway.telegram.secretName` | string | `""` | Secret with the bot token and chat id (required when enabled) |
+| `roomGateway.telegram.botTokenKey` / `chatIdKey` | string | `bot-token` / `chat-id` | Keys in that Secret |
+| `roomGateway.telegram.notifyOnly` | bool | `false` | Do not relay Telegram replies into the room |
+| `roomGateway.telegram.topicMode` | string | `shared_chat` | `shared_chat`, `fixed_topic` or `topic_per_session` |
+| `roomGateway.telegram.messageThreadId` | int | `null` | Topic thread id (required for `fixed_topic`) |
+| `roomGateway.observability` | object | `{}` | Rendered verbatim as the broker's `observability:` section |
+| `roomGateway.ingress.enabled` | bool | `true` | Render the Ingress (and Middleware in path mode) |
+| `roomGateway.ingress.mode` | string | `path` | `path` (shared host, prefix stripped) or `host` (dedicated host) |
+| `roomGateway.ingress.pathPrefix` | string | `/rooms` | Prefix shared by all rooms on the host |
+| `roomGateway.ingress.className` | string | `traefik` | Ingress class |
+| `roomGateway.ingress.host` | string | `""` | Public host (required when enabled) |
+| `roomGateway.ingress.annotations` | object | `{}` | Ingress annotations; no cert-manager annotation by default |
+| `roomGateway.ingress.tls.enabled` / `secretName` | bool / string | `true` / `""` | TLS Secret for the host (required when enabled) |
+
+Ownership comes from `session.ownerId` and `session.tenantId`, and the room's name from `session.id` and `session.name`. The pod-level values (`image`, `envoy.*`, `securityContext`, `nodeSelector`, `tolerations`, `affinity`, `podLabels`, `podAnnotations`, `serviceAccountName`, `imagePullSecrets`, `networkPolicy`, `identityAuthority`) apply as usual, and `extraVolumes` back `envoy.extraVolumeMounts`. `replicaCount` must be 0 or 1.
+
 ## Values
 
 <!-- README VALUES TABLE -- generated from values.yaml -->
@@ -349,6 +463,7 @@ Alternative to Ingress for session routing. When enabled, creates an `HTTPRoute`
 | `securityContext.runAsNonRoot` | bool | `true` | Run as non-root user |
 | `securityContext.runAsUser` | int | `1000` | Run as user ID |
 | `securityContext.fsGroup` | int | `1000` | Filesystem group ID |
+| `securityContext.fsGroupChangePolicy` | string | `"OnRootMismatch"` | When the kubelet re-owns mounted volumes. `Always` walks every file on each pod start, which took over two minutes on a user home of 250k files. |
 
 ## Container Architecture
 

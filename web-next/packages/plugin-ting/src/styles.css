@@ -66,3 +66,41 @@
   background-image: none;
   background-color: var(--color-bg-secondary);
 }
+
+/* NIUU colors for legacy fixed-color surfaces. */
+[data-theme='niuu'] .niuu\:bg-\[\#1e232a\] {
+  background-color: var(--niuu-bg-tertiary);
+}
+[data-theme='niuu'] .niuu\:bg-\[\#252c36\] {
+  background-color: var(--niuu-bg-tertiary);
+}
+[data-theme='niuu'] .niuu\:bg-\[\#1d232b\] {
+  background-color: var(--niuu-bg-tertiary);
+}
+[data-theme='niuu'] .niuu\:bg-\[\#171b22\] {
+  background-color: var(--niuu-bg-secondary);
+}
+[data-theme='niuu'] .niuu\:hover\:bg-\[\#1d232b\]:hover {
+  background-color: var(--niuu-bg-tertiary);
+}
+[data-theme='niuu'] .niuu\:bg-\[\#202733\] {
+  background-color: var(--niuu-bg-tertiary);
+}
+[data-theme='niuu'] .niuu\:bg-\[\#151a20\] {
+  background-color: var(--niuu-bg-secondary);
+}
+[data-theme='niuu'] .niuu\:bg-\[\#1d2630\] {
+  background-color: var(--niuu-bg-tertiary);
+}
+[data-theme='niuu'] .niuu\:bg-\[\#455564\] {
+  background-color: var(--color-bg-elevated);
+}
+[data-theme='niuu'] .niuu\:bg-\[\#8aa0b8\] {
+  background-color: var(--color-text-muted);
+}
+[data-theme='niuu'] .niuu\:border-\[\#617183\] {
+  border-color: var(--color-border);
+}
+[data-theme='niuu'] .niuu\:text-\[\#cad4df\] {
+  color: var(--color-text-primary);
+}

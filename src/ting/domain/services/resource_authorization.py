@@ -113,6 +113,16 @@ class AuthorizedCampaignRepository(_Policy, WorkflowCampaignRepository):
         items = await self.repo.list_campaigns(owner_id=owner_id)
         return [item for item in items if await self.visible(item, "campaign")]
 
+    async def list_campaign_summaries(self, *, owner_id):
+        items = await self.repo.list_campaign_summaries(owner_id=owner_id)
+        return [item for item in items if await self.visible(item, "campaign")]
+
+    async def list_ticket_campaigns(self, *, owner_id, saga_id=None, issue_id=None):
+        items = await self.repo.list_ticket_campaigns(
+            owner_id=owner_id, saga_id=saga_id, issue_id=issue_id
+        )
+        return [item for item in items if await self.visible(item, "campaign")]
+
     async def list_active_campaigns(self):
         items = await self.repo.list_active_campaigns()
         return [item for item in items if await self.visible(item, "campaign")]
@@ -128,6 +138,10 @@ class AuthorizedCampaignRepository(_Policy, WorkflowCampaignRepository):
     async def save_campaign(self, campaign):
         await self.save_check(campaign, await self.repo.get_campaign(campaign.id), "campaign")
         return await self.repo.save_campaign(campaign)
+
+    async def save_ticket_campaign(self, campaign, *, saga_id, issue_id):
+        await self.save_check(campaign, await self.repo.get_campaign(campaign.id), "campaign")
+        return await self.repo.save_ticket_campaign(campaign, saga_id=saga_id, issue_id=issue_id)
 
     async def delete_campaign(self, campaign_id):
         await self.check(await self.repo.get_campaign(campaign_id), "campaign", "delete")
@@ -164,6 +178,10 @@ class AuthorizedSagaRepository(_Policy, SagaRepository):
     async def update_saga_workflow(self, saga_id, **kwargs):
         await self.check(await self.repo.get_saga(saga_id), "saga", "update")
         return await self.repo.update_saga_workflow(saga_id, **kwargs)
+
+    async def update_saga_board_workflows(self, saga_id, **kwargs):
+        await self.check(await self.repo.get_saga(saga_id), "saga", "update")
+        return await self.repo.update_saga_board_workflows(saga_id, **kwargs)
 
     async def update_saga_target(self, saga_id, **kwargs):
         await self.check(await self.repo.get_saga(saga_id), "saga", "update")

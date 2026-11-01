@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { ChatConnectionsContext } from '@niuulabs/ui';
@@ -577,6 +577,7 @@ function mockChatState(overrides: Partial<ReturnType<typeof chatHooks.useSkuldCh
     meshEvents: [],
     agentEvents: new Map(),
     pendingPermissions: [],
+    pendingInputRequests: [],
     capabilities: {},
     sendMessage: vi.fn(),
     sendDirectedMessages: vi.fn(),
@@ -709,7 +710,12 @@ describe('LiveSessionDetailPage', () => {
 
     await screen.findByTestId('live-session-detail-page');
     await screen.findByText('Human Gate Requested');
-    expect(screen.getByText(/Please approve or request changes on the PRD/)).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('region', { name: 'PRD approval gate' })).getByText(
+        /Please approve or request changes on the PRD/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('attention-gate')).toHaveTextContent('PRD approval gate');
 
     fireEvent.change(screen.getByLabelText('Reply Notes'), {
       target: { value: 'The scope is right; proceed.' },
@@ -779,7 +785,11 @@ describe('LiveSessionDetailPage', () => {
 
     wrap('test-session-id-1234');
 
-    expect(await screen.findByText('Which accent colour do you prefer?')).toBeInTheDocument();
+    const chatPanel = await screen.findByRole('tabpanel');
+    expect(await within(chatPanel).findByText('Which accent colour do you prefer?')).toBeVisible();
+    expect(
+      within(screen.getByTestId('attention-input')).getByText('Which accent colour do you prefer?'),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Teal' }));
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
     expect(respondToInput).toHaveBeenCalledWith('tty-1-6f17f32f', ['Teal']);
@@ -1045,6 +1055,7 @@ describe('LiveSessionDetailPage', () => {
         meshEvents: [],
         agentEvents: new Map(),
         pendingPermissions: [],
+        pendingInputRequests: [],
         capabilities: {},
         sendMessage: vi.fn(),
         sendDirectedMessages: vi.fn(),
@@ -1438,13 +1449,13 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute('aria-selected', 'true');
     });
 
-    it('defaults to Chat, Diffs and Files without optional tabs', async () => {
+    it('defaults to Chat, Diffs, Files and Telemetry without optional tabs', async () => {
       localStorage.removeItem('niuu.forge.sessionTabs');
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(
         screen.getAllByRole('tab').map((tab) => tab.textContent?.replace(/\d+/g, '').trim()),
-      ).toEqual(['Chat', 'Diffs', 'Files']);
+      ).toEqual(['Chat', 'Diffs', 'Files', 'Telemetry']);
     });
 
     it('uses browser tab preferences and returns to Chat when the active tab is hidden', async () => {
@@ -1623,6 +1634,200 @@ describe('LiveSessionDetailPage', () => {
       });
       expect(screen.getAllByText('changed files').length).toBeGreaterThanOrEqual(1);
       expect(screen.queryByText('Loading files...')).not.toBeInTheDocument();
+    });
+
+    describe('review comments', () => {
+      function stubDiff() {
+        global.fetch = vi.fn(async (input: string | URL | Request) => {
+          const url =
+            typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+          const body = url.includes('/api/diff/files')
+            ? {
+                files: [{ path: 'src/app.ts', status: 'mod', ins: 1, del: 1 }],
+              }
+            : url.includes('/api/diff?')
+              ? {
+                  filePath: 'src/app.ts',
+                  hunks: [
+                    {
+                      oldStart: 2,
+                      oldCount: 1,
+                      newStart: 2,
+                      newCount: 1,
+                      lines: [
+                        { type: 'remove', content: 'console.log("old");', oldLine: 2 },
+                        { type: 'add', content: 'console.log("new");', newLine: 2 },
+                      ],
+                    },
+                  ],
+                }
+              : {};
+          return new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }) as typeof fetch;
+      }
+
+      async function openDiff() {
+        await screen.findByTestId('live-session-detail-page');
+        fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+        fireEvent.click(await screen.findByText('src/app.ts'));
+        await screen.findByText('console.log("new");');
+      }
+
+      function commentOnRemovedLine(body: string) {
+        fireEvent.click(screen.getByRole('button', { name: 'Comment on removed line 2' }));
+        fireEvent.change(screen.getByRole('textbox', { name: 'Comment for line 2' }), {
+          target: { value: body },
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Add comment' }));
+      }
+
+      it('sends a draft to the session as one message and returns to chat', async () => {
+        stubDiff();
+        const sendMessage = vi.fn();
+        mockChatState({ sendMessage });
+        wrap('test-session-id-1234');
+        await openDiff();
+
+        commentOnRemovedLine('Keep this log line');
+        expect(screen.getByText('1 review comment not sent')).toBeInTheDocument();
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Send to session' }));
+
+        expect(sendMessage).toHaveBeenCalledTimes(1);
+        expect(sendMessage).toHaveBeenCalledWith(
+          [
+            'Review comments. Address each one, then summarize what you changed.',
+            '**src/app.ts**',
+            'Line 2 (removed):\n> console.log("old");\nKeep this log line',
+          ].join('\n\n'),
+          [],
+        );
+        expect(screen.queryByText('1 review comment not sent')).not.toBeInTheDocument();
+        expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute('aria-selected', 'true');
+      });
+
+      it('keeps comments across tabs until they are discarded', async () => {
+        stubDiff();
+        mockChatState();
+        wrap('test-session-id-1234');
+        await openDiff();
+
+        commentOnRemovedLine('Keep this log line');
+        fireEvent.click(screen.getByRole('tab', { name: /Chat/i }));
+        expect(screen.getByText('1 review comment not sent')).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+        expect(screen.queryByText('1 review comment not sent')).not.toBeInTheDocument();
+      });
+
+      it('holds the review while the chat is disconnected', async () => {
+        stubDiff();
+        mockChatState({ connected: false });
+        wrap('test-session-id-1234');
+        await openDiff();
+
+        commentOnRemovedLine('Keep this log line');
+
+        expect(screen.getByRole('button', { name: 'Send to session' })).toBeDisabled();
+      });
+
+      it('offers no comment controls on a read-only session', async () => {
+        stubDiff();
+        mockChatState();
+        wrap('test-session-id-1234', { readOnly: true });
+        await openDiff();
+
+        expect(screen.queryByRole('button', { name: /Comment on line/ })).not.toBeInTheDocument();
+      });
+    });
+
+    describe('session panel', () => {
+      it('sits beside chat and answers a permission through the live chat', async () => {
+        const respondToPermission = vi.fn();
+        mockChatState({
+          respondToPermission,
+          pendingPermissions: [
+            { requestId: 'perm-1', toolName: 'Bash', description: 'Run a command', command: 'ls' },
+          ],
+        });
+        wrap('test-session-id-1234');
+
+        const panel = await screen.findByTestId('session-attention-panel');
+        fireEvent.click(within(panel).getByRole('button', { name: 'Allow Bash once' }));
+
+        expect(respondToPermission).toHaveBeenCalledWith('perm-1', 'allow_once');
+      });
+
+      it('lists a pending native gate and shows the latest task list', async () => {
+        mockChatState({
+          messages: [
+            {
+              id: 'todo',
+              role: 'assistant',
+              content: '',
+              createdAt: new Date(0),
+              parts: [
+                {
+                  type: 'tool_use',
+                  name: 'TodoWrite',
+                  input: { todos: [{ content: 'Write the fix', status: 'in_progress' }] },
+                },
+              ],
+            },
+          ],
+        });
+        wrap('test-session-id-1234', {
+          volundr: {
+            getWorkflowGates: vi.fn().mockResolvedValue([
+              {
+                id: 'gate-1',
+                label: 'PRD approval gate',
+                status: 'pending',
+                pending_behavior: 'help_needed',
+              },
+            ]),
+          },
+        });
+
+        const gate = await screen.findByTestId('attention-gate');
+        expect(gate).toHaveTextContent('PRD approval gate');
+        expect(gate).toHaveTextContent('Waiting for your approval.');
+        expect(screen.getByRole('region', { name: 'Tasks (0/1)' })).toHaveTextContent(
+          'Write the fix',
+        );
+      });
+
+      it('leads back to chat from another tab', async () => {
+        mockChatState({
+          pendingInputRequests: [
+            { requestId: 'input-1', questions: [{ prompt: 'Which branch?', choices: [] }] },
+          ],
+        });
+        wrap('test-session-id-1234');
+        await screen.findByTestId('session-attention-panel');
+
+        fireEvent.click(screen.getByRole('tab', { name: /Logs/i }));
+        fireEvent.click(screen.getByRole('button', { name: 'Open chat' }));
+
+        expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute('aria-selected', 'true');
+      });
+
+      it('remembers being hidden', async () => {
+        mockChatState();
+        wrap('test-session-id-1234');
+        await screen.findByTestId('session-attention-panel');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Hide session panel' }));
+
+        expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
+        expect(localStorage.getItem('niuu.forge.panel')).toBe('0');
+        fireEvent.click(screen.getByRole('button', { name: 'Show session panel' }));
+        expect(screen.getByTestId('session-attention-panel')).toBeInTheDocument();
+      });
     });
 
     it('renders a saved transcript for stopped sessions', async () => {
@@ -2334,6 +2539,7 @@ describe('LiveSessionDetailPage', () => {
         meshEvents: [],
         agentEvents: new Map(),
         pendingPermissions: [],
+        pendingInputRequests: [],
         capabilities: {},
         sendMessage: vi.fn(),
         sendDirectedMessages: vi.fn(),

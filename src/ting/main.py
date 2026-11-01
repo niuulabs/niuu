@@ -23,6 +23,7 @@ from niuu.observability import enable_trace_log_correlation
 from niuu.ports.delivery import EvidenceAuthenticator
 from niuu.ports.integrations import IntegrationRepository
 from niuu.ports.workload_identity import WorkloadTokenIssuer
+from niuu.review_widgets import load_review_widgets
 from niuu.service_runtime import (
     _get_auth_mode,
     _validate_identity_adapter_class,
@@ -50,6 +51,7 @@ from ting.adapters.postgres_notification_subscriptions import (
     PostgresNotificationSubscriptionRepository,
 )
 from ting.adapters.postgres_sagas import PostgresSagaRepository
+from ting.adapters.postgres_ticket_coordinators import PostgresTicketCoordinatorRepository
 from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
 from ting.adapters.postgres_workflow_executions import PostgresWorkflowExecutionRepository
 from ting.adapters.tracker_factory import TrackerAdapterFactory
@@ -133,6 +135,11 @@ from ting.domain.services.resource_authorization import (
     AuthorizedWorkflowRepository,
 )
 from ting.domain.services.review_engine import ReviewEngine
+from ting.domain.services.ticket_advance import TicketAdvancer
+from ting.domain.services.ticket_coordinator import (
+    TicketCoordinatorService,
+    coordinator_ravn_config,
+)
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.domain.services.workflow_execution import WorkflowExecutionService
 from ting.domain.services.workflow_migration import workflow_catalog_migration_is_current
@@ -638,6 +645,10 @@ def create_app(
         )
 
     app.state.settings = settings
+    app.state.review_widgets = load_review_widgets(
+        settings.review_widgets.module_manifest_files,
+        max_bytes=settings.review_widgets.max_page_bytes,
+    )
     _ting_identity_cls = import_class(settings.auth.adapter)
     _validate_identity_adapter_class(_ting_identity_cls, _get_auth_mode(settings))
     app.state.identity = _ting_identity_cls(**settings.auth.kwargs)
@@ -905,6 +916,7 @@ def create_app(
             app.state.workflow_campaign_repo = workflow_campaign_repo
             a2a_launch_repo = PostgresA2ALaunchReservationRepository(pool)
             app.state.a2a_launch_repo = a2a_launch_repo
+            app.state.ticket_coordinator_repo = PostgresTicketCoordinatorRepository(pool)
 
             async def _resolve_a2a_launch_repo():
                 return a2a_launch_repo
@@ -1304,6 +1316,29 @@ def create_app(
             app.dependency_overrides[dispatcher_resolve_event_bus] = _resolve_event_bus
 
             stale_campaigns = settings.a2a.stale_campaigns
+
+            def _background_coordinators(
+                adapter: VolundrPort, principal: Principal
+            ) -> TicketCoordinatorService:
+                # No request here: the adapter carries the owner's own connection credentials.
+                return TicketCoordinatorService(
+                    repo=app.state.ticket_coordinator_repo,
+                    volundr=adapter,
+                    principal=principal,
+                    auth_token=None,
+                    persona=settings.ticket_coordinator.persona,
+                    model=settings.ticket_coordinator.model,
+                    session_definitions=settings.session_definitions,
+                    configured_models=list(settings.bifrost.models),
+                    cli_turn_timeout_seconds=settings.dispatch.workflow_cli_turn_timeout_seconds,
+                    ravn_config=coordinator_ravn_config(
+                        settings.dispatch.flock.ravn_config,
+                        settings.ticket_coordinator.ravn_config,
+                    ),
+                    platform_origin=settings.a2a.public_base_url.rstrip("/"),
+                    anonymous_platform=settings.auth.allow_anonymous_dev,
+                )
+
             workflow_campaign_projector = WorkflowCampaignProjector(
                 repo=workflow_campaign_repo,
                 volundr_factory=app.state.volundr_factory,
@@ -1312,6 +1347,16 @@ def create_app(
                 sweep_interval_seconds=stale_campaigns.sweep_interval_seconds,
                 input_wait_timeout_seconds=stale_campaigns.input_wait_timeout_seconds,
                 idle_timeout_seconds=stale_campaigns.idle_timeout_seconds,
+                coordinator_repo=app.state.ticket_coordinator_repo,
+                coordinator_persona=settings.ticket_coordinator.persona,
+                ticket_advancer=TicketAdvancer(
+                    saga_repo=saga_repo,
+                    campaign_repo=workflow_campaign_repo,
+                    coordinator_repo=app.state.ticket_coordinator_repo,
+                    tracker_factory=app.state.tracker_factory,
+                    volundr_factory=app.state.volundr_factory,
+                    coordinators=_background_coordinators,
+                ),
             )
             app.state.workflow_campaign_projector = workflow_campaign_projector
             await workflow_campaign_projector.start()

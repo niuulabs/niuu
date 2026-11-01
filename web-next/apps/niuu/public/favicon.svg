@@ -1,7 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 56" fill="none">
-  <g stroke="#38BDF8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M10 44V12L28 38V14" />
-    <path d="M46 44V16L28 42V14" opacity=".85" />
-    <circle cx="28" cy="28" r="2.1" fill="#38BDF8" stroke="none" />
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="NIUU"><style>.b{stroke:#4F8299}.f{stroke:#1D718F}@media (prefers-color-scheme:dark){.b{stroke:#6FA8C2}.f{stroke:#A8E7F4}}</style><g transform="translate(-25.6 -25.6) scale(1.2)" fill="none" stroke-linecap="round" stroke-linejoin="round"><path class="b" d="M 95 191 C 98 146 108 91 135 58 C 158 30 183 41 194 69 C 207 101 197 140 168 170 C 148 190 123 197 100 187" stroke-width="13"/><path class="f" d="M 58 91 C 83 80 120 102 162 125 C 186 139 209 150 212 134 C 215 119 193 106 164 96 C 123 82 84 83 58 91 C 39 98 43 119 54 143 C 67 173 92 190 121 191 C 158 192 183 166 199 133 C 205 118 205 105 202 101" stroke-width="17"/></g></svg>

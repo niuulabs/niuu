@@ -7,7 +7,11 @@
   overflow: hidden;
   /* Matches the plan's canvas, which is what shows through until the
      renderer's first frame lands. */
-  background: radial-gradient(ellipse at 50% 50%, #0a0c12 0%, #050509 70%);
+  background: radial-gradient(
+    ellipse at 50% 50%,
+    var(--niuu-backdrop-centre, #0a0c12) 0%,
+    var(--niuu-backdrop-edge, #050509) 70%
+  );
 }
 
 .topology-scene3d__canvas-host {
@@ -45,10 +49,10 @@
   display: flex;
   gap: 14px;
   padding: 6px 10px;
-  border: 1px solid rgb(147 197 253 / 16%);
+  border: 1px solid rgb(var(--niuu-rgb-signal, 147 197 253) / 16%);
   border-radius: 6px;
-  background: rgb(9 9 11 / 76%);
-  color: rgb(186 230 253 / 62%);
+  background: rgb(var(--niuu-rgb-ink, 9 9 11) / 76%);
+  color: rgb(var(--niuu-rgb-signal, 186 230 253) / 62%);
   font-family: var(--font-mono, monospace);
   font-size: 10px;
   letter-spacing: 0.04em;

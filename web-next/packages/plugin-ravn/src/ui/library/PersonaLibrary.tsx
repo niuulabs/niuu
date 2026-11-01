@@ -184,7 +184,7 @@ function PersonaDetailPane({
               {detail.permissionMode}
             </span>
             <span className="rw-chip">
-              {usedBy.length > 0 ? `used by ${usedBy.length}` : 'not used by any ravn'}
+              {usedBy.length > 0 ? `used by ${usedBy.length}` : 'not used by any agent'}
             </span>
           </div>
         </div>
@@ -272,7 +272,7 @@ function PersonaDetailPane({
                 <strong>Editing {detail.name}</strong>
                 {detail.isBuiltin
                   ? ' — saving writes an override; the built-in stays one reset away.'
-                  : ' — changes apply to ravens the next time they load it.'}
+                  : ' — changes apply to agents the next time they load it.'}
               </span>
               <button type="button" className="rw-btn" onClick={() => setView('sheet')}>
                 Done
@@ -315,7 +315,7 @@ function PersonaDetailPane({
           description={
             detail.isBuiltin
               ? 'Removes your override; the built-in definition applies again.'
-              : `Deletes this persona.${usedBy.length > 0 ? ` ${usedBy.length} ravn(s) still name it and will fail to load it.` : ''}`
+              : `Deletes this persona.${usedBy.length > 0 ? ` ${usedBy.length} agent(s) still name it and will fail to load it.` : ''}`
           }
         >
           {remove.isError && (
@@ -438,7 +438,7 @@ export function PersonaLibrary() {
         <div className="rw-rail__head">
           <div>
             <h2 className="rw-rail__title">Personas</h2>
-            <div className="rw-rail__sub">the character a ravn runs with</div>
+            <div className="rw-rail__sub">the character an agent runs with</div>
           </div>
           <button
             type="button"
@@ -550,7 +550,7 @@ export function PersonaLibrary() {
           <div className="rw-empty">
             <div className="rw-empty__inner">
               <h3 className="rw-empty__title">No personas</h3>
-              <p className="rw-empty__text">Create one to give a ravn its character.</p>
+              <p className="rw-empty__text">Create one to give an agent its character.</p>
             </div>
           </div>
         )}

@@ -82,3 +82,27 @@ async def test_case_insensitive_role_matching():
         assert result["status"] == "resolved"
     finally:
         broker_api_module.broker = original
+
+
+async def test_an_agent_refused_a_person_s_gate_gets_403_with_the_reason(monkeypatch):
+    fake_broker = SimpleNamespace(
+        _settings=SimpleNamespace(ws_auth=SimpleNamespace(room_role_source="proxy")),
+        resolve_workflow_gate=AsyncMock(side_effect=PermissionError("waits for a person")),
+    )
+    monkeypatch.setattr("skuld.broker_api.broker", fake_broker)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_workflow_gate(
+            _request("owner"),
+            "gate-1",
+            _WorkflowGateResolveRequest(
+                decision="APPROVE", actor="system:serviceaccount:nats:regin"
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "waits for a person" in exc_info.value.detail
+    assert (
+        fake_broker.resolve_workflow_gate.await_args.kwargs["actor"]
+        == "system:serviceaccount:nats:regin"
+    )

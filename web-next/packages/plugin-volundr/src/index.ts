@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { createRoute, redirect } from '@tanstack/react-router';
-import { SquareTerminal } from 'lucide-react';
+import { SessionsIcon } from '@niuulabs/ui';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { readUiMode } from '@niuulabs/shell';
 import { ForgePage } from './ui/ForgePage';
@@ -15,17 +15,15 @@ import { useUnreadNotificationCount } from './ui/hooks/useNotifications';
 export const volundrPlugin = definePlugin({
   id: 'volundr',
   rune: 'V',
-  title: 'Völundr',
-  subtitle: '',
+  // Coding sessions: a terminal an agent works in.
+  icon: createElement(SessionsIcon),
+  title: 'Forge',
+  subtitle: 'build and execute',
   simple: {
     tabs: ['sessions'],
-    title: 'Sessions',
-    subtitle: 'coding agents in sandboxes',
-    // Coding sessions: a terminal an agent works in.
-    icon: createElement(SquareTerminal, { size: 17, 'aria-hidden': true }),
   },
   tabs: [
-    { id: 'forge', label: 'Forge', path: '/volundr/forge' },
+    { id: 'forge', label: 'Overview', path: '/volundr/forge' },
     { id: 'sessions', label: 'Sessions', path: '/volundr/sessions' },
     { id: 'catalog', label: 'Catalog', path: '/volundr/catalog' },
     {
@@ -168,8 +166,8 @@ export { Terminal } from './ui/Terminal/Terminal';
 export type { TerminalProps } from './ui/Terminal/Terminal';
 export { FileTree } from './ui/FileTree/FileTree';
 export type { FileTreeProps } from './ui/FileTree/FileTree';
-export { FileViewer } from './ui/FileTree/FileViewer';
-export type { FileViewerProps } from './ui/FileTree/FileViewer';
+export { FileViewer } from '@niuulabs/ui';
+export type { FileViewerProps } from '@niuulabs/ui';
 export { SessionDetailPage } from './ui/SessionDetailPage';
 export type { SessionDetailPageProps, SessionTab } from './ui/SessionDetailPage';
 export {

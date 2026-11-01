@@ -5,7 +5,7 @@ Niuu brings together ephemeral working context, durable resident state,
 conversation history, and shared knowledge. These have different lifetimes and
 owners. The shared knowledge service is one part of that memory model.
 
-The knowledge service, named Mímir in the UI and configuration, stores material
+The knowledge service, Memory in the UI and Mímir in configuration, stores material
 that can be retrieved across interactions and by multiple agents. The agent
 runtime owns the judgment about what an experience means and how to revise
 its understanding. Keeping a transcript alone does not turn an interaction into

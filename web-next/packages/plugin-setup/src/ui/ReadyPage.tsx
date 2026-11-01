@@ -1,5 +1,5 @@
 import { useIntegrations, useSetupState, useStackStatus } from './hooks';
-import { NiuuMark } from './icons';
+import { ContinuityField, NiuuMark } from '@niuulabs/ui';
 import { summarizeConnections } from './FinishStep';
 import { LocalModelCard } from './LocalModelCard';
 import './SetupPage.css';
@@ -26,19 +26,19 @@ export const WALKTHROUGHS: readonly Walkthrough[] = [
   {
     href: '/ting',
     title: 'Turn an issue into a workflow',
-    desc: 'Pick an issue from your tracker; Ting plans it into a saga with gates you approve.',
+    desc: 'Pick an issue from your tracker; Niuu plans it into a project with gates you approve.',
     steps: [
-      'Ting → Sagas → Plan from issue; pick one from the tracker you connected.',
+      'Work → Projects → Plan from issue; pick one from the tracker you connected.',
       'Review the plan; gates are where you approve before it continues.',
-      'Dispatch; each step runs as a session you can open from the saga.',
+      'Dispatch; each step runs as a session you can open from the project.',
     ],
   },
   {
     href: '/ravn',
     title: 'Meet the residents',
-    desc: 'Long-lived Ravns that watch your environment and ask before they act.',
+    desc: 'Long-lived agents that watch your environment and ask before they act.',
     steps: [
-      'Ravn → Personas shows what a resident can be given to steward.',
+      'Agents → Personas shows what a resident can be given to keep.',
       'Start one against this host; it observes first and asks before acting.',
       'Talk to it in its room; every action it proposes waits for your answer.',
     ],
@@ -56,8 +56,9 @@ export function ReadyPage() {
   const rows = summarizeConnections(integrationsQuery.data);
   return (
     <div className="setup-page setup-page--hero" data-testid="ready-page">
+      <ContinuityField />
       <div className="setup-hero">
-        <div className="setup-hero__kicker">níu · ready</div>
+        <div className="setup-hero__kicker">niuu · ready</div>
         <div className="setup-hero__mark">
           <NiuuMark size={56} />
         </div>

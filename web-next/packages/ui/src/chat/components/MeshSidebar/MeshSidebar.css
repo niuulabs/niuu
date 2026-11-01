@@ -158,11 +158,11 @@
 }
 
 .niuu-chat-peer-status-dot[data-status='blocked'] {
-  background-color: var(--color-warning, #f59e0b);
+  background-color: var(--color-warning, var(--niuu-warn, #f59e0b));
 }
 
 .niuu-chat-peer-status-dot[data-status='error'] {
-  background-color: var(--color-danger, #ef4444);
+  background-color: var(--color-danger, var(--niuu-critical, #ef4444));
 }
 
 .niuu-chat-peer-name {

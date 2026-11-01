@@ -8,6 +8,7 @@
 @config "../tailwind.config.ts";
 
 @import './primitives/Chip/Chip.css';
+@import './primitives/ContinuityField/ContinuityField.css';
 @import './primitives/ConfidenceBar/ConfidenceBar.css';
 @import './primitives/ConfidenceBadge/ConfidenceBadge.css';
 @import './primitives/Dialog/Dialog.css';

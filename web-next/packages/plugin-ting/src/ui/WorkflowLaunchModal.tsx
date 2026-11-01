@@ -71,7 +71,7 @@ export function WorkflowLaunchModal({
       open={open}
       onOpenChange={handleOpenChange}
       title={workflow ? `Launch ${workflow.name}` : 'Launch workflow'}
-      description="Start this workflow directly in Volundr as a workflow-backed flock session."
+      description="Start this workflow directly in Forge as a workflow-backed flock session."
       actions={[
         { label: 'Cancel', variant: 'secondary' },
         {

@@ -22,6 +22,7 @@ from ravn.adapters.personas.loader import (
     _parse_executor_fallbacks,
     _sanitize_executor_kwargs,
 )
+from ravn.domain.permission_mode import PERSONA_API_PERMISSION_MODES
 from ravn.domain.persona_document import (
     PortablePersonaDefinition,
     portable_persona_from_config,
@@ -46,11 +47,6 @@ _COLOR_BY_ROLE = {
     "ship": "var(--color-accent-emerald)",
     "verify": "var(--color-accent-amber)",
     "write": "var(--color-accent-emerald)",
-}
-_UI_TO_RUNTIME_PERMISSION = {
-    "default": "workspace-write",
-    "safe": "read-only",
-    "loose": "full-access",
 }
 _RUNTIME_TO_UI_PERMISSION = {
     "workspace-write": "default",
@@ -581,7 +577,7 @@ def _payload_to_config(payload: dict[str, Any]) -> PersonaConfig:
         system_prompt_template=str(payload["system_prompt_template"]),
         allowed_tools=list(payload["allowed_tools"]),
         forbidden_tools=list(payload["forbidden_tools"]),
-        permission_mode=_UI_TO_RUNTIME_PERMISSION.get(
+        permission_mode=PERSONA_API_PERMISSION_MODES.get(
             str(payload["permission_mode"]),
             str(payload["permission_mode"]),
         ),

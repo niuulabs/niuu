@@ -86,6 +86,59 @@ def _dream_learned_tools(tools: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _evolution_change(change: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": str(change.get("kind") or ""),
+        "tool": str(change.get("tool") or ""),
+        "at": str(change.get("at") or ""),
+        "runs": _as_int(change.get("runs")),
+        "successes": _as_int(change.get("successes")),
+        "peer": str(change.get("peer") or ""),
+        "version": _as_int(change.get("version")),
+        "reason": str(change.get("reason") or ""),
+        "replacedBy": str(change.get("replaced_by") or ""),
+    }
+
+
+def _dream_evolution(evolution: dict[str, Any]) -> dict[str, Any] | None:
+    """What the resident's learned tools did lately; ``None`` with no tool curator."""
+    if not evolution:
+        return None
+    return {
+        "headline": str(evolution.get("headline") or ""),
+        "windowSeconds": _as_number(evolution.get("window_seconds")),
+        "tools": _as_int(evolution.get("tools")),
+        "retired": _as_int(evolution.get("retired")),
+        "fromPeers": _as_int(evolution.get("from_peers")),
+        "runs": _as_int(evolution.get("runs")),
+        "successes": _as_int(evolution.get("successes")),
+        "mostUsed": [
+            {
+                "tool": str(tool.get("tool") or ""),
+                "runs": _as_int(tool.get("runs")),
+                "successes": _as_int(tool.get("successes")),
+                "lastUsedAt": str(tool.get("last_used_at") or ""),
+            }
+            for tool in evolution.get("most_used") or []
+            if isinstance(tool, dict)
+        ],
+        "changes": [
+            _evolution_change(change)
+            for change in evolution.get("changes") or []
+            if isinstance(change, dict)
+        ],
+        "attention": [
+            {
+                "tool": str(item.get("tool") or ""),
+                "runs": _as_int(item.get("runs")),
+                "lastUsedAt": str(item.get("last_used_at") or ""),
+            }
+            for item in evolution.get("attention") or []
+            if isinstance(item, dict)
+        ],
+    }
+
+
 def _dream_self_improvement(improvement: dict[str, Any]) -> dict[str, Any] | None:
     if not improvement:
         return None
@@ -138,6 +191,7 @@ def _dream_outcome(
         },
         "lessons": _dream_lessons(learnings),
         "learnedTools": _dream_learned_tools(_as_dict(raw.get("learned_tools"))),
+        "evolution": _dream_evolution(_as_dict(raw.get("evolution"))),
         "selfImprovement": _dream_self_improvement(_as_dict(learnings.get("self_improvement"))),
         "feedback": {
             "positive": _as_int(feedback.get("positive")),

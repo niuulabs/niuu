@@ -72,7 +72,7 @@ class SettingRowWidget(Widget):
 
     DEFAULT_CSS = """
     SettingRowWidget { height: auto; padding: 0 0 1 0; }
-    SettingRowWidget.selected { background: #27272a; }
+    SettingRowWidget.selected { background: #182b38; }
     SettingRowWidget .sr-main { height: 1; }
     SettingRowWidget .sr-desc { height: 1; }
     """

@@ -56,6 +56,43 @@ export interface ValkyrieResident {
 
 export type DreamStatus = 'completed' | 'noop' | 'failed';
 
+/** One thing that happened to a learned tool, from a dream's evolution report. */
+export interface EvolutionChange {
+  kind: 'built' | 'repaired' | 'picked_up' | 'retired';
+  tool: string;
+  at: string;
+  runs: number;
+  successes: number;
+  /** The resident a picked-up tool came from. */
+  peer: string;
+  version: number;
+  reason: string;
+  replacedBy: string;
+}
+
+/** One learned tool and how much it has been used. */
+export interface EvolutionToolUse {
+  tool: string;
+  runs: number;
+  successes: number;
+  lastUsedAt: string;
+}
+
+/** What a resident's learned tools did lately. Its headline is always one code wrote. */
+export interface EvolutionReport {
+  headline: string;
+  windowSeconds: number;
+  tools: number;
+  retired: number;
+  fromPeers: number;
+  runs: number;
+  successes: number;
+  /** Busiest first; the page shows the top few. */
+  mostUsed: EvolutionToolUse[];
+  changes: EvolutionChange[];
+  attention: Array<{ tool: string; runs: number; lastUsedAt: string }>;
+}
+
 export interface RetiredLearnedTool {
   name: string;
   /** superseded | debug_leftover | unrunnable | unused */
@@ -94,6 +131,8 @@ export interface DreamOutcome {
     rewritten: string[];
     auditPath: string;
   } | null;
+  /** The evolution report; null when the resident has no tool curator. */
+  evolution?: EvolutionReport | null;
   /** Learned-tool curation; null when the resident has no tool curator. */
   learnedTools: {
     installedBefore: number;
@@ -1122,7 +1161,7 @@ export type ReviewKind =
   | 'morning_brief';
 
 export type ReviewStatus =
-  'pending' | 'approved' | 'rejected' | 'expired' | 'applied' | 'apply_failed';
+  'pending' | 'approved' | 'rejected' | 'expired' | 'applied' | 'apply_failed' | 'withdrawn';
 
 export type ReviewRiskClass = 'low' | 'medium' | 'high' | 'critical';
 
@@ -1177,6 +1216,7 @@ const REVIEW_STATUSES: readonly ReviewStatus[] = [
   'expired',
   'applied',
   'apply_failed',
+  'withdrawn',
 ];
 
 const REVIEW_RISKS: readonly ReviewRiskClass[] = ['low', 'medium', 'high', 'critical'];

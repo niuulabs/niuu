@@ -10,6 +10,7 @@ import {
   createRouter,
 } from '@tanstack/react-router';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { ShellContext } from '@niuulabs/shell';
 import type { PersonaSummary } from '@niuulabs/domain';
 import { ResidentsPage } from './ResidentsPage';
 import type { Ravn } from '../domain/ravn';
@@ -109,7 +110,7 @@ function valkyrieServices(overrides: Record<string, unknown> = {}) {
   });
 }
 
-function mount(services: Record<string, unknown>) {
+function mount(services: Record<string, unknown>, { shell = false } = {}) {
   const rootRoute = createRootRoute({ component: () => <Outlet /> });
   const residents = createRoute({
     getParentRoute: () => rootRoute,
@@ -134,7 +135,15 @@ function mount(services: Record<string, unknown>) {
   render(
     <QueryClientProvider client={client}>
       <ServicesProvider services={services}>
-        <RouterProvider router={router} />
+        <ShellContext.Provider
+          value={
+            shell
+              ? { enabled: [], brand: null, version: '', ctx: { tweaks: {}, setTweak: () => {} } }
+              : null
+          }
+        >
+          <RouterProvider router={router} />
+        </ShellContext.Provider>
       </ServicesProvider>
     </QueryClientProvider>,
   );
@@ -150,9 +159,19 @@ describe('ResidentsPage', () => {
   it('leads with what a resident is and offers a new one', async () => {
     mount(valkyrieServices());
     expect(await screen.findByRole('heading', { name: 'Residents' })).toBeInTheDocument();
-    expect(screen.getByText(/A resident keeps one realm/)).toBeInTheDocument();
+    expect(screen.getByText(/A resident keeps one workspace/)).toBeInTheDocument();
     expect(screen.getByText(/A persona is the character it runs with/)).toBeInTheDocument();
     expect(screen.getByTestId('resident-deploy-open')).toBeInTheDocument();
+  });
+
+  it('names the realm without linking to it while the Realms plugin is off', async () => {
+    mount(valkyrieServices(), { shell: true });
+    const card = await screen.findByTestId(
+      'resident-card-target-a:11111111-1111-4111-8111-111111111111',
+    );
+    const keeps = await within(card).findByText('keeps Lexi API');
+    expect(keeps.tagName).toBe('SPAN');
+    expect(within(card).queryByTestId('resident-open-realm')).toBeNull();
   });
 
   it('shows the realm it keeps, its wakefulness and that nothing is waiting', async () => {
@@ -273,7 +292,7 @@ describe('ResidentsPage', () => {
       'resident-card-target-a:11111111-1111-4111-8111-111111111111',
     );
     expect(within(card).getByText('active')).toBeInTheDocument();
-    expect(within(card).getByText('keeps no realm yet')).toBeInTheDocument();
+    expect(within(card).getByText('keeps no workspace yet')).toBeInTheDocument();
     expect(within(card).queryByTestId('resident-open-realm')).not.toBeInTheDocument();
     expect(within(card).getByText('nothing waiting')).toBeInTheDocument();
   });

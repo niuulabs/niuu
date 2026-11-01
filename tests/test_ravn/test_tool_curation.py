@@ -19,12 +19,27 @@ from typing import Any
 
 import pytest
 
-from ravn.adapters.reflection.capability_matching import SemanticCapabilityMatcher
+from ravn.adapters.reflection.capability_matching import (
+    SemanticCapabilityMatcher,
+    SystemOneCapabilityMatcher,
+)
 from ravn.adapters.reflection.lesson_judge import LessonJudgeError
 from ravn.adapters.skill.file_registry import FileSkillRegistry
 from ravn.adapters.tools.build_tool import BuildTool
 from ravn.adapters.tools.capability_catalog import CapabilityListTool
-from ravn.ports.capability_matching import CapabilityDescriptor, CapabilityVerdict
+from ravn.ports.capability_matching import (
+    CapabilityDescriptor,
+    CapabilityMatchError,
+    CapabilityVerdict,
+)
+from ravn.ports.decision import (
+    ChoiceAnswer,
+    DecisionAnswer,
+    DecisionQuestion,
+    DecisionResult,
+    NoulAnswer,
+    NoulQuestion,
+)
 from ravn.ports.tool_build_backend import ToolBuildResult
 from ravn.skills.management import SkillLifecycle, SkillManagementRegistry
 from ravn.valkyrie_evolution.learned_tools import (
@@ -44,6 +59,7 @@ from ravn.valkyrie_evolution.tool_curation import (
     RETIRED_SUPERSEDED,
     RETIRED_UNRUNNABLE,
     RETIRED_UNUSED,
+    ROLLED_BACK,
     LearnedToolCurator,
     LifecycleSnapshot,
     find_installed_capability,
@@ -447,6 +463,8 @@ class TestCurator:
         ).plan()
 
         reasons = {decision.name: decision.reason for decision in plan.retire}
+        details = {decision.name: decision.detail for decision in plan.retire}
+        assert details["rolled_back_tool"] == "it was rolled back after repeated failures"
         assert reasons == {
             "debug_k8s_config": RETIRED_DEBUG_LEFTOVER,
             "patch_node_labels_via_sa": RETIRED_UNRUNNABLE,
@@ -727,6 +745,182 @@ class TestSemanticMatcher:
             )
 
 
+class _Decisions:
+    """Answers each candidate question with the probability set for that tool's name."""
+
+    def __init__(
+        self, probabilities: dict[str, float] | None = None, *, error: Exception | None = None
+    ) -> None:
+        self.probabilities = probabilities or {}
+        self.error = error
+        self.calls: list[tuple[Any, dict[str, NoulQuestion], str]] = []
+
+    async def decide(
+        self, state: Any, questions: dict[str, DecisionQuestion], *, purpose: str
+    ) -> DecisionResult:
+        self.calls.append((state, questions, purpose))  # type: ignore[arg-type]
+        if self.error is not None:
+            raise self.error
+        answers: dict[str, DecisionAnswer] = {
+            question_id: NoulAnswer(
+                self.probabilities[question.instructions["candidate"]["name"]]  # type: ignore[index, union-attr]
+            )
+            for question_id, question in questions.items()
+        }
+        return DecisionResult(model="jev-test", answers=answers, input_tokens=600)
+
+
+class TestSystemOneMatcher:
+    def _matcher(
+        self, decisions: _Decisions, *, min_same_probability: float = 0.6
+    ) -> SystemOneCapabilityMatcher:
+        index = _Index(
+            {
+                "pods: pods": [1.0, 0.0],
+                "pods2: pods2": [0.9, 0.1],
+                "pods3: pods3": [0.8, 0.2],
+                "events: events": [0.0, 1.0],
+            }
+        )
+        return SystemOneCapabilityMatcher(
+            lessons=index,  # type: ignore[arg-type]
+            decisions=decisions,  # type: ignore[arg-type]
+            similarity_threshold=0.5,
+            min_same_probability=min_same_probability,
+            excerpt_chars=100,
+        )
+
+    async def test_each_shortlisted_tool_gets_its_own_question(self) -> None:
+        decisions = _Decisions({"pods2": 0.9, "pods3": 0.1})
+        verdicts = await self._matcher(decisions).same_capability(
+            _descriptor("pods"),
+            [_descriptor("pods3"), _descriptor("events"), _descriptor("pods2")],
+            as_revision=True,
+        )
+
+        assert [(v.candidate_key, v.same, v.probability) for v in verdicts] == [
+            ("pods2", True, 0.9),
+            ("pods3", False, 0.1),
+        ]
+        assert "0.90" in verdicts[0].reason
+        assert "jev-test" in verdicts[0].reason
+        assert len(decisions.calls) == 1
+        state, questions, purpose = decisions.calls[0]
+        assert state["request"] == {
+            "name": "pods",
+            "description": "pods",
+            "inputs": ["namespace"],
+        }
+        assert purpose == "learned_tool.same_capability"
+        assert [q.instructions["candidate"]["name"] for q in questions.values()] == [
+            "pods2",
+            "pods3",
+        ]
+
+    async def test_the_bar_is_inclusive_and_configured(self) -> None:
+        verdicts = await self._matcher(
+            _Decisions({"pods2": 0.7}), min_same_probability=0.7
+        ).same_capability(_descriptor("pods"), [_descriptor("pods2")])
+
+        assert verdicts[0].same is True
+
+        verdicts = await self._matcher(
+            _Decisions({"pods2": 0.69}), min_same_probability=0.7
+        ).same_capability(_descriptor("pods"), [_descriptor("pods2")])
+
+        assert verdicts[0].same is False
+
+    async def test_every_tool_over_the_threshold_is_judged(self) -> None:
+        names = [f"pods{number}" for number in range(2, 12)]
+        vectors = {f"{name}: {name}": [1.0, 0.0] for name in [*names, "pods"]}
+        decisions = _Decisions(dict.fromkeys(names, 0.1))
+        matcher = SystemOneCapabilityMatcher(
+            lessons=_Index(vectors),  # type: ignore[arg-type]
+            decisions=decisions,  # type: ignore[arg-type]
+            similarity_threshold=0.5,
+            min_same_probability=0.6,
+            excerpt_chars=100,
+        )
+
+        verdicts = await matcher.same_capability(
+            _descriptor("pods"), [_descriptor(name) for name in names]
+        )
+
+        assert len(verdicts) == len(names)
+
+    async def test_a_build_request_is_asked_as_a_revision(self) -> None:
+        decisions = _Decisions({"pods2": 0.1})
+        matcher = self._matcher(decisions)
+
+        await matcher.same_capability(_descriptor("pods"), [_descriptor("pods2")])
+        await matcher.same_capability(_descriptor("pods"), [_descriptor("pods2")], as_revision=True)
+
+        duplicate = decisions.calls[0][1]["candidate_1"]
+        revision = decisions.calls[1][1]["candidate_1"]
+        assert "built twice" in duplicate.instructions["question"]
+        assert "next version" not in duplicate.instructions["question"]
+        assert "next version" in revision.instructions["question"]
+        assert "only adds to it" in revision.criteria["true"]
+        assert "its own job" in duplicate.criteria["false"]
+
+    async def test_nothing_close_enough_makes_no_request(self) -> None:
+        decisions = _Decisions()
+
+        verdicts = await self._matcher(decisions).same_capability(
+            _descriptor("pods"), [_descriptor("events")]
+        )
+
+        assert verdicts == []
+        assert decisions.calls == []
+
+    async def test_a_failed_decision_raises(self) -> None:
+        matcher = self._matcher(_Decisions(error=TimeoutError("slow")))
+
+        with pytest.raises(CapabilityMatchError, match="slow"):
+            await matcher.same_capability(_descriptor("pods"), [_descriptor("pods2")])
+
+    async def test_a_mistyped_answer_raises(self) -> None:
+        class Mistyped(_Decisions):
+            async def decide(self, *_: Any, **__: Any) -> DecisionResult:
+                answer = ChoiceAnswer(choice="yes", confidence=1.0, probabilities={"yes": 1.0})
+                return DecisionResult(
+                    model="jev-test", answers={"candidate_1": answer}, input_tokens=None
+                )
+
+        with pytest.raises(CapabilityMatchError, match="candidate_1"):
+            await self._matcher(Mistyped()).same_capability(
+                _descriptor("pods"), [_descriptor("pods2")]
+            )
+
+    async def test_the_likeliest_tool_wins_the_lineage(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "pods2")
+        await _install(tmp_path, skills, "pods3")
+        code_dir, artifacts_dir = _dirs(tmp_path)
+
+        class Likelier:
+            async def same_capability(
+                self, _: CapabilityDescriptor, candidates: Sequence[CapabilityDescriptor], **__: Any
+            ) -> list[CapabilityVerdict]:
+                keys = {candidate.name: candidate.key for candidate in candidates}
+                return [
+                    CapabilityVerdict(keys["pods2"], True, 0.9, "", probability=0.61),
+                    CapabilityVerdict(keys["pods3"], True, 0.7, "", probability=0.95),
+                ]
+
+        found = await find_installed_capability(
+            tools_dir=code_dir,
+            artifacts_dir=artifacts_dir,
+            skills=skills,
+            capability_id="",
+            name="pods_new",
+            matcher=Likelier(),
+        )
+
+        assert found is not None
+        assert found.entry.name == "pods3"
+
+
 # ---------------------------------------------------------------------------
 # build_tool: repair over variant
 # ---------------------------------------------------------------------------
@@ -890,6 +1084,68 @@ class TestRepairOverVariant:
         assert json.loads(result.content)["tool_name"] == "inspect_persistentvolume"
         assert "retired as unrunnable" in backend.requests[0].signal_context
 
+    async def test_a_rolled_back_tools_repair_is_told_the_failure(self, tmp_path: Path) -> None:
+        """A rollback that only said "repeated failures" sent builders to
+        rewrite code whose real problem was a timeout or a 403."""
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "prometheus_readonly_query", capability="prom.query")
+        await skills.archive(
+            "prometheus_readonly_query",
+            reason=ROLLED_BACK,
+            detail="learned tool timed out after 10s. Its Job could reach only monitoring/p:9090",
+        )
+        backend = RecordingBackend()
+        tool, _ = _build_tool(tmp_path, build_backend=backend, skill_manager=skills)
+
+        result = await tool.execute(
+            _request("prometheus_readonly_query", capability_id="prom.query")
+        )
+
+        problems = json.loads(result.content)["repair_of"]["problems"]
+        assert problems == [
+            "it was rolled back after repeated failures; the last one was: learned tool "
+            "timed out after 10s. Its Job could reach only monitoring/p:9090"
+        ]
+        assert "could reach only monitoring/p:9090" in backend.requests[0].signal_context
+        assert "the resident installs it itself" in backend.requests[0].signal_context
+
+    async def test_an_identical_rebuild_puts_a_rolled_back_tool_back(self, tmp_path: Path) -> None:
+        """valhalla's working Prometheus tool stayed archived after an
+        identical rebuild reported "already installed", so it commissioned a
+        cosmetic change just to get it running again."""
+        skills = _skills(tmp_path)
+        installed = await _install(
+            tmp_path, skills, "prometheus_readonly_query", capability="prom.query"
+        )
+        await skills.archive(
+            "prometheus_readonly_query", reason=ROLLED_BACK, detail="timed out after 10s"
+        )
+
+        class SameCode(RecordingBackend):
+            async def build(self, request: Any) -> ToolBuildResult:
+                self.requests.append(request)
+                return ToolBuildResult(
+                    manifest=installed.manifest.to_dict(),
+                    tool_code=installed.tool_code,
+                    test_code=installed.test_code,
+                    requirements=[],
+                    provenance={},
+                )
+
+        tool, registered = _build_tool(tmp_path, build_backend=SameCode(), skill_manager=skills)
+
+        result = await tool.execute(
+            _request("prometheus_readonly_query", capability_id="prom.query")
+        )
+
+        payload = json.loads(result.content)
+        assert payload["status"] == "already_installed"
+        assert payload["reactivated"]["rolled_back_because"] == "timed out after 10s"
+        assert skills.status("prometheus_readonly_query") == "active"
+        record = skills.lifecycle_metadata("prometheus_readonly_query")
+        assert (record["archived_reason"], record["consecutive_failures"]) == ("", 0)
+        assert registered == []
+
     async def test_a_judge_that_cannot_answer_builds_nothing(self, tmp_path: Path) -> None:
         skills = _skills(tmp_path)
         await _install(tmp_path, skills, "some_tool")
@@ -910,6 +1166,29 @@ class TestRepairOverVariant:
 
         assert result.is_error is True
         assert "could not decide" in result.content
+        assert backend.requests == []
+
+    async def test_a_decision_model_that_cannot_answer_builds_nothing(self, tmp_path: Path) -> None:
+        skills = _skills(tmp_path)
+        await _install(tmp_path, skills, "some_tool")
+
+        class BrokenMatcher:
+            async def same_capability(self, *_: Any, **__: Any) -> list[CapabilityVerdict]:
+                raise CapabilityMatchError("decision model could not answer: 503")
+
+        backend = RecordingBackend()
+        tool, _ = _build_tool(
+            tmp_path,
+            build_backend=backend,
+            skill_manager=skills,
+            capability_matcher=BrokenMatcher(),
+        )
+
+        result = await tool.execute(_request("brand_new_capability"))
+
+        assert result.is_error is True
+        assert "could not decide" in result.content
+        assert "503" in result.content
         assert backend.requests == []
 
     async def test_a_failed_rebuild_never_replaces_the_working_envelope(
@@ -1070,6 +1349,8 @@ async def test_a_peer_copy_does_not_undo_a_retirement_here(tmp_path: Path) -> No
     skills = _skills(state)
     await _install(state, skills, "list_pods_in_namespace_safe")
     await _install(state, skills, "k8s_quantity_parse")
+    await _install(state, skills, "prometheus_readonly_query")
+    await skills.archive("prometheus_readonly_query", reason=ROLLED_BACK, detail="timed out")
     code_dir, artifacts_dir = _dirs(state)
     for name, reason in (
         ("list_pods_in_namespace_safe", RETIRED_SUPERSEDED),
@@ -1109,7 +1390,12 @@ async def test_a_peer_copy_does_not_undo_a_retirement_here(tmp_path: Path) -> No
 
     ignored = await runtime._reconcile_retired_tool(proposal("list_pods_in_namespace_safe"))
     restored = await runtime._reconcile_retired_tool(proposal("k8s_quantity_parse"))
+    # Rolled back, not retired: still installed, so the peer copy installs
+    # over it as its next version with nothing to restore first.
+    rolled_back = await runtime._reconcile_retired_tool(proposal("prometheus_readonly_query"))
 
+    assert rolled_back is None
+    assert skills.status("prometheus_readonly_query") == "archived"
     assert ignored is not None and ignored.action == "ignored"
     assert "superseded" in ignored.rationale
     assert restored is None
@@ -1134,6 +1420,73 @@ def test_the_capability_matcher_follows_lesson_matching() -> None:
     assert _build_capability_matcher(Settings(), consolidation) is None
     assert _build_capability_matcher(semantic, None) is None
     assert isinstance(_build_capability_matcher(semantic, consolidation), SemanticCapabilityMatcher)
+
+
+class TestDecisionCapabilityMatcher:
+    @staticmethod
+    def _settings(**capability_matching: Any) -> Any:
+        from ravn.config import Settings
+
+        return Settings(
+            reflection={"matching": {"mode": "semantic"}},
+            decision={
+                "enabled": True,
+                "kwargs": {"base_url": "http://ollama:11434", "model": "clef-flash"},
+                "capability_matching": capability_matching,
+            },
+        )
+
+    @staticmethod
+    def _consolidation() -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(lessons=_Index({}), judge=_Judge({}))
+
+    def test_off_by_default_it_is_the_lesson_judge(self) -> None:
+        from ravn.cli.runtime_builders import _build_capability_matcher
+
+        matcher = _build_capability_matcher(self._settings(), self._consolidation())
+
+        assert isinstance(matcher, SemanticCapabilityMatcher)
+
+    def test_enabled_it_asks_the_observed_decision_port(self) -> None:
+        from ravn.cli.runtime_builders import _build_capability_matcher
+        from ravn.decision_observability import ObservedDecisionPort
+
+        settings = self._settings(enabled=True, min_same_probability=0.75)
+
+        matcher = _build_capability_matcher(settings, self._consolidation())
+
+        assert isinstance(matcher, SystemOneCapabilityMatcher)
+        assert isinstance(matcher._decisions, ObservedDecisionPort)
+        assert matcher._min_same_probability == 0.75
+
+    def test_enabled_without_a_shortlist_is_a_configuration_error(self) -> None:
+        from ravn.cli.runtime_builders import _build_capability_matcher
+        from ravn.config import Settings
+        from ravn.domain.exceptions import ConfigurationError
+
+        lexical = Settings(
+            decision={"enabled": True, "capability_matching": {"enabled": True}},
+        )
+
+        with pytest.raises(ConfigurationError, match="reflection.matching.mode: semantic"):
+            _build_capability_matcher(lexical, self._consolidation())
+        with pytest.raises(ConfigurationError, match="reflection.matching.mode: semantic"):
+            _build_capability_matcher(self._settings(enabled=True), None)
+
+    def test_enabled_without_a_decision_model_is_a_configuration_error(self) -> None:
+        from ravn.cli.runtime_builders import _build_capability_matcher
+        from ravn.config import Settings
+        from ravn.domain.exceptions import ConfigurationError
+
+        settings = Settings(
+            reflection={"matching": {"mode": "semantic"}},
+            decision={"capability_matching": {"enabled": True}},
+        )
+
+        with pytest.raises(ConfigurationError, match="decision.enabled is false"):
+            _build_capability_matcher(settings, self._consolidation())
 
 
 def test_the_curator_is_built_only_when_enabled(tmp_path: Path) -> None:
@@ -1468,6 +1821,28 @@ class TestBackendRefusal:
         assert registered == []
         code_dir, _ = _dirs(tmp_path)
         assert not learned_tool_path(code_dir, "count_cluster_nodes").exists()
+
+    async def test_a_reach_the_backend_cannot_enforce_commissions_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """The refusal used to arrive after the whole remote workflow had
+        built, reviewed and published the tool."""
+        backend = RecordingBackend()
+        tool, registered = _build_tool(
+            tmp_path, build_backend=backend, execution_backend="container"
+        )
+        request = _request("regin_repo_review_readonly")
+        request["manifest"]["declared_reach"] = [
+            {"kind": "http", "target": "https://api.github.com:443", "access": "read"}
+        ]
+
+        result = await tool.execute(request)
+
+        assert result.is_error
+        assert "nothing was commissioned" in result.content
+        assert "target-specific network reach" in result.content
+        assert backend.requests == []
+        assert registered == []
 
     def test_the_builder_is_only_told_about_the_host_sdk_where_it_exists(
         self, tmp_path: Path

@@ -578,7 +578,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
         {/* Fan-in */}
         <Section
           title="Fan-in"
-          subtitle="How Ting combines this persona's output with others emitting the same event."
+          subtitle="How Niuu combines this persona's output with others emitting the same event."
         >
           <div className="rv-fanin-grid" data-testid="fanin-cards">
             {FAN_IN_STRATEGIES.map((s) => {
@@ -670,7 +670,7 @@ function PersonaFormInner({ persona, onSave, isSaving = false }: PersonaFormProp
         </Section>
 
         {/* Mímir write routing */}
-        <Section title="Mímir write routing">
+        <Section title="Memory write routing">
           <FieldRow label="Route writes to">
             <div className="niuu:flex niuu:items-center niuu:gap-2">
               {MIMIR_ROUTINGS.map((r) => (

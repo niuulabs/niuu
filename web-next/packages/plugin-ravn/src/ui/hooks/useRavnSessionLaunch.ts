@@ -12,7 +12,7 @@ export function useRavnSessionLaunch() {
   const queryClient = useQueryClient();
   const mutation = useMutation({
     mutationFn: async (launch: RavnSessionLaunch) => {
-      if (!volundr) throw new Error('No Forge service is wired into this host');
+      if (!volundr) throw new Error('No sessions service is wired into this app');
       return volundr.startSession(ravnSessionRequest(launch));
     },
     onSuccess: async () => {

@@ -88,8 +88,8 @@ export function HistoryPage() {
           <h2 className="history-page__title">Session History</h2>
 
           <p className="history-page__subtitle">
-            Terminated sessions, failed runs, and archived pod lineage across ravens, launch specs,
-            clusters, and sagas.
+            Terminated sessions, failed runs, and archived pod lineage across agents, launch specs,
+            clusters, and projects.
           </p>
         </div>
 
@@ -111,7 +111,7 @@ export function HistoryPage() {
             <span className="history-page__summary-value">{failedCount}</span>
           </div>
           <div className="history-page__summary-card">
-            <span className="history-page__summary-label">ravens</span>
+            <span className="history-page__summary-label">agents</span>
             <span className="history-page__summary-value">{uniqueRavns}</span>
           </div>
         </div>
@@ -121,14 +121,14 @@ export function HistoryPage() {
       <div className="history-page__filters" role="search" aria-label="History filters">
         <div className="history-page__filter-grid">
           <label className="history-page__field">
-            <span className="history-page__field-label">Raven</span>
+            <span className="history-page__field-label">Agent</span>
             <input
               className="history-page__filter-input"
               type="text"
-              placeholder="Filter by raven ID…"
+              placeholder="Filter by agent ID…"
               value={ravnId}
               onChange={(e) => setRavnId(e.target.value)}
-              aria-label="Filter by raven ID"
+              aria-label="Filter by agent ID"
             />
           </label>
           <label className="history-page__field">
@@ -143,14 +143,14 @@ export function HistoryPage() {
             />
           </label>
           <label className="history-page__field">
-            <span className="history-page__field-label">Saga</span>
+            <span className="history-page__field-label">Project</span>
             <input
               className="history-page__filter-input"
               type="text"
-              placeholder="Filter by saga ID…"
+              placeholder="Filter by project ID…"
               value={sagaId}
               onChange={(e) => setSagaId(e.target.value)}
-              aria-label="Filter by saga"
+              aria-label="Filter by project"
             />
           </label>
           <div className="history-page__field">
@@ -231,9 +231,9 @@ export function HistoryPage() {
             <tr>
               <th scope="col">Outcome</th>
               <th scope="col">Session ID</th>
-              <th scope="col">Raven / Persona</th>
+              <th scope="col">Agent / Persona</th>
               <th scope="col">Workload</th>
-              <th scope="col">Saga</th>
+              <th scope="col">Project</th>
               <th scope="col">Terminated</th>
               <th scope="col">Duration</th>
               <th scope="col">

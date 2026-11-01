@@ -313,6 +313,20 @@ class TestSessionMessageService:
         assert event.data["target_peer_id"] == ""
 
     @pytest.mark.asyncio
+    async def test_the_event_names_whoever_sent_the_message(
+        self,
+        service: SessionMessageService,
+        tracker: StatefulMockTracker,
+        event_bus: InMemoryEventBus,
+    ):
+        run = _make_run(status=RunStatus.RUNNING)
+        tracker.runs[run.id] = run
+
+        await service.send_message(run.id, "hello", owner_id="user-1")
+
+        assert event_bus.get_log(1)[0].owner_id == "user-1"
+
+    @pytest.mark.asyncio
     async def test_send_message_no_event_bus(
         self,
         tracker: StatefulMockTracker,

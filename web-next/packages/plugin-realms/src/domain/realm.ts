@@ -167,15 +167,19 @@ export interface RealmView {
   runningSessions: number;
 }
 
-export function requiredDraftError(draft: RealmDraft, needsBoard: boolean): string | null {
+export function requiredDraftError(
+  draft: RealmDraft,
+  needsBoard: boolean,
+  needsRepo = true,
+): string | null {
   if (!isValidSlug(draft.slug)) {
-    return 'Give the realm a name made of lowercase letters, digits, dashes or underscores.';
+    return 'Give the workspace a name made of lowercase letters, digits, dashes or underscores.';
   }
-  if (!draft.name.trim()) return 'Give the realm a name.';
+  if (!draft.name.trim()) return 'Give the workspace a name.';
   if (!draft.charter.trim()) return 'Write a charter: a few sentences about what matters.';
-  if (!draft.repo) return 'Pick a repository.';
+  if (needsRepo && !draft.repo) return 'Pick a repository.';
   if (needsBoard && !draft.trackerBoard) return 'Pick the tracker board the resident works from.';
   if (!draft.profileId || !draft.instanceId) return 'Pick where the resident runs.';
-  if (!draft.mountTarget) return 'Pick where the realm memory is created.';
+  if (!draft.mountTarget) return 'Pick where the workspace memory is created.';
   return null;
 }

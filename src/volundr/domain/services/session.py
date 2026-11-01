@@ -2099,7 +2099,7 @@ class SessionService:
                     reconciled += 1
                 continue
 
-            actual_status = await self._pod_manager.status(session)
+            actual_status = _booting_status(session, await self._pod_manager.status(session))
 
             if session.status in {
                 SessionStatus.STOPPING,
@@ -2171,7 +2171,7 @@ class SessionService:
         if session.status not in reconcilable_statuses or self._spawn_in_flight(session):
             return session
 
-        actual_status = await self._pod_manager.status(session)
+        actual_status = _booting_status(session, await self._pod_manager.status(session))
         status_detail = await self._pod_manager.status_detail(session)
         if actual_status == session.status:
             if (
@@ -2205,6 +2205,18 @@ class SessionService:
         untouched (no false reap).
         """
         return await self.reconcile_session_if_active(session_id)
+
+
+def _booting_status(session: Session, actual_status: SessionStatus) -> SessionStatus:
+    """Keep a provisioning row provisioning while its runtime is still coming up.
+
+    Pod managers report a runtime that is not ready yet as STARTING. Writing that
+    back moves the row away from PROVISIONING, which ``_poll_readiness`` requires
+    to record the verdict, so the session would only reach RUNNING on a later read.
+    """
+    if session.status == SessionStatus.PROVISIONING and actual_status == SessionStatus.STARTING:
+        return SessionStatus.PROVISIONING
+    return actual_status
 
 
 def _communication_route_id(

@@ -93,6 +93,7 @@ ROUTE_POLICIES: tuple[RoutePolicy, ...] = (
     RoutePolicy("GET", f"{_S}/message-deliveries/{{request_id}}", _READ, Binding.OWNED),
     # Steering another session needs the `message` grant; never the session itself.
     RoutePolicy("POST", f"{_S}/messages", FORGE_SESSION_MESSAGE_SCOPE, Binding.PEER),
+    RoutePolicy("POST", f"{_S}/room/{{operation}}", FORGE_SESSION_MESSAGE_SCOPE, Binding.PEER),
     # Lifecycle needs the `lifecycle` grant: create, start/resume and stop. No
     # delete or archive, and a session cannot start or stop itself.
     RoutePolicy("POST", f"{FORGE_PREFIX}/sessions", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.NONE),

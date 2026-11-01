@@ -41,6 +41,7 @@ from ting.domain.models import (
     Run,
     RunStatus,
     Saga,
+    SagaBoardWorkflow,
     SagaStatus,
     SagaStructure,
     TrackerIssue,
@@ -50,12 +51,18 @@ from ting.domain.models import (
     WorkflowDefinition,
     WorkflowScope,
 )
+from ting.domain.services.review_list import (
+    PLAN_SAGA_KEY,
+    PLAN_TICKETS_KEY,
+    PLANNING_WORKFLOW_NAME,
+)
 from ting.domain.tracker_routing import (
     TrackerRoutingError,
     select_tracker,
     select_tracker_for_saga,
 )
 from ting.domain.utils import _session_name, _slugify
+from ting.domain.workflow_board import WorkflowBoardError, module_widgets_of, project_board
 from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_name_from_snapshot
 from ting.ports.git import GitPort
 from ting.ports.llm import LLMPort
@@ -67,7 +74,14 @@ from ting.ports.workflow_repository import WorkflowRepository
 
 logger = logging.getLogger(__name__)
 
-_PLANNING_WORKFLOW_NAME = "Saga Planning"
+_ACTIVE_CAMPAIGN_STATUSES = frozenset(
+    {
+        WorkflowCampaignStatus.PENDING,
+        WorkflowCampaignStatus.RUNNING,
+        WorkflowCampaignStatus.BLOCKED,
+    }
+)
+_PLANNING_WORKFLOW_NAME = PLANNING_WORKFLOW_NAME
 _PLAN_BRIEF_GATE_NODE_ID = "plan-brief-gate"
 _PLAN_REVIEW_GATE_NODE_ID = "plan-review-gate"
 _PLAN_GATE_NODE_IDS = (_PLAN_BRIEF_GATE_NODE_ID, _PLAN_REVIEW_GATE_NODE_ID)
@@ -399,6 +413,65 @@ def _build_resolved_workflow_snapshot(
         ) from exc
 
 
+def _board_workflows(pins: Sequence[SagaBoardWorkflow]) -> list[SagaBoardWorkflowResponse]:
+    return [
+        SagaBoardWorkflowResponse(
+            id=str(pin.workflow_id),
+            name=workflow_name_from_snapshot(pin.workflow_snapshot) or "",
+        )
+        for pin in pins
+    ]
+
+
+async def _pin_board_workflow(
+    *,
+    request: Request,
+    principal: Principal,
+    workflow_id_value: str,
+) -> SagaBoardWorkflow:
+    workflow_id, version, snapshot = await _resolve_selected_workflow(
+        request=request,
+        principal=principal,
+        workflow_id_value=workflow_id_value,
+    )
+    # A coordinator starts workflows from Ting's public agent card, which lists system workflows.
+    if snapshot["scope"] != WorkflowScope.SYSTEM.value:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"{snapshot['name']} is private, and ticket coordinators can only start "
+                "system workflows"
+            ),
+        )
+    return SagaBoardWorkflow(
+        workflow_id=workflow_id,
+        workflow_version=version,
+        workflow_snapshot=snapshot,
+    )
+
+
+async def _refuse_removing_active_workflows(
+    saga: Saga,
+    kept: set[UUID],
+    *,
+    campaign_repo: WorkflowCampaignRepository,
+    owner_id: str,
+) -> None:
+    """Runs keep the workflow they started with, so it stays on the board until they finish."""
+    campaigns = await campaign_repo.list_ticket_campaigns(owner_id=owner_id, saga_id=saga.id)
+    busy = [
+        campaign
+        for campaign in campaigns
+        if campaign.workflow_id not in kept and campaign.status in _ACTIVE_CAMPAIGN_STATUSES
+    ]
+    if busy:
+        names = ", ".join(sorted({campaign.workflow_name for campaign in busy}))
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Tickets are still running {names}, so it has to stay on the board",
+        )
+
+
 async def _resolve_planning_workflow(
     repo: WorkflowRepository,
     principal: Principal,
@@ -668,6 +741,10 @@ def _to_plan_session_response(
         updated_at=campaign.updated_at,
         stage_state=[_to_plan_stage_response(stage) for stage in campaign.stage_state],
         questions=_plan_questions_for_campaign(campaign, gates),
+        saga_id=campaign.metadata.get(PLAN_SAGA_KEY),
+        tickets=[
+            PlanTicketResponse(**ticket) for ticket in campaign.metadata.get(PLAN_TICKETS_KEY, [])
+        ],
     )
 
 
@@ -764,6 +841,7 @@ class SagaDetailResponse(BaseModel):
     workflow_id: str | None = None
     workflow: str | None = None
     workflow_version: str | None = None
+    board_workflows: list[SagaBoardWorkflowResponse] = Field(default_factory=list)
     instance_id: str | None = None
     instance_name: str | None = None
     target_tags: list[str] = Field(default_factory=list)
@@ -778,6 +856,19 @@ class DecomposeRequest(BaseModel):
 
 class UpdateSagaRequest(BaseModel):
     status: str
+
+
+class SagaBoardWorkflowsRequest(BaseModel):
+    workflow_ids: list[str]
+
+
+class SagaBoardWorkflowResponse(BaseModel):
+    id: str
+    name: str
+
+
+class SagaBoardWorkflowsResponse(BaseModel):
+    board_workflows: list[SagaBoardWorkflowResponse]
 
 
 class SagaWorkflowAssignmentRequest(BaseModel):
@@ -885,6 +976,15 @@ class PlanQuestionResponse(BaseModel):
     kind: str = "text"
 
 
+class PlanTicketResponse(BaseModel):
+    """A ticket a committed project plan became."""
+
+    name: str
+    issue_id: str
+    identifier: str = ""
+    url: str = ""
+
+
 class PlanSessionResponse(BaseModel):
     """Response from spawning a planning session."""
 
@@ -900,6 +1000,8 @@ class PlanSessionResponse(BaseModel):
     updated_at: datetime | None = None
     stage_state: list[PlanStageStateResponse] = Field(default_factory=list)
     questions: list[PlanQuestionResponse] = Field(default_factory=list)
+    saga_id: str | None = None
+    tickets: list[PlanTicketResponse] = Field(default_factory=list)
 
 
 class ExtractStructureRequest(BaseModel):
@@ -926,6 +1028,7 @@ class CommitRequest(BaseModel):
     workflow_id: str | None = None
     workflow_version: str | None = Field(default=None, alias="workflowVersion")
     tracker_connection_id: str | None = None
+    plan_slug: str | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -1171,7 +1274,7 @@ def create_sagas_router() -> APIRouter:
         principal: Principal = Depends(extract_principal),
         campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> list[PlanSessionResponse]:
-        campaigns = await campaign_repo.list_campaigns(owner_id=principal.user_id)
+        campaigns = await campaign_repo.list_campaign_summaries(owner_id=principal.user_id)
         # Every planning campaign, not only the resumable ones. Filtering to
         # PENDING/RUNNING/BLOCKED meant a plan vanished from the surface the
         # moment it finished: the campaign, its approved plan and its slug all
@@ -1302,6 +1405,7 @@ def create_sagas_router() -> APIRouter:
             workflow_id=str(saga.workflow_id) if saga.workflow_id else None,
             workflow=workflow_name_from_snapshot(saga.workflow_snapshot),
             workflow_version=saga.workflow_version,
+            board_workflows=_board_workflows(saga.board_workflows),
             instance_id=saga.instance_id,
             instance_name=instance_name,
             target_tags=saga.target_tags,
@@ -1743,6 +1847,65 @@ def create_sagas_router() -> APIRouter:
             target_match=saga.target_match,
         )
 
+    @router.put("/{saga_id}/board-workflows", response_model=SagaBoardWorkflowsResponse)
+    async def set_board_workflows(
+        saga_id: UUID,
+        body: SagaBoardWorkflowsRequest,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+        repo: SagaRepository = Depends(resolve_saga_repo),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+    ) -> SagaBoardWorkflowsResponse:
+        """Choose and order the workflows a project's board runs; empty means its one workflow."""
+        saga = await repo.get_saga(saga_id, owner_id=principal.user_id)
+        if saga is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Saga not found: {saga_id}",
+            )
+        # Reordering keeps each workflow's pin, so only a newly added one takes a new version.
+        pinned = {str(pin.workflow_id): pin for pin in saga.board_workflows}
+        pins = tuple(
+            [
+                pinned.get(workflow_id)
+                or await _pin_board_workflow(
+                    request=request,
+                    principal=principal,
+                    workflow_id_value=workflow_id,
+                )
+                for workflow_id in body.workflow_ids
+            ]
+        )
+        try:
+            board = project_board(replace(saga, board_workflows=pins))
+        except WorkflowBoardError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        installed = getattr(request.app.state, "review_widgets", {})
+        missing = sorted(module_widgets_of(board) - installed.keys()) if board else []
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"This board needs review widgets this deployment has not installed: "
+                    f"{', '.join(missing)}. Add their module to review_widgets."
+                ),
+            )
+        await _refuse_removing_active_workflows(
+            saga,
+            {pin.workflow_id for pin in pins} or {saga.workflow_id},
+            campaign_repo=campaign_repo,
+            owner_id=principal.user_id,
+        )
+        await repo.update_saga_board_workflows(
+            saga_id,
+            board_workflows=pins,
+            owner_id=principal.user_id,
+        )
+        return SagaBoardWorkflowsResponse(board_workflows=_board_workflows(pins))
+
     @router.put("/{saga_id}/workflow", response_model=SagaListItem)
     async def assign_workflow(
         saga_id: str,
@@ -2005,6 +2168,7 @@ def create_sagas_router() -> APIRouter:
         request: Request,
         principal: Principal = Depends(extract_principal),
         saga_repo: SagaRepository = Depends(resolve_saga_repo),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
         adapters: list[TrackerPort] = Depends(resolve_trackers),
         git: GitPort = Depends(_resolve_git_for_request),
     ) -> CommittedSagaResponse:
@@ -2019,6 +2183,15 @@ def create_sagas_router() -> APIRouter:
 
         Returns 409 if the slug already exists.
         """
+        if body.plan_slug and (
+            await campaign_repo.get_campaign_by_slug(body.plan_slug, owner_id=principal.user_id)
+            is None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Plan not found: {body.plan_slug}",
+            )
+
         # Idempotency: reject duplicate slugs
         existing = await saga_repo.get_saga_by_slug(body.slug)
         if existing is not None:
@@ -2078,6 +2251,7 @@ def create_sagas_router() -> APIRouter:
             workflow_id=workflow_id,
             workflow_version=workflow_version,
             workflow_snapshot=workflow_snapshot,
+            plan_slug=body.plan_slug,
         )
 
         from identity.adapters.http_auth import authorization_http_errors
@@ -2230,6 +2404,33 @@ def create_sagas_router() -> APIRouter:
                 await saga_repo.save_phase(phase, conn=conn)
             for run in runs:
                 await saga_repo.save_run(run, conn=conn)
+
+        # Read again: the plan's run may have moved on while the tracker was being filled.
+        plan_campaign = (
+            await campaign_repo.get_campaign_by_slug(body.plan_slug, owner_id=principal.user_id)
+            if body.plan_slug
+            else None
+        )
+        if plan_campaign is not None:
+            await campaign_repo.save_campaign(
+                replace(
+                    plan_campaign,
+                    metadata={
+                        **plan_campaign.metadata,
+                        PLAN_SAGA_KEY: str(saga.id),
+                        PLAN_TICKETS_KEY: [
+                            {
+                                "name": run.name,
+                                "issue_id": run.tracker_id,
+                                "identifier": run.identifier,
+                                "url": run.url,
+                            }
+                            for run in runs
+                        ],
+                    },
+                    updated_at=now,
+                )
+            )
 
         # 4. Create feature branch for each repo (best-effort — logged on failure)
         warnings: list[str] = []

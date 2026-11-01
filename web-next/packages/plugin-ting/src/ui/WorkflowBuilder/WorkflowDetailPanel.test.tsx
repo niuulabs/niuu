@@ -392,7 +392,7 @@ describe('WorkflowDetailPanel', () => {
     expect(props.onRemovePersona).toHaveBeenCalledWith('stage-1', 'planner');
 
     fireEvent.change(selects[2]!, { target: { value: 'reviewer' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add ravn' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add agent' }));
     expect(props.onAddPersona).toHaveBeenCalledWith('stage-1', 'reviewer', 'claude-sonnet', 40);
   });
 
@@ -973,8 +973,8 @@ describe('WorkflowDetailPanel', () => {
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'flock' }));
-    expect(screen.getByText('No ravns assigned yet.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Add ravn' })).toBeDisabled();
+    expect(screen.getByText('No agents assigned yet.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add agent' })).toBeDisabled();
 
     fireEvent.click(screen.getByRole('button', { name: 'validate' }));
     expect(screen.getByText('No validation issues on this node.')).toBeInTheDocument();
@@ -1016,7 +1016,7 @@ describe('WorkflowDetailPanel', () => {
     });
 
     expect(screen.getByPlaceholderText('scratch/, notes/')).toBeInTheDocument();
-    expect(screen.getByText('Ephemeral local Mimir')).toBeInTheDocument();
+    expect(screen.getByText('Ephemeral local memory')).toBeInTheDocument();
 
     const seedSelect = screen
       .getByText('Seed from registry mount')

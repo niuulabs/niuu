@@ -288,7 +288,7 @@ def _build_up_callback(
                 _set_environment(
                     key,
                     value,
-                    only_if_missing=key in {"RESIDENT_RUNTIMES", "CREDENTIAL_STORE"},
+                    only_if_missing=key in _OPERATOR_OWNED_LOCAL_ENV,
                 )
 
         if no_web:
@@ -498,6 +498,14 @@ HOST_PROCESS_RESIDENT_RUNTIME_ADAPTER = (
     "volundr.adapters.outbound.host_resident_runtime.HostProcessResidentRuntimeController"
 )
 MINI_RESIDENTS_DIR = "~/.niuu/residents"
+#: Local defaults an operator can replace by setting the variable themselves.
+_OPERATOR_OWNED_LOCAL_ENV = frozenset(
+    {
+        "RESIDENT_RUNTIMES",
+        "CREDENTIAL_STORE",
+        "MIMIR__DEPLOYMENT",
+    }
+)
 MINI_RESIDENT_CODEX_MODEL = "gpt-5.6-sol"
 MINI_RESIDENT_CAPABILITIES = [
     "chat",
@@ -655,8 +663,21 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
         env["INTEGRATIONS__SEED_CONNECTIONS"] = json.dumps(seeds)
     if settings.mode == "mini":
         from cli.config import auth_adapter_env
+        from niuu.service_databases import database_name_for_service
 
         env.update(auth_adapter_env(settings.host_auth))
+        # A local Workspace creates its Memory through the same deployment
+        # port as a cluster, and Guild finds that port on a registered Mimir.
+        env["MIMIR__DEPLOYMENT"] = json.dumps(
+            {
+                "adapter": "mimir.adapters.local.LocalKnowledgeDeploymentAdapter",
+                "root": str(workspaces_dir.parent / "knowledge"),
+            }
+        )
+        env["NIUU__LOCAL_MIMIR_URL"] = _host_resident_platform_url(settings)
+        # A resident runtime references its realm by foreign key in Forge's
+        # database, so a host that embeds Forge keeps one realm store there.
+        env["NIUU__REALM_DATABASE"] = database_name_for_service("volundr")
     return env
 
 
@@ -779,6 +800,14 @@ def _ravn_local_profile(
                         }
                     },
                     "platform": {"enabled": True, "baseUrl": platform_url},
+                    "personaSource": {
+                        "adapter": "ravn.adapters.personas.http.HttpPersonaAdapter",
+                        "kwargs": {"base_url": platform_url},
+                    },
+                    "mimir": {
+                        "instances": [{"name": "local", "role": "shared", "url": platform_url}],
+                        "writeRouting": {"default": ["local"]},
+                    },
                     "wakefulness": {"enabled": True},
                 },
             }

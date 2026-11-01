@@ -1890,6 +1890,7 @@ def create_app(
                 prefix="/api/v1/forge",
                 default_show_internal=settings.replay.default_show_internal,
                 notification_service=notification_service,
+                resident_runtime_service=resident_runtime_service,
             )
             app.include_router(session_log_router)
             app.include_router(create_guild_router(guild_membership, prefix="/api/v1/forge"))

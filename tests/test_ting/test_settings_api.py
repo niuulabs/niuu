@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from ting.api.flock_config import create_flock_config_router
 from ting.api.settings import create_settings_router
 from ting.config import AuthConfig, FlockConfig, NotificationConfig, Settings, WatcherConfig
+
+PLATFORM_ADMIN = {
+    "x-auth-user-id": "dev-user",
+    "x-auth-tenant": "default",
+    "x-auth-roles": "volundr:admin",
+}
 
 
 def _make_client() -> TestClient:
@@ -21,7 +28,7 @@ def _make_client() -> TestClient:
     )
     settings.dispatch.flock = FlockConfig()
     app.state.settings = settings
-    return TestClient(app)
+    return TestClient(app, headers=PLATFORM_ADMIN)
 
 
 class TestSettingsAPI:
@@ -141,8 +148,48 @@ class TestSettingsAPI:
             "/api/v1/ting/settings/flock",
             json={"flock_name": "Core Platform"},
         )
-        runtime_response = client.get("/api/v1/ting/flock/config")
+        runtime_response = client.get(
+            "/api/v1/ting/flock/config",
+            headers={
+                "x-auth-user-id": "dev-user",
+                "x-auth-tenant": "default",
+                "x-auth-roles": "volundr:admin",
+            },
+        )
 
         assert patch_response.status_code == 200
         assert runtime_response.status_code == 200
         assert runtime_response.json()["flock_enabled"] is False
+
+
+class TestSharedSettingsAccess:
+    @pytest.mark.parametrize(
+        "caller",
+        [
+            {**PLATFORM_ADMIN, "x-auth-tenant": "org-a"},
+            {**PLATFORM_ADMIN, "x-auth-roles": "volundr:developer"},
+        ],
+        ids=["another-orgs-admin", "platform-developer"],
+    )
+    @pytest.mark.parametrize(
+        ("method", "path", "body"),
+        [
+            ("GET", "/api/v1/ting/settings", None),
+            ("GET", "/api/v1/ting/settings/flock", None),
+            ("GET", "/api/v1/ting/settings/dispatch", None),
+            ("GET", "/api/v1/ting/settings/notifications", None),
+            ("PATCH", "/api/v1/ting/settings/flock", {"flock_name": "theirs"}),
+            ("PATCH", "/api/v1/ting/settings/dispatch", {"batch_size": 99}),
+            ("PATCH", "/api/v1/ting/settings/notifications", {"channel": "none"}),
+        ],
+    )
+    def test_only_the_platform_orgs_admins_reach_shared_settings(
+        self, caller: dict[str, str], method: str, path: str, body: dict | None
+    ) -> None:
+        client = _make_client()
+        batch_size = client.app.state.settings.watcher.batch_size
+
+        response = client.request(method, path, json=body, headers=caller)
+
+        assert response.status_code == 403
+        assert client.app.state.settings.watcher.batch_size == batch_size

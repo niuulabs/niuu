@@ -184,7 +184,11 @@ class TestFlockGoesIdleWhenNoPeerWorks:
             "flock-coder",
             "outcome",
             {
-                "data": {"event_type": "code.completed", "verdict": "help_needed"},
+                "data": {
+                    "event_type": "code.completed",
+                    "verdict": "help_needed",
+                    "summary": "Waiting on repository access.",
+                },
                 "metadata": {"event_type": "code.completed", "task_id": "build-1"},
             },
         )
@@ -198,6 +202,7 @@ class TestFlockGoesIdleWhenNoPeerWorks:
                     "event_type": "code.completed",
                     "verdict": "help_needed",
                     "persona": "coder",
+                    "summary": "Waiting on repository access.",
                 }
             },
         )

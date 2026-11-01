@@ -10,6 +10,7 @@ import httpx
 import pytest
 import respx
 
+from niuu.domain.models import Principal
 from ravn.adapters.personas.loader import PersonaConfig
 from ravn.domain.persona_document import portable_persona_from_config
 from ting.adapters.volundr_http import VolundrHTTPAdapter
@@ -184,6 +185,29 @@ class TestPortablePersonas:
 
 
 class TestSpawnSession:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_refusal_keeps_the_reason_forge_gave(self, adapter: VolundrHTTPAdapter):
+        respx.post(SESSIONS_URL).mock(
+            return_value=httpx.Response(
+                409, json={"detail": "No session slot is free: 4 of 4 sessions are running."}
+            )
+        )
+        request = SpawnRequest(
+            name="my-session",
+            repo="org/repo",
+            branch="feat/alpha",
+            model="m",
+            tracker_issue_id="ALPHA-1",
+            tracker_issue_url="https://linear.app/i-1",
+            system_prompt="",
+            initial_prompt="",
+            base_branch="dev",
+        )
+
+        with pytest.raises(httpx.HTTPStatusError, match="No session slot is free: 4 of 4"):
+            await adapter.spawn_session(request)
+
     @pytest.mark.asyncio
     @respx.mock
     async def test_success(self, adapter: VolundrHTTPAdapter):
@@ -543,50 +567,103 @@ class TestListSessions:
 
 
 class TestGetPRStatus:
-    @pytest.mark.asyncio
-    @respx.mock
-    async def test_success(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1/pr").mock(
+    """Reads the real provider route, which works for a stopped session on any deployment."""
+
+    @staticmethod
+    def _session(branch: str = "feat/x-niu-1") -> None:
+        respx.get(f"{SESSIONS_URL}/ses-1").mock(
             return_value=httpx.Response(
                 200,
                 json={
-                    "pr_id": "42",
-                    "url": "https://github.com/org/repo/pull/42",
-                    "state": "open",
-                    "mergeable": True,
-                    "ci_passed": True,
+                    "id": "ses-1",
+                    "name": "run",
+                    "status": "stopped",
+                    "tracker_issue_id": None,
+                    "source": {
+                        "type": "git",
+                        "repo": "https://github.com/o/r",
+                        "branch": branch,
+                        "base_branch": "main",
+                    },
                 },
             )
         )
 
+    @staticmethod
+    def _pull_request(number: int, branch: str = "feat/x-niu-1", **overrides) -> dict:
+        return {
+            "number": number,
+            "title": "A change",
+            "url": f"https://github.com/o/r/pull/{number}",
+            "repo_url": "https://github.com/o/r",
+            "provider": "github",
+            "source_branch": branch,
+            "target_branch": "main",
+            "status": "open",
+            "ci_status": None,
+            **overrides,
+        }
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_it_reads_the_newest_pull_request_from_the_sessions_branch(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        self._session()
+        route = respx.get(f"{BASE_URL}/api/v1/niuu/repos/prs").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    self._pull_request(9, branch="feat/x-niu-2"),
+                    self._pull_request(4, status="closed"),
+                    self._pull_request(7, status="merged", ci_status="passing"),
+                ],
+            )
+        )
+
         pr_status = await adapter.get_pr_status("ses-1")
-        assert pr_status.pr_id == "42"
-        assert pr_status.url == "https://github.com/org/repo/pull/42"
-        assert pr_status.state == "open"
-        assert pr_status.mergeable is True
+
+        assert route.calls.last.request.url.params["repo_url"] == "https://github.com/o/r"
+        assert route.calls.last.request.url.params["status"] == "all"
+        assert pr_status.pr_id == "7"
+        assert pr_status.url == "https://github.com/o/r/pull/7"
+        assert pr_status.state == "merged"
         assert pr_status.ci_passed is True
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_ci_passed_none(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1/pr").mock(
-            return_value=httpx.Response(
-                200,
-                json={
-                    "pr_id": "pr-1",
-                    "state": "open",
-                    "mergeable": False,
-                },
-            )
+    async def test_failing_ci_reads_as_failed(self, adapter: VolundrHTTPAdapter):
+        self._session()
+        respx.get(f"{BASE_URL}/api/v1/niuu/repos/prs").mock(
+            return_value=httpx.Response(200, json=[self._pull_request(1, ci_status="failing")])
         )
 
-        pr_status = await adapter.get_pr_status("ses-1")
-        assert pr_status.ci_passed is None
+        assert (await adapter.get_pr_status("ses-1")).ci_passed is False
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_branch_with_no_pull_request_is_none(self, adapter: VolundrHTTPAdapter):
+        self._session()
+        respx.get(f"{BASE_URL}/api/v1/niuu/repos/prs").mock(
+            return_value=httpx.Response(200, json=[self._pull_request(1, branch="other")])
+        )
+
+        assert await adapter.get_pr_status("ses-1") is None
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_session_that_no_longer_exists_is_none(self, adapter: VolundrHTTPAdapter):
+        respx.get(f"{SESSIONS_URL}/ses-1").mock(return_value=httpx.Response(404))
+
+        assert await adapter.get_pr_status("ses-1") is None
 
     @pytest.mark.asyncio
     @respx.mock
     async def test_raises_on_error(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1/pr").mock(return_value=httpx.Response(500, text="error"))
+        self._session()
+        respx.get(f"{BASE_URL}/api/v1/niuu/repos/prs").mock(
+            return_value=httpx.Response(500, text="error")
+        )
 
         with pytest.raises(httpx.HTTPStatusError):
             await adapter.get_pr_status("ses-1")
@@ -714,18 +791,7 @@ class TestSendMessage:
     @pytest.mark.asyncio
     @respx.mock
     async def test_send_directed_room_message(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1").mock(
-            return_value=httpx.Response(
-                200,
-                json={
-                    "id": "ses-1",
-                    "name": "research-council",
-                    "status": "running",
-                    "chat_endpoint": "http://volundr.test:8000/s/ses-1/chat",
-                },
-            )
-        )
-        route = respx.post("http://volundr.test:8000/s/ses-1/chat/api/room/direct").mock(
+        route = respx.post(f"{SESSIONS_URL}/ses-1/room/direct").mock(
             return_value=httpx.Response(200, json={"ok": True})
         )
 
@@ -735,8 +801,7 @@ class TestSendMessage:
             "Please prefer the staged rollout option.",
         )
 
-        sent = route.calls[0].request
-        body = json.loads(sent.content)
+        body = json.loads(route.calls[0].request.content)
         assert body["target_peer_id"] == "flock-council-chair"
         assert body["content"] == "Please prefer the staged rollout option."
         assert body["source"] == "ting"
@@ -744,18 +809,7 @@ class TestSendMessage:
     @pytest.mark.asyncio
     @respx.mock
     async def test_publish_workflow_event(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1").mock(
-            return_value=httpx.Response(
-                200,
-                json={
-                    "id": "ses-1",
-                    "name": "developer-delivery",
-                    "status": "running",
-                    "chat_endpoint": "http://volundr.test:8000/s/ses-1/chat",
-                },
-            )
-        )
-        route = respx.post("http://volundr.test:8000/s/ses-1/chat/api/room/workflow-events").mock(
+        route = respx.post(f"{SESSIONS_URL}/ses-1/room/workflow-events").mock(
             return_value=httpx.Response(200, json={"status": "published"})
         )
 
@@ -777,47 +831,38 @@ class TestSendMessage:
         }
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("operation", ["workflow", "direct"])
     @respx.mock
-    async def test_room_control_uses_configured_gateway_origin(self, adapter, operation):
-        respx.get(f"{SESSIONS_URL}/ses-1").respond(
-            200,
-            json={
-                "id": "ses-1",
-                "name": "developer-delivery",
-                "status": "running",
-                "chat_endpoint": "wss://browser-only.example/s/ses-1/session",
-            },
+    async def test_joining_and_leaving_a_room_go_through_forge(self, adapter):
+        joined = respx.post(f"{SESSIONS_URL}/ses-1/room/join").respond(200, json={})
+        left = respx.post(f"{SESSIONS_URL}/ses-1/room/leave").respond(200, json={})
+
+        await adapter.join_room(
+            "ses-1",
+            participant_id="ticket-coordinator",
+            display_name="Coordinator",
+            member_session_id="ses-2",
+            notice_context="[Ticket NIU-1]",
         )
-        suffix = "workflow-events" if operation == "workflow" else "direct"
-        route = respx.post(f"{BASE_URL}/s/ses-1/api/room/{suffix}").respond(200, json={})
-        if operation == "workflow":
-            await adapter.publish_workflow_event(
-                "ses-1", "test.observed", "observation", request_id="continuation-1"
-            )
-        else:
-            await adapter.send_directed_room_message("ses-1", "flock-coordinator", "reply")
-        assert route.call_count == 1
+        await adapter.leave_room("ses-1", "ticket-coordinator", reason="run_finished")
+
+        assert joined.call_count == 1
+        assert left.call_count == 1
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_room_control_preserves_direct_skuld_origin(self, adapter):
-        respx.get(f"{SESSIONS_URL}/ses-1").respond(
-            200,
-            json={
-                "id": "ses-1",
-                "name": "direct-session",
-                "status": "running",
-                "chat_endpoint": "wss://session-ingress.example/session",
-            },
-        )
-        route = respx.post("https://session-ingress.example/api/room/workflow-events").respond(
-            200, json={}
-        )
-        await adapter.publish_workflow_event(
-            "ses-1", "test.observed", "observation", request_id="continuation-1"
-        )
-        assert route.call_count == 1
+    async def test_leaving_the_room_of_a_session_that_is_gone(self, adapter):
+        respx.post(f"{SESSIONS_URL}/ses-1/room/leave").respond(404, json={})
+
+        with pytest.raises(LookupError, match="no room to leave"):
+            await adapter.leave_room("ses-1", "ticket-coordinator", reason="run_finished")
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_refused_room_call_stays_loud(self, adapter):
+        respx.post(f"{SESSIONS_URL}/ses-1/room/direct").respond(403, json={})
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await adapter.send_directed_room_message("ses-1", "flock-coordinator", "reply")
 
 
 class TestStopSession:
@@ -1119,7 +1164,32 @@ class TestWorkflowGates:
             "decision": "APPROVE",
             "notes": "Looks bounded.",
             "source": "ting.plan",
+            "actor": "",
         }
+
+    @respx.mock
+    async def test_resolving_a_gate_names_the_agent_behind_the_caller(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        route = respx.post(f"{SESSIONS_URL}/ses-1/workflow/gates/gate-1/resolve").mock(
+            return_value=httpx.Response(200, json={"status": "resolved"})
+        )
+
+        await adapter.resolve_workflow_gate(
+            "ses-1",
+            "gate-1",
+            "APPROVE",
+            principal=Principal(
+                user_id="u1",
+                email="a@b.c",
+                tenant_id="t1",
+                roles=[],
+                actor="system:serviceaccount:nats:regin",
+            ),
+        )
+
+        sent = json.loads(route.calls.last.request.content)
+        assert sent["actor"] == "system:serviceaccount:nats:regin"
 
 
 class _FakeLineIterator:

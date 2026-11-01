@@ -4,6 +4,13 @@ When the operator stops typing for ``silence_threshold_seconds``, this trigger
 runs a cheap LLM reflection on the conversation and emits 0–N follow-up intents
 as threads into Mímir via ``create_thread()``.
 
+The conversation comes from the injected ``transcript`` source (in the daemon,
+:meth:`ravn.adapters.channels.gateway.RavnGateway.transcript_since`): the
+operator's recent exchange, bounded by ``max_transcript_chars``.  A pass with
+no conversation since the previous reflection makes no LLM call and records no
+timestamp — there is nothing to reflect on, and a model asked anyway invents
+intents that become Mímir threads and then full agent tasks.
+
 Build order step 3 from the Vaka vision (§4.1, §12).
 
 Two reflection passes
@@ -41,11 +48,21 @@ from ravn.ports.trigger import TriggerPort
 
 logger = logging.getLogger(__name__)
 
+# ``(since, max_chars) -> transcript``: the operator conversation that happened
+# after ``since`` (everything when ``None``), at most ``max_chars`` of it,
+# newest last.  Empty string when there is none.
+TranscriptSource = Callable[[datetime | None, int], str]
+
 _STATE_FILE_NAME = "wakefulness_state.json"
 
 _SHALLOW_PROMPT = """\
 You are reflecting on a conversation between an AI assistant and its operator.
 The operator has been silent for a while.
+
+The conversation, oldest first:
+<conversation>
+{conversation}
+</conversation>
 
 Answer two questions:
 1. What is unfinished from this conversation that is worth pursuing?
@@ -67,6 +84,11 @@ Respond ONLY with valid JSON — no markdown fences, no commentary.\
 _DEEP_PROMPT = """\
 You are performing a deep reflection on a long-silent conversation between an AI
 assistant and its operator.
+
+The conversation, oldest first:
+<conversation>
+{conversation}
+</conversation>
 
 Consider the broader context: recurring themes, long-term goals mentioned, and
 any patterns in what the operator cares about.
@@ -98,6 +120,7 @@ class WakefulnessTrigger(TriggerPort):
         mimir:      Mímir adapter for creating threads.
         llm:        LLM adapter for the reflection call.
         config:     Wakefulness configuration.
+        transcript: Source of the operator conversation the reflection is about.
         state_dir:  Directory for persisting reflection timestamps.
                     Defaults to ``~/.ravn/daemon``.
     """
@@ -108,12 +131,14 @@ class WakefulnessTrigger(TriggerPort):
         mimir: MimirPort,
         llm: LLMPort,
         config: WakefulnessConfig,
+        transcript: TranscriptSource,
         state_dir: Path | None = None,
     ) -> None:
         self._tracker = tracker
         self._mimir = mimir
         self._llm = llm
         self._config = config
+        self._transcript = transcript
         self._state_dir = state_dir or Path.home() / ".ravn" / "daemon"
         self._last_reflection_at: datetime | None = None
         self._last_deep_reflection_at: datetime | None = None
@@ -162,10 +187,11 @@ class WakefulnessTrigger(TriggerPort):
         # Deep reflection pass — broader context, longer silence.
         if silence_seconds >= self._config.deep_reflection_threshold_seconds:
             if not self._in_deep_cooldown(now):
-                await self._reflect(deep=True)
-                self._last_deep_reflection_at = now
-                self._save_state()
-                return
+                reflected = await self._reflect(deep=True, since=self._last_deep_reflection_at)
+                if reflected:
+                    self._last_deep_reflection_at = now
+                    self._save_state()
+                    return
 
         # Shallow reflection pass.
         if silence_seconds < self._config.silence_threshold_seconds:
@@ -174,9 +200,20 @@ class WakefulnessTrigger(TriggerPort):
         if self._in_shallow_cooldown(now):
             return
 
-        await self._reflect(deep=False)
+        # Any earlier reflection, deep or shallow, already covered what came before it.
+        reflected = await self._reflect(deep=False, since=self._latest_reflection_at())
+        if not reflected:
+            return
         self._last_reflection_at = now
         self._save_state()
+
+    def _latest_reflection_at(self) -> datetime | None:
+        stamps = [
+            stamp
+            for stamp in (self._last_reflection_at, self._last_deep_reflection_at)
+            if stamp is not None
+        ]
+        return max(stamps, default=None)
 
     def _in_shallow_cooldown(self, now: datetime) -> bool:
         if self._last_reflection_at is None:
@@ -190,13 +227,27 @@ class WakefulnessTrigger(TriggerPort):
         elapsed = (now - self._last_deep_reflection_at).total_seconds()
         return elapsed < self._config.deep_reflection_cooldown_seconds
 
-    async def _reflect(self, *, deep: bool) -> None:
-        """Run LLM reflection and create threads for each intent."""
+    async def _reflect(self, *, deep: bool, since: datetime | None) -> bool:
+        """Reflect on the conversation since *since* and create a thread per intent.
+
+        Returns ``False`` without calling the LLM when there is no conversation
+        since *since*; ``True`` once the reflection and its threads are done.
+        """
+        conversation = self._transcript(since, self._config.max_transcript_chars)
+        if not conversation:
+            logger.debug(
+                "WakefulnessTrigger: no conversation since %s; nothing to reflect on", since
+            )
+            return False
+
         label = "deep" if deep else "shallow"
         logger.info("WakefulnessTrigger: running %s reflection", label)
 
         prompt_template = _DEEP_PROMPT if deep else _SHALLOW_PROMPT
-        prompt = prompt_template.format(max_intents=self._config.max_intents_per_reflection)
+        prompt = prompt_template.format(
+            max_intents=self._config.max_intents_per_reflection,
+            conversation=conversation,
+        )
 
         intents = await self._call_llm(prompt)
         capped = intents[: self._config.max_intents_per_reflection]
@@ -217,6 +268,7 @@ class WakefulnessTrigger(TriggerPort):
                 title,
                 intent.get("why", ""),
             )
+        return True
 
     async def _call_llm(self, prompt: str) -> list[dict]:
         """Ask for the follow-up intents; raises when the model gives no usable answer."""

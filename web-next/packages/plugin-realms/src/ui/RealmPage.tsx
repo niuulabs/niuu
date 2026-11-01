@@ -277,7 +277,7 @@ function TalkToIt({ ravn }: { ravn: Ravn }) {
         </div>
       ) : (
         <span className="niuu:text-xs niuu:text-text-faint">
-          No conversation yet. Ask it anything about the realm.
+          No conversation yet. Ask it anything about the workspace.
         </span>
       )}
       <div className="niuu:flex niuu:items-center niuu:gap-2">
@@ -286,13 +286,13 @@ function TalkToIt({ ravn }: { ravn: Ravn }) {
           className={PRIMARY}
           disabled={create.isPending}
           onClick={() =>
-            create.mutate({ title: `Realm chat ${new Date().toISOString().slice(0, 10)}` })
+            create.mutate({ title: `Workspace chat ${new Date().toISOString().slice(0, 10)}` })
           }
         >
           {latest ? 'New conversation' : 'Start a conversation'}
         </button>
         <Link to={'/ravn/ravens' as never} className={LINK}>
-          Open in Ravn
+          Open in Agents
         </Link>
       </div>
       {create.error ? (
@@ -399,7 +399,7 @@ export function RealmPage() {
   const navigate = useNavigate();
   const data = useRealmView(slug);
   const ravens = useRavens();
-  const ravn = ravnForRealm(ravens.data, slug);
+  const ravn = ravnForRealm(ravens.data, slug, data.realm?.id);
   const walkthrough = useWalkthrough(FIRST_REALM_WALKTHROUGH);
   const ctx = usePluginCtx();
   const mode = useUiMode();
@@ -417,17 +417,17 @@ export function RealmPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['volundr', 'sessions'] }),
   });
 
-  if (data.isLoading) return <LoadingState label="Loading realm…" />;
+  if (data.isLoading) return <LoadingState label="Loading workspace…" />;
   if (data.error)
-    return <ErrorState title="Could not load the realm" message={String(data.error)} />;
+    return <ErrorState title="Could not load the workspace" message={String(data.error)} />;
   if (data.notFound || !data.realm || !data.view) {
     return (
       <ErrorState
-        title="No such realm"
-        message={`There is no realm called ${slug}.`}
+        title="No such workspace"
+        message={`There is no workspace called ${slug}.`}
         action={
           <Link to="/realms" className={BUTTON}>
-            Back to realms
+            Back to workspaces
           </Link>
         }
       />
@@ -529,7 +529,7 @@ export function RealmPage() {
               className={BUTTON}
               onClick={runWorkflow}
               disabled={mode === 'advanced' && !workflows.data}
-              title="Run a workflow in this realm"
+              title="Run a workflow in this workspace"
               data-testid="realm-run-workflow"
             >
               Workflow
@@ -557,7 +557,7 @@ export function RealmPage() {
           ]}
           value={tab}
           onChange={switchTab}
-          aria-label="Realm section"
+          aria-label="Workspace section"
         />
 
         {tab === 'overview' ? (
@@ -738,18 +738,18 @@ export function RealmPage() {
             </div>
             {data.mount && data.mountName ? (
               <EmptyState
-                title="Realm memory"
-                description="Explore this realm's pages, links and proof in the Memory scene."
+                title="Workspace memory"
+                description="Explore this workspace's pages, links and proof in the Memory scene."
                 action={
                   <Link to="/mimir" search={{ mount: data.mountName }} className={BUTTON}>
-                    Explore this realm&apos;s memory
+                    Explore this workspace&apos;s memory
                   </Link>
                 }
               />
             ) : (
               <EmptyState
-                title="Realm memory is still starting"
-                description="The Mímir instance created with the realm has not been discovered yet."
+                title="Workspace memory is still starting"
+                description="The memory instance created with the workspace has not been discovered yet."
               />
             )}
           </div>
@@ -787,16 +787,16 @@ export function RealmPage() {
         open={pickerOpen}
         onOpenChange={setPickerOpen}
         title="Run a workflow here"
-        description={`The workflow starts against ${view.binding?.repo ?? 'this realm'}${view.binding?.branch ? ` on ${view.binding.branch}` : ''}.`}
+        description={`The workflow starts against ${view.binding?.repo ?? 'this workspace'}${view.binding?.branch ? ` on ${view.binding.branch}` : ''}.`}
       >
         <div className="niuu:flex niuu:flex-col niuu:gap-2" data-testid="workflow-picker">
           {(workflows.data ?? []).length === 0 ? (
             <EmptyState
               title="No workflows yet"
-              description="Build one under Ting › Workflows, then run it here."
+              description="Build one under Work › Workflows, then run it here."
               action={
                 <Link to={'/ting/workflows' as never} className={PRIMARY}>
-                  Open Ting › Workflows
+                  Open Work › Workflows
                 </Link>
               }
             />
@@ -822,7 +822,7 @@ export function RealmPage() {
             ))
           )}
           <Link to={'/ting/workflows' as never} className={`${LINK} niuu:self-start`}>
-            Manage workflows in Ting
+            Manage workflows
           </Link>
         </div>
       </Modal>
@@ -836,7 +836,7 @@ export function RealmPage() {
         launching={launchWorkflow.isPending}
         onLaunch={async (request) => {
           const target = workflow ?? workflows.data?.[0];
-          if (!target) throw new Error('No workflow to run. Create one under Ting › Workflows.');
+          if (!target) throw new Error('No workflow to run. Create one under Work › Workflows.');
           await launchWorkflow.mutateAsync({
             id: target.id,
             request: {

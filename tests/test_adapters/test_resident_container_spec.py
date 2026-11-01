@@ -418,6 +418,26 @@ def test_materialize_ravn_container_extends_shared_mesh_configuration() -> None:
     assert skuld_config["mesh"]["realm_id"] == str(runtime.flock_id)
 
 
+def test_materialize_ravn_container_passes_the_profile_persona_source() -> None:
+    source = {"adapter": "ravn.adapters.personas.http.HttpPersonaAdapter", "kwargs": {}}
+    values = _flock_values() | {
+        "image": "example.test/ravn@sha256:123",
+        "resident": {**_flock_values()["resident"], "personaSource": source},
+    }
+
+    spec = materialize_resident_container(
+        _runtime(),
+        values,
+        default_image="",
+        default_service_name="resident",
+        default_service_port=9000,
+        volundr_api_url="http://volundr",
+        sandbox_command=("skuld", "serve"),
+    )
+
+    assert yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])["persona_source"] == source
+
+
 def test_naming_convention_helpers_match_web_next_realm_ts() -> None:
     # Mirrors web-next/packages/plugin-realms/src/domain/realm.ts
     # charterPagePathFor / mountNameFor — keep these in lockstep.

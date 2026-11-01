@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import respx
@@ -651,6 +651,39 @@ class TestBuildTools:
         )
 
         assert "persisted_metric_window" in {tool.name for tool in tools}
+
+    @pytest.mark.parametrize(("enabled", "refused"), [(True, True), (False, False)])
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    async def test_mimir_write_refuses_the_friction_ledger_while_it_is_kept(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+        enabled: bool,
+        refused: bool,
+    ) -> None:
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+
+        settings.reflection.friction.enabled = enabled
+        settings.reflection.friction.ledger_prefix = "ledger"
+        mimir = AsyncMock()
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            mimir,
+            no_tools=False,
+            persona_config=MagicMock(allowed_tools=["mimir_write"], forbidden_tools=None),
+        )
+
+        write = next(tool for tool in tools if tool.name == "mimir_write")
+        result = await write.execute({"path": "ledger/x.md", "content": "# Closed"})
+        assert result.is_error is refused
+        assert mimir.upsert_page.await_count == (0 if refused else 1)
 
     @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
     def test_bulk_mode_omits_sdk_tools_without_an_authorized_host_route(

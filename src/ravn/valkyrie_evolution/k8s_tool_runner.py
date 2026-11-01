@@ -224,7 +224,7 @@ class KubernetesJobLearnedToolRunner:
         if run.timed_out:
             return ToolRunResult(
                 ok=False,
-                error=f"learned tool timed out after {timeout_seconds}s",
+                error=_timeout_error(timeout_seconds, egress),
                 stderr=run.stderr,
                 enforcement=enforcement,
             )
@@ -577,12 +577,13 @@ class KubernetesJobExecutor:
                 core, run_name, code, payload, requirements, owner_job_uid=owner_uid
             )
             created_secret = True
-            timed_out = await self._wait_started_completion(batch, core, run_name, timeout_seconds)
+            exit_code = await self._wait_started_completion(batch, core, run_name, timeout_seconds)
+            timed_out = exit_code is None
             logs = "" if timed_out else await self._read_pod_logs(core, run_name)
             output_exceeded = len(logs.encode()) > self._config.output_limit_bytes
             if output_exceeded:
                 logs = logs.encode()[: self._config.output_limit_bytes].decode(errors="replace")
-            exit_code = 124 if timed_out else await self._exit_code(batch, run_name)
+            exit_code = 124 if exit_code is None else exit_code
             result, diagnostics = _split_result(logs)
             return JobRunResult(
                 stdout=result,
@@ -704,12 +705,13 @@ class KubernetesJobExecutor:
                 core, run_name, tool_code, test_code, requirements, owner_job_uid=_job_uid(job)
             )
             created_secret = True
-            timed_out = await self._wait_started_completion(batch, core, run_name, timeout_seconds)
+            exit_code = await self._wait_started_completion(batch, core, run_name, timeout_seconds)
+            timed_out = exit_code is None
             logs = await self._read_pod_logs(core, run_name)
             output_exceeded = len(logs.encode()) > self._config.output_limit_bytes
             if output_exceeded:
                 logs = logs.encode()[: self._config.output_limit_bytes].decode(errors="replace")
-            exit_code = 124 if timed_out else await self._exit_code(batch, run_name)
+            exit_code = 124 if exit_code is None else exit_code
             return JobRunResult(
                 stdout=logs,
                 exit_code=exit_code,
@@ -731,8 +733,8 @@ class KubernetesJobExecutor:
         core: Any,
         run_name: str,
         timeout_seconds: float,
-    ) -> bool:
-        """Wait for a tool or verify Job to reach a terminal state.
+    ) -> int | None:
+        """Wait for a tool or verify Job's container to finish.
 
         The test's own *timeout_seconds* budget starts counting from the
         container's actual ``state.running.startedAt`` — never from when
@@ -740,14 +742,20 @@ class KubernetesJobExecutor:
         the time the test itself gets to run (a 100s pull ahead of a 30s
         test must not become "ran for 0s, therefore hung").
 
-        Returns ``True`` when the container ran for at least
-        *timeout_seconds* without the Job reaching a terminal state — a
-        genuine test hang, reported by the caller as a failed verification,
-        never infrastructure. Raises :class:`LearnedToolInfrastructureError`
-        when the container never started within its own
-        ``job_pod_start_timeout_seconds`` budget (scheduling, image pull),
-        or when ``_infra_failure_reason`` finds a definite cause once the
-        Job is marked failed.
+        The run is over when its container terminates, not when the Job
+        controller gets round to marking the Job finished: that update lags
+        the container by seconds (2-4s measured on a quiet cluster), and
+        counted against the budget it made a tool that finished in 7s of a
+        10s budget report a timeout and lose its result.
+
+        Returns the container's exit code, or ``None`` when the container
+        ran for at least *timeout_seconds* without finishing — a genuine
+        hang, reported by the caller as a timeout, never infrastructure.
+        Raises :class:`LearnedToolInfrastructureError` when the container
+        never started within its own ``job_pod_start_timeout_seconds``
+        budget (scheduling, image pull), or when ``_pod_infra_reason``
+        finds a definite cluster-driven cause once the Job failed or its
+        container stopped.
         """
         wait_start = time.monotonic()
         pod_start_deadline = wait_start + self._config.job_pod_start_timeout_seconds
@@ -761,16 +769,27 @@ class KubernetesJobExecutor:
             job = await batch.read_namespaced_job(run_name, self._config.namespace)
             status = _job_status(job)
             if status.get("succeeded"):
-                return False
+                return 0
             if status.get("failed"):
                 reason = await self._infra_failure_reason(core, run_name)
                 if reason:
                     raise LearnedToolInfrastructureError(
                         f"Job {run_name} never ran its container: {reason}"
                     )
-                return False
+                return 1
+            pods = await self._pods(core, run_name)
+            exit_code = next(
+                (code for code in map(_container_exit_code, pods) if code is not None), None
+            )
+            if exit_code is not None:
+                reason = next(filter(None, map(_pod_infra_reason, pods)), None)
+                if reason:
+                    raise LearnedToolInfrastructureError(
+                        f"Job {run_name} container was stopped by the cluster: {reason}"
+                    )
+                return exit_code
             if started_at is None:
-                started_at = await self._pod_started_at(core, run_name)
+                started_at = next(filter(None, map(_container_started_at, pods)), None)
             now = time.monotonic()
             if started_at is None and now >= pod_start_deadline:
                 reason = await self._infra_failure_reason(core, run_name)
@@ -782,7 +801,7 @@ class KubernetesJobExecutor:
             if started_at is not None:
                 ran_for = (dt.datetime.now(dt.UTC) - started_at).total_seconds()
                 if ran_for >= timeout_seconds:
-                    return True
+                    return None
             if now >= backstop_deadline:
                 reason = await self._infra_failure_reason(core, run_name)
                 detail = f" ({reason})" if reason else ""
@@ -799,26 +818,13 @@ class KubernetesJobExecutor:
             )
 
     async def _infra_failure_reason(self, core: Any, run_name: str) -> str | None:
-        pods = await core.list_namespaced_pod(
-            self._config.namespace, label_selector=f"job-name={run_name}"
-        )
-        items = getattr(pods, "items", pods)
-        for pod in items:
-            reason = _pod_infra_reason(pod)
-            if reason:
-                return reason
-        return None
+        return next(filter(None, map(_pod_infra_reason, await self._pods(core, run_name))), None)
 
-    async def _pod_started_at(self, core: Any, run_name: str) -> dt.datetime | None:
+    async def _pods(self, core: Any, run_name: str) -> list[Any]:
         pods = await core.list_namespaced_pod(
             self._config.namespace, label_selector=f"job-name={run_name}"
         )
-        items = getattr(pods, "items", pods)
-        for pod in items:
-            started_at = _container_started_at(pod)
-            if started_at is not None:
-                return started_at
-        return None
+        return list(getattr(pods, "items", pods))
 
     async def _cleanup(
         self,
@@ -1180,10 +1186,6 @@ class KubernetesJobExecutor:
             limit_bytes=self._config.output_limit_bytes + 1,
         )
 
-    async def _exit_code(self, batch: Any, run_name: str) -> int:
-        status = _job_status(await batch.read_namespaced_job(run_name, self._config.namespace))
-        return 0 if status.get("succeeded") else 1
-
     async def _delete_job(self, batch: Any, run_name: str) -> None:
         await batch.delete_namespaced_job(
             run_name,
@@ -1438,9 +1440,19 @@ _INFRA_WAITING_REASONS = frozenset(
 #: a positively-identified cluster-driven cause overrides it.
 _INFRA_EVICTION_MARKERS = ("drain", "preempt", "taint")
 
+#: How the kubelet opens a node-pressure eviction. It appends "Container
+#: <name> was using <usage>, request is <request>" for each container over
+#: its request, so a message with no such clause blames the node, not the
+#: tool: on jarnvidr a full image filesystem evicted tool pods that were
+#: still pulling their image.
+_NODE_PRESSURE_EVICTION = "the node was low on resource"
+_CONTAINER_OVER_REQUEST = "was using"
+
 
 def _eviction_is_infrastructure(message: str) -> bool:
     lowered = message.lower()
+    if lowered.startswith(_NODE_PRESSURE_EVICTION):
+        return _CONTAINER_OVER_REQUEST not in lowered
     return any(marker in lowered for marker in _INFRA_EVICTION_MARKERS)
 
 
@@ -1517,6 +1529,23 @@ def _container_started_at(pod: Any) -> dt.datetime | None:
     return None
 
 
+def _container_exit_code(pod: Any) -> int | None:
+    """The exit code of the pod's container once it has terminated, or None
+    while it has not. Jobs run with ``restartPolicy: Never`` and
+    ``backoffLimit: 0``, so a terminated container is the run's outcome."""
+    data = pod.to_dict() if hasattr(pod, "to_dict") else pod
+    if not isinstance(data, dict):
+        return None
+    status = data.get("status") or {}
+    container_statuses = status.get("container_statuses") or status.get("containerStatuses") or []
+    for container_status in container_statuses:
+        terminated = (container_status.get("state") or {}).get("terminated") or {}
+        exit_code = terminated.get("exit_code", terminated.get("exitCode"))
+        if exit_code is not None:
+            return int(exit_code)
+    return None
+
+
 _NAMESPACED_NAME_RE = re.compile(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-a-z0-9.]*[a-z0-9])?")
 
 #: Runs first in every tool and verify Job: refuses to start the tool unless
@@ -1560,6 +1589,24 @@ def _split_result(logs: str) -> tuple[str, str]:
             result = lines[index].removeprefix(_RESULT_MARKER)
             return result, "\n".join(lines[:index] + lines[index + 1 :]).strip()
     return "", logs.strip()
+
+
+def _timeout_error(timeout_seconds: float, egress: EgressPlan) -> str:
+    """A timeout that names the network the run had.
+
+    The NetworkPolicy drops a connection to anything the declared reach does
+    not name, so the tool sees no refusal: the connection hangs until this
+    timeout. Reported as a bare timeout, a tool that probed one undeclared
+    address looked like slow code, and residents rebuilt it again and again.
+    """
+    message = f"learned tool timed out after {timeout_seconds}s"
+    if egress.unrestricted:
+        return message
+    return (
+        f"{message}. Its Job could reach {egress.describe()}; a connection to anything "
+        "else is dropped by the network policy and hangs until this timeout instead of "
+        "failing, so check that the tool contacts only its declared reach"
+    )
 
 
 def _gated_command(python_args: list[str], requirements_path: str) -> list[str]:

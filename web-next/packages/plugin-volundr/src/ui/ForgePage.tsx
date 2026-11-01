@@ -578,7 +578,7 @@ export function ForgePage() {
     <>
       <div className="vol-forge" data-testid="forge-page">
         {connectionStates.length > 0 && (
-          <div className="vol-forge__connections" aria-label="Forge connections">
+          <div className="vol-forge__connections" aria-label="Host connections">
             <p>
               {incompleteMetrics
                 ? 'Metrics cover loaded hosts; some data is pending or unavailable.'
@@ -601,12 +601,12 @@ export function ForgePage() {
                 type="button"
                 onClick={() => void Promise.all([overview.refetch(), sessionsQuery.refetch()])}
               >
-                Retry Forge connections
+                Retry host connections
               </button>
             )}
           </div>
         )}
-        <section className="vol-forge__metrics" aria-label="Forge metrics">
+        <section className="vol-forge__metrics" aria-label="Host metrics">
           <MetricTile
             label="ACTIVE PODS"
             value={sessionsQuery.data ? activeSessions.length : '—'}
@@ -693,7 +693,7 @@ export function ForgePage() {
           >
             <header className="vol-forge__panel-head">
               <div className="vol-forge__panel-title">
-                <h2>Forge load</h2>
+                <h2>Host load</h2>
                 <span>{forgeClusters.length} clusters</span>
               </div>
               <button

@@ -130,7 +130,7 @@ class RavnTUI(TextualApp[None]):
         yield TabBar(id="tab-bar")
         yield Container(id="main-container")
         yield Container(
-            Label("[bold #f59e0b]:[/]", id="cmd-input-prompt"),
+            Label("[bold #86d0e8]:[/]", id="cmd-input-prompt"),
             Input(placeholder="command", id="cmd-input"),
             id="cmd-input-container",
         )

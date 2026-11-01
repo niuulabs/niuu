@@ -88,6 +88,7 @@ class ResidentWakefulness:
         learning_curator: Any | None = None,
         self_improvement: Any | None = None,
         tool_curator: Any | None = None,
+        evolution_reporter: Any | None = None,
         tick_interval_seconds: float = DEFAULT_TICK_INTERVAL_SECONDS,
         wakeful_window_seconds: float = DEFAULT_WAKEFUL_WINDOW_SECONDS,
         dream_interval_seconds: float = DEFAULT_DREAM_INTERVAL_SECONDS,
@@ -109,6 +110,7 @@ class ResidentWakefulness:
         self._learning_curator = learning_curator
         self._self_improvement = self_improvement
         self._tool_curator = tool_curator
+        self._evolution_reporter = evolution_reporter
         self._tick_interval_seconds = tick_interval_seconds
         self._wakeful_window_seconds = wakeful_window_seconds
         self._dream_interval_seconds = dream_interval_seconds
@@ -376,11 +378,14 @@ class ResidentWakefulness:
         # not also stop the library from being kept.
         learned_tools = await self._tool_curator.curate() if self._tool_curator else {}
         learnings = await self._curate_learnings()
+        # Last, so it reports what this dream changed.
+        evolution = await self._evolution_reporter.report() if self._evolution_reporter else {}
 
         return {
             "skills_reviewed": len(rows),
             "learnings": learnings,
             "learned_tools": learned_tools,
+            "evolution": evolution,
             "marked_stale": marked_stale,
             "promoted": promoted,
             "promotion_candidates": promotion_candidates,

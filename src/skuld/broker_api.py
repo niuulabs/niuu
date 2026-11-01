@@ -1182,7 +1182,7 @@ class _RoomWorkflowEventRequest(BaseModel):
 
 
 class _RoomJoinRequest(BaseModel):
-    """Request body for joining a live Environment room."""
+    """Request body for joining a live room, as a person or an agent from another session."""
 
     participant_id: str
     display_name: str = ""
@@ -1192,10 +1192,14 @@ class _RoomJoinRequest(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     surfaces: list[str] = Field(default_factory=lambda: ["skuld.room"])
     environment_action_authorities: list[str] = Field(default_factory=list)
+    participant_type: str = "human"
+    session_id: str = ""
+    subscribes_to: list[str] = Field(default_factory=list)
+    notice_context: str = ""
 
 
 class _RoomHeartbeatRequest(BaseModel):
-    """Request body for human Environment heartbeat/state updates."""
+    """Request body for a joined participant's heartbeat/state updates."""
 
     participant_id: str
     status: str | None = None
@@ -1231,6 +1235,9 @@ class _WorkflowGateResolveRequest(BaseModel):
     decision: str
     notes: str = ""
     source: str = "human"
+    decided_by: str = ""
+    # The workload acting for the caller. Claiming one can only narrow what may be answered.
+    actor: str = ""
 
 
 @app.post("/api/message", dependencies=_LOOPBACK_GUARD)
@@ -1391,9 +1398,9 @@ async def publish_room_workflow_event(body: _RoomWorkflowEventRequest) -> dict:
 
 @app.post("/api/room/join")
 async def join_room(body: _RoomJoinRequest) -> dict:
-    """Join a human participant to a live Valkyrie Environment."""
+    """Join a person or an agent from another session to this room."""
     try:
-        participant = await broker.join_human_environment(
+        participant = await broker.join_environment(
             participant_id=body.participant_id,
             display_name=body.display_name,
             environment_id=body.environment_id,
@@ -1402,6 +1409,10 @@ async def join_room(body: _RoomJoinRequest) -> dict:
             capabilities=body.capabilities or None,
             surfaces=body.surfaces or None,
             environment_action_authorities=body.environment_action_authorities,
+            participant_type=body.participant_type,
+            session_id=body.session_id,
+            subscribes_to=body.subscribes_to or None,
+            notice_context=body.notice_context,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -1415,9 +1426,9 @@ async def join_room(body: _RoomJoinRequest) -> dict:
 
 @app.post("/api/room/heartbeat")
 async def heartbeat_room(body: _RoomHeartbeatRequest) -> dict:
-    """Update human participant presence in a live Valkyrie Environment."""
+    """Update a joined participant's presence in this room."""
     try:
-        participant = await broker.heartbeat_human_environment(
+        participant = await broker.heartbeat_environment(
             participant_id=body.participant_id,
             status=body.status,
             wakefulness=body.wakefulness,
@@ -1433,9 +1444,9 @@ async def heartbeat_room(body: _RoomHeartbeatRequest) -> dict:
 
 @app.post("/api/room/leave")
 async def leave_room(body: _RoomLeaveRequest) -> dict:
-    """Leave a human participant from a live Valkyrie Environment."""
+    """End a joined participant's membership of this room."""
     try:
-        await broker.leave_human_environment(
+        await broker.leave_environment(
             participant_id=body.participant_id,
             reason=body.reason,
         )
@@ -1546,9 +1557,13 @@ async def resolve_workflow_gate(
             body.decision,
             notes=body.notes,
             source=body.source,
+            decided_by=body.decided_by,
+            actor=body.actor,
         )
     except LookupError as exc:
         raise HTTPException(404, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except RuntimeError as exc:

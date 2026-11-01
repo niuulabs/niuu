@@ -33,12 +33,12 @@ class StatusBar(Widget):
     StatusBar #sb-mode {
         width: auto;
         padding: 0 1;
-        color: #3f3f46;
+        color: #2b4351;
     }
     StatusBar #sb-sep1 {
         width: auto;
         padding: 0 1;
-        color: #3f3f46;
+        color: #2b4351;
     }
     StatusBar #sb-flokk-tag {
         width: auto;
@@ -47,12 +47,12 @@ class StatusBar(Widget):
     StatusBar #sb-sep2 {
         width: auto;
         padding: 0 1;
-        color: #3f3f46;
+        color: #2b4351;
     }
     StatusBar #sb-active {
         width: auto;
         padding: 0 1;
-        color: #52525b;
+        color: #648090;
     }
     StatusBar #sb-notification {
         width: 1fr;
@@ -60,7 +60,7 @@ class StatusBar(Widget):
     }
     StatusBar #sb-clock {
         width: auto;
-        color: #52525b;
+        color: #648090;
         dock: right;
     }
     """
@@ -72,12 +72,12 @@ class StatusBar(Widget):
         self._flokk_name: str = "local"
 
     def compose(self) -> ComposeResult:
-        yield Static("[bold #f59e0b]ᚱ RAVN[/]", id="sb-logo")
-        yield Static("[#3f3f46] NORMAL [/]", id="sb-mode")
-        yield Static("[#3f3f46]│[/]", id="sb-sep1")
-        yield Label("[#f59e0b]flokk:local · 0 ravens · 0 tasks[/]", id="sb-flokk-tag")
-        yield Static("[#3f3f46]│[/]", id="sb-sep2")
-        yield Label("[#52525b]→ —[/]", id="sb-active")
+        yield Static("[bold #86d0e8]ᚱ RAVN[/]", id="sb-logo")
+        yield Static("[#2b4351] NORMAL [/]", id="sb-mode")
+        yield Static("[#2b4351]│[/]", id="sb-sep1")
+        yield Label("[#86d0e8]flokk:local · 0 ravens · 0 tasks[/]", id="sb-flokk-tag")
+        yield Static("[#2b4351]│[/]", id="sb-sep2")
+        yield Label("[#648090]→ —[/]", id="sb-active")
         yield Static("", id="sb-notification")
         yield Label("", id="sb-clock")
 
@@ -105,7 +105,7 @@ class StatusBar(Widget):
     def _flash_notification(self, text: str) -> None:
         try:
             notif = self.query_one("#sb-notification", Static)
-            notif.update(f"[bold #f59e0b]⚡ {text}[/]")
+            notif.update(f"[bold #86d0e8]⚡ {text}[/]")
         except Exception:
             return
         self.set_timer(5.0, self._clear_notification)
@@ -129,12 +129,12 @@ class StatusBar(Widget):
         running = sum(1 for c in conns if c.ravn_info and c.ravn_info.get("state") == "running")
         tag = f"flokk:{self._flokk_name} · {count} ravens · {running} tasks"
         with suppress(Exception):
-            self.query_one("#sb-flokk-tag", Label).update(f"[#f59e0b]{tag}[/]")
+            self.query_one("#sb-flokk-tag", Label).update(f"[#86d0e8]{tag}[/]")
 
     def set_active_ravn(self, name: str) -> None:
         self._active_ravn = name
         with suppress(Exception):
-            self.query_one("#sb-active", Label).update(f"[#52525b]→ {name}[/]")
+            self.query_one("#sb-active", Label).update(f"[#648090]→ {name}[/]")
 
     def set_task_count(self, count: int) -> None:
         # task count is now derived live in _update_flokk_tag; kept for compat
@@ -143,8 +143,8 @@ class StatusBar(Widget):
     def set_mode(self, mode: str) -> None:
         """Update the vim mode indicator (NORMAL / INSERT)."""
         if mode == "INSERT":
-            markup = "[bold #f59e0b] INSERT [/]"
+            markup = "[bold #86d0e8] INSERT [/]"
         else:
-            markup = "[#3f3f46] NORMAL [/]"
+            markup = "[#2b4351] NORMAL [/]"
         with suppress(Exception):
             self.query_one("#sb-mode", Static).update(markup)

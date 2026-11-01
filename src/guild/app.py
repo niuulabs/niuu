@@ -97,6 +97,20 @@ async def _seed_embedded_forge_instance(
     )
 
 
+async def _seed_local_mimir_instance(instance_service: InstanceService, base_url: str) -> None:
+    await instance_service.upsert_seed_instance(
+        kind=InstanceKind.MIMIR,
+        slug="local-memory",
+        name="Local Memory",
+        base_url=base_url,
+        visibility=InstanceVisibility.SYSTEM,
+        enabled=True,
+        is_default=False,
+        config={},
+        tags=["local"],
+    )
+
+
 def _has_configured_local_forge(seeded_instances: list[InstanceSeedConfig]) -> bool:
     """Whether the operator explicitly configured their own ``local`` Volundr slug.
 
@@ -219,6 +233,10 @@ def create_app(
             ):
                 await _seed_embedded_forge_instance(
                     instance_service, list(loaded_settings.niuu.instances)
+                )
+            if loaded_settings.niuu.local_mimir_url:
+                await _seed_local_mimir_instance(
+                    instance_service, loaded_settings.niuu.local_mimir_url
                 )
 
             fragment_inbox = ObservatoryFragmentInboxService(

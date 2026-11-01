@@ -188,6 +188,19 @@ An empty list in `match` means "any".
   must report the missing API, not substitute a watermark write.
 - Session-scoped routes go to the owning instance (`_find_session_owner`).
 - Rules and sinks go to the selected instance, local by default.
+- Push devices (`POST /devices`, `GET /devices`, `DELETE /devices/{token}`) fan out
+  to every visible instance, because each node pushes to the devices registered
+  with it. They succeed only when every instance agrees, and never report a
+  partial result:
+  - `POST` answers 201 with one instance's record when all accepted. A node's 4xx
+    refusal propagates as that status; an unreachable node or 5xx is 502. The
+    detail names each failing instance. Registration is idempotent per node on
+    (owner, token), so the client retries.
+  - `DELETE` answers 204 when all instances removed it or no longer know it (404);
+    otherwise the same error shape.
+  - `GET` returns the union de-duplicated by token (first instance wins), and fails
+    naming an unreachable instance instead of setting
+    `X-Forge-Unavailable-Instances`, since a partial list reads as "not registered".
 
 ## 7. Delivery (delivery workstream)
 

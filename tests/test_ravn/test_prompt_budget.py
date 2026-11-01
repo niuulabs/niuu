@@ -11,6 +11,7 @@ import pytest
 from ravn.agent import RavnAgent
 from ravn.budget import _CHARS_PER_TOKEN
 from ravn.cap_telemetry import cap_hit_counts
+from ravn.domain.events import RavnEventType
 from ravn.domain.exceptions import PromptBudgetExceededError
 from ravn.domain.models import (
     StreamEvent,
@@ -238,6 +239,24 @@ class TestToolResultCap:
         history_blob = str([m.content for m in agent.session.messages])
         assert "tool result truncated" in history_blob
         assert "x" * 2_000 not in history_blob
+
+    async def test_channels_receive_the_capped_result(self) -> None:
+        """An uncapped result is larger than a NATS message, which loses the event."""
+        agent = _agent(
+            make_tool_then_text_llm("giant_result"),
+            tools=[GiantResultTool(size=50_000)],
+            max_tool_result_chars=1_000,
+        )
+
+        result = await agent.run_turn("go")
+
+        emitted = [
+            event.payload["result"]
+            for event in agent._channel.events
+            if event.type == RavnEventType.TOOL_RESULT
+        ]
+        assert emitted == [result.tool_results[0].content]
+        assert len(emitted[0]) < 2_000
 
     async def test_disabled_cap_keeps_full_result(self) -> None:
         agent = _agent(

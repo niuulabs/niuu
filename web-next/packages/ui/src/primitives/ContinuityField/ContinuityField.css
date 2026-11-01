@@ -1,0 +1,88 @@
+/* The niuu theme sets the master colours; other themes take their brand ramp. */
+.niuu-continuity {
+  --_field-ink: var(--color-bg-primary);
+  --_field-haze: var(--niuu-field-haze, var(--brand-800));
+  --_field-line: var(--niuu-field-line, var(--brand-500));
+  --_field-edge: var(--niuu-field-edge, var(--brand-600));
+  --_field-path: var(--niuu-field-path, var(--brand-300));
+  --_field-glow: var(
+    --niuu-field-glow,
+    color-mix(in srgb, var(--brand-500) 9%, var(--color-bg-primary))
+  );
+  --_field-mid: var(
+    --niuu-field-mid,
+    color-mix(in srgb, var(--brand-500) 3%, var(--color-bg-primary))
+  );
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse at 50% 40%,
+    var(--_field-glow) 0%,
+    var(--_field-mid) 37%,
+    var(--_field-ink) 75%
+  );
+}
+.niuu-continuity::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse 46% 56% at 50% 50%,
+    var(--_field-ink) 0%,
+    color-mix(in srgb, var(--_field-ink) 86%, transparent) 42%,
+    transparent 100%
+  );
+}
+.niuu-continuity__wave {
+  position: absolute;
+  top: 0;
+  right: -14%;
+  width: 128%;
+  height: 100%;
+}
+
+@media (min-width: 981px) {
+  .niuu-continuity--hero {
+    background: radial-gradient(
+      ellipse at 80% 30%,
+      var(--_field-glow) 0%,
+      var(--_field-mid) 37%,
+      var(--_field-ink) 75%
+    );
+  }
+  .niuu-continuity--hero::after {
+    background: linear-gradient(
+      90deg,
+      var(--_field-ink) 0%,
+      color-mix(in srgb, var(--_field-ink) 95%, transparent) 24%,
+      color-mix(in srgb, var(--_field-ink) 66%, transparent) 40%,
+      transparent 68%
+    );
+  }
+  .niuu-continuity--hero .niuu-continuity__wave {
+    top: 72px;
+    right: -10%;
+    width: 92%;
+    height: calc(100% - 72px);
+    opacity: 0.98;
+  }
+}
+
+@media (max-width: 980px) {
+  .niuu-continuity::after {
+    background: radial-gradient(
+      ellipse 96% 60% at 50% 50%,
+      var(--_field-ink) 0%,
+      color-mix(in srgb, var(--_field-ink) 80%, transparent) 50%,
+      transparent 100%
+    );
+  }
+  .niuu-continuity__wave {
+    right: -55%;
+    width: 210%;
+    opacity: 0.7;
+  }
+}
