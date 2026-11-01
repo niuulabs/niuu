@@ -62,94 +62,152 @@ html:has(.niuu-home) { scroll-behavior:smooth }
 .niuu-home .section-lead h2 { margin-bottom:0 }
 .niuu-home .section-lead p { max-width:440px;margin:0 }
 
-/* The idea. */
-.niuu-home .idea-lead { display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:8%;align-items:end }
-.niuu-home .evolution { list-style:none;margin:72px 0 0;padding:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:32px;position:relative }
-.niuu-home .evolution:before { content:'';position:absolute;left:0;right:0;top:4px;height:1px;background:linear-gradient(90deg,#3f6a7f,#3f6a7f 80%,var(--signal)) }
-.niuu-home .evolution li { position:relative;padding-top:28px }
-.niuu-home .evolution li:before { content:'';position:absolute;left:0;top:0;width:9px;height:9px;border-radius:50%;background:var(--ink);border:1px solid var(--signal) }
-.niuu-home .evolution h3 { font-size:18px;margin:8px 0 6px }
-.niuu-home .evolution p { font-size:14px;line-height:1.65;color:#a8bbc6;margin:0 }
-
-/* The gallery: the visual centre of the page. */
+/* The gallery: one agent to a whole environment, the centre of the page.
+   Each step has its own composition, sized to what it has to show. */
 .niuu-home .gallery { padding:clamp(96px,10vw,148px) 0 0;border-top:1px solid #1e3342;background:#091620;overflow:clip }
-.niuu-home .gallery-head { padding:0 var(--edge);margin-bottom:48px }
-.niuu-home .gallery-head h2 { margin-top:0;font-size:clamp(44px,5.4vw,84px);letter-spacing:-.045em }
-.niuu-home .chapter-nav { position:sticky;top:0;z-index:5;display:flex;gap:32px;padding:0 var(--edge);border-top:1px solid #1e3342;border-bottom:1px solid #1e3342;background:#091620;font-size:13px;color:#8ba3b0;overflow-x:auto;scrollbar-width:none }
-.niuu-home .chapter-nav a { padding:15px 0;white-space:nowrap;border-bottom:1px solid transparent;margin-bottom:-1px;transition:color .2s }
-.niuu-home .chapter-nav a:hover { color:var(--mist) }
-.niuu-home .chapter-nav a.current { color:var(--mist);border-bottom-color:var(--signal) }
-.niuu-home .chapter { display:grid;gap:64px;padding:clamp(88px,9vw,132px) 0;align-items:center;scroll-margin-top:50px }
-.niuu-home .chapter + .chapter { border-top:1px solid #1a2f3c }
-.niuu-home .chapter.right { grid-template-columns:minmax(300px,4fr) minmax(0,8.5fr);padding-left:var(--edge) }
-.niuu-home .chapter.left { grid-template-columns:minmax(0,8.5fr) minmax(300px,4fr);padding-right:var(--edge) }
-.niuu-home .chapter.left .chapter-text { order:2 }
-.niuu-home .chapter.wide { grid-template-columns:minmax(0,1fr);gap:44px;padding-left:var(--edge);padding-right:var(--edge) }
-.niuu-home .chapter.wide .chapter-text { display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);column-gap:8%;align-items:start }
-.niuu-home .chapter.wide .label, .niuu-home .chapter.wide h3 { grid-column:1 }
-.niuu-home .chapter.wide .chapter-text p { grid-column:2;grid-row:2 }
-.niuu-home .chapter.wide .view-tabs { grid-column:1;grid-row:3;margin-top:20px }
-.niuu-home .chapter.wide .more { grid-column:2;grid-row:3;align-self:end;justify-self:start;margin:0 0 10px }
-.niuu-home .chapter-text h3 { font:300 clamp(30px,2.75vw,44px)/1.14 'Inter Display',Inter,sans-serif;letter-spacing:-.034em;margin:14px 0 18px }
-.niuu-home .chapter-text p { font-size:15px;line-height:1.75;color:#a8bbc6;margin:0 }
-.niuu-home .chapter-text .more { display:inline-block;margin-top:16px }
-.niuu-home .view-tabs { display:flex;flex-wrap:wrap;gap:22px;margin:30px 0 0;border-bottom:1px solid #2b4351 }
-.niuu-home .view-tabs button { background:none;border:0;border-bottom:1px solid transparent;margin-bottom:-1px;padding:0 0 10px;font-size:13px;color:#8ba3b0;transition:color .2s }
+.niuu-home .gallery-head { padding:0 var(--edge);margin-bottom:56px }
+.niuu-home .gallery-head h2 { margin-top:0;font-size:clamp(38px,5.4vw,84px);letter-spacing:-.045em }
+/* The steps stay in view: the same continuous line as the brand, filling as you read. */
+.niuu-home .steps { --progress:0%;position:sticky;top:0;z-index:5;padding:16px var(--edge) 14px;border-top:1px solid #1e3342;border-bottom:1px solid #1e3342;background:#091620;overflow-x:auto;scrollbar-width:none }
+.niuu-home .steps ol { list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;position:relative }
+.niuu-home .steps ol:before, .niuu-home .steps ol:after { content:'';position:absolute;left:0;top:4px;height:1px }
+.niuu-home .steps ol:before { right:0;background:#2b4351 }
+.niuu-home .steps ol:after { width:var(--progress);background:var(--signal);transition:width .35s ease }
+.niuu-home .steps a { display:block;padding:20px 16px 0 0;position:relative;color:#8ba3b0;transition:color .2s }
+.niuu-home .step-mark { position:absolute;left:0;top:0;width:9px;height:9px;border-radius:50%;background:#091620;border:1px solid #4a6a7c;z-index:1;transition:background .2s,border-color .2s }
+.niuu-home .steps strong { display:block;font-size:14px;font-weight:500;line-height:1.3;white-space:nowrap }
+.niuu-home .steps small { display:block;font-size:12px;line-height:1.4;color:#7f99a8;margin-top:2px }
+.niuu-home .steps a:hover { color:var(--mist) }
+.niuu-home .steps a.passed .step-mark { background:var(--signal);border-color:var(--signal) }
+.niuu-home .steps a[aria-current] { color:var(--mist) }
+.niuu-home .steps a[aria-current] .step-mark { background:var(--signal);border-color:var(--signal);box-shadow:0 0 0 3px #86d0e833 }
+
+.niuu-home .act { padding:clamp(80px,8vw,124px) var(--edge);scroll-margin-top:84px }
+.niuu-home .act + .act { border-top:1px solid #1a2f3c }
+.niuu-home .act-head { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8%;align-items:end }
+.niuu-home .gallery .act-head h3 { font:300 clamp(34px,3.55vw,56px)/1.12 'Inter Display',Inter,sans-serif;letter-spacing:-.038em;margin:14px 0 0 }
+.niuu-home .act-head p { font-size:16px;line-height:1.75;color:#a8bbc6;margin:0 0 12px }
+.niuu-home .act-head .more { display:inline-block;margin-top:4px }
+.niuu-home .tile { margin:0;min-width:0 }
+.niuu-home .tile figcaption, .niuu-home .stage-view figcaption { font-size:14px;line-height:1.6;color:#a8bbc6;margin-top:12px }
+.niuu-home .shot-frame { display:block;position:relative;border:1px solid #2b4351;border-radius:8px;overflow:hidden;background:#0a1823;cursor:zoom-in;transition:border-color .2s }
+.niuu-home .shot-frame:hover { border-color:#6b94a9 }
+.niuu-home .shot-frame img { width:100%;height:auto }
+.niuu-home .tiles { display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:36px 32px;margin-top:clamp(56px,6vw,84px);align-items:start }
+.niuu-home .span-5 { grid-column:span 5 }
+.niuu-home .span-6 { grid-column:span 6 }
+.niuu-home .span-7 { grid-column:span 7 }
+
+/* One agent: modest and familiar, with the session running off the page edge. */
+.niuu-home .act.opening { display:grid;grid-template-columns:minmax(0,4.4fr) minmax(0,7.6fr);gap:64px;align-items:center;padding-right:0 }
+.niuu-home .opening .act-head { display:block }
+.niuu-home .opening .act-head p { margin-top:20px }
+.niuu-home .aside-tile { margin-top:44px }
+.niuu-home .opening .lead .shot-frame { border-right:0;border-radius:8px 0 0 8px }
+
+/* A process: the first full-width moment, and the one the page turns on. */
+.niuu-home .stage-view { margin:clamp(40px,4.5vw,64px) calc(var(--edge) * -1) 0 }
+.niuu-home .stage-view .shot-frame { border-left:0;border-right:0;border-radius:0 }
+.niuu-home .stage-view figcaption { padding:0 var(--edge) }
+.niuu-home .flow { position:absolute;inset:0;width:100%;height:100%;pointer-events:none }
+.niuu-home .flow rect { fill:none;stroke:var(--signal);stroke-width:1.5 }
+.niuu-home .flow circle.go { fill:var(--strong) }
+.niuu-home .flow circle.back { fill:var(--warning) }
+.niuu-home .flow text { font:500 13px Inter,Arial,sans-serif;fill:#c6d8e1 }
+
+/* A team: the room runs off the opposite edge, with the handoffs read beside it. */
+.niuu-home .act.room { padding-left:0 }
+.niuu-home .room-grid { display:grid;grid-template-columns:minmax(0,7.2fr) minmax(0,4.8fr);gap:64px;align-items:center }
+.niuu-home .room .lead .shot-frame { border-left:0;border-radius:0 8px 8px 0 }
+.niuu-home .room .lead figcaption { padding-left:var(--edge) }
+.niuu-home .room .act-head { display:block }
+.niuu-home .room .act-head p { margin-top:20px }
+.niuu-home .handoffs { list-style:none;margin:36px 0 0;padding:0;position:relative }
+.niuu-home .handoffs:before { content:'';position:absolute;left:4px;top:10px;bottom:10px;width:1px;background:linear-gradient(180deg,#3f6a7f,var(--signal)) }
+.niuu-home .handoffs li { position:relative;padding:0 0 18px 28px;font-size:15px;line-height:1.55;color:#a8bbc6 }
+.niuu-home .handoffs li:last-child { padding-bottom:0 }
+.niuu-home .handoffs li:before { content:'';position:absolute;left:0;top:7px;width:9px;height:9px;border-radius:50%;background:#091620;border:1px solid var(--signal) }
+.niuu-home .handoffs strong { color:var(--mist);font-weight:500;margin-right:4px }
+.niuu-home .room .tiles { padding-left:var(--edge) }
+
+/* Continuity: a mosaic, because it is made of many lasting things. */
+.niuu-home .mosaic { display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:36px 32px;margin-top:clamp(44px,5vw,64px) }
+.niuu-home .mosaic .map { grid-column:span 8;grid-row:span 2 }
+.niuu-home .mosaic .side { grid-column:span 4 }
+.niuu-home .mosaic .wide { grid-column:span 7 }
+.niuu-home .mosaic .narrow { grid-column:span 5 }
+.niuu-home .commission { margin-top:clamp(72px,8vw,110px);padding-top:clamp(56px,6vw,80px);border-top:1px solid #1a2f3c }
+.niuu-home .commission-lead { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:8%;align-items:end }
+.niuu-home .commission-lead h4 { font:300 clamp(28px,2.6vw,40px)/1.16 'Inter Display',Inter,sans-serif;letter-spacing:-.032em;margin:0 }
+.niuu-home .commission-lead p { font-size:15px;line-height:1.75;color:#a8bbc6;margin:0 }
+.niuu-home .evolution { list-style:none;margin:48px 0 0;padding:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:32px;position:relative }
+.niuu-home .evolution:before { content:'';position:absolute;left:0;right:0;top:4px;height:1px;background:linear-gradient(90deg,#3f6a7f,#3f6a7f 80%,var(--signal)) }
+.niuu-home .evolution li { position:relative;padding-top:24px }
+.niuu-home .evolution li:before { content:'';position:absolute;left:0;top:0;width:9px;height:9px;border-radius:50%;background:#091620;border:1px solid var(--signal) }
+.niuu-home .evolution p { font-size:14px;line-height:1.65;color:#a8bbc6;margin:8px 0 0 }
+.niuu-home .wide-tile { margin-top:44px }
+
+/* An environment: the widest view of all, where the parts turn out to be one system. */
+.niuu-home .gallery .environment .act-head h3 { font-size:clamp(38px,4.6vw,72px);letter-spacing:-.044em }
+.niuu-home .env { margin-top:clamp(56px,6vw,84px);scroll-margin-top:96px }
+.niuu-home .env-title { display:flex;justify-content:space-between;align-items:baseline;gap:32px;margin-bottom:22px }
+.niuu-home .env-title h4 { font:300 clamp(24px,2.1vw,32px)/1.2 'Inter Display',Inter,sans-serif;letter-spacing:-.03em;margin:0 }
+.niuu-home .env-title p { font-size:14px;color:#a8bbc6;margin:0 }
+.niuu-home .env-grid { display:grid;grid-template-columns:minmax(0,1fr) minmax(170px,210px);border:1px solid #2b4351;border-radius:10px;background:#0b1a25 }
+.niuu-home .env-main { padding:28px;min-width:0 }
+.niuu-home .env-tenants { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px }
+.niuu-home .tenant { border:1px dashed #4a6a7c;border-radius:8px;padding:16px 18px 18px }
+.niuu-home .tenant-parts { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:14px }
+.niuu-home .env-part { display:block;min-width:0;transition:color .2s }
+.niuu-home .env-part .glyph { display:block;color:#8acfe2;margin-bottom:8px }
+.niuu-home .env-part strong { display:block;font-size:15px;font-weight:500;color:var(--mist) }
+.niuu-home .env-part small { display:block;font-size:12.5px;line-height:1.45;color:#a3b4bd;margin-top:3px }
+.niuu-home .env-part:hover strong { color:var(--strong) }
+.niuu-home .env-links { display:flex;justify-content:space-evenly;height:34px }
+.niuu-home .env-links span { position:relative;width:1px;background:#2b4351;overflow:hidden }
+.niuu-home .env-links span:after { content:'';position:absolute;left:0;top:-14px;width:1px;height:14px;background:var(--signal);animation:niuu-flow 3.4s linear infinite }
+.niuu-home .env-links span:nth-child(2n):after { animation-delay:1.1s }
+.niuu-home .env-links span:nth-child(3n):after { animation-delay:2.2s }
+@keyframes niuu-flow { from { transform:translateY(0) } to { transform:translateY(62px) } }
+.niuu-home .env-bands { border:1px solid #375063;border-radius:8px;background:#102430 }
+.niuu-home .env-bands .env-part { display:grid;grid-template-columns:22px 110px minmax(0,1fr);gap:0 12px;align-items:center;padding:14px 18px }
+.niuu-home .env-bands .env-part + .env-part { border-top:1px solid #2b4351 }
+.niuu-home .env-bands .glyph { margin:0 }
+.niuu-home .env-bands small { margin:0;font-size:13px }
+.niuu-home .env-hosts { list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px }
+.niuu-home .env-hosts li { border:1px solid #2b4351;border-radius:8px;padding:11px 12px }
+.niuu-home .env-hosts strong { display:block;font-size:14px;font-weight:500;color:var(--mist) }
+.niuu-home .env-hosts small { display:block;font-size:12.5px;color:#a3b4bd }
+.niuu-home .env-side { border-left:1px solid #2b4351;padding:28px 22px;display:flex;align-items:center;background:#0d1e29;border-radius:0 10px 10px 0 }
+.niuu-home .areas { margin-top:clamp(64px,7vw,96px) }
+.niuu-home .areas .cases { margin-top:18px }
+.niuu-home .areas h4 { font-size:16px;font-weight:500;margin:0 0 6px;transition:color .2s }
+.niuu-home .areas .case:hover h4 { color:var(--strong) }
+.niuu-home .areas .aside { margin-top:28px }
+.niuu-home .areas .direction { margin-top:22px }
+
+/* Install tabs. */
+.niuu-home .view-tabs { display:flex;flex-wrap:wrap;gap:6px 28px;margin:0;border-bottom:1px solid #2b4351 }
+.niuu-home .view-tabs button { background:none;border:0;border-bottom:1px solid transparent;margin-bottom:-1px;padding:0 0 12px;font-size:14px;color:#8ba3b0;transition:color .2s }
 .niuu-home .view-tabs button:hover { color:var(--mist) }
 .niuu-home .view-tabs button[aria-selected="true"] { color:var(--mist);border-bottom-color:var(--signal) }
 .niuu-home .view { margin:0;animation:niuu-view .28s ease-out }
-.niuu-home .view[hidden] { display:none }
 @keyframes niuu-view { from { opacity:0 } to { opacity:1 } }
-.niuu-home .view figcaption { font-size:13px;line-height:1.6;color:#8ba3b0;margin-top:14px }
-.niuu-home .shot-frame { display:block;border:1px solid #2b4351;border-radius:8px;overflow:hidden;background:#0a1823;cursor:zoom-in;transition:border-color .2s }
-.niuu-home .shot-frame:hover { border-color:#6b94a9 }
-.niuu-home .shot-frame img { width:100%;height:auto }
-/* Bleed the screen off the page edge, away from the text. */
-.niuu-home .chapter.right .shot-frame { border-right:0;border-radius:8px 0 0 8px }
-.niuu-home .chapter.left .shot-frame { border-left:0;border-radius:0 8px 8px 0 }
-.niuu-home .chapter.left figcaption { padding-left:var(--edge) }
+.niuu-home .view[hidden] { display:none }
 .niuu-home .enlarge { width:min(1560px,94vw);max-width:none;max-height:92vh;padding:0;border:1px solid #2b4351;border-radius:8px;background:#0a1823;color:var(--mist);overflow:auto;cursor:zoom-out }
 .niuu-home .enlarge::backdrop { background:#040a10e6 }
 .niuu-home .enlarge img { width:100%;height:auto }
 .niuu-home .enlarge button { position:sticky;top:10px;float:right;margin:10px 10px -46px 0;z-index:1;border:1px solid #3a5565;border-radius:6px;background:#0a1823;color:#c6d8e1;padding:7px 11px;font-size:12px }
 
-/* The environment: one system, so one drawing rather than six cards. */
-.niuu-home .system { display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,.86fr);border:1px solid #2b4351;border-radius:8px;overflow:hidden }
-.niuu-home .part { display:block;padding:26px 28px;transition:background .2s }
-.niuu-home .part:hover { background:#102430 }
-.niuu-home .part .glyph { display:block;color:#8acfe2;margin-bottom:16px }
-.niuu-home .part h3 { font-size:20px;margin:0 }
-.niuu-home .part-line { display:block;font-size:12px;color:#90cde2;margin:2px 0 10px }
-.niuu-home .part p { font-size:14px;line-height:1.6;color:#a3b4bd;margin:0;max-width:300px }
-.niuu-home .part-workspaces { grid-column:1 / 4;grid-row:1;border-bottom:1px solid #2b4351 }
-.niuu-home .part-inner { grid-row:2;border-right:1px solid #223846 }
-.niuu-home .part-platform { grid-column:1 / 4;grid-row:3;border-top:1px solid #2b4351;background:#0d1e29 }
-.niuu-home .part-platform:hover { background:#102430 }
-.niuu-home .part-observatory { grid-column:4;grid-row:1 / 4;border-left:1px solid #2b4351 }
-.niuu-home .built { display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr);gap:8%;margin-top:clamp(72px,8vw,110px) }
-.niuu-home .built h3 { font:300 clamp(26px,2.3vw,36px)/1.18 'Inter Display',Inter,sans-serif;letter-spacing:-.03em;margin:0 0 14px }
+/* What NIUU builds on. */
+.niuu-home .built { display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr);gap:8% }
+.niuu-home .section .built h2 { font-size:clamp(28px,2.8vw,42px);line-height:1.16;letter-spacing:-.032em;margin:0 0 14px }
 .niuu-home .built p { font-size:15px;line-height:1.75;color:#a8bbc6;margin:0 }
 .niuu-home .support { margin:0;border-top:1px solid #2b4351 }
 .niuu-home .support div { display:grid;grid-template-columns:150px minmax(0,1fr);gap:20px;padding:13px 0;border-bottom:1px solid #223846 }
 .niuu-home .support dt { font-size:14px;color:#a8bbc6 }
 .niuu-home .support dd { margin:0;font-size:14px;line-height:1.6;color:#e8f3f6 }
 
-/* Continuity and evolution. */
-.niuu-home .evolve { display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:8%;align-items:end }
-.niuu-home .kept { display:grid;grid-template-columns:repeat(2,1fr);gap:22px 24px }
-.niuu-home .kept div { border-top:1px solid #375063;padding-top:12px;color:#b5cad2;font-size:14px;line-height:1.6 }
-.niuu-home .kept strong { display:block;font-size:14px;color:#e8f3f6;font-weight:500;margin-bottom:4px }
-.niuu-home .gallery.plain { background:none;box-shadow:none;clip-path:none }
-.niuu-home .gallery-head.evolve { margin-bottom:0;padding-bottom:clamp(72px,8vw,110px) }
-.niuu-home .gallery-head.evolve h2 { font-size:clamp(35px,3.55vw,58px);letter-spacing:-.039em;margin-top:16px }
-.niuu-home .plain .chapter { border-top:1px solid #1a2f3c }
-.niuu-home .commission { padding:clamp(88px,9vw,132px) var(--edge);border-top:1px solid #1a2f3c }
-.niuu-home .commission-lead { display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);column-gap:8%;align-items:end }
-.niuu-home .commission-lead h3 { font:300 clamp(30px,2.75vw,44px)/1.14 'Inter Display',Inter,sans-serif;letter-spacing:-.034em }
-.niuu-home .commission-lead p { font-size:15px;line-height:1.75;color:#a8bbc6;margin:0 }
-.niuu-home .commission .evolution h4 { font-size:18px;font-weight:450;letter-spacing:-.02em;margin:8px 0 6px }
-.niuu-home .commission .evolution { margin-top:56px }
-.niuu-home .commission .view { margin-top:56px }
 .niuu-home .direction { font-size:14px;line-height:1.7;color:#8ba3b0;max-width:720px;margin:72px 0 0;padding-top:20px;border-top:1px solid #2b4351 }
 
 /* Use cases. */
@@ -159,10 +217,7 @@ html:has(.niuu-home) { scroll-behavior:smooth }
 .niuu-home .case p { font-size:14px;line-height:1.65;color:#a8bbc6;margin:0;max-width:340px }
 .niuu-home .case:hover h3 { color:var(--strong) }
 .niuu-home .case.own { border-top-color:var(--signal) }
-.niuu-home .cases.pair { grid-template-columns:repeat(2,minmax(0,1fr));gap:40px 8% }
-.niuu-home .cases.pair p { max-width:500px }
-.niuu-home #teams .aside { margin-top:36px }
-.niuu-home #teams .direction { margin-top:32px }
+.niuu-home .cases.four { grid-template-columns:repeat(4,minmax(0,1fr));gap:28px }
 
 /* Getting started and the close. */
 .niuu-home .site-actions { display:flex;align-items:center;gap:16px }
@@ -172,7 +227,6 @@ html:has(.niuu-home) { scroll-behavior:smooth }
 .niuu-home .start { display:grid;grid-template-columns:.95fr 1.05fr;gap:8%;align-items:start }
 .niuu-home .start .hero-cta { margin-top:28px }
 .niuu-home .start > div { min-width:0 }
-.niuu-home .start .view-tabs { margin-top:0 }
 .niuu-home .start .view > .aside:first-child { margin:18px 0 12px }
 .niuu-home .terminal { border:1px solid #2b4351;border-radius:8px;overflow:hidden;background:#07131e }
 .niuu-home .terminal-head { display:flex;justify-content:space-between;align-items:center;padding:9px 14px;border-bottom:1px solid #2b4351;font:500 10px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.14em;color:#82a7b9;text-transform:uppercase }
@@ -192,10 +246,10 @@ html:has(.niuu-home) { scroll-behavior:smooth }
 .niuu-home .closing-links small { display:block;font-size:14px;line-height:1.6;color:#a8bbc6;margin-top:8px }
 /* Past the container's maximum there is no page edge to bleed into. */
 @media (min-width:1601px) {
-  .niuu-home .chapter.right .shot-frame, .niuu-home .chapter.left .shot-frame { border:1px solid #2b4351;border-radius:8px }
-  .niuu-home .chapter.right { padding-right:var(--edge) }
-  .niuu-home .chapter.left { padding-left:var(--edge) }
-  .niuu-home .chapter.left figcaption { padding-left:0 }
+  .niuu-home .act.opening { padding-right:var(--edge) }
+  .niuu-home .act.room { padding-left:var(--edge) }
+  .niuu-home .opening .lead .shot-frame, .niuu-home .room .lead .shot-frame { border:1px solid #2b4351;border-radius:8px }
+  .niuu-home .room .lead figcaption, .niuu-home .room .tiles { padding-left:0 }
 }
 @media (max-width:1100px) {
   .niuu-home .site-nav { display:none }
@@ -203,12 +257,24 @@ html:has(.niuu-home) { scroll-behavior:smooth }
   .niuu-home .wave { right:-25%;width:125% }
   .niuu-home .section-lead { display:block }
   .niuu-home .section-lead p { margin-top:14px }
-  .niuu-home .chapter.right, .niuu-home .chapter.left { grid-template-columns:minmax(0,1fr);gap:36px;padding-left:var(--edge);padding-right:var(--edge) }
-  .niuu-home .chapter.left .chapter-text { order:0 }
-  .niuu-home .chapter.right .shot-frame, .niuu-home .chapter.left .shot-frame { border:1px solid #2b4351;border-radius:8px }
-  .niuu-home .chapter.left figcaption { padding-left:0 }
-  .niuu-home .chapter-text { max-width:640px }
-  .niuu-home .chapter.wide .chapter-text { max-width:none }
+  .niuu-home .steps ol { grid-template-columns:repeat(5,minmax(136px,1fr)) }
+  .niuu-home .steps small { display:none }
+  .niuu-home .steps a { padding-top:18px }
+  .niuu-home .act-head, .niuu-home .commission-lead { grid-template-columns:minmax(0,1fr);gap:20px }
+  .niuu-home .act.opening { grid-template-columns:minmax(0,1fr);gap:40px;padding-right:var(--edge) }
+  .niuu-home .opening .lead { order:-1 }
+  .niuu-home .opening .act-head p { margin-top:14px }
+  .niuu-home .opening .lead .shot-frame, .niuu-home .room .lead .shot-frame { border:1px solid #2b4351;border-radius:8px }
+  .niuu-home .act.room { padding-left:var(--edge) }
+  .niuu-home .room-grid { grid-template-columns:minmax(0,1fr);gap:36px }
+  .niuu-home .room-text { order:-1 }
+  .niuu-home .room .lead figcaption, .niuu-home .room .tiles { padding-left:0 }
+  .niuu-home .env-tenants { gap:14px }
+  .niuu-home .tenant-parts { grid-template-columns:minmax(0,1fr);gap:12px }
+  .niuu-home .env-hosts { grid-template-columns:repeat(3,minmax(0,1fr)) }
+  .niuu-home .cases.four { grid-template-columns:repeat(2,minmax(0,1fr)) }
+  .niuu-home .evolution { grid-template-columns:repeat(2,minmax(0,1fr));gap:28px 32px }
+  .niuu-home .evolution:before { display:none }
 }
 @media (max-width:780px) {
   .niuu-home .site-head { height:76px }
@@ -220,17 +286,24 @@ html:has(.niuu-home) { scroll-behavior:smooth }
   .niuu-home .hero p { max-width:450px }
   .niuu-home .wave { width:165%;right:-65%;top:170px;opacity:.55 }
   .niuu-home .hero:after { background:linear-gradient(90deg,#071019 0%,#071019da 49%,#07101944 85%) }
-  .niuu-home .idea-lead, .niuu-home .evolve, .niuu-home .built, .niuu-home .commission-lead, .niuu-home .start { grid-template-columns:minmax(0,1fr);gap:32px }
-  .niuu-home .evolution { grid-template-columns:minmax(0,1fr);gap:0;margin-top:44px }
-  .niuu-home .evolution:before { left:4px;right:auto;top:8px;bottom:0;width:1px;height:auto;background:#3f6a7f }
-  .niuu-home .evolution li { padding:0 0 26px 34px }
-  .niuu-home .evolution li:before { top:7px }
-  .niuu-home .evolution li:last-child { padding-bottom:0 }
-  .niuu-home .chapter.wide .chapter-text { display:block }
-  .niuu-home .system { grid-template-columns:minmax(0,1fr) }
-  .niuu-home .part-workspaces, .niuu-home .part-inner, .niuu-home .part-platform, .niuu-home .part-observatory { grid-column:1;grid-row:auto;border:0;border-bottom:1px solid #2b4351 }
-  .niuu-home .part-inner { padding-left:44px }
-  .niuu-home .part-observatory { border-bottom:0 }
+  .niuu-home .built, .niuu-home .start { grid-template-columns:minmax(0,1fr);gap:32px }
+  .niuu-home .flow { display:none }
+  .niuu-home .stage-view { margin-left:0;margin-right:0 }
+  .niuu-home .stage-view .shot-frame { border:1px solid #2b4351;border-radius:8px }
+  .niuu-home .stage-view figcaption { padding:0 }
+  .niuu-home .tiles, .niuu-home .mosaic { display:block }
+  .niuu-home .tile + .tile { margin-top:32px }
+  .niuu-home .env-title { display:block }
+  .niuu-home .env-title p { margin-top:6px }
+  .niuu-home .env-grid { grid-template-columns:minmax(0,1fr) }
+  .niuu-home .env-main { padding:16px }
+  .niuu-home .env-tenants { grid-template-columns:minmax(0,1fr) }
+  .niuu-home .tenant-parts { grid-template-columns:repeat(3,minmax(0,1fr)) }
+  .niuu-home .env-part small { display:none }
+  .niuu-home .env-bands .env-part small, .niuu-home .env-side .env-part small { display:block }
+  .niuu-home .env-bands .env-part { grid-template-columns:22px minmax(0,1fr);padding:12px 14px }
+  .niuu-home .env-bands small { grid-column:2 }
+  .niuu-home .env-side { border-left:0;border-top:1px solid #2b4351;border-radius:0 0 10px 10px;padding:16px }
   .niuu-home .cases { grid-template-columns:repeat(2,minmax(0,1fr)) }
 }
 @media (max-width:520px) {
@@ -240,10 +313,15 @@ html:has(.niuu-home) { scroll-behavior:smooth }
   .niuu-home .site-link { display:none }
   .niuu-home .support div { grid-template-columns:minmax(0,1fr);gap:2px }
   .niuu-home .btn { width:100% }
-  .niuu-home .cases, .niuu-home .cases.pair { grid-template-columns:minmax(0,1fr) }
-  .niuu-home .kept { grid-template-columns:minmax(0,1fr) }
+  .niuu-home .cases, .niuu-home .cases.four { grid-template-columns:minmax(0,1fr) }
+  .niuu-home .env-hosts { grid-template-columns:repeat(2,minmax(0,1fr)) }
+  .niuu-home .env-hosts li:last-child { grid-column:span 2 }
+  .niuu-home .evolution { grid-template-columns:minmax(0,1fr);gap:20px }
 }
 @media (prefers-reduced-motion:reduce) {
   html:has(.niuu-home) { scroll-behavior:auto }
   .niuu-home .view { animation:none }
+  .niuu-home .steps ol:after { transition:none }
+  .niuu-home .flow-motion { display:none }
+  .niuu-home .env-links span:after { animation:none;display:none }
 }

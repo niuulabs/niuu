@@ -1,5 +1,5 @@
 /* Landing page interaction: copy the start commands, switch gallery views,
- * enlarge a screenshot and mark the current gallery chapter. */
+ * enlarge a screenshot and mark the current step of the gallery. */
 const COPY_CONFIRM_MS = 1800;
 
 function initCopy(home) {
@@ -56,17 +56,42 @@ function initEnlarge(home) {
   dialog.addEventListener("click", () => dialog.close());
 }
 
-function initChapterNav(home) {
-  const links = [...home.querySelectorAll(".chapter-nav a")];
-  const mark = (id) =>
-    links.forEach((link) => link.classList.toggle("current", link.hash === `#${id}`));
+function initSteps(home) {
+  const nav = home.querySelector(".steps");
+  const links = [...nav.querySelectorAll("a")];
+  const mark = (id) => {
+    const current = links.findIndex((link) => link.hash === `#${id}`);
+    links.forEach((link, index) => {
+      link.classList.toggle("passed", index < current);
+      if (index === current) link.setAttribute("aria-current", "step");
+      else link.removeAttribute("aria-current");
+    });
+    nav.style.setProperty("--progress", `${(current / links.length) * 100}%`);
+    nav.scrollLeft = links[current].offsetLeft - links[0].offsetLeft;
+  };
   const observer = new IntersectionObserver(
     (entries) => {
       entries.filter((entry) => entry.isIntersecting).forEach((entry) => mark(entry.target.id));
     },
     { rootMargin: "-45% 0px -45% 0px" },
   );
-  home.querySelectorAll(".chapter").forEach((chapter) => observer.observe(chapter));
+  home.querySelectorAll(".act").forEach((act) => observer.observe(act));
+}
+
+/* The graph only moves while it can be seen, and starts from the top of a run. */
+function initFlow(home) {
+  const flow = home.querySelector(".flow");
+  if (!flow || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  flow.pauseAnimations();
+  const observer = new IntersectionObserver(([entry]) => {
+    if (entry.isIntersecting) {
+      flow.setCurrentTime(0);
+      flow.unpauseAnimations();
+      return;
+    }
+    flow.pauseAnimations();
+  });
+  observer.observe(flow);
 }
 
 function initHome() {
@@ -75,7 +100,8 @@ function initHome() {
   initCopy(home);
   initViews(home);
   initEnlarge(home);
-  initChapterNav(home);
+  initSteps(home);
+  initFlow(home);
 }
 
 document$.subscribe(initHome);

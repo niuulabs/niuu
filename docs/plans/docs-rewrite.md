@@ -93,7 +93,7 @@ Verdicts: **Keep** (light pass for names and voice), **Rewrite**, **Merge**,
 
 | Page | Words | Verdict | Why |
 |---|---:|---|---|
-| `index.md` | - | Rewritten | Landing page in this worktree, third pass around a feature gallery of real screens. |
+| `index.md` | - | Rewritten | Landing page in this worktree, fifth pass: one story in five steps, each with its own composition. |
 | `overview.md` | 504 | Merge | Into `get-started/introduction.md`, done. The landing page now does its selling. Redirect. |
 | `get-started/introduction.md` | 475 | Rewritten | Sample page. |
 | `get-started/install.md` | 967 | Rewrite | Lead with the path that works today. Remove the `v1.4.0` example, which does not exist. Depends on decision 1. |
@@ -139,7 +139,7 @@ Verdicts: **Keep** (light pass for names and voice), **Rewrite**, **Merge**,
 | `operations/openshell-runtime.md` | 2354 | Keep | Replace internal names in prose. |
 | `operations/integrations-and-mcp.md` | 1292 | Keep | Review the PAT mention. |
 | `operations/security-and-permissions.md` | 3447 | Rewrite | Accurate, dense, heavy on internal names. Lead with a boundaries table: login, policy, workload credentials, sandboxes, network, machines. Review the PAT sections. |
-| `operations/scaling.md` | New | Write | One machine to Kubernetes, session backends, autoscaling values, event bus transports, and joining machines. Folds in `docs/operator/joining-machines.md`. No throughput numbers until they are measured. |
+| `operations/scaling.md` | New | Write | One machine to Kubernetes, session backends, autoscaling values, event bus transports, registering hosts in Platform, tags, and `niuu join`. Folds in `docs/operator/joining-machines.md`. No throughput numbers until they are measured. |
 | `operations/observability.md` | 1078 | Keep | Replace internal names in prose. |
 | `operations/migrations.md` | 252 | Keep | Light pass. |
 | `operations/production-checklist.md` | 247 | Keep | Light pass. |
@@ -258,8 +258,8 @@ When it goes live:
 
 ## Teams, tenancy, scale and security
 
-The landing page gives these one section, For teams. The pages above carry the
-detail. Write the left column as fact and the right column as direction.
+The landing page closes its gallery with these, under In place today. The pages
+above carry the detail. Write the left column as fact and the right column as direction.
 
 | Theme | Ships today | Direction, or limited |
 |---|---|---|
@@ -299,7 +299,11 @@ uncommitted in the main checkout and is not on `dev`, so link it only once it la
    The landing page therefore uses `niuu platform up` on loopback. `install.md`
    still sends readers to `./start-dev`. Change the default to loopback, or warn.
 
-6. **How much of human collaboration should ship before this is sold?** Jozef
+6. **Should `niuu join` work out of the box?** Platform's register wizard is the
+   path the page shows. The terminal route returns 503 until
+   `workload_identity.enabled` is on with a signing key, which neither mini nor
+   Docker mode sets, and each machine needs its own heartbeat supervisor.
+7. **How much of human collaboration should ship before this is sold?** Jozef
    asked for it on the page, and today it is mostly direction: a team can sign in
    and share residents and Memory, but not projects, workflows or Workspaces, and
    inviting a colleague into a session has no screen. The session-invite UI and

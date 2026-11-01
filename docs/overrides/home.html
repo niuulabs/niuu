@@ -27,39 +27,78 @@
 </a>
 {% endmacro %}
 
-{% macro chapter(chapter) %}
-<article class="chapter {{ chapter.layout }}" id="{{ chapter.id }}" data-views>
-  <div class="chapter-text">
-    <div class="label">{{ chapter.name }}</div>
-    <h3>{{ chapter.title }}</h3>
-    <p>{{ chapter.body }}</p>
-    <a class="more" href="{{ chapter.link.doc | url }}">{{ chapter.link.label }} →</a>
-    {% if chapter.views | length > 1 %}
-    <div class="view-tabs" role="tablist" aria-label="{{ chapter.name }} views">
-      {% for view in chapter.views %}
-      <button type="button" role="tab" id="{{ chapter.id }}-tab-{{ loop.index }}" aria-controls="{{ chapter.id }}-view-{{ loop.index }}" aria-selected="{{ 'true' if loop.first else 'false' }}"{% if not loop.first %} tabindex="-1"{% endif %}>{{ view.name }}</button>
-      {% endfor %}
-    </div>
-    {% endif %}
-  </div>
-  <div class="chapter-views">
-    {% for view in chapter.views %}
-    <figure class="view"{% if chapter.views | length > 1 %} role="tabpanel" id="{{ chapter.id }}-view-{{ loop.index }}" aria-labelledby="{{ chapter.id }}-tab-{{ loop.index }}"{% endif %}{% if not loop.first %} hidden{% endif %}>
-      {{ shot(view) }}
-      <figcaption>{{ view.caption }}</figcaption>
-    </figure>
-    {% endfor %}
-  </div>
-</article>
+{% macro tile(view, class) %}
+<figure class="tile {{ class }}">
+  {{ shot(view) }}
+  <figcaption>{{ view.caption }}</figcaption>
+</figure>
 {% endmacro %}
 
-{% macro part(entry, class) %}
-<a class="part {{ class }}" href="{{ entry.doc | url }}">
-  <span class="glyph">{{ icon(entry.icon, 22) }}</span>
-  <h3>{{ entry.name }}</h3>
-  <span class="part-line">{{ entry.line }}</span>
-  <p>{{ entry.body }}</p>
+{% macro tiles(views) %}
+<div class="tiles">
+  {% for view in views %}{{ tile(view, 'span-' ~ view.span) }}{% endfor %}
+</div>
+{% endmacro %}
+
+{% macro act_head(chapter) %}
+<header class="act-head">
+  <div>
+    <div class="label">{{ chapter.label }}</div>
+    <h3>{{ chapter.title }}</h3>
+  </div>
+  <div>
+    <p>{{ chapter.body }}</p>
+    <a class="more" href="{{ chapter.link.doc | url }}">{{ chapter.link.label }} →</a>
+  </div>
+</header>
+{% endmacro %}
+
+{% macro env_part(entry, name) %}
+<a class="env-part" href="{{ entry.doc | url }}">
+  <span class="glyph">{{ icon(name, 18) }}</span>
+  <strong>{{ entry.name }}</strong>
+  <small>{{ entry.line }}</small>
 </a>
+{% endmacro %}
+
+{% macro env_links(count) %}
+<div class="env-links" aria-hidden="true">{% for _ in range(count) %}<span></span>{% endfor %}</div>
+{% endmacro %}
+
+{# The system at scale. Every box is something that ships; what is planned stays out of the drawing. #}
+{% macro env_map(map) %}
+<div class="env" id="system">
+  <div class="env-title">
+    <h4>{{ map.title }}</h4>
+    <p>{{ map.boundary }}</p>
+  </div>
+  <div class="env-grid">
+    <div class="env-main">
+      <div class="env-tenants">
+        {% for tenant in map.tenants %}
+        <div class="tenant">
+          <div class="label">{{ tenant }}</div>
+          <div class="tenant-parts">
+            {{ env_part(map.workspaces, 'workspaces') }}
+            {{ env_part(map.agents, 'agents') }}
+            {{ env_part(map.memory, 'memory') }}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {{ env_links(6) }}
+      <div class="env-bands">
+        {{ env_part(map.forge, 'forge') }}
+        {{ env_part(map.platform, 'platform') }}
+      </div>
+      {{ env_links(5) }}
+      <ul class="env-hosts">
+        {% for host in map.hosts %}<li><strong>{{ host.name }}</strong><small>{{ host.line }}</small></li>{% endfor %}
+      </ul>
+    </div>
+    <div class="env-side">{{ env_part(map.observatory, 'observatory') }}</div>
+  </div>
+</div>
 {% endmacro %}
 
 <div class="niuu-home"><div class="container">
@@ -89,97 +128,110 @@
       </div>
     </section>
 
-    {% set idea = home.idea %}
-    <section class="section" id="idea">
-      <div class="idea-lead">
-        <div>
-          <div class="label">{{ idea.label }}</div>
-          <h2>{{ idea.title | join("<br>") }}</h2>
-        </div>
-        <div>
-          <p class="lede">{{ idea.body }}</p>
-          <p class="lede quiet">{{ idea.body_more }}</p>
-        </div>
-      </div>
-      <ol class="evolution">
-        {% for stage in idea.stages %}
-        <li>
-          <div class="label">{{ stage.name }}</div>
-          <h3>{{ stage.title }}</h3>
-          <p>{{ stage.body }}</p>
-        </li>
-        {% endfor %}
-      </ol>
-      <p class="aside">{{ idea.note }}</p>
-    </section>
-
     {% set gallery = home.gallery %}
     <section class="gallery" id="at-work">
       <div class="gallery-head">
-        <h2>{{ gallery.title }}</h2>
+        <h2>{{ gallery.title | join("<br>") }}</h2>
         <p class="lede">{{ gallery.body }}</p>
       </div>
-      <nav class="chapter-nav" aria-label="Features">
-        {% for chapter in gallery.chapters %}<a href="#{{ chapter.id }}">{{ chapter.name }}</a>{% endfor %}
-      </nav>
-      {% for entry in gallery.chapters %}{{ chapter(entry) }}{% endfor %}
-    </section>
-
-    {% set evolution = home.evolution %}
-    <section class="gallery plain" id="evolution">
-      <div class="gallery-head evolve">
-        <div>
-          <div class="label">{{ evolution.label }}</div>
-          <h2>{{ evolution.title | join("<br>") }}</h2>
-          <p class="lede">{{ evolution.body }}</p>
-        </div>
-        <div class="kept">
-          {% for entry in evolution.kept %}<div><strong>{{ entry.title }}</strong> {{ entry.body }}</div>{% endfor %}
-        </div>
-      </div>
-      {{ chapter(evolution.resident) }}
-      {% set commission = evolution.commission %}
-      <div class="commission">
-        <div class="commission-lead">
-          <h3>{{ commission.title }}</h3>
-          <p>{{ commission.body }}</p>
-        </div>
-        <ol class="evolution">
-          {% for step in commission.steps %}
-          <li>
-            <div class="label">{{ step.name }}</div>
-            <h4>{{ step.title }}</h4>
-            <p>{{ step.body }}</p>
-          </li>
+      <nav class="steps" aria-label="From one agent to a whole environment">
+        <ol>
+          {% for chapter in gallery.chapters %}
+          <li><a href="#{{ chapter.id }}"><span class="step-mark" aria-hidden="true"></span><strong>{{ chapter.step }}</strong><small>{{ chapter.label }}</small></a></li>
           {% endfor %}
         </ol>
-        <figure class="view">
-          {{ shot(commission) }}
-          <figcaption>{{ commission.caption }}</figcaption>
+      </nav>
+
+      {% set one = gallery.chapters[0] %}
+      <article class="act opening" id="{{ one.id }}">
+        <div class="opening-text">
+          {{ act_head(one) }}
+          {{ tile(one.aside, 'aside-tile') }}
+        </div>
+        {{ tile(one.lead, 'lead') }}
+      </article>
+
+      {% set two = gallery.chapters[1] %}
+      <article class="act stage" id="{{ two.id }}">
+        {{ act_head(two) }}
+        <figure class="stage-view">
+          {% set src = ('images/home/gallery/' ~ two.stage.image ~ '.webp') | url %}
+          <a class="shot-frame" href="{{ src }}" data-enlarge>
+            <picture>
+              <source media="(max-width:780px)" srcset="{{ ('images/home/gallery/' ~ two.stage.image ~ '-phone.webp') | url }}">
+              <img src="{{ src }}" alt="{{ two.stage.alt }}" width="{{ two.stage.width }}" height="{{ two.stage.height }}" loading="lazy">
+            </picture>
+            {% include "partials/niuu-graph-flow.html" %}
+          </a>
+          <figcaption>{{ two.stage.caption }}</figcaption>
         </figure>
-      </div>
-      {{ chapter(evolution.workspaces) }}
+        {{ tiles(two.tiles) }}
+      </article>
+
+      {% set three = gallery.chapters[2] %}
+      <article class="act room" id="{{ three.id }}">
+        <div class="room-grid">
+          {{ tile(three.lead, 'lead') }}
+          <div class="room-text">
+            {{ act_head(three) }}
+            <ol class="handoffs">
+              {% for step in three.handoffs %}<li><strong>{{ step.who }}</strong> {{ step.what }}</li>{% endfor %}
+            </ol>
+          </div>
+        </div>
+        {{ tiles(three.tiles) }}
+      </article>
+
+      {% set four = gallery.chapters[3] %}
+      <article class="act continuity" id="{{ four.id }}">
+        {{ act_head(four) }}
+        <div class="mosaic">
+          {% for view in four.mosaic %}{{ tile(view, view.place) }}{% endfor %}
+        </div>
+        {% set commission = four.commission %}
+        <div class="commission">
+          <div class="commission-lead">
+            <h4>{{ commission.title }}</h4>
+            <p>{{ commission.body }}</p>
+          </div>
+          <ol class="evolution">
+            {% for step in commission.steps %}
+            <li>
+              <div class="label">{{ step.name }}</div>
+              <p>{{ step.body }}</p>
+            </li>
+            {% endfor %}
+          </ol>
+          {{ tile(commission, 'wide-tile') }}
+        </div>
+      </article>
+
+      {% set five = gallery.chapters[4] %}
+      <article class="act environment" id="{{ five.id }}">
+        {{ act_head(five) }}
+        {{ env_map(five.map) }}
+        {{ tiles(five.tiles) }}
+        <div class="areas">
+          <div class="label">{{ five.areas_label }}</div>
+          <div class="cases four">
+            {% for area in five.areas %}
+            <a class="case" href="{{ area.doc | url }}">
+              <h4>{{ area.title }}</h4>
+              <p>{{ area.body }}</p>
+            </a>
+            {% endfor %}
+          </div>
+          <p class="aside">{{ five.note }}</p>
+          <p class="direction">{{ five.direction }}</p>
+        </div>
+      </article>
     </section>
 
-    {% set environment = home.environment %}
-    <section class="section band" id="environment">
-      <div class="section-lead">
-        <div>
-          <div class="label">{{ environment.label }}</div>
-          <h2>{{ environment.title }}</h2>
-        </div>
-        <p class="lede">{{ environment.body }}</p>
-      </div>
-      <div class="system">
-        {{ part(environment.workspaces, "part-workspaces") }}
-        {% for entry in environment.parts %}{{ part(entry, "part-inner") }}{% endfor %}
-        {{ part(environment.platform, "part-platform") }}
-        {{ part(environment.observatory, "part-observatory") }}
-      </div>
-      {% set built = environment.built %}
+    {% set built = home.environment.built %}
+    <section class="section" id="environment">
       <div class="built">
         <div>
-          <h3>{{ built.title }}</h3>
+          <h2>{{ built.title }}</h2>
           <p>{{ built.body }}</p>
         </div>
         <div>
@@ -193,7 +245,7 @@
     </section>
 
     {% set use_cases = home.use_cases %}
-    <section class="section" id="use-cases">
+    <section class="section band" id="use-cases">
       <div class="section-lead">
         <div>
           <div class="label">{{ use_cases.label }}</div>
@@ -209,27 +261,6 @@
         </a>
         {% endfor %}
       </div>
-    </section>
-
-    {% set teams = home.teams %}
-    <section class="section band" id="teams">
-      <div class="section-lead">
-        <div>
-          <div class="label">{{ teams.label }}</div>
-          <h2>{{ teams.title }}</h2>
-        </div>
-        <p class="lede">{{ teams.body }}</p>
-      </div>
-      <div class="cases pair">
-        {% for area in teams.areas %}
-        <a class="case" href="{{ area.doc | url }}">
-          <h3>{{ area.title }}</h3>
-          <p>{{ area.body }}</p>
-        </a>
-        {% endfor %}
-      </div>
-      <p class="aside">{{ teams.note }}</p>
-      <p class="direction">{{ teams.direction }}</p>
     </section>
 
     {% set start = home.start %}
