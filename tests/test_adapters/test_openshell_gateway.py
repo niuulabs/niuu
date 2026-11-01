@@ -1905,6 +1905,108 @@ async def test_resident_reconcile_reports_processes_when_they_cannot_be_started(
     assert observation.conditions[1].reason == "Unavailable"
 
 
+def _drain_sandbox(adapter, client) -> None:
+    """Leave the sandbox as a node drain does: stopped until the gateway starts it."""
+    running = client.get_sandbox
+
+    def stopped(name: str):
+        return replace(
+            running(name),
+            phase=adapter.openshell_pb2.SANDBOX_PHASE_STOPPED,
+            ready=False,
+        )
+
+    def start_sandbox(name: str):
+        client.get_sandbox = running
+        return replace(
+            running(name),
+            phase=adapter.openshell_pb2.SANDBOX_PHASE_PROVISIONING,
+            ready=False,
+        )
+
+    client.get_sandbox = stopped
+    client.start_sandbox = Mock(side_effect=start_sandbox)
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_starts_a_sandbox_that_stopped_under_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A drained resident comes back on its own sandbox, then gets its processes."""
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.exec_script = lambda **_kwargs: (1, "")
+    manager = _deployed_resident_manager(adapter, client, runtime)
+    _drain_sandbox(adapter, client)
+    sandbox_name = runtime.backend_ref["name"]
+
+    observation = await manager.reconcile(runtime, _resident_profile())
+
+    client.start_sandbox.assert_called_once_with(sandbox_name)
+    assert client.created is None
+    assert client.deleted == []
+    assert client.execs == []
+    assert observation.observed_state is ResidentObservedState.DEPLOYING
+    assert observation.backend_ref["name"] == sandbox_name
+
+    await manager.reconcile(runtime, _resident_profile())
+
+    client.start_sandbox.assert_called_once()
+    assert [process["pid_path"] for process in client.execs] == [
+        "/sandbox/.volundr/skuld.pid",
+        "/sandbox/.volundr/ravn.pid",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_leaves_a_stopped_sandbox_it_should_not_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime()).model_copy(
+        update={"desired_state": ResidentDesiredState.SUSPENDED}
+    )
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = _deployed_resident_manager(adapter, client, runtime)
+    _drain_sandbox(adapter, client)
+
+    await manager.reconcile(runtime, _resident_profile())
+
+    client.start_sandbox.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_leaves_a_stopped_sandbox_to_a_restart_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = _deployed_resident_manager(adapter, client, runtime)
+    _drain_sandbox(adapter, client)
+
+    async with manager._resident_process_lock(runtime):
+        await manager.reconcile(runtime, _resident_profile())
+
+    client.start_sandbox.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_raises_when_a_stopped_sandbox_will_not_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = _deployed_resident_manager(adapter, client, runtime)
+    _drain_sandbox(adapter, client)
+    client.start_sandbox = Mock(side_effect=adapter.grpc.RpcError())
+
+    with pytest.raises(RuntimeError, match="could not start stopped resident sandbox"):
+        await manager.reconcile(runtime, _resident_profile())
+
+
 @pytest.mark.asyncio
 async def test_hermes_reconcile_recovers_internal_service_endpoint(
     monkeypatch: pytest.MonkeyPatch,
@@ -4478,6 +4580,39 @@ async def test_restart_on_the_current_image_restarts_processes_in_place(
         "/sandbox/.volundr/skuld.pid",
         "/sandbox/.volundr/ravn.pid",
     ]
+
+
+@pytest.mark.asyncio
+async def test_restart_brings_back_a_sandbox_that_stopped_under_the_resident(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, runtime, client, manager, _ = await _resident_on_old_image(monkeypatch)
+    client.sandbox_image = _CURRENT_SANDBOX_IMAGE
+    _drain_sandbox(adapter, client)
+
+    await manager.restart(runtime, _resident_profile())
+
+    client.start_sandbox.assert_called_once_with(runtime.backend_ref["name"])
+    assert client.deleted == []
+    assert client.created is None
+    assert [process["pid_path"] for process in client.execs] == [
+        "/sandbox/.volundr/skuld.pid",
+        "/sandbox/.volundr/ravn.pid",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_restart_raises_when_a_stopped_sandbox_will_not_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, runtime, client, manager, _ = await _resident_on_old_image(monkeypatch)
+    _drain_sandbox(adapter, client)
+    client.start_sandbox = Mock(side_effect=adapter.grpc.RpcError())
+
+    with pytest.raises(RuntimeError, match="could not start stopped resident sandbox"):
+        await manager.restart(runtime, _resident_profile())
+
+    assert client.execs == []
 
 
 @pytest.mark.asyncio

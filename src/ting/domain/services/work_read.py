@@ -26,7 +26,6 @@ from ting.domain.models import (
     WorkflowCampaign,
     WorkflowCampaignStatus,
 )
-from ting.domain.services.tracker_selection import tracker_for_saga
 from ting.domain.ticket_coordinator import (
     PENDING_GATES_KEY,
     PULL_REQUEST_KEY,
@@ -34,6 +33,7 @@ from ting.domain.ticket_coordinator import (
     TicketCoordinatorStatus,
     ticket_of,
 )
+from ting.domain.tracker_routing import TrackerRoutingError, select_tracker_for_saga
 from ting.domain.workflow_board import (
     BACKLOG_COLUMN_ID,
     DONE_COLUMN_ID,
@@ -414,8 +414,9 @@ class WorkReadService:
         if saga is None:
             raise WorkNotFoundError(f"Project work not found: {saga_id}")
 
-        tracker = tracker_for_saga(self._trackers, saga)
-        if tracker is None:
+        try:
+            tracker = select_tracker_for_saga(self._trackers, saga)
+        except TrackerRoutingError as exc:
             resolution_failure = next(
                 (
                     failure
@@ -438,7 +439,7 @@ class WorkReadService:
                         message=(
                             resolution_failure.message
                             if resolution_failure is not None
-                            else "The linked tracker source is unavailable."
+                            else str(exc)
                         ),
                     ),
                 ),
@@ -581,9 +582,10 @@ class WorkReadService:
 
     async def tracker_issue(self, saga: Saga, issue_id: str) -> TrackerIssue | None:
         """Return one of a project's tracker issues."""
-        tracker = tracker_for_saga(self._trackers, saga)
-        if tracker is None:
-            raise WorkSourceUnavailableError("The linked tracker source is unavailable.")
+        try:
+            tracker = select_tracker_for_saga(self._trackers, saga)
+        except TrackerRoutingError as exc:
+            raise WorkSourceUnavailableError(str(exc)) from exc
         issues = await tracker.list_issues(saga.tracker_id)
         return next((issue for issue in issues if issue.id == issue_id), None)
 
