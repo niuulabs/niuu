@@ -51,6 +51,19 @@ async def test_poller_broadcasts_only_changed_realm_summaries() -> None:
 
 
 @pytest.mark.asyncio
+async def test_connection_manager_broadcasts_to_the_requested_realm_only() -> None:
+    manager = ConnectionManager(max_clients=2)
+    odin_queue = manager.connect("odin")
+    thor_queue = manager.connect("thor")
+    summary = RealmSummary(realm_id="odin", health_status="healthy")
+
+    manager.broadcast("odin", summary)
+
+    assert await odin_queue.get() == summary
+    assert thor_queue.empty()
+
+
+@pytest.mark.asyncio
 async def test_poller_logs_adapter_errors_and_continues(caplog: pytest.LogCaptureFixture) -> None:
     healthy_summary = RealmSummary(realm_id="thor", health_status="healthy")
     failing = FakeRealmAdapter("odin", error=RuntimeError("adapter unavailable"))
@@ -64,7 +77,7 @@ async def test_poller_logs_adapter_errors_and_continues(caplog: pytest.LogCaptur
 
     assert poller.summary_for("odin") is None
     assert poller.summary_for("thor") == healthy_summary
-    broadcast.assert_called_once_with(healthy_summary)
+    broadcast.assert_called_once_with(healthy_summary.realm_id, healthy_summary)
     assert "could not poll realm odin" in caplog.text
 
 
@@ -103,7 +116,8 @@ async def test_poller_waits_an_interval_before_the_next_poll() -> None:
     assert adapter.calls == 1
 
 
-def test_connection_manager_enforces_the_limit_and_removes_empty_realm_sets() -> None:
+@pytest.mark.asyncio
+async def test_connection_manager_enforces_the_limit_and_closes_disconnected_queues() -> None:
     manager = ConnectionManager(max_clients=2)
     queue = manager.connect("odin")
     second_queue = manager.connect("odin")
@@ -117,6 +131,8 @@ def test_connection_manager_enforces_the_limit_and_removes_empty_realm_sets() ->
     manager.disconnect("odin", second_queue)
 
     assert manager.active_client_count == 0
+    assert await queue.get() is None
+    assert await second_queue.get() is None
 
 
 @pytest.mark.asyncio
@@ -168,6 +184,33 @@ async def test_stream_checks_for_disconnect_after_an_empty_queue_timeout() -> No
     )
 
     await anext(stream)
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
+
+    assert manager.active_client_count == 0
+
+
+@pytest.mark.asyncio
+async def test_stream_stops_when_its_queue_is_disconnected() -> None:
+    class RequestThatStaysConnected:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    manager = ConnectionManager(max_clients=1)
+    queue = manager.connect("odin")
+    summary = RealmSummary(realm_id="odin", health_status="healthy")
+    stream = stream_realm_summary(
+        RequestThatStaysConnected(),
+        "odin",
+        manager,
+        summary,
+        queue,
+        disconnect_check_interval=15.0,
+    )
+
+    await anext(stream)
+    manager.disconnect("odin", queue)
+
     with pytest.raises(StopAsyncIteration):
         await anext(stream)
 
