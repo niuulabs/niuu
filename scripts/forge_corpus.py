@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from niuu.domain.transcript_rebuild import rebuild_turns
 from scripts.forge_trace import (
     compare_streams,
     digest,
@@ -26,7 +27,6 @@ from scripts.forge_trace import (
 from volundr.adapters.inbound.ws_session_replay import create_session_replay_router
 from volundr.config import ReplayConfig
 from volundr.domain.models import SessionLogEntry
-from volundr.domain.services.transcript_rebuild import rebuild_turns
 
 DEFAULT_CORPUS = Path("tests/fixtures/forge-corpus")
 CHECKPOINT_TYPES = {"result", "ask_user_question", "ask_user_resolved", "plan", "agent_update"}

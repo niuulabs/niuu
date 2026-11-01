@@ -5,8 +5,8 @@ from uuid import UUID
 
 import pytest
 
+from niuu.domain.transcript_rebuild import rebuild_turns
 from volundr.domain.models import SessionLogEntry
-from volundr.domain.services.transcript_rebuild import rebuild_turns
 
 SID = UUID("bf1b7317-0af3-4823-af08-930d0fe8dc22")
 

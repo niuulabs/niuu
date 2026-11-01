@@ -1013,8 +1013,8 @@ def _rebuild_from_frames(frames: list[dict]) -> list[dict]:
     """
     import uuid
 
+    from niuu.domain.transcript_rebuild import rebuild_turns
     from volundr.domain.models import SessionLogEntry
-    from volundr.domain.services.transcript_rebuild import rebuild_turns
 
     session_uuid = uuid.uuid4()
     entries: list[SessionLogEntry] = []

@@ -215,7 +215,7 @@ async def test_d3_agent_crash_mid_turn_rebuilds_interrupted_transcript() -> None
     stable across two rebuilds."""
     _require_tmux()
 
-    from volundr.domain.services.transcript_rebuild import rebuild_turns
+    from niuu.domain.transcript_rebuild import rebuild_turns
 
     async with BrokerHarness(hooks=True, idle_timeout_s=0.3) as h:
         client = await h.connect()
@@ -402,7 +402,7 @@ def test_d4_authoritative_turns_win_no_double_count_of_raw_frames() -> None:
     """D4 (default tier, pure reducer): when a conversation.turn row AND overlapping
     raw frames share the same request_id, the authoritative row wins and the raw
     frames are NOT double-counted into a second assistant turn."""
-    from volundr.domain.services.transcript_rebuild import rebuild_turns
+    from niuu.domain.transcript_rebuild import rebuild_turns
 
     rows = [
         # Authoritative SDK rows.

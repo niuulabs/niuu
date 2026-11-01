@@ -9,7 +9,7 @@ from datetime import datetime
 import httpx
 
 from niuu.domain.text_projection import REPAIR_KEY, projection_digest, repair_legacy_turn
-from niuu.domain.transcript_reducer import reduce_frames
+from niuu.domain.transcript_rebuild import rebuild_turns
 
 
 @dataclass(frozen=True)
@@ -46,9 +46,13 @@ async def fetch_durable_history(
     max_bytes: int,
     on_frames: Callable[[list[_HistoryFrame]], None] | None = None,
 ) -> list[dict]:
-    """Fold a frozen public-log horizon; filtered pages never imply end-of-log.
+    """Fold a frozen log horizon; filtered pages never imply end-of-log.
 
-    Raw rows are paged before the server removes synthetic/per-connect frames.
+    Reads the reducer seeds too and folds with Forge's own ``rebuild_turns``:
+    a room participant's reply is stored only as a ``conversation.turn`` seed,
+    so the public wire view alone loses every Ravn answer a session gave.
+
+    Raw rows are paged before the server removes per-connect frames.
     An empty page can safely advance by the requested raw page size: its rows
     were all excluded and strictly increasing integer seqs bound their end.
     A short visible page must likewise be followed until the frozen head.
@@ -65,7 +69,12 @@ async def fetch_durable_history(
                 client,
                 path,
                 remaining=max_bytes - consumed,
-                params={"after": cursor, "limit": page_size, "show_internal": "true"},
+                params={
+                    "after": cursor,
+                    "limit": page_size,
+                    "show_internal": "true",
+                    "include_seeds": "true",
+                },
             )
             consumed += size
             if not isinstance(page, list):
@@ -105,7 +114,7 @@ async def fetch_durable_history(
             cursor = previous
         if on_frames is not None:
             on_frames(frames)
-        return reduce_frames(frames).turns
+        return rebuild_turns(frames).turns
 
 
 def merge_history_turns(durable: list[dict], local: list[dict]) -> list[dict]:

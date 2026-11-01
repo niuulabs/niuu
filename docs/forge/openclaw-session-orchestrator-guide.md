@@ -960,6 +960,10 @@ Controller rules:
   until you reach `latest_seq`.
 - `ts` is the EMISSION time stamped by the broker at capture, so replayed
   timelines reflect when things actually happened.
+- The default read is the wire view. A room participant's reply, such as a Ravn
+  coordinator's, is never a wire frame: it is stored only as a
+  `conversation.turn` seed. To rebuild a room session's history, read
+  `?show_internal=true&include_seeds=true` and fold the rows with `rebuild_turns`.
 - Human turns are mirrored into the log too, so a pure log replay shows the
   full dialogue.
 - History survives session deletion (no FK); there is currently NO retention

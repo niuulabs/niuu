@@ -14,11 +14,13 @@ the whole ordered list — so a log replay folds byte-identically to what stream
 one turn-id policy + one metadata schema). There is no second folding implementation: the
 divergence in turn-id policy, reasoning ordering, and metadata key names is gone.
 
-This stays a PURE domain helper — no I/O, no ``skuld`` imports — called only by
-``SessionArchiveService._load_event_log_transcript``.
+This stays a PURE domain helper — no I/O, no ``skuld`` or ``volundr`` imports. Forge calls
+it from ``SessionArchiveService._load_event_log_transcript`` and the mid-cursor replay
+attach; Skuld calls it to hydrate a restarted session from the same rows, so a broker
+restart and a Forge read fold one log into one history.
 
 Data-safety contract (see the Bug-2 spec §8):
-  * Fallback-only: the caller runs this only after live/archive sources are empty.
+  * Forge fallback-only: the archive path runs this only after live/archive sources are empty.
   * No write-back: never mutates ``message_count`` (the /usage path is the single writer).
   * No double-count: ``conversation.turn`` rows are authoritative; raw frames that share a
     saved turn's ``request_id`` (or a human turn's ``uuid``) are skipped — this neutralises
@@ -34,14 +36,11 @@ Data-safety contract (see the Bug-2 spec §8):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from niuu.domain.conversation_timeline import project_timeline, timeline
 from niuu.domain.text_projection import apply_repair_markers, repair_legacy_turns
-from niuu.domain.transcript_reducer import apply_steering_frames, reduce_frames
-
-if TYPE_CHECKING:
-    from volundr.domain.models import SessionLogEntry
+from niuu.domain.transcript_reducer import Frame, apply_steering_frames, reduce_frames
 
 
 @dataclass
@@ -52,8 +51,8 @@ class RebuildResult:
     partial: bool = False
 
 
-def rebuild_turns(entries: list[SessionLogEntry]) -> RebuildResult:
-    """Fold ordered ``SessionLogEntry`` rows into renderable conversation turns."""
+def rebuild_turns(entries: list[Frame]) -> RebuildResult:
+    """Fold ordered durable-log rows into renderable conversation turns."""
     rows = sorted(entries, key=lambda e: e.seq)
     if not rows:
         return RebuildResult(turns=[], partial=False)

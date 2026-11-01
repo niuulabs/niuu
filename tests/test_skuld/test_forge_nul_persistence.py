@@ -146,7 +146,7 @@ async def test_nul_turn_lands_in_durable_log_and_rebuilds() -> None:
     """
     _require_tmux()
 
-    from volundr.domain.services.transcript_rebuild import rebuild_turns
+    from niuu.domain.transcript_rebuild import rebuild_turns
 
     async with BrokerHarness(hooks=True, idle_timeout_s=0.3) as h:
         client = await h.connect()
