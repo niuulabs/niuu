@@ -151,10 +151,7 @@ html:has(.niuu-home) { scroll-behavior:smooth }
 .niuu-home .commission .evolution h4 { font-size:18px;font-weight:450;letter-spacing:-.02em;margin:8px 0 6px }
 .niuu-home .commission .evolution { margin-top:56px }
 .niuu-home .commission .view { margin-top:56px }
-.niuu-home .gallery-foot { padding:0 var(--edge) clamp(96px,10vw,148px) }
-.niuu-home .gallery-foot .direction { margin-top:0 }
 .niuu-home .direction { font-size:14px;line-height:1.7;color:#8ba3b0;max-width:720px;margin:72px 0 0;padding-top:20px;border-top:1px solid #2b4351 }
-.niuu-home .chapter .direction { margin:0 }
 
 /* Use cases. */
 .niuu-home .cases { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:34px 32px }

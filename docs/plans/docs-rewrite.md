@@ -254,7 +254,7 @@ When it goes live:
 | `concepts/platform-model.md` | Update the Workspaces row, and its Realms implementation name. |
 | `get-started/configure-project.md` | "Project" in this page means a Forge repository setup. Rename or reword it so the two do not collide. |
 | `reference/api.md`, `reference/cli-niuu.md` | They say saga because the API and CLI do. Change them with the rename, not before. |
-| Home | Move the direction line into the Workspaces chapter body, and recapture both Workspace screens. |
+| Home | Add projects to the Workspaces chapter, and recapture both Workspace screens. |
 
 ## Teams, tenancy, scale and security
 

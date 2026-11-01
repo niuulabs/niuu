@@ -18,7 +18,7 @@ The page states selling points in a line each. Detail goes to the docs;
 | - | Hero | A place where intelligent systems do real work. | What NIUU is. Headline and supporting copy unchanged. |
 | 1 | The idea | Agents that work for you, not agents you have to drive. | Why autonomous work needs more than sessions. Session, workflow, team, resident. |
 | 2 | Gallery | See NIUU at work. | The visual centre. Seven chapters of real screens, in the order work grows: one agent to a whole environment. |
-| 3 | Continuity and evolution | Work doesn't start over. It evolves. | Residents, how a resident commissions what it needs, and Workspaces. The direction line closes it, marked as direction. |
+| 3 | Continuity and evolution | Work doesn't start over. It evolves. | Residents, how a resident commissions what it needs, and Workspaces. |
 | 4 | The NIUU environment | Six parts of one system. | One drawing of how the parts fit, then what NIUU builds on. |
 | 5 | Use cases | Not just for code. | The range of work, ending on Add your own. |
 | 6 | For teams | From one person to an organization. | Teams, multi-tenancy, scaling and security in one place, for someone evaluating NIUU for a company, with what is direction marked. |
@@ -63,7 +63,7 @@ width.
 | What carries forward | Moved to Continuity | It belongs with the conclusion, not the opening. |
 | Six product cards | Replaced by one drawing | Cards listed six products; the drawing shows one system. |
 | Built on what you have, seven rows | Moved under the environment, four rows | Harnesses, models, connections and runtimes. Every named product stays. |
-| Direction section | One line in Continuity | Still marked as direction, no longer a stop in the story. |
+| Direction section | Removed | Jozef asked to take it off the page. The operating-system direction stays in the docs. |
 | One worked example of a tool build | A four-step commissioning story, with the workflow | Jozef asked for the evolution story: a resident can commission work. |
 | No ticket screens | Tickets and Coordinator chapters | Jozef asked to see a workflow applied to a ticket, with the coordinator beside it. |
 | Use cases | Kept, without cards | Asked for near the bottom. |
@@ -102,7 +102,7 @@ along.
 | Workspace trust levels | **Mostly stored, not enforced** | Agents read only the `build` grant (`src/ravn/adapters/realm/client.py`). The One workspace screen shows "asks before deploy", but nothing enforces it. The copy makes no claim about it. |
 | Workspace setup from a sentence | Ships, simple | A regex in the browser (`plugin-realms/src/domain/sentence.ts`), not the resident. The page no longer claims it. |
 | Workspaces outside code | **Limited** | Every template requires a repository. The page's example is a resident, not a Workspace. |
-| Projects that hold Workspaces | **Direction** | Built but uncommitted on `feat/projects-without-repo`, tested on mock data only, never run on real sessions. One line in the Workspaces chapter, marked as direction. See "Projects and Workspaces" in `docs-rewrite.md`. |
+| Projects that hold Workspaces | **Direction** | Built but uncommitted on `feat/projects-without-repo`, tested on mock data only, never run on real sessions. Not on the page: Jozef removed the line. See "Projects and Workspaces" in `docs-rewrite.md`. |
 | Residents with mandates, Activity and Inbox | Ships | `plugin-valkyrie`, resident runtime |
 | Resident self-improvement | Ships | `src/ravn/adapters/reflection/self_improvement.py`: in its dream a resident judges past fixes, drops one that did not help for good, and acts on recurring friction by changing a learning, retiring a belief, commissioning a tool or filing a defect ticket. |
 | A resident commissions work | Ships | `build_tool` starts a Work workflow over A2A (`src/ravn/adapters/tool_build/a2a.py`). The resident answers builder questions and reviews gates within its `build` grant (`gate_review.py`), verifies the result itself, and three failures in a row roll a tool back (`docs/operator/valkyrie-self-improvement.md`). |
@@ -120,7 +120,7 @@ along.
 | Memory with beliefs and evidence | Ships | `plugin-mimir` |
 | Observatory live map | Ships | `plugin-observatory`. It shows what is connected to it, so a small install has a small map. The copy says "you have connected". |
 | Forge overview | Ships | `plugin-volundr`. Sessions run on connected hosts. Copy does not claim every agent runs through it. |
-| One goal and actor model across everything | **Direction** | `concepts/operating-system.md`. Only in the Direction section. |
+| One goal and actor model across everything | **Direction** | `concepts/operating-system.md`. In the docs only, not on the page. |
 | A resident's intrinsic drive | **Not claimed** | The June design names it as missing. The page says residents observe and judge, not that they set their own goals. |
 
 ## About the screens

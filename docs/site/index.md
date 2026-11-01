@@ -327,7 +327,6 @@ home:
       link:
         label: Sessions and workspaces
         doc: concepts/sessions-and-workspaces/
-      direction: "Where this is heading: a project holds several Workspaces, each with its own resident and, if it needs one, its own tracker. A repository becomes optional. That is direction, not what ships today."
       views:
         - name: All Workspaces
           image: workspaces
@@ -341,10 +340,6 @@ home:
           height: 1220
           caption: One Workspace, with what its resident did and what it asked for.
           alt: A Workspace showing what its resident did, with some actions taken alone and others waiting for approval
-    direction: Where this is heading is an operating system for agents, with goals, agents, capabilities and memory in one model. That is direction, not what ships today.
-    direction_link:
-      label: Read the direction
-      doc: concepts/operating-system/
   use_cases:
     label: Use cases
     title: Not just for code.

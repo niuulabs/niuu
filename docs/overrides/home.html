@@ -50,7 +50,6 @@
     </figure>
     {% endfor %}
   </div>
-  {% if chapter.direction %}<p class="direction">{{ chapter.direction }}</p>{% endif %}
 </article>
 {% endmacro %}
 
@@ -160,9 +159,6 @@
         </figure>
       </div>
       {{ chapter(evolution.workspaces) }}
-      <div class="gallery-foot">
-        <p class="direction">{{ evolution.direction }} <a class="more" href="{{ evolution.direction_link.doc | url }}">{{ evolution.direction_link.label }} →</a></p>
-      </div>
     </section>
 
     {% set environment = home.environment %}
