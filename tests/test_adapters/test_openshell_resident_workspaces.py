@@ -219,7 +219,7 @@ class _SandboxFleetClient(_FakeOpenShellGatewayClient):
             annotations=sandbox.annotations,
         )
 
-    def delete_sandbox(self, name: str, *, timeout: float) -> bool:
+    def delete_sandbox(self, name: str) -> bool:
         if self.fail_deletes.get(name):
             self.fail_deletes[name] -= 1
             raise RuntimeError(f"gateway could not delete {name} now")

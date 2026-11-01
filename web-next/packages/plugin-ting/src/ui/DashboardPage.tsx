@@ -292,16 +292,14 @@ function DashboardContent() {
 
   if (isLoading) return <LoadingState label="Loading dashboard…" />;
   if (isError)
-    return (
-      <ErrorState message={error instanceof Error ? error.message : 'Failed to load projects'} />
-    );
+    return <ErrorState message={error instanceof Error ? error.message : 'Failed to load sagas'} />;
 
   const openSaga = (saga: Saga) =>
     void navigate({ to: '/ting/sagas/$sagaId', params: { sagaId: saga.id } });
 
   const handleViewAll = () => {
     void navigate({ to: '/ting/sagas' as never });
-    toast({ title: 'Navigating to Projects' });
+    toast({ title: 'Navigating to Sagas' });
   };
 
   return (
@@ -325,7 +323,7 @@ function DashboardContent() {
       )}
 
       <div className="ting-kpi ting-kpi--accent">
-        <div className="ting-kpi__label">Active projects</div>
+        <div className="ting-kpi__label">Active sagas</div>
         <div className="ting-kpi__val">
           {activeSagas.length}
           <span className="ting-kpi__unit">in flight</span>
@@ -375,7 +373,7 @@ function DashboardContent() {
       </div>
 
       <div className="ting-dash__row-title">
-        <h2>Project stream</h2>
+        <h2>Saga stream</h2>
         <button className="ting-btn" type="button" onClick={handleViewAll}>
           View all
         </button>
@@ -422,7 +420,7 @@ function DashboardContent() {
 
       <div className="ting-dash__row-title">
         <h2>Live flock</h2>
-        <span className="ting-eyebrow">events · last 5m</span>
+        <span className="ting-eyebrow">sleipnir events · last 5m</span>
       </div>
 
       <div className="ting-flock-viz ting-dash__wide">
@@ -447,8 +445,8 @@ function DashboardContent() {
         </div>
         {feed.length === 0 ? (
           <div className="ting-run-feed ting-run-feed--empty">
-            No recent activity yet. Run state changes and project events will show up here once the
-            dispatcher or review flow emits them.
+            No recent Ting activity yet. Run state changes and saga events will show up here once
+            the dispatcher or review flow emits them.
           </div>
         ) : (
           <div className="ting-run-feed">
@@ -462,7 +460,7 @@ function DashboardContent() {
                   className="ting-feed-row__link"
                   type="button"
                   disabled={!entry.sagaId}
-                  title={entry.sagaId ? `Open ${entry.subject}` : 'No linked project'}
+                  title={entry.sagaId ? `Open ${entry.subject}` : 'No linked saga'}
                   onClick={() =>
                     entry.sagaId &&
                     void navigate({
@@ -502,13 +500,13 @@ function DashboardContent() {
       </div>
 
       <div className="ting-kpi ting-dash__wide">
-        <div className="ting-kpi__label">Project overview</div>
+        <div className="ting-kpi__label">Saga overview</div>
         <div
           className="ting-kpi__val"
           style={{ fontSize: 18, display: 'flex', alignItems: 'baseline', gap: 8 }}
         >
           {activeSagas.length}
-          <span className="ting-kpi__unit">active projects</span>
+          <span className="ting-kpi__unit">active sagas</span>
         </div>
         <div className="ting-kpi__stats-grid">
           <div className="ting-kpi__stat-chip">

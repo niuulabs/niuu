@@ -8,7 +8,7 @@ const ALL_ROLES = personaRoleSchema.options;
 describe('RavnAvatar', () => {
   it('renders with correct aria-label', () => {
     render(<RavnAvatar role="plan" rune="ᚱ" state="idle" />);
-    expect(screen.getByLabelText('agent plan idle')).toBeInTheDocument();
+    expect(screen.getByLabelText('ravn plan idle')).toBeInTheDocument();
   });
 
   it('renders the rune character', () => {
@@ -45,12 +45,12 @@ describe('RavnAvatar', () => {
 
   it('accepts a custom className', () => {
     render(<RavnAvatar role="report" rune="ᚱ" state="idle" className="extra" />);
-    expect(screen.getByLabelText('agent report idle')).toHaveClass('niuu-ravn-av', 'extra');
+    expect(screen.getByLabelText('ravn report idle')).toHaveClass('niuu-ravn-av', 'extra');
   });
 
   it('applies the correct size', () => {
     render(<RavnAvatar role="verify" rune="ᚱ" state="idle" size={40} />);
-    const el = screen.getByLabelText('agent verify idle');
+    const el = screen.getByLabelText('ravn verify idle');
     expect(el).toHaveStyle({ width: '40px', height: '40px' });
   });
 

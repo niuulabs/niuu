@@ -36,22 +36,19 @@ selected runtime. See [models and routing](model-routing.md) and
 ## Moving parts and implementation names
 
 The documentation describes services by their responsibilities. This table maps
-those responsibilities to the product names in the UI and the implementation
-names in APIs, configuration, packages, and source. Implementation names are
-stable: a product name never changes a route, a config key, or a command.
+those responsibilities to the names used in the UI, configuration, and source.
 
-| Moving part | Responsibility | Product | Implementation name |
-| --- | --- | --- | --- |
-| Agent runtime | Judgment, learning, capability evolution, continuation, and A2A | Agents | Ravn |
-| Resident environments | Environments kept by residents, their charter, trust, and memory | Workspaces | Realms |
-| Workflows and teams | Definitions, dispatch, stages, review gates, and runs | Work | Ting |
-| Sessions and execution | Session lifecycle, launch configuration, and review surfaces | Forge | Völundr |
-| Session gateway | Runtime processes, authentication, transcripts, and channel adaptation | Forge | Skuld |
-| Shared memory and knowledge | Durable sources, knowledge pages, retrieval, and curation | Memory | Mímir |
-| Model gateway | Model catalog, providers, routing, and usage | AI models | Bifröst |
-| Service discovery | Instance registration, discovery, and routing | Platform | Guild |
-| Event bus | Event transport between local and distributed services | Platform | Sleipnir |
-| Observability | Topology, activity, and relationships across the system | Observatory | Observatory |
+| Moving part | Responsibility | Implementation name |
+| --- | --- | --- |
+| Agent runtime | Judgment, learning, capability evolution, continuation, and A2A | Ravn |
+| Workflows and teams | Definitions, dispatch, stages, review gates, and runs | Ting |
+| Workspaces and execution | Workspace and session lifecycle, launch configuration, and review surfaces | Völundr / Forge |
+| Session gateway | Runtime processes, authentication, transcripts, and channel adaptation | Skuld |
+| Shared memory and knowledge | Durable sources, knowledge pages, retrieval, and curation | Mímir |
+| Model gateway | Model catalog, providers, routing, and usage | Bifröst |
+| Service discovery | Instance registration, discovery, and routing | Guild |
+| Event bus | Event transport between local and distributed services | Sleipnir |
+| Observability | Topology, activity, and relationships across the system | Observatory |
 
 Choose the services required by your workload. The
 [local quick start](../get-started/first-local-stack.md) is one small entry point.

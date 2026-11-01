@@ -89,7 +89,7 @@ class AdminPage(Widget):
     AdminPage #admin-search { height: auto; display: none; }
     AdminPage #admin-search.visible { display: block; }
     AdminPage #admin-content { height: 1fr; overflow-y: auto; }
-    AdminPage #admin-empty { color: #78909d; padding: 2; }
+    AdminPage #admin-empty { color: #71717a; padding: 2; }
     """
 
     tab_index: reactive[int] = reactive(0)

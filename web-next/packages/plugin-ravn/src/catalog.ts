@@ -114,9 +114,9 @@ export const SEED_TOOL_REGISTRY: ToolRegistry = [
   { id: 'git.diff', group: 'git', destructive: false, desc: 'Show diffs' },
   { id: 'git.checkout', group: 'git', destructive: true, desc: 'Switch branches or restore files' },
   { id: 'git.push', group: 'git', destructive: true, desc: 'Push commits to remote' },
-  { id: 'mimir.read', group: 'mimir', destructive: false, desc: 'Query the memory store' },
-  { id: 'mimir.write', group: 'mimir', destructive: false, desc: 'Write to the memory store' },
-  { id: 'mimir.delete', group: 'mimir', destructive: true, desc: 'Delete entries from memory' },
+  { id: 'mimir.read', group: 'mimir', destructive: false, desc: 'Query Mímir knowledge store' },
+  { id: 'mimir.write', group: 'mimir', destructive: false, desc: 'Write to Mímir knowledge store' },
+  { id: 'mimir.delete', group: 'mimir', destructive: true, desc: 'Delete entries from Mímir' },
   {
     id: 'observe.metrics',
     group: 'observe',
@@ -127,7 +127,7 @@ export const SEED_TOOL_REGISTRY: ToolRegistry = [
   { id: 'security.scan', group: 'security', destructive: false, desc: 'Static security scanner' },
   { id: 'security.secrets', group: 'security', destructive: false, desc: 'Secret detection scan' },
   { id: 'bus.emit', group: 'bus', destructive: false, desc: 'Emit an event to the event bus' },
-  { id: 'ravn.dispatch', group: 'bus', destructive: false, desc: 'Dispatch an agent session' },
-  { id: 'ravn.cascade', group: 'bus', destructive: false, desc: 'Cascade to child agents' },
+  { id: 'ravn.dispatch', group: 'bus', destructive: false, desc: 'Dispatch a ravn session' },
+  { id: 'ravn.cascade', group: 'bus', destructive: false, desc: 'Cascade to child ravens' },
   { id: 'web', group: 'observe', destructive: false, desc: 'Fetch a URL or search the web' },
 ];

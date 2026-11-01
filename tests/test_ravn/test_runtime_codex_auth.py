@@ -277,39 +277,3 @@ async def test_broker_is_the_runtime_volundr_not_the_platform(monkeypatch) -> No
     assert auth._resolved_exchange_url() == (
         "https://platform.example/api/v1/tokens/workload/exchange"
     )
-
-
-async def test_a_mediated_platform_bearer_wins_over_the_projected_token_file(
-    monkeypatch,
-) -> None:
-    """A Ting launch configures personas for Kubernetes: a projected token file
-    exchanged at the platform. On OpenShell that file does not exist, so the
-    persona's Codex start died with "workload identity proof token not found".
-    The bearer OpenShell mediates (exported into the platform access token) is
-    what every other platform client already uses; the broker must use it too,
-    and must not touch the file at all."""
-    monkeypatch.setenv("SKULD__VOLUNDR_API_URL", "https://niuu.noatun.example.test")
-    monkeypatch.setenv("RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN", "openshell-placeholder")
-    settings = Settings.model_validate(
-        {
-            "runtime_executor": {
-                "transport_adapter": _CODEX,
-                "codex_auth_adapter": "skuld.codex_auth.VolundrCodexAuthProvider",
-            },
-            "gateway": {
-                "platform": {
-                    "enabled": True,
-                    "base_url": "https://volundr.valhalla.example.test",
-                    "workload_token_file": "/var/run/secrets/niuu-workload/token",
-                    "workload_exchange_url": (
-                        "https://volundr.valhalla.example.test/api/v1/tokens/workload/exchange"
-                    ),
-                }
-            },
-        }
-    )
-
-    provider = _runtime_cli_transport_kwargs(_CODEX, settings)["codex_auth_provider"]
-    async with await provider._http_client_provider() as client:
-        assert str(client.base_url).rstrip("/") == "https://niuu.noatun.example.test"
-        assert client.headers["Authorization"] == "Bearer openshell-placeholder"

@@ -1,4 +1,3 @@
-{{- if not (include "skuld.roomGatewayEnabled" .) }}
 {{- if and .Values.localServices.enabled .Values.localServices.terminal.debug }}
 apiVersion: v1
 kind: ConfigMap
@@ -332,5 +331,4 @@ data:
       </script>
     </body>
     </html>
-{{- end }}
 {{- end }}

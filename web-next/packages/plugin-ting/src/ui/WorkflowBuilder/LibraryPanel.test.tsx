@@ -67,7 +67,7 @@ describe('LibraryPanel', () => {
 
   it('always renders the explicit ephemeral local Mimir resource', () => {
     render(<LibraryPanel personas={DEFAULT_PERSONAS} />);
-    expect(screen.getByText('Ephemeral local memory')).toBeInTheDocument();
+    expect(screen.getByText('Ephemeral Local Mimir')).toBeInTheDocument();
     expect(screen.getByText(/workspace-local scratch/i)).toBeInTheDocument();
   });
 
@@ -179,7 +179,7 @@ describe('LibraryPanel', () => {
 
   it('hides the resource section entirely when embedded without a Mimir handler', () => {
     render(<LibraryPanel embedded personas={DEFAULT_PERSONAS} registryMounts={[REGISTRY_MOUNT]} />);
-    expect(screen.queryByText('Ephemeral local memory')).not.toBeInTheDocument();
+    expect(screen.queryByText('Ephemeral Local Mimir')).not.toBeInTheDocument();
     expect(screen.queryByTestId('mimir-mount-shared-mimir')).not.toBeInTheDocument();
   });
 
@@ -192,7 +192,7 @@ describe('LibraryPanel', () => {
         onAddMimirResource={vi.fn()}
       />,
     );
-    expect(screen.getByText('Ephemeral local memory')).toBeInTheDocument();
+    expect(screen.getByText('Ephemeral Local Mimir')).toBeInTheDocument();
   });
 
   it('filters resources by category and hides flow control when nothing matches', () => {

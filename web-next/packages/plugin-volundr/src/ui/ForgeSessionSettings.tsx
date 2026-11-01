@@ -12,7 +12,7 @@ export const SESSION_TAB_SETTINGS = [
 ] as const;
 
 export function useSessionTabs() {
-  const [value, setValue] = useForgePreference<string>('sessionTabs', 'chat,diffs,files,telemetry');
+  const [value, setValue] = useForgePreference<string>('sessionTabs', 'chat,diffs,files');
   const enabled = new Set(value.split(','));
   enabled.add('chat');
   const setEnabled = (id: string, checked: boolean) => {

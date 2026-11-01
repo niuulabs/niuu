@@ -1,4 +1,3 @@
-import { InfrastructureIcon } from '@niuulabs/ui';
 import { createElement } from 'react';
 import { createRoute } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
@@ -22,9 +21,8 @@ function GuildTopbar() {
 export const guildPlugin = definePlugin({
   id: 'guild',
   rune: 'G',
-  icon: createElement(InfrastructureIcon),
-  title: 'Platform',
-  subtitle: 'your environment',
+  title: 'Guild',
+  subtitle: 'runtime registry',
   tabs: [{ id: 'instances', label: 'Instances', path: '/guild' }],
   routes: (rootRoute) => [
     createRoute({

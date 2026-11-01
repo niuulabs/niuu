@@ -371,21 +371,6 @@ class InstanceRegistryConfig(BaseModel):
     """Shared registry config for runtime instances."""
 
     instances: list[InstanceSeedConfig] = Field(default_factory=list)
-    local_mimir_url: str = Field(
-        default="",
-        description=(
-            "URL of the Mimir service co-hosted with Guild. When set, Guild registers it so "
-            "its knowledge deployment targets are visible. Empty when Mimir is not co-hosted."
-        ),
-    )
-    realm_database: str = Field(
-        default="",
-        description=(
-            "Database the shared host keeps realms in. Set on a host that embeds Forge, whose "
-            "resident runtimes reference realms by foreign key. Empty keeps them in the shared "
-            "database."
-        ),
-    )
     catalog: list[InstanceCatalogEntryConfig] = Field(default_factory=_default_instance_catalog)
     health: InstanceHealthConfig = Field(default_factory=InstanceHealthConfig)
     node_join: NodeJoinConfig = Field(default_factory=NodeJoinConfig)

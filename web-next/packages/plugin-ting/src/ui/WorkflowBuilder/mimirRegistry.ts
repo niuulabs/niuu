@@ -25,7 +25,7 @@ export const EPHEMERAL_LOCAL_MOUNT_ID = '__ephemeral_local__';
 
 export const EPHEMERAL_LOCAL_MOUNT: WorkflowRegistryMount = {
   id: EPHEMERAL_LOCAL_MOUNT_ID,
-  name: 'Ephemeral local memory',
+  name: 'Ephemeral Local Mimir',
   kind: 'local',
   lifecycle: 'ephemeral',
   role: 'local',
@@ -37,7 +37,7 @@ export const EPHEMERAL_LOCAL_MOUNT: WorkflowRegistryMount = {
   enabled: true,
   healthStatus: 'unknown',
   healthMessage: 'Created inside the session workspace at runtime',
-  desc: 'Workspace-local scratch memory. Path is assigned automatically at runtime.',
+  desc: 'Workspace-local scratch Mimir. Path is assigned automatically at runtime.',
 };
 
 export function serializeWorkflowRegistryMount(mount: WorkflowRegistryMount): string {

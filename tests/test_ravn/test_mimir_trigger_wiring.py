@@ -3,8 +3,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from ravn.cli.commands import _wire_mimir_triggers
 from ravn.config import Settings
 
@@ -176,71 +174,7 @@ def test_wakefulness_without_tracker_is_skipped() -> None:
         ),
         patch("ravn.adapters.triggers.wakefulness.WakefulnessTrigger") as mock_wakefulness,
     ):
-        with pytest.raises(RuntimeError, match="wakefulness.enabled is true"):
-            _wire_mimir_triggers(drive_loop, mimir, settings, llm=llm, interaction_tracker=None)
+        _wire_mimir_triggers(drive_loop, mimir, settings, llm=llm, interaction_tracker=None)
 
     mock_wakefulness.assert_not_called()
-
-
-def _wakefulness_settings(**overrides: object) -> Settings:
-    return Settings(
-        workflow={"graph": {}},
-        mimir={
-            "source_trigger": {"enabled": False},
-            "staleness_trigger": {"enabled": False},
-        },
-        thread={"enabled": False},
-        **overrides,
-    )
-
-
-def _wire_wakefulness(settings: Settings, *, gateway: object | None) -> tuple[MagicMock, MagicMock]:
-    drive_loop = MagicMock()
-    with (
-        patch("ravn.adapters.triggers.thread_queue.ThreadQueueTrigger"),
-        patch("ravn.adapters.triggers.wakefulness.WakefulnessTrigger") as mock_wakefulness,
-    ):
-        _wire_mimir_triggers(
-            drive_loop,
-            MagicMock(),
-            settings,
-            llm=MagicMock(),
-            interaction_tracker=MagicMock(),
-            gateway=gateway,
-        )
-    return drive_loop, mock_wakefulness
-
-
-def test_wakefulness_registers_on_its_own_enabled_flag() -> None:
-    """wakefulness.enabled alone registers it; resident_wakefulness is a different feature."""
-    settings = _wakefulness_settings(wakefulness={"enabled": True})
-    assert settings.resident_wakefulness.enabled is False
-    gateway = MagicMock()
-
-    _, mock_wakefulness = _wire_wakefulness(settings, gateway=gateway)
-
-    mock_wakefulness.assert_called_once()
-    kwargs = mock_wakefulness.call_args.kwargs
-    assert kwargs["config"] is settings.wakefulness
-    assert kwargs["transcript"] == gateway.transcript_since
-
-
-def test_resident_wakefulness_alone_does_not_register_the_trigger() -> None:
-    settings = _wakefulness_settings(resident_wakefulness={"enabled": True})
-
-    _, mock_wakefulness = _wire_wakefulness(settings, gateway=MagicMock())
-
-    mock_wakefulness.assert_not_called()
-
-
-def test_wakefulness_disabled_registers_nothing() -> None:
-    _, mock_wakefulness = _wire_wakefulness(_wakefulness_settings(), gateway=MagicMock())
-
-    mock_wakefulness.assert_not_called()
-
-
-def test_wakefulness_without_a_gateway_is_fatal() -> None:
-    settings = _wakefulness_settings(wakefulness={"enabled": True})
-
-    with pytest.raises(RuntimeError, match="gateway channel"):
-        _wire_wakefulness(settings, gateway=None)
+    drive_loop.register_trigger.assert_called_once_with(thread_queue_trigger)

@@ -7,20 +7,6 @@ function client() {
 }
 
 describe('Work HTTP read adapter', () => {
-  it('reads reviews across projects and for one ticket', async () => {
-    const http = client();
-    http.get.mockResolvedValue({ items: [] });
-    const adapter = buildWorkHttpAdapter(http as never);
-
-    await adapter.reviews();
-    await adapter.ticketReviews('project/1', 'issue 1');
-
-    expect(http.get).toHaveBeenCalledWith('/work/reviews');
-    await adapter.reviewWidget('acme-print', 'quality');
-    expect(http.get).toHaveBeenCalledWith('/work/review-widgets/acme-print/quality');
-    expect(http.get).toHaveBeenCalledWith('/work/project/project%2F1/tasks/issue%201/reviews');
-  });
-
   it('preserves independent source coverage and the execution continuation', async () => {
     const http = client();
     const collection = {
@@ -57,51 +43,6 @@ describe('Work HTTP read adapter', () => {
     http.get.mockResolvedValue(detail);
     expect(await buildWorkHttpAdapter(http).get('project', 'a/b')).toBe(detail);
     expect(http.get).toHaveBeenCalledWith('/work/project/a%2Fb');
-  });
-
-  it('posts a gate decision to the ticket it answers', async () => {
-    const http = client();
-    const decision = {
-      gateId: 'gate-1',
-      activationId: 'activation-1',
-      decision: 'approve' as const,
-      notes: '',
-    };
-
-    await buildWorkHttpAdapter(http).decideRunGate('a2a/1', decision);
-    await buildWorkHttpAdapter(http).decideGate('saga/1', 'issue 1', decision);
-
-    expect(http.post).toHaveBeenCalledWith(
-      '/work/project/saga%2F1/tasks/issue%201/gate-decision',
-      decision,
-    );
-    expect(http.post).toHaveBeenCalledWith('/work/runs/a2a%2F1/gate-decision', decision);
-  });
-
-  it('reads a run that has no ticket', async () => {
-    const http = client();
-
-    await buildWorkHttpAdapter(http).runReviews('a2a/1');
-
-    expect(http.get).toHaveBeenCalledWith('/work/runs/a2a%2F1/reviews');
-  });
-
-  it('starts a ticket through its coordinator', async () => {
-    const http = client();
-
-    await buildWorkHttpAdapter(http).startTicket('saga/1', 'issue 1');
-
-    expect(http.post).toHaveBeenCalledWith('/work/project/saga%2F1/tasks/issue%201/start', {});
-  });
-
-  it('names the column a ticket was dropped on', async () => {
-    const http = client();
-
-    await buildWorkHttpAdapter(http).startTicket('saga-1', 'issue-1', 'planning');
-
-    expect(http.post).toHaveBeenCalledWith('/work/project/saga-1/tasks/issue-1/start', {
-      columnId: 'planning',
-    });
   });
 
   it('propagates permission errors rather than presenting an empty collection', async () => {

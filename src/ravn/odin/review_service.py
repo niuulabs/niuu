@@ -41,24 +41,11 @@ _SETTLED_STATUSES = frozenset(
         ReviewStatus.APPLIED.value,
         ReviewStatus.APPLY_FAILED.value,
         ReviewStatus.EXPIRED.value,
-        ReviewStatus.WITHDRAWN.value,
     }
 )
 
-#: Statuses recording the resident's outcome, which a decision precedes: a
-#: decided event redelivered after one of these must not walk the item back.
+#: Statuses recording the resident's apply outcome, which a decision precedes.
 _RESOLVED_STATUSES = frozenset(
-    {
-        ReviewStatus.APPLIED.value,
-        ReviewStatus.APPLY_FAILED.value,
-        ReviewStatus.WITHDRAWN.value,
-    }
-)
-
-#: Statuses showing the resident already applied an operator decision; a
-#: withdrawal that arrives after one of these describes a question that was
-#: answered through the queue, so it must not rewrite that history.
-_APPLIED_STATUSES = frozenset(
     {
         ReviewStatus.APPLIED.value,
         ReviewStatus.APPLY_FAILED.value,
@@ -131,11 +118,6 @@ class OdinReviewService:
             stale_decision = (
                 event_type == registry.ODIN_REVIEW_DECIDED and existing.status in _RESOLVED_STATUSES
             )
-            late_withdrawal = (
-                item.status == ReviewStatus.WITHDRAWN.value and existing.status in _APPLIED_STATUSES
-            )
-            if late_withdrawal:
-                return
             if item.status != ReviewStatus.PENDING.value and not stale_decision:
                 existing.status = item.status
             if event_type == registry.ODIN_REVIEW_DECIDED or item.decided_by:

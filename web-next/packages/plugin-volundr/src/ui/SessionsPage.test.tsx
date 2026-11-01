@@ -181,10 +181,10 @@ describe('SessionsPage', () => {
     );
     expect(screen.queryByText('Build archive: unavailable')).not.toBeInTheDocument();
     offline = false;
-    fireEvent.click(screen.getByRole('button', { name: 'Retry host connections' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Forge connections' }));
     expect(await screen.findByTestId('pod-entry-recovered')).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.queryByLabelText('Host connections')).not.toBeInTheDocument(),
+      expect(screen.queryByLabelText('Forge connections')).not.toBeInTheDocument(),
     );
   });
 

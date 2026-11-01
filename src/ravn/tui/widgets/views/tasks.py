@@ -12,11 +12,11 @@ from textual.widgets import DataTable
 from ravn.tui.utils import iter_bar
 
 _STATUS_STYLE: dict[str, str] = {
-    "running": "#86d0e8",
+    "running": "#f59e0b",
     "queued": "#06b6d4",
-    "complete": "#76bfa7",
-    "error": "#e78d94",
-    "stopped": "#78909d",
+    "complete": "#10b981",
+    "error": "#ef4444",
+    "stopped": "#71717a",
 }
 
 
@@ -27,7 +27,7 @@ class TaskBoardView(Widget):
     TaskBoardView {
         height: 1fr;
         width: 1fr;
-        background: #071019;
+        background: #09090b;
     }
     TaskBoardView DataTable {
         height: 1fr;
@@ -77,7 +77,7 @@ class TaskBoardView(Widget):
         for conn in conns:
             info = conn.ravn_info or {}
             state = info.get("state", conn.status)
-            style = _STATUS_STYLE.get(state, "#a5b7c1")
+            style = _STATUS_STYLE.get(state, "#a1a1aa")
             persona = str(info.get("persona", "—"))[:30]
             cur = info.get("iteration")
             mx = info.get("max_iterations")

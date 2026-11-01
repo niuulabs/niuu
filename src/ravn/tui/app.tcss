@@ -1,5 +1,5 @@
 /* Ravn TUI — Textual CSS
- * NIUU Ink base (#071019), Signal accent (#86d0e8), JetBrains Mono throughout.
+ * Zinc-950 base (#09090b), amber brand (#f59e0b), JetBrains Mono throughout.
  * Matches the HTML prototype aesthetic: ravn_flokk_tui.html
  */
 
@@ -8,7 +8,7 @@
 /* ------------------------------------------------------------------ */
 
 Screen {
-    background: #071019;
+    background: #09090b;
     color: #d4d4d8;
 }
 
@@ -57,13 +57,13 @@ Screen {
 
 #cmd-input-prompt {
     width: auto;
-    color: #86d0e8;
+    color: #f59e0b;
     padding: 0;
 }
 
 #cmd-input {
     background: #0d0d0f;
-    color: #86d0e8;
+    color: #f59e0b;
     border: none;
     width: 1fr;
     padding: 0;
@@ -75,19 +75,19 @@ Screen {
 /* ------------------------------------------------------------------ */
 
 DataTable {
-    background: #071019;
+    background: #09090b;
     color: #d4d4d8;
 }
 
 DataTable > .datatable--header {
     background: #161618;
-    color: #648090;
+    color: #52525b;
     text-style: bold;
 }
 
 DataTable > .datatable--cursor {
     background: #1c1c1e;
-    color: #edf4f7;
+    color: #fafafa;
 }
 
 DataTable > .datatable--fixed {
@@ -95,7 +95,7 @@ DataTable > .datatable--fixed {
 }
 
 DataTable > .datatable--odd-row {
-    background: #071019;
+    background: #09090b;
 }
 
 DataTable > .datatable--even-row {
@@ -107,13 +107,13 @@ DataTable > .datatable--even-row {
 /* ------------------------------------------------------------------ */
 
 Input {
-    background: #10212d;
+    background: #18181b;
     color: #d4d4d8;
-    border: solid #2b4351;
+    border: solid #3f3f46;
 }
 
 Input:focus {
-    border: solid #86d0e8;
+    border: solid #f59e0b;
 }
 
 /* ------------------------------------------------------------------ */
@@ -121,11 +121,11 @@ Input:focus {
 /* ------------------------------------------------------------------ */
 
 RichLog {
-    background: #071019;
+    background: #09090b;
     color: #d4d4d8;
     scrollbar-size: 1 1;
-    scrollbar-color: #182b38;
-    scrollbar-color-hover: #2b4351;
+    scrollbar-color: #27272a;
+    scrollbar-color-hover: #3f3f46;
 }
 
 /* ------------------------------------------------------------------ */
@@ -133,7 +133,7 @@ RichLog {
 /* ------------------------------------------------------------------ */
 
 Label {
-    color: #a5b7c1;
+    color: #a1a1aa;
 }
 
 /* ------------------------------------------------------------------ */
@@ -141,6 +141,6 @@ Label {
 /* ------------------------------------------------------------------ */
 
 #sb-notification.-urgent {
-    color: #86d0e8;
+    color: #f59e0b;
     background: #1a1200;
 }

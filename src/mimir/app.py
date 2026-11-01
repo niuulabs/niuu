@@ -175,7 +175,6 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         deployment=deployment,
         public_url=config.announce_url or "",
         tenant_id=config.tenant_id,
-        platform_tenant_id=config.platform_tenant_id,
         adapter=adapter,
         name=config.name,
         role=config.role,
@@ -191,7 +190,6 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         auth=identity_adapter,
         auth_mode=auth_mode,
         live_activity=live_activity,
-        platform_tenant_id=config.platform_tenant_id,
     )
 
     @asynccontextmanager

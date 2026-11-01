@@ -1132,7 +1132,7 @@ describe('SettingsPage', () => {
       </ConfigProvider>,
     );
 
-    expect(await screen.findByRole('heading', { name: 'Work Settings' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Ting Settings' })).toBeTruthy();
     expect(
       screen.getByText(
         'This service does not have a live settings endpoint configured in the current host profile.',
@@ -1434,7 +1434,7 @@ describe('SettingsPage', () => {
 
     wrap(<SettingsPage />);
 
-    expect(await screen.findByRole('heading', { name: 'Work Settings' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Ting Settings' })).toBeTruthy();
     expect(await screen.findByText(expectedCopy)).toBeTruthy();
     expect(await screen.findByText('Response detail:')).toBeTruthy();
   });

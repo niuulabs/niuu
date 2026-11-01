@@ -47,7 +47,7 @@ describe('sessionBackedRavens', () => {
       flockRole: 'coordinator',
     });
     expect(isSessionRavn(ravn!)).toBe(true);
-    expect(ravnTarget(ravn!)).toBe('this host');
+    expect(ravnTarget(ravn!)).toBe('this Forge');
   });
 
   it('leaves sessions that belong to a listed ravn alone', () => {

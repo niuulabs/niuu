@@ -912,21 +912,6 @@ describe('buildTingHttpAdapter', () => {
       });
     });
 
-    it('sets the ordered board workflows and reads them back on a saga', async () => {
-      const client = makeClient();
-      const stored = [{ id: 'workflow-1', name: 'Ticket Planning Flow' }];
-      client.put.mockResolvedValue({ board_workflows: stored });
-      client.get.mockResolvedValue({ ...rawSaga, board_workflows: stored });
-      const adapter = buildTingHttpAdapter(client);
-
-      await expect(adapter.setBoardWorkflows('saga 1', ['workflow-1'])).resolves.toEqual(stored);
-
-      expect(client.put).toHaveBeenCalledWith('/sagas/saga%201/board-workflows', {
-        workflow_ids: ['workflow-1'],
-      });
-      expect((await adapter.getSaga('saga-1'))?.boardWorkflows).toEqual(stored);
-    });
-
     it('assigns saga targets and maps the resulting saga', async () => {
       const client = makeClient();
       client.put.mockResolvedValue({

@@ -176,9 +176,9 @@ export function ObservatoryRailSections({ topology, selectedId, onSelect }: Prop
         )}
       </CollapsibleSection>
 
-      <CollapsibleSection title="Memory instances" meta={mimirs.length} testId="rail-mimir">
+      <CollapsibleSection title="Mímir instances" meta={mimirs.length} testId="rail-mimir">
         {mimirs.length === 0 ? (
-          <Empty>No memory instances discovered.</Empty>
+          <Empty>No Mímir instances discovered.</Empty>
         ) : (
           mimirs.map((node: TopologyNode) => (
             <RailRow

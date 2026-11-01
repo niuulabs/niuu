@@ -106,7 +106,7 @@ describe('SessionsPage helpers', () => {
         clusterId: undefined,
         clusterName: undefined,
       }),
-    ).toBe('unknown host');
+    ).toBe('unknown forge');
     expect(sessionActivityTs(sessions[2]!)).toBe(Date.parse('2026-05-01T00:30:00.000Z'));
     expect(compareSessionsByActivity(sessions[0]!, sessions[1]!)).toBeGreaterThan(0);
 

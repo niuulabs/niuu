@@ -39,12 +39,12 @@ class ChatView(Widget):
     ChatView {
         height: 1fr;
         width: 1fr;
-        background: #071019;
+        background: #09090b;
         layout: vertical;
     }
     ChatView #cv-log {
         height: 1fr;
-        background: #071019;
+        background: #09090b;
     }
     ChatView #cv-stream {
         padding: 0 1;
@@ -57,7 +57,7 @@ class ChatView(Widget):
     }
     ChatView #cv-input-bar {
         height: 3;
-        border-top: solid #182b38;
+        border-top: solid #27272a;
         background: #0d0d0f;
         padding: 0 1;
     }
@@ -98,21 +98,21 @@ class ChatView(Widget):
     def on_mount(self) -> None:
         log = self.query_one("#cv-log", RichLog)
         if self._connection:
-            log.write(f"[#2b4351]  ── {self._connection.name} ──[/]")
+            log.write(f"[#3f3f46]  ── {self._connection.name} ──[/]")
             log.write("")
             asyncio.create_task(self._connect_ws(), name="chat-ws")
         else:
-            log.write("[#2b4351]  ── no ravn selected ──[/]")
+            log.write("[#3f3f46]  ── no ravn selected ──[/]")
             log.write("")
-            log.write("[#648090]  Select a ravn from the Flokk panel:[/]")
+            log.write("[#52525b]  Select a ravn from the Flokk panel:[/]")
             log.write(
-                "[#2b4351]  Tab[/][#78909d] → focus Flokk  [/]"
-                "[#2b4351]j/k[/][#78909d] → navigate  [/]"
-                "[#2b4351]↵[/][#78909d] → open chat[/]"
+                "[#3f3f46]  Tab[/][#71717a] → focus Flokk  [/]"
+                "[#3f3f46]j/k[/][#71717a] → navigate  [/]"
+                "[#3f3f46]↵[/][#71717a] → open chat[/]"
             )
             log.write("")
-            log.write("[#648090]  No ravn? Connect one:[/]")
-            log.write("[#2b4351]  :[/][#78909d]connect host:7477[/]")
+            log.write("[#52525b]  No ravn? Connect one:[/]")
+            log.write("[#3f3f46]  :[/][#71717a]connect host:7477[/]")
 
     # ------------------------------------------------------------------
     # Scroll actions (j/k/G/g when log is in view)
@@ -152,7 +152,7 @@ class ChatView(Widget):
                         frame = json.loads(raw)
                         self._handle_frame(frame)
         except Exception as exc:
-            self._append_system(f"[#e78d94]disconnected: {exc}[/]")
+            self._append_system(f"[#ef4444]disconnected: {exc}[/]")
         finally:
             self._ws = None
             self.streaming = False
@@ -202,12 +202,12 @@ class ChatView(Widget):
             case "result":
                 self.streaming = False
                 if frame.get("subtype") == "error" or frame.get("is_error"):
-                    self._append_system(f"[#e78d94]{frame.get('result', 'error')}[/]")
+                    self._append_system(f"[#ef4444]{frame.get('result', 'error')}[/]")
 
             case "error":
                 self.streaming = False
                 msg = frame.get("error", {}).get("message", "unknown error")
-                self._append_system(f"[#e78d94]{msg}[/]")
+                self._append_system(f"[#ef4444]{msg}[/]")
 
     # ------------------------------------------------------------------
     # Input
@@ -223,7 +223,7 @@ class ChatView(Widget):
 
     async def _send(self, text: str) -> None:
         if not self._ws:
-            self._append_system("[#78909d](not connected — reconnecting…)[/]")
+            self._append_system("[#71717a](not connected — reconnecting…)[/]")
             if self._connection:
                 asyncio.create_task(self._connect_ws(), name="chat-ws-reconnect")
             return
@@ -231,7 +231,7 @@ class ChatView(Widget):
             await self._ws.send(json.dumps({"type": "user", "content": text}))
             self.streaming = True
         except Exception:
-            self._append_system("[#e78d94]send failed[/]")
+            self._append_system("[#ef4444]send failed[/]")
 
     # ------------------------------------------------------------------
     # Live stream display
@@ -262,7 +262,7 @@ class ChatView(Widget):
         ts = datetime.now().strftime("%H:%M:%S")
         safe = text.replace("[", "\\[")
         log.write(f"[#d4d4d8 on #1a1308]  {safe}  [/]")
-        log.write(f"[#2b4351]  {ts} · you[/]")
+        log.write(f"[#3f3f46]  {ts} · you[/]")
         log.write("")
 
     def _append_ravn(self, text: str) -> None:
@@ -276,7 +276,7 @@ class ChatView(Widget):
         ts = datetime.now().strftime("%H:%M:%S")
         for line in _render_markdown(text):
             log.write(line)
-        log.write(f"[#2b4351]  {ts} · {name}[/]")
+        log.write(f"[#3f3f46]  {ts} · {name}[/]")
         log.write("")
         log.scroll_end(animate=False)
 
@@ -284,7 +284,7 @@ class ChatView(Widget):
         with suppress(Exception):
             log = self.query_one("#cv-log", RichLog)
             safe = text.replace("[", "\\[")
-            log.write(f"[italic #648090]  ✦ {safe}[/]")
+            log.write(f"[italic #52525b]  ✦ {safe}[/]")
 
     def _append_tool_start(self, tool: str) -> None:
         with suppress(Exception):
@@ -294,7 +294,7 @@ class ChatView(Widget):
     def _append_system(self, text: str) -> None:
         with suppress(Exception):
             log = self.query_one("#cv-log", RichLog)
-            log.write(f"[#2b4351]  ── {text} ──[/]")
+            log.write(f"[#3f3f46]  ── {text} ──[/]")
 
 
 # ---------------------------------------------------------------------------
@@ -312,12 +312,12 @@ def _inline(text: str) -> str:
     # Inline code (highest priority — must run before bold/italic)
     text = re.sub(
         r"`(.+?)`",
-        lambda m: "[#a5b7c1 on #111111] " + m.group(1).replace("[", "\\[") + " [/]",
+        lambda m: "[#a1a1aa on #111111] " + m.group(1).replace("[", "\\[") + " [/]",
         text,
     )
     # Bold
-    text = re.sub(r"\*\*(.+?)\*\*", r"[bold #edf4f7]\1[/]", text)
-    text = re.sub(r"__(.+?)__", r"[bold #edf4f7]\1[/]", text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"[bold #fafafa]\1[/]", text)
+    text = re.sub(r"__(.+?)__", r"[bold #fafafa]\1[/]", text)
     # Italic
     text = re.sub(r"\*(.+?)\*", r"[italic #d4d4d8]\1[/]", text)
     text = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"[italic #d4d4d8]\1[/]", text)
@@ -335,40 +335,40 @@ def _render_markdown(text: str) -> list[str]:
         if raw.startswith("```"):
             if in_code_block:
                 in_code_block = False
-                output.append("[#2b4351]  ───[/]")
+                output.append("[#3f3f46]  ───[/]")
             else:
                 in_code_block = True
                 code_lang = raw[3:].strip()
                 label = f" {code_lang}" if code_lang else ""
-                output.append(f"[#2b4351]  ──{label}[/]")
+                output.append(f"[#3f3f46]  ──{label}[/]")
             continue
 
         if in_code_block:
             safe = raw.replace("[", "\\[")
-            output.append(f"  [#a5b7c1 on #111111]{safe}[/]")
+            output.append(f"  [#a1a1aa on #111111]{safe}[/]")
             continue
 
         # Headings
         if raw.startswith("### "):
-            output.append(f"[bold #a5b7c1]{_inline(raw[4:])}[/]")
+            output.append(f"[bold #a1a1aa]{_inline(raw[4:])}[/]")
         elif raw.startswith("## "):
             output.append(f"[bold #d4d4d8]{_inline(raw[3:])}[/]")
         elif raw.startswith("# "):
-            output.append(f"[bold #edf4f7]{_inline(raw[2:])}[/]")
+            output.append(f"[bold #fafafa]{_inline(raw[2:])}[/]")
         # Unordered list
         elif raw.startswith(("- ", "* ")):
-            output.append(f"  [#648090]·[/] [#d4d4d8]{_inline(raw[2:])}[/]")
+            output.append(f"  [#52525b]·[/] [#d4d4d8]{_inline(raw[2:])}[/]")
         # Ordered list
         elif re.match(r"^\d+\. ", raw):
             content = re.sub(r"^\d+\. ", "", raw)
             num = re.match(r"^(\d+)\. ", raw).group(1)  # type: ignore[union-attr]
-            output.append(f"  [#648090]{num}.[/] [#d4d4d8]{_inline(content)}[/]")
+            output.append(f"  [#52525b]{num}.[/] [#d4d4d8]{_inline(content)}[/]")
         # Blockquote
         elif raw.startswith("> "):
-            output.append(f"  [italic #78909d]{_inline(raw[2:])}[/]")
+            output.append(f"  [italic #71717a]{_inline(raw[2:])}[/]")
         # Horizontal rule
         elif raw.strip() in ("---", "***", "___"):
-            output.append("[#2b4351]  ─────────────────────────────────────[/]")
+            output.append("[#3f3f46]  ─────────────────────────────────────[/]")
         # Normal text
         elif raw:
             output.append(f"[#d4d4d8]{_inline(raw)}[/]")

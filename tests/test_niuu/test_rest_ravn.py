@@ -782,13 +782,9 @@ class _FakeRealmService:
         self.realm = realm
         self.requested_ids: list[UUID] = []
 
-    async def get_realm(self, realm_ref: UUID, tenant_id: str) -> Realm | None:
+    async def get_realm(self, realm_ref: UUID) -> Realm | None:
         self.requested_ids.append(realm_ref)
-        if (
-            self.realm is not None
-            and realm_ref == self.realm.id
-            and tenant_id == self.realm.tenant_id
-        ):
+        if self.realm is not None and realm_ref == self.realm.id:
             return self.realm
         return None
 
@@ -805,7 +801,6 @@ def _realm(**overrides: object) -> Realm:
         "created_at": now,
         "updated_at": now,
         "autonomy_profile": "balanced",
-        "tenant_id": "tenant-a",
     }
     values.update(overrides)
     return Realm(**values)
@@ -891,39 +886,6 @@ def test_create_raven_fails_when_realm_sync_fails() -> None:
     )
 
     assert response.status_code >= 400
-    assert not create_route.calls
-
-
-@respx.mock
-def test_create_raven_refuses_a_realm_in_another_tenant() -> None:
-    """A known realm id must not copy another tenant's realm onto a target."""
-    realm = _realm(tenant_id="tenant-b")
-    embedded = FastAPI()
-    embedded.state.realm_service = _FakeRealmService(realm)
-    client = _client(
-        [_instance("noatun", base_url="http://noatun")],
-        embedded_forge_app=embedded,
-    )
-    sync_route = respx.put(f"http://noatun/api/v1/realms/by-id/{realm.id}").mock(
-        return_value=Response(200, json={})
-    )
-    create_route = respx.post("http://noatun/api/v1/ravn/ravens").mock(
-        return_value=Response(201, json={"id": "resident-id", "managed": True})
-    )
-
-    response = client.post(
-        "/api/v1/ravn/ravens",
-        headers=_headers(),
-        json={
-            "instance_id": "noatun",
-            "profile_id": "ravn-openshell",
-            "name": "Muninn",
-            "realm_id": str(realm.id),
-        },
-    )
-
-    assert response.status_code == 422
-    assert not sync_route.calls
     assert not create_route.calls
 
 

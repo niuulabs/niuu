@@ -1,7 +1,5 @@
 import { useState, useEffect } from 'react';
-import { GateDecision } from '@niuulabs/ui';
 import type { ExtractedStructure, PhaseSpec } from '../ports';
-import type { PlanTicketFlag } from '../domain/planTicketCheck';
 
 const SIZE_CLASSES: Record<'S' | 'M' | 'L', string> = {
   S: 'niuu:bg-accent-emerald/20 niuu:text-accent-emerald niuu:border-accent-emerald/30',
@@ -30,21 +28,16 @@ interface PlanDraftProps {
   onSaveDraft?(): void;
   onEditPhase(phaseIndex: number, name: string): void;
   onRemoveRun?(phaseIndex: number, runIndex: number): void;
-  ticketFlags?: PlanTicketFlag[];
-  ticketCheckError?: string | null;
-  onRequestRevision?(flags: PlanTicketFlag[]): void;
-  onRequestChanges?(note: string): void;
 }
 
 interface PhaseEditorProps {
   phase: PhaseSpec;
   phaseIndex: number;
-  flags: PlanTicketFlag[];
   onSave(name: string): void;
   onRemoveRun?(runIndex: number): void;
 }
 
-function PhaseEditor({ phase, phaseIndex, flags, onSave, onRemoveRun }: PhaseEditorProps) {
+function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProps) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(phase.name);
 
@@ -129,7 +122,7 @@ function PhaseEditor({ phase, phaseIndex, flags, onSave, onRemoveRun }: PhaseEdi
                 title={run.persona ?? 'raven'}
                 aria-label={`persona: ${run.persona ?? 'raven'}`}
               >
-                {run.persona ? run.persona.charAt(0).toUpperCase() : 'A'}
+                {run.persona ? run.persona.charAt(0).toUpperCase() : 'ᚱ'}
               </span>
 
               {/* Col 2: Name + meta */}
@@ -162,11 +155,11 @@ function PhaseEditor({ phase, phaseIndex, flags, onSave, onRemoveRun }: PhaseEdi
               <button
                 type="button"
                 disabled
-                aria-label={`Promote run ${ri + 1} to own project unavailable`}
-                title="Unavailable: promoting a run to its own project is not supported."
+                aria-label={`Promote run ${ri + 1} to own saga unavailable`}
+                title="Unavailable: promoting a run to its own saga is not supported."
                 className="niuu:text-xs niuu:text-text-muted niuu:border niuu:border-border niuu:rounded niuu:px-1.5 niuu:py-0.5 niuu:opacity-40 niuu:cursor-not-allowed"
               >
-                Own project
+                Own saga
               </button>
 
               {/* Col 5: Remove button */}
@@ -181,16 +174,6 @@ function PhaseEditor({ phase, phaseIndex, flags, onSave, onRemoveRun }: PhaseEdi
                 </button>
               ) : (
                 <span />
-              )}
-
-              {flags.some((flag) => flag.runIndex === ri) && (
-                <ul className="ting-plan-run-flags" data-testid={`run-flags-${phaseIndex}-${ri}`}>
-                  {flags
-                    .filter((flag) => flag.runIndex === ri)
-                    .map((flag) => (
-                      <li key={flag.message}>{flag.message}</li>
-                    ))}
-                </ul>
               )}
             </li>
           ))}
@@ -217,13 +200,9 @@ export function PlanDraft({
   onSaveDraft,
   onEditPhase,
   onRemoveRun,
-  ticketFlags = [],
-  ticketCheckError = null,
-  onRequestRevision,
-  onRequestChanges,
 }: PlanDraftProps) {
   const phases = structure.structure?.phases ?? [];
-  const sagaName = structure.structure?.name ?? 'New project';
+  const sagaName = structure.structure?.name ?? 'New Saga';
   const risks = structure.structure?.risks ?? [];
 
   const totalRuns = phases.reduce((sum, p) => sum + p.runs.length, 0);
@@ -235,7 +214,6 @@ export function PlanDraft({
       : 0;
 
   const [draftSavedFeedback, setDraftSavedFeedback] = useState(false);
-  const [note, setNote] = useState('');
 
   useEffect(() => {
     if (!draftSavedFeedback) return;
@@ -259,7 +237,7 @@ export function PlanDraft({
             </h2>
             <p className="niuu:text-sm niuu:text-text-secondary">
               Nothing is created yet. Tune the draft, remove work, or re-plan before materializing
-              the project.
+              the saga.
             </p>
           </div>
         </div>
@@ -305,34 +283,9 @@ export function PlanDraft({
         </div>
       )}
 
-      {(ticketFlags.length > 0 || ticketCheckError) && (
-        <div className="ting-plan-card ting-plan-ticket-check" data-testid="plan-ticket-check">
-          <div>
-            <h3>Ticket check</h3>
-            {ticketFlags.length > 0 && (
-              <p>
-                {ticketFlags.length} thing{ticketFlags.length === 1 ? '' : 's'} to review before
-                these become tickets. Titles are compared word by word, so a match can be wrong.
-              </p>
-            )}
-            {ticketCheckError && <p role="alert">{ticketCheckError}</p>}
-          </div>
-          {onRequestRevision && ticketFlags.length > 0 && (
-            <button
-              type="button"
-              onClick={() => onRequestRevision(ticketFlags)}
-              disabled={loading}
-              className="ting-plan-secondary-btn niuu:disabled:opacity-40"
-            >
-              Send back for revision
-            </button>
-          )}
-        </div>
-      )}
-
       {phases.length === 0 && (
         <p className="niuu:text-sm niuu:text-text-muted niuu:italic">
-          No phases extracted — the agent couldn&apos;t decompose this goal. Try going back and
+          No phases extracted — the raven couldn&apos;t decompose this goal. Try going back and
           adding more context.
         </p>
       )}
@@ -343,7 +296,6 @@ export function PlanDraft({
             key={idx}
             phase={phase}
             phaseIndex={idx}
-            flags={ticketFlags.filter((flag) => flag.phaseIndex === idx)}
             onSave={(name) => onEditPhase(idx, name)}
             onRemoveRun={onRemoveRun ? (ri) => onRemoveRun(idx, ri) : undefined}
           />
@@ -397,20 +349,15 @@ export function PlanDraft({
             </button>
           </div>
         )}
+        <button
+          type="button"
+          onClick={onApprove}
+          disabled={loading || phases.length === 0}
+          className="ting-plan-primary-btn niuu:disabled:opacity-50 niuu:disabled:cursor-not-allowed"
+        >
+          {loading ? 'Launching…' : 'Approve & launch →'}
+        </button>
       </div>
-      <GateDecision
-        title="Plan review"
-        hint="Approving creates the project and its tickets. Changes go back to the planner in the same run."
-        note={note}
-        onNoteChange={setNote}
-        requireNote
-        approveLabel={loading ? 'Launching…' : 'Approve & launch →'}
-        changesLabel="Request changes"
-        busy={loading}
-        disabled={phases.length === 0}
-        onApprove={onApprove}
-        onRequestChanges={() => onRequestChanges?.(note.trim())}
-      />
     </div>
   );
 }

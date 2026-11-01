@@ -117,12 +117,8 @@ def _sanitize_fts_query(query: str) -> str:
     Each whitespace-delimited token is wrapped in double quotes so that FTS5
     operators (AND, OR, NOT, -, *, ^) and hyphenated terms are treated as
     literals rather than syntax.
-
-    Repeated terms are dropped. FTS5 ANDs the phrases, so a repeat narrows nothing,
-    but it holds a doclist per phrase: a 1.7 MB resident prompt, 78k terms of which
-    2.8k were distinct, took 1.9 GB to match and got the pod OOM-killed.
     """
-    tokens = list(dict.fromkeys(query.split()))
+    tokens = query.split()
     if not tokens:
         return '""'
     sanitized = []

@@ -250,7 +250,7 @@ def create_sessions_router() -> APIRouter:
             active_volundr = session_volundr or volundr
             try:
                 pr_status = await active_volundr.get_pr_status(run.session_id)
-                if pr_status is not None and pr_status.ci_passed is False:
+                if pr_status.ci_passed is False:
                     logger.warning(
                         "Approving session %s with failing CI",
                         _sanitize_log(session_id),

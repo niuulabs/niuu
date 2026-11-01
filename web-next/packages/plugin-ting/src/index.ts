@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { createRoute, redirect } from '@tanstack/react-router';
-import { WorkIcon } from '@niuulabs/ui';
+import { BriefcaseBusiness } from 'lucide-react';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { WorkflowBuilderPage } from './ui/WorkflowBuilderPage';
 import { WorkflowsRoute } from './ui/WorkflowsRoute';
@@ -10,10 +10,7 @@ import { DispatchView } from './ui/DispatchView';
 import { TingTopbar } from './ui/TingTopbar';
 import { TingFooter } from './ui/TingFooter';
 import { PlanWizard } from './ui/PlanWizard';
-import { ReviewsPage } from './ui/review/ReviewsPage';
 import { PlanDetailPage } from './ui/PlanDetailPage';
-import { RunReviewPage } from './ui/review/RunReviewPage';
-import { TicketReviewPage } from './ui/review/TicketReviewPage';
 import { TingSubnav } from './ui/TingSubnav';
 import { ResearchCenterPage } from './ui/ResearchCenterPage';
 import { ResearchNewPage } from './ui/ResearchNewPage';
@@ -30,7 +27,6 @@ export {
 export { buildWorkHttpAdapter } from './adapters/workHttp';
 export type { IWorkService, IWorkflowExecutionService, IDeliveryExecutionService } from './ports';
 export type * from './domain/work';
-export type * from './domain/review';
 export { WorkflowExecutionGraph } from './ui/WorkflowExecutionGraph';
 export type { WorkflowExecutionGraphProps } from './ui/WorkflowExecutionGraph';
 export type * from './domain/workflowExecutionGraph';
@@ -66,17 +62,18 @@ function resolveLegacySettingsTarget(sectionId?: string): string {
 export const tingPlugin = definePlugin({
   id: 'ting',
   rune: 'T',
-  icon: createElement(WorkIcon),
-  title: 'Work',
-  subtitle: 'run and oversee work',
+  title: 'Ting',
+  subtitle: 'sagas · runs · dispatch',
   simple: {
-    tabs: ['work', 'reviews', 'workflows', 'builder'],
+    tabs: ['work', 'workflows', 'builder'],
+    title: 'Ting',
+    subtitle: 'run and oversee work',
+    icon: createElement(BriefcaseBusiness, { size: 17, 'aria-hidden': true }),
   },
   tabs: [
-    { id: 'work', label: 'Board', path: '/ting/work' },
-    { id: 'reviews', label: 'Reviews', path: '/ting/plan' },
-    { id: 'workflows', label: 'Workflows', path: '/ting/workflows' },
-    { id: 'builder', label: 'Builder', path: '/ting/workflows/build' },
+    { id: 'work', label: 'Work', rune: '◈', path: '/ting/work' },
+    { id: 'workflows', label: 'Workflows', rune: '⚙', path: '/ting/workflows' },
+    { id: 'builder', label: 'Builder', rune: '◇', path: '/ting/workflows/build' },
   ],
   routes: (rootRoute) => [
     createRoute({
@@ -96,16 +93,6 @@ export const tingPlugin = definePlugin({
       getParentRoute: () => rootRoute,
       path: '/ting/work/$workId',
       component: WorkPage,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/ting/review/run/$slug',
-      component: RunReviewPage,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/ting/review/$projectId/$issueId',
-      component: TicketReviewPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -194,11 +181,6 @@ export const tingPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting/plan',
-      component: ReviewsPage,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/ting/plan/new',
       component: PlanWizard,
     }),
     createRoute({
@@ -452,7 +434,6 @@ export {
 } from './ui/WorkflowLaunchForm';
 export { WorkflowStrip, gateWaitsForPerson, type WorkflowStripProps } from './ui/WorkflowStrip';
 export { SimpleWorkflowsPage } from './ui/SimpleWorkflowsPage';
-export { BoardWorkflowsCard } from './ui/BoardWorkflowsCard';
 export { WorkflowCard } from './ui/WorkflowCard';
 export { StageProgressRail } from './ui/StageProgressRail';
 export { StepDots } from './ui/StepDots';

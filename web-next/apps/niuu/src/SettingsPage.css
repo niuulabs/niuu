@@ -26,7 +26,7 @@
 .settings-shell__sidebar-eyebrow,
 .settings-shell__kicker,
 .settings-shell__panel-topline {
-  color: rgb(var(--niuu-rgb-mist, 202 208 220) / 0.7);
+  color: rgba(202, 208, 220, 0.7);
   font-size: 0.7rem;
   font-weight: 700;
   letter-spacing: 0.18em;
@@ -35,7 +35,7 @@
 
 .settings-shell__sidebar-count,
 .settings-shell__provider-count {
-  color: rgb(var(--niuu-rgb-mist, 202 208 220) / 0.5);
+  color: rgba(202, 208, 220, 0.5);
   font-family: var(--font-mono);
   font-size: 0.85rem;
 }
@@ -45,7 +45,7 @@
 .settings-field__description,
 .settings-shell__endpoint-note,
 .settings-shell__status {
-  color: rgb(var(--niuu-rgb-muted, 185 191 205) / 0.72);
+  color: rgba(185, 191, 205, 0.72);
   font-size: 0.78rem;
   line-height: 1.5;
 }
@@ -60,11 +60,7 @@
 }
 
 .settings-shell__provider-group--active {
-  background: linear-gradient(
-    90deg,
-    rgb(var(--niuu-rgb-signal, 104 177 255) / 0.08),
-    rgb(var(--niuu-rgb-signal, 104 177 255) / 0)
-  );
+  background: linear-gradient(90deg, rgba(104, 177, 255, 0.08), rgba(104, 177, 255, 0));
 }
 
 .settings-shell__provider-header,
@@ -82,7 +78,7 @@
 }
 
 .settings-shell__provider-title {
-  color: rgb(var(--niuu-rgb-mist, 240 243 248) / 0.94);
+  color: rgba(240, 243, 248, 0.94);
   font-size: 0.77rem;
   font-weight: 700;
   letter-spacing: 0.12em;
@@ -104,7 +100,7 @@
 .settings-shell__section-link {
   padding: 0.54rem 0.74rem;
   border-radius: 11px;
-  color: rgb(var(--niuu-rgb-mist, 212 217 228) / 0.88);
+  color: rgba(212, 217, 228, 0.88);
   transition:
     background-color 120ms ease,
     color 120ms ease,
@@ -113,16 +109,16 @@
 
 .settings-shell__section-link:hover {
   background: rgba(255, 255, 255, 0.04);
-  color: rgb(var(--niuu-rgb-mist, 245 247 250) / 0.98);
+  color: rgba(245, 247, 250, 0.98);
 }
 
 .settings-shell__section-link--active {
-  background: rgb(var(--niuu-rgb-signal, 104 177 255) / 0.12);
-  color: rgb(var(--niuu-rgb-mist, 245 247 250) / 0.98);
+  background: rgba(104, 177, 255, 0.12);
+  color: rgba(245, 247, 250, 0.98);
 }
 
 .settings-shell__section-link-mark {
-  color: rgb(var(--niuu-rgb-signal, 138 196 255) / 0.95);
+  color: rgba(138, 196, 255, 0.95);
   font-size: 0.73rem;
   flex: 0 0 auto;
 }
@@ -145,18 +141,18 @@
 }
 
 .settings-shell__panel-badge--editable {
-  color: var(--niuu-brand-400, #9bd2ff);
-  background: rgb(var(--niuu-rgb-signal, 73 144 255) / 0.12);
+  color: #9bd2ff;
+  background: rgba(73, 144, 255, 0.12);
 }
 
 .settings-shell__panel-badge--readonly {
-  color: rgb(var(--niuu-rgb-mist, 205 210 220) / 0.76);
+  color: rgba(205, 210, 220, 0.76);
   background: rgba(255, 255, 255, 0.04);
 }
 
 .settings-shell__provider-empty {
   padding: 0.4rem 0.4rem 0;
-  color: rgb(var(--niuu-rgb-muted, 160 168 182) / 0.68);
+  color: rgba(160, 168, 182, 0.68);
   font-size: 0.78rem;
 }
 
@@ -192,7 +188,7 @@
   padding: 1rem 0;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  color: rgb(var(--niuu-rgb-mist, 240 243 248) / 0.94);
+  color: rgba(240, 243, 248, 0.94);
   font-size: 0.9rem;
   font-weight: 600;
 }
@@ -205,7 +201,7 @@
 }
 
 .settings-shell__panel-code {
-  color: rgb(var(--niuu-rgb-muted, 150 157 173) / 0.72);
+  color: rgba(150, 157, 173, 0.72);
   font-family: var(--font-mono);
   font-size: 0.74rem;
 }
@@ -223,7 +219,7 @@
 .settings-shell__panel-heading,
 .settings-shell__panel-title {
   margin: 0;
-  color: var(--niuu-text-primary, #f5f7fb);
+  color: #f5f7fb;
   font-size: clamp(1.45rem, 2.2vw, 1.75rem);
   line-height: 1.08;
 }
@@ -269,14 +265,14 @@
 }
 
 .settings-field__label {
-  color: rgb(var(--niuu-rgb-mist, 232 236 243) / 0.96);
+  color: rgba(232, 236, 243, 0.96);
   font-size: 0.84rem;
   font-weight: 600;
 }
 
 .settings-field__value {
   justify-self: stretch;
-  color: rgb(var(--niuu-rgb-mist, 246 248 252) / 0.94);
+  color: rgba(246, 248, 252, 0.94);
   font-family: var(--font-mono);
   font-size: 0.84rem;
   line-height: 1.5;
@@ -290,10 +286,10 @@
 .settings-field__control,
 .settings-field__textarea {
   width: 100%;
-  border: 1px solid rgb(var(--niuu-rgb-muted, 115 127 149) / 0.34);
+  border: 1px solid rgba(115, 127, 149, 0.34);
   border-radius: 10px;
-  background: rgb(var(--niuu-rgb-ink, 13 16 21) / 0.98);
-  color: var(--niuu-text-primary, #f4f7fb);
+  background: rgba(13, 16, 21, 0.98);
+  color: #f4f7fb;
   font-family: var(--font-mono);
   font-size: 0.84rem;
   line-height: 1.5;
@@ -317,13 +313,13 @@
 .settings-field__control:focus,
 .settings-field__textarea:focus {
   outline: none;
-  border-color: rgb(var(--niuu-rgb-signal, 111 181 255) / 0.92);
-  box-shadow: 0 0 0 3px rgb(var(--niuu-rgb-signal, 97 171 255) / 0.16);
+  border-color: rgba(111, 181, 255, 0.92);
+  box-shadow: 0 0 0 3px rgba(97, 171, 255, 0.16);
 }
 
 .settings-field__control::placeholder,
 .settings-field__textarea::placeholder {
-  color: rgb(var(--niuu-rgb-muted, 145 153 168) / 0.56);
+  color: rgba(145, 153, 168, 0.56);
 }
 
 .settings-field__select-caret {
@@ -331,7 +327,7 @@
   top: 50%;
   right: 1rem;
   transform: translateY(-50%);
-  color: rgb(var(--niuu-rgb-muted, 174 181 194) / 0.7);
+  color: rgba(174, 181, 194, 0.7);
   pointer-events: none;
 }
 
@@ -359,9 +355,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgb(var(--niuu-rgb-muted, 134 146 168) / 0.52);
+  border: 1px solid rgba(134, 146, 168, 0.52);
   border-radius: 0.35rem;
-  background: rgb(var(--niuu-rgb-ink, 14 16 21) / 0.95);
+  background: rgba(14, 16, 21, 0.95);
   color: transparent;
   font-size: 0.92rem;
   font-weight: 700;
@@ -373,18 +369,18 @@
 }
 
 .settings-checkbox__input:focus + .settings-checkbox__box {
-  box-shadow: 0 0 0 3px rgb(var(--niuu-rgb-signal, 97 171 255) / 0.16);
-  border-color: rgb(var(--niuu-rgb-signal, 111 181 255) / 0.92);
+  box-shadow: 0 0 0 3px rgba(97, 171, 255, 0.16);
+  border-color: rgba(111, 181, 255, 0.92);
 }
 
 .settings-checkbox__box--checked {
-  background: rgb(var(--niuu-rgb-signal, 78 149 255) / 0.18);
-  border-color: rgb(var(--niuu-rgb-signal, 111 181 255) / 0.92);
-  color: var(--niuu-brand-100, #dff1ff);
+  background: rgba(78, 149, 255, 0.18);
+  border-color: rgba(111, 181, 255, 0.92);
+  color: #dff1ff;
 }
 
 .settings-checkbox__label {
-  color: rgb(var(--niuu-rgb-mist, 240 244 251) / 0.95);
+  color: rgba(240, 244, 251, 0.95);
   font-family: var(--font-mono);
   font-size: 0.8rem;
   letter-spacing: 0.02em;
@@ -409,15 +405,11 @@
 }
 
 .settings-shell__save-button {
-  border: 1px solid rgb(var(--niuu-rgb-muted, 115 127 149) / 0.34);
+  border: 1px solid rgba(115, 127, 149, 0.34);
   border-radius: 999px;
   padding: 0.55rem 0.95rem;
-  background: linear-gradient(
-    180deg,
-    rgb(var(--niuu-rgb-signal, 70 136 235) / 0.2),
-    rgb(var(--niuu-rgb-signal, 46 101 180) / 0.16)
-  );
-  color: var(--niuu-brand-100, #ecf5ff);
+  background: linear-gradient(180deg, rgba(70, 136, 235, 0.2), rgba(46, 101, 180, 0.16));
+  color: #ecf5ff;
   font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.02em;
@@ -437,11 +429,11 @@
 }
 
 .settings-shell__status--success {
-  color: var(--niuu-ok, #a9e8be);
+  color: #a9e8be;
 }
 
 .settings-shell__status--error {
-  color: var(--niuu-critical, #ff9797);
+  color: #ff9797;
 }
 
 .settings-shell__resources {
@@ -462,7 +454,7 @@
 
 .settings-resource__title {
   margin: 0;
-  color: var(--niuu-text-primary, #f5f7fb);
+  color: #f5f7fb;
   font-size: 0.94rem;
   font-weight: 650;
 }
@@ -474,7 +466,7 @@
 .settings-resource__copy,
 .settings-resource__row-meta,
 .settings-resource__group-label {
-  color: rgb(var(--niuu-rgb-muted, 185 191 205) / 0.72);
+  color: rgba(185, 191, 205, 0.72);
   font-size: 0.76rem;
   line-height: 1.5;
 }
@@ -506,7 +498,7 @@
 
 .settings-resource__composer-label,
 .settings-resource__group-label {
-  color: rgb(var(--niuu-rgb-mist, 226 231 240) / 0.92);
+  color: rgba(226, 231, 240, 0.92);
   font-size: 0.7rem;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -515,7 +507,7 @@
 
 .settings-resource__required {
   margin-left: 0.45rem;
-  color: var(--niuu-brand-400, #8fc8ff);
+  color: #8fc8ff;
   font-family: var(--font-mono);
   font-size: 0.68rem;
 }
@@ -545,14 +537,14 @@
 
 .settings-resource__callout {
   margin-bottom: 0.9rem;
-  border: 1px solid rgb(var(--niuu-rgb-signal, 111 181 255) / 0.2);
+  border: 1px solid rgba(111, 181, 255, 0.2);
   border-radius: 12px;
-  background: rgb(var(--niuu-rgb-signal, 62 111 179) / 0.08);
+  background: rgba(62, 111, 179, 0.08);
   padding: 0.85rem 0.95rem;
 }
 
 .settings-resource__callout-title {
-  color: var(--niuu-brand-100, #dff0ff);
+  color: #dff0ff;
   font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -562,7 +554,7 @@
 .settings-resource__secret {
   display: block;
   margin: 0.45rem 0;
-  color: var(--niuu-text-primary, #f4f7fb);
+  color: #f4f7fb;
   font-family: var(--font-mono);
   font-size: 0.84rem;
   word-break: break-all;
@@ -598,23 +590,23 @@
 }
 
 .settings-resource__catalog-card:hover {
-  border-color: rgb(var(--niuu-rgb-signal, 111 181 255) / 0.32);
-  background: rgb(var(--niuu-rgb-signal, 111 181 255) / 0.06);
+  border-color: rgba(111, 181, 255, 0.32);
+  background: rgba(111, 181, 255, 0.06);
 }
 
 .settings-resource__catalog-card--active {
-  border-color: rgb(var(--niuu-rgb-signal, 111 181 255) / 0.58);
-  background: rgb(var(--niuu-rgb-signal, 111 181 255) / 0.11);
+  border-color: rgba(111, 181, 255, 0.58);
+  background: rgba(111, 181, 255, 0.11);
 }
 
 .settings-resource__catalog-title {
-  color: rgb(var(--niuu-rgb-mist, 242 245 250) / 0.96);
+  color: rgba(242, 245, 250, 0.96);
   font-size: 0.84rem;
   font-weight: 650;
 }
 
 .settings-resource__catalog-meta {
-  color: rgb(var(--niuu-rgb-muted, 185 191 205) / 0.72);
+  color: rgba(185, 191, 205, 0.72);
   font-size: 0.74rem;
   line-height: 1.45;
 }
@@ -634,20 +626,20 @@
 }
 
 .settings-resource__row-title {
-  color: rgb(var(--niuu-rgb-mist, 242 245 250) / 0.96);
+  color: rgba(242, 245, 250, 0.96);
   font-size: 0.84rem;
   font-weight: 600;
 }
 
 .settings-resource__row-note {
   margin-top: 0.28rem;
-  color: rgb(var(--niuu-rgb-success, 169 232 190) / 0.88);
+  color: rgba(169, 232, 190, 0.88);
   font-size: 0.75rem;
   line-height: 1.45;
 }
 
 .settings-resource__row-note--error {
-  color: var(--niuu-critical, #ff9797);
+  color: #ff9797;
 }
 
 .settings-resource__account {
@@ -665,7 +657,7 @@
 }
 
 .settings-resource__row-action {
-  color: var(--niuu-text-primary, #f1f4fa);
+  color: #f1f4fa;
   font-size: 0.76rem;
   font-weight: 600;
   border: 1px solid rgba(255, 255, 255, 0.09);
@@ -676,7 +668,7 @@
 
 .settings-resource__empty {
   justify-content: flex-start;
-  color: rgb(var(--niuu-rgb-muted, 176 183 196) / 0.74);
+  color: rgba(176, 183, 196, 0.74);
   font-size: 0.82rem;
 }
 

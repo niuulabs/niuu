@@ -1,10 +1,9 @@
 import './PlanWizard.css';
-import { Link, useNavigate, useParams } from '@tanstack/react-router';
+import { useNavigate, useParams } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import { StateDot, type DotState } from '@niuulabs/ui';
 import type { ITingService, PlanRisk, PhaseSpec } from '../ports';
-import { PlanWizard } from './PlanWizard';
 
 /**
  * A single plan, addressable by slug.
@@ -48,10 +47,6 @@ export function PlanDetailPage() {
   }
 
   const plan = session.data;
-  // While a plan is open, its page is its review, on the wizard's own draft step.
-  if (plan.status && !plan.sagaId && RESUMABLE_STATUSES.includes(plan.status.toLowerCase())) {
-    return <PlanWizard resumeSlug={slug} />;
-  }
   const structure = draft.data?.structure ?? null;
   const phases: PhaseSpec[] = structure?.phases ?? [];
   const risks: PlanRisk[] = structure?.risks ?? [];
@@ -65,7 +60,7 @@ export function PlanDetailPage() {
           className="ting-plan-detail__back"
           onClick={() => void navigate({ to: '/ting/plan' as never })}
         >
-          ← Reviews
+          ← Plans
         </button>
         <h1>{plan.name || structure?.name || slug}</h1>
         <span className="ting-plan-detail__status">
@@ -81,7 +76,7 @@ export function PlanDetailPage() {
           <dt>Repository</dt>
           <dd>{plan.repo || 'none selected'}</dd>
           <dt>Workflow</dt>
-          <dd>{plan.workflowName || 'Project planning'}</dd>
+          <dd>{plan.workflowName || 'Saga Planning'}</dd>
           <dt>Slug</dt>
           <dd>{slug}</dd>
         </dl>
@@ -100,22 +95,6 @@ export function PlanDetailPage() {
           </ul>
         </section>
       )}
-
-      {plan.sagaId && (plan.tickets?.length ?? 0) > 0 ? (
-        <section className="ting-plan-card" aria-label="Tickets from this plan">
-          <h2>Tickets from this plan</h2>
-          <ol>
-            {plan.tickets?.map((ticket) => (
-              <li key={ticket.issueId}>
-                <Link to={`/ting/review/${plan.sagaId}/${ticket.issueId}` as never}>
-                  {ticket.identifier || ticket.name}
-                </Link>
-                {ticket.identifier ? <span> {ticket.name}</span> : null}
-              </li>
-            ))}
-          </ol>
-        </section>
-      ) : null}
 
       <section className="ting-plan-card" aria-label="Run breakdown">
         <div className="ting-plan-detail__runs-head">
@@ -153,8 +132,6 @@ export function PlanDetailPage() {
     </div>
   );
 }
-
-const RESUMABLE_STATUSES = ['pending', 'running', 'blocked'];
 
 function statusDot(status?: string | null): DotState {
   const value = (status ?? '').toLowerCase();

@@ -14,7 +14,7 @@ function dotClassName(status: PhaseStatus): string {
   if (status === 'complete')
     return `${base} niuu:bg-[#455564] niuu:border-[#617183] niuu:text-[#cad4df]`;
   if (status === 'active')
-    return `${base} niuu:bg-brand niuu:border-brand niuu:text-bg-primary niuu:shadow-[0_0_18px_rgb(var(--niuu-rgb-signal,125_211_252)/0.35)]`;
+    return `${base} niuu:bg-brand niuu:border-brand niuu:text-bg-primary niuu:shadow-[0_0_18px_rgba(125,211,252,0.35)]`;
   if (status === 'gated')
     return `${base} niuu:bg-accent-amber/20 niuu:border-accent-amber niuu:text-accent-amber`;
   return `${base} niuu:bg-bg-elevated niuu:border-border niuu:text-text-muted`;

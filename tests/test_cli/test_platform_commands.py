@@ -1185,48 +1185,6 @@ class TestCheckAuthEnvConflicts:
         _check_auth_env_conflicts({"BIFROST_CONFIG": '{"auth_mode": "oidc"}'}, "oidc")
 
 
-def test_mini_gives_local_memory_a_deployment_target_guild_can_find(tmp_path):
-    settings = CLISettings(
-        mode="mini",
-        server={"host": "0.0.0.0", "port": 8181},
-        pod_manager={"workspaces_dir": str(tmp_path / "workspaces")},
-    )
-
-    env = _resolve_local_pod_manager_env(settings)
-
-    assert json.loads(env["MIMIR__DEPLOYMENT"]) == {
-        "adapter": "mimir.adapters.local.LocalKnowledgeDeploymentAdapter",
-        "root": str(tmp_path / "knowledge"),
-    }
-    assert env["NIUU__LOCAL_MIMIR_URL"] == "http://127.0.0.1:8181"
-    assert env["NIUU__REALM_DATABASE"] == "volundr"
-
-
-def test_only_mini_targets_local_memory():
-    env = _resolve_local_pod_manager_env(CLISettings(mode="cluster"))
-
-    assert "MIMIR__DEPLOYMENT" not in env
-    assert "NIUU__LOCAL_MIMIR_URL" not in env
-    assert "NIUU__REALM_DATABASE" not in env
-
-
-def test_mini_residents_read_personas_and_memory_from_the_platform(tmp_path):
-    from volundr.config import ResidentRuntimesConfig
-
-    settings = CLISettings(
-        mode="mini", pod_manager={"workspaces_dir": str(tmp_path / "workspaces")}
-    )
-
-    env = _resolve_local_pod_manager_env(settings)
-
-    runtimes = ResidentRuntimesConfig.model_validate_json(env["RESIDENT_RUNTIMES"])
-    (profile,) = runtimes.profiles
-    resident = profile.deployment["values"]["resident"]
-    assert resident["personaSource"]["adapter"].endswith("HttpPersonaAdapter")
-    assert resident["personaSource"]["kwargs"] == {"base_url": "http://127.0.0.1:8080"}
-    assert resident["mimir"]["instances"][0]["url"] == "http://127.0.0.1:8080"
-
-
 @pytest.mark.parametrize("mode", ["mini", "cluster"])
 def test_only_mini_selects_no_auth(mode, monkeypatch):
     from ravn.config import Settings as RavnSettings

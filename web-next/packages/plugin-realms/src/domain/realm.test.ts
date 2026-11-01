@@ -67,7 +67,6 @@ describe('requiredDraftError', () => {
     expect(requiredDraftError({ ...complete, name: ' ' }, true)).toMatch(/name/);
     expect(requiredDraftError({ ...complete, charter: '' }, true)).toMatch(/charter/);
     expect(requiredDraftError({ ...complete, repo: '' }, true)).toMatch(/repository/);
-    expect(requiredDraftError({ ...complete, repo: '' }, true, false)).toBeNull();
     expect(requiredDraftError({ ...complete, trackerBoard: '' }, true)).toMatch(/board/);
     expect(requiredDraftError({ ...complete, trackerBoard: '' }, false)).toBeNull();
     expect(requiredDraftError({ ...complete, profileId: '' }, true)).toMatch(/runs/);

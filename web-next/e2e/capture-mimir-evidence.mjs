@@ -9,7 +9,7 @@ const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 
 await page.goto(base + '/', { waitUntil: 'networkidle' });
-await page.getByTitle(/^Memory/).click();
+await page.getByTitle(/^Mímir/).click();
 await page.waitForTimeout(1500);
 
 const shoot = async (name) => {

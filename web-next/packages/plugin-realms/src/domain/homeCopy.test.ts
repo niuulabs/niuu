@@ -19,9 +19,9 @@ describe('homeCopy', () => {
     expect(stateSentence({ realms: 0, running: 0, needsYou: 0 })).toBe(
       'Nothing is running yet. Pick one of the three below.',
     );
-    expect(stateSentence({ realms: 1, running: 0, needsYou: 0 })).toBe('One workspace.');
+    expect(stateSentence({ realms: 1, running: 0, needsYou: 0 })).toBe('One realm.');
     expect(stateSentence({ realms: 3, running: 2, needsYou: 1 })).toBe(
-      'Three workspaces, two sessions running, one thing needs you.',
+      'Three realms, two sessions running, one thing needs you.',
     );
     expect(stateSentence({ realms: 0, running: 1, needsYou: 4 })).toBe(
       'One session running, four things need you.',

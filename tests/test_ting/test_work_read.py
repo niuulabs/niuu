@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from functools import partial
 from hashlib import sha256
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -182,12 +181,6 @@ def _repositories(
     saga_repo.get_runs_by_phase = AsyncMock(return_value=[])
     campaign_repo = MagicMock(spec=WorkflowCampaignRepository)
     campaign_repo.list_campaigns = AsyncMock(return_value=campaigns or [])
-    campaign_repo.list_ticket_campaigns = partial(
-        WorkflowCampaignRepository.list_ticket_campaigns, campaign_repo
-    )
-    campaign_repo.list_campaign_summaries = partial(
-        WorkflowCampaignRepository.list_campaign_summaries, campaign_repo
-    )
     campaign_repo.get_campaign = AsyncMock(
         side_effect=lambda campaign_id: next(
             (item for item in campaigns or [] if item.id == campaign_id), None
@@ -540,61 +533,6 @@ async def test_legacy_unscoped_progress_is_withheld_and_marks_linkage_unavailabl
     assert operational.status == CoverageStatus.UNAVAILABLE
     assert operational.error is not None
     assert operational.error.code == "operationalReadFailed"
-
-
-async def test_project_without_a_stored_connection_reads_from_its_provider() -> None:
-    saga = _saga(connection_id="")
-    issue = TrackerIssue(
-        id="issue-1",
-        identifier="ENG-1",
-        title="Imported before connections were stored",
-        description="",
-        status="Todo",
-        status_type="unstarted",
-    )
-    project = TrackerProject(
-        id="project-1",
-        name="Platform",
-        description="",
-        status="started",
-        url="",
-        milestone_count=0,
-        issue_count=1,
-    )
-    linear = _tracker("linear-a", projects=[project], issues=[issue])
-    native = _tracker("native")
-    native.provider = "native"
-    saga_repo, campaign_repo = _repositories(sagas=[saga])
-
-    detail = await _service(
-        saga_repo=saga_repo,
-        campaign_repo=campaign_repo,
-        trackers=[linear, native],
-    ).get_project(saga.id)
-
-    assert [task.source.identifier for task in detail.tasks] == ["ENG-1"]
-    tracker_coverage = next(item for item in detail.coverage if item.source == "tracker")
-    assert tracker_coverage.status == CoverageStatus.COMPLETE
-    assert tracker_coverage.connection_id == "linear-a"
-    native.list_issues.assert_not_awaited()
-
-
-async def test_project_says_why_its_tracker_cannot_be_chosen() -> None:
-    saga = _saga(connection_id="")
-    linear_a = _tracker("linear-a")
-    linear_b = _tracker("linear-b")
-    saga_repo, campaign_repo = _repositories(sagas=[saga])
-
-    detail = await _service(
-        saga_repo=saga_repo,
-        campaign_repo=campaign_repo,
-        trackers=[linear_a, linear_b],
-    ).get_project(saga.id)
-
-    tracker_coverage = next(item for item in detail.coverage if item.source == "tracker")
-    assert tracker_coverage.status == CoverageStatus.UNAVAILABLE
-    assert tracker_coverage.error is not None
-    assert "re-import the project" in tracker_coverage.error.message
 
 
 def test_api_serializes_camel_case_and_rejects_invalid_execution_cursor() -> None:

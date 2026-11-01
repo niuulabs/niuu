@@ -39,7 +39,7 @@ describe('ToolPicker', () => {
     expect(screen.getByText('File System')).toBeInTheDocument();
     expect(screen.getByText('Shell')).toBeInTheDocument();
     expect(screen.getByText('Git')).toBeInTheDocument();
-    expect(screen.getByText('Memory')).toBeInTheDocument();
+    expect(screen.getByText('Mímir')).toBeInTheDocument();
 
     expect(screen.getByText('read')).toBeInTheDocument();
     expect(screen.getByText('bash')).toBeInTheDocument();

@@ -12,10 +12,10 @@ from textual.widget import Widget
 from textual.widgets import DataTable
 
 _STATUS_STYLE = {
-    "enabled": "#76bfa7",
-    "disabled": "#78909d",
-    "running": "#86d0e8",
-    "error": "#e78d94",
+    "enabled": "#10b981",
+    "disabled": "#71717a",
+    "running": "#f59e0b",
+    "error": "#ef4444",
 }
 
 
@@ -26,7 +26,7 @@ class CronView(Widget):
     CronView {
         height: 1fr;
         width: 1fr;
-        background: #071019;
+        background: #09090b;
     }
     CronView DataTable {
         height: 1fr;
@@ -83,7 +83,7 @@ class CronView(Widget):
             last_run = job.get("last_run", "—")
             next_run = job.get("next_run", "—")
             status = job.get("status", "enabled")
-            style = _STATUS_STYLE.get(status, "#a5b7c1")
+            style = _STATUS_STYLE.get(status, "#a1a1aa")
             table.add_row(name, schedule, last_run, next_run, f"[{style}]{status}[/]")
 
     def load_jobs(self, jobs: list[dict[str, Any]]) -> None:

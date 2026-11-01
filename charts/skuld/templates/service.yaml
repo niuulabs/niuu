@@ -10,7 +10,7 @@ spec:
     # Single entry point - nginx handles all internal routing
     # When envoy is enabled, traffic flows: Service -> Envoy -> Nginx -> backends
     - port: {{ .Values.service.port }}
-      targetPort: {{ if include "skuld.envoyEnabled" . }}envoy{{ else }}http{{ end }}
+      targetPort: {{ if .Values.envoy.enabled }}envoy{{ else }}http{{ end }}
       protocol: TCP
       name: http
     {{- if and (include "skuld.residentEnabled" .) .Values.resident.openclaw.enabled }}

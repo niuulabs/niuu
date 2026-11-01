@@ -34,7 +34,7 @@ class CapsView(Widget):
     CapsView {
         height: 1fr;
         width: 1fr;
-        background: #071019;
+        background: #09090b;
     }
     CapsView DataTable {
         height: 1fr;
@@ -70,9 +70,9 @@ class CapsView(Widget):
             row: list[str] = [conn.name]
             for cap in _KNOWN_CAPABILITIES:
                 if cap in active_caps:
-                    row.append("[bold #86d0e8]●[/]")
+                    row.append("[bold #f59e0b]●[/]")
                 elif caps.get(cap, False):
-                    row.append("[#76bfa7]✓[/]")
+                    row.append("[#10b981]✓[/]")
                 else:
-                    row.append("[#2b4351]–[/]")
+                    row.append("[#3f3f46]–[/]")
             table.add_row(*row)

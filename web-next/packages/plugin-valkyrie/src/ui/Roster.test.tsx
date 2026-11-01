@@ -74,14 +74,14 @@ describe('Roster', () => {
     const user = userEvent.setup();
     renderRoster();
 
-    await user.type(screen.getByLabelText('Filter residents'), 'saga');
+    await user.type(screen.getByLabelText('Filter valkyries'), 'saga');
     expect(screen.getByTestId('roster-item-valkyrie-host-email')).toBeInTheDocument();
     expect(screen.queryByTestId('roster-item-valkyrie-valhalla-sigrun')).not.toBeInTheDocument();
     expect(screen.queryByTestId('roster-group-kubernetes')).not.toBeInTheDocument();
 
-    await user.clear(screen.getByLabelText('Filter residents'));
-    await user.type(screen.getByLabelText('Filter residents'), 'no-such-valkyrie');
-    expect(screen.getByTestId('roster-empty')).toHaveTextContent('No residents match');
+    await user.clear(screen.getByLabelText('Filter valkyries'));
+    await user.type(screen.getByLabelText('Filter valkyries'), 'no-such-valkyrie');
+    expect(screen.getByTestId('roster-empty')).toHaveTextContent('No valkyries match');
   });
 
   it('collapses and expands a group', async () => {

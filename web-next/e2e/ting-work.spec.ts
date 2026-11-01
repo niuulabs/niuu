@@ -51,83 +51,6 @@ const task = {
   actions: [],
 };
 
-const trackerColumn = {
-  kind: 'tracker',
-  review: null,
-  approveColumnId: null,
-  changesColumnId: null,
-};
-const planning = { workflowId: 'workflow-0', workflowName: 'Ticket Planning Flow' };
-const delivery = { workflowId: 'workflow-1', workflowName: 'Reviewed Delivery Flow' };
-const deliveryColumns = [
-  { ...trackerColumn, ...delivery, id: 'building', title: 'Building', kind: 'work' },
-  {
-    ...trackerColumn,
-    ...delivery,
-    id: 'code-review',
-    title: 'Code review',
-    kind: 'gate',
-    review: 'code',
-    approveColumnId: 'merging',
-    changesColumnId: 'building',
-  },
-  { ...trackerColumn, ...delivery, id: 'merging', title: 'Merging', kind: 'work' },
-];
-const board = {
-  columns: [
-    { ...trackerColumn, id: 'backlog', title: 'Backlog' },
-    ...deliveryColumns,
-    { ...trackerColumn, id: 'done', title: 'Done' },
-  ],
-};
-const plannedBoard = {
-  columns: [
-    { ...trackerColumn, id: 'backlog', title: 'Backlog' },
-    { ...trackerColumn, ...planning, id: 'planning', title: 'Planning', kind: 'work' },
-    {
-      ...trackerColumn,
-      ...planning,
-      id: 'plan-review',
-      title: 'Plan review',
-      kind: 'gate',
-      review: 'plan',
-      approveColumnId: 'building',
-      changesColumnId: 'planning',
-    },
-    ...deliveryColumns,
-    { ...trackerColumn, id: 'done', title: 'Done' },
-  ],
-};
-const readyTask = {
-  ...task,
-  dispatch: {
-    sagaId: projectId,
-    issueId: 'issue-1',
-    repo: 'niuulabs/niuu',
-    connectionId: null,
-    workflowId: null,
-  },
-  board: { columnId: 'backlog', state: 'notStarted', gate: null },
-};
-const gatedTask = {
-  ...task,
-  board: {
-    columnId: 'code-review',
-    state: 'needsDecision',
-    gate: {
-      id: 'gate-1',
-      activationId: 'activation-1',
-      nodeId: 'delivery-code-gate',
-      label: 'Code review',
-      condition: 'Merging lands the change on the target branch.',
-      instructions: 'Read the pull request.',
-      summary: '',
-      requestedAt: '2026-10-30T12:00:00Z',
-      attempt: 1,
-    },
-  },
-};
-
 async function configure(
   page: Page,
   options: {
@@ -135,17 +58,11 @@ async function configure(
     failDetail?: boolean;
     trackerImport?: boolean;
     results?: boolean;
-    board?: boolean;
-    readyTicket?: boolean;
-    plannedBoard?: boolean;
   } = {},
 ) {
   await page.route('**/config*.json', async (route) => {
     const config = await (await route.fetch()).json();
     config.demoMode = true;
-    // The demo setup service is never complete, so SetupGate would redirect mid-test.
-    config.services.setup = { mode: 'http', baseUrl: '/api/v1/niuu/setup' };
-    config.services.integrations = { mode: 'http', baseUrl: '/api/v1/integrations' };
     config.services['ting.work'] = { mode: 'http', baseUrl: '/api/v1/ting' };
     if (options.results) config.services['ting.specs'] = { mode: 'http', baseUrl: '/api/v1/ting' };
     if (options.trackerImport) {
@@ -181,11 +98,10 @@ async function configure(
         : {
             json: {
               item: project,
-              tasks: [options.readyTicket ? readyTask : options.board ? gatedTask : task],
+              tasks: [task],
               coverage: [
                 { source: 'operationalRuns', connectionId: null, status: 'complete', error: null },
               ],
-              ...(options.board ? { board: options.plannedBoard ? plannedBoard : board } : {}),
             },
           },
     ),
@@ -263,188 +179,6 @@ test('ticket detail distinguishes source status from absent execution and surviv
   await expect(page.getByRole('button', { name: 'Start eligible work' })).toHaveCount(0);
   await page.reload();
   await expect(page.getByRole('heading', { name: task.title })).toBeVisible();
-});
-
-test('the board view survives detail, reload and back navigation', async ({ page }) => {
-  await configure(page);
-  await page.goto('/ting/work');
-  await page.getByRole('button', { name: 'Board view' }).click();
-  await expect(page).toHaveURL(/view=board/);
-
-  const attention = page.getByTestId('board-column-attention');
-  await expect(attention.getByText(campaign.title)).toBeVisible();
-  await expect(attention.getByText(campaign.attention.message)).toBeVisible();
-
-  await page.getByTestId(`work-card-project:${projectId}`).click();
-  const started = page.getByTestId('ticket-board').getByTestId('board-column-started');
-  await expect(started.getByRole('link', { name: 'OPS-42' })).toBeVisible();
-  await expect(started.getByText('Not started', { exact: true })).toBeVisible();
-
-  await page.reload();
-  await expect(page.getByTestId('ticket-board')).toBeVisible();
-
-  await page.getByRole('button', { name: /Back to work/i }).click();
-  await expect(page.getByTestId('work-board')).toBeVisible();
-});
-
-test('a project board answers the gate its workflow declares', async ({ page }) => {
-  await configure(page, { board: true });
-  const decisions: unknown[] = [];
-  await page.route('**/gate-decision', (route) => {
-    decisions.push(route.request().postDataJSON());
-    return route.fulfill({
-      json: { status: 'resolved', sessionId: 'session-1', gateId: 'gate-1' },
-    });
-  });
-  await page.goto(`/ting/work/project:${projectId}?view=board`);
-
-  const projectBoard = page.getByTestId('project-board');
-  await expect(projectBoard.getByText('Reviewed Delivery Flow')).toBeVisible();
-  const review = page.getByTestId('board-column-code-review');
-  await review.getByRole('button', { name: gatedTask.title }).focus();
-  await page.keyboard.press('Enter');
-
-  const panel = page.getByRole('complementary', { name: 'OPS-42' });
-  await expect(panel.getByText('Is this ready to merge?')).toBeVisible();
-  await panel.getByRole('button', { name: 'Request changes → Building' }).click();
-  await expect(panel.getByRole('alert')).toHaveText('Say what should change first.');
-  expect(decisions).toEqual([]);
-
-  await panel.getByRole('button', { name: 'Approve → Merging' }).click();
-  await expect
-    .poll(() => decisions)
-    .toEqual([{ gateId: 'gate-1', activationId: 'activation-1', decision: 'approve', notes: '' }]);
-});
-
-test('a project board starts a ticket through its coordinator', async ({ page }) => {
-  await configure(page, { board: true, readyTicket: true });
-  const started: string[] = [];
-  await page.route('**/tasks/*/start', (route) => {
-    started.push(route.request().url());
-    return route.fulfill({ json: { status: 'coordinating', sessionId: 'coordinator-1' } });
-  });
-  await page.goto(`/ting/work/project:${projectId}?view=board`);
-
-  await page.getByRole('button', { name: 'Start', exact: true }).click();
-
-  await expect.poll(() => started.length).toBe(1);
-  expect(started[0]).toContain(`/work/project/${projectId}/tasks/issue-1/start`);
-  const panel = page.getByRole('complementary', { name: 'OPS-42' });
-  await expect(panel.getByRole('tab', { name: 'Coordinator' })).toHaveAttribute(
-    'aria-selected',
-    'true',
-  );
-  await expect(panel.getByText('No coordinator yet')).toBeVisible();
-  await panel.getByRole('tab', { name: 'Workflow' }).click();
-  await expect(panel.getByText('None yet')).toBeVisible();
-  await panel.getByRole('button', { name: 'Hide' }).click();
-  await expect(page.getByRole('complementary', { name: 'OPS-42' })).toHaveCount(0);
-});
-
-test('a project board runs its workflows in order and asks before skipping one', async ({
-  page,
-}) => {
-  await configure(page, { board: true, readyTicket: true, plannedBoard: true });
-  const starts: unknown[] = [];
-  await page.route('**/tasks/*/start', (route) => {
-    starts.push(route.request().postDataJSON());
-    return route.fulfill({ json: { status: 'coordinating', sessionId: 'coordinator-1' } });
-  });
-  await page.goto(`/ting/work/project:${projectId}?view=board`);
-
-  await expect(page.getByRole('button', { name: /Ticket Planning Flow/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /Reviewed Delivery Flow/ })).toBeVisible();
-
-  await page.getByTestId('board-ticket-issue-1').dragTo(page.getByTestId('board-column-merging'));
-  await expect(page.getByRole('status')).toContainText('Reviewed Delivery Flow starts at Building');
-
-  await page.getByTestId('board-ticket-issue-1').dragTo(page.getByTestId('board-column-building'));
-  await expect(page.getByRole('alert')).toContainText('This skips Ticket Planning Flow');
-  await page.getByRole('button', { name: 'Skip and start' }).click();
-
-  await expect.poll(() => starts).toEqual([{ columnId: 'building' }]);
-});
-
-test('a project board shows what its workflow defines', async ({ page }) => {
-  await configure(page, { board: true });
-  await page.goto(`/ting/work/project:${projectId}?view=board`);
-
-  await page.getByRole('button', { name: /Reviewed Delivery Flow/ }).click();
-
-  const panel = page.getByRole('complementary', { name: 'Reviewed Delivery Flow' });
-  await expect(panel.getByText('Building → Code review → Merging → Done')).toBeVisible();
-  await expect(panel.getByText('A person approves')).toBeVisible();
-});
-
-test('a project board fills the page and scrolls sideways', async ({ page }) => {
-  await page.setViewportSize({ width: 1000, height: 700 });
-  await configure(page, { board: true });
-  await page.goto(`/ting/work/project:${projectId}?view=board`);
-
-  await expect(page.getByTestId('project-board')).toBeVisible();
-  await expect(page.getByRole('complementary', { name: 'Work workspace' })).toBeHidden();
-  await page.getByRole('button', { name: gatedTask.title }).click();
-
-  const scroller = page.getByTestId('board-scroller');
-  const box = await scroller.boundingBox();
-  expect(box!.y).toBeLessThan(160);
-  expect(box!.y + box!.height).toBeLessThanOrEqual(700);
-  await scroller.hover();
-  await page.mouse.wheel(0, 400);
-  await expect.poll(() => scroller.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
-  await expect(page.getByTestId('board-column-done')).toBeInViewport();
-});
-
-test('a project board shows a decision the session refused', async ({ page }) => {
-  await configure(page, { board: true });
-  await page.route('**/gate-decision', (route) =>
-    route.fulfill({
-      status: 409,
-      json: { detail: 'This gate changed after you opened it. Review it again.' },
-    }),
-  );
-  await page.goto(`/ting/work/project:${projectId}?view=board`);
-
-  await page.getByRole('button', { name: gatedTask.title }).click();
-  const panel = page.getByRole('complementary', { name: 'OPS-42' });
-  await panel.getByRole('button', { name: 'Approve → Merging' }).click();
-  await expect(panel.getByRole('alert')).toContainText('Review it again');
-});
-
-test('the board reports a failed source and a failed project', async ({ page }) => {
-  await configure(page, { partial: true, failDetail: true });
-  await page.goto('/ting/work?view=board');
-  await expect(page.getByText('Reconnect the tracker account.')).toBeVisible();
-  await expect(page.getByTestId('work-board')).toBeVisible();
-
-  await page.getByTestId(`work-card-project:${projectId}`).click();
-  await expect(page.getByText('Work detail could not be loaded')).toBeVisible();
-});
-
-test('the layout switch works from the keyboard', async ({ page }) => {
-  await configure(page);
-  await page.goto('/ting/work');
-  await page.getByRole('button', { name: 'Board view' }).focus();
-  await page.keyboard.press('Enter');
-  await expect(page.getByTestId('work-board')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Board view' })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  );
-});
-
-test('the board stacks on a phone without sideways scrolling', async ({ page }) => {
-  await configure(page);
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('/ting/work?view=board');
-  await expect(page.getByTestId('work-board')).toBeVisible();
-
-  const first = await page.getByTestId('board-column-attention').boundingBox();
-  const second = await page.getByTestId('board-column-active').boundingBox();
-  expect(second!.y).toBeGreaterThan(first!.y);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
-    true,
-  );
 });
 
 test('filter and search survive detail and back navigation', async ({ page }) => {

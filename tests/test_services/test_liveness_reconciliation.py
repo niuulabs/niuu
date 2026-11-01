@@ -250,28 +250,6 @@ class TestReconcileActiveSessions:
         assert updated.status == SessionStatus.RUNNING
         assert started == [f"routes:{session.id}", f"started:{session.id}"]
 
-    async def test_booting_runtime_keeps_provisioning_row(self, service, repo, pod_manager):
-        """Pod managers call a booting runtime STARTING; that is not a regression."""
-        row = _session(SessionStatus.PROVISIONING, datetime.now(UTC))
-        await repo.create(row)
-        pod_manager.status = lambda _session: _async_status(SessionStatus.STARTING)
-
-        assert await service.reconcile_active_sessions() == 0
-
-        assert (await repo.get(row.id)).status == SessionStatus.PROVISIONING
-
-    async def test_session_read_keeps_provisioning_row(self, service, repo, pod_manager):
-        """A status read mid-boot must leave the readiness poller able to finish."""
-        row = _session(SessionStatus.PROVISIONING, datetime.now(UTC))
-        await repo.create(row)
-        pod_manager.status = lambda _session: _async_status(SessionStatus.STARTING)
-
-        await service.reconcile_session_if_active(row.id)
-
-        pod_manager.wait_for_ready_result = SessionStatus.RUNNING
-        await service._poll_readiness(row, skip_initial_delay=True)
-        assert (await repo.get(row.id)).status == SessionStatus.RUNNING
-
     async def test_ready_runtime_recovers_failed_kubernetes_row(self, service, repo, pod_manager):
         session = _session(SessionStatus.FAILED, datetime.now(UTC)).model_copy(
             update={"chat_endpoint": None, "code_endpoint": None, "error": "timed out"}

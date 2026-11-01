@@ -90,19 +90,6 @@ describe('groupRavens', () => {
       expect(result.jotunheim).toHaveLength(1); // haiku
       expect(result.midgard).toHaveLength(2); // 2× sonnet
     });
-
-    it('groups a resident by its cluster before the instance that lists it', () => {
-      const listedByYmir = RAVENS.map((ravn, index) => ({
-        ...ravn,
-        instanceName: 'Ymir',
-        ...(index === 0 && { cluster: 'ymir' }),
-        ...(index === 1 && { cluster: 'glitnir' }),
-      }));
-      const result = groupRavens(listedByYmir, 'location');
-      expect(Object.keys(result).sort()).toEqual(['Glitnir', 'Ymir']);
-      expect(result.Glitnir).toHaveLength(1);
-      expect(result.Ymir).toHaveLength(RAVENS.length - 1);
-    });
   });
 
   describe('flock grouping', () => {

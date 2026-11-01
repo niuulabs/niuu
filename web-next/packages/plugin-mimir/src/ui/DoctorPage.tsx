@@ -136,7 +136,7 @@ export function DoctorPage() {
       </div>
 
       <p className="niuu:text-sm niuu:text-text-secondary niuu:m-0">
-        Self-checks for this memory instance — indexes, embeddings, sources, and mounts.
+        Self-checks for this Mímir instance — indexes, embeddings, sources, and mounts.
       </p>
 
       <ul

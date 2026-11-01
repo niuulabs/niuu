@@ -20,7 +20,7 @@ export const ravnMountSchema = z.object({
 
 export type RavnMount = z.infer<typeof ravnMountSchema>;
 
-export const residentBackendSchema = z.enum(['helmrelease', 'openshell', 'local', 'discovered']);
+export const residentBackendSchema = z.enum(['helmrelease', 'openshell', 'local']);
 export type ResidentBackend = z.infer<typeof residentBackendSchema>;
 
 export const residentEngineSchema = z.enum(['ravn', 'openclaw', 'hermes']);
@@ -154,11 +154,6 @@ export const ravnSchema = z
     instanceId: z.string().optional(),
     instanceName: z.string().optional(),
     instanceSlug: z.string().optional(),
-    /**
-     * The cluster the resident runs in, when that is not the instance listing
-     * it: a catalog Valkyrie is listed by one instance but runs in its own.
-     */
-    cluster: z.string().optional(),
     messageCount: z.number().int().nonnegative().optional(),
     tokenCount: z.number().int().nonnegative().optional(),
     costUsd: z.number().nonnegative().optional(),
@@ -168,17 +163,8 @@ export const ravnSchema = z
     context.addIssue({
       code: 'custom',
       path: ['personaName'],
-      message: 'personaName is required for non-resident agents',
+      message: 'personaName is required for non-resident ravens',
     });
   });
 
 export type Ravn = z.infer<typeof ravnSchema>;
-
-/**
- * Where a ravn runs, as people name it: its cluster when the resident runs
- * somewhere other than the instance listing it, else that instance.
- */
-export function ravnPlace(ravn: Pick<Ravn, 'cluster' | 'instanceName'>): string {
-  if (ravn.cluster) return ravn.cluster.charAt(0).toUpperCase() + ravn.cluster.slice(1);
-  return ravn.instanceName ?? '';
-}

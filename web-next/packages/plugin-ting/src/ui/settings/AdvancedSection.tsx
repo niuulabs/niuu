@@ -51,7 +51,7 @@ export function AdvancedSection({ onAction }: AdvancedSectionProps = {}) {
         Advanced
       </h3>
       <p className="niuu:text-sm niuu:text-text-secondary niuu:mb-4">
-        Danger zone. These actions can disrupt running projects and runs.
+        Danger zone. These actions can disrupt running sagas and runs.
       </p>
 
       <div className="niuu:flex niuu:flex-col niuu:gap-3 niuu:max-w-lg">

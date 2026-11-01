@@ -69,12 +69,6 @@ interface PodGroupDef {
 
 type SidebarMode = 'state' | 'repo' | 'forge' | 'project';
 const SIDEBAR_MODES = ['state', 'repo', 'forge', 'project'] as const;
-const SIDEBAR_MODE_LABELS: Record<SidebarMode, string> = {
-  state: 'State',
-  repo: 'Repo',
-  forge: 'Host',
-  project: 'Project',
-};
 type RowAction = 'stop' | 'archive' | 'restore' | 'delete';
 
 interface SessionSection {
@@ -190,7 +184,7 @@ export function groupByRepo(sessions: Session[]): SessionSection[] {
 }
 
 export function forgeGroupLabel(session: Session): string {
-  return session.clusterName ?? session.clusterId ?? 'unknown host';
+  return session.clusterName ?? session.clusterId ?? 'unknown forge';
 }
 
 export function groupByForge(sessions: Session[]): SessionSection[] {
@@ -1007,7 +1001,8 @@ export function SessionsPage() {
                         data-testid={`pod-group-mode-${mode}`}
                         aria-pressed={active}
                       >
-                        {SIDEBAR_MODE_LABELS[mode]}
+                        {mode[0]?.toUpperCase()}
+                        {mode.slice(1)}
                       </button>
                     );
                   })}
@@ -1023,7 +1018,7 @@ export function SessionsPage() {
                     />
                     <input
                       type="search"
-                      placeholder="filter by name / repo / branch / host"
+                      placeholder="filter by name / repo / branch / forge"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       className="niuu:min-w-0 niuu:flex-1 niuu:bg-transparent niuu:py-0.5 niuu:pr-1 niuu:text-[11px] niuu:text-text-primary niuu:placeholder:text-text-muted niuu:focus:outline-none"
@@ -1035,7 +1030,7 @@ export function SessionsPage() {
               </div>
 
               {connectionStates.some((source) => source.loading || source.error) && (
-                <div className="forge-session-source-status" aria-label="Host connections">
+                <div className="forge-session-source-status" aria-label="Forge connections">
                   {connectionStates
                     .filter((source) => source.loading || source.error)
                     .map((source) => (
@@ -1057,7 +1052,7 @@ export function SessionsPage() {
                     ))}
                   {connectionStates.some((source) => source.error) && (
                     <button type="button" onClick={() => void sessionsQuery.refetch()}>
-                      Retry host connections
+                      Retry Forge connections
                     </button>
                   )}
                 </div>

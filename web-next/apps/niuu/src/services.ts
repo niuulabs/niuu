@@ -22,7 +22,6 @@ import {
   createMockDispatcherService,
   createMockTingSessionService,
   createMockTrackerService,
-  createMockWorkService,
   createMockWorkflowService,
   createMockResearchService,
   createMockSpecsService,
@@ -120,7 +119,7 @@ export class UnsupportedSessionStoreOperationError extends Error {
 
   constructor(operation: 'create' | 'update') {
     super(
-      `The app session-store adapter does not support session ${operation}. Use the session lifecycle service instead.`,
+      `The app session-store adapter does not support session ${operation}. Use the Forge lifecycle service instead.`,
     );
     this.name = 'UnsupportedSessionStoreOperationError';
     this.operation = operation;
@@ -822,7 +821,7 @@ export function buildServiceBackendStatus(
   return Object.fromEntries(
     Object.entries(resolved).map(([serviceName, status]) => [
       serviceName,
-      status.mode === 'unavailable'
+      status.mode === 'unavailable' && serviceName !== 'ting.work'
         ? {
             ...status,
             mode: 'demo',
@@ -1368,7 +1367,7 @@ function buildVolundrClusterAdapter(volundr: IVolundrService): IClusterAdapter {
               {
                 id: 'shared',
                 slug: 'shared',
-                name: 'Shared host',
+                name: 'Shared Forge',
                 baseUrl: '',
                 enabled: true,
                 isDefault: false,
@@ -1391,7 +1390,7 @@ function buildVolundrClusterAdapter(volundr: IVolundrService): IClusterAdapter {
           {
             id: 'shared',
             slug: 'shared',
-            name: capacityFromNodes(nodes).gpu > 0 ? 'Shared GPU host' : 'Shared host',
+            name: capacityFromNodes(nodes).gpu > 0 ? 'Shared GPU Forge' : 'Shared Forge',
             baseUrl: '',
             enabled: true,
             isDefault: false,
@@ -1621,12 +1620,10 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     ting: tingService,
     'ting.work': workClient
       ? buildWorkHttpAdapter(workClient)
-      : config.demoMode
-        ? createMockWorkService()
-        : unavailableService<IWorkService>(
-            'ting.work',
-            'Configure a live work backend to view work.',
-          ),
+      : unavailableService<IWorkService>(
+          'ting.work',
+          'Configure a live Ting backend to view work.',
+        ),
     'ting.workflowExecutions': tingClient
       ? buildWorkflowExecutionHttpAdapter(tingClient)
       : unavailableService<IWorkflowExecutionService>('ting.workflowExecutions'),

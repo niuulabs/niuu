@@ -831,7 +831,6 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
             ),
             "securityContext": {
                 "fsGroup": 1000,
-                "fsGroupChangePolicy": "OnRootMismatch",
             },
             "initContainers": self._build_init_containers(session, spec),
             "volumes": volumes,

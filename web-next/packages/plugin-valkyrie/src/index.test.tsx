@@ -5,9 +5,9 @@ import { valkyriePlugin } from './index';
 describe('valkyriePlugin', () => {
   it('centers the plugin on the resident console without a Fleet tab', () => {
     expect(valkyriePlugin.tabs).toEqual([
-      { id: 'console', label: 'Roster', path: '/valkyrie' },
-      { id: 'activity', label: 'Activity', path: '/valkyrie/activity' },
-      { id: 'inbox', label: 'Inbox', path: '/valkyrie/inbox' },
+      { id: 'console', label: 'Console', rune: 'ᛒ', path: '/valkyrie' },
+      { id: 'activity', label: 'Activity', rune: '↔', path: '/valkyrie/activity' },
+      { id: 'inbox', label: 'Inbox', rune: '◇', path: '/valkyrie/inbox' },
     ]);
     // The retired Fleet tab must not resurface.
     expect(valkyriePlugin.tabs?.some((tab) => tab.id === 'fleet')).toBe(false);

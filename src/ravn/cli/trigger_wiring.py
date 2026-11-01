@@ -34,7 +34,6 @@ def _wire_mimir_triggers(
     llm: Any = None,
     interaction_tracker: Any = None,
     agent_factory: Any | None = None,
-    gateway: Any | None = None,
 ) -> None:
     """Register Mímir source, staleness, and thread triggers on the drive loop.
 
@@ -105,21 +104,15 @@ def _wire_mimir_triggers(
             )
 
     # Wakefulness trigger (NIU-565) — detects silence, reflects, emits intents.
-    # Gated on ``wakefulness.enabled`` (the trigger's own config); the resident
-    # state machine's ``resident_wakefulness`` is a different feature.
-    if settings.wakefulness.enabled and llm is not None:
+    if settings.resident_wakefulness.enabled and llm is not None:
         if _uses_cli_transport_runtime():
             logger.info(
                 "wakefulness: skipped for CLI-transport runtime; auxiliary LLM hooks still need "
                 "transport-backed support"
             )
+        elif interaction_tracker is None:
+            logger.warning("wakefulness: no interaction tracker provided — skipping")
         else:
-            if interaction_tracker is None or gateway is None:
-                raise RuntimeError(
-                    "wakefulness.enabled is true but this daemon has no operator conversation "
-                    "to reflect on (no interaction tracker or gateway): enable a gateway "
-                    "channel under gateway.channels, or set wakefulness.enabled to false"
-                )
             from ravn.adapters.triggers.wakefulness import WakefulnessTrigger
 
             drive_loop.register_trigger(
@@ -128,7 +121,6 @@ def _wire_mimir_triggers(
                     mimir=mimir,
                     llm=llm,
                     config=settings.wakefulness,
-                    transcript=gateway.transcript_since,
                 )
             )
             logger.info(
@@ -908,7 +900,6 @@ def _wire_cascade(
                     title=f"Handle {result.triggered_by}",
                     initiative_context=initiative_context,
                     triggered_by=result.triggered_by,
-                    gate_feedback=result.gate_feedback,
                     # AMBIENT, not SILENT: work triggered by a peer's outcome is the
                     # visible work of a flock session, and the mesh activity stream is
                     # the only way it reaches the room — Skuld's collaboration bridge

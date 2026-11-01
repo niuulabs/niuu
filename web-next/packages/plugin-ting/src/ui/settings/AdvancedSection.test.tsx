@@ -11,7 +11,7 @@ describe('AdvancedSection', () => {
   it('renders the description', () => {
     render(<AdvancedSection />);
     expect(
-      screen.getByText('Danger zone. These actions can disrupt running projects and runs.'),
+      screen.getByText('Danger zone. These actions can disrupt running sagas and runs.'),
     ).toBeInTheDocument();
   });
 

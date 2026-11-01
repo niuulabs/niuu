@@ -9,11 +9,9 @@ import {
 } from '@niuulabs/plugin-sdk';
 import { ThemeProvider } from '@niuulabs/design-tokens';
 import { useConfig } from '@niuulabs/plugin-sdk';
-import { CommandPaletteProvider, NiuuMark } from '@niuulabs/ui';
+import { CommandPaletteProvider } from '@niuulabs/ui';
 import { ShellContext } from './ShellContext';
 import { composeRouter } from './composeRouter';
-
-const RAIL_MARK_SIZE = 24;
 
 interface ShellProps {
   plugins: PluginDescriptor[];
@@ -27,7 +25,7 @@ interface ShellProps {
 
 export function Shell({
   plugins,
-  brand = <NiuuMark size={RAIL_MARK_SIZE} />,
+  brand = 'ᚾ',
   version = '0.0.1',
   topbarContent,
   _testHistory,

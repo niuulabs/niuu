@@ -134,7 +134,7 @@ def create_workflow_sharing_router() -> APIRouter:
             existing = await repo.get_workflow(target_id)
             if existing is None or not _can_view_workflow(existing, principal):
                 raise HTTPException(status_code=404, detail="Workflow not found")
-            _assert_can_manage_existing(existing, principal, request)
+            _assert_can_manage_existing(existing, principal)
             _assert_revision(existing, body.expected_revision)
         preview = plan.preview(
             context={
@@ -204,7 +204,7 @@ def create_workflow_sharing_router() -> APIRouter:
             expected_revision=body.expected_revision,
             base_revision=base_revision,
         )
-        return _to_response(saved, request=request, principal=principal)
+        return _to_response(saved, principal=principal)
 
     @router.get("/{workflow_id}/export")
     async def download_workflow(

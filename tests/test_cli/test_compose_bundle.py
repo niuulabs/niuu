@@ -231,9 +231,6 @@ class TestRender:
         assert json.loads(niuu["environment"]["INTEGRATIONS__MODULE_MANIFEST_FILES"]) == [
             "/opt/niuu-external-integrations/0/niuu-module.yaml"
         ]
-        assert json.loads(niuu["environment"]["REVIEW_WIDGETS__MODULE_MANIFEST_FILES"]) == [
-            "/opt/niuu-external-integrations/0/niuu-module.yaml"
-        ]
         assert niuu["environment"]["PYTHONPATH"] == "/opt/niuu-external-integrations/0"
         assert "INTEGRATIONS__DEFINITION_FILES" not in niuu["environment"]
 

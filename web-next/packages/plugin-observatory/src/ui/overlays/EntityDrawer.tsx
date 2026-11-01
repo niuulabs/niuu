@@ -86,7 +86,7 @@ function KindProperties({ node }: { node: TopologyNode }) {
                 {node.mode ?? '—'}
               </span>
             </dd>
-            <dt>active projects</dt>
+            <dt>active sagas</dt>
             <dd>{node.activeSagas ?? 0}</dd>
             <dt>pending runs</dt>
             <dd>{node.pendingRuns ?? 0}</dd>

@@ -119,16 +119,16 @@ function ForgeSessionSection({
       title="Runs as"
       action={
         <button type="button" onClick={() => onOpenForgeSession(sessionId)}>
-          Open session →
+          Open in Forge →
         </button>
       }
     >
       <div className="rw-card" data-testid="ravn-setup-session">
         <div>
-          <div className="rw-card__title">A session on {ravnTarget(ravn)}</div>
+          <div className="rw-card__title">A Forge session on {ravnTarget(ravn)}</div>
           <div className="rw-card__sub">
-            Its agent and chat room run as processes on the host — no container. The personas it
-            runs were chosen at launch; Sessions shows the session&rsquo;s full configuration.
+            Its ravn and chat room run as processes on the Forge host — no container. The personas
+            it runs were chosen at launch; Forge shows the session&rsquo;s full configuration.
           </div>
         </div>
       </div>
@@ -155,7 +155,7 @@ export function SetupTab({
       ? [['Listens for', ravn.eventSubscriptions.join('\n')]]
       : []),
     ...(ravn.mounts?.length
-      ? [['Memory mounts', ravn.mounts.map((mount) => `${mount.name} (${mount.role})`).join(', ')]]
+      ? [['Mímir mounts', ravn.mounts.map((mount) => `${mount.name} (${mount.role})`).join(', ')]]
       : []),
   ];
 
@@ -180,7 +180,7 @@ export function SetupTab({
           )}
           <Field label="Target">{ravnTarget(ravn)}</Field>
           <Field label="Model" mono={Boolean(ravn.model)}>
-            {ravn.model || 'set by the host’s agent configuration'}
+            {ravn.model || 'set by the Forge’s ravn configuration'}
           </Field>
           <Field label="State">
             <RavnStateBadge state={ravnLifeState(ravn)} />
@@ -290,7 +290,7 @@ export function SetupTab({
 
       <Section title="Identifiers">
         <div className="rw-kv">
-          <Field label="Agent" mono>
+          <Field label="Ravn" mono>
             {ravn.id}
           </Field>
           {ravn.sessionId && ravn.sessionId !== ravn.id && (

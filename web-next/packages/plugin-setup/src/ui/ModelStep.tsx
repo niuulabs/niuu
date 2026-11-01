@@ -215,7 +215,7 @@ export function ModelStep({
             <span className="setup-option__title">A model server I already run</span>
             <span className="setup-option__desc">
               vLLM, sparkrun, Ollama or anything OpenAI-compatible, on this host or another. The
-              platform&apos;s model gateway routes Claude Code, Codex and agent sessions to it;
+              platform&apos;s model gateway routes Claude Code, Codex and Ravn sessions to it;
               nothing is downloaded.
             </span>
             <Field
@@ -328,8 +328,8 @@ export function ModelStep({
           </div>
         ) : null}
         <div className="setup-note">
-          vLLM serves the model on this host and the model gateway routes to it. Sessions, workflows
-          and residents can then work without code leaving the box.
+          vLLM serves the model on this host and Bifrost routes to it. Sessions, workflows and
+          residents can then work without code leaving the box.
         </div>
       </div>
     </div>

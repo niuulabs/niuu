@@ -1,5 +1,5 @@
 import { useNavigate } from '@tanstack/react-router';
-import { KpiStrip, KpiCard, Table, LoadingState, ErrorState } from '@niuulabs/ui';
+import { Rune, KpiStrip, KpiCard, Table, LoadingState, ErrorState } from '@niuulabs/ui';
 import { useVolundrStats } from './useVolundrSessions';
 import { useVolundrClusters } from './hooks/useVolundrClusters';
 import { useSessionList } from './hooks/useSessionStore';
@@ -122,8 +122,11 @@ export function VolundrPage() {
     <div className="niuu:flex niuu:flex-col niuu:gap-8 niuu:p-6" data-testid="volundr-overview">
       {/* Header */}
       <div className="niuu:flex niuu:items-center niuu:gap-3">
+        <Rune glyph="ᚲ" size={32} />
         <div>
-          <h2 className="niuu:text-lg niuu:font-semibold niuu:text-text-primary">Sessions</h2>
+          <h2 className="niuu:text-lg niuu:font-semibold niuu:text-text-primary">
+            Völundr · session forge
+          </h2>
           <p className="niuu:text-sm niuu:text-text-muted">
             Provisions and manages remote dev pods.
           </p>

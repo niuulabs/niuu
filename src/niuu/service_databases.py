@@ -242,26 +242,6 @@ NIUU_SHARED_BOOTSTRAP_SQL: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_ravn_personas_owner_updated
         ON ravn_personas(owner_id, updated_at DESC);
     """,
-    # Mirrors migrations/000090_realm_tenancy.up.sql for a database with no
-    # resident_runtimes table. Runs on every start, so it stays idempotent.
-    """
-    ALTER TABLE realms ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
-
-    UPDATE realms r
-    SET tenant_id = m.tenant_id
-    FROM tenant_memberships m
-    WHERE r.tenant_id = ''
-      AND m.user_id = r.owner_id
-      AND (SELECT COUNT(*) FROM tenant_memberships m2 WHERE m2.user_id = r.owner_id) = 1;
-
-    UPDATE realms r
-    SET tenant_id = only_tenant.id
-    FROM (SELECT MIN(id) AS id FROM tenants HAVING COUNT(*) = 1) only_tenant
-    WHERE r.tenant_id = '';
-
-    ALTER TABLE realms DROP CONSTRAINT IF EXISTS realms_slug_key;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_realms_tenant_slug ON realms (tenant_id, slug);
-    """,
 )
 
 GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
@@ -310,16 +290,6 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
             OR (visibility = 'user' AND owner_id IS NOT NULL)
         )
     );
-    """,
-    # Matches migration 000041, for databases this bootstrap created first.
-    """
-    ALTER TABLE niuu_instances
-        DROP CONSTRAINT IF EXISTS niuu_instances_kind_check;
-    """,
-    """
-    ALTER TABLE niuu_instances
-        ADD CONSTRAINT niuu_instances_kind_check
-        CHECK (kind IN ('volundr', 'ting', 'mimir', 'bifrost', 'ravn', 'observatory', 'generic'));
     """,
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_niuu_instances_scope_slug

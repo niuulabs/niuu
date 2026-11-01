@@ -361,9 +361,8 @@ def create_runs_router() -> APIRouter:
             try:
                 volundr = await find_session_target(volundr_targets, run.session_id)
                 pr_status = await volundr.get_pr_status(run.session_id)
-                if pr_status is not None:
-                    pr_url = pr_status.url
-                    ci_passed = pr_status.ci_passed
+                pr_url = pr_status.url
+                ci_passed = pr_status.ci_passed
             except Exception:
                 logger.warning(
                     "Failed to fetch PR status for session %s",
@@ -585,7 +584,6 @@ def create_runs_router() -> APIRouter:
                 body.content,
                 sender="user",
                 target_peer_id=body.target_peer_id,
-                owner_id=principal.user_id,
             )
         except RunNotFoundError:
             raise HTTPException(

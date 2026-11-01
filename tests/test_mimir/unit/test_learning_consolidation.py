@@ -27,7 +27,7 @@ from niuu.domain.mimir import MimirSource, compute_content_hash
 #: so they get a fixed admin identity rather than testing auth per call.
 _ADMIN_HEADERS = {
     "x-auth-user-id": "test-user",
-    "x-auth-tenant": "default",
+    "x-auth-tenant": "test-tenant",
     "x-auth-roles": "volundr:admin",
 }
 

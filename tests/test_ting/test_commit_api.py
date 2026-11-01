@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,7 +12,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from identity.adapters.authorization import AllowAllAuthorizationAdapter
-from ting.api.research import resolve_workflow_campaign_repo
 from ting.api.sagas import (
     create_sagas_router,
     resolve_git,
@@ -26,8 +25,6 @@ from ting.domain.models import (
     RunStatus,
     Saga,
     SagaStatus,
-    WorkflowCampaign,
-    WorkflowCampaignStatus,
 )
 from ting.ports.git import GitPort
 
@@ -131,31 +128,17 @@ def mock_git() -> MockGit:
     return MockGit()
 
 
-def _no_plans() -> MagicMock:
-    repo = MagicMock()
-    repo.get_campaign_by_slug = AsyncMock(return_value=None)
-    repo.save_campaign = AsyncMock()
-    return repo
-
-
-@pytest.fixture
-def campaign_repo() -> MagicMock:
-    return _no_plans()
-
-
 @pytest.fixture
 def client(
     mock_tracker: MockTracker,
     saga_repo: MockSagaRepo,
     mock_git: MockGit,
-    campaign_repo: MagicMock,
 ) -> TestClient:
     app = FastAPI()
     app.state.authorization = AllowAllAuthorizationAdapter()
     app.include_router(create_sagas_router())
     app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
     app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
-    app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaign_repo
     app.dependency_overrides[resolve_git] = lambda: mock_git
     app.state.settings = _dev_settings()
     return TestClient(app)
@@ -253,7 +236,6 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [MetadataTracker()]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
-        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plans
         app.dependency_overrides[resolve_git] = MockGit
         app.state.settings = _dev_settings()
         client = TestClient(app)
@@ -321,7 +303,6 @@ class TestCommitSagaValidation:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: []
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
-        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plans
         app.dependency_overrides[resolve_git] = lambda: mock_git
         app.state.settings = _dev_settings()
         client = TestClient(app)
@@ -380,7 +361,6 @@ class TestCommitSagaTrackerFailure:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [FailingSagaTracker()]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
-        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plans
         app.dependency_overrides[resolve_git] = lambda: mock_git
         app.state.settings = _dev_settings()
         client = TestClient(app)
@@ -402,7 +382,6 @@ class TestCommitSagaTrackerFailure:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [FailingPhaseTracker()]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
-        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plans
         app.dependency_overrides[resolve_git] = lambda: mock_git
         app.state.settings = _dev_settings()
         client = TestClient(app)
@@ -424,7 +403,6 @@ class TestCommitSagaTrackerFailure:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [FailingRunTracker()]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
-        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plans
         app.dependency_overrides[resolve_git] = lambda: mock_git
         app.state.settings = _dev_settings()
         client = TestClient(app)
@@ -449,7 +427,6 @@ class TestCommitSagaGitFailure:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [MockTracker()]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
-        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plans
         app.dependency_overrides[resolve_git] = lambda: FailingGit()
         app.state.settings = _dev_settings()
         client = TestClient(app)
@@ -482,7 +459,6 @@ class TestCommitSagaGitFailure:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [MockTracker()]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
-        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plans
         app.dependency_overrides[resolve_git] = lambda: git
         app.state.settings = _dev_settings()
         client = TestClient(app)
@@ -521,52 +497,3 @@ def test_cedar_denial_precedes_tracker_and_git_mutations(client, mock_tracker, m
     assert response.status_code == 403
     mock_tracker.create_saga.assert_not_called()
     mock_git.create_branch.assert_not_called()
-
-
-class TestCommitFromAPlan:
-    def test_a_plan_that_does_not_exist_is_refused_before_anything_is_created(
-        self, client: TestClient, saga_repo: MockSagaRepo
-    ) -> None:
-        resp = client.post(
-            "/api/v1/ting/sagas/commit", json={**VALID_COMMIT_BODY, "plan_slug": "gone"}
-        )
-
-        assert resp.status_code == 404
-        assert not saga_repo.sagas
-
-    def test_a_committed_plan_links_its_project_and_tickets_both_ways(
-        self, client: TestClient, saga_repo: MockSagaRepo, campaign_repo: MagicMock
-    ) -> None:
-        campaign_repo.get_campaign_by_slug = AsyncMock(
-            return_value=WorkflowCampaign(
-                id=uuid4(),
-                slug="plan-1",
-                name="Plan",
-                owner_id="dev-user",
-                workflow_id=uuid4(),
-                workflow_version="1.0.0",
-                workflow_name="Saga Planning",
-                workflow_snapshot={},
-                session_id="s1",
-                session_name="plan",
-                status=WorkflowCampaignStatus.RUNNING,
-                active_stage_id=None,
-                stage_state=[],
-                metadata={"surface": "ting.plan"},
-                created_at=datetime.now(UTC),
-                updated_at=datetime.now(UTC),
-            )
-        )
-
-        resp = client.post(
-            "/api/v1/ting/sagas/commit", json={**VALID_COMMIT_BODY, "plan_slug": "plan-1"}
-        )
-
-        assert resp.status_code == 201
-        saga = saga_repo.sagas[0]
-        assert saga.plan_slug == "plan-1"
-        saved = campaign_repo.save_campaign.await_args.args[0]
-        assert saved.metadata["saga_id"] == str(saga.id)
-        assert [ticket["name"] for ticket in saved.metadata["tickets"]] == [
-            run.name for run in saga_repo.runs
-        ]

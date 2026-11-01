@@ -49,8 +49,8 @@ class SkillLifecycle:
     #: first use can have taken (created to the last use before the field
     #: existed). An upper bound, frozen at the next run so it never grows.
     first_use_wait_bound_seconds: float | None = None
-    #: Why an archived skill was archived ("rolled_back" for a regression
-    #: rollback, "" for a manual archive), with the detail, the skill that supersedes it, and the
+    #: Why an archived skill was archived ("" for a rollback or a manual
+    #: archive), with the detail, the skill that supersedes it, and the
     #: learned-tool artifact id kept in the archive, so it can be restored.
     archived_reason: str = ""
     archived_detail: str = ""
@@ -207,8 +207,6 @@ class SkillManagementRegistry:
         meta.version += 1
         meta.status = "active"
         meta.archived_at = ""
-        meta.archived_reason = ""
-        meta.archived_detail = ""
         # A revision is new code: it must not inherit the failure streak of
         # whatever it replaced, or one more failure after a rollback/restore
         # immediately re-triggers rollback without giving the revision the

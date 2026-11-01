@@ -14,18 +14,18 @@
   align-items: center;
   gap: 8px;
   margin-top: 8px;
-  color: var(--text-secondary, var(--niuu-text-secondary, #a1a1aa));
+  color: var(--text-secondary, #a1a1aa);
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 12px;
 }
 
 .specs-campaign-card__stage span {
-  color: var(--text-faint, var(--niuu-text-muted, #71717a));
+  color: var(--text-faint, #71717a);
   text-transform: uppercase;
 }
 
 .specs-campaign-card__stage strong {
-  color: var(--text-primary, var(--niuu-text-primary, #f4f4f5));
+  color: var(--text-primary, #f4f4f5);
   font-weight: 650;
 }
 
@@ -41,25 +41,25 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid var(--border-subtle, rgb(var(--niuu-rgb-muted, 148 163 184) / 0.22));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.22));
   border-radius: 999px;
   padding: 5px 9px;
-  color: var(--text-secondary, var(--niuu-text-secondary, #a1a1aa));
+  color: var(--text-secondary, #a1a1aa);
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
   letter-spacing: 0.04em;
 }
 
 .specs-doc-pill.is-present {
-  border-color: rgb(var(--niuu-rgb-signal, 56 189 248) / 0.35);
-  color: var(--niuu-brand-300, #bae6fd);
-  background: rgb(var(--niuu-rgb-signal, 14 165 233) / 0.1);
+  border-color: rgba(56, 189, 248, 0.35);
+  color: #bae6fd;
+  background: rgba(14, 165, 233, 0.1);
 }
 
 .specs-review-pill {
-  border-color: rgb(var(--niuu-rgb-warning, 251 191 36) / 0.35);
-  color: var(--niuu-warn, #fde68a);
-  background: rgb(var(--niuu-rgb-warning, 251 191 36) / 0.1);
+  border-color: rgba(251, 191, 36, 0.35);
+  color: #fde68a;
+  background: rgba(251, 191, 36, 0.1);
 }
 
 .specs-detail-layout {
@@ -73,15 +73,15 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  border-bottom: 1px solid var(--border-subtle, rgb(var(--niuu-rgb-muted, 148 163 184) / 0.18));
+  border-bottom: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.18));
   padding: 0 0 12px;
 }
 
 .specs-doc-tab {
-  border: 1px solid var(--border-subtle, rgb(var(--niuu-rgb-muted, 148 163 184) / 0.22));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.22));
   border-radius: 8px;
   background: transparent;
-  color: var(--text-secondary, var(--niuu-text-secondary, #a1a1aa));
+  color: var(--text-secondary, #a1a1aa);
   cursor: pointer;
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 12px;
@@ -89,9 +89,9 @@
 }
 
 .specs-doc-tab.is-active {
-  border-color: rgb(var(--niuu-rgb-signal, 56 189 248) / 0.55);
-  background: rgb(var(--niuu-rgb-signal, 14 165 233) / 0.14);
-  color: var(--niuu-brand-200, #e0f2fe);
+  border-color: rgba(56, 189, 248, 0.55);
+  background: rgba(14, 165, 233, 0.14);
+  color: #e0f2fe;
 }
 
 .specs-doc-tab:disabled {
@@ -102,9 +102,9 @@
 .specs-document-shell,
 .specs-review-panel,
 .specs-side-panel {
-  border: 1px solid var(--border-subtle, rgb(var(--niuu-rgb-muted, 148 163 184) / 0.18));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.18));
   border-radius: 8px;
-  background: var(--bg-secondary, var(--niuu-bg-secondary, #18181b));
+  background: var(--bg-secondary, #18181b);
 }
 
 .specs-document-shell {
@@ -125,7 +125,7 @@
 
 .specs-panel-title {
   margin: 0 0 14px;
-  color: var(--text-primary, var(--niuu-text-primary, #f4f4f5));
+  color: var(--text-primary, #f4f4f5);
   font-size: 18px;
   font-weight: 650;
 }
@@ -143,7 +143,7 @@
 }
 
 .specs-meta-list dt {
-  color: var(--text-faint, var(--niuu-text-muted, #71717a));
+  color: var(--text-faint, #71717a);
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
   letter-spacing: 0.12em;
@@ -152,7 +152,7 @@
 
 .specs-meta-list dd {
   margin: 0;
-  color: var(--text-secondary, var(--niuu-text-secondary, #a1a1aa));
+  color: var(--text-secondary, #a1a1aa);
   font-size: 13px;
   overflow-wrap: anywhere;
 }
@@ -166,7 +166,7 @@
 .specs-markdown h1,
 .specs-markdown h2,
 .specs-markdown h3 {
-  color: var(--text-primary, var(--niuu-text-primary, #f4f4f5));
+  color: var(--text-primary, #f4f4f5);
   line-height: 1.18;
 }
 
@@ -196,32 +196,32 @@
 }
 
 .specs-markdown code {
-  border: 1px solid var(--border-subtle, rgb(var(--niuu-rgb-muted, 148 163 184) / 0.18));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.18));
   border-radius: 5px;
   background: rgba(0, 0, 0, 0.24);
   padding: 1px 5px;
-  color: var(--niuu-brand-300, #bae6fd);
+  color: #bae6fd;
   font-family: var(--font-mono, ui-monospace, monospace);
 }
 
 .specs-review-notes {
   margin: 0 0 14px;
-  border: 1px solid var(--border-subtle, rgb(var(--niuu-rgb-muted, 148 163 184) / 0.18));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.18));
   border-radius: 8px;
-  background: var(--bg-primary, var(--niuu-bg-primary, #09090b));
+  background: var(--bg-primary, #09090b);
   padding: 12px;
 }
 
 .specs-review-notes h3 {
   margin: 0 0 8px;
-  color: var(--text-primary, var(--niuu-text-primary, #f4f4f5));
+  color: var(--text-primary, #f4f4f5);
   font-size: 13px;
   font-weight: 650;
 }
 
 .specs-review-notes p {
   margin: 0;
-  color: var(--text-secondary, var(--niuu-text-secondary, #a1a1aa));
+  color: var(--text-secondary, #a1a1aa);
   font-size: 13px;
 }
 
@@ -233,7 +233,7 @@
 .specs-inline-link {
   border: 0;
   background: transparent;
-  color: var(--niuu-brand-300, #bae6fd);
+  color: #bae6fd;
   cursor: pointer;
   padding: 0;
   text-align: left;
@@ -247,10 +247,10 @@
   width: 100%;
   min-height: 128px;
   resize: vertical;
-  border: 1px solid var(--border-subtle, rgb(var(--niuu-rgb-muted, 148 163 184) / 0.22));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.22));
   border-radius: 8px;
-  background: var(--bg-primary, var(--niuu-bg-primary, #09090b));
-  color: var(--text-primary, var(--niuu-text-primary, #f4f4f5));
+  background: var(--bg-primary, #09090b);
+  color: var(--text-primary, #f4f4f5);
   padding: 12px;
 }
 
@@ -262,23 +262,23 @@
 }
 
 .specs-action-button {
-  border: 1px solid var(--border-subtle, rgb(var(--niuu-rgb-muted, 148 163 184) / 0.22));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.22));
   border-radius: 8px;
   background: transparent;
-  color: var(--text-secondary, var(--niuu-text-secondary, #a1a1aa));
+  color: var(--text-secondary, #a1a1aa);
   cursor: pointer;
   padding: 9px 12px;
 }
 
 .specs-action-button.is-primary {
-  border-color: rgb(var(--niuu-rgb-signal, 56 189 248) / 0.5);
-  background: rgb(var(--niuu-rgb-signal, 14 165 233) / 0.15);
-  color: var(--niuu-brand-200, #e0f2fe);
+  border-color: rgba(56, 189, 248, 0.5);
+  background: rgba(14, 165, 233, 0.15);
+  color: #e0f2fe;
 }
 
 .specs-action-button.is-danger {
-  border-color: rgb(var(--niuu-rgb-danger, 248 113 113) / 0.45);
-  color: var(--niuu-critical, #fecaca);
+  border-color: rgba(248, 113, 113, 0.45);
+  color: #fecaca;
 }
 
 .specs-action-button:disabled {

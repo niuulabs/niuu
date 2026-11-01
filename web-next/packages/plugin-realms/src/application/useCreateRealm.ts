@@ -38,8 +38,8 @@ export interface RecipeStep {
 export const RECIPE_STEPS: RecipeStep[] = [
   { id: 'validate', label: 'check the draft', advancedPath: '/realms' },
   { id: 'connections', label: 'test connections', advancedPath: '/settings/integrations' },
-  { id: 'realm', label: 'create the workspace', advancedPath: '/valkyrie' },
-  { id: 'memory', label: 'create workspace memory', advancedPath: '/mimir/registry' },
+  { id: 'realm', label: 'create the realm', advancedPath: '/valkyrie' },
+  { id: 'memory', label: 'create realm memory', advancedPath: '/mimir/registry' },
   { id: 'routing', label: 'route memory writes', advancedPath: '/mimir/registry' },
   { id: 'persona', label: 'write the persona', advancedPath: '/ravn/personas' },
   { id: 'trust', label: 'grant trust', advancedPath: '/valkyrie' },
@@ -137,7 +137,7 @@ export function useCreateRealm() {
       };
 
       await step('validate', async () => {
-        const problem = requiredDraftError(draft, template.needsBoard, template.needsRepo);
+        const problem = requiredDraftError(draft, template.needsBoard);
         if (problem) throw new Error(problem);
       });
 
@@ -163,9 +163,7 @@ export function useCreateRealm() {
 
       await step('memory', async () => {
         if (!mimir.mounts.deployInstance) {
-          throw new Error(
-            'This memory instance has no deployment target; set one in Memory › Library.',
-          );
+          throw new Error('This Mímir has no deployment target; set one in Mímir › Registry.');
         }
         await mimir.mounts.deployInstance({
           name: deploymentNameFor(draft.slug),
@@ -198,7 +196,7 @@ export function useCreateRealm() {
       await step('trust', async () => {
         await realms.createTrustGrant(draft.slug, {
           action_class: 'observe',
-          target: draft.repo || '*',
+          target: draft.repo,
           level: 2,
           limits: {
             template: template.id,
@@ -279,7 +277,7 @@ export function useCreateRealm() {
           await new Promise((resolve) => setTimeout(resolve, MOUNT_DISCOVERY_INTERVAL_MS));
         }
         throw new Error(
-          `Workspace memory ${mountName} did not appear within 60 s; the deployment is still starting. Check Memory › Library and write the charter from Settings once it is up.`,
+          `Realm memory ${mountName} did not appear within 60 s; the deployment is still starting. Check Mímir › Registry and write the charter from Settings once it is up.`,
         );
       });
 

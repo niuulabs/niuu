@@ -43,7 +43,7 @@ export function ObservatoryReadout({ topology, messageRate }: Props) {
       <Cell label="Pods" value={stats.pods} />
       <Cell label="Residents" value={stats.residents} tone="spring" />
       <Cell label="Meshes" value={stats.meshes} tone="amber" />
-      <Cell label="Memory" value={stats.mimirs} />
+      <Cell label="Mímir" value={stats.mimirs} />
       <Cell label="Msgs / min" value={rate} />
     </div>
   );

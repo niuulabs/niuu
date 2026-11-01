@@ -19,12 +19,7 @@ from niuu.domain.models import Principal
 from niuu.domain.services.token_scope import require_scope
 from niuu.domain.session_endpoint import public_session_endpoint
 from niuu.domain.tags import matches_tags
-from ting.adapters.inbound.auth import (
-    extract_bearer_token,
-    extract_principal,
-    is_platform_admin,
-    platform_tenant_id,
-)
+from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.a2a_identity import local_agent_card_url
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.workflow_bindings import binding_errors
@@ -248,7 +243,6 @@ def create_workflows_router() -> APIRouter:
 
     @router.get("", response_model=list[WorkflowResponse])
     async def list_workflows(
-        request: Request,
         scope: Literal["all", "system", "user"] = Query(default="all"),
         principal: Principal = Depends(extract_principal),
         repo: WorkflowRepository = Depends(resolve_workflow_repo),
@@ -258,9 +252,7 @@ def create_workflows_router() -> APIRouter:
             owner_id=principal.user_id,
             scope=scope_filter,
         )
-        return [
-            _to_response(workflow, request=request, principal=principal) for workflow in workflows
-        ]
+        return [_to_response(workflow, principal=principal) for workflow in workflows]
 
     @router.get(
         "/{workflow_id}/versions",
@@ -283,7 +275,6 @@ def create_workflows_router() -> APIRouter:
     )
     async def get_workflow_version(
         version: str,
-        request: Request,
         workflow_id: UUID = Path(description="Workflow UUID"),
         principal: Principal = Depends(extract_principal),
         repo: WorkflowRepository = Depends(resolve_workflow_repo),
@@ -294,11 +285,10 @@ def create_workflows_router() -> APIRouter:
         workflow = await repo.get_workflow_version(workflow_id, version=version)
         if workflow is None:
             raise HTTPException(status_code=404, detail="Workflow version not found")
-        return _to_response(workflow, request=request, principal=principal)
+        return _to_response(workflow, principal=principal)
 
     @router.get("/{workflow_id}", response_model=WorkflowResponse)
     async def get_workflow(
-        request: Request,
         workflow_id: UUID = Path(description="Workflow UUID"),
         principal: Principal = Depends(extract_principal),
         repo: WorkflowRepository = Depends(resolve_workflow_repo),
@@ -306,7 +296,7 @@ def create_workflows_router() -> APIRouter:
         workflow = await repo.get_workflow(workflow_id)
         if workflow is None or not _can_view_workflow(workflow, principal):
             raise HTTPException(status_code=404, detail="Workflow not found")
-        return _to_response(workflow, request=request, principal=principal)
+        return _to_response(workflow, principal=principal)
 
     @router.post("", response_model=WorkflowResponse, status_code=status.HTTP_201_CREATED)
     async def create_workflow(
@@ -316,7 +306,7 @@ def create_workflows_router() -> APIRouter:
         repo: WorkflowRepository = Depends(resolve_workflow_repo),
     ) -> WorkflowResponse:
         scope = WorkflowScope(body.scope)
-        _assert_can_manage_scope(scope, principal, request)
+        _assert_can_manage_scope(scope, principal)
         graph = _body_to_graph(body)
 
         original = None
@@ -363,7 +353,7 @@ def create_workflows_router() -> APIRouter:
             principal=principal,
             refresh_personas=body.refresh_personas,
         )
-        return _to_response(saved, request=request, principal=principal)
+        return _to_response(saved, principal=principal)
 
     @router.put("/{workflow_id}", response_model=WorkflowResponse)
     async def update_workflow(
@@ -378,8 +368,8 @@ def create_workflows_router() -> APIRouter:
             raise HTTPException(status_code=404, detail="Workflow not found")
 
         scope = WorkflowScope(body.scope)
-        _assert_can_manage_existing(existing, principal, request)
-        _assert_can_manage_scope(scope, principal, request)
+        _assert_can_manage_existing(existing, principal)
+        _assert_can_manage_scope(scope, principal)
         if scope != existing.scope:
             raise HTTPException(
                 status_code=422,
@@ -443,7 +433,7 @@ def create_workflows_router() -> APIRouter:
             base_revision=base_revision,
             bump=body.bump,
         )
-        return _to_response(saved, request=request, principal=principal)
+        return _to_response(saved, principal=principal)
 
     @router.post(
         "/{workflow_id}/versions",
@@ -469,7 +459,6 @@ def create_workflows_router() -> APIRouter:
 
     @router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def delete_workflow(
-        request: Request,
         workflow_id: UUID = Path(description="Workflow UUID"),
         principal: Principal = Depends(extract_principal),
         repo: WorkflowRepository = Depends(resolve_workflow_repo),
@@ -480,7 +469,7 @@ def create_workflows_router() -> APIRouter:
 
         if existing.read_only:
             raise HTTPException(status_code=409, detail="Bundled workflows cannot be deleted")
-        _assert_can_manage_existing(existing, principal, request)
+        _assert_can_manage_existing(existing, principal)
         try:
             deleted = await repo.delete_workflow(workflow_id)
         except (WorkflowConflictError, WorkflowReadOnlyError) as exc:
@@ -640,7 +629,6 @@ def _body_to_graph(body: WorkflowBody) -> dict[str, Any]:
 def _to_response(
     workflow: WorkflowDefinition,
     *,
-    request: Request,
     principal: Principal | None = None,
 ) -> WorkflowResponse:
     graph = workflow.graph or {}
@@ -662,8 +650,7 @@ def _to_response(
         origin="bundled" if workflow.origin == "bundled" else "authored",
         based_on_revision=workflow.based_on_revision,
         read_only=workflow.read_only,
-        can_edit=principal is not None
-        and _can_edit_workflow(workflow, principal, platform_tenant=platform_tenant_id(request)),
+        can_edit=principal is not None and _can_edit_workflow(workflow, principal),
         canonical_yaml=dump_workflow_document(workflow),
         requirements=workflow.requirements,
         tags=[str(tag).strip() for tag in list(graph.get("tags") or []) if str(tag).strip()],
@@ -1256,11 +1243,17 @@ def _owner_id_for_scope(scope: WorkflowScope, principal: Principal) -> str | Non
     return principal.user_id
 
 
-def _assert_can_manage_scope(scope: WorkflowScope, principal: Principal, request: Request) -> None:
+def _can_manage_system_workflows(principal: Principal) -> bool:
+    allowed_roles = {"admin", "ting:admin", "volundr:admin", "volundr:developer"}
+    normalized_roles = {role.strip() for role in principal.roles if role.strip()}
+    return bool(normalized_roles & allowed_roles)
+
+
+def _assert_can_manage_scope(scope: WorkflowScope, principal: Principal) -> None:
     if scope != WorkflowScope.SYSTEM:
         return
 
-    if is_platform_admin(principal, platform_tenant_id=platform_tenant_id(request)):
+    if _can_manage_system_workflows(principal):
         return
 
     raise HTTPException(
@@ -1276,19 +1269,15 @@ def _can_view_workflow(workflow: WorkflowDefinition, principal: Principal) -> bo
     return workflow.owner_id == principal.user_id
 
 
-def _can_edit_workflow(
-    workflow: WorkflowDefinition, principal: Principal, *, platform_tenant: str
-) -> bool:
+def _can_edit_workflow(workflow: WorkflowDefinition, principal: Principal) -> bool:
     if workflow.scope == WorkflowScope.SYSTEM:
-        return is_platform_admin(principal, platform_tenant_id=platform_tenant)
+        return _can_manage_system_workflows(principal)
     return workflow.owner_id == principal.user_id
 
 
-def _assert_can_manage_existing(
-    workflow: WorkflowDefinition, principal: Principal, request: Request
-) -> None:
+def _assert_can_manage_existing(workflow: WorkflowDefinition, principal: Principal) -> None:
     if workflow.scope == WorkflowScope.SYSTEM:
-        if is_platform_admin(principal, platform_tenant_id=platform_tenant_id(request)):
+        if _can_manage_system_workflows(principal):
             return
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

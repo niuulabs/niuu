@@ -85,17 +85,16 @@ const SESSION_STATE_ORDER: Record<SessionState, number> = {
 
 const PANEL_SURFACE_STYLE = {
   backgroundColor: 'var(--light-panel, #1b1b20)',
-  borderColor: 'var(--light-border, rgb(var(--niuu-rgb-muted, 90 94 107) / 0.72))',
+  borderColor: 'var(--light-border, rgba(90, 94, 107, 0.72))',
 } as const;
 
 const NODE_SURFACE_STYLE = {
   backgroundColor: 'var(--light-panel, #111216)',
-  borderColor: 'var(--light-border, rgb(var(--niuu-rgb-muted, 90 94 107) / 0.68))',
+  borderColor: 'var(--light-border, rgba(90, 94, 107, 0.68))',
 } as const;
 
 const PRIMARY_BADGE_STYLE = {
-  backgroundColor:
-    'var(--volundr-label-background, rgb(var(--niuu-rgb-signal, 58 155 228) / 0.16))',
+  backgroundColor: 'var(--volundr-label-background, rgba(58, 155, 228, 0.16))',
   color: 'var(--light-accent, #8fd8ff)',
 } as const;
 
@@ -104,8 +103,8 @@ const STATUS_PILL_STYLE = {
 } as const;
 
 const FORGE_BUTTON_STYLE = {
-  backgroundColor: 'rgb(var(--niuu-rgb-signal, 28 124 173) / 0.18)',
-  borderColor: 'rgb(var(--niuu-rgb-signal, 81 178 232) / 0.65)',
+  backgroundColor: 'rgba(28, 124, 173, 0.18)',
+  borderColor: 'rgba(81, 178, 232, 0.65)',
 } as const;
 
 const CLUSTER_PRESENTATION: Record<string, ClusterPresentation> = {
@@ -406,7 +405,7 @@ function PodsPanel({ pods, isLoading }: { pods: ClusterSessionView[]; isLoading:
     <section className="niuu:rounded-xl niuu:border" style={PANEL_SURFACE_STYLE}>
       <header className="niuu:flex niuu:items-baseline niuu:gap-3 niuu:border-b niuu:border-border niuu:px-4 niuu:py-3">
         <h3 className="niuu:text-base niuu:font-semibold niuu:text-text-primary">
-          Pods on this host
+          Pods on this forge
         </h3>
         <span className="niuu:font-mono niuu:text-base niuu:text-text-faint">{pods.length}</span>
       </header>
@@ -416,7 +415,7 @@ function PodsPanel({ pods, isLoading }: { pods: ClusterSessionView[]; isLoading:
         </div>
       ) : pods.length === 0 ? (
         <div className="niuu:p-4 niuu:font-mono niuu:text-xs niuu:text-text-faint">
-          no niuu sessions active on this host
+          no niuu sessions active on this forge
         </div>
       ) : (
         <ul className="niuu:divide-y niuu:divide-border">
@@ -580,7 +579,7 @@ export function ClustersPage() {
       >
         <EmptyState
           title="No clusters registered"
-          description="Connect a realm to start placing sessions on a host."
+          description="Connect a realm to start placing sessions on a forge."
         />
       </div>
     );
@@ -752,7 +751,7 @@ export function ClustersPage() {
                 type="button"
               >
                 <span className="niuu:text-lg">+</span>
-                host here
+                forge here
               </button>
             </div>
           </header>

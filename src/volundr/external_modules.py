@@ -19,7 +19,6 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from niuu.review_widgets import ReviewWidgetDeclaration
 from niuu.utils import import_class
 from volundr.domain.compute import MachineProvider
 from volundr.domain.vm_runtime import VmRuntime
@@ -28,8 +27,6 @@ MACHINE_PROVIDER_CONTRACT = "niuu_machine_provider"
 MACHINE_PROVIDER_CONTRACT_VERSION = 1
 VM_RUNTIME_CONTRACT = "niuu_vm_runtime"
 VM_RUNTIME_CONTRACT_VERSION = 1
-REVIEW_WIDGET_CONTRACT = "niuu_review_widget"
-REVIEW_WIDGET_CONTRACT_VERSION = 1
 
 
 class ExternalModuleLoadError(ValueError):
@@ -59,8 +56,7 @@ class ExternalModuleManifest(BaseModel):
     schema_version: Literal[1]
     id: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     requires: dict[str, int] = Field(default_factory=dict)
-    components: tuple[ExternalModuleComponent, ...] = ()
-    review_widgets: tuple[ReviewWidgetDeclaration, ...] = ()
+    components: tuple[ExternalModuleComponent, ...] = Field(min_length=1)
     integration_definition_files: tuple[str, ...] = ()
 
     @field_validator("integration_definition_files")
@@ -78,20 +74,11 @@ class ExternalModuleManifest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_contracts_and_names(self) -> ExternalModuleManifest:
-        if not self.components and not self.review_widgets:
-            raise ValueError("a package must declare components or review_widgets")
         names = [component.name for component in self.components]
         if len(set(names)) != len(names):
             raise ValueError("component names must be unique within a package")
-        widget_names = [widget.name for widget in self.review_widgets]
-        if len(set(widget_names)) != len(widget_names):
-            raise ValueError("review widget names must be unique within a package")
 
-        supported_contracts = {
-            MACHINE_PROVIDER_CONTRACT,
-            VM_RUNTIME_CONTRACT,
-            REVIEW_WIDGET_CONTRACT,
-        }
+        supported_contracts = {MACHINE_PROVIDER_CONTRACT, VM_RUNTIME_CONTRACT}
         unknown_requirements = sorted(set(self.requires) - supported_contracts)
         if unknown_requirements:
             raise ValueError(
@@ -120,12 +107,6 @@ class ExternalModuleManifest(BaseModel):
             raise ValueError(
                 f"vm_runtime components require {VM_RUNTIME_CONTRACT}: "
                 f"{VM_RUNTIME_CONTRACT_VERSION}"
-            )
-        if self.review_widgets and (
-            self.requires.get(REVIEW_WIDGET_CONTRACT) != REVIEW_WIDGET_CONTRACT_VERSION
-        ):
-            raise ValueError(
-                f"review_widgets require {REVIEW_WIDGET_CONTRACT}: {REVIEW_WIDGET_CONTRACT_VERSION}"
             )
         return self
 

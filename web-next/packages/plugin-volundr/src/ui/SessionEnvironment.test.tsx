@@ -67,7 +67,7 @@ it('handles a mount mapping and unavailable source metadata', () => {
   rerender(
     <SessionEnvironment session={{ ...session, source: { type: 'local_mount', paths: [] } }} />,
   );
-  expect(screen.getByText('Not reported by the host')).toBeInTheDocument();
+  expect(screen.getByText('Not reported by Forge')).toBeInTheDocument();
   rerender(
     <SessionEnvironment
       session={{ ...session, source: { type: 'git', repo: 'offline:repo', branch: '' } }}

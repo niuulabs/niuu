@@ -194,7 +194,7 @@ async def test_research_reads_the_same_gateway_mount_as_the_runtime(backend, tmp
                 event_hooks={"request": [observe]},
                 headers={
                     "x-auth-user-id": "owner",
-                    "x-auth-tenant": "default",
+                    "x-auth-tenant": "tenant",
                     "x-auth-roles": "volundr:developer",
                 },
             )

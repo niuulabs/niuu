@@ -78,7 +78,7 @@ describe('ObservatoryRailSections', () => {
     expect(screen.getByText('No residents reporting.')).toBeInTheDocument();
     expect(screen.getByText('No agent meshes discovered.')).toBeInTheDocument();
     expect(screen.getByText('No clusters discovered.')).toBeInTheDocument();
-    expect(screen.getByText('No memory instances discovered.')).toBeInTheDocument();
+    expect(screen.getByText('No Mímir instances discovered.')).toBeInTheDocument();
   });
 
   it('selects a node when its row is clicked', async () => {

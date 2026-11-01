@@ -430,10 +430,6 @@ class TestLearnedToolRunTool:
         assert "archived after 2 consecutive failures" in second.content
         shown = await manager.show("flaky_tool", include_archived=True)
         assert shown["metadata"]["status"] == "archived"
-        # The failure that crossed the threshold is kept: a repair is told
-        # what broke instead of only that something did.
-        assert shown["metadata"]["archived_reason"] == "rolled_back"
-        assert "boom" in shown["metadata"]["archived_detail"]
 
         third = await dispatch.execute({"name": "flaky_tool", "input": {}})
         assert third.is_error

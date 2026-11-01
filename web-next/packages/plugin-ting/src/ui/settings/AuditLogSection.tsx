@@ -14,8 +14,8 @@ const KIND_LABELS: Record<AuditEntryKind, string> = {
   'run.merged': 'Run merged',
   'run.failed': 'Run failed',
   'run.escalated': 'Run escalated',
-  'saga.created': 'Project created',
-  'saga.completed': 'Project completed',
+  'saga.created': 'Saga created',
+  'saga.completed': 'Saga completed',
 };
 
 const KIND_GROUPS: { label: string; kinds: AuditEntryKind[] }[] = [
@@ -36,7 +36,7 @@ const KIND_GROUPS: { label: string; kinds: AuditEntryKind[] }[] = [
     kinds: ['run.dispatched', 'run.merged', 'run.failed', 'run.escalated'],
   },
   {
-    label: 'Projects',
+    label: 'Sagas',
     kinds: ['saga.created', 'saga.completed'],
   },
 ];

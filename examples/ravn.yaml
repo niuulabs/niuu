@@ -81,15 +81,10 @@ thread:
 # Wakefulness trigger (NIU-565)
 #
 # Detects operator silence and runs a cheap LLM reflection to emit follow-up
-# intents as threads into Mímir.
-#
-# It reflects on the conversation held by the daemon's gateway sessions, so it
-# needs a gateway channel (gateway.channels.<name>.enabled: true); enabled
-# without one, the daemon refuses to start.  max_transcript_chars bounds how
-# much of that conversation goes into each reflection prompt.
+# intents as threads into Mímir.  Enabled in M2.
 # ---------------------------------------------------------------------------
 wakefulness:
-  enabled: false
+  enabled: true
   silence_threshold_seconds: 1800         # 30 min of silence triggers shallow reflection
   reflection_cooldown_seconds: 3600       # at most one shallow reflection per hour
   deep_reflection_threshold_seconds: 7200 # 2 h silence triggers deep reflection
@@ -98,7 +93,6 @@ wakefulness:
   max_intents_per_reflection: 5
   initial_thread_weight: 5.0
   poll_interval_seconds: 60
-  max_transcript_chars: 12000
 
 # ---------------------------------------------------------------------------
 # Recap trigger (NIU-569)

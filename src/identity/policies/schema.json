@@ -204,19 +204,6 @@
             }
           }
         }
-      },
-      "realm": {
-        "shape": {
-          "type": "Record",
-          "attributes": {
-            "owner_id": {
-              "type": "String"
-            },
-            "tenant_id": {
-              "type": "String"
-            }
-          }
-        }
       }
     },
     "actions": {
@@ -248,8 +235,7 @@
             "workflow",
             "campaign",
             "instance",
-            "topology_source",
-            "realm"
+            "topology_source"
           ],
           "context": {
             "type": "Record",
@@ -271,8 +257,7 @@
             "workflow",
             "campaign",
             "instance",
-            "topology_source",
-            "realm"
+            "topology_source"
           ],
           "context": {
             "type": "Record",
@@ -309,8 +294,7 @@
             "workflow",
             "campaign",
             "instance",
-            "topology_source",
-            "realm"
+            "topology_source"
           ],
           "context": {
             "type": "Record",
@@ -333,8 +317,7 @@
             "workflow",
             "campaign",
             "instance",
-            "topology_source",
-            "realm"
+            "topology_source"
           ],
           "context": {
             "type": "Record",
@@ -453,8 +436,7 @@
             "workflow",
             "campaign",
             "instance",
-            "topology_source",
-            "realm"
+            "topology_source"
           ],
           "context": {
             "type": "Record",
@@ -553,20 +535,6 @@
           ],
           "resourceTypes": [
             "session"
-          ],
-          "context": {
-            "type": "Record",
-            "attributes": {}
-          }
-        }
-      },
-      "record_capability": {
-        "appliesTo": {
-          "principalTypes": [
-            "User"
-          ],
-          "resourceTypes": [
-            "realm"
           ],
           "context": {
             "type": "Record",

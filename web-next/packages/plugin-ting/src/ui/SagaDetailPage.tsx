@@ -25,7 +25,6 @@ import type {
 import { useAssignSagaRepos, useAssignSagaTarget, useAssignSagaWorkflow, useSaga } from './useSaga';
 import { usePhases } from './usePhases';
 import { useSendRunMessage } from './useRunMessages';
-import { BoardWorkflowsCard } from './BoardWorkflowsCard';
 import { WorkflowCard } from './WorkflowCard';
 import { SagaWorkflowModal } from './SagaWorkflowModal';
 import { StageProgressRail } from './StageProgressRail';
@@ -137,9 +136,9 @@ function glyphForRole(role: PersonaRole): string {
 function phaseDotClasses(status: Phase['status']): string {
   const base = 'niuu:w-3 niuu:h-3 niuu:rounded-full niuu:shrink-0';
   if (status === 'complete')
-    return `${base} niuu:bg-brand/90 niuu:shadow-[0_0_0_2px_rgb(var(--niuu-rgb-signal,125_211_252)/0.14)]`;
+    return `${base} niuu:bg-brand/90 niuu:shadow-[0_0_0_2px_rgba(125,211,252,0.14)]`;
   if (status === 'active')
-    return `${base} niuu:bg-brand niuu:shadow-[0_0_0_4px_rgb(var(--niuu-rgb-signal,125_211_252)/0.10)]`;
+    return `${base} niuu:bg-brand niuu:shadow-[0_0_0_4px_rgba(125,211,252,0.10)]`;
   if (status === 'gated') return `${base} niuu:bg-accent-amber`;
   return `${base} niuu:bg-text-muted/40`;
 }
@@ -336,19 +335,19 @@ function TargetCard({
     <section className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-4 niuu:space-y-3">
       <div className="niuu:space-y-1">
         <div className="niuu:text-[11px] niuu:font-mono niuu:uppercase niuu:tracking-[0.08em] niuu:text-text-muted">
-          Session host
+          Volundr target
         </div>
         <h3 className="niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
           {targetLabel}
         </h3>
         <p className="niuu:text-sm niuu:leading-6 niuu:text-text-secondary">
-          Assign this project to default routing, one specific session host, or a label selector
+          Assign this saga to default routing, one specific Volundr instance, or a label selector
           that resolves at dispatch time.
         </p>
       </div>
       <div className="niuu:space-y-3">
         <SegmentedFilter<TargetMode>
-          aria-label="Session host mode"
+          aria-label="Volundr target mode"
           value={mode}
           onChange={setMode}
           options={[
@@ -364,7 +363,7 @@ function TargetCard({
             className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
             disabled={isLoading || isUpdating}
           >
-            <option value="">Select a session host</option>
+            <option value="">Select Volundr instance</option>
             {targets.map((target) => (
               <option key={target.connectionId} value={target.connectionId}>
                 {target.name}
@@ -494,7 +493,7 @@ function SagaReposCard({
       <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-3">
         <div className="niuu:space-y-1">
           <div className="niuu:text-[11px] niuu:font-mono niuu:uppercase niuu:tracking-[0.08em] niuu:text-text-muted">
-            Project repositories
+            Saga repositories
           </div>
           <h3 className="niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
             {currentRefs.length} {currentRefs.length === 1 ? 'repo' : 'repos'}
@@ -768,10 +767,10 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
     queryFn: () => repoCatalog.getRepos(),
   });
 
-  if (sagaLoading || phasesLoading) return <LoadingState label="Loading project…" />;
+  if (sagaLoading || phasesLoading) return <LoadingState label="Loading saga…" />;
   if (sagaError)
     return (
-      <ErrorState message={sagaErr instanceof Error ? sagaErr.message : 'Failed to load project'} />
+      <ErrorState message={sagaErr instanceof Error ? sagaErr.message : 'Failed to load saga'} />
     );
   if (phasesError)
     return (
@@ -779,7 +778,7 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
         message={phasesErr instanceof Error ? phasesErr.message : 'Failed to load phases'}
       />
     );
-  if (!saga) return <ErrorState message={`Project "${sagaId}" not found`} />;
+  if (!saga) return <ErrorState message={`Saga "${sagaId}" not found`} />;
 
   const allPhases = phases ?? [];
   const activeRuns = allPhases
@@ -813,7 +812,7 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
           onClick={() => void navigate({ to: '/ting/sagas' })}
           className="niuu:text-sm niuu:text-text-secondary niuu:hover:text-text-primary"
         >
-          ← Projects
+          ← Sagas
         </button>
       )}
 
@@ -839,7 +838,7 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
           {allPhases.length === 0 ? (
             <EmptyState
               title="No phases yet"
-              description="This project has not been decomposed into phases."
+              description="This saga has not been decomposed into phases."
             />
           ) : (
             allPhases.map((phase) => <PhaseCard key={phase.id} phase={phase} />)
@@ -870,7 +869,6 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
             onAssign={() => setShowWorkflowModal(true)}
             onClear={saga.workflowId ? () => handleAssignWorkflow(null) : undefined}
           />
-          <BoardWorkflowsCard saga={saga} />
           <StageProgressRail phases={allPhases} />
         </div>
       </div>

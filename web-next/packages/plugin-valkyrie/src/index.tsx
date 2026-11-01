@@ -1,4 +1,3 @@
-import { ResidentsIcon } from '@niuulabs/ui';
 import { createRoute, redirect } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ActivityPage } from './ui/ActivityPage';
@@ -39,13 +38,12 @@ const createLegacyRedirect =
 export const valkyriePlugin = definePlugin({
   id: 'valkyrie',
   rune: 'V',
-  icon: <ResidentsIcon />,
-  title: 'Resident console',
-  subtitle: 'what your residents are doing',
+  title: 'Valkyrie',
+  subtitle: 'resident telemetry',
   tabs: [
-    { id: 'console', label: 'Roster', path: '/valkyrie' },
-    { id: 'activity', label: 'Activity', path: '/valkyrie/activity' },
-    { id: 'inbox', label: 'Inbox', path: '/valkyrie/inbox' },
+    { id: 'console', label: 'Console', rune: 'ᛒ', path: '/valkyrie' },
+    { id: 'activity', label: 'Activity', rune: '↔', path: '/valkyrie/activity' },
+    { id: 'inbox', label: 'Inbox', rune: '◇', path: '/valkyrie/inbox' },
   ],
   routes: (rootRoute) => [
     createRoute({

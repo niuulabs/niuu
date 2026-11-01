@@ -15,7 +15,7 @@ export interface Walkthrough {
 
 export const FIRST_REALM_WALKTHROUGH: Walkthrough = {
   id: 'first-realm',
-  title: 'Set up your first workspace',
+  title: 'Set up your first realm',
   tip: 'You are not managing tickets any more. You are managing one resident, and it manages the tickets.',
   steps: [
     { id: 'template', title: 'Pick a template', detail: 'Product resident fits most codebases.' },

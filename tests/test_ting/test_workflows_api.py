@@ -9,7 +9,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import jwt
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -423,9 +422,7 @@ def _make_client(
     app.state.authorization = AllowAllAuthorizationAdapter()
     app.state.persona_source = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
     app.include_router(create_workflows_router())
-    app.state.settings = settings or Settings(
-        auth=AuthConfig(allow_anonymous_dev=False, platform_tenant_id="")
-    )
+    app.state.settings = settings or Settings(auth=AuthConfig(allow_anonymous_dev=False))
     app.dependency_overrides[resolve_workflow_repo] = lambda: repo
     app.dependency_overrides[resolve_workflow_launch_campaign_repo] = lambda: (
         campaign_repo or RecordingCampaignRepository()
@@ -521,24 +518,6 @@ class TestWorkflowCatalogAPI:
                 "nodes": [],
                 "edges": [],
             },
-        )
-
-        assert response.status_code == 403
-
-    @pytest.mark.parametrize(
-        ("tenant", "roles"),
-        [("default", "volundr:developer"), ("org-a", "volundr:admin"), ("org-a", "ting:admin")],
-    )
-    def test_only_the_platform_orgs_admins_manage_system_workflows(
-        self, tenant: str, roles: str
-    ) -> None:
-        settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
-        client = _make_client(InMemoryWorkflowRepository(), settings=settings)
-
-        response = client.post(
-            "/api/v1/ting/workflows",
-            headers={**_headers(roles=roles), "x-auth-tenant": tenant},
-            json={"name": "Shared Flow", "scope": "system", "nodes": [], "edges": []},
         )
 
         assert response.status_code == 403

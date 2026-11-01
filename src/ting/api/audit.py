@@ -12,7 +12,6 @@ from niuu.domain.models import Principal
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from ting.adapters.inbound.auth import extract_principal
 from ting.api.dispatcher import resolve_event_bus
-from ting.api.events import visible_to
 from ting.ports.event_bus import EventBusPort, TingEvent
 
 
@@ -65,7 +64,7 @@ def create_audit_router() -> APIRouter:
         since: str | None = Query(default=None),
         until: str | None = Query(default=None),
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
-        principal: Principal = Depends(extract_principal),
+        _principal: Principal = Depends(extract_principal),
         event_bus: EventBusPort = Depends(resolve_event_bus),
     ) -> list[AuditEntryResponse]:
         try:
@@ -89,8 +88,7 @@ def create_audit_router() -> APIRouter:
         filtered = [
             event
             for event in events
-            if visible_to(event, principal)
-            and _matches_window(
+            if _matches_window(
                 event,
                 kinds=requested_kinds,
                 actor=actor,

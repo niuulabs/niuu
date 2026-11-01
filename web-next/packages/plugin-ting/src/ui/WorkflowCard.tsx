@@ -69,15 +69,15 @@ export function WorkflowCard({
       <div className="niuu:p-5 niuu:space-y-4">
         <div>
           <div className="niuu:mb-1 niuu:text-[11px] niuu:font-mono niuu:uppercase niuu:tracking-[0.12em] niuu:text-text-muted">
-            APPLIED · PER-PROJECT
+            APPLIED · PER-SAGA
           </div>
           <div className="niuu:mb-1 niuu:text-[15px] niuu:font-semibold niuu:text-text-primary">
             {name}
           </div>
           <p className="niuu:m-0 niuu:text-[13px] niuu:leading-6 niuu:text-text-secondary">
             {hasAssignedWorkflow
-              ? 'Saved as the project default. Dispatch can override this workflow for a single run.'
-              : 'This project will use the system dispatch default until a workflow is assigned.'}
+              ? 'Saved as the saga default. Dispatch can override this workflow for a single run.'
+              : 'This saga will use the system dispatch default until a workflow is assigned.'}
           </p>
         </div>
 
@@ -89,7 +89,7 @@ export function WorkflowCard({
             i
           </span>
           <span>
-            The project workflow is the default. Per-dispatch overrides from Dispatch apply only to
+            The saga workflow is the default. Per-dispatch overrides from Dispatch apply only to
             that single launch.
           </span>
         </div>

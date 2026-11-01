@@ -146,7 +146,7 @@ describe('SagaDetailPage', () => {
     render(<SagaDetailPage sagaId={SAGA_ID} />, {
       wrapper: wrap({ ting: slowSvc, 'ting.dispatch': mockDispatchBus }),
     });
-    expect(screen.getByText(/Loading project/i)).toBeInTheDocument();
+    expect(screen.getByText(/Loading saga/i)).toBeInTheDocument();
   });
 
   it('renders the compact saga header', async () => {
@@ -214,7 +214,7 @@ describe('SagaDetailPage', () => {
       wrapper: wrap({ ting: createMockTingService(), 'ting.dispatch': mockDispatchBus }),
     });
     await waitFor(() =>
-      expect(screen.getByRole('region', { name: 'Workflow' })).toBeInTheDocument(),
+      expect(screen.getByRole('region', { name: /workflow/i })).toBeInTheDocument(),
     );
     expect(screen.getByRole('region', { name: /stage progress/i })).toBeInTheDocument();
   });
@@ -239,7 +239,7 @@ describe('SagaDetailPage', () => {
       wrapper: wrap({ ting: svc, 'ting.dispatch': mockDispatchBus }),
     });
     await waitFor(() =>
-      expect(screen.getByText(/Project "nonexistent-id" not found/)).toBeInTheDocument(),
+      expect(screen.getByText(/Saga "nonexistent-id" not found/)).toBeInTheDocument(),
     );
   });
 
@@ -249,7 +249,7 @@ describe('SagaDetailPage', () => {
     });
     await waitFor(() => expect(screen.getByText('NIU-500')).toBeInTheDocument());
     expect(screen.getByText('Auth Rewrite')).toBeInTheDocument();
-    screen.getByRole('button', { name: /Projects/i }).click();
+    screen.getByRole('button', { name: /Sagas/i }).click();
     expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/sagas' });
   });
 

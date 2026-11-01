@@ -1,31 +1,3 @@
-{{- if include "skuld.roomGatewayEnabled" . -}}
-Skuld room gateway deployed: {{ include "skuld.fullname" . }}
-
-Room:       {{ include "skuld.sessionId" . }} (environment {{ .Values.roomGateway.room.environmentId }})
-Resident:   {{ .Values.roomGateway.room.defaultTargetPeerId }}
-Owner:      {{ .Values.session.ownerId }} (tenant {{ .Values.session.tenantId }})
-
-Every request needs a verified JWT; the room admits its owner and the tenant's administrators.
-{{- if .Values.roomGateway.ingress.enabled }}
-{{- $scheme := ternary "wss" "ws" .Values.roomGateway.ingress.tls.enabled }}
-{{- $prefix := include "skuld.roomGatewayPathPrefix" . }}
-
-Endpoints:
-  Operator (Lexi, web UI): {{ $scheme }}://{{ .Values.roomGateway.ingress.host }}{{ $prefix }}/session
-  Resident (Ravn):         {{ $scheme }}://{{ .Values.roomGateway.ingress.host }}{{ $prefix }}/ws/ravn/{{ .Values.roomGateway.room.defaultTargetPeerId }}
-  Set the resident's skuld.broker_url to {{ $scheme }}://{{ .Values.roomGateway.ingress.host }}{{ $prefix }}/ws/ravn
-{{- else }}
-
-Endpoints (in cluster, through Envoy on the Service):
-  ws://{{ include "skuld.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}/session
-  ws://{{ include "skuld.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}/ws/ravn/{{ .Values.roomGateway.room.defaultTargetPeerId }}
-{{- end }}
-{{- if .Values.roomGateway.telegram.enabled }}
-
-Prerequisites:
-  Secret "{{ .Values.roomGateway.telegram.secretName }}" with keys "{{ .Values.roomGateway.telegram.botTokenKey }}" and "{{ .Values.roomGateway.telegram.chatIdKey }}" (Telegram bot token and chat id)
-{{- end }}
-{{- else -}}
 Skuld session deployed: {{ include "skuld.fullname" . }}
 
 Session ID: {{ include "skuld.sessionId" . }}
@@ -79,4 +51,3 @@ Create the PVC:
       requests:
         storage: 5Gi
   EOF
-{{- end }}

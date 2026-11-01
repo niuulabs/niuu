@@ -11,7 +11,6 @@ and the read-action check on session read routes (GET /sessions/{id},
 /runtime-version, /conversation) under the bundled Cedar policy.
 """
 
-from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -705,49 +704,6 @@ class TestWorkflowGateResolveAuth:
 
         assert resp.status_code == 200
         assert resp.json() == {"status": "resolved"}
-        sent = mock_client.post.await_args.kwargs["json"]
-        assert sent["decided_by"] == "owner@test.com"
-        assert sent["actor"] == ""
-
-    def _resolved_as(self, session_repo, cedar_authz, principal, **body) -> dict:
-        session = self._live_session()
-        _seed_session(session_repo, session)
-        app = _build_rest_app(session_repo, StubIdentityAdapter(principal), cedar_authz)
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.json.return_value = {"status": "resolved"}
-        mock_response.raise_for_status.return_value = None
-
-        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post.return_value = mock_response
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
-
-            with TestClient(app) as client:
-                resp = client.post(
-                    f"/api/v1/forge/sessions/{session.id}/workflow/gates/g1/resolve",
-                    json={"decision": "approved", **body},
-                )
-
-        assert resp.status_code == 200
-        return mock_client.post.await_args.kwargs["json"]
-
-    def test_an_agent_on_the_token_is_who_the_gate_records(self, session_repo, cedar_authz):
-        sent = self._resolved_as(
-            session_repo,
-            cedar_authz,
-            replace(OWNER_PRINCIPAL, actor="system:serviceaccount:nats:regin"),
-        )
-
-        assert sent["actor"] == "system:serviceaccount:nats:regin"
-        assert sent["decided_by"] == "regin"
-
-    def test_an_agent_named_by_ting_is_who_the_gate_records(self, session_repo, cedar_authz):
-        sent = self._resolved_as(
-            session_repo, cedar_authz, OWNER_PRINCIPAL, actor="system:serviceaccount:nats:regin"
-        )
-
-        assert sent["actor"] == "system:serviceaccount:nats:regin"
-        assert sent["decided_by"] == "regin"
 
 
 class TestWorkflowGateReadAuth:

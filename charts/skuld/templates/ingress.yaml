@@ -1,4 +1,3 @@
-{{- if not (include "skuld.roomGatewayEnabled" .) }}
 {{- if .Values.ingress.enabled -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -55,5 +54,4 @@ spec:
                 port:
                   name: http
   {{- end }}
-{{- end }}
 {{- end }}

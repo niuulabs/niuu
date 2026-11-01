@@ -1,17 +1,13 @@
 # Sessions and workspaces
 
 A **session** is a managed execution of an agent runtime and its conversation.
-A **session workspace** is the filesystem where that work happens. Stopping
-execution and deleting its files are separate operations.
-
-A session workspace is not the **Workspaces** product: that is the environment a
-resident keeps, with its charter, trust, and memory. One Workspace can run many
-sessions, each with its own session workspace.
+A **workspace** is the filesystem where that work happens. Stopping execution
+and deleting its files are separate operations.
 
 ## From launch to result
 
 A launch supplies a source, runtime, model, target, and optional persona,
-credentials, and resources. Forge records the session and asks the configured
+credentials, and resources. Völundr records the session and asks the configured
 backend to start it. Skuld starts the runtime and connects its messages and
 workspace interfaces to the platform.
 

@@ -238,14 +238,14 @@ export function QuickLaunch({
         )}
         <section className="vol-quick__section">
           <div className="vol-quick__actions">
-            <h2>Session workspace</h2>
+            <h2>Workspace</h2>
             <a href="/guild" className="vol-quick__link">
-              Manage hosts in Platform
+              Manage environments in Guild
             </a>
           </div>
           <div className="vol-quick__row">
             <label>
-              Host
+              Forge
               <select
                 value={host?.id ?? ''}
                 onChange={(e) => {
@@ -253,9 +253,9 @@ export function QuickLaunch({
                   // A local folder is re-derived from the new Forge, which may not mount one.
                   setPickedSource((current) => (current === 'local_mount' ? null : current));
                 }}
-                aria-label="Host"
+                aria-label="Forge"
               >
-                {!host && <option value="">Select a host</option>}
+                {!host && <option value="">Select a Forge</option>}
                 {enabledHosts.map((h) => (
                   <option key={h.id} value={h.id}>
                     {h.name} · {h.baseUrl}
@@ -275,7 +275,7 @@ export function QuickLaunch({
             </label>
           </div>
           {!hosts.isLoading && enabledHosts.length === 0 && !hosts.error && (
-            <p role="alert">Add an enabled host to launch a session.</p>
+            <p role="alert">Add an enabled Forge host to launch a session.</p>
           )}
           {sourceType === 'local_mount' ? (
             <label>
@@ -284,10 +284,10 @@ export function QuickLaunch({
                 aria-label="Working folder"
                 value={folder}
                 onChange={(e) => host && setFolders({ ...folders, [host.id]: e.target.value })}
-                placeholder="Absolute folder path on this host"
+                placeholder="Absolute folder path on this Forge"
               />
               <small>
-                Existing folder on {host?.name ?? 'the selected host'}. Remembered separately for
+                Existing folder on {host?.name ?? 'the selected Forge'}. Remembered separately for
                 each host.
               </small>
             </label>

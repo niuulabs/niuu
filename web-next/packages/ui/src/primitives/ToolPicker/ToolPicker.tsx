@@ -8,7 +8,7 @@ const GROUP_LABELS: Record<ToolGroup, string> = {
   fs: 'File System',
   shell: 'Shell',
   git: 'Git',
-  mimir: 'Memory',
+  mimir: 'Mímir',
   observe: 'Observe',
   security: 'Security',
   bus: 'Event Bus',

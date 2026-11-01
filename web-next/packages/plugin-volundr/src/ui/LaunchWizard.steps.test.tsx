@@ -513,7 +513,7 @@ describe('LaunchWizard step components', () => {
     expect(within(select).getByRole('option', { name: /Sonnet/ })).toBeInTheDocument();
     expect(within(select).queryByRole('option', { name: /GPT Test/ })).not.toBeInTheDocument();
     expect(
-      screen.getByText(/Showing 1 of 3 models compatible with Claude Code/),
+      screen.getByText(/Showing 1 of 3 Bifrost models compatible with Claude Code/),
     ).toBeInTheDocument();
 
     rerender(
@@ -539,7 +539,7 @@ describe('LaunchWizard step components', () => {
     expect(within(select).getByRole('option', { name: /Sonnet/ })).toBeInTheDocument();
     expect(within(select).getByRole('option', { name: /GPT Test/ })).toBeInTheDocument();
     expect(within(select).getByRole('option', { name: /Local Test/ })).toBeInTheDocument();
-    expect(screen.getByText(/Showing all 3 models for OpenCode/)).toBeInTheDocument();
+    expect(screen.getByText(/Showing all 3 Bifrost models for OpenCode/)).toBeInTheDocument();
   });
 
   it('shows tag-based Forge routing controls', () => {
@@ -566,11 +566,11 @@ describe('LaunchWizard step components', () => {
     expect(screen.queryByTestId('forge-target-select')).not.toBeInTheDocument();
     expect(screen.getByTestId('forge-target-match-select')).toBeInTheDocument();
     expect(screen.getByText('gpu')).toBeInTheDocument();
-    expect(screen.getByText(/1 matching host: Forge Beta/)).toBeInTheDocument();
+    expect(screen.getByText(/1 matching Forge: Forge Beta/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('batch'));
     expect(update).toHaveBeenCalledWith({ targetTags: ['gpu', 'batch'] });
-    fireEvent.click(screen.getByText('Specific host'));
+    fireEvent.click(screen.getByText('Specific Forge'));
     expect(update).toHaveBeenCalledWith({ targetMode: 'instance' });
   });
 

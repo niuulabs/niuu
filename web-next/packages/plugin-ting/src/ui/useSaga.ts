@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import type { ITingService, SagaRepoRef, SagaTargetSelection } from '../ports';
-import type { Saga, SagaBoardWorkflow } from '../domain/saga';
+import type { Saga } from '../domain/saga';
 
 export function useSaga(id: string) {
   const ting = useService<ITingService>('ting');
@@ -25,19 +25,6 @@ export function useAssignSagaWorkflow(sagaId: string) {
         return current.map((entry) => (entry.id === saga.id ? saga : entry));
       });
       void queryClient.invalidateQueries({ queryKey: ['ting', 'dispatch-queue'] });
-    },
-  });
-}
-
-export function useSetBoardWorkflows(sagaId: string) {
-  const ting = useService<ITingService>('ting');
-  const queryClient = useQueryClient();
-
-  return useMutation<SagaBoardWorkflow[], Error, string[]>({
-    mutationFn: (workflowIds: string[]) => ting.setBoardWorkflows(sagaId, workflowIds),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['ting', 'sagas', sagaId] });
-      void queryClient.invalidateQueries({ queryKey: ['ting', 'work'] });
     },
   });
 }

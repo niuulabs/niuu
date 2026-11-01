@@ -337,7 +337,7 @@ export function useResearchCampaignPage() {
     if (!campaign) return;
     if (typeof window !== 'undefined') {
       const confirmed = window.confirm(
-        `Delete research campaign "${campaign.name}"? This removes the campaign record but does not delete any existing memory pages.`,
+        `Delete research campaign "${campaign.name}"? This removes the campaign record from Ting but does not delete any existing Mimir pages.`,
       );
       if (!confirmed) return;
     }

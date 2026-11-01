@@ -45,10 +45,10 @@ export function PlanRuns({ error, onBack }: PlanRunsProps) {
       <div className="niuu:flex niuu:flex-col niuu:items-center niuu:gap-3">
         <StateDot state="processing" pulse />
         <h2 className="niuu:text-lg niuu:font-semibold niuu:text-text-primary">
-          Agents are mapping the work…
+          Ravns are mapping the work…
         </h2>
         <p className="niuu:text-sm niuu:text-text-secondary niuu:text-center niuu:max-w-xs">
-          The planning agent is decomposing your goal into phases and runs. This can take a few
+          The planning ravn is decomposing your goal into phases and runs. This can take a few
           minutes or longer; you can leave this page open while it works.
         </p>
       </div>
@@ -66,16 +66,16 @@ export function PlanRuns({ error, onBack }: PlanRunsProps) {
       <div
         aria-live="polite"
         className="niuu:flex niuu:flex-col niuu:gap-1 niuu:text-center"
-        aria-label="Agent activity"
+        aria-label="Raven activity"
       >
         <p className="niuu:text-xs niuu:text-text-muted niuu:font-mono">
-          decomposer — analyzing brief
+          ᚱ · decomposer — analyzing brief
         </p>
         <p className="niuu:text-xs niuu:text-text-muted niuu:font-mono">
-          investigator — probing repo for affected modules
+          ᚱ · investigator — probing repo for affected modules
         </p>
         <p className="niuu:text-xs niuu:text-text-muted niuu:font-mono">
-          memory indexer — pulling in prior-art projects
+          ᚱ · mimir-indexer — pulling in prior-art sagas
         </p>
       </div>
     </div>

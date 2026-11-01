@@ -1,13 +1,9 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import type { IWorkService } from '../ports';
-import type { GateDecision, WorkCollection, WorkResourceKind } from '../domain/work';
+import type { WorkCollection, WorkResourceKind } from '../domain/work';
 
 const EXECUTION_PAGE_SIZE = 50;
-/** A board follows runs it does not drive, so it refreshes while it is on screen. */
-const BOARD_REFRESH_MS = 5000;
-/** A review reads a run's whole session log, so it refreshes more slowly than the board. */
-const REVIEW_REFRESH_MS = 15000;
 
 export function useWorkCollection() {
   const service = useService<IWorkService>('ting.work');
@@ -45,71 +41,5 @@ export function useWorkDetail(kind: WorkResourceKind | null, id: string | null) 
     queryKey: ['ting', 'work', kind, id],
     queryFn: () => service.get(kind as WorkResourceKind, id as string),
     enabled: Boolean(kind && id),
-    refetchInterval: (query) => (query.state.data?.board ? BOARD_REFRESH_MS : false),
-  });
-}
-
-export function useReviews() {
-  const service = useService<IWorkService>('ting.work');
-  return useQuery({
-    queryKey: ['ting', 'work', 'reviews'],
-    queryFn: () => service.reviews(),
-    refetchInterval: REVIEW_REFRESH_MS,
-  });
-}
-
-export function useReviewWidget(module: string, name: string) {
-  const service = useService<IWorkService>('ting.work');
-  return useQuery({
-    queryKey: ['ting', 'work', 'review-widget', module, name],
-    queryFn: () => service.reviewWidget(module, name),
-    retry: false,
-  });
-}
-
-export function useTicketReviews(projectId: string, issueId: string) {
-  const service = useService<IWorkService>('ting.work');
-  return useQuery({
-    queryKey: ['ting', 'work', 'reviews', projectId, issueId],
-    queryFn: () => service.ticketReviews(projectId, issueId),
-    refetchInterval: REVIEW_REFRESH_MS,
-  });
-}
-
-export function useRunReviews(slug: string) {
-  const service = useService<IWorkService>('ting.work');
-  return useQuery({
-    queryKey: ['ting', 'work', 'reviews', 'run', slug],
-    queryFn: () => service.runReviews(slug),
-    refetchInterval: REVIEW_REFRESH_MS,
-  });
-}
-
-export function useRunGateDecision(slug: string) {
-  const service = useService<IWorkService>('ting.work');
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (decision: GateDecision) => service.decideRunGate(slug, decision),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ting', 'work'] }),
-  });
-}
-
-export function useGateDecision(projectId: string) {
-  const service = useService<IWorkService>('ting.work');
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ issueId, decision }: { issueId: string; decision: GateDecision }) =>
-      service.decideGate(projectId, issueId, decision),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ting', 'work'] }),
-  });
-}
-
-export function useStartTicket(projectId: string) {
-  const service = useService<IWorkService>('ting.work');
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ issueId, columnId }: { issueId: string; columnId?: string }) =>
-      service.startTicket(projectId, issueId, columnId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ting', 'work'] }),
   });
 }

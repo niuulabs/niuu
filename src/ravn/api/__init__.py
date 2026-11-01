@@ -13,7 +13,7 @@ import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import httpx
@@ -34,13 +34,10 @@ from niuu.settings_schema import (
     SettingsSectionSchema,
 )
 from niuu.utils import import_class
-from ravn.adapters.platform_runtime import HttpPlatformRuntimeAdapter, PlatformRequestError
+from ravn.adapters.platform_runtime import HttpPlatformRuntimeAdapter
 from ravn.api.persistence_wiring import aclose_stores, build_budget_ledger, build_trigger_store
 from ravn.api.residents import (
     ResidentDirectory,
-    ResidentLogsUnavailableError,
-    ResidentNotFoundError,
-    ResidentSessionsUnavailableError,
     StandaloneDiscoveryUnavailableError,
     forward_auth,
 )
@@ -49,8 +46,6 @@ from ravn.api.trigger_validation import (
     check_repo_allowlisted,
     validate_trigger_spec,
 )
-from ravn.api.valkyrie_config import ValkyrieDashboardConfig
-from ravn.api.valkyrie_roster import ValkyrieCatalogRoster
 from ravn.api.valkyries import (
     ValkyrieDashboardProjection,
     build_nats_review_command_publisher_from_env,
@@ -61,12 +56,9 @@ from ravn.api.warden_stream import WardenStreamBroker
 from ravn.config import Settings
 from ravn.domain.budget_totals import BudgetTotals
 from ravn.domain.trigger_record import TriggerRecord
-from ravn.dynamic_adapters import build_dynamic_adapter
 from ravn.ports.budget_ledger import BudgetLedgerPort
 from ravn.ports.platform_runtime import PlatformRuntimePort
 from ravn.ports.resident_discovery import ResidentDiscoveryPort
-from ravn.ports.resident_logs import ResidentLogPort, ResidentLogSourceError
-from ravn.ports.resident_roster import ResidentRosterPort
 from ravn.ports.trigger_store import TriggerStorePort
 from ravn.ports.warden_deployer import WardenDeploymentError
 from ravn.ports.warden_discovery import WardenDiscoveryPort
@@ -125,9 +117,6 @@ class ResidentCreateRequest(BaseModel):
     realm_id: UUID | None = None
 
 
-_FORWARDED_PLATFORM_STATUSES = frozenset({401, 403, 404, 409, 422})
-
-
 def _raise_platform_error(exc: httpx.HTTPStatusError) -> None:
     try:
         payload = exc.response.json()
@@ -183,8 +172,6 @@ def create_app(
     warden_discovery: WardenDiscoveryPort | None = None,
     resident_discovery: ResidentDiscoveryPort | None = None,
     platform_runtime: PlatformRuntimePort | None = None,
-    resident_roster: ResidentRosterPort | None = None,
-    resident_logs: ResidentLogPort | None = None,
 ) -> FastAPI:
     """Create and return the Ravn FastAPI sub-application.
 
@@ -197,17 +184,6 @@ def create_app(
             filesystem-backed location when omitted.
     """
     app = FastAPI(title="Ravn API", docs_url=None, redoc_url=None)
-
-    @app.exception_handler(PlatformRequestError)
-    async def platform_request_failed(request: Request, exc: PlatformRequestError) -> JSONResponse:
-        # The platform's refusal of the caller's credential is the caller's
-        # answer; anything else it could not serve is an upstream failure.
-        status_code = (
-            exc.status_code
-            if exc.status_code in _FORWARDED_PLATFORM_STATUSES
-            else http_status.HTTP_502_BAD_GATEWAY
-        )
-        return JSONResponse(status_code=status_code, content={"detail": exc.detail})
 
     @app.exception_handler(StandaloneDiscoveryUnavailableError)
     async def standalone_discovery_unavailable(
@@ -232,25 +208,7 @@ def create_app(
         base_url=loaded_settings.gateway.platform.base_url,
         timeout_seconds=loaded_settings.gateway.platform.timeout,
     )
-    # The projection holds the Valkyries' live telemetry-derived state; the
-    # resident roster reads the catalog from the same config and that state
-    # from the projection, so the fleet list and the dashboard cannot disagree.
-    valkyrie_dashboard_config = ValkyrieDashboardConfig()
-    valkyrie_projection = ValkyrieDashboardProjection(valkyrie_dashboard_config)
-    if resident_roster is None:
-        resident_roster = ValkyrieCatalogRoster(
-            dashboard=valkyrie_projection,
-            config=valkyrie_dashboard_config,
-        )
-    if resident_logs is None:
-        resident_logs = build_dynamic_adapter(loaded_settings.resident_logs)
-    resident_directory = ResidentDirectory(
-        platform=platform,
-        discovery=standalone_discovery,
-        roster=resident_roster,
-        logs=resident_logs,
-        platform_tenant_id=loaded_settings.platform_tenant_id,
-    )
+    resident_directory = ResidentDirectory(platform=platform, discovery=standalone_discovery)
     trigger_store = build_trigger_store(loaded_settings.trigger_store)
     budget_ledger = build_budget_ledger(loaded_settings.budget_ledger)
     # See TriggerExecutionConfig: this process only stores triggers, it
@@ -528,18 +486,8 @@ def create_app(
     async def list_ravens_endpoint(
         request: Request,
         principal: Principal = Depends(extract_principal),
-        visibility: Literal["system"] | None = Query(
-            default=None,
-            description=(
-                "`system` lists only residents visible to every member of the "
-                "caller's org, without the caller's own; for shared views such as "
-                "the Observatory."
-            ),
-        ),
     ) -> list[dict]:
         """List durable residents and visible compatibility deployments."""
-        if visibility == "system":
-            return await resident_directory.list_system_ravens(principal)
         auth_headers, auth_params = forward_auth(request)
         return await resident_directory.list_ravens(principal, auth_headers, auth_params)
 
@@ -591,13 +539,12 @@ def create_app(
         lines: int = Query(default=200, ge=1, le=5000),
         source: list[str] = Query(default_factory=list),
         min_level: str = Query(default="", max_length=32),
-        principal: Principal = Depends(extract_principal),
+        _: Principal = Depends(extract_principal),
     ) -> dict:
         auth_headers, auth_params = forward_auth(request)
         try:
             return await resident_directory.get_raven_logs(
                 ravn_id,
-                principal=principal,
                 lines=lines,
                 sources=tuple(source),
                 min_level=min_level,
@@ -606,17 +553,6 @@ def create_app(
             )
         except httpx.HTTPStatusError as exc:
             _raise_platform_error(exc)
-        except ResidentNotFoundError as exc:
-            raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail=str(exc))
-        except ResidentLogsUnavailableError as exc:
-            raise HTTPException(status_code=http_status.HTTP_409_CONFLICT, detail=str(exc))
-        except ResidentLogSourceError as exc:
-            raise HTTPException(status_code=http_status.HTTP_502_BAD_GATEWAY, detail=str(exc))
-        except ValueError as exc:
-            # An unknown min_level or a container name that is not one.
-            raise HTTPException(
-                status_code=http_status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
-            )
 
     @app.post("/api/v1/ravn/ravens/{ravn_id}/suspend")
     async def suspend_raven_endpoint(
@@ -654,12 +590,12 @@ def create_app(
     async def list_resident_sessions_endpoint(
         ravn_id: str,
         request: Request,
-        principal: Principal = Depends(extract_principal),
+        _: Principal = Depends(extract_principal),
     ) -> list[dict]:
         auth_headers, auth_params = forward_auth(request)
         try:
             return await resident_directory.list_resident_sessions(
-                ravn_id, principal, auth_headers, auth_params
+                ravn_id, auth_headers, auth_params
             )
         except httpx.HTTPStatusError as exc:
             _raise_platform_error(exc)
@@ -672,17 +608,15 @@ def create_app(
         ravn_id: str,
         body: dict,
         request: Request,
-        principal: Principal = Depends(extract_principal),
+        _: Principal = Depends(extract_principal),
     ) -> dict:
         auth_headers, auth_params = forward_auth(request)
         try:
             return await resident_directory.create_resident_session(
-                ravn_id, body, principal, auth_headers, auth_params
+                ravn_id, body, auth_headers, auth_params
             )
         except httpx.HTTPStatusError as exc:
             _raise_platform_error(exc)
-        except ResidentSessionsUnavailableError as exc:
-            raise HTTPException(status_code=http_status.HTTP_409_CONFLICT, detail=str(exc))
 
     @app.delete(
         "/api/v1/ravn/ravens/{ravn_id}/sessions/{session_id}",
@@ -692,17 +626,15 @@ def create_app(
         ravn_id: str,
         session_id: str,
         request: Request,
-        principal: Principal = Depends(extract_principal),
+        _: Principal = Depends(extract_principal),
     ) -> Response:
         auth_headers, auth_params = forward_auth(request)
         try:
             await resident_directory.delete_resident_session(
-                ravn_id, session_id, principal, auth_headers, auth_params
+                ravn_id, session_id, auth_headers, auth_params
             )
         except httpx.HTTPStatusError as exc:
             _raise_platform_error(exc)
-        except ResidentSessionsUnavailableError as exc:
-            raise HTTPException(status_code=http_status.HTTP_409_CONFLICT, detail=str(exc))
         return Response(status_code=http_status.HTTP_204_NO_CONTENT)
 
     @app.get("/api/v1/ravn/deployment-profiles")
@@ -714,33 +646,12 @@ def create_app(
         auth_headers, auth_params = forward_auth(request)
         return await resident_directory.list_profiles(auth_headers, auth_params)
 
-    async def require_platform_org(
-        principal: Principal = Depends(extract_principal),
-    ) -> None:
-        """Keep the operator's Valkyrie fleet, and control of it, with the operator."""
-        if principal.tenant_id != loaded_settings.platform_tenant_id:
-            raise HTTPException(
-                status_code=http_status.HTTP_403_FORBIDDEN,
-                detail="The Valkyrie API is limited to the org running this deployment",
-            )
-
-    platform_org_only = [Depends(require_platform_org)]
-
-    @app.get(
-        "/api/v1/ravn/wardens",
-        response_model=list[WardenSpec],
-        dependencies=platform_org_only,
-    )
+    @app.get("/api/v1/ravn/wardens", response_model=list[WardenSpec])
     async def list_wardens_endpoint() -> list[WardenSpec]:
         """List known wardens from configured discovery adapters."""
         return await list_known_wardens()
 
-    @app.post(
-        "/api/v1/ravn/wardens",
-        response_model=WardenSpec,
-        status_code=201,
-        dependencies=platform_org_only,
-    )
+    @app.post("/api/v1/ravn/wardens", response_model=WardenSpec, status_code=201)
     async def create_warden_endpoint(body: WardenCreateRequest) -> WardenSpec:
         """Create and persist a new warden."""
         spec = WardenSpec(
@@ -780,11 +691,7 @@ def create_app(
         await publish_warden_update("warden.created", created)
         return created
 
-    @app.get(
-        "/api/v1/ravn/wardens/{warden_id}",
-        response_model=WardenSpec,
-        dependencies=platform_org_only,
-    )
+    @app.get("/api/v1/ravn/wardens/{warden_id}", response_model=WardenSpec)
     async def get_warden_endpoint(warden_id: str) -> WardenSpec:
         """Return one known warden."""
         warden = await get_known_warden(warden_id)
@@ -795,11 +702,7 @@ def create_app(
             )
         return warden
 
-    @app.get(
-        "/api/v1/ravn/wardens/{warden_id}/logs",
-        response_model=list[WardenLogEntry],
-        dependencies=platform_org_only,
-    )
+    @app.get("/api/v1/ravn/wardens/{warden_id}/logs", response_model=list[WardenLogEntry])
     async def get_warden_logs_endpoint(
         warden_id: str,
         stream: str = "stdout",
@@ -845,11 +748,7 @@ def create_app(
             detail="stream must be 'stdout', 'stderr', or 'all'",
         )
 
-    @app.get(
-        "/api/v1/ravn/wardens/{warden_id}/activity",
-        response_model=list[WardenLogEntry],
-        dependencies=platform_org_only,
-    )
+    @app.get("/api/v1/ravn/wardens/{warden_id}/activity", response_model=list[WardenLogEntry])
     async def get_warden_activity_endpoint(
         warden_id: str, limit: int = 200
     ) -> list[WardenLogEntry]:
@@ -880,7 +779,7 @@ def create_app(
         merged.sort(key=lambda entry: (entry.timestamp or "", entry.id))
         return merged[-limit:]
 
-    @app.get("/api/v1/ravn/wardens/{warden_id}/stream", dependencies=platform_org_only)
+    @app.get("/api/v1/ravn/wardens/{warden_id}/stream")
     async def stream_warden_endpoint(warden_id: str, request: Request) -> StreamingResponse:
         """Stream SSE updates for one known warden."""
         if await get_known_warden(warden_id) is None:
@@ -918,11 +817,7 @@ def create_app(
             },
         )
 
-    @app.post(
-        "/api/v1/ravn/wardens/{warden_id}/observe",
-        response_model=WardenSpec,
-        dependencies=platform_org_only,
-    )
+    @app.post("/api/v1/ravn/wardens/{warden_id}/observe", response_model=WardenSpec)
     async def observe_warden_endpoint(warden_id: str) -> WardenSpec:
         """Refresh live backend status for one persisted warden."""
         try:
@@ -942,11 +837,7 @@ def create_app(
         await publish_warden_update("warden.observed", observed)
         return observed
 
-    @app.post(
-        "/api/v1/ravn/wardens/{warden_id}/install",
-        response_model=WardenSpec,
-        dependencies=platform_org_only,
-    )
+    @app.post("/api/v1/ravn/wardens/{warden_id}/install", response_model=WardenSpec)
     async def install_warden_endpoint(warden_id: str) -> WardenSpec:
         """Generate local service artifacts and mark a warden as installed."""
         try:
@@ -961,11 +852,7 @@ def create_app(
         await publish_warden_update("warden.installed", warden)
         return warden
 
-    @app.post(
-        "/api/v1/ravn/wardens/{warden_id}/start",
-        response_model=WardenSpec,
-        dependencies=platform_org_only,
-    )
+    @app.post("/api/v1/ravn/wardens/{warden_id}/start", response_model=WardenSpec)
     async def start_warden_endpoint(warden_id: str) -> WardenSpec:
         """Mark an installed warden as started."""
         existing = store.get(warden_id)
@@ -988,11 +875,7 @@ def create_app(
         await publish_warden_update("warden.started", started)
         return started
 
-    @app.post(
-        "/api/v1/ravn/wardens/{warden_id}/stop",
-        response_model=WardenSpec,
-        dependencies=platform_org_only,
-    )
+    @app.post("/api/v1/ravn/wardens/{warden_id}/stop", response_model=WardenSpec)
     async def stop_warden_endpoint(warden_id: str) -> WardenSpec:
         """Stop an installed warden."""
         existing = store.get(warden_id)
@@ -1015,11 +898,7 @@ def create_app(
         await publish_warden_update("warden.stopped", stopped)
         return stopped
 
-    @app.post(
-        "/api/v1/ravn/wardens/{warden_id}/uninstall",
-        response_model=WardenSpec,
-        dependencies=platform_org_only,
-    )
+    @app.post("/api/v1/ravn/wardens/{warden_id}/uninstall", response_model=WardenSpec)
     async def uninstall_warden_endpoint(warden_id: str) -> WardenSpec:
         """Uninstall a warden deployment while keeping its persisted spec."""
         try:
@@ -1396,6 +1275,7 @@ def create_app(
     from ravn.api.valkyries import build_skuld_room_client_from_env  # noqa: PLC0415
     from ravn.odin.review_service import OdinReviewService  # noqa: PLC0415
 
+    valkyrie_projection = ValkyrieDashboardProjection()
     valkyrie_learning_commands = build_nats_review_command_publisher_from_env(
         loaded_settings.valkyrie.command,
         loaded_settings.valkyrie.telemetry,
@@ -1500,23 +1380,15 @@ def create_app(
             room_client=build_skuld_room_client_from_env(loaded_settings.valkyrie.room),
             review_service=odin_review_service,
             history_service=valkyrie_history,
-        ),
-        dependencies=platform_org_only,
+        )
     )
-    app.include_router(
-        create_valkyrie_skills_router(valkyrie_skills),
-        dependencies=platform_org_only,
-    )
-    app.include_router(
-        create_valkyrie_metrics_router(valkyrie_skills, valkyrie_history),
-        dependencies=platform_org_only,
-    )
+    app.include_router(create_valkyrie_skills_router(valkyrie_skills))
+    app.include_router(create_valkyrie_metrics_router(valkyrie_skills, valkyrie_history))
     app.include_router(
         create_odin_review_router(
             odin_review_service,
             room_client=build_skuld_room_client_from_env(loaded_settings.valkyrie.room),
-        ),
-        dependencies=platform_org_only,
+        )
     )
 
     return app

@@ -1,6 +1,5 @@
 import { hostChips, hostFlavor, type HostFacts } from '../domain/setup';
-import { NiuuMark } from '@niuulabs/ui';
-import { ArrowIcon } from './icons';
+import { ArrowIcon, NiuuMark } from './icons';
 
 export interface WelcomeStepProps {
   facts: HostFacts | null;
@@ -19,7 +18,7 @@ export function WelcomeStep({ facts, loading, onBegin }: WelcomeStepProps) {
   const chips = hostChips(facts);
   return (
     <div className="setup-hero" data-testid="setup-welcome">
-      <div className="setup-hero__kicker">niuu · first launch</div>
+      <div className="setup-hero__kicker">níu · first launch</div>
       <div className="setup-hero__mark">
         <NiuuMark size={72} />
       </div>

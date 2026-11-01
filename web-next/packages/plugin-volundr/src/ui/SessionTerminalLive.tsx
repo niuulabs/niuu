@@ -521,7 +521,7 @@ function SessionTerminalConnection({ url, readOnly = false }: SessionTerminalLiv
         title={unavailable ? 'Terminal unavailable' : 'Could not connect to terminal'}
         message={
           unavailable
-            ? 'This host does not provide terminal access for this session.'
+            ? 'This Forge host does not provide terminal access for this session.'
             : terminalError!
         }
         action={

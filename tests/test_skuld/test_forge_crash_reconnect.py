@@ -348,10 +348,8 @@ async def test_d7_reconnect_conversation_history_carries_head_seq_cursor() -> No
         assert "head_seq" in history, f"reconnect frame missing head_seq cursor: {history}"
         head_seq = history["head_seq"]
         assert isinstance(head_seq, int) and head_seq >= 1
-        # The cursor is the durable-log head when the frame was sent; the broker may
-        # log more (an idle transition, a late event) before this line reads it,
-        # so it can only lag the live head. The no-gap check below covers the rest.
-        assert head_seq <= h.broker._event_log_seq
+        # The cursor equals the broker's durable-log head at reconnect time.
+        assert head_seq == h.broker._event_log_seq
 
         # Drive a SECOND turn so the log grows past the captured head. Gate on the
         # durable-log head itself advancing past the captured head_seq — not merely

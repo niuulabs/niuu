@@ -133,7 +133,7 @@ function RosterRow({
             health,
           )}`}
         >
-          {valkyrie.name.charAt(0)}
+          ᛒ
         </span>
         <span
           className={`niuu:absolute niuu:-bottom-1 niuu:-left-1 niuu:flex niuu:h-4 niuu:w-4 niuu:items-center niuu:justify-center niuu:rounded-full niuu:bg-bg-secondary ${wakefulnessClasses(
@@ -223,9 +223,9 @@ export function Roster({
         </div>
         <input
           type="search"
-          aria-label="Filter residents"
+          aria-label="Filter valkyries"
           data-testid="roster-filter"
-          placeholder="Filter residents..."
+          placeholder="Filter valkyries..."
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           className="niuu:w-full niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-1.5 niuu:text-sm niuu:text-text-primary niuu:placeholder:text-text-muted"
@@ -278,7 +278,7 @@ export function Roster({
         })}
         {groups.length === 0 ? (
           <p data-testid="roster-empty" className="niuu:px-1 niuu:text-xs niuu:text-text-muted">
-            No residents match &quot;{query.trim()}&quot;.
+            No valkyries match &quot;{query.trim()}&quot;.
           </p>
         ) : null}
       </div>

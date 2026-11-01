@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field
 
 from niuu.domain.models import Principal
 from ting.adapters.inbound.auth import extract_principal
-from ting.api.events import visible_to
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.event_bus import EventBusPort
 
@@ -123,16 +122,16 @@ def create_dispatcher_router() -> APIRouter:
             int | None,
             Query(ge=1, le=1000, description="Legacy alias for number of events to return."),
         ] = None,
-        principal: Principal = Depends(extract_principal),
+        _principal: Principal = Depends(extract_principal),
         event_bus: EventBusPort = Depends(resolve_event_bus),
     ) -> ActivityLogResponse | list[str]:
-        """Return the caller's events among the last N on the dispatcher event bus.
+        """Return the last N activity events from the dispatcher event bus.
 
         Events are ordered oldest-first.  Use the ``n`` query parameter to
         control how many events are returned (default 100, max 1000).
         """
         size = limit if limit is not None else (n if n is not None else 100)
-        events = [event for event in event_bus.get_log(size) if visible_to(event, principal)]
+        events = event_bus.get_log(size)
 
         if limit is not None:
             return ActivityLogResponse(

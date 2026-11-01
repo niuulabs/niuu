@@ -39,7 +39,7 @@
   font-size: 10px;
   letter-spacing: 0.42em;
   text-transform: uppercase;
-  color: var(--color-text-muted);
+  color: var(--brand-300);
 }
 .setup-rail__steps {
   display: flex;
@@ -146,9 +146,9 @@
 .setup-title {
   margin: 0;
   font-size: var(--text-3xl);
-  font-weight: 300;
+  font-weight: 700;
   line-height: 1.2;
-  letter-spacing: -0.04em;
+  letter-spacing: -0.025em;
 }
 .setup-lede {
   margin: 0;
@@ -368,23 +368,22 @@
   color: var(--color-text-secondary);
 }
 .setup-btn--primary {
-  --_btn-fill: var(--color-accent-fill, var(--brand-500));
-  min-height: 49px;
+  min-height: 46px;
   padding: 12px 24px;
   border: 0;
-  border-radius: var(--radius-sm);
-  background: var(--_btn-fill);
-  color: var(--color-accent-on-fill, var(--color-bg-primary));
+  border-radius: var(--radius-full);
+  background: var(--brand-500);
+  color: var(--color-bg-primary);
   font-size: var(--text-sm);
-  font-weight: 500;
+  font-weight: 600;
+  box-shadow: 0 0 36px color-mix(in srgb, var(--brand-500) 50%, transparent);
 }
 .setup-btn--primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--_btn-fill) 85%, white);
+  background: var(--brand-400);
   border-color: transparent;
 }
-.setup-btn--primary:focus-visible {
-  outline: 2px solid var(--brand-500);
-  outline-offset: 4px;
+.setup-btn--primary:disabled {
+  box-shadow: none;
 }
 
 /* ── Welcome / ready hero ────────────────────────────── */
@@ -404,23 +403,30 @@
   font-size: var(--text-xs);
   letter-spacing: 0.42em;
   text-transform: uppercase;
-  color: var(--color-text-muted);
+  color: var(--brand-300);
 }
 .setup-hero__mark {
   color: var(--color-brand);
+  filter: drop-shadow(0 0 14px color-mix(in srgb, var(--brand-500) 60%, transparent));
 }
 .setup-hero__title {
   margin: 0;
   font-size: var(--text-4xl);
-  font-weight: 300;
+  font-weight: 700;
   line-height: 1.15;
-  letter-spacing: -0.047em;
+  letter-spacing: -0.025em;
 }
 .setup-hero .setup-grid {
   width: 100%;
   text-align: left;
 }
 .setup-page--hero {
+  background: linear-gradient(
+    180deg,
+    var(--color-bg-primary),
+    color-mix(in srgb, var(--brand-500) 12%, var(--color-bg-primary)) 68%,
+    var(--color-bg-primary) 74%
+  );
   overflow: auto;
 }
 .setup-links {

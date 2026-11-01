@@ -360,12 +360,6 @@ class ResidentMemoryPort(Protocol):
     async def read_operator_needed(self, case_id: str = "") -> ResidentMemoryEntry | None:
         """Return the latest pending operator question when one exists."""
 
-    async def read_closed_operator_question(self, case_id: str) -> ResidentMemoryEntry | None:
-        """Return the case's operator question when it exists but is no longer pending.
-
-        Its ``status`` metadata says how it closed: ``answered`` or ``withdrawn``.
-        """
-
     async def write_operator_answer(self, answer: str, *, case_id: str = "") -> str:
         """Persist the latest operator answer and mark the pending question answered."""
 

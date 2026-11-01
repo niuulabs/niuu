@@ -136,15 +136,15 @@ describe('MimirSubnav', () => {
   it('can collapse the Mímir subnav', async () => {
     const setTweak = vi.fn();
     wrap({ tweaks: {}, setTweak });
-    fireEvent.click(screen.getByRole('button', { name: /collapse memory sidebar/i }));
+    fireEvent.click(screen.getByRole('button', { name: /collapse mímir sidebar/i }));
     expect(setTweak).toHaveBeenCalledWith('mimir.subnavCollapsed', true);
   });
 
   it('renders the collapsed Mímir subnav and can expand it', async () => {
     const setTweak = vi.fn();
     wrap({ tweaks: { 'mimir.subnavCollapsed': true }, setTweak });
-    expect(screen.getByRole('button', { name: /expand memory sidebar/i })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /expand memory sidebar/i }));
+    expect(screen.getByRole('button', { name: /expand mímir sidebar/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /expand mímir sidebar/i }));
     expect(setTweak).toHaveBeenCalledWith('mimir.subnavCollapsed', false);
   });
 

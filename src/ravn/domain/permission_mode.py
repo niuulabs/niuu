@@ -56,15 +56,6 @@ def parse_permission_mode(value: object) -> PermissionMode:
         ) from None
 
 
-#: The registry and its REST API name persona permissions for people; a running
-#: Ravn needs the mode each name stands for.
-PERSONA_API_PERMISSION_MODES = {
-    "default": "workspace-write",
-    "safe": "read-only",
-    "loose": "full-access",
-}
-
-
 def parse_optional_permission_mode(value: object) -> PermissionMode | None:
     """Parse an optional *value*; ``None`` or blank means "not set".
 

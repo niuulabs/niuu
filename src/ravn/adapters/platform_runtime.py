@@ -4,53 +4,11 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from uuid import UUID
 
 import httpx
 
 _DEFAULT_PLATFORM_API_URL = "http://localhost:8080"
 _DEFAULT_TIMEOUT_SECONDS = 5.0
-
-
-class PlatformRequestError(httpx.HTTPStatusError):
-    """The platform Forge refused or failed a request Ravn made on the caller's behalf.
-
-    Raised in place of a bare ``httpx.HTTPStatusError`` (it still is one, so
-    existing handlers keep working) so the API can answer with the platform's
-    own refusal instead of an unhandled 500.
-    """
-
-    @property
-    def status_code(self) -> int:
-        return self.response.status_code
-
-    @property
-    def detail(self) -> str:
-        try:
-            payload = self.response.json()
-        except ValueError:
-            payload = None
-        if isinstance(payload, dict) and isinstance(payload.get("detail"), str):
-            return payload["detail"]
-        return f"platform answered HTTP {self.status_code} for {self.request.url.path}"
-
-
-def _is_uuid(value: str) -> bool:
-    try:
-        UUID(value)
-    except ValueError:
-        return False
-    return True
-
-
-def _raise_for_status(response: httpx.Response) -> None:
-    if response.is_success:
-        return
-    raise PlatformRequestError(
-        f"platform answered HTTP {response.status_code} for {response.request.url.path}",
-        request=response.request,
-        response=response,
-    )
 
 
 def _path_segment(value: str) -> str:
@@ -106,7 +64,7 @@ class HttpPlatformRuntimeAdapter:
         )
         if response.status_code == 404:
             return None
-        _raise_for_status(response)
+        response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):
             raise RuntimeError("Platform Forge stop returned an unexpected payload")
@@ -129,14 +87,8 @@ class HttpPlatformRuntimeAdapter:
         auth_headers: dict[str, str],
         auth_params: dict[str, str],
     ) -> dict[str, Any] | None:
-        path = f"/api/v1/forge/resident-runtimes/{_path_segment(runtime_id)}"
-        # Managed runtime ids are UUIDs the platform assigns; any other id
-        # (a catalog Valkyrie, a discovered Deployment) names no managed
-        # runtime, and the platform would reject it as malformed, not unknown.
-        if not _is_uuid(runtime_id):
-            return None
         return await self._get_item(
-            path,
+            f"/api/v1/forge/resident-runtimes/{_path_segment(runtime_id)}",
             auth_headers,
             auth_params,
         )
@@ -192,7 +144,7 @@ class HttpPlatformRuntimeAdapter:
             headers=auth_headers,
             params=auth_params,
         )
-        _raise_for_status(response)
+        response.raise_for_status()
 
     async def get_resident_logs(
         self,
@@ -216,7 +168,7 @@ class HttpPlatformRuntimeAdapter:
             headers=auth_headers,
             params=params,
         )
-        _raise_for_status(response)
+        response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):
             raise RuntimeError("Platform resident logs returned an unexpected payload")
@@ -261,7 +213,7 @@ class HttpPlatformRuntimeAdapter:
             headers=auth_headers,
             params=auth_params,
         )
-        _raise_for_status(response)
+        response.raise_for_status()
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -288,7 +240,7 @@ class HttpPlatformRuntimeAdapter:
         response = await self._client.get(path, headers=auth_headers, params=auth_params)
         if response.status_code == 404:
             return None
-        _raise_for_status(response)
+        response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):
             raise RuntimeError(
@@ -309,7 +261,7 @@ class HttpPlatformRuntimeAdapter:
             headers=auth_headers,
             params=auth_params,
         )
-        _raise_for_status(response)
+        response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):
             raise RuntimeError(
@@ -324,5 +276,5 @@ class HttpPlatformRuntimeAdapter:
         auth_params: dict[str, str],
     ) -> Any:
         response = await self._client.get(path, headers=auth_headers, params=auth_params)
-        _raise_for_status(response)
+        response.raise_for_status()
         return response.json()

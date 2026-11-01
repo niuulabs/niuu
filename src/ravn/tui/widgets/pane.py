@@ -54,11 +54,11 @@ class PaneHeader(Widget):
     }
     PaneHeader #ph-title {
         width: 1fr;
-        color: #78909d;
+        color: #71717a;
     }
     PaneHeader #ph-meta {
         width: auto;
-        color: #648090;
+        color: #52525b;
     }
     """
 
@@ -86,8 +86,8 @@ class PaneHeader(Widget):
     def _title_markup(self, *, active: bool) -> str:
         text = self._title_text()
         if active:
-            return f"[bold #86d0e8]{text}[/]"
-        return f"[#78909d]{text}[/]"
+            return f"[bold #f59e0b]{text}[/]"
+        return f"[#71717a]{text}[/]"
 
     def set_active(self, active: bool) -> None:
         self._active = active
@@ -96,7 +96,7 @@ class PaneHeader(Widget):
 
     def update_meta(self, meta: str) -> None:
         with suppress(Exception):
-            self.query_one("#ph-meta", Static).update(f"[#648090]{meta}[/]")
+            self.query_one("#ph-meta", Static).update(f"[#52525b]{meta}[/]")
 
     def update_view(self, view_type: str, target: str | None = None) -> None:
         self._view_type = view_type
@@ -116,12 +116,12 @@ class PaneWidget(Widget):
     DEFAULT_CSS = """
     PaneWidget {
         layout: vertical;
-        border: solid #182b38;
+        border: solid #27272a;
         height: 1fr;
         width: 1fr;
     }
     PaneWidget.-focused {
-        border: solid #86d0e8;
+        border: solid #f59e0b;
     }
     """
 

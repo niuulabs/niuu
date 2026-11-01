@@ -69,11 +69,11 @@ describe('RavnFooter', () => {
     expect(screen.getByTestId('ravn-footer')).toBeInTheDocument();
   });
 
-  it('shows agents count', async () => {
+  it('shows ravens count', async () => {
     render(<RavnFooter />, { wrapper: wrapWithServices(services()) });
     await waitFor(() => {
-      const chip = screen.getByTestId('footer-chip-agents');
-      expect(chip.textContent).toContain('agents');
+      const chip = screen.getByTestId('footer-chip-ravens');
+      expect(chip.textContent).toContain('ravens');
       expect(chip.textContent).toMatch(/\d+\/\d+/);
     });
   });
@@ -98,7 +98,7 @@ describe('RavnFooter', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByTestId('footer-chip-agents').querySelector('[data-state]'),
+        screen.getByTestId('footer-chip-ravens').querySelector('[data-state]'),
       ).toHaveAttribute('data-state', 'warn');
       expect(
         screen.getByTestId('footer-chip-sessions').querySelector('[data-state]'),
@@ -137,7 +137,7 @@ describe('RavnFooter', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByTestId('footer-chip-agents').querySelector('[data-state]'),
+        screen.getByTestId('footer-chip-ravens').querySelector('[data-state]'),
       ).toHaveAttribute('data-state', 'ok');
       expect(
         screen.getByTestId('footer-chip-sessions').querySelector('[data-state]'),

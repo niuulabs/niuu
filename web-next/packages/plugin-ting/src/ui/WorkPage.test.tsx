@@ -10,7 +10,7 @@ import { parseWorkRouteId, WorkPage, workRouteId } from './WorkPage';
 const mockNavigate = vi.fn();
 const routerState = vi.hoisted(() => ({
   params: {} as { workId?: string },
-  search: {} as { filter?: string; q?: string; view?: string },
+  search: {} as { filter?: string; q?: string },
 }));
 
 vi.mock('@tanstack/react-router', () => ({
@@ -159,8 +159,6 @@ function makeWorkService(overrides: Partial<IWorkService> = {}): IWorkService {
   return {
     list: vi.fn().mockResolvedValue(collection),
     get: vi.fn().mockResolvedValue(projectDetail),
-    decideGate: vi.fn().mockResolvedValue(undefined),
-    startTicket: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -211,77 +209,6 @@ describe('WorkPage', () => {
     routerState.params = {};
     routerState.search = {};
     mockNavigate.mockReset();
-  });
-
-  it('switches the overview to a board and keeps the choice in the URL', async () => {
-    routerState.search = { filter: 'attention', q: 'billing' };
-    renderPage();
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Board view' }));
-
-    expect(mockNavigate).toHaveBeenCalledWith({
-      to: '/ting/work',
-      search: { filter: 'attention', q: 'billing', view: 'board' },
-    });
-  });
-
-  it('renders work as columns and opens a card with the view preserved', async () => {
-    routerState.search = { view: 'board' };
-    renderPage();
-
-    const attention = await screen.findByTestId('board-column-attention');
-    expect(within(attention).getByText('Define usage-based billing')).toBeInTheDocument();
-    expect(
-      within(attention).getByText('Review the proposed acceptance criteria'),
-    ).toBeInTheDocument();
-    expect(
-      within(screen.getByTestId('board-column-completed')).getByText('Ship workspace invitations'),
-    ).toBeInTheDocument();
-
-    fireEvent.click(within(attention).getByRole('button', { name: /Define usage-based billing/ }));
-
-    expect(mockNavigate).toHaveBeenCalledWith({
-      to: '/ting/work/$workId',
-      params: { workId: 'campaign:spec-1' },
-      search: { view: 'board' },
-    });
-  });
-
-  it('hides empty columns once a filter narrows the board', async () => {
-    routerState.search = { view: 'board', filter: 'attention' };
-    renderPage();
-
-    await screen.findByTestId('board-column-attention');
-
-    expect(screen.queryByTestId('board-column-completed')).not.toBeInTheDocument();
-  });
-
-  it('starts an eligible ticket from the project board', async () => {
-    routerState.params = { workId: 'project:project-1' };
-    routerState.search = { view: 'board' };
-    const dispatch = makeDispatchService();
-    renderPage(makeWorkService(), dispatch);
-
-    const column = await screen.findByTestId('board-column-started');
-    expect(within(column).getByText('NIU-142')).toBeInTheDocument();
-    expect(within(column).getByText('Not started')).toBeInTheDocument();
-
-    fireEvent.click(within(column).getByRole('button', { name: 'Start eligible work' }));
-
-    await waitFor(() => expect(dispatch.approve).toHaveBeenCalledTimes(1));
-  });
-
-  it('keeps the project route when changing how tickets are laid out', async () => {
-    routerState.params = { workId: 'project:project-1' };
-    renderPage();
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Board view' }));
-
-    expect(mockNavigate).toHaveBeenCalledWith({
-      to: '/ting/work/$workId',
-      params: { workId: 'project:project-1' },
-      search: { view: 'board' },
-    });
   });
 
   it('shows project, attention, active and completed work with a scoped source error', async () => {

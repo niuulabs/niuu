@@ -2,6 +2,7 @@ import { createRoute } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { LoginPage } from './ui/LoginPage';
 import { CallbackPage } from './ui/CallbackPage';
+export { LogoKnot } from './ui/LogoKnot';
 
 export const loginPlugin = definePlugin({
   id: 'login',

@@ -29,9 +29,7 @@ config:
       adapters:
         - adapter: ravn.adapters.discovery.k8s.K8sDiscoveryAdapter
     wakefulness:
-      # Reflects on an operator conversation held by a gateway channel; this
-      # resident has none, so it stays off (enabled without a channel is fatal).
-      enabled: false
+      enabled: true
     dream_cycle:
       enabled: true
       persona: {{ .Values.agent.persona | quote }}

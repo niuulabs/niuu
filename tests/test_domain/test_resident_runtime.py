@@ -443,7 +443,7 @@ async def test_create_record_persists_the_realm_binding(runtime_service) -> None
 
 async def test_create_record_rejects_unknown_realm_when_repository_is_configured() -> None:
     class _FakeRealmRepository:
-        async def get_tenant_realm(self, realm_ref, tenant_id):
+        async def get_realm(self, realm_ref):
             return None
 
     repository = MemoryResidentRuntimeRepository()
@@ -468,7 +468,7 @@ async def test_create_record_accepts_a_realm_the_repository_resolves() -> None:
     resolved_realm_id = uuid4()
 
     class _FakeRealmRepository:
-        async def get_tenant_realm(self, realm_ref, tenant_id):
+        async def get_realm(self, realm_ref):
             return object() if realm_ref == resolved_realm_id else None
 
     repository = MemoryResidentRuntimeRepository()
@@ -487,29 +487,6 @@ async def test_create_record_accepts_a_realm_the_repository_resolves() -> None:
         realm_id=resolved_realm_id,
     )
     assert runtime.realm_id == resolved_realm_id
-
-
-async def test_create_record_rejects_a_realm_in_another_tenant() -> None:
-    realm_id = uuid4()
-
-    class _FakeRealmRepository:
-        async def get_tenant_realm(self, realm_ref, tenant_id):
-            return object() if realm_ref == realm_id and tenant_id == "tenant-b" else None
-
-    service = ResidentRuntimeService(
-        MemoryResidentRuntimeRepository(),
-        _profiles(),
-        [MemoryResidentRuntimeController()],
-        realm_repository=_FakeRealmRepository(),
-    )
-
-    with pytest.raises(ResidentRuntimeValidationError, match="Realm not found"):
-        await service.create_record(
-            _principal(tenant_id="tenant-a"),
-            name="Realm resident",
-            profile_id="ravn-openshell",
-            realm_id=realm_id,
-        )
 
 
 async def test_create_deploys_and_persists_real_observation(runtime_service) -> None:

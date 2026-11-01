@@ -196,9 +196,8 @@ class WorkflowExecutionMessageTool(WorkflowExecutionToolBase):
         return (
             "Reply to one exact outstanding child input using the current attempt_id. Copy "
             "metadata.requestId for a question, or metadata.gateId plus gateDecision for a gate, "
-            "from the blocker notification. Only a gate in automated_approval mode takes an "
-            "agent's answer; any other gate waits for a person, so tell the operator instead. "
-            "Reuse message_id unchanged when retrying the same delivery."
+            "from the blocker notification. Reuse message_id unchanged when retrying the same "
+            "delivery."
         )
 
     @property

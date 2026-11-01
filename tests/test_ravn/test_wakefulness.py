@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
 
 import pytest
 
@@ -600,30 +599,3 @@ async def test_cancelled_dream_is_not_recorded_as_a_dream(tmp_path) -> None:
     assert not await recorder.of_type("valkyrie.dream.failed")
     restarted, _clock = _reporting_machine(tmp_path, bus=bus, wall_now=[2_000.0])
     assert restarted._clock() - restarted._last_dream_at >= 100.0
-
-
-async def test_a_dream_reports_after_it_has_curated(tmp_path) -> None:
-    order: list[str] = []
-
-    class Curator:
-        async def curate(self) -> dict[str, Any]:
-            order.append("curate")
-            return {}
-
-    class Reporter:
-        async def report(self) -> dict[str, Any]:
-            order.append("report")
-            return {"headline": "Built 1 new tool."}
-
-    machine = ResidentWakefulness(
-        identity=_identity(),
-        skills=_skills(tmp_path),
-        publisher=InProcessBus(),
-        tool_curator=Curator(),
-        evolution_reporter=Reporter(),
-    )
-
-    await machine.dream()
-
-    assert order == ["curate", "report"]
-    assert machine.last_dream["evolution"] == {"headline": "Built 1 new tool."}

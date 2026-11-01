@@ -107,35 +107,6 @@ def test_span_context_and_metrics_are_real_when_sdk_is_installed() -> None:
     telemetry.shutdown()
 
 
-def test_histogram_buckets_are_applied_when_given() -> None:
-    pytest.importorskip("opentelemetry.sdk")
-    from opentelemetry.sdk.metrics import MeterProvider
-    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
-    from opentelemetry.sdk.trace import TracerProvider
-
-    from niuu.observability import Observability
-
-    reader = InMemoryMetricReader()
-    telemetry = Observability(
-        tracer_provider=TracerProvider(),
-        meter_provider=MeterProvider(metric_readers=[reader]),
-    )
-    telemetry.duration("fast.call", 0.2, buckets=[0.1, 0.25, 0.5])
-    telemetry.record("unit.score", 0.7)
-
-    points = {
-        metric.name: metric.data.data_points[0]
-        for resource in reader.get_metrics_data().resource_metrics
-        for scope in resource.scope_metrics
-        for metric in scope.metrics
-    }
-    assert list(points["fast.call"].explicit_bounds) == [0.1, 0.25, 0.5]
-    assert list(points["fast.call"].bucket_counts) == [0, 1, 0, 0]
-    assert list(points["unit.score"].explicit_bounds)[:3] == [0.0, 5.0, 10.0]
-
-    telemetry.shutdown()
-
-
 @pytest.mark.asyncio
 async def test_learned_tool_lifecycle_has_explicit_trace_spans(
     tmp_path,

@@ -79,7 +79,7 @@ class TimelineEntry(Widget):
 
     DEFAULT_CSS = """
     TimelineEntry { height: auto; padding: 0 0 0 2; }
-    TimelineEntry.selected { background: #182b38; }
+    TimelineEntry.selected { background: #27272a; }
     TimelineEntry .te-main { height: 1; }
     TimelineEntry .te-meta { height: 1; }
     """
@@ -138,7 +138,7 @@ class ChroniclesPage(Widget):
     ChroniclesPage #chron-search { height: auto; display: none; }
     ChroniclesPage #chron-search.visible { display: block; }
     ChroniclesPage #chron-timeline { height: 1fr; overflow-y: auto; }
-    ChroniclesPage #chron-empty { color: #78909d; padding: 2; }
+    ChroniclesPage #chron-empty { color: #71717a; padding: 2; }
     """
 
     cursor: reactive[int] = reactive(0)

@@ -116,7 +116,7 @@ export function ResearchNewPage() {
             </h1>
             <p className="niuu:mb-0 niuu:mt-2 niuu:text-sm niuu:text-text-secondary">
               Pick a research-compatible workflow, then let it create the notebook and durable
-              memory trail.
+              memory trail in Mímir.
             </p>
           </div>
 
@@ -216,7 +216,7 @@ export function ResearchNewPage() {
                   Default research workflow
                 </div>
                 <p className="niuu:m-0 niuu:text-sm niuu:text-text-secondary">
-                  Niuu will ask the backend to launch its default research-compatible workflow if
+                  Ting will ask the backend to launch its default research-compatible workflow if
                   the workflow catalog is unavailable.
                 </p>
               </div>
@@ -230,7 +230,7 @@ export function ResearchNewPage() {
               </span>
               <span className="niuu:text-xs niuu:text-text-faint">
                 {targetsQuery.isLoading
-                  ? 'Loading session hosts'
+                  ? 'Loading Volundr targets'
                   : selectedTarget
                     ? `${selectedTarget.name}${selectedTarget.tags?.length ? ` · ${selectedTarget.tags.join(', ')}` : ''}`
                     : 'Backend default target'}

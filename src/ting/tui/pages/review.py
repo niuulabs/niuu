@@ -36,8 +36,8 @@ class ReviewRow(Widget):
     ReviewRow {
         height: auto;
         padding: 1 2;
-        border-bottom: solid #182b38;
-        background: #10212d;
+        border-bottom: solid #27272a;
+        background: #18181b;
     }
     """
 

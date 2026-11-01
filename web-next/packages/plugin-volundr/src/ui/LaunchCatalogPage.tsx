@@ -22,7 +22,7 @@ export function LaunchCatalogPage() {
     <div className="vol-quick vol-quick-page" data-testid="launch-catalog-page">
       <header>
         <h1>Launch catalogue</h1>
-        <p>Two standards. Your host, your workspace. Ready in a few clicks.</p>
+        <p>Two standards. Your Forge, your workspace. Ready in a few clicks.</p>
       </header>
       <QuickLaunch onAdvanced={() => setAdvanced(true)} />
       <div className="vol-quick__section">

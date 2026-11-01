@@ -14,10 +14,6 @@ The ``kind`` field is the only thing that varies between producers:
 * ``autonomy_change``  — an operator-initiated autonomy mode change
 * ``morning_brief``    — a periodic resident digest awaiting acknowledgement
 
-A producer whose request stops mattering (a resident's operator question that
-closes without a queue decision) retires it itself: the item settles as
-``withdrawn`` via ``odin.review.resolved`` and leaves the pending queue.
-
 Operator-initiated commands ride the same envelope as auto-decided items so
 every human intervention lands in one auditable ledger.
 """
@@ -26,7 +22,6 @@ from __future__ import annotations
 
 import json
 import logging
-from copy import deepcopy
 from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -61,11 +56,6 @@ class ReviewStatus(StrEnum):
     EXPIRED = "expired"
     APPLIED = "applied"
     APPLY_FAILED = "apply_failed"
-    #: The producer retired the request itself: what it asked no longer needs a
-    #: queue decision (the question was withdrawn, or answered through another
-    #: channel). Machine-driven like ``expired``, but initiated by the resident
-    #: that filed the item rather than by a timer. ``apply_outcome`` says which.
-    WITHDRAWN = "withdrawn"
 
 
 #: Operator decisions; everything else in ReviewStatus is machine-driven.
@@ -74,23 +64,12 @@ REVIEW_DECISIONS = frozenset({ReviewStatus.APPROVED.value, ReviewStatus.REJECTED
 #: ``requested_action`` of an item that asks the operator an open question.
 OPERATOR_QUESTION_ACTION = "answer_operator_question"
 
-#: ``apply_outcome`` of an item its producer withdrew because the request no
-#: longer needs anyone's answer (an operator question the resident closed).
-WITHDRAWN_OUTCOME = "withdrawn"
-
-#: ``apply_outcome`` of an operator question that was answered, but not through
-#: the queue (a room or direct reply, the gateway, the CLI).
-ANSWERED_ELSEWHERE_OUTCOME = "answered_elsewhere"
-
 #: A free-text reply to an open question. It settles the item as approved (the
 #: question was answered, not refused) and carries the reply in ``decision_answer``.
 ANSWERED_DECISION = "answered"
 
 #: Every decision the operator API accepts.
 OPERATOR_DECISIONS = REVIEW_DECISIONS | {ANSWERED_DECISION}
-
-#: Every ``apply_outcome`` a withdrawn item carries.
-WITHDRAWAL_OUTCOMES = frozenset({WITHDRAWN_OUTCOME, ANSWERED_ELSEWHERE_OUTCOME})
 
 #: Capability an operator must hold to decide each kind of item.
 REVIEW_CAPABILITIES: dict[str, str] = {
@@ -227,21 +206,6 @@ class ReviewItem:
         elif outcome == "apply_failed":
             self.status = ReviewStatus.APPLY_FAILED.value
 
-    def withdraw(self, *, outcome: str, detail: str) -> None:
-        """Retire a pending item without an operator decision.
-
-        ``outcome`` is :data:`WITHDRAWN_OUTCOME` or :data:`ANSWERED_ELSEWHERE_OUTCOME`;
-        ``detail`` is the sentence the operator reads in the queue.
-        """
-        if outcome not in WITHDRAWAL_OUTCOMES:
-            raise ValueError(f"unknown withdrawal outcome: {outcome!r}")
-        if not detail.strip():
-            raise ValueError("a withdrawal needs a reason the operator can read")
-        self.status = ReviewStatus.WITHDRAWN.value
-        self.apply_outcome = outcome
-        self.apply_detail = detail
-        self.resolved_at = datetime.now(UTC).isoformat()
-
 
 def item_targets(
     item: ReviewItem,
@@ -367,15 +331,6 @@ class JsonReviewStore:
                 return item
         return None
 
-    def find(self, item_id: str) -> ReviewItem | None:
-        return self._items.get(item_id)
-
-    def find_pending_by_id(self, item_id: str) -> ReviewItem | None:
-        item = self._items.get(item_id)
-        if item is None or not item.is_pending:
-            return None
-        return item
-
     def save(self, item: ReviewItem) -> ReviewItem:
         self._items[item.item_id] = item
         self._save()
@@ -438,15 +393,6 @@ class ReviewRequester:
         await self._publisher.publish(review_requested_event(item, source=self._source))
         return item
 
-    def settled_item(self, item_id: str) -> ReviewItem | None:
-        """The outbox copy of ``item_id`` if it is no longer pending, else None."""
-        if self._store is None:
-            return None
-        item = self._store.find(item_id)
-        if item is None or item.is_pending:
-            return None
-        return item
-
     def has_pending(self, dedupe_key: str) -> bool:
         if self._store is None:
             return False
@@ -457,41 +403,6 @@ class ReviewRequester:
         if self._store is None:
             return
         self._store.save(item)
-
-    def pending_items(self) -> list[ReviewItem]:
-        """Every item still pending in the outbox (empty without an outbox)."""
-        if self._store is None:
-            return []
-        return self._store.list(status=ReviewStatus.PENDING.value)
-
-    async def withdraw(self, item: ReviewItem, *, outcome: str, detail: str) -> ReviewItem | None:
-        """Retire a request whose subject closed without a queue decision.
-
-        Publishes ``odin.review.resolved`` with the item ``withdrawn`` so the
-        central queue stops offering it, then syncs the outbox. With an outbox
-        the pending copy with ``item``'s dedupe key (its id when it has none) is
-        what is retired, and None means nothing is pending, so a repeat is a
-        no-op; without an outbox, ``item`` itself is announced. The publish comes
-        first: a failed publish leaves the outbox pending, so the next reconcile
-        retries instead of believing the queue was told.
-        """
-        target = item
-        if self._store is not None:
-            pending = (
-                self._store.find_pending(item.dedupe_key)
-                if item.dedupe_key
-                else self._store.find_pending_by_id(item.item_id)
-            )
-            if pending is None:
-                return None
-            # Settle a copy: the store holds the live object, and a failed publish
-            # must leave it pending.
-            target = deepcopy(pending)
-        target.withdraw(outcome=outcome, detail=detail)
-        await self._publisher.publish(review_resolved_event(target, source=self._source))
-        if self._store is not None:
-            self._store.save(target)
-        return target
 
     async def reannounce(self) -> int:
         """Re-publish pending items after a restart; returns the count."""

@@ -15,12 +15,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-from niuu.adapters.outbound.http_auth import (
-    StaticBearerTokenAuthAdapter,
-    WorkloadIdentityBearerTokenAuthAdapter,
-)
-from niuu.ports.http_auth import HttpAuthPort
-from ravn.config import PermissionConfig, PlatformToolsConfig, Settings, ToolGroupConfig
+from niuu.adapters.outbound.http_auth import WorkloadIdentityBearerTokenAuthAdapter
+from ravn.config import PermissionConfig, Settings, ToolGroupConfig
 from ravn.domain.exceptions import ConfigurationError
 from ravn.domain.harness import (
     HarnessCapabilityProfile,
@@ -80,8 +76,6 @@ def _attach_agent_build_tool(
     installed_artifact_recorder: Any | None = None,
     capability_matcher: Any | None = None,
     skill_manager: Any | None = None,
-    peer_tools: Any | None = None,
-    peer_capability_matcher: Any | None = None,
 ) -> Any:
     """Attach build_tool when the active persona explicitly allows it."""
     if not enabled:
@@ -168,11 +162,6 @@ def _attach_agent_build_tool(
             installed_artifact_recorder=installed_artifact_recorder,
             capability_matcher=capability_matcher,
             skill_manager=skill_manager,
-            peer_tools=peer_tools,
-            peer_capability_matcher=peer_capability_matcher,
-            peer_prior_art_probability=(
-                settings.decision.capability_matching.peer_prior_art_probability
-            ),
         )
     except TypeError:
         logger.debug("build_tool not attached: executor does not support dynamic tools")
@@ -645,7 +634,16 @@ def _codex_auth_provider(settings: Settings) -> Any | None:
     # kubernetes.io service-account token, whose audience the exchange rejects.
     # Handing over the default silently replaced a working credential with one
     # that could only ever 401.
-    auth = _codex_broker_auth(platform, exchange_base_url=platform_url or base_url)
+    # The workload token is exchanged at the platform when one is configured;
+    # only the broker call itself goes to the cluster's Völundr.
+    auth_kwargs: dict[str, Any] = {"base_url": platform_url or base_url}
+    if "workload_token_file" in platform.model_fields_set:
+        auth_kwargs["token_file"] = platform.workload_token_file
+    if "workload_exchange_url" in platform.model_fields_set:
+        auth_kwargs["exchange_url"] = platform.workload_exchange_url
+    if "workload_audiences" in platform.model_fields_set:
+        auth_kwargs["audiences"] = list(platform.workload_audiences)
+    auth = WorkloadIdentityBearerTokenAuthAdapter(**auth_kwargs)
 
     async def _client() -> httpx.AsyncClient:
         # HttpAuthPort.headers() is synchronous — it performs the token
@@ -658,28 +656,6 @@ def _codex_auth_provider(settings: Settings) -> Any | None:
         http_client_provider=_client,
         **dict(settings.runtime_executor.codex_auth_kwargs),
     )
-
-
-def _codex_broker_auth(platform: PlatformToolsConfig, *, exchange_base_url: str) -> HttpAuthPort:
-    """The credential a persona presents to the Codex token broker.
-
-    An explicit platform bearer wins, as it does for every other platform
-    client (``client_from_workload_identity``): it is a PAT off-cluster, or the
-    workload-bound token a sandbox runtime mediates — OpenShell has no projected
-    token to exchange, so a configured token file there can only fail.
-    """
-    if platform.access_token:
-        return StaticBearerTokenAuthAdapter(token=platform.access_token)
-    # The workload token is exchanged at the platform when one is configured;
-    # only the broker call itself goes to the cluster's Völundr.
-    auth_kwargs: dict[str, Any] = {"base_url": exchange_base_url}
-    if "workload_token_file" in platform.model_fields_set:
-        auth_kwargs["token_file"] = platform.workload_token_file
-    if "workload_exchange_url" in platform.model_fields_set:
-        auth_kwargs["exchange_url"] = platform.workload_exchange_url
-    if "workload_audiences" in platform.model_fields_set:
-        auth_kwargs["audiences"] = list(platform.workload_audiences)
-    return WorkloadIdentityBearerTokenAuthAdapter(**auth_kwargs)
 
 
 def _transport_mcp_servers(settings: Settings) -> list[dict[str, Any]]:
@@ -772,98 +748,6 @@ def _build_embedding_port(settings: Settings) -> Any:
         ) from exc
 
 
-def build_decision_port(settings: Settings) -> Any:
-    """Construct the configured decision model port, observed, or raise with the remedy.
-
-    Returns None only when ``decision.enabled`` is false. A feature that needs the port while it
-    is disabled is a configuration error, raised here rather than discovered per turn.
-    """
-    from ravn.decision_observability import ObservedDecisionPort  # noqa: PLC0415
-    from ravn.dynamic_adapters import import_adapter  # noqa: PLC0415
-
-    config = settings.decision
-    if not config.enabled:
-        if config.resident_first_opinion.enabled:
-            raise ConfigurationError(
-                "decision.resident_first_opinion.enabled is true but decision.enabled is false; "
-                "enable and configure decision, or turn the first opinion off"
-            )
-        if config.capability_matching.enabled:
-            raise ConfigurationError(
-                "decision.capability_matching.enabled is true but decision.enabled is false; "
-                "enable and configure decision, or turn capability matching off"
-            )
-        if config.evolution_headline.enabled:
-            raise ConfigurationError(
-                "decision.evolution_headline.enabled is true but decision.enabled is false; "
-                "enable and configure decision, or turn the evolution headline off"
-            )
-        return None
-    kwargs = dict(config.kwargs)
-    for kwarg_name, env_var in config.secret_kwargs_env.items():
-        value = os.environ.get(env_var, "").strip()
-        if not value:
-            raise ConfigurationError(
-                f"decision.secret_kwargs_env maps {kwarg_name!r} to {env_var!r}, which is not "
-                "set; inject the secret, or remove the mapping for a keyless backend"
-            )
-        kwargs[kwarg_name] = value
-    try:
-        adapter = import_adapter(config.adapter)(**kwargs)
-    except Exception as exc:
-        raise ConfigurationError(
-            f"decision.enabled is true but the adapter {config.adapter!r} could not be "
-            f"constructed: {exc}. Fix decision.adapter/kwargs, or set decision.enabled=false"
-        ) from exc
-    return ObservedDecisionPort(adapter)
-
-
-def build_resident_first_opinion(settings: Settings, *, has_resident_runtime: bool) -> Any:
-    """The observe-only resident first opinion, or None when it is not enabled.
-
-    Building it also builds the decision port, so a configured but unbuildable backend fails
-    startup whether or not anything consumes it yet.
-    """
-    decision_port = build_decision_port(settings)
-    config = settings.decision.resident_first_opinion
-    if not config.enabled:
-        return None
-    if not has_resident_runtime:
-        raise ConfigurationError(
-            "decision.resident_first_opinion.enabled is true but this daemon runs no resident "
-            "runtime, so there are no resident turns to give an opinion on"
-        )
-    from ravn.resident_first_opinion import ResidentFirstOpinion  # noqa: PLC0415
-
-    return ResidentFirstOpinion(
-        decision_port,
-        max_observation_chars=config.max_observation_chars,
-        max_mandate_chars=config.max_mandate_chars,
-    )
-
-
-def build_resident_slot_attention(settings: Settings, first_opinion: Any) -> Any:
-    """Per-slot opinions (and the gate, when enabled) sharing the first opinion's decision port."""
-    from ravn.resident_attention import (  # noqa: PLC0415
-        AttentionGatePolicy,
-        ResidentSlotAttention,
-    )
-
-    config = settings.decision.resident_first_opinion
-    return ResidentSlotAttention(
-        first_opinion.decisions,
-        policy=AttentionGatePolicy(
-            skip_tiers=frozenset(config.gate.skip_tiers),
-            skip_decisions=frozenset(config.gate.skip_decisions),
-            min_skip_probability=config.gate.min_skip_probability,
-        ),
-        gate_enabled=config.gate.enabled,
-        max_observation_chars=config.max_observation_chars,
-        max_mandate_chars=config.max_mandate_chars,
-        max_working_state_chars=config.max_working_state_chars,
-    )
-
-
 @dataclass(frozen=True)
 class LearningConsolidation:
     """Lesson index and judge shared by reflection, curation, and injection."""
@@ -926,68 +810,28 @@ def _build_learning_consolidation(settings: Settings, llm: Any) -> LearningConso
 def _build_capability_matcher(
     settings: Settings,
     consolidation: LearningConsolidation | None,
-    *,
-    min_same_probability: float | None = None,
 ) -> Any | None:
     """Meaning-based learned-tool matching, on the lesson-matching machinery.
 
     Present exactly when lessons are matched semantically
-    (``reflection.matching.mode: semantic``): the same embedding shortlist and
-    threshold pick the candidates, and the lesson judge decides whether two tools
-    serve one capability. With lexical matching only declared capability ids and
-    names link tools, which is what that setting asks for.
-
-    With ``decision.capability_matching.enabled`` the decision model judges instead
-    of the lesson judge, at *min_same_probability* when a caller has its own bar.
-    It keeps the embedding shortlist, so without semantic matching a resident
-    cannot start.
+    (``reflection.matching.mode: semantic``): the same embedding shortlist,
+    threshold and judge decide whether two tools serve one capability. With
+    lexical matching only declared capability ids and names link tools, which
+    is what that setting asks for.
     """
-    config = settings.decision.capability_matching
     reflection = settings.effective_post_session_reflection_config()
-    semantic = reflection.matching.mode == "semantic" and consolidation is not None
-    if config.enabled and not semantic:
-        raise ConfigurationError(
-            "decision.capability_matching.enabled is true but it shortlists tools by embedding, "
-            "which needs reflection.matching.mode: semantic and embedding.enabled: true; "
-            "set those, or turn capability matching off"
-        )
-    if not semantic:
+    if reflection.matching.mode != "semantic" or consolidation is None:
         return None
     from ravn.adapters.reflection.capability_matching import (  # noqa: PLC0415
         SemanticCapabilityMatcher,
-        SystemOneCapabilityMatcher,
     )
 
-    if config.enabled:
-        return SystemOneCapabilityMatcher(
-            lessons=consolidation.lessons,
-            decisions=build_decision_port(settings),
-            similarity_threshold=reflection.matching.similarity_threshold,
-            min_same_probability=(
-                config.min_same_probability
-                if min_same_probability is None
-                else min_same_probability
-            ),
-            excerpt_chars=reflection.matching.judge_excerpt_chars,
-        )
     return SemanticCapabilityMatcher(
         lessons=consolidation.lessons,
         judge=consolidation.judge,
         similarity_threshold=reflection.matching.similarity_threshold,
         max_candidates=reflection.matching.max_related,
         excerpt_chars=reflection.matching.judge_excerpt_chars,
-    )
-
-
-def _build_peer_capability_matcher(
-    settings: Settings,
-    consolidation: LearningConsolidation | None,
-) -> Any | None:
-    """The same matching for flock peers' tools, at the peer gate's own bar."""
-    return _build_capability_matcher(
-        settings,
-        consolidation,
-        min_same_probability=settings.decision.capability_matching.peer_min_same_probability,
     )
 
 

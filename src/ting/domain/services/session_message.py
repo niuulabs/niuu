@@ -65,7 +65,6 @@ class SessionMessageService:
         sender: str = "user",
         auth_token: str | None = None,
         target_peer_id: str | None = None,
-        owner_id: str = "",
     ) -> MessageResult:
         """Send a message to the session running a run.
 
@@ -122,7 +121,6 @@ class SessionMessageService:
                         "content_length": len(content),
                         "target_peer_id": target_peer_id or "",
                     },
-                    owner_id=owner_id,
                 )
             )
 

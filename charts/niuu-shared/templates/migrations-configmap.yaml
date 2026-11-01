@@ -497,33 +497,4 @@ data:
         WHERE revoked_at IS NULL;
   000088_workload_delegations.down.sql: |
     DROP TABLE IF EXISTS workload_delegations;
-  000090_realm_tenancy.up.sql: |
-    -- Realms belong to a tenant; a slug is unique within one tenant, not globally.
-    --
-    -- The backfill only assigns a tenant on unambiguous evidence. A realm with no
-    -- such evidence keeps tenant_id = '' and is unreachable until an operator
-    -- assigns it, because guessing could hand a realm to the wrong tenant.
-    ALTER TABLE realms ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
-
-    -- An owner who belongs to exactly one tenant.
-    UPDATE realms r
-    SET tenant_id = m.tenant_id
-    FROM tenant_memberships m
-    WHERE r.tenant_id = ''
-      AND m.user_id = r.owner_id
-      AND (SELECT COUNT(*) FROM tenant_memberships m2 WHERE m2.user_id = r.owner_id) = 1;
-
-    -- A deployment with one tenant has only one possible answer.
-    UPDATE realms r
-    SET tenant_id = only_tenant.id
-    FROM (SELECT MIN(id) AS id FROM tenants HAVING COUNT(*) = 1) only_tenant
-    WHERE r.tenant_id = '';
-
-    ALTER TABLE realms DROP CONSTRAINT IF EXISTS realms_slug_key;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_realms_tenant_slug ON realms (tenant_id, slug);
-  000090_realm_tenancy.down.sql: |
-    -- Restoring the global constraint fails loudly if two tenants share a slug.
-    DROP INDEX IF EXISTS idx_realms_tenant_slug;
-    ALTER TABLE realms ADD CONSTRAINT realms_slug_key UNIQUE (slug);
-    ALTER TABLE realms DROP COLUMN IF EXISTS tenant_id;
 {{- end }}

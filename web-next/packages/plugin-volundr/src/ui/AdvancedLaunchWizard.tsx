@@ -169,7 +169,7 @@ export function AdvancedLaunchWizard(props: LaunchWizardProps) {
                 disabled={isLastStep && !canLaunch}
                 data-testid="wizard-next"
               >
-                {isLastStep ? 'start session' : 'continue \u2192'}
+                {isLastStep ? 'forge session' : 'continue \u2192'}
               </button>
             )}
           </div>

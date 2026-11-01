@@ -596,7 +596,7 @@ describe('WorkflowBuilder', () => {
       />,
     );
     fireEvent.mouseDown(screen.getByTestId('workflow-node-resource-1'));
-    expect(screen.getByText('Ephemeral local memory')).toBeInTheDocument();
+    expect(screen.getByText('Ephemeral local Mimir')).toBeInTheDocument();
     expect(screen.getByText(/path is fixed by the runtime/i)).toBeInTheDocument();
   });
 

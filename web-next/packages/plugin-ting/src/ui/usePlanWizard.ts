@@ -258,13 +258,13 @@ function defaultDraftFeedbackQuestion(): ClarifyingQuestion {
   return {
     id: 'draft-feedback',
     question: 'What focused changes should the planning workflow make to this draft?',
-    hint: 'Request one bounded change. Niuu will send it back through the workflow before showing a revised draft.',
+    hint: 'Request one bounded change. Ting will send it back through the workflow before showing a revised draft.',
   };
 }
 
 function buildCommitRequest(state: PlanWizardState): CommitSagaRequest {
   const structure = state.structure?.structure;
-  const name = structure?.name ?? 'New project';
+  const name = structure?.name ?? 'New Saga';
   const slug = name
     .toLowerCase()
     .replace(/\s+/g, '-')
@@ -273,7 +273,6 @@ function buildCommitRequest(state: PlanWizardState): CommitSagaRequest {
   return {
     name,
     slug,
-    planSlug: state.session?.campaignSlug,
     description: state.prompt,
     repos: state.repo ? [state.repo] : [],
     baseBranch: 'main',
@@ -449,7 +448,7 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
       const campaignSlug = stateRef.current.session?.campaignSlug;
       if (campaignSlug && ting.sendPlanFeedback) {
         try {
-          await ting.sendPlanFeedback(campaignSlug, 'Approved in Plan.', 'approve');
+          await ting.sendPlanFeedback(campaignSlug, 'Approved in Ting Plan.', 'approve');
         } catch {
           // Final approval already carries the user's commit intent; a closed workflow session
           // should not block materializing the reviewed draft.
@@ -461,7 +460,7 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
     } catch (err) {
       dispatch({
         type: 'APPROVE_ERROR',
-        error: err instanceof Error ? err.message : 'Failed to commit project',
+        error: err instanceof Error ? err.message : 'Failed to commit saga',
       });
     }
   }

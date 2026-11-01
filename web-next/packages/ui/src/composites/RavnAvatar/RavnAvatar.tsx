@@ -38,7 +38,7 @@ export function RavnAvatar({
     <span
       className={cn('niuu-ravn-av', className)}
       title={title ?? `${rune} · ${role} · ${state}`}
-      aria-label={title ?? `agent ${role} ${state}`}
+      aria-label={title ?? `ravn ${role} ${state}`}
       style={{ width: size, height: size }}
     >
       <PersonaShapeRenderer shape={shape} size={size} />

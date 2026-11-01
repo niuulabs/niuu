@@ -74,12 +74,12 @@ test('ting lands on Work with the primary navigation only', async ({ page }) => 
 test('sagas route renders search, filters, and actions', async ({ page }) => {
   await page.goto('/ting/sagas');
 
-  await expect(page.getByRole('searchbox', { name: 'Search projects' })).toBeVisible({
+  await expect(page.getByRole('searchbox', { name: 'Search sagas' })).toBeVisible({
     timeout: 5000,
   });
-  await expect(page.getByRole('searchbox', { name: 'Filter projects' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Import project from tracker' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Export projects as JSON' })).toBeVisible();
+  await expect(page.getByRole('searchbox', { name: 'Filter sagas' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Import saga from tracker' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Export sagas as JSON' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Create new saga' })).toBeVisible();
   const selectedSaga = page.getByRole('complementary').locator('button[aria-pressed="true"]');
   await expect(selectedSaga).toBeVisible();
@@ -115,7 +115,7 @@ test('dispatch route search accepts input', async ({ page }) => {
 });
 
 test('plan wizard renders the prompt step', async ({ page }) => {
-  await page.goto('/ting/plan/new');
+  await page.goto('/ting/plan');
 
   await expect(page.getByRole('form', { name: 'Plan prompt form' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Describe your goal' })).toBeVisible();
@@ -124,7 +124,7 @@ test('plan wizard renders the prompt step', async ({ page }) => {
 
 test('plan wizard advances to clarifying questions', async ({ page }) => {
   await mockPlanWizardApi(page);
-  await page.goto('/ting/plan/new');
+  await page.goto('/ting/plan');
 
   await page.getByRole('textbox', { name: 'Goal description' }).fill('Build auth module');
   await page.getByRole('button', { name: 'Next →' }).click();
@@ -137,7 +137,7 @@ test('plan wizard advances to clarifying questions', async ({ page }) => {
 
 test('plan wizard can decompose into running and review states', async ({ page }) => {
   await mockPlanWizardApi(page);
-  await page.goto('/ting/plan/new');
+  await page.goto('/ting/plan');
 
   await page.getByRole('textbox', { name: 'Goal description' }).fill('Build auth module');
   await page.getByRole('button', { name: 'Next →' }).click();
@@ -154,7 +154,7 @@ test('plan wizard can decompose into running and review states', async ({ page }
 
 test('plan wizard can approve into the launched state', async ({ page }) => {
   await mockPlanWizardApi(page);
-  await page.goto('/ting/plan/new');
+  await page.goto('/ting/plan');
 
   await page.getByRole('textbox', { name: 'Goal description' }).fill('Build auth module');
   await page.getByRole('button', { name: 'Next →' }).click();

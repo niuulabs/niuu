@@ -436,7 +436,6 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         env["INTEGRATIONS__DEFINITION_FILES"] = json.dumps(definition_files)
     if manifest_files:
         env["INTEGRATIONS__MODULE_MANIFEST_FILES"] = json.dumps(manifest_files)
-        env["REVIEW_WIDGETS__MODULE_MANIFEST_FILES"] = json.dumps(manifest_files)
     if python_paths:
         env["PYTHONPATH"] = ":".join(python_paths)
     if settings.compute is not None:

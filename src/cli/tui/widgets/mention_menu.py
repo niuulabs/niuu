@@ -40,8 +40,8 @@ class MentionMenu(Widget):
         display: none;
         width: 50;
         max-height: 14;
-        background: #10212d;
-        border: round #2b4351;
+        background: #18181b;
+        border: round #3f3f46;
         padding: 0 1;
         layer: autocomplete;
     }
@@ -53,11 +53,11 @@ class MentionMenu(Widget):
         padding: 0 1;
     }
     MentionMenu .mention-item.selected {
-        background: #182b38;
-        color: #e4bd7e;
+        background: #27272a;
+        color: #f59e0b;
     }
     MentionMenu .mention-more {
-        color: #78909d;
+        color: #71717a;
         height: 1;
     }
     """

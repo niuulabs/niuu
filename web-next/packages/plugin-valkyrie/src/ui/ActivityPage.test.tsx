@@ -57,7 +57,7 @@ describe('ActivityPage', () => {
     await screen.findAllByTestId('story-investigation');
 
     await user.click(
-      screen.getAllByRole('button', { name: /registry token rollover broke image pulls/i })[0]!,
+      screen.getByRole('button', { name: /registry token rollover broke image pulls/i }),
     );
 
     const thread = screen.getByTestId('story-thread');
@@ -71,7 +71,7 @@ describe('ActivityPage', () => {
     expect(within(thread).getByTestId('story-action-status')).toHaveTextContent('completed');
 
     await user.click(
-      screen.getAllByRole('button', { name: /registry token rollover broke image pulls/i })[0]!,
+      screen.getByRole('button', { name: /registry token rollover broke image pulls/i }),
     );
     expect(screen.queryByTestId('story-thread')).toBeNull();
   });
@@ -105,7 +105,7 @@ describe('ActivityPage', () => {
     await screen.findAllByTestId('story-investigation');
 
     await user.click(
-      screen.getAllByRole('button', { name: /registry token rollover broke image pulls/i })[0]!,
+      screen.getByRole('button', { name: /registry token rollover broke image pulls/i }),
     );
     await user.click(await screen.findByTestId('skill-link-registry_token_refresh_check'));
 

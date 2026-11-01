@@ -100,16 +100,16 @@ for (const phone of [false, true])
     await page.goto('/volundr/sessions');
     const row = page.getByTestId('pod-entry-thor');
     await expect(row).toBeVisible();
-    await expect(page.getByLabel('Host connections')).toContainText('offline: loading');
-    await expect(page.getByLabel('Host connections')).toContainText('offline: unavailable');
+    await expect(page.getByLabel('Forge connections')).toContainText('offline: loading');
+    await expect(page.getByLabel('Forge connections')).toContainText('offline: unavailable');
     await expect(row).toBeVisible();
     await expect(page.getByText('Failed to load sessions', { exact: true })).toHaveCount(0);
     control.recovered = true;
-    const retry = page.getByRole('button', { name: 'Retry host connections' });
+    const retry = page.getByRole('button', { name: 'Retry Forge connections' });
     await retry.focus();
     await page.keyboard.press('Enter');
     await expect(page.getByTestId('pod-entry-offline')).toBeVisible();
-    await expect(page.getByLabel('Host connections')).toHaveCount(0);
+    await expect(page.getByLabel('Forge connections')).toHaveCount(0);
     expect(requests.every((url) => url.searchParams.has('instance_id'))).toBe(true);
     await page.screenshot({
       path: info.outputPath('sessions-recovered.png'),

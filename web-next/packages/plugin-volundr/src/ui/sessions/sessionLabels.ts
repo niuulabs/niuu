@@ -138,7 +138,7 @@ export function groupByRepo(sessions: Session[]): SessionSection[] {
 }
 
 export function forgeGroupLabel(session: Session): string {
-  return session.clusterName ?? session.clusterId ?? 'unknown host';
+  return session.clusterName ?? session.clusterId ?? 'unknown forge';
 }
 
 // ---------------------------------------------------------------------------

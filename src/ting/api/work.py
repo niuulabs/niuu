@@ -1,20 +1,11 @@
-"""Work projection over Ting's existing bounded contexts.
-
-Everything here reads, apart from the gate decision, which only forwards an
-answer to the session that owns the gate.
-"""
+"""Read-only Work projection over Ting's existing bounded contexts."""
 
 from __future__ import annotations
 
-import asyncio
-import logging
-from collections.abc import Mapping
-from dataclasses import replace
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
@@ -24,20 +15,10 @@ from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.research import resolve_workflow_campaign_repo
 from ting.api.sagas import resolve_saga_repo
 from ting.api.tracker import resolve_trackers
-from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.dispatch_service import DispatchService
-from ting.domain.services.review_list import ReviewKind, ReviewState, review_list, review_run
-from ting.domain.services.ticket_coordinator import (
-    TicketCoordinatorService,
-    TicketWorkflow,
-    coordinator_ravn_config,
-)
-from ting.domain.services.ticket_review import RunReview, campaign_reviews
 from ting.domain.services.work_read import (
     CoverageError,
     CoverageStatus,
-    SessionGateReader,
-    SessionProgress,
     SourceCoverage,
     WorkCondition,
     WorkDetail,
@@ -48,44 +29,10 @@ from ting.domain.services.work_read import (
     WorkSummary,
     WorkTask,
 )
-from ting.domain.ticket_coordinator import TicketCoordinatorStatus, ticket_of
-from ting.domain.workflow_board import (
-    BACKLOG_COLUMN_ID,
-    GATE_STATUS_PENDING,
-    SESSION_GONE_REASON,
-    BoardColumnKind,
-    BoardTicketState,
-    BoardWorkflow,
-    ProjectBoard,
-)
 from ting.ports.saga_repository import SagaRepository
-from ting.ports.ticket_coordinator_repository import TicketCoordinatorRepository
 from ting.ports.tracker import TrackerPort, TrackerResolution
-from ting.ports.volundr import VolundrFactory, VolundrPort, VolundrSession
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_execution import WorkflowExecutionRepository
-
-_GATE_DECISIONS = {"approve": "APPROVE", "request_changes": "CHANGES_REQUESTED"}
-_GATE_DECISION_SOURCE = "ting.board"
-_SESSION_ERROR_STATE = "error"
-_SESSION_STARTING_REASON = "The run's session is starting. Its gate returns when it is up."
-_SESSION_STOPPED_REASON = "The run's session is stopped. Start it again to answer its gate."
-_SESSION_AWAY_REASONS = {
-    "created": _SESSION_STARTING_REASON,
-    "starting": _SESSION_STARTING_REASON,
-    "provisioning": _SESSION_STARTING_REASON,
-    "stopping": _SESSION_STOPPED_REASON,
-    "stopped": _SESSION_STOPPED_REASON,
-}
-_BLOCKED_VERDICT = "blocked"
-_CLOSED_TICKET_STATUS_TYPES = frozenset({"completed", "canceled"})
-# Starting is here because no run exists yet: a coordinator that never acted can be asked again.
-_STARTABLE_STATES = frozenset(
-    {BoardTicketState.NOT_STARTED, BoardTicketState.READY, BoardTicketState.STARTING}
-)
-
-logger = logging.getLogger(__name__)
-_PASSED_THROUGH_GATE_STATUSES = frozenset({403, 404, 409})
 
 
 def _camel(value: str) -> str:
@@ -191,90 +138,12 @@ class DispatchRefResponse(_ResponseModel):
     workflow_id: str | None
 
 
-class BoardGateResponse(_ResponseModel):
-    id: str
-    activation_id: str
-    node_id: str
-    label: str
-    condition: str
-    instructions: str
-    summary: str
-    requested_at: str
-    attempt: int
-
-
-class BoardDecisionResponse(_ResponseModel):
-    label: str
-    status: str
-    decided_by: str
-    notes: str
-    decided_at: str
-
-
-class BoardPlacementResponse(_ResponseModel):
-    column_id: str | None
-    state: BoardTicketState
-    gate: BoardGateResponse | None = None
-    reason: str | None = None
-    passed_workflow_ids: list[str] = []
-    last_decision: BoardDecisionResponse | None = None
-
-
-class TicketCoordinatorRefResponse(_ResponseModel):
-    session_id: str
-    status: TicketCoordinatorStatus
-    connection_id: str | None
-    chat_endpoint: str | None
-    start_error: str | None = None
-
-
-class TicketWorkflowRunResponse(_ResponseModel):
-    task_id: str
-    workflow_name: str
-    status: WorkflowCampaignStatus
-    session_id: str | None
-    current_step: str | None = None
-    pr_url: str | None = None
-
-
 class WorkTaskResponse(_ResponseModel):
     source: TrackerIssueRefResponse
     title: str
-    description: str = ""
     operational_run: OperationalRunRefResponse | None
     dispatch: DispatchRefResponse | None
     actions: list[str]
-    board: BoardPlacementResponse | None = None
-    coordinator: TicketCoordinatorRefResponse | None = None
-    workflow_run: TicketWorkflowRunResponse | None = None
-
-
-class ReviewSourceResponse(_ResponseModel):
-    kind: str
-    value: str
-
-
-class ReviewPanelResponse(_ResponseModel):
-    widget: str
-    title: str
-    source: ReviewSourceResponse | None = None
-    files: list[str] = []
-
-
-class BoardColumnResponse(_ResponseModel):
-    id: str
-    title: str
-    kind: BoardColumnKind
-    review: str | None = None
-    panels: list[ReviewPanelResponse] = []
-    approve_column_id: str | None = None
-    changes_column_id: str | None = None
-    workflow_id: str | None = None
-    workflow_name: str | None = None
-
-
-class WorkBoardResponse(_ResponseModel):
-    columns: list[BoardColumnResponse]
 
 
 class WorkCollectionResponse(_ResponseModel):
@@ -289,107 +158,6 @@ class WorkDetailResponse(_ResponseModel):
     item: WorkSummaryResponse
     tasks: list[WorkTaskResponse]
     coverage: list[SourceCoverageResponse]
-    board: WorkBoardResponse | None = None
-
-
-class GateDecisionRequest(BaseModel):
-    model_config = ConfigDict(alias_generator=_camel, populate_by_name=True)
-
-    gate_id: str
-    activation_id: str
-    decision: Literal["approve", "request_changes"]
-    notes: str = ""
-
-
-class GateDecisionResponse(_ResponseModel):
-    status: Literal["resolved"]
-    session_id: str
-    gate_id: str
-
-
-class TicketStartRequest(BaseModel):
-    model_config = ConfigDict(alias_generator=_camel, populate_by_name=True)
-
-    column_id: str | None = None
-
-
-class TicketStartResponse(_ResponseModel):
-    status: Literal["coordinating"]
-    session_id: str
-
-
-class ReviewRevisionResponse(_ResponseModel):
-    number: int
-    gate_id: str
-    activation_id: str
-    requested_at: str
-    status: str
-    summary: str
-    decided_by: str
-    notes: str
-    decided_at: str
-    fields: dict[str, str]
-
-
-class RunReviewResponse(_ResponseModel):
-    column_id: str
-    title: str
-    review: str | None
-    workflow_name: str
-    task_id: str
-    session_id: str
-    panels: list[ReviewPanelResponse]
-    revisions: list[ReviewRevisionResponse]
-    chat_endpoint: str | None = None
-
-
-class TicketReviewsResponse(_ResponseModel):
-    reviews: list[RunReviewResponse]
-    unreadable_runs: list[str]
-    plan_slug: str | None = None
-
-
-class ReviewRunResponse(_ResponseModel):
-    slug: str
-    title: str
-    workflow_name: str
-    prompt: str
-    session_id: str
-    repo: str
-    branch: str
-    started_by: str | None = None
-
-
-class RunReviewsResponse(_ResponseModel):
-    run: ReviewRunResponse
-    reviews: list[RunReviewResponse]
-    unreadable_runs: list[str]
-
-
-class ReviewItemResponse(_ResponseModel):
-    task_id: str
-    kind: ReviewKind
-    title: str
-    workflow_name: str
-    state: ReviewState
-    gate_label: str
-    updated_at: datetime
-    project_id: str | None = None
-    project_name: str | None = None
-    issue_id: str | None = None
-    identifier: str | None = None
-    started_by: str | None = None
-
-
-class ReviewListResponse(_ResponseModel):
-    items: list[ReviewItemResponse]
-
-
-class ReviewWidgetResponse(_ResponseModel):
-    module: str
-    name: str
-    title: str
-    html: str
 
 
 async def resolve_work_execution_repo(
@@ -413,8 +181,6 @@ def _service(
     tracker_resolution: TrackerResolution,
     execution_repo: WorkflowExecutionRepository | None,
     campaign_lifecycle_available: bool,
-    session_gates: SessionGateReader | None = None,
-    coordinator_repo: TicketCoordinatorRepository | None = None,
 ) -> WorkReadService:
     return WorkReadService(
         principal=principal,
@@ -424,380 +190,7 @@ def _service(
         execution_repo=execution_repo,
         tracker_resolution_failures=tracker_resolution.failures,
         campaign_lifecycle_available=campaign_lifecycle_available,
-        session_gates=session_gates,
-        coordinator_repo=coordinator_repo,
     )
-
-
-def _run_session_id(task: WorkTask) -> str | None:
-    """The session a ticket's gates live in, whichever way its run started."""
-    if task.workflow_run is not None:
-        return task.workflow_run.session_id
-    return task.operational_run.session_id if task.operational_run else None
-
-
-def _require_changes_note(body: GateDecisionRequest) -> None:
-    if body.decision == "request_changes" and not body.notes.strip():
-        raise HTTPException(status_code=422, detail="Say what should change")
-
-
-def _is_gate_shown(gate: Mapping[str, Any], body: GateDecisionRequest) -> bool:
-    """Whether a session's gate is still the pending one the reviewer decided on."""
-    return (
-        gate.get("status") == GATE_STATUS_PENDING
-        and gate.get("id") == body.gate_id
-        and gate.get("activation_id") == body.activation_id
-    )
-
-
-async def _owned_run(
-    campaign_repo: WorkflowCampaignRepository, slug: str, principal: Principal
-) -> WorkflowCampaign:
-    campaign = await campaign_repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
-    if campaign is None:
-        raise HTTPException(status_code=404, detail=f"Run not found: {slug}")
-    return campaign
-
-
-async def _read_reviews(
-    runs: list[WorkflowCampaign],
-    sessions: _ForgeSessions,
-    request: Request,
-    principal: Principal,
-) -> tuple[list[RunReview], list[str]]:
-    """Each run's reviews, and the runs whose session is gone."""
-    reviews: list[RunReview] = []
-    unreadable: list[str] = []
-    page_size = request.app.state.settings.workflow_execution.list_page_size
-    for campaign in runs:
-        try:
-            located = await sessions.locate(campaign.session_id, campaign.connection_id)
-        except ForgeSessionUnreadableError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        if located is None:
-            unreadable.append(campaign.workflow_name)
-            continue
-        forge, session = located
-        found = await campaign_reviews(
-            forge,
-            campaign,
-            page_size=page_size,
-            auth_token=extract_bearer_token(request),
-            principal=principal,
-        )
-        reviews.extend(replace(item, chat_endpoint=session.chat_endpoint) for item in found)
-    return reviews, unreadable
-
-
-async def _forward_gate_decision(
-    sessions: _ForgeSessions,
-    session_id: str,
-    gate_id: str,
-    body: GateDecisionRequest,
-    request: Request,
-    principal: Principal,
-) -> None:
-    # The gate lives on the Forge the session was found on, which is not always the primary.
-    forge = sessions.forge_of(session_id)
-    if forge is None:
-        raise HTTPException(
-            status_code=502, detail=f"The Forge of session {session_id} could not be found"
-        )
-    try:
-        await forge.resolve_workflow_gate(
-            session_id,
-            gate_id,
-            _GATE_DECISIONS[body.decision],
-            notes=body.notes.strip(),
-            source=_GATE_DECISION_SOURCE,
-            auth_token=extract_bearer_token(request),
-            principal=principal,
-        )
-    except httpx.HTTPStatusError as exc:
-        status_code = exc.response.status_code
-        raise HTTPException(
-            status_code=status_code if status_code in _PASSED_THROUGH_GATE_STATUSES else 502,
-            detail=f"The session did not accept this decision: {exc}",
-        ) from exc
-
-
-def _refuse_active_run(task: WorkTask) -> None:
-    """Runs move their own ticket, so a new start waits until none is active."""
-    placement = task.board
-    identifier = task.source.identifier
-    if placement is None or placement.state in _STARTABLE_STATES:
-        return
-    if placement.state == BoardTicketState.DONE:
-        raise HTTPException(status_code=409, detail=f"{identifier} is done")
-    if placement.state == BoardTicketState.UNKNOWN:
-        raise HTTPException(
-            status_code=409, detail=f"Ting cannot read where {identifier} is right now"
-        )
-    if task.coordinator is not None and task.coordinator.start_error:
-        return
-    run = task.workflow_run
-    if run is not None and run.status == WorkflowCampaignStatus.FAILED:
-        return
-    if (
-        placement.state == BoardTicketState.BLOCKED
-        and run is None
-        and task.operational_run is None
-        and task.coordinator is not None
-    ):
-        # The coordinator died before any run began, so there is nothing to wait for.
-        return
-    raise HTTPException(status_code=409, detail=f"{identifier} already has a run in progress")
-
-
-def _workflow_to_start(board: ProjectBoard, task: WorkTask, column_id: str | None) -> BoardWorkflow:
-    """The workflow a ticket enters: only ever at its first column."""
-    placement = task.board
-    target = column_id or (placement.column_id if placement else None)
-    if target == BACKLOG_COLUMN_ID and column_id is None:
-        return board.first_workflow
-    workflow = board.workflow_starting_at(target or "")
-    if workflow is not None:
-        return workflow
-    column = next((item for item in board.columns if item.id == target), None)
-    if column is None or column.workflow_id is None:
-        raise HTTPException(status_code=409, detail="Choose a column that starts a workflow")
-    owner = board.workflow(column.workflow_id)
-    raise HTTPException(
-        status_code=409,
-        detail=f"{owner.name} starts at {owner.board.first_column.title}",
-    )
-
-
-def _coordinator_repo(request: Request) -> TicketCoordinatorRepository | None:
-    return getattr(request.app.state, "ticket_coordinator_repo", None)
-
-
-def _public_origin(request: Request) -> str:
-    configured = request.app.state.settings.a2a.public_base_url
-    return (configured or str(request.base_url)).rstrip("/")
-
-
-def _coordinator_service(
-    request: Request,
-    *,
-    adapter: VolundrPort,
-    principal: Principal,
-) -> TicketCoordinatorService:
-    repo = _coordinator_repo(request)
-    if repo is None:
-        raise HTTPException(status_code=503, detail="Ticket coordinators are not configured")
-    settings = request.app.state.settings.ticket_coordinator
-    return TicketCoordinatorService(
-        repo=repo,
-        volundr=adapter,
-        principal=principal,
-        auth_token=extract_bearer_token(request),
-        persona=settings.persona,
-        model=settings.model,
-        session_definitions=request.app.state.settings.session_definitions,
-        configured_models=list(request.app.state.settings.bifrost.models),
-        cli_turn_timeout_seconds=(
-            request.app.state.settings.dispatch.workflow_cli_turn_timeout_seconds
-        ),
-        ravn_config=coordinator_ravn_config(
-            request.app.state.settings.dispatch.flock.ravn_config, settings.ravn_config
-        ),
-        platform_origin=_public_origin(request),
-        anonymous_platform=request.app.state.settings.auth.allow_anonymous_dev,
-    )
-
-
-async def _close_finished_coordinators(
-    detail: WorkDetail,
-    *,
-    saga_id: UUID,
-    request: Request,
-    adapter: VolundrPort | None,
-    principal: Principal,
-) -> WorkDetail:
-    """A coordinator lives as long as its ticket, so a closed ticket ends it."""
-    finished = [
-        task
-        for task in detail.tasks
-        if task.coordinator is not None
-        and task.coordinator.status == TicketCoordinatorStatus.ACTIVE
-        and task.source.status_type.strip().lower() in _CLOSED_TICKET_STATUS_TYPES
-    ]
-    if not finished or adapter is None:
-        return detail
-    service = _coordinator_service(request, adapter=adapter, principal=principal)
-    repo = _coordinator_repo(request)
-    failed = False
-    for task in finished:
-        coordinator = await repo.get(saga_id, task.source.issue_id)
-        try:
-            await service.close(coordinator)
-        except httpx.HTTPError:
-            logger.error(
-                "Could not close the coordinator of %s", task.source.identifier, exc_info=True
-            )
-            failed = True
-    if not failed:
-        return detail
-    return replace(
-        detail,
-        coverage=(
-            *detail.coverage,
-            SourceCoverage(
-                source="ticketCoordinators",
-                connection_id=None,
-                status=CoverageStatus.PARTIAL,
-                error=CoverageError(
-                    code="closeFailed",
-                    message="A finished ticket's coordinator session could not be closed.",
-                ),
-            ),
-        ),
-    )
-
-
-async def _forge_adapter(request: Request, principal: Principal) -> VolundrPort | None:
-    factory = getattr(request.app.state, "volundr_factory", None)
-    if factory is None:
-        return None
-    return await factory.primary_for_principal(principal)
-
-
-def _blocked_reason(session: VolundrSession | None) -> str | None:
-    """Why a flock stopped, when its last outcome before going idle was a blocked verdict."""
-    metadata = getattr(session, "activity_metadata", None)
-    last = metadata.get("flock_idle") if isinstance(metadata, dict) else None
-    if not isinstance(last, dict) or last.get("verdict") != _BLOCKED_VERDICT:
-        return None
-    return str(last.get("summary") or f"{last.get('persona') or 'A stage'} is blocked.")
-
-
-class ForgeSessionUnreadableError(RuntimeError):
-    """A session's Forge could not be asked, so whether the session exists is not known."""
-
-
-class _ForgeSessions:
-    """Reads sessions from the Forge each one lives on.
-
-    A board spans sessions on several Forges, because unpinned launches are
-    placed across every registered one. A session is read from the Forge it
-    was launched on when that is known; otherwise every Forge of the principal
-    is asked. The Forges are resolved once per request, never per ticket, and a
-    session counts as gone only when every Forge that was asked answered
-    without it.
-    """
-
-    def __init__(self, factory: VolundrFactory, *, principal: Principal, auth_token: str | None):
-        self._factory = factory
-        self._principal = principal
-        self._auth_token = auth_token
-        self._forges: asyncio.Task[tuple[list[VolundrPort], int]] | None = None
-        self._located: dict[str, VolundrPort] = {}
-
-    def forge_of(self, session_id: str) -> VolundrPort | None:
-        """The Forge a session was found on while the board was read."""
-        return self._located.get(session_id)
-
-    async def read(self, session_id: str, connection_id: str | None) -> SessionProgress:
-        if connection_id:
-            adapter = await self._forge_for(connection_id)
-            session = await self._get_session(adapter, session_id)
-        else:
-            adapter, session = await self._locate(session_id)
-        if adapter is None or session is None:
-            # Every Forge asked answered, and none has it: known, not unreadable.
-            return SessionProgress(gates=[], failed=True, blocked_reason=SESSION_GONE_REASON)
-        self._located[session_id] = adapter
-        if session.status in _SESSION_AWAY_REASONS:
-            # Its broker is not listening, so its gates cannot be read right now.
-            return SessionProgress(
-                gates=[],
-                chat_endpoint=session.chat_endpoint,
-                away_reason=_SESSION_AWAY_REASONS[session.status],
-                blocked_reason=(
-                    _SESSION_STOPPED_REASON
-                    if _SESSION_AWAY_REASONS[session.status] == _SESSION_STOPPED_REASON
-                    else None
-                ),
-            )
-        gates = await adapter.get_workflow_gates(
-            session_id, auth_token=self._auth_token, principal=self._principal
-        )
-        return SessionProgress(
-            gates=gates,
-            failed=session.activity_state == _SESSION_ERROR_STATE,
-            chat_endpoint=session.chat_endpoint,
-            blocked_reason=_blocked_reason(session),
-        )
-
-    async def locate(
-        self, session_id: str, connection_id: str | None
-    ) -> tuple[VolundrPort, VolundrSession] | None:
-        """The Forge holding a session and the session, or None once every Forge says it is gone."""
-        if connection_id:
-            adapter = await self._forge_for(connection_id)
-            session = await self._get_session(adapter, session_id)
-        else:
-            found, session = await self._locate(session_id)
-            if found is None:
-                return None
-            adapter = found
-        return (adapter, session) if session is not None else None
-
-    async def _forges_of_principal(self) -> tuple[list[VolundrPort], int]:
-        if self._forges is None:
-            self._forges = asyncio.ensure_future(
-                self._factory.for_principal_with_unresolved(self._principal)
-            )
-        return await self._forges
-
-    async def _forge_for(self, connection_id: str) -> VolundrPort:
-        adapters, _ = await self._forges_of_principal()
-        for adapter in adapters:
-            if connection_id in {adapter.target_id, adapter.name}:
-                return adapter
-        raise ForgeSessionUnreadableError(
-            f"Forge connection {connection_id!r} did not resolve, so its sessions cannot be "
-            "read. Check the connection's credential in Guild."
-        )
-
-    async def _get_session(self, adapter: VolundrPort, session_id: str) -> VolundrSession | None:
-        return await adapter.get_session(
-            session_id, auth_token=self._auth_token, principal=self._principal
-        )
-
-    async def _locate(self, session_id: str) -> tuple[VolundrPort | None, VolundrSession | None]:
-        adapters, unresolved = await self._forges_of_principal()
-        if not adapters:
-            raise ForgeSessionUnreadableError("No Forge connection is available to read sessions.")
-        answers = await asyncio.gather(
-            *(self._get_session(adapter, session_id) for adapter in adapters),
-            return_exceptions=True,
-        )
-        failures = [answer for answer in answers if isinstance(answer, BaseException)]
-        for failure in failures:
-            if isinstance(failure, asyncio.CancelledError):
-                raise failure
-        for adapter, answer in zip(adapters, answers, strict=True):
-            if not isinstance(answer, BaseException) and answer is not None:
-                return adapter, answer
-        if failures:
-            raise ForgeSessionUnreadableError(
-                f"Session {session_id} was not found, but a Forge could not be asked."
-            ) from failures[0]
-        if unresolved:
-            raise ForgeSessionUnreadableError(
-                f"Session {session_id} was not found, but {unresolved} registered Forge(s) "
-                "could not be reached with a usable credential."
-            )
-        return None, None
-
-
-def _forge_sessions(request: Request, principal: Principal) -> _ForgeSessions | None:
-    factory = getattr(request.app.state, "volundr_factory", None)
-    if factory is None:
-        return None
-    return _ForgeSessions(factory, principal=principal, auth_token=extract_bearer_token(request))
 
 
 def _summary_response(item: WorkSummary) -> WorkSummaryResponse:
@@ -817,7 +210,6 @@ def _detail_response(detail: WorkDetail) -> WorkDetailResponse:
         item=_summary_response(detail.item),
         tasks=[_task_response(item) for item in detail.tasks],
         coverage=[_coverage_response(item) for item in detail.coverage],
-        board=WorkBoardResponse.model_validate(detail.board) if detail.board else None,
     )
 
 
@@ -860,33 +252,6 @@ def create_work_router() -> APIRouter:
             coverage=[_coverage_response(item) for item in result.coverage],
         )
 
-    @router.get("/reviews", response_model=ReviewListResponse)
-    async def list_reviews(
-        principal: Principal = Depends(extract_principal),
-        saga_repo: SagaRepository = Depends(resolve_saga_repo),
-        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
-    ) -> ReviewListResponse:
-        """Every run a person reviews, across projects, from what campaigns already record."""
-        campaigns = await campaign_repo.list_campaign_summaries(owner_id=principal.user_id)
-        sagas = await saga_repo.list_sagas(owner_id=principal.user_id)
-        return ReviewListResponse.model_validate({"items": review_list(campaigns, sagas)})
-
-    @router.get("/review-widgets/{module}/{name}", response_model=ReviewWidgetResponse)
-    async def read_review_widget(
-        module: str,
-        name: str,
-        request: Request,
-        _principal: Principal = Depends(extract_principal),
-    ) -> ReviewWidgetResponse:
-        """A widget's page as data: it only ever runs inside the review's sandbox."""
-        widget = request.app.state.review_widgets.get(f"{module}/{name}")
-        if widget is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Review widget {module}/{name} is not installed on this deployment",
-            )
-        return ReviewWidgetResponse.model_validate(widget)
-
     @router.get("/{kind}/{work_id}", response_model=WorkDetailResponse)
     async def get_work(
         kind: Literal["project", "campaign", "execution"],
@@ -898,8 +263,6 @@ def create_work_router() -> APIRouter:
         tracker_resolution: TrackerResolution = Depends(resolve_work_trackers),
         execution_repo: WorkflowExecutionRepository | None = Depends(resolve_work_execution_repo),
     ) -> WorkDetailResponse:
-        forge = await _forge_adapter(request, principal) if kind == "project" else None
-        sessions = _forge_sessions(request, principal) if forge is not None else None
         service = _service(
             principal=principal,
             saga_repo=saga_repo,
@@ -910,8 +273,6 @@ def create_work_router() -> APIRouter:
                 getattr(request.app.state, "subscriber", None)
                 and request.app.state.subscriber.running
             ),
-            session_gates=sessions.read if sessions is not None else None,
-            coordinator_repo=_coordinator_repo(request),
         )
         try:
             if kind == "campaign":
@@ -964,18 +325,11 @@ def create_work_router() -> APIRouter:
                             message="Dispatch readiness could not be determined.",
                         ),
                     )
-            detail = await service.get_project(
-                work_id,
-                ready_issue_ids=ready_issue_ids,
-                dispatch_coverage=dispatch_coverage,
-            )
             return _detail_response(
-                await _close_finished_coordinators(
-                    detail,
-                    saga_id=work_id,
-                    request=request,
-                    adapter=forge,
-                    principal=principal,
+                await service.get_project(
+                    work_id,
+                    ready_issue_ids=ready_issue_ids,
+                    dispatch_coverage=dispatch_coverage,
                 )
             )
         except WorkNotFoundError as exc:
@@ -983,226 +337,18 @@ def create_work_router() -> APIRouter:
         except WorkSourceUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    @router.post(
-        "/project/{saga_id}/tasks/{issue_id}/gate-decision",
-        response_model=GateDecisionResponse,
-    )
-    async def decide_gate(
-        saga_id: UUID,
-        issue_id: str,
-        body: GateDecisionRequest,
-        request: Request,
-        principal: Principal = Depends(extract_principal),
-        saga_repo: SagaRepository = Depends(resolve_saga_repo),
-        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
-        tracker_resolution: TrackerResolution = Depends(resolve_work_trackers),
-    ) -> GateDecisionResponse:
-        """Answer the gate a ticket is waiting on, exactly as the reviewer saw it."""
-        _require_changes_note(body)
-        sessions = _forge_sessions(request, principal)
-        if sessions is None or await _forge_adapter(request, principal) is None:
-            raise HTTPException(status_code=503, detail="No Forge connection is available")
-        service = _service(
-            principal=principal,
-            saga_repo=saga_repo,
-            campaign_repo=campaign_repo,
-            tracker_resolution=tracker_resolution,
-            execution_repo=None,
-            campaign_lifecycle_available=True,
-            session_gates=sessions.read,
-            coordinator_repo=_coordinator_repo(request),
-        )
-        try:
-            detail = await service.get_project(saga_id)
-        except WorkNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        task = next((item for item in detail.tasks if item.source.issue_id == issue_id), None)
-        if task is None:
-            raise HTTPException(status_code=404, detail=f"Ticket not found: {issue_id}")
-        gate = task.board.gate if task.board else None
-        session_id = _run_session_id(task)
-        if gate is None or session_id is None:
-            raise HTTPException(status_code=409, detail="This ticket is not waiting on a gate")
-        if gate.id != body.gate_id or gate.activation_id != body.activation_id:
-            raise HTTPException(
-                status_code=409,
-                detail="This gate changed after you opened it. Review it again.",
-            )
-        await _forward_gate_decision(sessions, session_id, gate.id, body, request, principal)
-        return GateDecisionResponse(status="resolved", session_id=session_id, gate_id=gate.id)
-
-    @router.get(
-        "/project/{saga_id}/tasks/{issue_id}/reviews",
-        response_model=TicketReviewsResponse,
-    )
-    async def ticket_reviews(
-        saga_id: UUID,
-        issue_id: str,
-        request: Request,
-        principal: Principal = Depends(extract_principal),
-        saga_repo: SagaRepository = Depends(resolve_saga_repo),
-        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
-    ) -> TicketReviewsResponse:
-        """Everything this ticket's runs have put in front of a person, oldest first."""
-        sessions = _forge_sessions(request, principal)
-        if sessions is None:
-            raise HTTPException(status_code=503, detail="No Forge connection is available")
-        saga = await saga_repo.get_saga(saga_id, owner_id=principal.user_id)
-        if saga is None:
-            raise HTTPException(status_code=404, detail=f"Project work not found: {saga_id}")
-        campaigns = await campaign_repo.list_ticket_campaigns(
-            owner_id=principal.user_id, saga_id=saga_id
-        )
-        runs = [
-            campaign
-            for campaign in campaigns
-            if campaign.session_id
-            and (ticket := ticket_of(campaign.metadata)) is not None
-            and ticket[1] == issue_id
-        ]
-        reviews, unreadable = await _read_reviews(runs, sessions, request, principal)
-        return TicketReviewsResponse.model_validate(
-            {"reviews": reviews, "unreadable_runs": unreadable, "plan_slug": saga.plan_slug}
-        )
-
-    @router.get("/runs/{slug}/reviews", response_model=RunReviewsResponse)
-    async def run_review(
-        slug: str,
-        request: Request,
-        principal: Principal = Depends(extract_principal),
-        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
-    ) -> RunReviewsResponse:
-        """What a run with no ticket has put in front of a person."""
-        sessions = _forge_sessions(request, principal)
-        if sessions is None:
-            raise HTTPException(status_code=503, detail="No Forge connection is available")
-        campaign = await _owned_run(campaign_repo, slug, principal)
-        runs = [campaign] if campaign.session_id else []
-        reviews, unreadable = await _read_reviews(runs, sessions, request, principal)
-        return RunReviewsResponse.model_validate(
-            {"run": review_run(campaign), "reviews": reviews, "unreadable_runs": unreadable}
-        )
-
-    @router.post("/runs/{slug}/gate-decision", response_model=GateDecisionResponse)
-    async def decide_run_gate(
-        slug: str,
-        body: GateDecisionRequest,
-        request: Request,
-        principal: Principal = Depends(extract_principal),
-        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
-    ) -> GateDecisionResponse:
-        """Answer the gate a run with no ticket is waiting on, exactly as the reviewer saw it."""
-        _require_changes_note(body)
-        sessions = _forge_sessions(request, principal)
-        if sessions is None:
-            raise HTTPException(status_code=503, detail="No Forge connection is available")
-        campaign = await _owned_run(campaign_repo, slug, principal)
-        session_id = campaign.session_id
-        if not session_id:
-            raise HTTPException(status_code=409, detail="This run has no session to answer")
-        progress = await sessions.read(session_id, campaign.connection_id)
-        if progress.away_reason:
-            raise HTTPException(status_code=409, detail=progress.away_reason)
-        if not any(_is_gate_shown(gate, body) for gate in progress.gates):
-            raise HTTPException(
-                status_code=409,
-                detail="This gate changed after you opened it. Review it again.",
-            )
-        await _forward_gate_decision(sessions, session_id, body.gate_id, body, request, principal)
-        return GateDecisionResponse(status="resolved", session_id=session_id, gate_id=body.gate_id)
-
-    @router.post(
-        "/project/{saga_id}/tasks/{issue_id}/start",
-        response_model=TicketStartResponse,
-    )
-    async def start_ticket(
-        saga_id: UUID,
-        issue_id: str,
-        request: Request,
-        body: TicketStartRequest | None = None,
-        principal: Principal = Depends(extract_principal),
-        saga_repo: SagaRepository = Depends(resolve_saga_repo),
-        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
-        tracker_resolution: TrackerResolution = Depends(resolve_work_trackers),
-    ) -> TicketStartResponse:
-        """Hand a ticket to its coordinator, which starts the workflow of the dropped column."""
-        adapter = await _forge_adapter(request, principal)
-        sessions = _forge_sessions(request, principal)
-        if adapter is None or sessions is None:
-            raise HTTPException(status_code=503, detail="No Forge connection is available")
-        saga = await saga_repo.get_saga(saga_id, owner_id=principal.user_id)
-        if saga is None:
-            raise HTTPException(status_code=404, detail=f"Project work not found: {saga_id}")
-        if (saga.workflow_id is None and not saga.board_workflows) or not saga.repos:
-            raise HTTPException(
-                status_code=409,
-                detail="Give this project a workflow and a repository before starting tickets",
-            )
-        service = _service(
-            principal=principal,
-            saga_repo=saga_repo,
-            campaign_repo=campaign_repo,
-            tracker_resolution=tracker_resolution,
-            execution_repo=None,
-            campaign_lifecycle_available=True,
-            session_gates=sessions.read,
-            coordinator_repo=_coordinator_repo(request),
-        )
-        try:
-            issue = await service.tracker_issue(saga, issue_id)
-            detail = await service.get_project(saga_id)
-        except WorkSourceUnavailableError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        task = next((item for item in detail.tasks if item.source.issue_id == issue_id), None)
-        if issue is None or task is None:
-            raise HTTPException(status_code=404, detail=f"Ticket not found: {issue_id}")
-        _refuse_active_run(task)
-        if detail.board is None:
-            snapshot = saga.workflow_snapshot or {}
-            workflow = TicketWorkflow(
-                id=str(saga.workflow_id), name=str(snapshot.get("name") or "")
-            )
-        else:
-            entered = _workflow_to_start(detail.board, task, body.column_id if body else None)
-            workflow = TicketWorkflow(id=entered.id, name=entered.name)
-        try:
-            coordinator = await _coordinator_service(
-                request, adapter=adapter, principal=principal
-            ).start_workflow(saga, issue, workflow)
-        except httpx.HTTPError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"The ticket's coordinator could not be started: {exc}",
-            ) from exc
-        return TicketStartResponse(status="coordinating", session_id=coordinator.session_id)
-
     return router
 
 
 __all__ = [
-    "BoardColumnResponse",
-    "BoardGateResponse",
-    "BoardPlacementResponse",
     "DispatchRefResponse",
-    "GateDecisionRequest",
-    "GateDecisionResponse",
     "OperationalRunRefResponse",
     "RawWorkStateResponse",
-    "ReviewItemResponse",
-    "ReviewListResponse",
-    "ReviewPanelResponse",
-    "ReviewWidgetResponse",
-    "ReviewRevisionResponse",
-    "ReviewSourceResponse",
-    "RunReviewResponse",
     "SessionRefResponse",
     "SourceCoverageResponse",
-    "TicketReviewsResponse",
-    "TicketStartRequest",
     "TrackerIssueRefResponse",
     "TrackerProjectRefResponse",
     "WorkAttentionResponse",
-    "WorkBoardResponse",
     "WorkCollectionResponse",
     "WorkDetailResponse",
     "WorkLinksResponse",

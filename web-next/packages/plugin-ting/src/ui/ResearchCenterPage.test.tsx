@@ -647,7 +647,9 @@ describe('ResearchCenterPage', () => {
     expect(screen.getAllByText('PUBLISHED').length).toBeGreaterThan(0);
     expect(screen.getByText('EXPLORATORY')).toBeInTheDocument();
     expect(screen.getByText('DEEP MONITORING')).toBeInTheDocument();
-    expect(screen.getByText('Review campaign artifacts and published memory.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Review campaign artifacts and published memory in Mimir.'),
+    ).toBeInTheDocument();
     expect(
       screen.getByText('campaign needs human review before it can continue'),
     ).toBeInTheDocument();

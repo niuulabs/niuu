@@ -215,14 +215,12 @@ def create_ting_test_app(
     """
     from ting.adapters.postgres_dispatcher import PostgresDispatcherRepository
     from ting.adapters.postgres_sagas import PostgresSagaRepository
-    from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
     from ting.api.dispatch import resolve_dispatcher_repo as dispatch_resolve_dispatcher_repo
     from ting.api.dispatch import resolve_saga_repo as dispatch_resolve_saga_repo
     from ting.api.dispatch import resolve_volundr
     from ting.api.dispatcher import resolve_dispatcher_repo
     from ting.api.dispatcher import resolve_event_bus as dispatcher_resolve_event_bus
     from ting.api.events import resolve_event_bus
-    from ting.api.research import resolve_workflow_campaign_repo
     from ting.api.runs import resolve_git, resolve_run_repo
     from ting.api.runs import resolve_tracker as resolve_runs_tracker
     from ting.api.runs import resolve_volundr as resolve_runs_volundr
@@ -244,7 +242,6 @@ def create_ting_test_app(
     # Real repos backed by the transactional pool
     saga_repo = PostgresSagaRepository(pool)
     dispatcher_repo = PostgresDispatcherRepository(pool)
-    campaign_repo = PostgresWorkflowCampaignRepository(pool)
 
     # Stubs for external adapters
     stub_tracker = StubTracker()
@@ -260,9 +257,6 @@ def create_ting_test_app(
 
     async def _dispatcher_repo():  # noqa: ANN202
         return dispatcher_repo
-
-    async def _campaign_repo():  # noqa: ANN202
-        return campaign_repo
 
     async def _tracker():  # noqa: ANN202
         return stub_tracker
@@ -283,7 +277,6 @@ def create_ting_test_app(
         return event_bus
 
     app.dependency_overrides[resolve_saga_repo] = _saga_repo
-    app.dependency_overrides[resolve_workflow_campaign_repo] = _campaign_repo
     app.dependency_overrides[dispatch_resolve_saga_repo] = _saga_repo
     app.dependency_overrides[resolve_run_repo] = _saga_repo
     app.dependency_overrides[resolve_dispatcher_repo] = _dispatcher_repo

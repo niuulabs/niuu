@@ -39,7 +39,7 @@ describe('Forge-backed ravens', () => {
     expect(row).toHaveTextContent('huginn-scout');
     expect(row).toHaveTextContent('session');
     expect(await screen.findByTestId('live-chat')).toHaveTextContent(/\/s\/flock\/session$/);
-    expect(screen.getByTestId('ravn-open-forge-session')).toHaveTextContent('Session');
+    expect(screen.getByTestId('ravn-open-forge-session')).toHaveTextContent('Forge session');
     expect(screen.queryByTestId('ravn-delete')).not.toBeInTheDocument();
     expect(screen.queryByTestId('ravn-restart')).not.toBeInTheDocument();
   });
@@ -98,10 +98,10 @@ describe('Forge-backed ravens', () => {
       ravnServices({ ravens: [], sessions: [flockSession()] }),
     );
     expect(await screen.findByTestId('ravn-setup-session')).toHaveTextContent(
-      'A session on this host',
+      'A Forge session on this Forge',
     );
-    expect(screen.getByText('set by the host’s agent configuration')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Open session →' }));
+    expect(screen.getByText('set by the Forge’s ravn configuration')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Open in Forge →' }));
     await waitFor(() => expect(router.state.location.pathname).toBe(`/volundr/sessions/${FLOCK}`));
   });
 
@@ -113,7 +113,7 @@ describe('Forge-backed ravens', () => {
       .mockResolvedValue([flockSession()]);
     mountRavn(`/ravn?ravn=${FLOCK}`, services);
     expect(await screen.findByTestId('ravn-health-banner')).toHaveTextContent(
-      'Starting on this host',
+      'Starting on this Forge',
     );
     expect(await screen.findByTestId('live-chat', {}, { timeout: 4_000 })).toBeInTheDocument();
   });
@@ -133,13 +133,13 @@ describe('Deploying a ravn as a Forge session', () => {
     const services = ravnServices({ withForge: true });
     const router = mountRavn('/ravn', services);
     fireEvent.click(await screen.findByTestId('ravn-deploy-open'));
-    const dialog = await screen.findByRole('dialog', { name: 'Deploy an agent' });
+    const dialog = await screen.findByRole('dialog', { name: 'Deploy a ravn' });
     expect(within(dialog).getByTestId('ravn-deploy-runtime-session')).toHaveAttribute(
       'aria-pressed',
       'true',
     );
     expect(within(dialog).getByTestId('ravn-deploy-session-model')).toHaveTextContent(
-      'Set by this host’s agent configuration',
+      'Set by this Forge’s ravn configuration',
     );
     const summary = within(dialog).getByTestId('ravn-deploy-summary');
     expect(summary).toHaveTextContent('Name it and pick a persona.');
@@ -157,7 +157,7 @@ describe('Deploying a ravn as a Forge session', () => {
 
     fireEvent.click(await within(dialog).findByText('research-analyst'));
     expect(summary).toHaveTextContent(
-      'Starts huginn-scout (session names are lowercase) as an agent session on this host with persona research-analyst.',
+      'Starts huginn-scout (Forge names sessions in lowercase) as a Ravn session on this Forge with persona research-analyst.',
     );
     fireEvent.click(within(dialog).getByTestId('ravn-deploy-submit'));
     await waitFor(() =>
@@ -181,7 +181,7 @@ describe('Deploying a ravn as a Forge session', () => {
       .mockRejectedValue(Object.assign(new Error('x'), { detail: 'max concurrent sessions' }));
     mountRavn('/ravn', services);
     fireEvent.click(await screen.findByTestId('ravn-deploy-open'));
-    const dialog = await screen.findByRole('dialog', { name: 'Deploy an agent' });
+    const dialog = await screen.findByRole('dialog', { name: 'Deploy a ravn' });
     fireEvent.change(await within(dialog).findByTestId('ravn-deploy-name'), {
       target: { value: 'scout' },
     });
@@ -196,7 +196,7 @@ describe('Deploying a ravn as a Forge session', () => {
   it('asks for a name once the persona is picked', async () => {
     mountRavn('/ravn', ravnServices({ withForge: true }));
     fireEvent.click(await screen.findByTestId('ravn-deploy-open'));
-    const dialog = await screen.findByRole('dialog', { name: 'Deploy an agent' });
+    const dialog = await screen.findByRole('dialog', { name: 'Deploy a ravn' });
     fireEvent.click(await within(dialog).findByText('research-framer'));
     expect(within(dialog).getByTestId('ravn-deploy-summary')).toHaveTextContent('Name it.');
   });

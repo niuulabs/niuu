@@ -12,15 +12,7 @@ from uuid import UUID
 import asyncpg
 
 from identity.ports import AuthorizationDeniedError
-from ting.domain.models import (
-    Phase,
-    PhaseStatus,
-    Run,
-    RunStatus,
-    Saga,
-    SagaBoardWorkflow,
-    SagaStatus,
-)
+from ting.domain.models import Phase, PhaseStatus, Run, RunStatus, Saga, SagaStatus
 from ting.ports.saga_repository import SagaRepository
 
 
@@ -123,11 +115,10 @@ class PostgresSagaRepository(SagaRepository):
                 (id, tracker_id, tracker_type, slug, name,
                  repos, feature_branch, base_branch, status, created_at, owner_id,
                  workflow_id, workflow_version, workflow_snapshot, instance_id,
-                 repo_branches, target_tags, target_match, tenant_id, tracker_connection_id,
-                 plan_slug)
+                 repo_branches, target_tags, target_match, tenant_id, tracker_connection_id)
             VALUES
                 ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15::uuid,
-                 $16::jsonb, $17, $18, $19, $20, $21)
+                 $16::jsonb, $17, $18, $19, $20)
             ON CONFLICT (id) DO UPDATE SET
                 tracker_id = EXCLUDED.tracker_id,
                 tracker_type = EXCLUDED.tracker_type,
@@ -145,8 +136,7 @@ class PostgresSagaRepository(SagaRepository):
                 instance_id = EXCLUDED.instance_id,
                 repo_branches = EXCLUDED.repo_branches,
                 target_tags = EXCLUDED.target_tags,
-                target_match = EXCLUDED.target_match,
-                plan_slug = EXCLUDED.plan_slug
+                target_match = EXCLUDED.target_match
                 WHERE sagas.tenant_id = EXCLUDED.tenant_id
                   AND sagas.owner_id IS NOT DISTINCT FROM EXCLUDED.owner_id
             """,
@@ -170,7 +160,6 @@ class PostgresSagaRepository(SagaRepository):
             saga.target_match,
             saga.tenant_id,
             saga.tracker_connection_id,
-            saga.plan_slug,
         )
         if result == "INSERT 0 0":
             raise AuthorizationDeniedError("Resource ownership is immutable")
@@ -332,35 +321,6 @@ class PostgresSagaRepository(SagaRepository):
             workflow_version,
             snapshot,
             saga_id,
-        )
-
-    async def update_saga_board_workflows(
-        self,
-        saga_id: UUID,
-        *,
-        board_workflows: tuple[SagaBoardWorkflow, ...],
-        owner_id: str | None = None,
-    ) -> None:
-        document = json.dumps(
-            [
-                {
-                    "workflow_id": str(pin.workflow_id),
-                    "workflow_version": pin.workflow_version,
-                    "workflow_snapshot": pin.workflow_snapshot,
-                }
-                for pin in board_workflows
-            ]
-        )
-        await self._pool.execute(
-            """
-            UPDATE sagas
-            SET board_workflows = $1::jsonb
-            WHERE id = $2
-              AND ($3::text IS NULL OR owner_id = $3)
-            """,
-            document,
-            saga_id,
-            owner_id,
         )
 
     async def update_saga_target(
@@ -532,22 +492,6 @@ class PostgresSagaRepository(SagaRepository):
             instance_id=str(row["instance_id"]) if row.get("instance_id") is not None else None,
             target_tags=list(row.get("target_tags") or []),
             target_match=str(row.get("target_match") or "all"),
-            plan_slug=row.get("plan_slug"),
-            board_workflows=PostgresSagaRepository._decode_board_workflows(
-                row.get("board_workflows")
-            ),
-        )
-
-    @staticmethod
-    def _decode_board_workflows(value: Any) -> tuple[SagaBoardWorkflow, ...]:
-        entries = json.loads(value) if isinstance(value, str) else value or []
-        return tuple(
-            SagaBoardWorkflow(
-                workflow_id=UUID(str(entry["workflow_id"])),
-                workflow_version=str(entry["workflow_version"]),
-                workflow_snapshot=dict(entry["workflow_snapshot"]),
-            )
-            for entry in entries
         )
 
     @staticmethod

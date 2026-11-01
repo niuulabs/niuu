@@ -21,7 +21,6 @@ const tingMocks = vi.hoisted(() => ({
   createMockDispatcherService: vi.fn(() => ({ kind: 'mock-dispatcher' })),
   createMockTingSessionService: vi.fn(() => ({ kind: 'mock-sessions' })),
   createMockTrackerService: vi.fn(() => ({ kind: 'mock-tracker' })),
-  createMockWorkService: vi.fn(() => ({ kind: 'mock-work' })),
   createMockWorkflowService: vi.fn(() => ({ kind: 'mock-workflows' })),
   createMockResearchService: vi.fn(() => ({ kind: 'mock-research' })),
   createMockSpecsService: vi.fn(() => ({ kind: 'mock-specs' })),
@@ -527,22 +526,6 @@ describe('buildServices live base selection', () => {
 
     expect(observatoryMocks.createMockAgentDirectory).not.toHaveBeenCalled();
     expect(isUnavailableService(services['observatory.agents'])).toBe(true);
-  });
-
-  it('serves work from the mock only when demo mode is explicit', () => {
-    const demo = buildServices({ demoMode: true, services: {} } as any);
-    expect(demo['ting.work']).toEqual({ kind: 'mock-work' });
-
-    tingMocks.createMockWorkService.mockClear();
-    const live = buildServices({ demoMode: false, services: {} } as any);
-    expect(tingMocks.createMockWorkService).not.toHaveBeenCalled();
-    expect(isUnavailableService(live['ting.work'])).toBe(true);
-  });
-
-  it('reports work as a demo adapter in demo mode', () => {
-    const status = buildServiceBackendStatus({ demoMode: true, services: {} } as any);
-
-    expect(status['ting.work']?.mode).toBe('demo');
   });
 
   it('builds separate forge runtime and volundr catalog adapters', () => {

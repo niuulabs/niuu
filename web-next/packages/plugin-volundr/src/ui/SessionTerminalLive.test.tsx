@@ -289,7 +289,7 @@ describe('SessionTerminalLive', () => {
     render(<SessionTerminalLive url="ws://localhost:8080/ws" />);
     await waitFor(() =>
       expect(
-        screen.getByText('This host does not provide terminal access for this session.'),
+        screen.getByText('This Forge host does not provide terminal access for this session.'),
       ).toBeInTheDocument(),
     );
   });

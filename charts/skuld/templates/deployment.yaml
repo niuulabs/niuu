@@ -1,4 +1,3 @@
-{{- if not (include "skuld.roomGatewayEnabled" .) }}
 {{- if and .Values.homeVolume.enabled .Values.homeVolume.persistentTmp }}
 {{- $id := include "skuld.sessionId" . }}
 {{- if not (regexMatch "^[a-zA-Z0-9][a-zA-Z0-9._-]*$" $id) }}
@@ -82,7 +81,6 @@ spec:
       securityContext:
         runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
         fsGroup: {{ .Values.securityContext.fsGroup }}
-        fsGroupChangePolicy: {{ .Values.securityContext.fsGroupChangePolicy }}
       {{- include "skuld.imagePullSecrets" . | nindent 6 }}
       {{- if or .Values.git.repoUrl .Values.homeVolume.enabled .Values.extraInitContainers (and .Values.localServices.enabled .Values.persistence.enabled) }}
       initContainers:
@@ -671,10 +669,71 @@ spec:
             {{- end }}
         {{- end }}
         {{- if (and .Values.wsAuth.enforce_ownership .Values.envoy.enabled) }}
-        {{- include "skuld.cedarAuthzContainer" . | nindent 8 }}
+        - name: cedar-authz
+          image: {{ include "skuld.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "identity.authz_main"]
+          args: ["--config", "/etc/authorization/authz.yaml"]
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import grpc; from envoy.service.auth.v3 import external_auth_pb2 as pb, external_auth_pb2_grpc as rpc; channel = grpc.insecure_channel('127.0.0.1:{{ .Values.envoy.authorization.port }}'); assert rpc.AuthorizationStub(channel).Check(pb.CheckRequest(), timeout={{ .Values.envoy.authorization.readinessProbe.timeoutSeconds }}).denied_response.status.code == 401"
+            periodSeconds: {{ .Values.envoy.authorization.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.envoy.authorization.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.envoy.authorization.readinessProbe.failureThreshold }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: {{ .Values.securityContext.runAsUser }}
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.envoy.authorization.resources | nindent 12 }}
+          volumeMounts:
+            - name: authz-config
+              mountPath: /etc/authorization
+              readOnly: true
+            {{- with .Values.envoy.authorization.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
         {{- end }}
         {{- if .Values.envoy.enabled }}
-        {{- include "skuld.envoyContainer" . | nindent 8 }}
+        # Envoy sidecar - JWT validation and header extraction
+        - name: envoy
+          image: "{{ .Values.envoy.image.repository }}:{{ .Values.envoy.image.tag }}"
+          imagePullPolicy: {{ .Values.envoy.image.pullPolicy }}
+          securityContext:
+            runAsUser: {{ .Values.securityContext.runAsUser }}
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          ports:
+            - name: envoy
+              containerPort: {{ .Values.envoy.port }}
+              protocol: TCP
+          {{- with .Values.envoy.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+            {{- with .Values.envoy.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.envoy.port }}
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: {{ .Values.envoy.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 15
         {{- end }}
       volumes:
         {{- if and .Values.wsAuth.enforce_ownership .Values.envoy.enabled }}
@@ -739,4 +798,3 @@ spec:
         {{- range .Values.extraVolumes }}
         - {{- toYaml . | nindent 10 }}
         {{- end }}
-{{- end }}

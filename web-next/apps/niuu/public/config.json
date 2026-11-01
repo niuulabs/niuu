@@ -1,6 +1,6 @@
 {
   "demoMode": true,
-  "theme": "niuu",
+  "theme": "ice",
   "plugins": {
     "setup": { "enabled": true, "order": 0 },
     "login": { "enabled": true, "order": 0 },

@@ -7,12 +7,9 @@ import asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from niuu.domain.models import Principal
 from ting.adapters.memory_event_bus import InMemoryEventBus
-from ting.api.events import _sse_generator, create_events_router, resolve_event_bus, visible_to
+from ting.api.events import _sse_generator, create_events_router, resolve_event_bus
 from ting.ports.event_bus import EventBusPort, TingEvent
-
-_ME = Principal(user_id="user-1", email="", tenant_id="tenant-a", roles=["volundr:developer"])
 
 # ---------------------------------------------------------------------------
 # TingEvent
@@ -233,7 +230,6 @@ class TestSseGenerator:
     async def test_yields_snapshot_on_start(self):
         bus = InMemoryEventBus(max_clients=5)
         snap = TingEvent(
-            owner_id="user-1",
             id="snap-1",
             event="dispatcher.state",
             data={"running": False, "threshold": 0.8, "queue_depth": 0},
@@ -242,7 +238,7 @@ class TestSseGenerator:
 
         q = bus.subscribe()
         chunks: list[str] = []
-        async for chunk in _sse_generator(bus, q, principal=_ME, keepalive_interval=30.0):
+        async for chunk in _sse_generator(bus, q, keepalive_interval=30.0):
             chunks.append(chunk)
             break  # Stop after snapshot
 
@@ -254,7 +250,6 @@ class TestSseGenerator:
         bus = InMemoryEventBus(max_clients=5)
         q = bus.subscribe()
         event = TingEvent(
-            owner_id="user-1",
             id="live-1",
             event="run.state_changed",
             data={
@@ -268,7 +263,7 @@ class TestSseGenerator:
         await bus.emit(event)  # pre-queue before generator starts
 
         chunks: list[str] = []
-        async for chunk in _sse_generator(bus, q, principal=_ME, keepalive_interval=30.0):
+        async for chunk in _sse_generator(bus, q, keepalive_interval=30.0):
             chunks.append(chunk)
             if "run.state_changed" in chunk:
                 break
@@ -282,7 +277,7 @@ class TestSseGenerator:
         q = bus.subscribe()
 
         chunks: list[str] = []
-        async for chunk in _sse_generator(bus, q, principal=_ME, keepalive_interval=0.05):
+        async for chunk in _sse_generator(bus, q, keepalive_interval=0.05):
             chunks.append(chunk)
             if ": keepalive" in chunk:
                 break
@@ -292,7 +287,6 @@ class TestSseGenerator:
     async def test_unsubscribes_on_close(self):
         bus = InMemoryEventBus(max_clients=5)
         snap = TingEvent(
-            owner_id="user-1",
             id="s1",
             event="dispatcher.state",
             data={"running": False, "threshold": 0.8, "queue_depth": 0},
@@ -302,7 +296,7 @@ class TestSseGenerator:
         q = bus.subscribe()
         assert bus.client_count == 1
 
-        gen = _sse_generator(bus, q, principal=_ME, keepalive_interval=30.0)
+        gen = _sse_generator(bus, q, keepalive_interval=30.0)
         async for _ in gen:
             break  # Snapshot yields immediately; break schedules aclose()
         await gen.aclose()  # Explicitly await cleanup to ensure finally runs
@@ -326,10 +320,10 @@ class TestSseGenerator:
         ]
 
         for ev_type, data in event_types:
-            await bus.emit(TingEvent(event=ev_type, data=data, owner_id="user-1"))
+            await bus.emit(TingEvent(event=ev_type, data=data))
 
         received: list[str] = []
-        gen = _sse_generator(bus, q, principal=_ME, keepalive_interval=30.0)
+        gen = _sse_generator(bus, q, keepalive_interval=30.0)
         for _ in range(len(event_types)):
             chunk = await gen.__anext__()
             received.append(chunk)
@@ -358,13 +352,9 @@ class TestSseEndpointHttp:
         bus = InMemoryEventBus(max_clients=1)
         bus.subscribe()  # fill up
         client = TestClient(_make_app(bus))
-        resp = client.get("/api/v1/ting/events", headers={"x-auth-user-id": "user-1"})
+        resp = client.get("/api/v1/ting/events")
         assert resp.status_code == 503
         assert "limit" in resp.json()["detail"].lower()
-
-    def test_refuses_a_caller_with_no_identity(self):
-        client = TestClient(_make_app(InMemoryEventBus()))
-        assert client.get("/api/v1/ting/events").status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -435,26 +425,3 @@ class TestEventBusConfig:
 
         s = Settings()
         assert s.event_bus.adapter == "ting.adapters.memory_event_bus.InMemoryEventBus"
-
-
-class TestEventVisibility:
-    def test_an_event_is_visible_only_to_its_owner(self):
-        assert visible_to(TingEvent(event="e", data={}, owner_id="user-1"), _ME)
-        assert not visible_to(TingEvent(event="e", data={}, owner_id="user-2"), _ME)
-
-    def test_an_event_with_no_owner_reaches_nobody(self):
-        assert not visible_to(TingEvent(event="e", data={}), _ME)
-
-    async def test_the_stream_drops_other_users_events(self):
-        bus = InMemoryEventBus()
-        await bus.emit(TingEvent(event="dispatcher.state", data={"who": "them"}, owner_id="user-2"))
-        q = bus.subscribe()
-        await bus.emit(TingEvent(event="session.spawned", data={"who": "them"}, owner_id="user-2"))
-        await bus.emit(TingEvent(event="session.spawned", data={}))
-        await bus.emit(TingEvent(event="session.spawned", data={"who": "me"}, owner_id="user-1"))
-
-        gen = _sse_generator(bus, q, principal=_ME, keepalive_interval=30.0)
-        first = await gen.__anext__()
-        await gen.aclose()
-
-        assert '"who": "me"' in first

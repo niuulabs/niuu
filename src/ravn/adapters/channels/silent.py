@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from ravn.domain.events import RavnEvent, RavnEventType
-from ravn.domain.surface import SURFACE_PREFIX as _SURFACE_PREFIX
 from ravn.ports.channel import ChannelPort
+
+_SURFACE_PREFIX = "[SURFACE]"
 
 
 class SilentChannel(ChannelPort):

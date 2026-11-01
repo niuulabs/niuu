@@ -42,7 +42,6 @@ class GuildPlugin(ServicePlugin):
                 name="guild-instances-api",
                 prefixes=(
                     "/api/v1/niuu/instances",
-                    "/api/v1/niuu/knowledge",
                     "/api/v1/niuu/targets",
                     "/api/v1/niuu/observatory",
                 ),

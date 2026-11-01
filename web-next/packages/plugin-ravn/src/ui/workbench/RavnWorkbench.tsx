@@ -111,7 +111,7 @@ export function RavnWorkbench() {
   if (ravens.isLoading) {
     return (
       <div className="rw-state-screen" data-testid="ravn-workbench-loading">
-        <LoadingState label="Loading agents…" />
+        <LoadingState label="Loading ravens…" />
       </div>
     );
   }
@@ -120,8 +120,8 @@ export function RavnWorkbench() {
     return (
       <div className="rw-state-screen" data-testid="ravn-workbench-error">
         <ErrorState
-          title="Agents could not be loaded"
-          message={errorText(ravens.error, 'The agents API did not answer')}
+          title="Ravens could not be loaded"
+          message={errorText(ravens.error, 'The Ravn API did not answer')}
           action={
             <button type="button" className="rw-btn" onClick={() => void ravens.refetch()}>
               Try again
@@ -195,9 +195,9 @@ export function RavnWorkbench() {
         <section className="rw-detail" data-testid="ravn-workbench-empty">
           <div className="rw-empty">
             <div className="rw-empty__inner">
-              <h3 className="rw-empty__title">No agents yet</h3>
+              <h3 className="rw-empty__title">No ravens yet</h3>
               <p className="rw-empty__text">
-                An agent is a model and runtime running as one of your personas. Deploy one to talk
+                A ravn is a model and runtime running as one of your personas. Deploy one to talk
                 with it here.
               </p>
               <div className="rw-empty__acts">
@@ -206,7 +206,7 @@ export function RavnWorkbench() {
                   className="rw-btn rw-btn--primary"
                   onClick={() => setDeployOpen(true)}
                 >
-                  Deploy an agent
+                  Deploy a ravn
                 </button>
               </div>
             </div>

@@ -234,7 +234,7 @@ claim that already holds a workspace is never overwritten.
 - An OpenShell resident's old sandbox that is slow to go is not a failed
   upgrade. Every removal of a resident sandbox waits
   `resident_sandbox_delete_timeout_seconds` (180s; sessions keep
-  `resource_delete_timeout`, 120s). If the sandbox is still being deleted after
+  `resource_delete_timeout`, 30s). If the sandbox is still being deleted after
   that, the resident reports `PlatformUpgrade` / `Upgrading` and its
   redeployment waits for the sandbox to go, then recreates it on its workspace
   claim, retrying on later passes. If the gateway refuses the delete, the
@@ -310,142 +310,6 @@ Live managed and compatibility residents also appear in
 Nothing auto-stops a resident — it lives until you scale down or delete the
 release.
 
-### The Valkyrie catalog in the resident list
-
-Valkyries are deployed straight from infrastructure, so neither Forge nor
-cluster discovery lists them. The Ravn API lists them from the environment
-catalog that also feeds the Valkyrie dashboard
-(`RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON`, or a file named by
-`RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_FILE`). Each `environments[]` record's
-`valkyrie` object becomes one resident in `GET /api/v1/ravn/ravens`,
-`GET /api/v1/ravn/ravens/{id}`, `GET /api/v1/ravn/ravens/{id}/sessions`,
-`GET /api/v1/ravn/sessions` and `GET /api/v1/ravn/sessions/{id}`, in the same
-shape as a discovered standalone resident:
-
-| Catalog field (on `valkyrie`) | Resident field |
-|---|---|
-| `valkyrieId` | `id` (defaults to `valkyrie-<environment>`; must be unique in the catalog) |
-| `valkyrieName` | `resident_name` |
-| `persona` | `persona_name` |
-| the environment's `name` | `location` |
-| — | `deployment: "valkyrie"`, `kind: "resident"` |
-| `chatEndpoint` (optional) | `chat_endpoint`, and `chat` in `capabilities` |
-| `visibility` (optional) | `system` (default), `tenant` or `user`; same rules as the discovery annotations above |
-| `ownerId`, `tenantId` (optional) | Required owner for `user` visibility, tenant for `tenant` visibility |
-| `placement` (optional) | `{cluster, namespace, workload}`: the Deployment that is the Valkyrie; gives the resident its `cluster` and its logs |
-
-`chatEndpoint` is the Valkyrie's room, an absolute `wss://` URL such as
-`wss://yggdrasil.niuu.world/rooms/<id>/ws/ravn`. Without it the Valkyrie is
-still listed, but has no `chat` capability, no `chat_endpoint`, and no entry in
-the sessions listings. A malformed `chatEndpoint` (or an unknown `visibility`)
-fails at config load, as does a catalog that repeats a `valkyrieId`.
-
-Status is what telemetry actually observed, never a configured default. A
-Valkyrie whose telemetry (any runtime, presence or signal-poll event for its
-`valkyrieId`) was last seen within `RAVN_VALKYRIE_DASHBOARD_ROSTER_STALE_AFTER_SECONDS`
-(default `900`) reports `status` and `observed_state` of `active`. One that was
-never observed since the API started, or went quiet for longer, reports `idle`.
-Either way an `Observed` entry in `conditions` says which (`Fresh`, `Stale`,
-`NeverObserved`), with the age and bound for stale ones. Keep the bound above
-the resident telemetry heartbeat, or a healthy Valkyrie flickers to `idle`
-between beats. Clients that only open rooms for running agents (Lexi) will not
-load the channel of an `idle` Valkyrie.
-
-The id precedence is managed, then discovered, then catalog: a catalog Valkyrie
-never appears twice when Forge or discovery already lists the same id.
-
-A catalog Valkyrie is listed by the instance whose Ravn holds the catalog
-(ymir), so its `instance_id` names that instance and calls about it are routed
-there. Where it actually runs is its `placement.cluster`, reported as `cluster`;
-the web UI and Lexi show and group a resident by `cluster` when it has one.
-
-### Channels with catalog residents (the Forge's discovered backend)
-
-A resident's extra channels are sessions in its Ravn OpenClaw shim, which the
-Forge drives (`RavnResidentSessionController`). The Forge only drives residents
-it has a record of, so catalog Valkyries get channels through the
-`discovered` resident backend: residents the Forge discovers instead of
-deploying. It keeps one record per discovered resident (id derived from the
-resident's key, `niuu.domain.discovered_residents.discovered_resident_id`),
-reports it active while its shim's `<shim_url>/health` answers, and never
-deploys, restarts, suspends or removes it. Its profile is never offered for
-deployment.
-
-```yaml
-residentRuntimeProfiles:
-  - id: discovered-ravn
-    enabled: true
-    displayName: Discovered Ravn
-    backend: discovered
-    engine: ravn
-    capabilities: [chat, logs]          # session.* are added by the Ravn session controller
-residentRuntimeControllers:
-  - adapter: volundr.adapters.outbound.discovered_resident_runtime.DiscoveredResidentRuntimeController
-    kwargs:
-      loki_base_url: https://loki.proxy.glitnir.alfheim.niuu.world
-      residents:
-        - key: valkyrie-glitnir-k8s     # the catalog valkyrieId
-          name: Hildr
-          owner_id: <user id>           # whose record (and channels) it is
-          tenant_id: <tenant id>
-          persona_name: k8s-valkyrie
-          shim_url: https://hildr.glitnir.alfheim.niuu.world/openclaw
-          chat_endpoint: wss://yggdrasil.niuu.world/rooms/hildr/session
-          placement: {cluster: glitnir, namespace: nats, workload: valkyrie-glitnir-k8s}
-    secretKwargs:
-      - kwarg: shim_tokens              # JSON object: resident key -> its shim token
-        secretName: discovered-resident-shim-tokens
-        secretKey: tokens.json
-```
-
-Each resident runs the shim with the same token
-(`gateway.channels.openclaw` with `path: /openclaw` behind its ingress,
-`token_env: RAVN_OPENCLAW_TOKEN`, `agent_id: main`). Every resident needs a token
-and every token a resident, or the Forge refuses to start.
-
-The Ravn API keeps listing the resident under its own id. When the caller may see
-the Forge's record of it, the resident gains `session.list`, `session.create` and
-`session.delete`, its sessions list is its room plus the record's sessions (chat
-endpoints `/s/<record id>/sessions/<id>/session`), and creating or deleting a
-channel goes to that record. Without a record a catalog resident has only its
-room, and creating a channel answers `409`.
-
-### Logs of discovered and catalog residents
-
-A managed resident's logs come from its control plane. A discovered or catalog
-resident is a plain Kubernetes workload, often in a cluster with no Niuu
-instance, so `GET /api/v1/ravn/ravens/{id}/logs` reads it by its placement from
-the configured `resident_logs` adapter. The Loki adapter reads the Loki that
-every cluster's collector ships pod logs to, one tenant per cluster:
-
-```yaml
-resident_logs:
-  adapter: ravn.adapters.resident_logs.loki.LokiResidentLogAdapter
-  base_url: https://loki.proxy.glitnir.alfheim.niuu.world
-  # query_path: /{cluster}/loki/api/v1/query_range   # default; {cluster} is the tenant path
-  # lookback_seconds: 86400
-  # timeout_seconds: 15
-```
-
-It selects the workload's pods (`<workload>-<replicaset>-<pod>`) in its
-namespace; `source` names containers and `min_level` filters on the line's
-level. A discovered resident is placed when its discovery adapter names its
-`cluster` (`KubernetesResidentDiscoveryAdapter(cluster: valhalla)`); a catalog
-Valkyrie, by its `placement`. A resident without a placement, or a Ravn with no
-`resident_logs` adapter, answers `409` with what to configure; a Loki that
-cannot answer is a `502`. Logs are never reported empty in place of either.
-
-### The shared (system) resident list
-
-`GET /api/v1/ravn/ravens?visibility=system` returns only the discovered and
-catalog residents whose visibility is `system`. It never asks Forge for the
-caller's own resident runtimes, so it suits views that one identity builds and
-every signed-in user sees. The Observatory topology uses it: each site's
-Observatory has its own site identity, which owns no residents and, on a Forge
-with `membership_authority: local`, is no tenant member either. A user's own
-residents therefore do not appear on the Observatory map; they stay visible to
-their owner in Lexi and the Residents page.
-
 ## Ownership
 
 Skuld enforces session ownership at WebSocket accept (`ws_auth` in the
@@ -454,14 +318,6 @@ matching `session.ownerId` (Envoy headers, dev params, or bearer token;
 admin roles bypass; unauthenticated loopback stays open for in-pod peers).
 The resident authenticates with its platform identity, so it can join
 exactly the sessions its owner owns — nothing else.
-
-The resident's own room connection (`skuld.broker_url`) presents that same
-platform identity as a bearer token, so a room hosted remotely behind JWT
-(`wss://yggdrasil.niuu.world/rooms/<id>/ws/ravn`) accepts it. A `wss://`
-`skuld.broker_url` therefore requires `gateway.platform.enabled` (with
-`gateway.platform.access_token`, or workload identity); without it the
-resident refuses to start. A plain in-cluster `ws://` broker needs no
-identity.
 
 ## The loop back
 

@@ -24,7 +24,7 @@ printf 'Workspace path: %s\n' "$NIUU_PRACTICE_DIR"
 The name and email above identify only this practice commit; they do not change
 your global Git settings or authenticate with any service.
 
-1. Open **Forge → Overview → custom launch…**.
+1. Open **Völundr → Forge → custom launch…**.
 2. Under **Source**, choose **local mount**.
 3. Paste the printed absolute **Workspace path** into **Path**. Do not paste the
    literal variable name. Give the session a distinct name, such as `niuu-practice`.
@@ -142,7 +142,7 @@ by the services; the CLI's host schema alone does not consume it. Setting
 
 ## Clone a repository from the catalog
 
-1. Reopen **Forge → Overview → custom launch…** after configuring the provider.
+1. Reopen **Völundr → Forge → custom launch…** after configuring the provider.
 2. Under **Source**, choose **git** and select the repository. For the public
    example, select the Niuu repository from the `niuulabs` organization.
 3. Select an existing **Branch**, using the default branch reported by the catalog

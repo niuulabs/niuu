@@ -32,7 +32,6 @@ from niuu.mesh import nng_ports_for as _ports_for
 from volundr.adapters.outbound.openshell_contract import (
     check_peer_workload_name,
     check_peer_workloads,
-    egress_target,
 )
 from volundr.adapters.outbound.resident_container_spec import PLATFORM_ACCESS_TOKEN_ENV
 from volundr.domain.models import (
@@ -91,12 +90,9 @@ _RAVN_COMMAND = [
         "sys.exit(proc.wait())\n"
     ),
 ]
-_RAVN_CONFIG_DIR = "/etc/ravn"
-_RAVN_CONFIG_FILE = "config.yaml"
-_RAVN_CONFIG_MOUNT_PATH = f"{_RAVN_CONFIG_DIR}/{_RAVN_CONFIG_FILE}"
+_RAVN_CONFIG_MOUNT_PATH = "/etc/ravn/config.yaml"
 _RAVN_CONFIG_VOLUME_PREFIX = "ravn-cfg"
-_INIT_WRITER_NAME = "write-ravn-cfg"
-_INIT_WRITER_ENV_PREFIX = "RAVN_CFG_"
+_RAVN_CONFIG_DIR = "/etc/ravn"
 _INIT_WRITER_IMAGE = "busybox:latest"
 _INIT_WRITER_SECURITY_CONTEXT = {
     "runAsUser": 1000,
@@ -237,57 +233,6 @@ def _openshell_mediated_mimir_instances(
             }
         mediated.append(instance)
     return mediated
-
-
-#: Prefix that hands an OpenShell persona the platform bearer its sandbox
-#: mediates, as a resident's Ravn gets it: the platform grant's env value is a
-#: placeholder OpenShell's proxy swaps for a workload-bound token on the hosts
-#: the grant covers. A sandbox without that grant stops the persona here,
-#: naming the missing piece, instead of every platform call failing later.
-_OPENSHELL_PLATFORM_TOKEN_PREFIX = [
-    "sh",
-    "-c",
-    (
-        "export RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN="
-        f'"${{{PLATFORM_ACCESS_TOKEN_ENV}:?the OpenShell sandbox has no Völundr platform '
-        'grant; set the OpenShell gateway volundr_api_url}"; exec "$@"'
-    ),
-    "ravn-platform-token",
-]
-#: Projected-token settings that name a file and exchange OpenShell never provides.
-_PROJECTED_PLATFORM_AUTH_KEYS = ("workload_token_file", "workload_exchange_url")
-
-
-def _openshell_mediated_platform(
-    ravn_config: dict[str, Any] | None,
-) -> tuple[dict[str, Any] | None, list[str]]:
-    """Point a persona's platform client at OpenShell's credential mediation.
-
-    A Ting launch configures ``gateway.platform`` for Kubernetes personas: a
-    projected token file exchanged at the platform. OpenShell mounts no
-    projected token, so that file can only be missing. Instead the sandbox's
-    platform grant covers the platform origins returned here and injects a
-    workload-bound token, which the persona reads from the env a resident uses
-    (see ``_OPENSHELL_PLATFORM_TOKEN_PREFIX``). Returns the rewritten overlay
-    and those origins; no origins when the platform is not enabled.
-    """
-    gateway = (ravn_config or {}).get("gateway")
-    platform = gateway.get("platform") if isinstance(gateway, dict) else None
-    if not isinstance(platform, dict) or not platform.get("enabled"):
-        return ravn_config, []
-    base_url = str(platform.get("base_url") or "").strip()
-    if not base_url:
-        raise ValueError(
-            "OpenShell flock personas reach the platform through the sandbox's platform "
-            "grant, which needs gateway.platform.base_url; set it in the launch's "
-            "ravn_config or disable gateway.platform"
-        )
-    mediated_platform = {
-        key: value for key, value in platform.items() if key not in _PROJECTED_PLATFORM_AUTH_KEYS
-    }
-    trusted = [str(origin) for origin in platform.get("a2a_trusted_origins") or [] if origin]
-    mediated = {**(ravn_config or {}), "gateway": {**gateway, "platform": mediated_platform}}
-    return mediated, list(dict.fromkeys([base_url, *trusted]))
 
 
 def _normalize_mimir_workload_config(
@@ -805,33 +750,6 @@ def _normalize_workflow_config(
     }
 
 
-def _observability_egress(observability_config: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """The OTLP endpoints Skuld and every Ravn in the flock export to.
-
-    Traces go over OTLP/gRPC, whose client completes TLS itself; metrics and
-    logs go over OTLP/HTTP.
-    """
-    if not observability_config or not observability_config.get("enabled"):
-        return []
-    return [
-        egress_target(
-            str(observability_config.get("trace_endpoint") or ""),
-            purpose="OTLP trace",
-            passthrough=True,
-        ),
-        egress_target(
-            str(observability_config.get("metric_endpoint") or ""),
-            purpose="OTLP metric",
-            passthrough=False,
-        ),
-        egress_target(
-            str(observability_config.get("log_endpoint") or ""),
-            purpose="OTLP log",
-            passthrough=False,
-        ),
-    ]
-
-
 def _workflow_trigger_config(workflow: dict[str, Any] | None) -> dict[str, str] | None:
     if not isinstance(workflow, dict):
         return None
@@ -890,7 +808,7 @@ def _default_flock_trigger_config(
         for persona in persona_dicts
         if isinstance(persona, dict)
     }
-    if not {"run-executor", "coordinator", "ticket-coordinator"} & persona_names:
+    if not {"run-executor", "coordinator"} & persona_names:
         return None
 
     return {
@@ -1270,9 +1188,6 @@ class RavnFlockContributor(SessionContributor):
         execution_credential_mounts: tuple[dict, ...] = (),
     ) -> tuple[dict[str, Any], PodSpecAdditions]:
         session_id = str(session.id)
-        platform_api_urls: list[str] = []
-        if runtime_backend == "openshell":
-            extra_ravn_config, platform_api_urls = _openshell_mediated_platform(extra_ravn_config)
         base_port = self._base_port
         all_personas = [pd["name"] for pd in persona_dicts]
         mimir_instances, _mimir_write_routing = _resolve_mimir_runtime(mimir_config)
@@ -1436,15 +1351,6 @@ class RavnFlockContributor(SessionContributor):
                 ]
             )
 
-        if workflow is None and workflow_trigger is not None and len(persona_dicts) == 1:
-            # A coordinator-led flock of one: a person in the room is talking to it.
-            skuld_env.append(
-                {
-                    "name": "SKULD__ROOM__DEFAULT_TARGET_PEER_ID",
-                    "value": flock_peer_id(persona_dicts[0]["name"]),
-                }
-            )
-
         if sleipnir_publish_urls:
             skuld_env.append(
                 {
@@ -1482,9 +1388,7 @@ class RavnFlockContributor(SessionContributor):
         # Ravn sidecar containers (indices 1..N)
         extra_containers: list[dict] = []
         config_volumes: list[dict] = []
-        config_writes: list[str] = []
-        config_write_env: list[dict] = []
-        config_write_mounts: list[dict] = []
+        init_containers: list[dict] = []
         openshell_workloads: list[dict[str, Any]] = []
         openshell_files: dict[str, str] = {}
 
@@ -1527,15 +1431,20 @@ class RavnFlockContributor(SessionContributor):
             cfg_vol_name = f"{_RAVN_CONFIG_VOLUME_PREFIX}-{persona}"
             config_volumes.append({"name": cfg_vol_name, "emptyDir": {}})
 
-            # The init container writes every persona's YAML into its volume. Each
-            # config travels in its own variable: a flock's configs together are far
-            # larger than the kernel accepts as a single exec argument (128 KiB).
-            cfg_write_dir = f"{_RAVN_CONFIG_DIR}/{persona}"
-            cfg_env_name = f"{_INIT_WRITER_ENV_PREFIX}{len(config_writes)}"
-            config_write_mounts.append({"name": cfg_vol_name, "mountPath": cfg_write_dir})
-            config_write_env.append({"name": cfg_env_name, "value": config_yaml})
-            config_writes.append(
-                f"printf '%s' \"${cfg_env_name}\" > {cfg_write_dir}/{_RAVN_CONFIG_FILE}\n"
+            # Init container writes YAML into the volume
+            heredoc = (
+                f"cat > {_RAVN_CONFIG_MOUNT_PATH} <<'__RAVN_EOF__'\n{config_yaml}__RAVN_EOF__\n"
+            )
+            init_containers.append(
+                {
+                    "name": f"write-ravn-cfg-{persona}",
+                    "image": self._init_writer_image,
+                    "command": ["sh", "-c", heredoc],
+                    "securityContext": _INIT_WRITER_SECURITY_CONTEXT.copy(),
+                    "volumeMounts": [
+                        {"name": cfg_vol_name, "mountPath": _RAVN_CONFIG_DIR},
+                    ],
+                }
             )
 
             ravn_env: list[dict] = [
@@ -1624,10 +1533,7 @@ class RavnFlockContributor(SessionContributor):
                     {
                         "name": check_peer_workload_name(f"ravn-{persona}"),
                         "image": self._ravn_image,
-                        "command": [
-                            *(_OPENSHELL_PLATFORM_TOKEN_PREFIX if platform_api_urls else []),
-                            *_RAVN_COMMAND,
-                        ],
+                        "command": list(_RAVN_COMMAND),
                         "environment": process_env,
                         "volume_mounts": [
                             {
@@ -1650,22 +1556,6 @@ class RavnFlockContributor(SessionContributor):
                     }
                 )
 
-        # One container, not one per persona: init containers run in series and
-        # each costs about a second of session boot.
-        init_containers: tuple[dict, ...] = ()
-        if config_writes:
-            init_containers = (
-                {
-                    "name": _INIT_WRITER_NAME,
-                    "image": self._init_writer_image,
-                    "imagePullPolicy": "IfNotPresent",
-                    "command": ["sh", "-ec", "".join(config_writes)],
-                    "env": config_write_env,
-                    "securityContext": _INIT_WRITER_SECURITY_CONTEXT.copy(),
-                    "volumeMounts": config_write_mounts,
-                },
-            )
-
         pod_volumes: list[dict[str, Any]] = [*config_volumes, *persona_source_volumes]
         if requires_local_mimir_mount:
             pod_volumes.insert(0, {"name": _MIMIR_VOLUME_NAME, "emptyDir": {}})
@@ -1683,7 +1573,7 @@ class RavnFlockContributor(SessionContributor):
                 else {}
             ),
             extra_containers=tuple(extra_containers),
-            init_containers=init_containers,
+            init_containers=tuple(init_containers),
         )
 
         values: dict[str, Any] = {
@@ -1734,10 +1624,7 @@ class RavnFlockContributor(SessionContributor):
                 "files": openshell_files,
                 "volumes": volumes,
                 "volumeMounts": mounts,
-                "egress": _observability_egress(observability_config),
             }
-            if platform_api_urls:
-                values["openshell"]["platformApiUrls"] = platform_api_urls
             pod_spec = PodSpecAdditions(env=tuple(skuld_env))
 
         if mimir_config:

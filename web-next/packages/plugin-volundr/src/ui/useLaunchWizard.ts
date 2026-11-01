@@ -462,9 +462,9 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
   const matchingTargets = getMatchingTargets(targets, form.targetTags, form.targetMatch);
   const targetRoutingError =
     form.targetMode === 'tags' && form.targetTags.length === 0
-      ? 'Select at least one host tag.'
+      ? 'Select at least one Forge tag.'
       : form.targetMode === 'tags' && matchingTargets.length === 0
-        ? 'No enabled host matches the selected tags.'
+        ? 'No enabled Forge target matches the selected tags.'
         : null;
   const sourceReady =
     form.sourcetype === 'blank' ||

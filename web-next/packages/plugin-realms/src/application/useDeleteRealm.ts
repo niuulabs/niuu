@@ -13,7 +13,7 @@ export const TEARDOWN_STEPS = [
   { id: 'resident', label: 'remove the resident' },
   { id: 'persona', label: 'delete the persona' },
   { id: 'routing', label: 'drop the memory routing rule' },
-  { id: 'realm', label: 'delete the workspace' },
+  { id: 'realm', label: 'delete the realm' },
 ] as const;
 
 export type TeardownStepId = (typeof TEARDOWN_STEPS)[number]['id'];

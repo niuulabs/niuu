@@ -94,6 +94,6 @@ describe('MimirTopbar', () => {
 
   it('renders the aria label for the stats container', () => {
     wrap();
-    expect(screen.getByLabelText('Memory stats')).toBeInTheDocument();
+    expect(screen.getByLabelText('Mímir stats')).toBeInTheDocument();
   });
 });

@@ -56,14 +56,14 @@ class HelpOverlay(ModalScreen[None]):
     HelpOverlay #help-container {
         width: 54;
         max-height: 80%;
-        background: #10212d;
-        border: round #e4bd7e;
+        background: #18181b;
+        border: round #f59e0b;
         padding: 1 2;
     }
     HelpOverlay #help-title {
         text-align: center;
         text-style: bold;
-        color: #e4bd7e;
+        color: #f59e0b;
         height: 1;
         margin-bottom: 1;
     }
@@ -78,7 +78,7 @@ class HelpOverlay(ModalScreen[None]):
     }
     HelpOverlay .help-close-hint {
         text-align: center;
-        color: #78909d;
+        color: #71717a;
         height: 1;
         margin-top: 1;
     }

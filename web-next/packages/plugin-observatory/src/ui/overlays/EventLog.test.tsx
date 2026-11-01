@@ -59,10 +59,10 @@ describe('EventLog', () => {
 
   it('renders event type tags', () => {
     render(<EventLog events={EVENTS} />);
-    expect(screen.getByText('WORK')).toBeInTheDocument();
-    expect(screen.getByText('MEMORY')).toBeInTheDocument();
-    expect(screen.getByText('MODELS')).toBeInTheDocument();
-    expect(screen.getByText('AGENT')).toBeInTheDocument();
+    expect(screen.getByText('TING')).toBeInTheDocument();
+    expect(screen.getByText('MIMIR')).toBeInTheDocument();
+    expect(screen.getByText('BIFROST')).toBeInTheDocument();
+    expect(screen.getByText('RAVN')).toBeInTheDocument();
   });
 
   it('sets data-type attribute on each entry', () => {

@@ -2074,7 +2074,7 @@ webNext:
     publicOrigin: "https://niuu.example.com"
     # -- Public session gateway origin used for /s/{sessionId}/... traffic
     sessionOrigin: ""
-    theme: "niuu"
+    theme: "ice"
     plugins:
       login:
         enabled: true

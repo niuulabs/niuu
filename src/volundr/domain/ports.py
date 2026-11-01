@@ -978,38 +978,6 @@ class ResidentOpenClawShimHost(ABC):
         """Route to the resident's shim on ``port``; None before the backend reports it."""
 
 
-@dataclass(frozen=True)
-class DiscoveredResident:
-    """A resident running outside the Forge, as its discovery source describes it.
-
-    ``key`` is the resident's own name elsewhere (e.g. its catalog id); the Forge's
-    record of it has the id ``niuu.domain.discovered_residents.discovered_resident_id``
-    derives from the key.
-    """
-
-    key: str
-    name: str
-    owner_id: str
-    tenant_id: str
-    profile_id: str
-    persona_name: str = ""
-    model: str = ""
-
-
-class ResidentDiscoverySource(ABC):
-    """Optional backend port: the backend discovers its residents instead of deploying them.
-
-    The Forge keeps a record for each discovered resident (so its sessions, chat and
-    notifications run through the same controllers as a deployed resident's), adds
-    records for new ones and removes the records of residents no longer discovered.
-    Its profiles are never offered for deployment.
-    """
-
-    @abstractmethod
-    async def discovered_residents(self) -> list[DiscoveredResident]:
-        """Every resident the backend currently knows; raises when it cannot tell."""
-
-
 class ResidentDeviceApprover(ABC):
     """Optional runtime capability for approving resident engine devices."""
 

@@ -10,10 +10,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
-from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 from typing import Any
-from urllib.parse import urlsplit
 
 #: OpenShell's peer-workload limits (``openshell_sandbox_backend::peer_workloads``).
 MAX_PEER_WORKLOADS = 16
@@ -84,78 +82,6 @@ def check_network_endpoint_modes(endpoint: Mapping[str, Any]) -> None:
     for field in _NETWORK_MODES:
         if field in endpoint:
             network_mode(field, endpoint[field])
-
-
-#: Default ports of the URL schemes an egress endpoint may use.
-_SCHEME_PORTS = {"https": 443, "http": 80}
-
-
-def egress_target(url: str, *, purpose: str, passthrough: bool) -> dict[str, Any]:
-    """The host and port a sandbox process reaches for ``url``, as a declared egress need.
-
-    ``passthrough`` marks a client that must complete TLS itself, such as a gRPC
-    (HTTP/2) client: OpenShell's TLS termination negotiates only HTTP/1.1.
-    """
-    parts = urlsplit(url)
-    if parts.scheme not in _SCHEME_PORTS or not parts.hostname:
-        raise ValueError(f"{purpose} endpoint {url!r} must be an http(s) URL with a host")
-    return {
-        "host": parts.hostname.lower(),
-        "port": parts.port or _SCHEME_PORTS[parts.scheme],
-        "purpose": purpose,
-        "passthrough": passthrough,
-    }
-
-
-def check_policy_allows_egress(
-    network_policies: Mapping[str, Any], egress: Iterable[Mapping[str, Any]]
-) -> None:
-    """Raise unless the sandbox policy lets the sandbox reach every declared egress target.
-
-    A target the policy does not allow is not a degraded mode: the process that
-    needs it retries and logs for the sandbox's whole life while the session
-    reads as healthy.
-    """
-    for target in egress:
-        host = str(target["host"])
-        port = int(target["port"])
-        endpoints = [
-            endpoint
-            for rule in network_policies.values()
-            for endpoint in (rule.get("endpoints") or [])
-            if _endpoint_matches(endpoint, host, port)
-        ]
-        where = f"{target['purpose']} endpoint {host}:{port}"
-        if not endpoints:
-            raise ValueError(
-                f"the OpenShell sandbox policy does not allow the {where}; add it to "
-                "sandbox_policy.network_policies with the binaries that use it, or "
-                "remove that endpoint from the configuration that requests it"
-            )
-        if target["passthrough"] and not any(
-            str(endpoint.get("tls") or "") == "skip" for endpoint in endpoints
-        ):
-            raise ValueError(
-                f"the OpenShell sandbox policy allows the {where} only with TLS "
-                "termination, which negotiates HTTP/1.1 and breaks its gRPC client; "
-                "set protocol: tcp and tls: skip on that endpoint"
-            )
-
-
-def _endpoint_matches(endpoint: Mapping[str, Any], host: str, port: int) -> bool:
-    ports = {int(endpoint.get("port") or 0), *(int(p) for p in endpoint.get("ports") or [])}
-    if port not in ports:
-        return False
-    pattern = str(endpoint.get("host") or "").lower()
-    pattern_labels = pattern.split(".")
-    host_labels = host.split(".")
-    # OpenShell's ``*`` matches within one DNS label, never across a dot.
-    if len(pattern_labels) != len(host_labels):
-        return False
-    return all(
-        fnmatchcase(label, wanted)
-        for label, wanted in zip(host_labels, pattern_labels, strict=True)
-    )
 
 
 def check_pod_metadata_keys(kind: str, keys: Iterable[str]) -> None:

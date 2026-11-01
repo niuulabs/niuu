@@ -69,7 +69,6 @@ from niuu.domain.mimir import (
     compute_source_id,
 )
 from niuu.domain.models import Principal
-from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 from niuu.ports.mimir import MimirPort
 from ravn.adapters.tools._url_security import check_ssrf
@@ -872,14 +871,12 @@ async def _merged_mount_responses(
     registry_store: MimirRegistryStore | None,
     mounts: list[dict[str, Any]] | None = None,
     tenant_id: str = "",
-    other_org: bool = False,
 ) -> list[MountResponse]:
     live_summaries = [
         await _summarize_mount(mount)
         for mount in (
             mounts
-            if mounts is not None
-            else _extract_mount_definitions(
+            or _extract_mount_definitions(
                 adapter,
                 default_name=default_name,
                 default_role=default_role,
@@ -888,8 +885,6 @@ async def _merged_mount_responses(
     ]
     live_by_name = {mount.name: mount for mount in live_summaries}
     entries = registry_store.list_entries(tenant_id=tenant_id) if registry_store is not None else []
-    if other_org:
-        entries = [entry for entry in entries if entry.tenant_id]
     if not entries:
         return sorted(live_summaries, key=lambda mount: mount.priority)
 
@@ -1077,25 +1072,6 @@ def _decorate_source(
 # ---------------------------------------------------------------------------
 
 
-#: Routes that read this host directly rather than through the caller's mounts.
-_HOST_ONLY_ROUTES = (
-    "/doctor",
-    "/routing/rules",
-    "/ravns/bindings",
-    "/entities/index",
-    "/related",
-    "/evidence",
-    "/page/revise",
-    "/eval/",
-    "/activity/live",
-)
-
-
-def _is_host_only_route(path: str) -> bool:
-    route = path.split("/mimir", 1)[-1]
-    return route.startswith(_HOST_ONLY_ROUTES)
-
-
 class MimirRouter:
     """Wraps a ``MimirPort`` and exposes it as a FastAPI ``APIRouter``.
 
@@ -1135,11 +1111,8 @@ class MimirRouter:
         auth: HeaderAuthenticationPort,
         auth_mode: str = "envoy",
         live_activity: LiveActivityRecorder | None = None,
-        platform_tenant_id: str = DEFAULT_PLATFORM_TENANT_ID,
     ) -> None:
         self._owner_tenant = tenant_id
-        self._platform_tenant_id = platform_tenant_id
-        self._other_org: ContextVar[bool] = ContextVar("mimir_other_org", default=False)
         self._auth = auth
         self._auth_mode = auth_mode
         self._public_url = public_url
@@ -1278,13 +1251,11 @@ class MimirRouter:
         # local-dev/no-auth callers to tenant-scoped restrictions designed
         # for multi-tenant deployments (host-path mount rejection, entry
         # lookups keyed by tenant) that "none" never had.
-        other_org = False
         if self._auth_mode == "none":
             tenant = ""
         else:
             principal = await self._verified_principal(request)
             tenant = principal.tenant_id if principal is not None else ""
-            other_org = principal is not None and tenant != self._platform_tenant_id
             if (
                 principal is not None
                 and not tenant
@@ -1295,10 +1266,7 @@ class MimirRouter:
                 )
         if self._owner_tenant and tenant != self._owner_tenant:
             raise HTTPException(403, "Knowledge instance belongs to a different tenant")
-        if other_org and _is_host_only_route(request.url.path):
-            raise HTTPException(403, "This route reads the host's own knowledge")
         tenant_token = self._tenant.set(tenant)
-        other_org_token = self._other_org.set(other_org)
         mounts_token = self._deployed_mounts.set([])
         try:
             if self._deployment is not None and "/deployments" not in request.url.path:
@@ -1313,7 +1281,6 @@ class MimirRouter:
                 if mount.get("close_after_request"):
                     await mount["port"].aclose()
             self._deployed_mounts.reset(mounts_token)
-            self._other_org.reset(other_org_token)
             self._tenant.reset(tenant_token)
 
     def _validate_registry_write(self, request: RegistryMountRequest) -> None:
@@ -1366,7 +1333,6 @@ class MimirRouter:
         return port
 
     def _mount_definitions(self) -> list[dict[str, Any]]:
-        other_org = self._other_org.get()
         mounts = _extract_mount_definitions(
             self._adapter,
             default_name=self._name,
@@ -1376,14 +1342,12 @@ class MimirRouter:
             mount["access_scope"] = "tenant" if self._owner_tenant else "global"
         if self._deployment is not None:
             mounts.extend(self._deployed_mounts.get())
-        if other_org:
-            mounts = [mount for mount in mounts if mount["access_scope"] == "tenant"]
         seen = {mount["name"] for mount in mounts}
         if self._registry_store is None:
             return mounts
 
         for entry in self._registry_store.list_entries(tenant_id=self._tenant.get()):
-            if entry.name in seen or (other_org and not entry.tenant_id):
+            if entry.name in seen:
                 continue
             port = self._registry_port(entry.name)
             if port is None:
@@ -1494,7 +1458,6 @@ class MimirRouter:
                 default_name=self._name,
                 default_role=self._role,
                 registry_store=self._registry_store,
-                other_org=self._other_org.get(),
                 tenant_id=self._tenant.get(),
                 mounts=mounts,
             )
@@ -1520,11 +1483,7 @@ class MimirRouter:
                     for mount in mounts
                 ]
             else:
-                entries = [
-                    entry
-                    for entry in self._registry_store.list_entries(tenant_id=self._tenant.get())
-                    if entry.tenant_id or not self._other_org.get()
-                ]
+                entries = self._registry_store.list_entries(tenant_id=self._tenant.get())
             names = {entry.name for entry in entries}
             if self._deployment is not None:
                 for mount in self._deployed_mounts.get():

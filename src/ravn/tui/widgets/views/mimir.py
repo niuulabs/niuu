@@ -23,7 +23,7 @@ class MimirView(Widget):
     MimirView {
         height: 1fr;
         width: 1fr;
-        background: #071019;
+        background: #09090b;
         layout: vertical;
     }
     MimirView #mv-instance-bar {
@@ -33,10 +33,10 @@ class MimirView(Widget):
     }
     MimirView #mv-content {
         height: 1fr;
-        background: #071019;
+        background: #09090b;
         scrollbar-size: 1 1;
-        scrollbar-color: #182b38;
-        scrollbar-color-hover: #2b4351;
+        scrollbar-color: #27272a;
+        scrollbar-color-hover: #3f3f46;
     }
     MimirView #mv-info {
         height: 1;
@@ -49,8 +49,8 @@ class MimirView(Widget):
     }
     MimirView #mv-search {
         height: 3;
-        border-top: solid #2b4351;
-        background: #10212d;
+        border-top: solid #3f3f46;
+        background: #18181b;
         display: none;
     }
     MimirView #mv-search.visible {
@@ -87,7 +87,7 @@ class MimirView(Widget):
         self._history: list[tuple[str, int]] = []
 
     def compose(self) -> ComposeResult:
-        yield Static("[#648090]  loading…[/]", id="mv-instance-bar")
+        yield Static("[#52525b]  loading…[/]", id="mv-instance-bar")
         yield RichLog(id="mv-content", markup=True, wrap=True, highlight=False)
         yield Static("", id="mv-info")
         yield Input(placeholder="Search pages…  (Enter to search, Esc to cancel)", id="mv-search")
@@ -118,11 +118,11 @@ class MimirView(Widget):
     def _update_instance_bar(self, suffix: str = "") -> None:
         name = self._current_name
         n = len(self._mimir_urls)
-        switch_hint = f"  [#2b4351][tab] {self._instance_idx + 1}/{n}[/]" if n > 1 else ""
+        switch_hint = f"  [#3f3f46][tab] {self._instance_idx + 1}/{n}[/]" if n > 1 else ""
         if suffix:
-            text = f"[#648090]  {name}  ·  {suffix}[/]{switch_hint}"
+            text = f"[#52525b]  {name}  ·  {suffix}[/]{switch_hint}"
         else:
-            text = f"[#648090]  {name}  ·  {len(self._pages)} pages[/]{switch_hint}"
+            text = f"[#52525b]  {name}  ·  {len(self._pages)} pages[/]{switch_hint}"
         with suppress(Exception):
             self.query_one("#mv-instance-bar", Static).update(text)
 
@@ -149,22 +149,22 @@ class MimirView(Widget):
                 self._rebuild_list(self._pages)
                 self._update_instance_bar()
             else:
-                self._write(f"[#e78d94]  HTTP {resp.status_code}[/]")
+                self._write(f"[#ef4444]  HTTP {resp.status_code}[/]")
                 self._update_instance_bar(f"error {resp.status_code}")
         except Exception as exc:
-            self._write(f"[#e78d94]  {exc}[/]")
+            self._write(f"[#ef4444]  {exc}[/]")
             self._update_instance_bar("unreachable")
 
     def _show_no_instances(self) -> None:
         log = self.query_one("#mv-content", RichLog)
         log.clear()
-        log.write("[#648090]  No Mímir instances configured.[/]")
+        log.write("[#52525b]  No Mímir instances configured.[/]")
         log.write("")
-        log.write("[#2b4351]  Add instances to your ravn config:[/]")
-        log.write("[#78909d]  mimir:[/]")
-        log.write("[#78909d]    instances:[/]")
-        log.write("[#78909d]      - name: shared[/]")
-        log.write("[#78909d]        url: https://your-volundr-host[/]")
+        log.write("[#3f3f46]  Add instances to your ravn config:[/]")
+        log.write("[#71717a]  mimir:[/]")
+        log.write("[#71717a]    instances:[/]")
+        log.write("[#71717a]      - name: shared[/]")
+        log.write("[#71717a]        url: https://your-volundr-host[/]")
         self._update_instance_bar("not configured")
 
     # ------------------------------------------------------------------
@@ -179,20 +179,20 @@ class MimirView(Widget):
         log.clear()
         self._hide_info()
         if not pages:
-            log.write("[#2b4351]  (no pages)[/]")
+            log.write("[#3f3f46]  (no pages)[/]")
             return
         for i, page in enumerate(pages):
             selected = i == self._selected_idx
-            accent = "[bold #86d0e8]▌[/]" if selected else " "
+            accent = "[bold #f59e0b]▌[/]" if selected else " "
             title = str(page.get("title", page.get("path", "?")))
             category = str(page.get("category", ""))
             summary = (str(page.get("summary", "") or ""))[:70]
             log.write(
                 f"{accent}[bold #06b6d4]{title}[/]"
-                + (f"  [#648090]{category}[/]" if category else "")
+                + (f"  [#52525b]{category}[/]" if category else "")
             )
             if summary:
-                log.write(f"  [#2b4351]{summary}[/]")
+                log.write(f"  [#3f3f46]{summary}[/]")
 
     # ------------------------------------------------------------------
     # Page loading
@@ -211,9 +211,9 @@ class MimirView(Widget):
                 self._render_page(resp.json())
                 self._mode = "page"
             else:
-                self._write(f"[#e78d94]  {resp.status_code}: {path}[/]")
+                self._write(f"[#ef4444]  {resp.status_code}: {path}[/]")
         except Exception as exc:
-            self._write(f"[#e78d94]  {exc}[/]")
+            self._write(f"[#ef4444]  {exc}[/]")
 
     def _render_page(self, page: dict[str, Any]) -> None:
         try:
@@ -227,23 +227,23 @@ class MimirView(Widget):
         source_ids: list[str] = page.get("source_ids", [])
         content = str(page.get("content", ""))
 
-        log.write(f"[bold #edf4f7]{title}[/]" + (f"  [#648090]{category}[/]" if category else ""))
-        log.write(f"[#2b4351]  updated {updated}  ·  {len(source_ids)} source(s)[/]")
+        log.write(f"[bold #fafafa]{title}[/]" + (f"  [#52525b]{category}[/]" if category else ""))
+        log.write(f"[#3f3f46]  updated {updated}  ·  {len(source_ids)} source(s)[/]")
         log.write("")
 
         for line in content.split("\n"):
             if line.startswith("### "):
-                log.write(f"[bold #a5b7c1]{line[4:]}[/]")
+                log.write(f"[bold #a1a1aa]{line[4:]}[/]")
             elif line.startswith("## "):
                 log.write(f"[bold #d4d4d8]{line[3:]}[/]")
             elif line.startswith("# "):
-                log.write(f"[bold #edf4f7]{line[2:]}[/]")
+                log.write(f"[bold #fafafa]{line[2:]}[/]")
             elif line.startswith(("- ", "* ")):
-                log.write(f"  [#648090]·[/] [#d4d4d8]{line[2:]}[/]")
+                log.write(f"  [#52525b]·[/] [#d4d4d8]{line[2:]}[/]")
             elif line.startswith("> "):
-                log.write(f"  [italic #78909d]{line[2:]}[/]")
+                log.write(f"  [italic #71717a]{line[2:]}[/]")
             elif line.startswith("```"):
-                log.write(f"[#2b4351]{line}[/]")
+                log.write(f"[#3f3f46]{line}[/]")
             elif line:
                 log.write(f"[#c4c4c4]{line}[/]")
             else:
@@ -274,10 +274,10 @@ class MimirView(Widget):
                 self._rebuild_list(results)
                 self._update_instance_bar(f"{len(results)} results for '{query}'")
             else:
-                self._write(f"[#e78d94]  Search error: HTTP {resp.status_code}[/]")
+                self._write(f"[#ef4444]  Search error: HTTP {resp.status_code}[/]")
                 self._update_instance_bar()
         except Exception as exc:
-            self._write(f"[#e78d94]  Search error: {exc}[/]")
+            self._write(f"[#ef4444]  Search error: {exc}[/]")
             self._update_instance_bar()
 
     # ------------------------------------------------------------------
@@ -373,7 +373,7 @@ class MimirView(Widget):
     def _show_info(self, text: str) -> None:
         with suppress(Exception):
             info = self.query_one("#mv-info", Static)
-            info.update(f"[#2b4351]  {text}[/]")
+            info.update(f"[#3f3f46]  {text}[/]")
             info.add_class("visible")
 
     def _hide_info(self) -> None:

@@ -102,18 +102,18 @@ for (const phone of [false, true])
     await expect(page.getByTestId('quick-launch-panel')).toBeVisible();
     await expect(page.getByTestId('inflight-panel')).toContainText('thor session');
     await expect(page.getByTestId('cluster-load-row')).toContainText('thor');
-    await expect(page.getByLabel('Host metrics')).toContainText('$1.25');
-    await expect(page.getByLabel('Host connections')).toContainText('offline metrics: loading');
-    await expect(page.getByLabel('Host connections')).toContainText(
+    await expect(page.getByLabel('Forge metrics')).toContainText('$1.25');
+    await expect(page.getByLabel('Forge connections')).toContainText('offline metrics: loading');
+    await expect(page.getByLabel('Forge connections')).toContainText(
       'offline resources: unavailable',
     );
-    await expect(page.getByLabel('Host connections')).toContainText('Metrics cover loaded hosts');
+    await expect(page.getByLabel('Forge connections')).toContainText('Metrics cover loaded hosts');
     await expect(page.getByTestId('cluster-load-row')).toHaveCount(1);
     control.recovered = true;
-    await page.getByRole('button', { name: 'Retry host connections' }).click();
+    await page.getByRole('button', { name: 'Retry Forge connections' }).click();
     await expect(page.getByTestId('cluster-load-row')).toHaveCount(2);
-    await expect(page.getByLabel('Host metrics')).toContainText('$2.50');
-    await expect(page.getByLabel('Host connections')).toHaveCount(0);
+    await expect(page.getByLabel('Forge metrics')).toContainText('$2.50');
+    await expect(page.getByLabel('Forge connections')).toHaveCount(0);
     expect(requests.every((url) => url.searchParams.has('instance_id'))).toBe(true);
     await page.screenshot({ path: info.outputPath('forge-ready.png') });
   });

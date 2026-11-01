@@ -1,5 +1,5 @@
 import { createRoute } from '@tanstack/react-router';
-import { RealmsIcon } from '@niuulabs/ui';
+import { Boxes } from 'lucide-react';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { RealmsHomePage } from './ui/RealmsHomePage';
 import { NewRealmPage } from './ui/NewRealmPage';
@@ -14,14 +14,14 @@ export const REALMS_TABS = [
 
 export const realmsPlugin = definePlugin({
   id: 'realms',
-  rune: 'R',
-  // A set of environments, each its own box.
-  icon: <RealmsIcon />,
-  title: 'Workspaces',
-  subtitle: 'where work happens',
+  rune: 'ᚱ',
+  title: 'Realms',
+  subtitle: 'environments kept by residents',
   tabs: REALMS_TABS.map((tab) => ({ ...tab })),
   simple: {
     tabs: REALMS_TABS.map((tab) => tab.id),
+    // A set of environments, each its own box.
+    icon: <Boxes size={17} aria-hidden="true" />,
   },
   routes: (rootRoute) => [
     createRoute({ getParentRoute: () => rootRoute, path: '/realms', component: RealmsHomePage }),

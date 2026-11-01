@@ -8,7 +8,7 @@ test('observatory rail button navigates to /observatory', async ({ page }) => {
 
   // The rail button's accessible name is the plugin rune (text content), not the title.
   // Match on the title attribute which includes the plugin name.
-  const railButton = page.getByTestId('rail-item-observatory');
+  const railButton = page.locator('button[title*="Observatory"]');
   await expect(railButton).toBeVisible();
 
   await railButton.click();
@@ -198,7 +198,7 @@ test('minimap overlay is visible with topology content', async ({ page }) => {
 // ── Registry page ─────────────────────────────────────────────────────────────
 test('registry page renders entity type list', async ({ page }) => {
   await page.goto('/observatory/registry');
-  await expect(page.getByText('Component types').first()).toBeVisible();
+  await expect(page.getByText('Registry').first()).toBeVisible();
   await expect(page.getByText('Realm').first()).toBeVisible({ timeout: 5000 });
   await expect(page.getByText('Cluster').first()).toBeVisible({ timeout: 5000 });
   await expect(page.getByText('Run').first()).toBeVisible({ timeout: 5000 });

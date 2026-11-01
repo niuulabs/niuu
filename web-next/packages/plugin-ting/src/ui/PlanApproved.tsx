@@ -1,3 +1,4 @@
+import { Rune } from '@niuulabs/ui';
 import type { Saga } from '../domain/saga';
 
 interface PlanApprovedProps {
@@ -15,10 +16,10 @@ export function PlanApproved({ saga, onNewPlan }: PlanApprovedProps) {
       aria-live="polite"
       data-testid="plan-approved"
     >
+      <Rune glyph="ᚦ" size={48} />
+
       <div className="niuu:flex niuu:flex-col niuu:gap-2">
-        <h2 className="niuu:text-xl niuu:font-semibold niuu:text-text-primary">
-          Project launched!
-        </h2>
+        <h2 className="niuu:text-xl niuu:font-semibold niuu:text-text-primary">Saga launched!</h2>
         <p className="niuu:text-sm niuu:text-text-secondary">
           <span className="niuu:font-medium niuu:text-brand-400">{saga.name}</span> has been created
           and is ready for the dispatcher.
@@ -27,7 +28,7 @@ export function PlanApproved({ saga, onNewPlan }: PlanApprovedProps) {
 
       <dl className="niuu:flex niuu:flex-col niuu:gap-1 niuu:text-left niuu:w-full niuu:max-w-sm niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-secondary niuu:px-4 niuu:py-3">
         <div className="niuu:flex niuu:justify-between niuu:text-sm">
-          <dt className="niuu:text-text-muted">Project</dt>
+          <dt className="niuu:text-text-muted">Saga</dt>
           <dd className="niuu:text-text-primary niuu:font-medium">{saga.name}</dd>
         </div>
         <div className="niuu:flex niuu:justify-between niuu:text-sm">
@@ -47,7 +48,7 @@ export function PlanApproved({ saga, onNewPlan }: PlanApprovedProps) {
           href="/ting"
           className="niuu:py-1 niuu:px-3 niuu:bg-brand niuu:text-bg-primary niuu:border niuu:border-brand niuu:rounded-sm niuu:cursor-pointer niuu:font-mono niuu:text-xs"
         >
-          Open in Projects →
+          Open in Sagas →
         </a>
         {onNewPlan && (
           <button

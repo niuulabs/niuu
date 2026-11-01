@@ -1,4 +1,3 @@
-import { ModelsIcon } from '@niuulabs/ui';
 import { createRoute } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { BifrostPage } from './ui/BifrostPage';
@@ -6,14 +5,13 @@ import { BifrostPage } from './ui/BifrostPage';
 export const bifrostPlugin = definePlugin({
   id: 'bifrost',
   rune: 'B',
-  icon: <ModelsIcon />,
-  title: 'AI models',
-  subtitle: 'models, providers and usage',
+  title: 'Bifröst',
+  subtitle: 'llm control plane',
   tabs: [
-    { id: 'overview', label: 'Overview', path: '/bifrost' },
-    { id: 'models', label: 'Models', path: '/bifrost/models' },
-    { id: 'providers', label: 'Providers', path: '/bifrost/providers' },
-    { id: 'usage', label: 'Usage', path: '/bifrost/usage' },
+    { id: 'overview', label: 'Overview', rune: '◎', path: '/bifrost' },
+    { id: 'models', label: 'Models', rune: '▦', path: '/bifrost/models' },
+    { id: 'providers', label: 'Providers', rune: '⇄', path: '/bifrost/providers' },
+    { id: 'usage', label: 'Usage', rune: '≋', path: '/bifrost/usage' },
   ],
   routes: (rootRoute) => [
     createRoute({

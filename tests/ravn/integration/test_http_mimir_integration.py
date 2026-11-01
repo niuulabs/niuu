@@ -42,7 +42,7 @@ _HOSTED_BASE = "http://mimir-test"
 #: auth, so it gets a fixed admin identity by default.
 _ADMIN_HEADERS = {
     "x-auth-user-id": "test-user",
-    "x-auth-tenant": "default",
+    "x-auth-tenant": "test-tenant",
     "x-auth-roles": "volundr:admin",
 }
 

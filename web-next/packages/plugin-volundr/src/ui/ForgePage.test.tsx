@@ -61,14 +61,14 @@ describe('ForgePage', () => {
     const getStats = vi.spyOn(service, 'getStats').mockRejectedValue(new Error('Host timed out'));
     wrap(service);
     expect(screen.getByTestId('quick-launch-panel')).toBeInTheDocument();
-    expect(await screen.findByText('Host metrics: unavailable')).toBeInTheDocument();
-    expect(screen.getByLabelText('Host connections')).toHaveTextContent(
+    expect(await screen.findByText('Forge metrics: unavailable')).toBeInTheDocument();
+    expect(screen.getByLabelText('Forge connections')).toHaveTextContent(
       'Metrics cover loaded hosts',
     );
     getStats.mockRestore();
-    fireEvent.click(screen.getByRole('button', { name: 'Retry host connections' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Forge connections' }));
     await waitFor(() =>
-      expect(screen.queryByLabelText('Host connections')).not.toBeInTheDocument(),
+      expect(screen.queryByLabelText('Forge connections')).not.toBeInTheDocument(),
     );
   });
   it('renders the forge page container', () => {
@@ -93,7 +93,7 @@ describe('ForgePage', () => {
   it('renders the forge load panel', async () => {
     wrap();
     await waitFor(() => expect(screen.getByTestId('forge-load-panel')).toBeInTheDocument());
-    expect(screen.getByText('Host load')).toBeInTheDocument();
+    expect(screen.getByText('Forge load')).toBeInTheDocument();
   });
 
   it('renders the quick launch panel', async () => {
@@ -112,7 +112,7 @@ describe('ForgePage', () => {
     const cluster: Cluster = {
       id: 'cl-test',
       realm: 'asgard',
-      name: 'Test Host',
+      name: 'Test Forge',
       kind: 'gpu',
       status: 'healthy',
       region: 'test',
@@ -130,7 +130,7 @@ describe('ForgePage', () => {
     };
 
     wrap(createMockVolundrService(), clusterAdapter);
-    await waitFor(() => expect(screen.getByText('Test Host')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Test Forge')).toBeInTheDocument());
 
     expect(screen.getByTestId('cluster-meter-cpu')).toHaveTextContent('500m / 8c');
     expect(screen.getByTestId('cluster-meter-mem')).toHaveTextContent('2Gi / 16Gi');

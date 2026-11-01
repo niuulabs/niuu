@@ -69,11 +69,6 @@ class TestSanitizeFtsQuery:
     def test_basic_token(self) -> None:
         assert sqlite_module._sanitize_fts_query("python") == '"python"'
 
-    def test_repeated_terms_become_one_phrase(self) -> None:
-        query = " ".join(["pod", "restart"] * 1000)
-
-        assert sqlite_module._sanitize_fts_query(query) == '"pod" "restart"'
-
     def test_multiple_tokens(self) -> None:
         assert sqlite_module._sanitize_fts_query("run tests") == '"run" "tests"'
 

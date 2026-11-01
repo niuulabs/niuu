@@ -16,7 +16,6 @@ export const STATUS_LABELS: Record<ReviewStatus, string> = {
   expired: 'expired',
   applied: 'applied',
   apply_failed: 'apply failed',
-  withdrawn: 'withdrawn',
 };
 
 export function riskClasses(risk: ReviewRiskClass): string {
@@ -28,7 +27,7 @@ export function riskClasses(risk: ReviewRiskClass): string {
 export function statusClasses(status: ReviewStatus): string {
   if (status === 'pending') return 'niuu:text-state-warn';
   if (status === 'rejected' || status === 'apply_failed') return 'niuu:text-critical';
-  if (status === 'expired' || status === 'withdrawn') return 'niuu:text-text-muted';
+  if (status === 'expired') return 'niuu:text-text-muted';
   return 'niuu:text-state-ok';
 }
 

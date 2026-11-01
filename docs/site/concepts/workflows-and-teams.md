@@ -5,7 +5,7 @@ connect those contributions into repeatable processes, including work commission
 by another agent. A resident can request a tool build; specialists can research,
 implement, and review it; the result returns to the resident for adoption.
 
-The workflow service (Work in the UI, Ting in configuration) represents repeatable
+The workflow service (Ting in the UI and configuration) represents repeatable
 work as definitions and tracks executions as
 runs. Use it when the relationship between stages matters: for example, implement
 a change, collect a review, and wait for approval before proceeding.

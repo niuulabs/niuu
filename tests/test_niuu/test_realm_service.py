@@ -7,10 +7,8 @@ from uuid import UUID, uuid4
 import pytest
 
 from niuu.domain.models import Capability, Realm, TrustGrant
-from niuu.domain.services.realm import RealmNotFoundError, RealmService
+from niuu.domain.services.realm import RealmService
 from niuu.ports.realm_repository import RealmRepository
-
-TENANT = "tenant-1"
 
 
 class InMemoryRealmRepository(RealmRepository):
@@ -21,15 +19,14 @@ class InMemoryRealmRepository(RealmRepository):
         self.grants: dict[UUID, TrustGrant] = {}
         self.capabilities: dict[UUID, Capability] = {}
 
-    async def list_realms(self, tenant_id: str) -> list[Realm]:
-        return [realm for realm in self.realms.values() if realm.tenant_id == tenant_id]
+    async def list_realms(self) -> list[Realm]:
+        return list(self.realms.values())
 
-    async def get_realm(self, realm_id: UUID) -> Realm | None:
-        return self.realms.get(realm_id)
-
-    async def get_tenant_realm(self, realm_ref: UUID | str, tenant_id: str) -> Realm | None:
+    async def get_realm(self, realm_ref: UUID | str) -> Realm | None:
+        if isinstance(realm_ref, UUID):
+            return self.realms.get(realm_ref)
         for realm in self.realms.values():
-            if realm.tenant_id == tenant_id and realm_ref in (realm.id, realm.slug):
+            if realm.slug == realm_ref:
                 return realm
         return None
 
@@ -86,22 +83,22 @@ def service() -> RealmService:
 async def test_delete_realm_removes_realm_grants_and_capabilities(
     service: RealmService,
 ) -> None:
-    realm = await service.create_realm("forge", "Forge", tenant_id=TENANT)
+    realm = await service.create_realm("forge", "Forge")
     await service.grant_trust(realm.id, "build", level=2)
     await service.record_capability(realm.id, "grep-tool", "tool")
 
-    deleted = await service.delete_realm("forge", TENANT)
+    deleted = await service.delete_realm("forge")
 
     assert deleted is not None and deleted.id == realm.id
-    assert await service.get_realm("forge", TENANT) is None
+    assert await service.get_realm("forge") is None
     assert await service.list_trust_grants(realm.id) == []
     assert await service.list_capabilities(realm.id) == []
 
 
 @pytest.mark.asyncio
 async def test_delete_realm_unknown_returns_none(service: RealmService) -> None:
-    assert await service.delete_realm("ghost", TENANT) is None
-    assert await service.delete_realm(uuid4(), TENANT) is None
+    assert await service.delete_realm("ghost") is None
+    assert await service.delete_realm(uuid4()) is None
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +107,7 @@ async def test_delete_realm_unknown_returns_none(service: RealmService) -> None:
 
 
 async def test_create_realm_persists_and_defaults(service: RealmService) -> None:
-    realm = await service.create_realm(slug="odin-forge", name="Odin Forge", tenant_id=TENANT)
+    realm = await service.create_realm(slug="odin-forge", name="Odin Forge")
 
     assert isinstance(realm.id, UUID)
     assert realm.slug == "odin-forge"
@@ -124,7 +121,6 @@ async def test_create_realm_with_all_fields(service: RealmService) -> None:
     realm = await service.create_realm(
         slug="raiders",
         name="Raiders",
-        tenant_id=TENANT,
         sleipnir_domain="raiders.mesh",
         owner_id="user-1",
         instance_id="inst-9",
@@ -140,26 +136,23 @@ async def test_create_realm_with_all_fields(service: RealmService) -> None:
 async def test_upsert_realm_creates_at_the_given_id(service: RealmService) -> None:
     realm_id = uuid4()
 
-    realm = await service.upsert_realm(realm_id, slug="workshop", name="Workshop", tenant_id=TENANT)
+    realm = await service.upsert_realm(realm_id, slug="workshop", name="Workshop")
 
     assert realm.id == realm_id
     assert realm.slug == "workshop"
     assert realm.created_at == realm.updated_at
-    assert await service.get_realm(realm_id, TENANT) is not None
+    assert await service.get_realm(realm_id) is not None
 
 
 async def test_upsert_realm_replaces_an_existing_row_without_changing_created_at(
     service: RealmService,
 ) -> None:
-    created = await service.upsert_realm(
-        uuid4(), slug="workshop", name="Workshop", tenant_id=TENANT
-    )
+    created = await service.upsert_realm(uuid4(), slug="workshop", name="Workshop")
 
     updated = await service.upsert_realm(
         created.id,
         slug="workshop",
         name="Workshop Renamed",
-        tenant_id=TENANT,
         owner_id="user-9",
     )
 
@@ -171,32 +164,32 @@ async def test_upsert_realm_replaces_an_existing_row_without_changing_created_at
 
 
 async def test_get_realm_by_slug(service: RealmService) -> None:
-    created = await service.create_realm(slug="scouts", name="Scouts", tenant_id=TENANT)
+    created = await service.create_realm(slug="scouts", name="Scouts")
 
-    fetched = await service.get_realm("scouts", TENANT)
+    fetched = await service.get_realm("scouts")
 
     assert fetched is not None
     assert fetched.id == created.id
 
 
 async def test_get_realm_by_id(service: RealmService) -> None:
-    created = await service.create_realm(slug="scouts", name="Scouts", tenant_id=TENANT)
+    created = await service.create_realm(slug="scouts", name="Scouts")
 
-    fetched = await service.get_realm(created.id, TENANT)
+    fetched = await service.get_realm(created.id)
 
     assert fetched is not None
     assert fetched.slug == "scouts"
 
 
 async def test_get_realm_unknown_returns_none(service: RealmService) -> None:
-    assert await service.get_realm("nope", TENANT) is None
+    assert await service.get_realm("nope") is None
 
 
 async def test_list_realms(service: RealmService) -> None:
-    await service.create_realm(slug="a", name="A", tenant_id=TENANT)
-    await service.create_realm(slug="b", name="B", tenant_id=TENANT)
+    await service.create_realm(slug="a", name="A")
+    await service.create_realm(slug="b", name="B")
 
-    realms = await service.list_realms(TENANT)
+    realms = await service.list_realms()
 
     assert {r.slug for r in realms} == {"a", "b"}
 
@@ -207,7 +200,7 @@ async def test_list_realms(service: RealmService) -> None:
 
 
 async def test_grant_trust_defaults(service: RealmService) -> None:
-    realm = await service.create_realm(slug="r", name="R", tenant_id=TENANT)
+    realm = await service.create_realm(slug="r", name="R")
 
     grant = await service.grant_trust(realm.id, "observe")
 
@@ -219,7 +212,7 @@ async def test_grant_trust_defaults(service: RealmService) -> None:
 
 
 async def test_grant_trust_with_limits(service: RealmService) -> None:
-    realm = await service.create_realm(slug="r", name="R", tenant_id=TENANT)
+    realm = await service.create_realm(slug="r", name="R")
 
     grant = await service.grant_trust(
         realm.id,
@@ -236,8 +229,8 @@ async def test_grant_trust_with_limits(service: RealmService) -> None:
 
 
 async def test_list_trust_grants_scoped_to_realm(service: RealmService) -> None:
-    realm_a = await service.create_realm(slug="a", name="A", tenant_id=TENANT)
-    realm_b = await service.create_realm(slug="b", name="B", tenant_id=TENANT)
+    realm_a = await service.create_realm(slug="a", name="A")
+    realm_b = await service.create_realm(slug="b", name="B")
     await service.grant_trust(realm_a.id, "observe")
     await service.grant_trust(realm_b.id, "build")
 
@@ -253,7 +246,7 @@ async def test_list_trust_grants_scoped_to_realm(service: RealmService) -> None:
 
 
 async def test_record_capability_defaults(service: RealmService) -> None:
-    realm = await service.create_realm(slug="r", name="R", tenant_id=TENANT)
+    realm = await service.create_realm(slug="r", name="R")
 
     cap = await service.record_capability(realm.id, "grep-tool", "tool")
 
@@ -264,7 +257,7 @@ async def test_record_capability_defaults(service: RealmService) -> None:
 
 
 async def test_record_capability_upserts_by_name(service: RealmService) -> None:
-    realm = await service.create_realm(slug="r", name="R", tenant_id=TENANT)
+    realm = await service.create_realm(slug="r", name="R")
     first = await service.record_capability(realm.id, "grep-tool", "tool", status="gap")
 
     second = await service.record_capability(realm.id, "grep-tool", "tool", status="building")
@@ -276,8 +269,8 @@ async def test_record_capability_upserts_by_name(service: RealmService) -> None:
 
 
 async def test_list_capabilities_scoped_to_realm(service: RealmService) -> None:
-    realm_a = await service.create_realm(slug="a", name="A", tenant_id=TENANT)
-    realm_b = await service.create_realm(slug="b", name="B", tenant_id=TENANT)
+    realm_a = await service.create_realm(slug="a", name="A")
+    realm_b = await service.create_realm(slug="b", name="B")
     await service.record_capability(realm_a.id, "cap-a", "tool")
     await service.record_capability(realm_b.id, "cap-b", "skill")
 
@@ -293,11 +286,11 @@ async def test_list_capabilities_scoped_to_realm(service: RealmService) -> None:
 
 
 async def test_resolve_build_grant_returns_build_grant(service: RealmService) -> None:
-    realm = await service.create_realm(slug="forge", name="Forge", tenant_id=TENANT)
+    realm = await service.create_realm(slug="forge", name="Forge")
     await service.grant_trust(realm.id, "observe", level=1)
     await service.grant_trust(realm.id, "build", level=3, limits={"workflow": "tool-builder"})
 
-    grant = await service.resolve_build_grant("forge", TENANT)
+    grant = await service.resolve_build_grant("forge")
 
     assert grant is not None
     assert grant.action_class == "build"
@@ -308,22 +301,22 @@ async def test_resolve_build_grant_returns_build_grant(service: RealmService) ->
 async def test_resolve_build_grant_picks_most_recent(service: RealmService) -> None:
     # Append-only ledger: the latest grant is the operator's standing decision,
     # even when it demotes the level — trust must be revocable.
-    realm = await service.create_realm(slug="forge", name="Forge", tenant_id=TENANT)
+    realm = await service.create_realm(slug="forge", name="Forge")
     await service.grant_trust(realm.id, "build", level=1)
     await service.grant_trust(realm.id, "build", level=5)
     await service.grant_trust(realm.id, "build", level=2)
 
-    grant = await service.resolve_build_grant("forge", TENANT)
+    grant = await service.resolve_build_grant("forge")
 
     assert grant is not None
     assert grant.level == 2
 
 
 async def test_resolve_build_grant_by_realm_id(service: RealmService) -> None:
-    realm = await service.create_realm(slug="forge", name="Forge", tenant_id=TENANT)
+    realm = await service.create_realm(slug="forge", name="Forge")
     await service.grant_trust(realm.id, "build", level=1)
 
-    grant = await service.resolve_build_grant(realm.id, TENANT)
+    grant = await service.resolve_build_grant(realm.id)
 
     assert grant is not None
     assert grant.action_class == "build"
@@ -332,67 +325,19 @@ async def test_resolve_build_grant_by_realm_id(service: RealmService) -> None:
 async def test_resolve_build_grant_unknown_realm_returns_none(
     service: RealmService,
 ) -> None:
-    assert await service.resolve_build_grant("ghost", TENANT) is None
+    assert await service.resolve_build_grant("ghost") is None
 
 
 async def test_resolve_build_grant_no_build_grant_returns_none(
     service: RealmService,
 ) -> None:
-    realm = await service.create_realm(slug="forge", name="Forge", tenant_id=TENANT)
+    realm = await service.create_realm(slug="forge", name="Forge")
     await service.grant_trust(realm.id, "observe", level=9)
 
-    assert await service.resolve_build_grant("forge", TENANT) is None
+    assert await service.resolve_build_grant("forge") is None
 
 
 async def test_resolve_build_grant_unknown_uuid_returns_none(
     service: RealmService,
 ) -> None:
-    assert await service.resolve_build_grant(uuid4(), TENANT) is None
-
-
-# ---------------------------------------------------------------------------
-# Tenant boundaries
-# ---------------------------------------------------------------------------
-
-
-async def test_realms_are_invisible_to_other_tenants(service: RealmService) -> None:
-    realm = await service.create_realm("forge", "Forge", tenant_id="tenant-a")
-
-    assert await service.get_realm("forge", "tenant-b") is None
-    assert await service.get_realm(realm.id, "tenant-b") is None
-    assert await service.list_realms("tenant-b") == []
-
-
-async def test_two_tenants_can_use_the_same_slug(service: RealmService) -> None:
-    first = await service.create_realm("forge", "Forge A", tenant_id="tenant-a")
-    second = await service.create_realm("forge", "Forge B", tenant_id="tenant-b")
-
-    fetched_first = await service.get_realm("forge", "tenant-a")
-    fetched_second = await service.get_realm("forge", "tenant-b")
-
-    assert fetched_first is not None and fetched_first.id == first.id
-    assert fetched_second is not None and fetched_second.id == second.id
-
-
-async def test_delete_realm_cannot_reach_another_tenant(service: RealmService) -> None:
-    realm = await service.create_realm("forge", "Forge", tenant_id="tenant-a")
-
-    assert await service.delete_realm(realm.id, "tenant-b") is None
-    assert await service.get_realm(realm.id, "tenant-a") is not None
-
-
-async def test_resolve_build_grant_cannot_reach_another_tenant(service: RealmService) -> None:
-    realm = await service.create_realm("forge", "Forge", tenant_id="tenant-a")
-    await service.grant_trust(realm.id, "build", level=3)
-
-    assert await service.resolve_build_grant("forge", "tenant-b") is None
-
-
-async def test_upsert_realm_refuses_an_id_in_another_tenant(service: RealmService) -> None:
-    realm = await service.create_realm("forge", "Forge", tenant_id="tenant-a")
-
-    with pytest.raises(RealmNotFoundError):
-        await service.upsert_realm(realm.id, slug="forge", name="Taken", tenant_id="tenant-b")
-
-    stored = await service.get_realm(realm.id, "tenant-a")
-    assert stored is not None and stored.name == "Forge"
+    assert await service.resolve_build_grant(uuid4()) is None

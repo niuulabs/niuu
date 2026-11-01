@@ -58,7 +58,7 @@ it('explains when Guild has no deployment services', async () => {
   });
   renderWithMimir(<InstanceDeployments />, service);
   expect(
-    await screen.findByText(/No deployment services are available in your infrastructure/),
+    await screen.findByText(/No deployment services are available in your Guild/),
   ).toBeInTheDocument();
   expect(
     screen.queryByRole('button', { name: 'Deploy instance', exact: true }),

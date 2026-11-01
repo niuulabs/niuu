@@ -1,8 +1,8 @@
 # Ingest and retrieve knowledge
 
-This exercise stores a short source in Memory, then reads it back. It verifies
+This exercise stores a short source in Mímir, then reads it back. It verifies
 persistence of source material without requiring a model to synthesize a page.
-Use a local Niuu host with Memory enabled and a writable store. The commands below
+Use a local Niuu host with Mímir enabled and a writable store. The commands below
 use its default local origin and write to the default mount.
 
 ## 1. Inspect the store
@@ -33,7 +33,7 @@ separate results.
 curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/mimir/sources
 ```
 
-Find the returned source ID and title. In Memory, inspect that source and
+Find the returned source ID and title. In the Mímir UI, inspect that source and
 its compilation state. To inspect existing knowledge pages through search:
 
 ```bash

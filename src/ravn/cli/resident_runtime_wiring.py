@@ -17,7 +17,6 @@ def _build_environment_signal_runtime(
     resident_learning_runtime: Any | None = None,
     resident_wakefulness: Any | None = None,
     resident_inbox: Any | None = None,
-    resident_runtime: Any | None = None,
     owns_publisher: bool = True,
 ) -> Any | None:
     """Build the resident Environment signal runtime when sources are configured."""
@@ -93,7 +92,6 @@ def _build_environment_signal_runtime(
         output_mode=output_mode,
         owns_publisher=owns_publisher,
         durable_home_enabled=resident_signal_recorder is not None,
-        home_wake=(resident_runtime.request_home_wake if resident_runtime is not None else None),
         # The dedupe set lives here so it survives a restart. Passed even
         # when environment signals are not routed through the inbox: the
         # two are separate choices, and a polling source re-reads its whole
@@ -253,7 +251,6 @@ def _build_resident_runtime(
         resident_personality=settings.environment.resident_personality,
         charter=settings.environment.charter,
         scheduled_wake_default_seconds=cfg.scheduled_wake_default_seconds,
-        failed_resume_retry_seconds=cfg.failed_resume_retry_seconds,
         repeated_decision_escalate_after=cfg.repeated_decision_escalate_after,
         health_refresh_interval_seconds=cfg.health_refresh_interval_seconds,
         stewardship_interval_seconds=cfg.stewardship_interval_seconds,
@@ -315,7 +312,6 @@ def _build_resident_learning_runtime(
         learned_tool_runner_for_backend,
         learned_tool_venvs_dir,
     )
-    from ravn.valkyrie_evolution.peer_tools import PeerToolCatalog  # noqa: PLC0415
 
     resident_id = settings.mesh.own_peer_id or f"valkyrie:{settings.environment.id}"
     local_ravn_dir = _resident_ravn_state_dir(workspace, settings)
@@ -374,11 +370,7 @@ def _build_resident_learning_runtime(
         skill_inventory_interval_seconds=(
             settings.resident_evolution.skill_inventory_interval_seconds
         ),
-        flock_inventory_interval_seconds=(
-            settings.resident_evolution.flock_inventory_interval_seconds
-        ),
         learning_store=FlockLearningStore(local_ravn_dir / "flock_learning.json"),
-        peer_catalog=PeerToolCatalog(local_ravn_dir / "flock_peer_tools.json"),
         review_requester=review_requester,
         learned_tool_runner=learned_tool_runner_for_backend(
             settings.resident_evolution.learned_tool_execution_backend,
@@ -457,21 +449,6 @@ def _build_resident_wakefulness(
     from ravn.valkyrie_evolution.wakefulness import ResidentWakefulness  # noqa: PLC0415
 
     cfg = settings.resident_wakefulness
-    evolution_reporter = None
-    if tool_curator is not None:
-        from ravn.cli.runtime_builders import build_decision_port  # noqa: PLC0415
-        from ravn.valkyrie_evolution.evolution_report import EvolutionReporter  # noqa: PLC0415
-
-        evolution_reporter = EvolutionReporter(
-            inventory=tool_curator.inventory,
-            valkyrie_id=resident_learning_runtime.identity.valkyrie_id,
-            window_seconds=cfg.evolution_window_seconds,
-            decisions=(
-                build_decision_port(settings)
-                if settings.decision.evolution_headline.enabled
-                else None
-            ),
-        )
     return ResidentWakefulness(
         identity=resident_learning_runtime.identity,
         skills=resident_learning_runtime.skills,
@@ -482,7 +459,6 @@ def _build_resident_wakefulness(
         learning_curator=learning_curator,
         self_improvement=self_improvement,
         tool_curator=tool_curator,
-        evolution_reporter=evolution_reporter,
         tick_interval_seconds=cfg.tick_interval_seconds,
         wakeful_window_seconds=cfg.wakeful_window_seconds,
         dream_interval_seconds=cfg.dream_interval_seconds,

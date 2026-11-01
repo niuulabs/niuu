@@ -15,7 +15,7 @@ const HINT_CHIPS = [
   },
   {
     label: '+ Example: simple endpoint',
-    text: 'Add a health check endpoint to the work service that reports queue depth and active run counts.',
+    text: 'Add a health check endpoint to the Ting service that reports queue depth and active run counts.',
   },
   {
     label: '+ Example: OIDC auth',

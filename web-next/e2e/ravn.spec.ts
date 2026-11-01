@@ -182,7 +182,7 @@ test('the deploy dialog lists runtimes and closes on Escape', async ({ page }) =
   await answerRavnApi(page);
   await page.goto('/ravn');
   await page.getByTestId('ravn-deploy-open').click();
-  const dialog = page.getByRole('dialog', { name: 'Deploy an agent' });
+  const dialog = page.getByRole('dialog', { name: 'Deploy a ravn' });
   await expect(dialog.getByTestId('ravn-deploy-profile-nemoclaw-local')).toBeVisible();
   await expect(dialog.getByTestId('ravn-deploy-submit')).toBeDisabled();
   await page.keyboard.press('Escape');

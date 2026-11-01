@@ -21,16 +21,16 @@ class MetricCard(Widget):
     MetricCard {
         width: 22;
         height: 5;
-        border: round #182b38;
+        border: round #27272a;
         padding: 1 2;
-        background: #10212d;
+        background: #18181b;
     }
     MetricCard #metric-icon-value {
         height: 1;
     }
     MetricCard #metric-label {
         height: 1;
-        color: #78909d;
+        color: #71717a;
     }
     """
 

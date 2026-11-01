@@ -557,17 +557,8 @@ export function TopologyCanvas({
     if (!ctx) return;
 
     let lightPalette: { background: string; text: string } | undefined;
-    let backdrop: { centre: string; edge: string } = {
-      centre: CANVAS.BACKDROP_CENTRE,
-      edge: CANVAS.BACKDROP_EDGE,
-    };
     const updateTheme = () => {
       const styles = getComputedStyle(canvas);
-      // Only the niuu theme defines these, so other themes keep the plan's wash.
-      backdrop = {
-        centre: styles.getPropertyValue('--niuu-backdrop-centre').trim() || CANVAS.BACKDROP_CENTRE,
-        edge: styles.getPropertyValue('--niuu-backdrop-edge').trim() || CANVAS.BACKDROP_EDGE,
-      };
       lightPalette =
         canvas.closest('[data-theme]')?.getAttribute('data-theme') === 'light'
           ? {
@@ -626,8 +617,8 @@ export function TopologyCanvas({
 
       // Background gradient
       const bg = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.7);
-      bg.addColorStop(0, lightPalette?.background ?? backdrop.centre);
-      bg.addColorStop(1, lightPalette?.background ?? backdrop.edge);
+      bg.addColorStop(0, lightPalette?.background ?? CANVAS.BACKDROP_CENTRE);
+      bg.addColorStop(1, lightPalette?.background ?? CANVAS.BACKDROP_EDGE);
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, w, h);
 

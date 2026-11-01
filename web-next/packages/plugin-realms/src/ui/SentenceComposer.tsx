@@ -27,7 +27,7 @@ export function SentenceComposer({ rows = 1 }: { rows?: number } = {}) {
       <Sparkles size={18} className="niuu:shrink-0 niuu:text-brand" aria-hidden="true" />
       <div className="niuu:flex niuu:flex-1 niuu:flex-col niuu:gap-0.5">
         <Textarea
-          aria-label="Describe the workspace in one sentence"
+          aria-label="Describe the realm in one sentence"
           placeholder={PLACEHOLDER}
           rows={rows}
           value={text}
@@ -48,7 +48,7 @@ export function SentenceComposer({ rows = 1 }: { rows?: number } = {}) {
         className="niuu:rounded-full niuu:bg-brand niuu:px-5 niuu:py-2 niuu:text-sm niuu:font-semibold niuu:text-bg-primary niuu:disabled:opacity-40"
         data-testid="sentence-submit"
       >
-        Start a workspace
+        Start a realm
       </button>
     </form>
   );

@@ -9,7 +9,7 @@
   height: 100%;
   max-height: none;
   padding: 16px 20px;
-  background: var(--niuu-bg-primary, #090a0d);
+  background: #090a0d;
 }
 
 .rv-resident-logs-view__row {
@@ -17,26 +17,26 @@
   grid-template-columns: 82px 58px minmax(90px, 0.2fr) minmax(0, 1fr);
   gap: 12px;
   align-items: baseline;
-  border-bottom: 1px solid rgb(var(--niuu-rgb-muted, 156 164 177) / 0.1);
+  border-bottom: 1px solid rgba(156, 164, 177, 0.1);
   padding: 8px 0;
-  color: var(--niuu-text-secondary, #9aa3af);
+  color: #9aa3af;
   font-family: var(--font-mono);
   font-size: 10px;
 }
 
 .rv-resident-logs-view__row time {
-  color: var(--niuu-text-muted, #68717f);
+  color: #68717f;
 }
 
 .rv-resident-logs-view__row strong {
-  color: var(--niuu-brand-300, #b7d9ef);
+  color: #b7d9ef;
   font-weight: 700;
   text-transform: uppercase;
 }
 
 .rv-resident-logs-view__row p {
   margin: 0;
-  color: var(--niuu-text-primary, #d9dee5);
+  color: #d9dee5;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -47,7 +47,7 @@
   align-items: center;
   justify-content: center;
   padding: 24px;
-  color: var(--niuu-text-muted, #7c8490);
+  color: #7c8490;
   font-family: var(--font-mono);
   font-size: 12px;
 }

@@ -3,15 +3,15 @@ import { render, screen } from '@testing-library/react';
 import { CliBadge } from './CliBadge';
 
 describe('CliBadge', () => {
-  it('renders the label', () => {
+  it('renders rune and label', () => {
     render(<CliBadge cli="claude" />);
-    expect(screen.queryByText('Cl')).not.toBeInTheDocument();
+    expect(screen.getByText('ᛗ')).toBeInTheDocument();
     expect(screen.getByText('Claude Code')).toBeInTheDocument();
   });
 
-  it('renders compact (short mark only)', () => {
+  it('renders compact (rune only)', () => {
     render(<CliBadge cli="claude" compact />);
-    expect(screen.getByText('Cl')).toBeInTheDocument();
+    expect(screen.getByText('ᛗ')).toBeInTheDocument();
     expect(screen.queryByText('Claude Code')).not.toBeInTheDocument();
   });
 

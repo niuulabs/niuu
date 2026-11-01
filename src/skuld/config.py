@@ -173,14 +173,6 @@ class WorkflowTriggerConfig(BaseModel):
 class WorkflowRuntimeConfig(BaseModel):
     """Workflow graph metadata injected into Skuld-backed flock sessions."""
 
-    gate_consumer_wait_s: float = Field(
-        default=20.0,
-        description=(
-            "How long a gate decision waits for the flock to reconnect after a restart. "
-            "Bounded by how long a caller will hold the request; on a hit the decision "
-            "fails with a 503 and the gate stays pending."
-        ),
-    )
     workflow_id: str = Field(default="")
     name: str = Field(default="")
     version: str = Field(default="")
@@ -276,9 +268,8 @@ class RoomConfig(BaseModel):
     presence_sweep_interval_s: float = Field(
         default=30.0,
         description=(
-            "How often participants past their heartbeat TTL with no live WebSocket "
-            "are shown as away. They keep their membership until they leave. 0 "
-            "disables the check."
+            "How often expired participants (heartbeat TTL exceeded, no live "
+            "WebSocket) are evicted from room state. 0 disables the sweep."
         ),
     )
 

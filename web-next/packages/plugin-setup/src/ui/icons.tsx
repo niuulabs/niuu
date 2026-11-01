@@ -51,3 +51,16 @@ export function BackIcon({ size = 14 }: IconProps) {
     </svg>
   );
 }
+
+/** The favicon's double-N stroke. */
+export function NiuuMark({ size = 28 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 56 56" fill="none" aria-hidden="true">
+      <g stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M10 44V12L28 38V14" />
+        <path d="M46 44V16L28 42V14" opacity="0.85" />
+        <circle cx="28" cy="28" r="2.1" fill="currentColor" stroke="none" />
+      </g>
+    </svg>
+  );
+}

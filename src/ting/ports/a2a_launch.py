@@ -19,10 +19,6 @@ class A2ALaunchReservationRepository(ABC):
     ) -> A2ALaunchReservation | None: ...
 
     @abstractmethod
-    async def release(self, reservation_id: UUID, *, lease_token: UUID) -> None:
-        """Give up a claim whose launch was refused, so it can be judged again."""
-
-    @abstractmethod
     async def mark_launched(
         self, reservation_id: UUID, *, lease_token: UUID, session_id: str
     ) -> A2ALaunchReservation: ...

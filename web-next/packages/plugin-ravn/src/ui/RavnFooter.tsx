@@ -18,7 +18,7 @@ export function RavnFooter() {
   return (
     <div className="niuu:flex niuu:items-center niuu:gap-1" data-testid="ravn-footer">
       <FooterChip
-        name="agents"
+        name="ravens"
         state={activeRavens > 0 ? 'ok' : 'warn'}
         value={`${activeRavens}/${totalRavens}`}
       />

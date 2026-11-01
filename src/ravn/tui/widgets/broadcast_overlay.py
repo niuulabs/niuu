@@ -26,8 +26,8 @@ class BroadcastOverlay(ModalScreen[None]):
     }
     BroadcastOverlay #bo-panel {
         width: 60;
-        background: #10212d;
-        border: solid #2b4351;
+        background: #18181b;
+        border: solid #3f3f46;
         layout: vertical;
         height: auto;
     }
@@ -35,25 +35,25 @@ class BroadcastOverlay(ModalScreen[None]):
         height: 1;
         padding: 0 1;
         background: #111113;
-        color: #86d0e8;
+        color: #f59e0b;
     }
     BroadcastOverlay #bo-list {
         height: 10;
-        background: #10212d;
+        background: #18181b;
         padding: 0;
     }
     BroadcastOverlay #bo-input {
-        background: #10212d;
+        background: #18181b;
         border: none;
-        border-top: solid #2b4351;
-        color: #edf4f7;
+        border-top: solid #3f3f46;
+        color: #fafafa;
         height: 3;
     }
     BroadcastOverlay #bo-hint {
         height: 1;
         padding: 0 1;
         background: #111113;
-        color: #648090;
+        color: #52525b;
     }
     """
 
@@ -66,14 +66,14 @@ class BroadcastOverlay(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Container(id="bo-panel"):
-            yield Static("[bold #86d0e8]  Broadcast[/]", id="bo-title")
+            yield Static("[bold #f59e0b]  Broadcast[/]", id="bo-title")
             yield RichLog(id="bo-list", markup=True, highlight=False, wrap=False)
             yield Input(
                 placeholder="  message to send to selected ravens…",
                 id="bo-input",
             )
             yield Static(
-                "[#2b4351]  j/k navigate   space toggle   tab↔input   enter send   esc cancel[/]",
+                "[#3f3f46]  j/k navigate   space toggle   tab↔input   enter send   esc cancel[/]",
                 id="bo-hint",
             )
 
@@ -160,16 +160,16 @@ class BroadcastOverlay(ModalScreen[None]):
             return
         log.clear()
         if not self._ravns:
-            log.write("[#648090]  no ravens connected[/]")
+            log.write("[#52525b]  no ravens connected[/]")
             return
         for i, conn in enumerate(self._ravns):
             sel = i == self._list_idx
             checked = conn.name in self._selected
-            accent = "[bold #86d0e8]▌[/]" if sel else " "
-            check = "[bold #76bfa7]✓[/]" if checked else "[#648090]·[/]"
+            accent = "[bold #f59e0b]▌[/]" if sel else " "
+            check = "[bold #10b981]✓[/]" if checked else "[#52525b]·[/]"
             info = conn.ravn_info or {}
             state = info.get("state", conn.status)
-            log.write(f"{accent}{check} [#edf4f7]{conn.name}[/]  [#2b4351]{state}[/]")
+            log.write(f"{accent}{check} [#fafafa]{conn.name}[/]  [#3f3f46]{state}[/]")
         n_sel = len(self._selected)
         n_tot = len(self._ravns)
-        log.write(f"\n[#648090]  {n_sel}/{n_tot} selected  [#2b4351]a[/] to toggle all[/]")
+        log.write(f"\n[#52525b]  {n_sel}/{n_tot} selected  [#3f3f46]a[/] to toggle all[/]")

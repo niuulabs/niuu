@@ -29,7 +29,6 @@ _CODEX_ENV_VARS = ("CODEX_CLI_PATH", "SKULD_CODEX_CLI_PATH")
 _CODEX_BUNDLE_CANDIDATES = (
     "/Applications/Codex.app/Contents/Resources/codex",
     "/Applications/Codex.app/Contents/MacOS/Codex",
-    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
 )
 
 # ---------------------------------------------------------------------------

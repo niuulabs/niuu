@@ -75,21 +75,6 @@ class TestAuditAPI:
         assert response.headers["X-Niuu-Canonical-Route"] == "/api/v1/audit"
         assert [entry["id"] for entry in response.json()] == ["evt-1"]
 
-    def test_hides_other_users_and_ownerless_events(self) -> None:
-        event_bus = InMemoryEventBus(max_clients=5, log_size=20)
-        event_bus._log.extend(  # noqa: SLF001
-            [
-                TingEvent(event="dispatch.started", data={}, owner_id="user-1", id="evt-1"),
-                TingEvent(event="dispatch.started", data={}, owner_id="user-2", id="evt-2"),
-                TingEvent(event="dispatch.started", data={}, id="evt-3"),
-            ]
-        )
-        client = _client(event_bus)
-
-        response = client.get("/api/v1/ting/audit", headers=_auth_headers())
-
-        assert [entry["id"] for entry in response.json()] == ["evt-1"]
-
     def test_rejects_invalid_timestamp_filter(self) -> None:
         client = _client(InMemoryEventBus(max_clients=5, log_size=20))
 

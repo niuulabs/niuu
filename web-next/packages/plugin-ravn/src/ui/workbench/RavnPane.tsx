@@ -89,7 +89,7 @@ function DeleteDialog({
       >
         {remove.isError && (
           <div className="rw-form-error" role="alert">
-            {errorText(remove.error, 'Deleting the agent failed')}
+            {errorText(remove.error, 'Deleting the ravn failed')}
           </div>
         )}
         <div className="rw-dialog-foot">
@@ -143,7 +143,7 @@ function StopDialog({
     >
       <DialogContent
         title={`Stop ${nameForRavn(ravn)}`}
-        description="Its agent and chat room processes end. The session stays in Forge, where it can be resumed."
+        description="Its ravn and chat room processes end. The session stays in Forge, where it can be resumed."
       >
         {stop.isError && (
           <div className="rw-form-error" role="alert">
@@ -207,7 +207,7 @@ export function RavnPane({
       <header className="rw-head">
         <button type="button" className="rw-btn rw-back" onClick={onBack}>
           <ChevronLeft size={14} aria-hidden="true" />
-          Agents
+          Ravens
         </button>
         <RavnMark ravn={ravn} size="lg" />
         <div className="rw-head__who">
@@ -220,11 +220,11 @@ export function RavnPane({
                 type="button"
                 className="rw-chip"
                 onClick={() => onOpenForgeSession(ravn.sessionId ?? ravn.id)}
-                title="Open the session"
+                title="Open the session in Forge"
                 data-testid="ravn-open-forge-session"
               >
                 <span className="rw-chip__k">runs as</span>
-                Session
+                Forge session
                 <ExternalLink size={11} aria-hidden="true" />
               </button>
             ) : ravn.personaName ? (
@@ -274,7 +274,7 @@ export function RavnPane({
             className="rw-btn rw-btn--primary"
             onClick={() => onTabChange('chat')}
             disabled={state !== 'running'}
-            title={state === 'running' ? `Talk with ${name}` : 'Only a running agent can talk'}
+            title={state === 'running' ? `Talk with ${name}` : 'Only a running ravn can talk'}
             data-testid="ravn-talk"
           >
             <MessageSquare size={14} aria-hidden="true" />
@@ -363,7 +363,7 @@ export function RavnPane({
         lifecyclePending={lifecycle.isPending}
       />
 
-      <nav className="rw-tabs" role="tablist" aria-label="Agent sections">
+      <nav className="rw-tabs" role="tablist" aria-label="Ravn sections">
         {RAVN_TABS.map((option) => (
           <button
             key={option.id}

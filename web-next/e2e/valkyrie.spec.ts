@@ -1,7 +1,5 @@
 import { expect, test } from '@playwright/test';
 
-const VALHALLA_ACTIVITY = '/valkyrie/activity?environment=env-k8s-valhalla';
-
 test('odin review inbox lists pending decisions with full lineage', async ({ page }) => {
   await page.goto('/valkyrie/inbox');
 
@@ -53,21 +51,24 @@ test('console is the default valkyrie view', async ({ page }) => {
 
   await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
   await expect(page.getByTestId('valkyrie-roster')).toBeVisible();
-  await expect(page.getByTestId('valkyrie-evolution')).toBeVisible();
+  await expect(page.getByTestId('valkyrie-signal-timeline')).toBeVisible();
 });
 
-test('console explains the charter and pending reviews', async ({ page }) => {
+test('console explains the charter, decisions, and pending reviews', async ({ page }) => {
   await page.goto('/valkyrie');
   await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
 
   await expect(page.getByTestId('valkyrie-charter')).toContainText('Keep the Valhalla cluster');
+  // Decision rows lead with the record's own readable sentence.
+  await expect(page.getByTestId('valkyrie-decisions')).toContainText(
+    'OOMKilled pattern handled with learned probe',
+  );
   await expect(page.getByTestId('valkyrie-pending-reviews')).toBeVisible();
   await expect(page.getByTestId('valkyrie-learning')).toContainText('k8s_memory_pressure_probe');
 });
 
-test('activity collapses re-judged decisions and never fakes approval', async ({ page }) => {
-  await page.goto(VALHALLA_ACTIVITY);
-  await page.getByTestId('evolution-fold-decisions').click();
+test('console collapses re-judged decisions and never fakes approval', async ({ page }) => {
+  await page.goto('/valkyrie');
   const decisions = page.getByTestId('valkyrie-decisions');
   await expect(decisions).toContainText('OOMKilled pattern handled with learned probe');
 
@@ -94,9 +95,8 @@ test('activity collapses re-judged decisions and never fakes approval', async ({
   await expect(pendingRow.getByTestId('decision-needs-approval')).toHaveText('Needs your approval');
 });
 
-test('activity decision expands to rationale, lineage, and its skill viewer', async ({ page }) => {
-  await page.goto(VALHALLA_ACTIVITY);
-  await page.getByTestId('evolution-fold-decisions').click();
+test('console decision expands to rationale, lineage, and its skill viewer', async ({ page }) => {
+  await page.goto('/valkyrie');
   await expect(page.getByTestId('valkyrie-decisions')).toContainText(
     'OOMKilled pattern handled with learned probe',
   );
@@ -119,9 +119,9 @@ test('activity decision expands to rationale, lineage, and its skill viewer', as
   await expect(dialog).not.toBeVisible();
 });
 
-test('activity signal browser drills into observed signals', async ({ page }) => {
-  await page.goto(VALHALLA_ACTIVITY);
-  await expect(page.getByTestId('activity-page')).toBeVisible({ timeout: 5000 });
+test('console signal browser drills into observed signals', async ({ page }) => {
+  await page.goto('/valkyrie');
+  await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
 
   await page.getByRole('button', { name: /browse observed signals/i }).click();
   await expect(page.getByTestId('valkyrie-signal-browser')).toContainText('pod/ravn-worker-77');
@@ -192,8 +192,8 @@ test('operator can open a learned skill from the console and read its code', asy
   await page.goto('/valkyrie');
   await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
 
-  await page.getByTestId('evolution-fold-tools').click();
   const panel = page.getByTestId('valkyrie-learned-skills');
+  await expect(panel).toContainText('Learned skills');
   await expect(panel).toContainText('k8s_memory_pressure_probe');
   await expect(panel).toContainText('Read-only probe that inspects');
 
@@ -285,7 +285,7 @@ test('console shows the effective build autonomy from the realm grant', async ({
 
   // Sigrun on env-k8s-valhalla → realm `valhalla` whose build grant is level 2.
   await expect(page.getByTestId('valkyrie-effective-autonomy')).toHaveText(
-    'Autonomous · effective (workspace grant level 2)',
+    'Autonomous · effective (realm grant level 2)',
   );
   await expect(page.getByTestId('valkyrie-configured-autonomy')).toHaveText(
     'configured autonomous',
@@ -294,11 +294,11 @@ test('console shows the effective build autonomy from the realm grant', async ({
   // Runa is configured guarded but shares the realm: the grant wins.
   await page.getByRole('button', { name: /Runa/ }).click();
   await expect(page.getByTestId('valkyrie-effective-autonomy')).toHaveText(
-    'Autonomous · effective (workspace grant level 2)',
+    'Autonomous · effective (realm grant level 2)',
   );
   await expect(page.getByTestId('valkyrie-configured-autonomy')).toHaveText('configured guarded');
   await expect(page.getByTestId('valkyrie-authority')).toContainText(
-    'workspace build governance — valhalla',
+    'realm build governance — valhalla',
   );
   await expect(page.getByTestId('tool-builder-autonomy')).toHaveText('autonomous · level 2');
 });
@@ -312,7 +312,7 @@ test('operator pins a builder workflow and raises the trust level from the conso
   // Saga lives on env-host-jozef → realm `host-jozef` with no build grant yet.
   await page.getByRole('button', { name: /Saga/ }).click();
   await expect(page.getByTestId('valkyrie-effective-autonomy')).toHaveText(
-    'Guarded · configured (no workspace build grant)',
+    'Guarded · configured (no realm build grant)',
   );
   const card = page.getByTestId('tool-builder-card');
   await expect(card.getByTestId('tool-builder-ungranted')).toBeVisible();
@@ -324,7 +324,7 @@ test('operator pins a builder workflow and raises the trust level from the conso
 
   await expect(card.getByTestId('tool-builder-autonomy')).toHaveText('yolo · level 4');
   await expect(page.getByTestId('valkyrie-effective-autonomy')).toHaveText(
-    'Yolo · effective (workspace grant level 4)',
+    'Yolo · effective (realm grant level 4)',
   );
 });
 

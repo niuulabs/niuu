@@ -101,7 +101,7 @@ function formatModeLabel(mode: string): string {
 function buildQuestion(campaign: ResearchCampaign): string {
   const question = campaign.metadata.question;
   if (typeof question === 'string' && question.trim()) return question.trim();
-  return 'Review campaign artifacts and published memory.';
+  return 'Review campaign artifacts and published memory in Mimir.';
 }
 
 function deriveWarning(
@@ -285,7 +285,7 @@ function summaryCards(cards: CampaignCardViewModel[]) {
       key: 'published',
       label: 'PUBLISHED',
       value: bucketCount(cards, 'published'),
-      sub: 'in memory',
+      sub: 'in mimir',
     },
     { key: 'draft', label: 'DRAFTS', value: bucketCount(cards, 'draft'), sub: 'not dispatched' },
   ];
@@ -662,7 +662,9 @@ export function ResearchCenterPage() {
 
         <footer className="research-bottom-rail">
           <div className="research-bottom-rail__side">
-            <span>work</span>
+            <span>ting</span>
+            <span className="research-bottom-rail__sep">·</span>
+            <span>route /ting/research</span>
             <span className="research-bottom-rail__sep">·</span>
             <span>dispatcher {dispatcherState?.running ? 'live' : 'paused'}</span>
           </div>
@@ -671,7 +673,7 @@ export function ResearchCenterPage() {
             <span className="research-bottom-rail__sep">·</span>
             <span>research-campaign</span>
             <span className="research-bottom-rail__sep">·</span>
-            <span>connected via memory</span>
+            <span>connected via mimir</span>
           </div>
         </footer>
       </div>

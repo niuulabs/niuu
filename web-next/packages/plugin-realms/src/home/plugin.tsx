@@ -1,5 +1,5 @@
 import { createRoute } from '@tanstack/react-router';
-import { HomeIcon } from '@niuulabs/ui';
+import { House } from 'lucide-react';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { HomePage } from './HomePage';
 
@@ -9,12 +9,12 @@ import { HomePage } from './HomePage';
  */
 export const homePlugin = definePlugin({
   id: 'home',
-  rune: 'H',
-  // The place you come back to.
-  icon: <HomeIcon />,
+  rune: 'ᚺ',
   title: 'Home',
   subtitle: 'what do you want to do',
   simple: {
+    // The place you come back to.
+    icon: <House size={17} aria-hidden="true" />,
     only: true,
     landing: true,
   },

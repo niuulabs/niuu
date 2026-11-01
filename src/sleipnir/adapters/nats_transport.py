@@ -130,7 +130,6 @@ import asyncio
 import hashlib
 import logging
 import random
-import re
 import ssl
 import time
 from collections import deque
@@ -165,7 +164,7 @@ from sleipnir.adapters._subscriber_support import (
 )
 from sleipnir.adapters.serialization import deserialize, serialize
 from sleipnir.domain import registry
-from sleipnir.domain.events import FLOCK_SCOPE_KEY, SleipnirEvent, match_event_type
+from sleipnir.domain.events import SleipnirEvent, match_event_type
 from sleipnir.ports.events import (
     EventHandler,
     SleipnirPublisher,
@@ -469,24 +468,22 @@ def _nats_subject_for_event(event_type: str, prefix: str) -> str:
     return f"{prefix}.{event_type}"
 
 
-def _nats_token(value: str) -> str:
-    """Return *value* as one NATS subject token."""
-    token = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(value).strip()).strip("-").lower()
-    return token or "unknown"
+def _additional_nats_subjects(event: SleipnirEvent) -> list[str]:
+    """Return explicit extra NATS subjects requested by the event payload."""
 
-
-def _flock_subject(event: SleipnirEvent) -> str | None:
-    """Return the subject that carries *event* across clusters, if it is for the flock.
-
-    Residents sit behind per-cluster streams; only a publish on this subject
-    reaches the flock streams of the other clusters.
-    """
-    scope = event.payload.get(FLOCK_SCOPE_KEY)
-    if not isinstance(scope, dict):
-        return None
-    domain = _nats_token(str(scope.get("domain") or "environment"))
-    environment_id = _nats_token(str(scope.get("environment_id") or ""))
-    return f"flock.{domain}.{environment_id}.{event.event_type}"
+    raw = event.payload.get("additional_nats_subjects")
+    if isinstance(raw, str):
+        candidates: list[Any] = [raw]
+    elif isinstance(raw, list):
+        candidates = raw
+    else:
+        return []
+    subjects: list[str] = []
+    for candidate in candidates:
+        subject = str(candidate).strip()
+        if subject:
+            subjects.append(subject)
+    return subjects
 
 
 def _extra_subscription_matches(
@@ -848,9 +845,9 @@ class NatsPublisher(SleipnirPublisher):
         subject = _nats_subject_for_event(event.event_type, self._subject_prefix)
         payload = serialize(event)
         await self._publish_with_timeout(subject, payload)
-        flock_subject = _flock_subject(event)
-        if flock_subject is not None and flock_subject != subject:
-            await self._publish_with_timeout(flock_subject, payload)
+        for additional_subject in _additional_nats_subjects(event):
+            if additional_subject != subject:
+                await self._publish_with_timeout(additional_subject, payload)
 
     async def _publish_with_timeout(self, subject: str, payload: bytes) -> None:
         """Publish with a hard deadline so a slow broker cannot hang callers."""

@@ -100,8 +100,7 @@ def test_ravn_api_lists_discovered_wardens_and_blocks_lifecycle(tmp_path) -> Non
         create_app(
             warden_store=WardenStore(tmp_path),
             warden_discovery=discovery,
-        ),
-        headers={"x-auth-user-id": "jozef", "x-auth-tenant": "default"},
+        )
     )
 
     listed = client.get("/api/v1/ravn/wardens")

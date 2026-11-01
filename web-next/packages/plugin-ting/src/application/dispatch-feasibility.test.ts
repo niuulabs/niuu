@@ -94,7 +94,7 @@ describe('checkRavenResolution', () => {
   it('fails when no ravens are available', () => {
     const result = checkRavenResolution(makeCtx({ ravenResolved: false }));
     expect(result.passed).toBe(false);
-    expect(result.reason).toMatch(/no agents/i);
+    expect(result.reason).toMatch(/no ravens/i);
   });
 });
 

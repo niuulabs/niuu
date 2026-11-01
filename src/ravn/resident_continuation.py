@@ -111,9 +111,6 @@ class NullResidentMemory(ResidentMemoryPort):
     async def read_operator_needed(self, case_id: str = "") -> ResidentMemoryEntry | None:
         return None
 
-    async def read_closed_operator_question(self, case_id: str) -> ResidentMemoryEntry | None:
-        return None
-
     async def write_operator_answer(self, answer: str, *, case_id: str = "") -> str:
         return ""
 
@@ -461,20 +458,6 @@ class LocalResidentMemory(ResidentMemoryPort):
             return None
         content = self._safe_path(path).read_text(encoding="utf-8")
         if not _operator_marker_is_pending(content):
-            return None
-        return ResidentMemoryEntry(
-            path=str(rel),
-            summary=_first_heading_or_line(content),
-            content=content,
-        )
-
-    async def read_closed_operator_question(self, case_id: str) -> ResidentMemoryEntry | None:
-        rel = self._prefix / _case_path(case_id, _OPERATOR_NEEDED_PATH)
-        path = self._safe_path(rel)
-        if not path.exists():
-            return None
-        content = path.read_text(encoding="utf-8")
-        if _operator_marker_is_pending(content):
             return None
         return ResidentMemoryEntry(
             path=str(rel),

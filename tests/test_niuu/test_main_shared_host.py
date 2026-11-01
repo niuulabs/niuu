@@ -13,7 +13,6 @@ from fastapi.testclient import TestClient
 
 import cli.shared_host as niuu_main
 from niuu.config import GitConfig
-from niuu.domain.models import Principal
 from volundr.config import Settings
 
 
@@ -210,39 +209,9 @@ def test_create_app_mounts_shared_identity_features_and_personas(
         assert "/api/v1/tracker/repo-mappings" in paths
         assert "/api/v1/niuu/instances" not in paths
         assert "/api/v1/forge/sessions" not in paths
-        app.dependency_overrides[niuu_main.extract_principal] = lambda: Principal(
-            user_id="user-1",
-            email="user@example.com",
-            tenant_id="tenant-1",
-            roles=["volundr:developer"],
-        )
+        app.dependency_overrides[niuu_main.extract_principal] = object
         app.state.realm_service.list_realms = AsyncMock(return_value=[])
         response = client.get("/api/v1/realms")
         assert response.status_code == 200
         assert response.json() == []
-        app.state.realm_service.list_realms.assert_awaited_once_with("tenant-1")
-
-
-async def test_realm_pool_is_the_shared_pool_by_default() -> None:
-    shared = object()
-
-    async with niuu_main._realm_database_pool(Settings(), shared) as pool:
-        assert pool is shared
-
-
-async def test_realm_pool_opens_the_configured_database(monkeypatch) -> None:
-    opened: list[str] = []
-
-    @asynccontextmanager
-    async def record_pool(config) -> AsyncIterator[object]:
-        opened.append(config.name)
-        yield "forge-pool"
-
-    monkeypatch.setattr(niuu_main, "database_pool", record_pool)
-    settings = Settings()
-    settings.niuu.realm_database = "volundr"
-
-    async with niuu_main._realm_database_pool(settings, object()) as pool:
-        assert pool == "forge-pool"
-
-    assert opened == ["volundr"]
+        app.state.realm_service.list_realms.assert_awaited_once()

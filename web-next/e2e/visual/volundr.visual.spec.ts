@@ -13,9 +13,7 @@ test.beforeEach(async ({ page }) => {
 test('volundr forge overview matches web2', async ({ page }) => {
   await page.goto('/volundr/forge');
   await page.waitForLoadState('networkidle');
-  await expect(page.getByRole('heading', { name: 'Forge', exact: true, level: 1 })).toBeVisible({
-    timeout: 10_000,
-  });
+  await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 10_000 });
   await expect(page.getByTestId('forge-page')).toBeVisible({ timeout: 10_000 });
   await expect(page).toHaveScreenshot('volundr-forge-overview.png');
 });
@@ -36,9 +34,7 @@ test('volundr launch catalog matches web2', async ({ page }) => {
 test('guild overview matches web2', async ({ page }) => {
   await page.goto('/guild');
   await page.waitForLoadState('networkidle');
-  await expect(page.getByRole('heading', { name: 'Platform', exact: true, level: 1 })).toBeVisible({
-    timeout: 10_000,
-  });
+  await expect(page.getByRole('heading', { name: 'Guild' })).toBeVisible({ timeout: 10_000 });
   await expect(page).toHaveScreenshot('guild-overview.png');
 });
 

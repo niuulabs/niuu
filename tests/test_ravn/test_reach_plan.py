@@ -148,20 +148,3 @@ def test_service_ref_parsing() -> None:
     assert parse_service_ref("ns/svc") == ServiceTarget("ns", "svc", None)
     with pytest.raises(ValueError, match="namespace/service"):
         parse_service_ref("not a service")
-
-
-def test_a_plan_describes_what_its_job_can_reach() -> None:
-    from ravn.valkyrie_evolution.reach_plan import EgressPlan, HostTarget, ServiceTarget
-
-    scoped = EgressPlan(
-        kubernetes_api=True,
-        services=(ServiceTarget("monitoring", "prometheus", 9090), ServiceTarget("a", "b")),
-        hosts=(HostTarget("api.github.com", 443),),
-    )
-
-    assert scoped.describe() == (
-        "only monitoring/prometheus:9090, a/b, api.github.com:443, the Kubernetes API "
-        "(as the read-only tool identity), plus cluster DNS"
-    )
-    assert EgressPlan().describe() == "no network at all"
-    assert EgressPlan(unrestricted=True).describe() == "unrestricted network egress"

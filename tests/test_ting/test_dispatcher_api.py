@@ -410,27 +410,11 @@ class TestGetActivityLog:
         assert "run.state_changed" in data[1]
         assert "session.stopped" in data[2]
 
-    def test_hides_other_users_events(self, client: TestClient, event_bus: InMemoryEventBus):
-        import asyncio
-
-        for owner in ("user-1", "user-2", ""):
-            asyncio.run(
-                event_bus.emit(
-                    TingEvent(event="session.spawned", data={"who": owner}, owner_id=owner)
-                )
-            )
-
-        resp = client.get("/api/v1/ting/dispatcher/log?limit=10", headers=_auth_headers())
-
-        assert [event["owner_id"] for event in resp.json()["events"]] == ["user-1"]
-
     def test_n_param_limits_results(self, client: TestClient, event_bus: InMemoryEventBus):
         import asyncio
 
         for i in range(10):
-            asyncio.run(
-                event_bus.emit(TingEvent(event="session.spawned", data={"i": i}, owner_id="user-1"))
-            )
+            asyncio.run(event_bus.emit(TingEvent(event="session.spawned", data={"i": i})))
 
         resp = client.get("/api/v1/ting/dispatcher/log?n=3", headers=_auth_headers())
         assert resp.status_code == 200
@@ -444,9 +428,7 @@ class TestGetActivityLog:
         import asyncio
 
         for i in range(3):
-            asyncio.run(
-                event_bus.emit(TingEvent(event="session.spawned", data={"i": i}, owner_id="user-1"))
-            )
+            asyncio.run(event_bus.emit(TingEvent(event="session.spawned", data={"i": i})))
 
         resp = client.get("/api/v1/ting/dispatcher/log?limit=2", headers=_auth_headers())
         assert resp.status_code == 200
@@ -513,9 +495,7 @@ class TestGetActivityLog:
 
         # Emit 50 events — all should be returned with default n=100
         for i in range(50):
-            asyncio.run(
-                event_bus.emit(TingEvent(event="session.spawned", data={"i": i}, owner_id="user-1"))
-            )
+            asyncio.run(event_bus.emit(TingEvent(event="session.spawned", data={"i": i})))
 
         resp = client.get("/api/v1/ting/dispatcher/log", headers=_auth_headers())
         assert resp.status_code == 200

@@ -122,7 +122,7 @@ export function NotificationsSection() {
         Notifications
       </h3>
       <p className="niuu:text-sm niuu:text-text-secondary niuu:mb-4">
-        Configure how and when Niuu sends notifications for run and dispatcher events.
+        Configure how and when Ting sends notifications for run and dispatcher events.
       </p>
 
       <form
@@ -179,7 +179,7 @@ export function NotificationsSection() {
           <ToggleRow
             id="notif-saga-complete"
             name="onSagaComplete"
-            label="Project complete"
+            label="Saga complete"
             defaultChecked={settings?.onSagaComplete}
           />
           <ToggleRow

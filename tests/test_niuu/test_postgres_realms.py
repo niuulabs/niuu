@@ -37,7 +37,6 @@ def _realm_row(**kwargs) -> MagicMock:
         "owner_id": "user-1",
         "instance_id": "inst-1",
         "autonomy_profile": "balanced",
-        "tenant_id": "tenant-1",
         "created_at": _NOW,
         "updated_at": _NOW,
     }
@@ -135,7 +134,7 @@ async def test_list_realms():
     repo, pool = _make_repo()
     pool.fetch.return_value = [_realm_row(), _realm_row(slug="other")]
 
-    realms = await repo.list_realms("tenant-1")
+    realms = await repo.list_realms()
 
     assert len(realms) == 2
     assert realms[0].slug == "forge"
@@ -168,7 +167,7 @@ async def test_get_realm_by_slug():
     repo, pool = _make_repo()
     pool.fetchrow.return_value = _realm_row()
 
-    realm = await repo.get_tenant_realm("forge", "tenant-1")
+    realm = await repo.get_realm("forge")
 
     assert realm is not None
     assert realm.slug == "forge"
@@ -180,7 +179,7 @@ async def test_get_realm_by_slug_not_found():
     repo, pool = _make_repo()
     pool.fetchrow.return_value = None
 
-    assert await repo.get_tenant_realm("ghost", "tenant-1") is None
+    assert await repo.get_realm("ghost") is None
 
 
 @pytest.mark.asyncio
@@ -288,44 +287,3 @@ async def test_upsert_capability_returns_mapped_row():
     assert result.status == "building"
     assert result.name == "grep-tool"
     pool.fetchrow.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_list_realms_filters_by_tenant():
-    pool = MagicMock()
-    pool.fetch = AsyncMock(return_value=[])
-    repo = PostgresRealmRepository(pool)
-
-    await repo.list_realms("tenant-1")
-
-    query, tenant_id = pool.fetch.await_args.args
-    assert "WHERE tenant_id = $1" in query
-    assert tenant_id == "tenant-1"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("realm_ref", [_REALM_ID, "forge"])
-async def test_get_tenant_realm_filters_by_tenant(realm_ref):
-    pool = MagicMock()
-    pool.fetchrow = AsyncMock(return_value=None)
-    repo = PostgresRealmRepository(pool)
-
-    assert await repo.get_tenant_realm(realm_ref, "tenant-2") is None
-
-    query, ref, tenant_id = pool.fetchrow.await_args.args
-    assert "AND tenant_id = $2" in query
-    assert ref == realm_ref
-    assert tenant_id == "tenant-2"
-
-
-@pytest.mark.asyncio
-async def test_save_realm_cannot_move_a_realm_between_tenants():
-    pool = MagicMock()
-    pool.execute = AsyncMock()
-    repo = PostgresRealmRepository(pool)
-
-    await repo.save_realm(_realm())
-
-    query = pool.execute.await_args.args[0]
-    assert "WHERE realms.tenant_id = EXCLUDED.tenant_id" in query
-    assert "tenant_id = EXCLUDED.tenant_id,\n" not in query

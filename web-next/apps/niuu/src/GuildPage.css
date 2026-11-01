@@ -12,14 +12,3 @@
   background-color: transparent;
   border-color: var(--color-border);
 }
-
-/* NIUU colors for legacy fixed-color surfaces. */
-[data-theme='niuu'] .niuu\:bg-\[\#111b24\] {
-  background-color: var(--niuu-bg-secondary);
-}
-[data-theme='niuu'] .niuu\:bg-\[\#1d2832\] {
-  background-color: var(--niuu-bg-tertiary);
-}
-[data-theme='niuu'] .niuu\:bg-\[\#22303b\] {
-  background-color: var(--niuu-bg-tertiary);
-}

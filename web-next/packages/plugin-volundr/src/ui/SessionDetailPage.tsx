@@ -13,7 +13,7 @@ import type { MeshEvent, MeshEventType, RoomParticipant } from '@niuulabs/ui';
 import { SourceLabel } from './atoms/SourceLabel';
 import { ClusterChip } from './atoms/ClusterChip';
 import { Terminal } from './Terminal/Terminal';
-import { SessionFilesWorkspace } from '@niuulabs/ui';
+import { SessionFilesWorkspace } from './SessionFilesWorkspace';
 import { useSessionDetail } from './hooks/useSessionStore';
 import { toLifecycleState } from './utils/toLifecycleState';
 import { buildMockRoom, buildMockTurns, groupTurns } from '../testing/mockChatData';

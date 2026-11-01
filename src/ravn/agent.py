@@ -813,10 +813,15 @@ class RavnAgent:
                         await self._maybe_save_snapshot(label=f"auto: before {tool_call.name}")
 
                     tool_started = time.monotonic()
-                    result = await self._execute_tool(
-                        tool_call, batch_size=len(llm_response.tool_calls)
-                    )
+                    result = await self._execute_tool(tool_call)
                     tool_wall_time_ms += (time.monotonic() - tool_started) * 1_000
+
+                    # NIU-1118: cap the result BEFORE it enters history — one
+                    # oversized result lands in the compression-protected tail
+                    # and would make the rest of the turn unrecoverable.
+                    result = self._truncate_oversized_tool_result(
+                        tool_call, result, batch_size=len(llm_response.tool_calls)
+                    )
 
                     # Inject budget warning into the tool result content.
                     result = _maybe_append_budget_warning(result, self._iteration_budget)
@@ -1889,13 +1894,13 @@ class RavnAgent:
             provider_protocol=provider_protocol,
         )
 
-    async def _execute_tool(self, tool_call: ToolCall, *, batch_size: int = 1) -> ToolResult:
+    async def _execute_tool(self, tool_call: ToolCall) -> ToolResult:
         from ravn.tool_observability import execute_observed_tool
 
         return await execute_observed_tool(
             name=tool_call.name,
             arguments=tool_call.input,
-            execute=lambda: self._execute_tool_observed(tool_call, batch_size=batch_size),
+            execute=lambda: self._execute_tool_observed(tool_call),
             call_id=tool_call.id,
             agent_name=self._persona or "ravn",
             conversation_id=str(self._session.id),
@@ -1903,12 +1908,7 @@ class RavnAgent:
             iteration=self._trace_iteration,
         )
 
-    async def _execute_tool_observed(
-        self,
-        tool_call: ToolCall,
-        *,
-        batch_size: int = 1,
-    ) -> ToolResult:
+    async def _execute_tool_observed(self, tool_call: ToolCall) -> ToolResult:
         """Execute a single tool call, enforcing permissions and running hooks.
 
         The ``ask_user`` tool is intercepted before regular dispatch and
@@ -1916,11 +1916,7 @@ class RavnAgent:
         present in the tools registry.
         """
         if tool_call.name == _ASK_USER_TOOL_NAME:
-            return self._truncate_oversized_tool_result(
-                tool_call,
-                await self._intercept_ask_user(tool_call),
-                batch_size=batch_size,
-            )
+            return await self._intercept_ask_user(tool_call)
 
         tool = self._tools.get(tool_call.name)
 
@@ -1996,11 +1992,6 @@ class RavnAgent:
             except Exception as exc:
                 logger.warning("Post-tool hook failed for '%s': %s", tool_call.name, exc)
 
-        # NIU-1118: cap the result BEFORE it enters history — one oversized
-        # result lands in the compression-protected tail and would make the
-        # rest of the turn unrecoverable. Before the event too: an uncapped
-        # result is larger than a NATS message, and the channel loses it.
-        result = self._truncate_oversized_tool_result(tool_call, result, batch_size=batch_size)
         await self._channel.emit(
             RavnEvent.tool_result(
                 self._source_id,

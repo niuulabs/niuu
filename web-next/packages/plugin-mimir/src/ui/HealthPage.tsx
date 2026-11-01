@@ -52,7 +52,7 @@ export function HealthPage() {
         <section className="mimir-panel niuu:m-6">
           <h4>gbrain maintenance</h4>
           <p>
-            gbrain uses native dream phases rather than the filesystem doctor and lint checks.
+            gbrain uses native dream phases rather than Mimir’s filesystem doctor and lint checks.
             Inspect its runtime for readiness, logs, and recorded phase results.
           </p>
           <button

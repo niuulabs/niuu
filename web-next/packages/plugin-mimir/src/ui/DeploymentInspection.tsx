@@ -56,7 +56,7 @@ export function DeploymentInspection({
       <header className="instance-runtime-heading">
         <div>
           <h4>
-            {deployment.backend === 'gbrain' ? 'gbrain runtime & dream cycles' : 'Memory runtime'}
+            {deployment.backend === 'gbrain' ? 'gbrain runtime & dream cycles' : 'Mimir runtime'}
           </h4>
           <p>
             {deployment.target === 'local' ? 'Local deployment' : 'Cluster deployment'} ·{' '}

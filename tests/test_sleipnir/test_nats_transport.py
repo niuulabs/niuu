@@ -68,7 +68,7 @@ from sleipnir.adapters.nats_transport import (
     nats_available,
 )
 from sleipnir.adapters.serialization import deserialize, serialize
-from sleipnir.domain.events import FLOCK_SCOPE_KEY, SleipnirEvent, flock_scope
+from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import StreamNotFoundError
 from tests.test_sleipnir.conftest import make_event
 
@@ -477,7 +477,7 @@ async def test_publisher_publish_sends_correct_subject(mock_nats):
     assert subject == "sleipnir.ravn.tool.complete"
 
 
-async def test_publisher_carries_a_flock_scoped_event_across_clusters(mock_nats):
+async def test_publisher_publish_sends_explicit_additional_subjects(mock_nats):
     mock_module, client, js, _ = mock_nats
     pub = NatsPublisher(subject_prefix="obs.ymir")
     await pub.start()
@@ -485,7 +485,10 @@ async def test_publisher_carries_a_flock_scoped_event_across_clusters(mock_nats)
         event_type="flock.learning.proposed",
         payload={
             "learning_id": "resident:ymir:inspect-proof",
-            FLOCK_SCOPE_KEY: flock_scope("k8s", "ymir"),
+            "additional_nats_subjects": [
+                "flock.k8s.ymir.flock.learning.proposed",
+                "obs.ymir.flock.learning.proposed",
+            ],
         },
     )
 
@@ -498,54 +501,6 @@ async def test_publisher_carries_a_flock_scoped_event_across_clusters(mock_nats)
     ]
     payloads = [call.args[1] for call in js.publish.call_args_list]
     assert all(_decode_nats_message(payload).event_id == event.event_id for payload in payloads)
-
-
-@pytest.mark.parametrize(
-    ("scope", "expected"),
-    [
-        (flock_scope("k8s", "Ymir Hub"), "flock.k8s.ymir-hub.valkyrie.evolution.skill_inventory"),
-        (flock_scope("", "ymir"), "flock.environment.ymir.valkyrie.evolution.skill_inventory"),
-        (flock_scope("k8s", ""), "flock.k8s.unknown.valkyrie.evolution.skill_inventory"),
-    ],
-    ids=["normalised", "no-domain", "no-environment"],
-)
-async def test_publisher_builds_the_flock_subject_itself(mock_nats, scope, expected):
-    mock_module, client, js, _ = mock_nats
-    pub = NatsPublisher(subject_prefix="obs.ymir")
-    await pub.start()
-    event = make_event(
-        event_type="valkyrie.evolution.skill_inventory", payload={FLOCK_SCOPE_KEY: scope}
-    )
-
-    await pub.publish(event)
-
-    assert [call.args[0] for call in js.publish.call_args_list][1:] == [expected]
-
-
-async def test_publisher_keeps_an_unscoped_event_on_its_own_subject(mock_nats):
-    mock_module, client, js, _ = mock_nats
-    pub = NatsPublisher(subject_prefix="obs.ymir")
-    await pub.start()
-
-    await pub.publish(make_event(event_type="flock.learning.proposed", payload={}))
-
-    assert [call.args[0] for call in js.publish.call_args_list] == [
-        "obs.ymir.flock.learning.proposed"
-    ]
-
-
-async def test_publisher_does_not_publish_twice_when_the_subjects_coincide(mock_nats):
-    mock_module, client, js, _ = mock_nats
-    pub = NatsPublisher(subject_prefix="flock.k8s.ymir")
-    await pub.start()
-    event = make_event(
-        event_type="flock.learning.proposed",
-        payload={FLOCK_SCOPE_KEY: flock_scope("k8s", "ymir")},
-    )
-
-    await pub.publish(event)
-
-    assert len(js.publish.call_args_list) == 1
 
 
 async def test_publisher_publish_payload_is_msgpack(mock_nats):

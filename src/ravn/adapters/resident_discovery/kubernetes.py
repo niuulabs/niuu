@@ -13,18 +13,13 @@ from typing import Any
 
 from niuu.domain.models import InstanceVisibility
 from ravn.adapters.kubernetes_deployments import KubernetesDeploymentDiscovery
-from ravn.ports.resident_discovery import ResidentPlacement, StandaloneResident
+from ravn.ports.resident_discovery import StandaloneResident
 
 logger = logging.getLogger(__name__)
 
 
 class KubernetesResidentDiscoveryAdapter(KubernetesDeploymentDiscovery):
-    """Read standalone resident deployments from the Kubernetes API.
-
-    ``cluster`` names the cluster this adapter reads, as the platform's log
-    collection names it; with it, each resident carries a placement so its
-    logs can be read and the fleet shows where it runs.
-    """
+    """Read standalone resident deployments from the Kubernetes API."""
 
     _discovery_kind = "residents"
 
@@ -37,9 +32,7 @@ class KubernetesResidentDiscoveryAdapter(KubernetesDeploymentDiscovery):
         context: str = "",
         in_cluster: bool | None = None,
         apps_api: Any | None = None,
-        cluster: str = "",
     ) -> None:
-        self._cluster = cluster
         super().__init__(
             namespace=namespace,
             label_selector=label_selector,
@@ -92,11 +85,6 @@ class KubernetesResidentDiscoveryAdapter(KubernetesDeploymentDiscovery):
             visibility=visibility,
             owner_id=self._value(annotations, "niuu.world/owner-id"),
             tenant_id=self._value(annotations, "niuu.world/tenant-id"),
-            placement=(
-                ResidentPlacement(cluster=self._cluster, namespace=namespace, workload=name)
-                if self._cluster
-                else None
-            ),
         )
 
     def _resident_status(self, deployment: Any) -> str:

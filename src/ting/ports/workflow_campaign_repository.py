@@ -6,7 +6,6 @@ from abc import ABC, abstractmethod
 from uuid import UUID
 
 from ting.domain.models import WorkflowCampaign
-from ting.domain.ticket_coordinator import ticket_of
 
 
 class CampaignAlreadyTerminalError(RuntimeError):
@@ -20,53 +19,9 @@ class CampaignAlreadyTerminalError(RuntimeError):
 class WorkflowCampaignRepository(ABC):
     """Persistence interface for launched workflow campaigns."""
 
-    async def save_ticket_campaign(
-        self,
-        campaign: WorkflowCampaign,
-        *,
-        saga_id: UUID,
-        issue_id: str,
-    ) -> str | None:
-        """Save a ticket's new run unless another is active; return that other run's slug.
-
-        The check and the save are one atomic step, so two launches for the same
-        ticket cannot both pass.
-        """
-        raise NotImplementedError(f"{type(self).__name__} cannot guard ticket launches")
-
     @abstractmethod
     async def list_campaigns(self, *, owner_id: str) -> list[WorkflowCampaign]:
         """List campaigns visible to the owner."""
-
-    async def list_campaign_summaries(self, *, owner_id: str) -> list[WorkflowCampaign]:
-        """List the owner's campaigns with only a summary of each workflow snapshot.
-
-        A snapshot carries every persona definition and the graph, and an owner can
-        hold hundreds of campaigns, so a page that lists them keeps just the
-        revision, the digest and the graph's tags.
-        """
-        return await self.list_campaigns(owner_id=owner_id)
-
-    async def list_ticket_campaigns(
-        self,
-        *,
-        owner_id: str,
-        saga_id: UUID | None = None,
-        issue_id: str | None = None,
-    ) -> list[WorkflowCampaign]:
-        """List the owner's campaigns tied to a ticket, oldest first, narrowed when asked.
-
-        An owner can hold hundreds of campaigns, each with its workflow snapshot,
-        so a board read must not load them all.
-        """
-        campaigns = [
-            campaign
-            for campaign in await self.list_campaigns(owner_id=owner_id)
-            if (ticket := ticket_of(campaign.metadata)) is not None
-            and (saga_id is None or ticket[0] == str(saga_id))
-            and (issue_id is None or ticket[1] == issue_id)
-        ]
-        return sorted(campaigns, key=lambda campaign: campaign.created_at)
 
     @abstractmethod
     async def list_active_campaigns(self) -> list[WorkflowCampaign]:

@@ -457,43 +457,6 @@ async def test_for_owner_with_unresolved_reports_zero_when_nothing_is_skipped() 
 
 
 @pytest.mark.asyncio
-async def test_for_principal_with_unresolved_counts_a_skipped_credentialless_instance() -> None:
-    registry = StubGuildRegistry(
-        [
-            _make_instance(
-                instance_id="system-1",
-                name="System Alpha",
-                base_url="http://alpha:8000",
-                config={"credential_name": "missing"},
-            ),
-            _make_instance(
-                instance_id="system-2",
-                name="System Beta",
-                base_url="http://beta:8000",
-            ),
-        ]
-    )
-    factory = VolundrAdapterFactory(registry, StubCredentialStore())
-    principal = Principal(user_id="owner-1", email="", tenant_id="tenant-1", roles=[])
-
-    adapters, unresolved = await factory.for_principal_with_unresolved(principal)
-
-    assert [adapter.name for adapter in adapters] == ["System Beta"]
-    assert unresolved == 1
-
-
-@pytest.mark.asyncio
-async def test_local_factory_reports_nothing_unresolved_for_a_principal() -> None:
-    factory = LocalVolundrAdapterFactory("http://local:8000")
-    principal = Principal(user_id="owner-1", email="", tenant_id="tenant-1", roles=[])
-
-    adapters, unresolved = await factory.for_principal_with_unresolved(principal)
-
-    assert len(adapters) == 1
-    assert unresolved == 0
-
-
-@pytest.mark.asyncio
 async def test_skipped_credentialless_instance_is_logged_loudly(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

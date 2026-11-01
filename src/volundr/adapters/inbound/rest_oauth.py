@@ -364,7 +364,7 @@ def _build_oauth_router(
         body_style = (
             "font-family:system-ui;display:flex;align-items:center;"
             "justify-content:center;height:100vh;margin:0;"
-            "background:#071019;color:#edf4f7;"
+            "background:#09090b;color:#fafafa;"
         )
         completion_key = json.dumps(f"{slug}:{credential_name}").replace("<", "\\u003c")
         html = (

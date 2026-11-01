@@ -7,7 +7,6 @@ import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
-from niuu.domain.discovered_residents import discovered_resident_id
 from niuu.ports.realm_repository import RealmRepository
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.models import (
@@ -25,10 +24,8 @@ from volundr.domain.models import (
     ResidentSession,
 )
 from volundr.domain.ports import (
-    DiscoveredResident,
     ResidentChatConnection,
     ResidentDeploymentProfileProvider,
-    ResidentDiscoverySource,
     ResidentLogsUnavailableError,
     ResidentRuntimeController,
     ResidentRuntimeLogReader,
@@ -120,7 +117,6 @@ class ResidentRuntimeService:
             self._with_wired_capabilities(profile)
             for profile in self._profiles.list()
             if (controller := self._controllers.get(profile.backend))
-            and not isinstance(controller, ResidentDiscoverySource)
             and controller.supports(profile)
             and self._profile_session_api_available(profile)
             and self._profile_logs_available(profile, controller)
@@ -142,11 +138,7 @@ class ResidentRuntimeService:
     ) -> ResidentRuntime:
         """Persist one resident and provision its backend asynchronously."""
         profile = self._require_profile(profile_id)
-        if isinstance(self._require_controller(profile), ResidentDiscoverySource):
-            raise ResidentRuntimeValidationError(
-                f"Resident profile {profile_id} is for residents the Forge discovers; it "
-                "deploys none"
-            )
+        self._require_controller(profile)
         runtime = await self.create_record(
             principal,
             name=name,
@@ -274,7 +266,7 @@ class ResidentRuntimeService:
                 f"Resident profile {profile_id} does not support flock membership"
             )
         if realm_id is not None and self._realm_repository is not None:
-            realm = await self._realm_repository.get_tenant_realm(realm_id, principal.tenant_id)
+            realm = await self._realm_repository.get_realm(realm_id)
             if realm is None:
                 raise ResidentRuntimeValidationError(f"Realm not found: {realm_id}")
 
@@ -412,84 +404,12 @@ class ResidentRuntimeService:
         )
 
     async def reconcile_all(self) -> None:
-        """Refresh every durable resident without letting one failure stop the pass.
-
-        Records of discovered residents are brought in line with their sources first,
-        so a newly discovered resident is reconciled in the same pass.
-        """
-        await self.sync_discovered()
+        """Refresh every durable resident without letting one failure stop the pass."""
         for runtime in await self._repository.list_for_reconciliation():
             try:
                 await self.reconcile(runtime.id)
             except ResidentRuntimeDeploymentError:
                 continue
-
-    async def sync_discovered(self) -> None:
-        """Keep one record per resident each discovery source reports, and no other.
-
-        A discovered resident's record has the id derived from its key, so the same
-        resident keeps the same record (and its sessions) across passes and restarts.
-        A source that cannot answer raises; its records are left as they are.
-        """
-        for controller in self._controllers.values():
-            if not isinstance(controller, ResidentDiscoverySource):
-                continue
-            discovered = {
-                discovered_resident_id(resident.key): resident
-                for resident in await controller.discovered_residents()
-            }
-            known = {
-                runtime.id: runtime
-                for runtime in await self._repository.list_for_reconciliation()
-                if runtime.backend is controller.backend
-            }
-            for runtime_id, resident in discovered.items():
-                await self._record_discovered(controller.backend, runtime_id, resident)
-            for runtime_id, runtime in known.items():
-                if runtime_id in discovered:
-                    continue
-                await self._repository.delete(runtime_id)
-                logger.info("Resident %s is no longer discovered; removed its record", runtime.name)
-
-    async def _record_discovered(
-        self,
-        backend: ResidentBackend,
-        runtime_id: UUID,
-        resident: DiscoveredResident,
-    ) -> None:
-        profile = self._require_profile(resident.profile_id)
-        if profile.backend is not backend:
-            raise ResidentRuntimeValidationError(
-                f"Discovered resident {resident.key!r} names profile {profile.id}, which is for "
-                f"the {profile.backend.value} backend, not {backend.value}"
-            )
-        fields = {
-            "owner_id": resident.owner_id,
-            "tenant_id": resident.tenant_id,
-            "name": resident.name,
-            "persona_name": resident.persona_name,
-            "model": resident.model or profile.default_model,
-            "profile_id": profile.id,
-            "engine": profile.engine,
-        }
-        existing = await self._repository.get(runtime_id)
-        if existing is None:
-            await self._repository.create(
-                ResidentRuntime(
-                    id=runtime_id,
-                    backend=backend,
-                    capabilities=profile.capabilities,
-                    backend_ref={"key": resident.key},
-                    **fields,
-                )
-            )
-            logger.info("Discovered resident %s (%s)", resident.name, resident.key)
-            return
-        if all(getattr(existing, name) == value for name, value in fields.items()):
-            return
-        await self._repository.update(
-            existing.model_copy(update={**fields, "updated_at": datetime.now(UTC)})
-        )
 
     @staticmethod
     def _require_lifecycle_capability(

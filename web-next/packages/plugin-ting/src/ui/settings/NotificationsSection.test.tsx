@@ -53,7 +53,7 @@ describe('NotificationsSection', () => {
     await waitFor(() => expect(screen.getByText('Run awaiting approval')).toBeInTheDocument());
     expect(screen.getByText('Run merged')).toBeInTheDocument();
     expect(screen.getByText('Run failed')).toBeInTheDocument();
-    expect(screen.getByText('Project complete')).toBeInTheDocument();
+    expect(screen.getByText('Saga complete')).toBeInTheDocument();
     expect(screen.getByText('Dispatcher error')).toBeInTheDocument();
   });
 

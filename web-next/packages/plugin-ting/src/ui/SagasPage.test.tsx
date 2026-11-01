@@ -65,7 +65,7 @@ function makeSaga(overrides: Partial<Saga> = {}): Saga {
     trackerId: 'NIU-1',
     trackerType: 'linear',
     slug: 'test-saga',
-    name: 'Test Project',
+    name: 'Test Saga',
     repos: ['niuulabs/volundr'],
     featureBranch: 'feat/test',
     baseBranch: 'main',
@@ -82,7 +82,7 @@ function makeSaga(overrides: Partial<Saga> = {}): Saga {
 describe('SagasPage', () => {
   it('renders the sagas heading', async () => {
     render(<SagasPage />, { wrapper: wrap(withDefaults({})) });
-    await waitFor(() => expect(screen.getByText('Projects')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Sagas')).toBeInTheDocument());
   });
 
   it('shows grouped left-rail sections', async () => {
@@ -132,7 +132,7 @@ describe('SagasPage', () => {
       getSagas: async (): Promise<Saga[]> => [
         makeSaga({
           id: '00000000-0000-0000-0000-000000000124',
-          name: 'Fallback Repo Project',
+          name: 'Fallback Repo Saga',
           repos: [],
         }),
       ],
@@ -141,11 +141,11 @@ describe('SagasPage', () => {
     render(<SagasPage />, { wrapper: wrap(withDefaults({ ting: sagasSvc })) });
 
     await waitFor(() =>
-      expect(screen.getAllByText('Fallback Repo Project').length).toBeGreaterThan(0),
+      expect(screen.getAllByText('Fallback Repo Saga').length).toBeGreaterThan(0),
     );
     const railButton = screen
       .getAllByRole('button')
-      .find((button) => button.textContent?.includes('Fallback Repo Project'));
+      .find((button) => button.textContent?.includes('Fallback Repo Saga'));
     expect(railButton).toBeDefined();
     expect(railButton).toHaveTextContent('niuulabs/volundr');
   });
@@ -154,9 +154,9 @@ describe('SagasPage', () => {
     render(<SagasPage />, { wrapper: wrap(withDefaults({})) });
 
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
-    expect(screen.queryByRole('region', { name: /Project list/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: /Saga list/i })).not.toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.queryByRole('status', { name: /Loading project/i })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('status', { name: /Loading saga/i })).not.toBeInTheDocument(),
     );
     expect(screen.getByText('feat/flokk-subs → main')).toBeInTheDocument();
   });
@@ -164,20 +164,20 @@ describe('SagasPage', () => {
   it('filters sagas from the page-head search', async () => {
     render(<SagasPage />, { wrapper: wrap(withDefaults({})) });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
-    fireEvent.change(screen.getByRole('searchbox', { name: /Filter projects/i }), {
+    fireEvent.change(screen.getByRole('searchbox', { name: /Filter sagas/i }), {
       target: { value: 'auth' },
     });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
-    expect(screen.queryByText('Plugin Agent Scaffold')).not.toBeInTheDocument();
+    expect(screen.queryByText('Plugin Ravn Scaffold')).not.toBeInTheDocument();
   });
 
   it('shows empty state when search matches nothing', async () => {
     render(<SagasPage />, { wrapper: wrap(withDefaults({})) });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
-    fireEvent.change(screen.getByRole('searchbox', { name: /Filter projects/i }), {
+    fireEvent.change(screen.getByRole('searchbox', { name: /Filter sagas/i }), {
       target: { value: 'zzznomatch' },
     });
-    await waitFor(() => expect(screen.getByText('No projects found')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('No sagas found')).toBeInTheDocument());
   });
 
   it('clicking a saga row navigates to saga detail', async () => {
@@ -191,7 +191,7 @@ describe('SagasPage', () => {
   it('shows loading state initially', () => {
     const slowSvc = { getSagas: () => new Promise(() => undefined) };
     render(<SagasPage />, { wrapper: wrap(withDefaults({ ting: slowSvc })) });
-    expect(screen.getByText(/Loading projects/i)).toBeInTheDocument();
+    expect(screen.getByText(/Loading sagas/i)).toBeInTheDocument();
   });
 
   it('shows error state when service throws', async () => {
@@ -207,7 +207,7 @@ describe('SagasPage', () => {
   it('shows empty state when no sagas exist', async () => {
     const emptySvc = { getSagas: async (): Promise<Saga[]> => [] };
     render(<SagasPage />, { wrapper: wrap(withDefaults({ ting: emptySvc })) });
-    await waitFor(() => expect(screen.getByText('No projects found')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('No sagas found')).toBeInTheDocument());
   });
 
   it('shows export toast', async () => {
@@ -221,14 +221,14 @@ describe('SagasPage', () => {
 
     render(<SagasPage />, { wrapper: wrap(withDefaults({})) });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
-    fireEvent.click(screen.getByRole('button', { name: /Export projects as JSON/i }));
-    await waitFor(() => expect(screen.getByText(/Exported \d+ projects/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /Export sagas as JSON/i }));
+    await waitFor(() => expect(screen.getByText(/Exported \d+ sagas/i)).toBeInTheDocument());
     expect(anchorClickSpy).toHaveBeenCalled();
   });
 
   it('deletes the selected saga import', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    const saga = makeSaga({ name: 'Imported Project' });
+    const saga = makeSaga({ name: 'Imported Saga' });
     const deleteSaga = vi.fn().mockResolvedValue(undefined);
     const sagasSvc = {
       ...createMockTingService(),
@@ -239,8 +239,8 @@ describe('SagasPage', () => {
 
     render(<SagasPage />, { wrapper: wrap(withDefaults({ ting: sagasSvc })) });
 
-    await waitFor(() => expect(screen.getAllByText('Imported Project').length).toBeGreaterThan(0));
-    fireEvent.click(screen.getByRole('button', { name: /delete selected project import/i }));
+    await waitFor(() => expect(screen.getAllByText('Imported Saga').length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: /delete selected saga import/i }));
 
     await waitFor(() => expect(deleteSaga).toHaveBeenCalledWith(saga.id));
     confirmSpy.mockRestore();
@@ -249,17 +249,17 @@ describe('SagasPage', () => {
   it('opens new saga modal', async () => {
     render(<SagasPage />, { wrapper: wrap(withDefaults({})) });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
-    fireEvent.click(screen.getByRole('button', { name: /Create new project/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Create new saga/i }));
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
   });
 
   it('sends the operator to Plan from the new saga modal', async () => {
     render(<SagasPage />, { wrapper: wrap(withDefaults({})) });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
-    fireEvent.click(screen.getByRole('button', { name: /Create new project/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Create new saga/i }));
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Go to Plan →' }));
-    expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/plan/new' });
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/plan' });
   });
 
   it('adds repositories by typed reference when no repo catalog is available', async () => {
@@ -268,7 +268,7 @@ describe('SagasPage', () => {
     });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
 
-    fireEvent.click(screen.getByRole('button', { name: /Import project from tracker/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
     await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
     await waitFor(() => expect(screen.getAllByText('Niuu Core').length).toBeGreaterThan(0));
     const projectButton = screen
@@ -298,7 +298,7 @@ describe('SagasPage', () => {
     });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
 
-    fireEvent.click(screen.getByRole('button', { name: /Import project from tracker/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
     await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
     await waitFor(() => expect(screen.getAllByText('Niuu Core').length).toBeGreaterThan(0));
     const projectButton = screen
@@ -320,12 +320,12 @@ describe('SagasPage', () => {
   it('opens tracker import modal', async () => {
     render(<SagasPage />, { wrapper: wrap(withDefaults({})) });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
-    fireEvent.click(screen.getByRole('button', { name: /Import project from tracker/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
     await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
     await waitFor(() => expect(screen.getAllByText('Niuu Core').length).toBeGreaterThan(0));
     expect(screen.getByTestId('repo-select')).toBeInTheDocument();
     expect(screen.queryByTestId('branch-select')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Import project' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Import saga' })).toBeDisabled();
   });
 
   it('imports a tracker project', async () => {
@@ -339,7 +339,7 @@ describe('SagasPage', () => {
     render(<SagasPage />, { wrapper: wrap(withDefaults({ 'ting.tracker': trackerSvc })) });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
 
-    fireEvent.click(screen.getByRole('button', { name: /Import project from tracker/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
     await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
     await waitFor(() => expect(screen.getAllByText('Niuu Core').length).toBeGreaterThan(0));
 
@@ -351,7 +351,7 @@ describe('SagasPage', () => {
     fireEvent.change(screen.getByTestId('repo-select'), {
       target: { value: 'niuulabs/volundr' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Import project' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Import saga' }));
 
     await waitFor(() =>
       expect(importProject).toHaveBeenCalledWith(
@@ -387,7 +387,7 @@ describe('SagasPage', () => {
       expect(screen.getAllByText('Completed Niuu Core').length).toBeGreaterThan(0),
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /Import project from tracker/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
     await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
     await waitFor(() => expect(screen.getAllByText('Niuu Core').length).toBeGreaterThan(0));
 
@@ -401,7 +401,7 @@ describe('SagasPage', () => {
     expect(
       screen.queryByText('This tracker project is already imported into Ting.'),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText(/already exists in Niuu/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/already exists in Ting/i)).not.toBeInTheDocument();
   });
 
   it('blocks tracker import when a saga with the same slug already exists', async () => {
@@ -409,7 +409,7 @@ describe('SagasPage', () => {
       id: '00000000-0000-0000-0000-000000000333',
       trackerId: 'other-project',
       slug: 'service-boundary-restoration-and-api-consolidation',
-      name: 'Existing conflicting project',
+      name: 'Existing conflicting saga',
     });
     const sagasSvc = {
       ...createMockTingService(),
@@ -437,10 +437,10 @@ describe('SagasPage', () => {
       wrapper: wrap(withDefaults({ ting: sagasSvc, 'ting.tracker': trackerSvc })),
     });
     await waitFor(() =>
-      expect(screen.getAllByText('Existing conflicting project').length).toBeGreaterThan(0),
+      expect(screen.getAllByText('Existing conflicting saga').length).toBeGreaterThan(0),
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /Import project from tracker/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
     await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
     const [projectTitle] = await screen.findAllByText(
       'Service Boundary Restoration and API Consolidation',
@@ -449,8 +449,8 @@ describe('SagasPage', () => {
     expect(projectButton).not.toBeNull();
     fireEvent.click(projectButton!);
 
-    expect(screen.getByText(/already exists in Niuu/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Import project' })).toBeDisabled();
+    expect(screen.getByText(/already exists in Ting/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Import saga' })).toBeDisabled();
   });
 
   it('does not list terminal tracker projects in the import modal', async () => {
@@ -482,7 +482,7 @@ describe('SagasPage', () => {
     render(<SagasPage />, { wrapper: wrap(withDefaults({ 'ting.tracker': trackerSvc })) });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
 
-    fireEvent.click(screen.getByRole('button', { name: /Import project from tracker/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
     await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
     await waitFor(() => expect(screen.getAllByText('Active Project').length).toBeGreaterThan(0));
     expect(screen.queryByText('Done Project')).not.toBeInTheDocument();
@@ -503,7 +503,7 @@ describe('SagasPage', () => {
     });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
 
-    fireEvent.click(screen.getByRole('button', { name: /Import project from tracker/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
     await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
     await waitFor(() => expect(screen.getAllByText('Niuu Core').length).toBeGreaterThan(0));
 
@@ -523,14 +523,14 @@ describe('SagasPage', () => {
     await waitFor(() => expect((versionSelect as HTMLSelectElement).disabled).toBe(false));
     fireEvent.change(versionSelect, { target: { value: '1.4.2' } });
 
-    const targetGroup = screen.getByRole('group', { name: 'Project target routing mode' });
+    const targetGroup = screen.getByRole('group', { name: 'Saga target routing mode' });
     fireEvent.click(within(targetGroup).getByRole('button', { name: 'Instance' }));
-    await waitFor(() => expect(screen.getByText('Select a session host')).toBeInTheDocument());
-    fireEvent.change(screen.getByDisplayValue('Select a session host'), {
+    await waitFor(() => expect(screen.getByText('Select a Volundr instance')).toBeInTheDocument());
+    fireEvent.change(screen.getByDisplayValue('Select a Volundr instance'), {
       target: { value: 'inst-1' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Import project' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Import saga' }));
 
     await waitFor(() =>
       expect(importProject).toHaveBeenCalledWith(
@@ -556,7 +556,7 @@ describe('SagasPage', () => {
     render(<SagasPage />, { wrapper: wrap(withDefaults({ 'ting.tracker': trackerSvc })) });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
 
-    fireEvent.click(screen.getByRole('button', { name: /Import project from tracker/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
     await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
     await waitFor(() => expect(screen.getAllByText('Niuu Core').length).toBeGreaterThan(0));
 
@@ -568,7 +568,7 @@ describe('SagasPage', () => {
       target: { value: 'niuulabs/volundr' },
     });
 
-    const targetGroup = screen.getByRole('group', { name: 'Project target routing mode' });
+    const targetGroup = screen.getByRole('group', { name: 'Saga target routing mode' });
     fireEvent.click(within(targetGroup).getByRole('button', { name: 'Tags' }));
     fireEvent.change(screen.getByPlaceholderText('gpu, valhalla'), {
       target: { value: 'gpu, valhalla' },
@@ -577,7 +577,7 @@ describe('SagasPage', () => {
       target: { value: 'any' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Import project' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Import saga' }));
 
     await waitFor(() =>
       expect(importProject).toHaveBeenCalledWith(
@@ -629,13 +629,13 @@ describe('SagasPage', () => {
     });
     await waitFor(() => expect(screen.getAllByText('Legacy Niuu Core').length).toBeGreaterThan(0));
 
-    fireEvent.click(screen.getByRole('button', { name: /Import project from tracker/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
     await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
     const [projectTitle] = await screen.findAllByText('Niuu Core');
     fireEvent.click(projectTitle.closest('button')!);
 
     expect(
-      screen.getByText(/already exists; Niuu will add the tracker source/i),
+      screen.getByText(/already exists; Ting will add the tracker source/i),
     ).toBeInTheDocument();
   });
 
@@ -666,7 +666,7 @@ describe('SagasPage', () => {
     render(<SagasPage />, { wrapper: wrap(withDefaults({ 'niuu.repos': reposSvc })) });
     await waitFor(() => expect(screen.getAllByText('Auth Rewrite').length).toBeGreaterThan(0));
 
-    fireEvent.click(screen.getByRole('button', { name: /Import project from tracker/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Import saga from tracker/i }));
     await waitFor(() => expect(screen.getByText('Import From Tracker')).toBeInTheDocument());
     await waitFor(() => expect(screen.getAllByText('Niuu Core').length).toBeGreaterThan(0));
     const projectButton = screen

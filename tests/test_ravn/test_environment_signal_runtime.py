@@ -246,68 +246,37 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
 
 
 @pytest.mark.asyncio
-async def test_durable_home_queues_nothing_and_wakes_home_only_for_critical() -> None:
+async def test_durable_home_holds_routine_signals_but_keeps_urgent_wakes() -> None:
+    settings = _settings()
+    settings.environment.signal_sources[0].kwargs["raw_items"][0]["severity"] = "info"
     bus = InProcessBus()
     enqueued: list[AgentTask] = []
-    wakes: list[str] = []
 
     async def persisted(_event: SleipnirEvent) -> dict:
-        return {
-            "residentAutonomySignalPersisted": True,
-            "residentAutonomySignalRef": "resident/inbox/pending/shape.md",
-        }
+        return {"residentAutonomySignalRef": "resident/inbox/signals/info.md"}
 
-    routine_settings = _settings()
-    routine_settings.environment.signal_sources[0].kwargs["raw_items"][0]["severity"] = "warning"
     routine = EnvironmentSignalRuntime(
-        settings=routine_settings,
+        settings=settings,
         publisher=bus,
         enqueue=lambda task: _enqueue(enqueued, task),
         resident_signal_processor=persisted,
         durable_home_enabled=True,
-        home_wake=lambda: wakes.append("routine"),
     )
     await routine.collect_once()
     assert enqueued == []
     assert routine._untriaged == []
-    assert wakes == []
 
-    critical = EnvironmentSignalRuntime(
-        settings=_settings(),
+    urgent_settings = _settings()
+    urgent = EnvironmentSignalRuntime(
+        settings=urgent_settings,
         publisher=bus,
         enqueue=lambda task: _enqueue(enqueued, task),
         resident_signal_processor=persisted,
         durable_home_enabled=True,
-        home_wake=lambda: wakes.append("critical"),
     )
-    await critical.collect_once()
-    # A critical observation no longer gets a task of its own (which would
-    # claim, and on acknowledging swallow, the whole shared slot); it wakes
-    # the home turn that judges the slot instead.
-    assert enqueued == []
-    assert wakes == ["critical"]
-
-
-@pytest.mark.asyncio
-async def test_durable_home_refuses_an_observation_the_inbox_did_not_keep() -> None:
-    bus = InProcessBus()
-
-    async def unpersisted(_event: SleipnirEvent) -> dict:
-        return {"residentAutonomySignalRef": "resident/inbox/pending/shape.md"}
-
-    runtime = EnvironmentSignalRuntime(
-        settings=_settings(),
-        publisher=bus,
-        enqueue=lambda task: _enqueue([], task),
-        resident_signal_processor=unpersisted,
-        durable_home_enabled=True,
-        home_wake=lambda: None,
-    )
-
-    with pytest.raises(RuntimeError, match="resident inbox"):
-        await runtime.collect_once()
-    # Not remembered, so the next poll collects it again.
-    assert not runtime._seen
+    await urgent.collect_once()
+    assert len(enqueued) == 1
+    assert enqueued[0].resident_inbox_refs == ["resident/inbox/signals/info.md"]
 
 
 @pytest.mark.asyncio

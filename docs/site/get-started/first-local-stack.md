@@ -103,7 +103,7 @@ means all interfaces: use `127.0.0.1` to open it on the same machine.
 
 ## 4. Launch an empty workspace
 
-Open the printed browser URL. Select **Forge → Overview** if you are elsewhere.
+Open the printed browser URL. Select **Völundr → Forge** if you are elsewhere.
 Under **Quick launch**, click **custom launch…**. Alternatively, open
 **Sessions** and click the **+** button titled **Launch a new session**.
 
@@ -216,7 +216,7 @@ Currently `down` and `status` operate on their own process-local service manager
 
 You have now exercised platform startup, agent authentication, session launch,
 a file-writing tool call, result inspection, and shutdown. Next, [use a repository
-and save a reusable launch](configure-project.md). Add model routing, workflows, and
+and save a reusable launch](configure-project.md). Add Bifröst, workflows, and
 residents after this basic path works.
 
 For the automated checks and their limits, see [Quick-start verification](../operations/quickstart-verification.md).

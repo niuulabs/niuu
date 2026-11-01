@@ -10,8 +10,8 @@ question for each configured owner, in the same feed and through the same outbox
 * **Idempotent.** A notification's identity is (owner, review item); a replay, a restart
   or a second Forge replica records it once.
 * **Retired when settled.** Once the item leaves ``pending`` (answered, approved,
-  rejected, expired, withdrawn by the resident) the owner's notification is marked read,
-  as a session's is when it stops waiting.
+  rejected, expired) the owner's notification is marked read, as a session's is when it
+  stops waiting.
 * **Backlog.** When the relay first follows the queue for an owner, the questions that
   are already waiting are recorded for the feed but marked feed-only, so they are not
   pushed one by one; one digest notification, which does push, says how many wait.

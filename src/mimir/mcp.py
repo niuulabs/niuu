@@ -46,7 +46,6 @@ from fastapi.responses import JSONResponse
 from mimir.live_activity import LiveActivityRecorder
 from mimir.router import WRITE_ROLES
 from niuu.domain.mimir import MimirSource, compute_content_hash
-from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 from niuu.ports.mimir import MimirPort
 
@@ -310,13 +309,11 @@ class MimirMcpServer:
         auth: HeaderAuthenticationPort | None = None,
         auth_mode: str = "envoy",
         live_activity: LiveActivityRecorder | None = None,
-        platform_tenant_id: str = DEFAULT_PLATFORM_TENANT_ID,
     ) -> None:
         self._adapter = adapter
         self._name = name
         self._auth = auth
         self._auth_mode = auth_mode
-        self._platform_tenant_id = platform_tenant_id
         self._live_activity = live_activity
 
     # ------------------------------------------------------------------
@@ -377,17 +374,6 @@ class MimirMcpServer:
         ):
             raise HTTPException(403, "Knowledge writes require an authenticated write role")
 
-    async def _require_platform_org(self, request: Request) -> None:
-        """Refuse another org: these tools act on this host's own knowledge, not a mount."""
-        if self._auth_mode == "none" or self._auth is None:
-            return
-        try:
-            principal = await self._auth.validate_headers(dict(request.headers))
-        except InvalidTokenError:
-            return
-        if principal.tenant_id != self._platform_tenant_id:
-            raise HTTPException(403, "This knowledge instance belongs to a different tenant")
-
     def router(self) -> APIRouter:
         """Return a FastAPI ``APIRouter`` with a ``POST /`` endpoint for MCP."""
         api_router = APIRouter()
@@ -405,17 +391,6 @@ class MimirMcpServer:
                         "error": {"code": -32700, "message": "Parse error"},
                     },
                     status_code=400,
-                )
-            try:
-                await server._require_platform_org(request)
-            except HTTPException as exc:
-                return JSONResponse(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": body.get("id") if isinstance(body, dict) else None,
-                        "error": {"code": -32603, "message": str(exc.detail)},
-                    },
-                    status_code=exc.status_code,
                 )
             if server._calls_a_write_tool(body):
                 try:

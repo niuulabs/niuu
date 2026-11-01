@@ -90,10 +90,6 @@ describe('ravnTarget', () => {
     expect(ravnTarget(makeRavn({ instanceName: '', backend: 'openshell' }))).toBe('openshell');
     expect(ravnTarget(makeRavn({ instanceName: '', backend: undefined }))).toBe('unassigned');
   });
-
-  it('names the cluster a resident runs in over the instance that lists it', () => {
-    expect(ravnTarget(makeRavn({ instanceName: 'Ymir', cluster: 'glitnir' }))).toBe('Glitnir');
-  });
 });
 
 describe('filtering', () => {

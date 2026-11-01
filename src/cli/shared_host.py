@@ -7,7 +7,6 @@ import contextlib
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any
 
 from fastapi import FastAPI
 
@@ -97,17 +96,6 @@ from volundr.integration_definitions import load_integration_definition_configs
 logger = logging.getLogger(__name__)
 
 
-@asynccontextmanager
-async def _realm_database_pool(settings: Settings, shared_pool: Any) -> AsyncGenerator[Any, None]:
-    """Yield the pool holding realms: the shared one, unless a host embeds Forge."""
-    name = settings.niuu.realm_database
-    if not name:
-        yield shared_pool
-        return
-    async with database_pool(settings.database.model_copy(update={"name": name})) as pool:
-        yield pool
-
-
 def _load_settings() -> Settings:
     """Load shared-service settings from YAML and environment."""
     return Settings()
@@ -172,10 +160,7 @@ def create_app(
         cfg = git_config or loaded_settings.git
         git_registry = create_git_registry(cfg)
 
-        async with (
-            database_pool(loaded_settings.database) as pool,
-            _realm_database_pool(loaded_settings, pool) as realm_pool,
-        ):
+        async with database_pool(loaded_settings.database) as pool:
             user_repository = PostgresUserRepository(pool)
             tenant_repository = PostgresTenantRepository(pool)
             storage_adapter = create_storage_adapter(loaded_settings)
@@ -309,7 +294,7 @@ def create_app(
             )
             app.state.persona_registry = PostgresPersonaRegistry(pool)
 
-            app.state.realm_service = RealmService(PostgresRealmRepository(realm_pool))
+            app.state.realm_service = RealmService(PostgresRealmRepository(pool))
             app.include_router(
                 create_realms_router(
                     extract_principal,

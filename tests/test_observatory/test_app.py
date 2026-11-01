@@ -7,12 +7,10 @@ import json
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
-import pytest
 from starlette.testclient import TestClient
 
 from identity.adapters.identity import AllowAllIdentityAdapter
 from niuu.domain.agent_directory import AgentDirectoryEntry, AgentDirectoryPage
-from niuu.domain.models import Principal
 from observatory.app import _events_stream, _topology_stream, create_app
 from observatory.registry import (
     InMemoryObservatoryRegistryRepository,
@@ -20,8 +18,6 @@ from observatory.registry import (
     RegistryValidationError,
     seed_registry_payload,
 )
-
-_OPERATOR = Principal(user_id="op", email="", tenant_id="default", roles=["volundr:admin"])
 
 
 def _test_app(**kwargs):
@@ -243,32 +239,6 @@ class TestObservatoryApp:
             assert payload["sections"][0]["id"] == "streams"
             assert any(field["key"] == "guild_url" for field in payload["sections"][0]["fields"])
 
-    @pytest.mark.parametrize(
-        ("method", "path"),
-        [
-            ("GET", "/api/v1/observatory/settings"),
-            ("PUT", "/api/v1/observatory/registry"),
-            ("POST", "/api/v1/observatory/registry/types"),
-            ("PATCH", "/api/v1/observatory/registry/types/cluster"),
-            ("DELETE", "/api/v1/observatory/registry/types/cluster"),
-        ],
-    )
-    def test_shared_registry_and_settings_stay_with_the_platform_org(
-        self, method: str, path: str
-    ) -> None:
-        with _make_client() as client:
-            before = client.get("/api/v1/observatory/registry").json()
-
-            response = client.request(
-                method,
-                path,
-                json={},
-                headers={"x-auth-user-id": "alice", "x-auth-tenant": "org-a"},
-            )
-
-            assert response.status_code == 403
-            assert client.get("/api/v1/observatory/registry").json() == before
-
     def test_agent_directory_forwards_principal_auth_and_all_filters(self) -> None:
         directory = _StubAgentDirectory()
         app = _test_app(
@@ -279,7 +249,7 @@ class TestObservatoryApp:
         headers = {
             "authorization": "Bearer token",
             "x-auth-user-id": "user-a",
-            "x-auth-tenant": "default",
+            "x-auth-tenant": "tenant-a",
         }
         with TestClient(app) as client:
             response = client.get(
@@ -312,11 +282,11 @@ class TestObservatoryApp:
         with TestClient(app) as client:
             found = client.get(
                 "/api/v1/observatory/agents/agent-1",
-                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "default"},
+                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "tenant-a"},
             )
             missing = client.get(
                 "/api/v1/observatory/agents/inaccessible",
-                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "default"},
+                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "tenant-a"},
             )
 
         assert found.status_code == 200
@@ -325,17 +295,13 @@ class TestObservatoryApp:
         assert missing.json() == {"detail": "Agent not found"}
 
     def test_topology_stream_aliases_return_sse(self) -> None:
-        first_chunk = asyncio.run(
-            anext(_topology_stream(_FakeDiscoveryService(), _OPERATOR, "default"))
-        )
+        first_chunk = asyncio.run(anext(_topology_stream(_FakeDiscoveryService())))
         payload = _extract_sse_payload(first_chunk)
         assert payload["nodes"]
         assert payload["timestamp"].endswith("Z")
 
     def test_events_stream_aliases_return_events(self) -> None:
-        first_chunk = asyncio.run(
-            anext(_events_stream(_FakeDiscoveryService(), _OPERATOR, "default"))
-        )
+        first_chunk = asyncio.run(anext(_events_stream(_FakeDiscoveryService())))
         payload = _extract_sse_payload(first_chunk)
         assert payload["type"] == "TING"
         assert payload["subject"] == "run summary"
@@ -346,7 +312,7 @@ class TestObservatoryApp:
             return None
 
         monkeypatch.setattr("observatory.app.asyncio.sleep", _fast_sleep)
-        stream = _topology_stream(_SequenceDiscoveryService(), _OPERATOR, "default")
+        stream = _topology_stream(_SequenceDiscoveryService())
         first_chunk = asyncio.run(anext(stream))
         second_chunk = asyncio.run(anext(stream))
         assert "event: topology.snapshot" in first_chunk
@@ -375,7 +341,7 @@ class TestObservatoryApp:
             return None
 
         monkeypatch.setattr("observatory.app.asyncio.sleep", _fast_sleep)
-        stream = _topology_stream(_RestampingService(), _OPERATOR, "default")
+        stream = _topology_stream(_RestampingService())
         first_chunk = asyncio.run(anext(stream))
         second_chunk = asyncio.run(anext(stream))
 
@@ -399,7 +365,7 @@ class TestObservatoryApp:
             return None
 
         monkeypatch.setattr("observatory.app.asyncio.sleep", _fast_sleep)
-        stream = _topology_stream(_ChangingService(), _OPERATOR, "default")
+        stream = _topology_stream(_ChangingService())
         asyncio.run(anext(stream))
         second_chunk = asyncio.run(anext(stream))
 
@@ -410,7 +376,7 @@ class TestObservatoryApp:
             return None
 
         monkeypatch.setattr("observatory.app.asyncio.sleep", _fast_sleep)
-        stream = _events_stream(_SequenceDiscoveryService(), _OPERATOR, "default")
+        stream = _events_stream(_SequenceDiscoveryService())
         first_chunk = asyncio.run(anext(stream))
         second_chunk = asyncio.run(anext(stream))
         assert "event: observatory.event" in first_chunk
@@ -446,7 +412,7 @@ class TestObservatoryApp:
                     return [{"id": "discovery:ravn", "message": "unreachable"}]
                 return []
 
-        stream = _events_stream(_ClearingService(), _OPERATOR, "default")
+        stream = _events_stream(_ClearingService())
         first = asyncio.run(anext(stream))
         second = asyncio.run(anext(stream))
 
@@ -475,7 +441,7 @@ class TestObservatoryApp:
                 del headers
                 return [{"id": "discovery:ting", "message": "401"}]
 
-        stream = _events_stream(_StuckService(), _OPERATOR, "default")
+        stream = _events_stream(_StuckService())
         first = asyncio.run(anext(stream))
         second = asyncio.run(anext(stream))
 
@@ -587,7 +553,7 @@ class TestObservatoryFragment:
         with TestClient(app) as client:
             response = client.get(
                 "/api/v1/observatory/fragment",
-                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "default"},
+                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "tenant-a"},
             )
 
         assert response.status_code == 200
@@ -604,7 +570,7 @@ class TestObservatoryFragment:
         with TestClient(app) as client:
             body = client.get(
                 "/api/v1/observatory/fragment",
-                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "default"},
+                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "tenant-a"},
             ).json()
 
         assert "typeId" in body["nodes"][0]
@@ -642,7 +608,7 @@ class TestObservatoryFragment:
         with TestClient(app) as client:
             body = client.get(
                 "/api/v1/observatory/fragment",
-                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "default"},
+                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "tenant-a"},
             ).json()
 
         assert [edge["targetId"] for edge in body["pendingEdges"]] == [
@@ -657,7 +623,7 @@ class TestObservatoryFragment:
         with TestClient(app) as client:
             body = client.get(
                 "/api/v1/observatory/fragment",
-                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "default"},
+                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "tenant-a"},
             ).json()
 
         assert body["events"]

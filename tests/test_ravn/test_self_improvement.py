@@ -11,7 +11,6 @@ gap, and a tool commission (not an operator question) for the capability gap.
 from __future__ import annotations
 
 import json
-import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -366,30 +365,6 @@ def test_friction_records_round_trip_through_their_page() -> None:
     assert "## Improvement actions" in page and "## Linked lessons" in page
     with pytest.raises(ValueError, match="no ```json"):
         parse_record("friction/x.md", "# no record")
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("actions", ["operator answered 2026-10-28: declined remediation"]),
-        ("occurrences", ["seen once"]),
-        ("escalated_anyway", "never"),
-    ],
-)
-def test_a_record_with_a_hand_written_field_names_the_page(field: str, value: object) -> None:
-    page = render_record(FrictionRecord(path="friction/x.md", kind="escalation", subject="s"))
-    edited = re.sub(rf'"{field}": \[\]', f'"{field}": {json.dumps(value)}', page)
-
-    with pytest.raises(ValueError, match=rf"friction/x\.md.*{field} must be a list of objects"):
-        parse_record("friction/x.md", edited)
-
-
-def test_a_record_rewritten_without_its_subject_names_the_page() -> None:
-    page = render_record(FrictionRecord(path="friction/x.md", kind="escalation", subject="s"))
-    edited = page.replace('  "subject": "s",\n', "")
-
-    with pytest.raises(ValueError, match=r"friction/x\.md.*subject is missing"):
-        parse_record("friction/x.md", edited)
 
 
 async def test_known_resolutions_answer_once_per_case(tmp_path: Path) -> None:

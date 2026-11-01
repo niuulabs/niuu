@@ -22,7 +22,6 @@ from ravn.valkyrie_evolution.k8s_tool_runner import (
     JobRunResult,
     KubernetesJobExecutor,
     KubernetesJobLearnedToolRunner,
-    _container_exit_code,
     _container_started_at,
     _job_uid,
     _k8s_safe_component,
@@ -119,46 +118,6 @@ async def test_runner_derives_each_runs_egress_from_its_declared_reach(tmp_path)
     assert "service-account token" in filesystem.error
     assert not untargeted_read.ok and "names no target" in untargeted_read.error
     assert len(executor.calls) == 3
-
-
-@pytest.mark.asyncio
-async def test_a_timeout_names_the_only_network_the_run_had(tmp_path) -> None:
-    """valhalla's Prometheus tool probed Services its reach did not name; the
-    policy dropped those connections, each hung, and the run was reported as a
-    bare timeout, so the resident rebuilt code that only needed its reach."""
-    executor = _FakeExecutor(JobRunResult(timed_out=True, network_enforced=True))
-    runner = KubernetesJobLearnedToolRunner(executor=executor)
-
-    result = await runner.run(
-        _write_tool(tmp_path),
-        {},
-        entry_point="run",
-        timeout_seconds=10,
-        declared_reach=[
-            ToolReachGrant(kind="network", target="monitoring/prometheus:9090", access="read")
-        ],
-    )
-
-    assert not result.ok
-    assert result.error.startswith("learned tool timed out after 10s.")
-    assert "could reach only monitoring/prometheus:9090, plus cluster DNS" in result.error
-    assert "dropped by the network policy and hangs" in result.error
-
-
-@pytest.mark.asyncio
-async def test_an_unrestricted_run_times_out_without_a_network_note(tmp_path) -> None:
-    executor = _FakeExecutor(JobRunResult(timed_out=True, network_enforced=True))
-    runner = KubernetesJobLearnedToolRunner(executor=executor)
-
-    result = await runner.run(
-        _write_tool(tmp_path),
-        {},
-        entry_point="run",
-        timeout_seconds=10,
-        declared_reach=[ToolReachGrant(kind="network", access="read_write")],
-    )
-
-    assert result.error == "learned tool timed out after 10s"
 
 
 def test_runner_refuses_unenforceable_reach_at_load() -> None:
@@ -497,9 +456,6 @@ class TestPodInfraReason:
             "Pod ephemeral local storage usage exceeds the total limit of containers",
             "Container tool was using 200Mi, which exceeds its request of 64Mi memory",
             "node pressure",
-            "The node was low on resource: ephemeral-storage. Threshold quantity: 984127912, "
-            "available: 494504Ki. Container tool was using 900Mi, request is 0, has larger "
-            "consumption of ephemeral-storage. ",
             "",
         ],
     )
@@ -514,8 +470,6 @@ class TestPodInfraReason:
             "Pod was terminated due to node drain",
             "The pod was preempted by a higher priority pod",
             "deleted due to NoExecute taint",
-            "The node was low on resource: ephemeral-storage. Threshold quantity: 984127912, "
-            "available: 494504Ki. ",
         ],
     )
     def test_cluster_driven_eviction_is_an_infra_reason(self, message: str) -> None:
@@ -1163,80 +1117,6 @@ async def test_run_pod_start_budget_is_separate_from_the_tool_timeout() -> None:
             timeout_seconds=10,
             egress=EgressPlan(),
         )
-
-
-def _terminated_since_2020(exit_code: int, **status: Any) -> dict[str, Any]:
-    """A pod whose container started long before any budget and has exited."""
-    return {
-        "phase": "Running",
-        **status,
-        "container_statuses": [
-            {
-                "state": {
-                    "terminated": {"started_at": "2020-01-01T00:00:00Z", "exit_code": exit_code}
-                }
-            }
-        ],
-    }
-
-
-async def _execute(executor: KubernetesJobExecutor) -> JobRunResult:
-    return await executor.execute(
-        run_name="ravn-tool-finished",
-        image=DEFAULT_TOOL_RUN_IMAGE,
-        code="def run(p): return {}",
-        payload={},
-        entry_point="run",
-        requirements=[],
-        timeout_seconds=10,
-        egress=EgressPlan(),
-    )
-
-
-async def test_a_run_ends_when_its_container_exits_not_when_the_job_is_marked() -> None:
-    """jarnvidr's Job controller marked Jobs succeeded 2-4s after their
-    container exited; counted against a 10s budget, a tool that finished in
-    7s was reported as a timeout and its result thrown away."""
-    batch = _FakeVerifyBatchV1({"succeeded": None, "failed": None})
-    core = _FakeVerifyCoreV1(
-        log='ravn-k8s-job-result: {"ok": true}', pod_status=_terminated_since_2020(0)
-    )
-
-    result = await _execute(_verify_executor(batch=batch, core=core))
-
-    assert not result.timed_out
-    assert (result.exit_code, result.stdout) == (0, '{"ok": true}')
-
-
-async def test_a_container_exit_code_is_the_runs_exit_code() -> None:
-    batch = _FakeVerifyBatchV1({"succeeded": None, "failed": None})
-    core = _FakeVerifyCoreV1(log="Traceback", pod_status=_terminated_since_2020(3))
-
-    result = await _execute(_verify_executor(batch=batch, core=core))
-
-    assert (result.timed_out, result.exit_code, result.stderr) == (False, 3, "Traceback")
-
-
-async def test_a_container_the_cluster_stopped_is_infrastructure() -> None:
-    batch = _FakeVerifyBatchV1({"succeeded": None, "failed": None})
-    core = _FakeVerifyCoreV1(
-        pod_status=_terminated_since_2020(
-            137, reason="Evicted", message="Pod was terminated due to node drain"
-        )
-    )
-
-    with pytest.raises(LearnedToolInfrastructureError, match="stopped by the cluster: evicted"):
-        await _execute(_verify_executor(batch=batch, core=core))
-
-
-def test_container_exit_code_reads_only_a_terminated_container() -> None:
-    def pod(state: dict[str, Any]) -> dict[str, Any]:
-        return {"status": {"containerStatuses": [{"state": state}]}}
-
-    assert _container_exit_code(pod({"terminated": {"exitCode": 2}})) == 2
-    assert _container_exit_code(pod({"running": {"startedAt": "2020-01-01T00:00:00Z"}})) is None
-    assert _container_exit_code({"status": {}}) is None
-    assert _container_exit_code(object()) is None
 
 
 def test_k8s_backend_requires_explicit_verified_deployment_coordinates(tmp_path) -> None:

@@ -50,7 +50,7 @@ describe('PersonaForm', () => {
     expect(screen.getByText('Produces')).toBeInTheDocument();
     expect(screen.getByText('Consumes')).toBeInTheDocument();
     expect(screen.getByText('Fan-in')).toBeInTheDocument();
-    expect(screen.getByText('Memory write routing')).toBeInTheDocument();
+    expect(screen.getByText('Mímir write routing')).toBeInTheDocument();
   });
 
   it('populates name field from persona', () => {

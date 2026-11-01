@@ -4,7 +4,7 @@ import { niuuConfigSchema } from './config';
 describe('niuuConfigSchema', () => {
   it('fills sensible defaults from an empty object', () => {
     const parsed = niuuConfigSchema.parse({});
-    expect(parsed.theme).toBe('niuu');
+    expect(parsed.theme).toBe('ice');
     expect(parsed.plugins).toEqual({});
     expect(parsed.services).toEqual({});
   });

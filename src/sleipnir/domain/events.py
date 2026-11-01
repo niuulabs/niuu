@@ -90,18 +90,6 @@ def match_event_type(pattern: str, event_type: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-#: Payload key saying an event is also meant for the flock, beyond what its
-#: publisher's own bus reaches. Publishers say who it is for and a transport
-#: decides how it gets there: one shared bus already reaches everyone, and
-#: NATS, which partitions residents by cluster, adds a subject.
-FLOCK_SCOPE_KEY = "flock_scope"
-
-
-def flock_scope(domain: str, environment_id: str) -> dict[str, str]:
-    """The :data:`FLOCK_SCOPE_KEY` value for an event from *environment_id*."""
-    return {"domain": domain, "environment_id": environment_id}
-
-
 @dataclass(kw_only=True)
 class SleipnirEvent:
     """A structured event published over the Sleipnir event bus.

@@ -19,7 +19,7 @@ export async function readForgeSource<T>(
     return await read(controller.signal);
   } catch (error) {
     if (timedOut) {
-      throw new Error('Connection timed out. Check this host in Platform.', { cause: error });
+      throw new Error('Connection timed out. Check this Forge in Guild.', { cause: error });
     }
     throw error;
   } finally {

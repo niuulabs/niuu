@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { ContinuityField } from '@niuulabs/ui';
 import {
   WIZARD_STEPS,
   backendStepId,
@@ -46,7 +45,7 @@ const STEP_COPY: Record<WizardStepId, { title: string; lede: string }> = {
   },
   model: {
     title: 'Run a model on this host?',
-    lede: 'vLLM serves it here and the model gateway routes to it. Sessions, workflows and residents can then work without code leaving the box.',
+    lede: 'vLLM serves it here and Bifrost routes to it. Sessions, workflows and residents can then work without code leaving the box.',
   },
   providers: {
     title: 'Connect AI providers',
@@ -58,7 +57,7 @@ const STEP_COPY: Record<WizardStepId, { title: string; lede: string }> = {
   },
   tracker: {
     title: 'Where does work come from?',
-    lede: 'Work turns issues into projects and dispatches them. Optional for now.',
+    lede: 'Ting turns issues into sagas and dispatches them. Optional for now.',
   },
   mcp: {
     title: 'Connect MCP servers',
@@ -190,7 +189,6 @@ export function SetupPage({ onNavigate, origin }: SetupPageProps = {}) {
   if (step === 'welcome') {
     return (
       <div className="setup-page setup-page--hero" data-testid="setup-page">
-        <ContinuityField />
         <WelcomeStep facts={host} loading={systemQuery.isLoading} onBegin={advance} />
       </div>
     );

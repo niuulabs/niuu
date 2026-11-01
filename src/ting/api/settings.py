@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from niuu.settings_schema import (
@@ -19,7 +19,6 @@ from niuu.settings_schema import (
     SettingsProviderSchema,
     SettingsSectionSchema,
 )
-from ting.adapters.inbound.auth import require_shared_settings_admin
 from ting.api.settings_store import get_ting_settings_store, now_utc
 
 
@@ -95,11 +94,7 @@ class NotificationSettingsPatch(BaseModel):
 
 
 def create_settings_router() -> APIRouter:
-    router = APIRouter(
-        prefix="/api/v1/ting/settings",
-        tags=["Ting Settings"],
-        dependencies=[Depends(require_shared_settings_admin)],
-    )
+    router = APIRouter(prefix="/api/v1/ting/settings", tags=["Ting Settings"])
 
     @router.get("", response_model=SettingsProviderSchema)
     async def get_settings_schema(request: Request) -> SettingsProviderSchema:

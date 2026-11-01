@@ -54,7 +54,6 @@ def test_guild_plugin_route_domains_are_stable_without_configured_workers() -> N
     ]
     assert route_domains[0].prefixes == (
         "/api/v1/niuu/instances",
-        "/api/v1/niuu/knowledge",
         "/api/v1/niuu/targets",
         "/api/v1/niuu/observatory",
     )

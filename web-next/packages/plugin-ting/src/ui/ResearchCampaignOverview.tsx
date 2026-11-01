@@ -124,7 +124,7 @@ export function ResearchCampaignOverview({
             {derivedState === 'running'
               ? `Working thesis · stage ${Math.max(1, campaign.stageState.findIndex((stage) => stage.stageId === activeStage?.stageId) + 1)}/${campaign.stageState.length}`
               : derivedState === 'review'
-                ? 'Review-ready · awaiting publish to Memory'
+                ? 'Review-ready · awaiting publish to Mímir'
                 : derivedState === 'published'
                   ? 'Final synthesis · published'
                   : derivedState === 'blocked'
@@ -154,7 +154,7 @@ export function ResearchCampaignOverview({
                   : derivedState === 'failed'
                     ? `${activeStage?.reason ?? 'The most recent run ended before the final synthesis could be completed.'}`
                     : derivedState === 'draft'
-                      ? 'Frame the question, pick a mode, and Niuu will run the seven-stage research workflow.'
+                      ? 'Frame the question, pick a mode, and Ting will run the seven-stage research workflow.'
                       : workingThesis}
               </p>
 
@@ -350,7 +350,7 @@ export function ResearchCampaignOverview({
                       })
                     }
                   >
-                    Publish to Memory →
+                    Publish to Mímir →
                   </button>
                   <button
                     type="button"
@@ -379,7 +379,7 @@ export function ResearchCampaignOverview({
                     className="ting-research-detail__ghost-button"
                     onClick={() => openMimirPage(finalArtifact.path)}
                   >
-                    Open in Memory
+                    ᛗ open in Mímir
                   </button>
                 </>
               )}

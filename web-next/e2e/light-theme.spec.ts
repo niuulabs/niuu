@@ -6,7 +6,6 @@ async function selectTheme(page: Page, theme: string) {
     .getByRole('button', {
       name: (
         {
-          niuu: 'NIUU',
           xteo: 'blue',
           ice: 'Native dark',
           amber: 'Amber',
@@ -82,7 +81,7 @@ test('borderless icon button opens all palettes and supports keyboard selection'
   await picker.focus();
   await page.keyboard.press('Enter');
   const options = page.locator('.niuu-shell__theme-option');
-  await expect(options).toHaveText(['NIUU', 'blue', 'Native dark', 'Amber', 'Spring', 'Light']);
+  await expect(options).toHaveText(['blue', 'Native dark', 'Amber', 'Spring', 'Light']);
   await page.getByRole('button', { name: 'Light', exact: true }).focus();
   await page.keyboard.press('Enter');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');

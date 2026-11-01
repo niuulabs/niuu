@@ -6,7 +6,6 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator
-from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -16,7 +15,6 @@ import pytest
 from ting.adapters.memory_event_bus import InMemoryEventBus
 from ting.config import WatcherConfig
 from ting.domain.models import (
-    PR_STATE_MERGED,
     DispatcherState,
     PRStatus,
     Run,
@@ -116,7 +114,10 @@ class StubVolundr(VolundrPort):
     async def get_pr_status(self, session_id: str) -> PRStatus:
         if session_id in self.pr_error_sessions:
             raise RuntimeError("PR not found")
-        return self.pr_statuses.get(session_id)
+        pr = self.pr_statuses.get(session_id)
+        if pr is None:
+            raise RuntimeError("No PR")
+        return pr
 
     async def get_chronicle_summary(self, session_id: str) -> str:
         if session_id in self.chronicle_error_sessions:
@@ -831,7 +832,6 @@ class TestActivityEventHandling:
                 "summary": "Plan is ready for human review.",
                 "instructions": "Approve the draft if it is bounded.",
                 "reason": "needs_human_approval",
-                "label": "plan-review-gate",
             }
         ]
         bus_event = await asyncio.wait_for(q.get(), timeout=1.0)
@@ -1356,87 +1356,6 @@ class TestDispatcherPauseFiltering:
 # ---------------------------------------------------------------------------
 # Tests -- Failure detection
 # ---------------------------------------------------------------------------
-
-
-class TestMergedWorkOutlivesItsSession:
-    @staticmethod
-    def _stopped() -> ActivityEvent:
-        return ActivityEvent(
-            session_id=SESSION_ID,
-            state="",
-            metadata={},
-            owner_id=OWNER_ID,
-            session_status="stopped",
-        )
-
-    @staticmethod
-    def _merged() -> PRStatus:
-        return PRStatus(
-            pr_id="2",
-            url="https://github.com/o/r/pull/2",
-            state=PR_STATE_MERGED,
-            mergeable=False,
-            ci_passed=True,
-        )
-
-    @pytest.mark.asyncio
-    async def test_stopping_a_session_after_its_merge_records_the_merge(self) -> None:
-        sub, volundr, tracker, event_bus = _make_subscriber()
-        volundr.pr_statuses[SESSION_ID] = self._merged()
-        q = event_bus.subscribe()
-
-        await sub._on_activity_event(self._stopped(), volundr, OWNER_ID)
-
-        progress = tracker.update_run_progress.call_args.kwargs
-        assert progress["status"] == RunStatus.MERGED
-        assert progress["pr_url"] == "https://github.com/o/r/pull/2"
-        assert tracker.update_run_state.call_args.args[1] == RunStatus.MERGED
-        event = await asyncio.wait_for(q.get(), timeout=1.0)
-        assert event.data["status"] == "MERGED"
-
-    @pytest.mark.asyncio
-    async def test_a_session_found_stopped_on_reconcile_keeps_its_merge(self) -> None:
-        sub, volundr, tracker, _ = _make_subscriber()
-        volundr.pr_statuses[SESSION_ID] = self._merged()
-        volundr.sessions[SESSION_ID] = replace(volundr.sessions[SESSION_ID], status="stopped")
-        run = _make_run()
-
-        await sub._handle_session_end(run, tracker, volundr, OWNER_ID, reason="Session stopped")
-
-        assert tracker.update_run_progress.call_args.kwargs["status"] == RunStatus.MERGED
-
-    @pytest.mark.asyncio
-    async def test_an_open_pull_request_still_fails_the_run(self) -> None:
-        sub, volundr, tracker, _ = _make_subscriber()
-        volundr.pr_statuses[SESSION_ID] = replace(self._merged(), state="open")
-
-        await sub._on_activity_event(self._stopped(), volundr, OWNER_ID)
-
-        assert tracker.update_run_progress.call_args.kwargs["status"] == RunStatus.FAILED
-
-    @pytest.mark.asyncio
-    async def test_not_knowing_about_the_merge_never_cancels_the_ticket(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        sub, volundr, tracker, _ = _make_subscriber()
-        volundr.pr_error_sessions.add(SESSION_ID)
-
-        await sub._on_activity_event(self._stopped(), volundr, OWNER_ID)
-
-        tracker.update_run_progress.assert_not_called()
-        assert "could not say whether" in caplog.text
-
-    @pytest.mark.asyncio
-    async def test_a_gate_on_a_dispatched_run_records_its_pull_request(self) -> None:
-        sub, volundr, tracker, _ = _make_subscriber()
-        volundr.pr_statuses[SESSION_ID] = replace(self._merged(), state="open")
-        run = _make_run()
-
-        await sub._record_run_pull_request(run, tracker, volundr)
-
-        progress = tracker.update_run_progress.call_args.kwargs
-        assert progress["pr_url"] == "https://github.com/o/r/pull/2"
-        assert "status" not in progress
 
 
 class TestFailureDetection:

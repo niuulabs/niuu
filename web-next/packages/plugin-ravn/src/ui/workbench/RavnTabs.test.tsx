@@ -223,7 +223,7 @@ describe('Activity tab', () => {
       ravens: [makeRavn({ managed: false, kind: 'persona', observedState: undefined })],
     });
     mountRavn(`/ravn?ravn=${RAVN_ID}&tab=activity`, services);
-    expect(await screen.findByText('No recorded activity for this agent.')).toBeInTheDocument();
+    expect(await screen.findByText('No recorded activity for this ravn.')).toBeInTheDocument();
   });
 });
 

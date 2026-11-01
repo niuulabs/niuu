@@ -63,8 +63,8 @@ class NiuuFooter(Widget):
     NiuuFooter {
         dock: bottom;
         height: 1;
-        background: #10212d;
-        color: #78909d;
+        background: #18181b;
+        color: #71717a;
     }
     NiuuFooter #footer-hints {
         width: 1fr;

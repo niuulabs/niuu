@@ -40,7 +40,6 @@ from ravn.ports.tool_build_backend import (
     ToolBuildRequest,
     ToolBuildResult,
     ToolBuildTaskEndedError,
-    ToolBuildTaskStatus,
 )
 
 logger = logging.getLogger(__name__)
@@ -264,27 +263,6 @@ class A2AToolBuildBackend(ToolBuildBackend):
                 },
             )
             return result
-
-    async def task_status(self, task_id: str) -> ToolBuildTaskStatus:
-        endpoint, _workflow_id, _push_supported = await self._resolve_endpoint_and_workflow()
-        state = _task_state(await self._get_task(endpoint, task_id))
-        if state == _COMPLETED_STATE:
-            return ToolBuildTaskStatus.COMPLETED
-        if state in _FAILED_STATES:
-            return ToolBuildTaskStatus.ENDED
-        return ToolBuildTaskStatus.ACTIVE
-
-    async def cancel(self, task_id: str) -> str:
-        endpoint, _workflow_id, _push_supported = await self._resolve_endpoint_and_workflow()
-        state = _task_state(await self._get_task(endpoint, task_id))
-        if state in _TERMINAL_STATES:
-            return state
-        cancelled = await self._rpc(endpoint, "CancelTask", {"id": task_id})
-        get_observability().event(
-            "ravn.a2a.task.cancelled",
-            attributes={"a2a.task.id": task_id, "a2a.task.state": _task_state(cancelled)},
-        )
-        return _task_state(cancelled)
 
     async def _build_observed(self, request: ToolBuildRequest) -> ToolBuildResult:
         endpoint, workflow_id, push_supported = await self._resolve_endpoint_and_workflow()

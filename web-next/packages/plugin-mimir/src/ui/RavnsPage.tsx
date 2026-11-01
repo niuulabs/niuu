@@ -917,7 +917,7 @@ function RavnProfile({
               </h4>
               <p className="niuu:m-0 niuu:mt-1 niuu:text-sm niuu:text-text-secondary">
                 Join the Warden&apos;s own gateway in-page. This is a live operator connection to
-                the daemon, not a Niuu session.
+                the daemon, not a Völundr session.
               </p>
             </div>
             <span

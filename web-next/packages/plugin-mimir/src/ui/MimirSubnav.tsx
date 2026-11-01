@@ -58,13 +58,13 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
 
   if (subnavCollapsed) {
     return (
-      <nav className="mm-subnav mm-subnav--collapsed" aria-label="Memory navigation">
+      <nav className="mm-subnav mm-subnav--collapsed" aria-label="Mímir navigation">
         <div className="mm-subnav-collapsed-head">
           <button
             type="button"
             className="mm-subnav-toggle"
             onClick={() => setSubnavCollapsed(false)}
-            aria-label="Expand memory sidebar"
+            aria-label="Expand Mímir sidebar"
             data-testid="mimir-subnav-toggle"
           >
             ›
@@ -149,7 +149,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
   }
 
   return (
-    <nav className="mm-subnav" aria-label="Memory navigation">
+    <nav className="mm-subnav" aria-label="Mímir navigation">
       <div className="mm-subnav-head">
         <div>
           <div className="mm-subnav-head__title">Context</div>
@@ -159,7 +159,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
           type="button"
           className="mm-subnav-toggle"
           onClick={() => setSubnavCollapsed(true)}
-          aria-label="Collapse memory sidebar"
+          aria-label="Collapse Mímir sidebar"
           data-testid="mimir-subnav-toggle"
         >
           ‹

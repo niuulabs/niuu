@@ -44,7 +44,7 @@ test('the index route lands on the home page with three choices', async ({ page 
   await expect(page.getByTestId('home-choice-workflow')).toBeVisible();
   await expect(page.getByTestId('home-choice-realm')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Home' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Forge' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Sessions' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Residents' })).toBeVisible();
 });
 

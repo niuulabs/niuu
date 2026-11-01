@@ -409,7 +409,6 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "activity_finder": ctx.get("a2a_activity_finder"),
             "default_connection_id": s.gateway.platform.a2a_default_connection_id,
             "default_metadata": s.gateway.platform.a2a_default_metadata,
-            "gate_decisions": s.gateway.platform.a2a_gate_decisions,
             "push_callback_url": s.gateway.platform.a2a_push_callback_url,
         },
     ),

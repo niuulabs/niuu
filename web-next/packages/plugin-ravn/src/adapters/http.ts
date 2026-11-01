@@ -272,7 +272,6 @@ interface RawRavn {
   instance_id?: string;
   instance_name?: string;
   instance_slug?: string;
-  cluster?: string;
   message_count?: number;
   tokens_used?: number;
   cost?: number | string;
@@ -533,7 +532,6 @@ function toRavn(raw: RawRavn): Ravn {
     ...(raw.instance_id !== undefined && { instanceId: raw.instance_id }),
     ...(raw.instance_name !== undefined && { instanceName: raw.instance_name }),
     ...(raw.instance_slug !== undefined && { instanceSlug: raw.instance_slug }),
-    ...(raw.cluster && { cluster: raw.cluster }),
     ...(raw.message_count !== undefined && { messageCount: raw.message_count }),
     ...(raw.tokens_used !== undefined && { tokenCount: raw.tokens_used }),
     ...(raw.cost !== undefined && { costUsd: Number(raw.cost) }),

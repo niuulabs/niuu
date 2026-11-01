@@ -70,7 +70,7 @@ class FileTreeItem(Widget):
 
     DEFAULT_CSS = """
     FileTreeItem { height: 1; padding: 0 1; }
-    FileTreeItem.selected { background: #182b38; }
+    FileTreeItem.selected { background: #27272a; }
     """
 
     def __init__(self, file: DiffFile, *, selected: bool = False, **kwargs: Any) -> None:
@@ -107,13 +107,13 @@ class DiffsPage(Widget):
     DiffsPage #diffs-search.visible { display: block; }
     DiffsPage #diffs-body { height: 1fr; }
     DiffsPage #diffs-tree {
-        width: 36; border: round #182b38; overflow-y: auto;
+        width: 36; border: round #27272a; overflow-y: auto;
     }
     DiffsPage #diffs-viewer {
-        width: 1fr; border: round #182b38; overflow-y: auto; padding: 0 1;
+        width: 1fr; border: round #27272a; overflow-y: auto; padding: 0 1;
     }
     DiffsPage #diffs-viewer-content { height: auto; }
-    DiffsPage #diffs-empty { color: #78909d; padding: 2; }
+    DiffsPage #diffs-empty { color: #71717a; padding: 2; }
     """
 
     cursor: reactive[int] = reactive(0)

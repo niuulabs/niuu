@@ -16,21 +16,21 @@ from ravn.tui.widgets.pane import PaneMetaUpdate
 
 # Fixed-width badge markup per event type
 _BADGE: dict[str, str] = {
-    "thought": "[#78909d on #131313] THOUGHT  [/]",
+    "thought": "[#71717a on #131313] THOUGHT  [/]",
     "tool_start": "[#06b6d4 on #071a1e] TOOL_START[/]",
-    "tool_result": "[#76bfa7 on #071a12] TOOL_RES  [/]",
-    "response": "[#86d0e8 on #1a1200] RESPONSE  [/]",
+    "tool_result": "[#10b981 on #071a12] TOOL_RES  [/]",
+    "response": "[#f59e0b on #1a1200] RESPONSE  [/]",
     "task_start": "[#a855f7 on #130d1f] TASK_START[/]",
     "task_complete": "[#a855f7 on #130d1f] TASK_DONE [/]",
-    "task_error": "[#e78d94 on #1a0909] TASK_ERR  [/]",
-    "heartbeat": "[#648090 on #111111] HEARTBEAT [/]",
-    "decision": "[#86d0e8 on #1a1200] DECISION  [/]",
+    "task_error": "[#ef4444 on #1a0909] TASK_ERR  [/]",
+    "heartbeat": "[#52525b on #111111] HEARTBEAT [/]",
+    "decision": "[#f59e0b on #1a1200] DECISION  [/]",
 }
 
 _EVENT_CYCLE = ["all", "thought", "tool", "response", "task", "heartbeat"]
 _MAX_ROWS = 500
 
-_SOURCE_COLORS = ["#86d0e8", "#06b6d4", "#76bfa7", "#a855f7", "#f97316", "#6366f1"]
+_SOURCE_COLORS = ["#f59e0b", "#06b6d4", "#10b981", "#a855f7", "#f97316", "#6366f1"]
 
 
 def _source_color(name: str) -> str:
@@ -52,14 +52,14 @@ class EventStreamView(Widget):
     EventStreamView {
         height: 1fr;
         width: 1fr;
-        background: #071019;
+        background: #09090b;
     }
     EventStreamView RichLog {
         height: 1fr;
-        background: #071019;
+        background: #09090b;
         scrollbar-size: 1 1;
-        scrollbar-color: #182b38;
-        scrollbar-color-hover: #2b4351;
+        scrollbar-color: #27272a;
+        scrollbar-color-hover: #3f3f46;
     }
     """
 
@@ -119,15 +119,15 @@ class EventStreamView(Widget):
         except Exception:
             return
 
-        badge = _BADGE.get(event_type, f"[#a5b7c1 on #10212d] {event_type[:10]:<10}[/]")
+        badge = _BADGE.get(event_type, f"[#a1a1aa on #18181b] {event_type[:10]:<10}[/]")
         ts = datetime.now().strftime("%H:%M:%S")
         data = event.get("data", {})
         detail = _summarise(data) if isinstance(data, dict) else ""
         source = (conn.name if hasattr(conn, "name") else str(conn))[:12]
 
         src_color = _source_color(source)
-        line = f"[#2b4351]{ts}[/] {badge} [{src_color}]{source}[/]" + (
-            f"  [#78909d]{detail}[/]" if detail else ""
+        line = f"[#3f3f46]{ts}[/] {badge} [{src_color}]{source}[/]" + (
+            f"  [#71717a]{detail}[/]" if detail else ""
         )
         log.write(line)
 

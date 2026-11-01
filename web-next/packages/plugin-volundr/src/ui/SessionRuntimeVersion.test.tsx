@@ -56,6 +56,6 @@ it('renders loading and an honest unavailable state', async () => {
   expect(screen.getByText('Checking runtime version…')).toBeInTheDocument();
   reject(new Error('old host'));
   expect(
-    await screen.findByText('This host could not report its runtime version.'),
+    await screen.findByText('This Forge could not report its runtime version.'),
   ).toBeInTheDocument();
 });

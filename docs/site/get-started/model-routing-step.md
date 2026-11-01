@@ -1,7 +1,7 @@
 # Inspect models and provider routing
 
 Use this guide when the model catalog and the runtime's actual provider are hard
-to distinguish. You need a running local Niuu host with AI models enabled. The reads
+to distinguish. You need a running local Niuu host with Bifröst enabled. The reads
 below use the default local port; use your deployment's authenticated origin for
 a shared host.
 
@@ -33,13 +33,13 @@ Choose `direct` routing when a request must stay on its configured provider.
 
 ## 3. Verify from the consuming runtime
 
-Point the intended client at the model gateway using that client's supported gateway
-configuration. Send a small request, then inspect gateway usage and the provider
+Point the intended client at Bifröst using that client's supported gateway
+configuration. Send a small request, then inspect Bifröst usage and the provider
 that served it. Verify the requested alias resolves to the intended model.
 
 A normal Claude Code subscription session follows its own authentication path
 unless you explicitly configured otherwise. Do not assume that selecting a model
-in Forge makes the gateway an intermediary.
+in Forge makes Bifröst an intermediary.
 
 ## Diagnose failures
 

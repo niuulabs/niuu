@@ -1,6 +1,5 @@
 """Tests for the push NotificationChannel adapters."""
 
-from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import urlparse
 
@@ -235,37 +234,6 @@ class TestApnsCategory:
         body = client.post.call_args[1]["json"]
         assert "category" not in body["aps"]
         assert set(body) == {"aps", "session_id", "kind", "request_id"}
-
-
-class TestApnsCollapseId:
-    """An outbox notification collapses on its id; a push without one has no collapse id."""
-
-    def _channel(self, client) -> ApnsNotificationChannel:
-        return ApnsNotificationChannel(
-            team_id="TEAM123",
-            key_id="KEY123",
-            private_key=_TEST_P8,
-            bundle_id="com.niuu.forge",
-            client=client,
-        )
-
-    async def test_a_notification_push_collapses_on_the_notification_id(self):
-        client = MagicMock()
-        client.post = AsyncMock(return_value=MagicMock(status_code=200))
-        message = replace(_message(), notification_id="5b0c8f0e-2f7a-5d1e-9c3b-1a2b3c4d5e6f")
-
-        await self._channel(client).deliver(message, [_ios_device("d1"), _ios_device("d2")])
-
-        for call in client.post.call_args_list:
-            assert call[1]["headers"]["apns-collapse-id"] == message.notification_id
-
-    async def test_a_push_without_a_notification_id_has_no_collapse_id(self):
-        client = MagicMock()
-        client.post = AsyncMock(return_value=MagicMock(status_code=200))
-
-        await self._channel(client).deliver(_message(), [_ios_device("d1")])
-
-        assert "apns-collapse-id" not in client.post.call_args[1]["headers"]
 
 
 class TestApnsDeviceEnvironment:

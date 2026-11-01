@@ -170,7 +170,6 @@ class TestFullWakefulnessLoop:
             mimir=mimir,
             llm=reflection_llm,
             config=_wakefulness_config(),
-            transcript=lambda since, max_chars: "operator: please follow up on the API design",
             state_dir=tmp_path / "state",
         )
 
@@ -488,7 +487,6 @@ class TestEmptyReflection:
             mimir=mimir,
             llm=reflection_llm,
             config=_wakefulness_config(),
-            transcript=lambda since, max_chars: "operator: please follow up on the API design",
             state_dir=tmp_path / "state",
         )
 

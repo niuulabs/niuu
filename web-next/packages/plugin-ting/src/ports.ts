@@ -7,28 +7,16 @@
  * Implementations live in src/adapters/.
  */
 
-import type { Saga, SagaBoardWorkflow, Phase, SagaRepoRef } from './domain/saga';
+import type { Saga, Phase, SagaRepoRef } from './domain/saga';
 import type { DispatcherState } from './domain/dispatcher';
 import type { SessionInfo } from './domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from './domain/tracker';
 import type { Workflow } from './domain/workflow';
-import type { GateDecision, WorkCollection, WorkDetail, WorkResourceKind } from './domain/work';
-import type { ReviewList, ReviewWidget, RunReviews, TicketReviews } from './domain/review';
+import type { WorkCollection, WorkDetail, WorkResourceKind } from './domain/work';
 
 export interface IWorkService {
   list(options?: { executionLimit?: number; executionCursor?: string }): Promise<WorkCollection>;
   get(kind: WorkResourceKind, id: string): Promise<WorkDetail>;
-  decideGate(projectId: string, issueId: string, decision: GateDecision): Promise<void>;
-  /** Hands a ticket to its coordinator, which starts the workflow beginning at this column. */
-  startTicket(projectId: string, issueId: string, columnId?: string): Promise<void>;
-  /** What this ticket's runs have put in front of a person, read from their session logs. */
-  ticketReviews(projectId: string, issueId: string): Promise<TicketReviews>;
-  runReviews(slug: string): Promise<RunReviews>;
-  decideRunGate(slug: string, decision: GateDecision): Promise<void>;
-  /** Every run a person reviews, across their projects. */
-  reviews(): Promise<ReviewList>;
-  /** A widget a module installed; its page only ever runs in the review's sandbox. */
-  reviewWidget(module: string, name: string): Promise<ReviewWidget>;
 }
 import type {
   WorkflowExecutionTrace,
@@ -91,7 +79,7 @@ import type {
 import type { ClarifyingQuestion } from './domain/plan';
 
 // Re-export domain types so consumers can import from a single location.
-export type { Saga, SagaBoardWorkflow, Phase, SagaRepoRef } from './domain/saga';
+export type { Saga, Phase, SagaRepoRef } from './domain/saga';
 export type { DispatcherState, DispatchRule } from './domain/dispatcher';
 export type { SessionInfo, TingSessionStatus } from './domain/session';
 export type { TrackerProject, TrackerMilestone, TrackerIssue, RepoInfo } from './domain/tracker';
@@ -126,8 +114,6 @@ export type { ClarifyingQuestion } from './domain/plan';
 export interface CommitSagaRequest {
   name: string;
   slug: string;
-  /** The project plan this commit comes from, so each can reach the other. */
-  planSlug?: string | null;
   description: string;
   repos: string[];
   baseBranch: string;
@@ -145,13 +131,6 @@ export interface CommitSagaRequest {
   trackerConnectionId?: string;
 }
 
-export interface PlanTicket {
-  name: string;
-  issueId: string;
-  identifier?: string;
-  url?: string;
-}
-
 export interface PlanSession {
   sessionId: string;
   chatEndpoint: string | null;
@@ -163,9 +142,6 @@ export interface PlanSession {
   status?: string | null;
   activeStageId?: string | null;
   updatedAt?: string | null;
-  /** The project and tickets this plan became, once committed. */
-  sagaId?: string | null;
-  tickets?: PlanTicket[];
   stageState?: {
     stageId: string;
     label: string;
@@ -262,8 +238,6 @@ export interface ITingService {
   ): Promise<void>;
   extractStructure(text: string): Promise<ExtractedStructure>;
   assignWorkflow(sagaId: string, workflowId: string | null): Promise<Saga>;
-  /** Sets the workflows a project's board runs, in order; empty means its one workflow. */
-  setBoardWorkflows(sagaId: string, workflowIds: string[]): Promise<SagaBoardWorkflow[]>;
   assignTarget(sagaId: string, target: SagaTargetSelection): Promise<Saga>;
   assignRepos(sagaId: string, repoRefs: SagaRepoRef[]): Promise<Saga>;
 }

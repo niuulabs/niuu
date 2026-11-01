@@ -221,7 +221,7 @@ describe('useCreateRealm', () => {
     expect(result.current.progress.failedStep?.id).toBe('validate');
   });
 
-  it('fails loudly when workspace memory never appears', async () => {
+  it('fails loudly when realm memory never appears', async () => {
     const log = createCallLog();
     const { result } = renderHook(() => useCreateRealm(), {
       wrapper: wrap(services(log, { mimir: fakeMimir(log, { mountAppears: false }) })),
@@ -248,7 +248,7 @@ describe('useCreateRealm', () => {
   it('writes the charter to memory before starting the resident', () => {
     const charterIndex = RECIPE_STEPS.findIndex((step) => step.id === 'charter');
     const residentIndex = RECIPE_STEPS.findIndex((step) => step.id === 'resident');
-    // The resident resolves its charter from workspace memory at startup and
+    // The resident resolves its charter from realm memory at startup and
     // exits if that page is configured but missing (see
     // resident_runtime_wiring.py's _resolve_environment_charter), and the
     // local controller has no restart policy — so charter must be written

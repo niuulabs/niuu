@@ -46,16 +46,11 @@ from pydantic_settings import (
 from bifrost.config import PricingOverride
 from niuu.config_models import WorkloadIdentityVerifierConfig
 from niuu.domain.observability import ObservabilityConfig
-from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshNatsConfig
 from ravn.domain.permission_mode import (
     PermissionMode,
     parse_optional_permission_mode,
     parse_permission_mode,
-)
-from ravn.domain.valkyrie_contracts import (
-    VALKYRIE_ATTENTION_TIER_ORDER,
-    VALKYRIE_DECISION_ORDER,
 )
 
 # ---------------------------------------------------------------------------
@@ -501,222 +496,6 @@ class RerankerConfig(BaseModel):
     kwargs: dict[str, Any] = Field(
         default_factory=dict,
         description="Extra kwargs forwarded to the reranker adapter constructor.",
-    )
-
-
-class ResidentAttentionGateConfig(BaseModel):
-    """Let a routine inbox slot skip a turn of its own (``ravn.resident_attention``).
-
-    Off until calibrated (``docs/design/system-one-decision-models.md`` §5): fit
-    ``min_skip_probability`` on ``ravn resident attention-calibrate`` output first. A skipped slot
-    stays pending and appears as a receipt in the next turn that runs, which acknowledges it;
-    critical observations, operator messages, A2A updates and numerically novel slots are never
-    skipped.
-    """
-
-    enabled: bool = Field(
-        default=False,
-        description=(
-            "Skip a turn for slots whose routine probability reaches min_skip_probability. "
-            "Requires decision.resident_first_opinion.enabled and a fitted threshold."
-        ),
-    )
-    skip_tiers: list[str] = Field(
-        default_factory=lambda: ["silent", "ambient"],
-        description="Attention tiers that count as routine for the skip probability.",
-    )
-    skip_decisions: list[str] = Field(
-        default_factory=lambda: ["ignore", "watch"],
-        description="Resident decisions that count as routine for the skip probability.",
-    )
-    min_skip_probability: float | None = Field(
-        default=None,
-        gt=0.0,
-        le=1.0,
-        description=(
-            "Probability mass on routine tier, routine decision and no investigation needed — "
-            "all three — at or above which a slot skips its turn. No default: fit it from "
-            "calibration. While unset, observe mode still records the skip probability."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _check(self) -> ResidentAttentionGateConfig:
-        unknown = [tier for tier in self.skip_tiers if tier not in VALKYRIE_ATTENTION_TIER_ORDER]
-        unknown += [d for d in self.skip_decisions if d not in VALKYRIE_DECISION_ORDER]
-        if unknown:
-            raise ValueError(f"unknown attention gate vocabulary: {unknown}")
-        if self.enabled and self.min_skip_probability is None:
-            raise ValueError(
-                "decision.resident_first_opinion.gate.enabled needs min_skip_probability, "
-                "fitted from `ravn resident attention-calibrate`"
-            )
-        return self
-
-
-class ResidentFirstOpinionConfig(BaseModel):
-    """Observe-only System One opinion on resident turns (``ravn.resident_first_opinion``).
-
-    Before each resident turn the decision model is asked for its tier and decision on the same
-    observation; after the turn both are recorded side by side in telemetry. The turn always runs
-    and its own outcome is the only one the ODIN court sees. Home turns are judged per inbox slot,
-    when the slot is selected (``ravn.resident_attention``); other resident turns as a whole.
-    """
-
-    enabled: bool = Field(
-        default=False,
-        description=(
-            "Ask the decision model for a first opinion on every resident turn and record it "
-            "beside the turn's own judgment. Requires decision.enabled."
-        ),
-    )
-    max_observation_chars: int = Field(
-        default=4000,
-        gt=0,
-        description=(
-            "Characters of the slot or turn observation sent as decision state; longer "
-            "observations are cut and the cut is reported. A decision model judges small, "
-            "relevant state. The head survives the cut: identity, counts and ranges come first."
-        ),
-    )
-    max_mandate_chars: int = Field(
-        default=2000,
-        gt=0,
-        description=(
-            "Characters of the resident's charter or case mandate sent as decision state; "
-            "longer ones are cut and the cut is reported."
-        ),
-    )
-    max_working_state_chars: int = Field(
-        default=2000,
-        gt=0,
-        description=(
-            "Characters of the resident's working state sent with a slot opinion; a longer one "
-            "is cut and the cut is reported. These three bounds keep a request near 8000 "
-            "characters, about 3600 tokens on Kubernetes evidence (2.2 characters per token)."
-        ),
-    )
-    gate: ResidentAttentionGateConfig = Field(
-        default_factory=ResidentAttentionGateConfig,
-        description="Per-slot attention gate built on the slot opinions. Off until calibrated.",
-    )
-
-    @model_validator(mode="after")
-    def _gate_needs_opinions(self) -> ResidentFirstOpinionConfig:
-        if self.gate.enabled and not self.enabled:
-            raise ValueError(
-                "decision.resident_first_opinion.gate.enabled requires "
-                "decision.resident_first_opinion.enabled"
-            )
-        return self
-
-
-class DecisionCapabilityMatchingConfig(BaseModel):
-    """Let the decision model judge whether two learned tools are one capability.
-
-    It answers for ``build_tool`` and for learned-tool curation in place of the lesson judge.
-    Candidates are still shortlisted by embedding, so this needs
-    ``reflection.matching.mode: semantic`` as well as ``decision.enabled``. A decision that fails
-    stops that build or curation pass; it never falls back to the lesson judge.
-    """
-
-    enabled: bool = Field(
-        default=False,
-        description="Ask the decision model, not the lesson judge, whether tools are the same.",
-    )
-    min_same_probability: float = Field(
-        default=0.6,
-        gt=0.0,
-        le=1.0,
-        description=(
-            "P(same capability) at or above which two tools count as one. Too low blocks new "
-            "tools and retires distinct ones; too high lets duplicates through."
-        ),
-    )
-    peer_min_same_probability: float = Field(
-        default=0.6,
-        gt=0.0,
-        le=1.0,
-        description=(
-            "P(same capability) at or above which build_tool tries to adopt a flock peer's tool "
-            "instead of building. Set apart from min_same_probability because a false match "
-            "here installs a tool rather than blocking on one this resident already holds."
-        ),
-    )
-    peer_prior_art_probability: float = Field(
-        default=0.4,
-        gt=0.0,
-        le=1.0,
-        description=(
-            "P(same capability) at or above which a flock peer's tool is handed to the builder "
-            "as prior art. Sits below peer_min_same_probability because it blocks nothing: the "
-            "build still runs, and a wrong match costs a few lines in its brief. Equal to it, "
-            "nothing is handed over short of the same capability."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _prior_art_sits_below_adoption(self) -> DecisionCapabilityMatchingConfig:
-        if self.peer_prior_art_probability > self.peer_min_same_probability:
-            raise ValueError(
-                "decision.capability_matching.peer_prior_art_probability "
-                f"({self.peer_prior_art_probability}) is above peer_min_same_probability "
-                f"({self.peer_min_same_probability}), so no peer tool could be prior art; "
-                "lower it, or set the two equal to hand over nothing short of a match"
-            )
-        return self
-
-
-class DecisionEvolutionHeadlineConfig(BaseModel):
-    """Let the decision model pick the sentence that sums up a resident's recent changes."""
-
-    enabled: bool = Field(
-        default=False,
-        description=(
-            "Ask the decision model which true sentence best sums up the period. Off, the "
-            "first sentence is shown. A failed decision fails the dream that asked."
-        ),
-    )
-
-
-class DecisionConfig(BaseModel):
-    """System One decision model (TypeSafe Jev, Cloudflare Clef, Ollama ``/v1/systemone``).
-
-    Off by default. ``adapter`` is a fully-qualified class path and ``kwargs`` its constructor
-    arguments, e.g. ``base_url`` and ``model`` (``jev-latest`` on ``https://api.typesafe.ai``,
-    or ``clef-flash`` on a local Ollama). The API key is never written in config: map it in
-    ``secret_kwargs_env`` and it is resolved from the environment at composition. When
-    enabled, a backend that cannot be built or reached raises; nothing carries on without it.
-    """
-
-    enabled: bool = Field(
-        default=False,
-        description="Build the decision model port for the features below that use it.",
-    )
-    adapter: str = Field(
-        default="ravn.adapters.decision.systemone.SystemOneDecisionAdapter",
-        description="Fully-qualified class path for the decision adapter.",
-    )
-    kwargs: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Extra kwargs forwarded to the decision adapter constructor.",
-    )
-    secret_kwargs_env: dict[str, str] = Field(
-        default_factory=dict,
-        description=(
-            "Maps kwarg names to env var names for credential injection, e.g. "
-            "{api_key: TYPESAFE_API_KEY}. Empty for keyless local servers; a mapped variable "
-            "that is unset or empty is a startup error."
-        ),
-    )
-    resident_first_opinion: ResidentFirstOpinionConfig = Field(
-        default_factory=ResidentFirstOpinionConfig,
-    )
-    capability_matching: DecisionCapabilityMatchingConfig = Field(
-        default_factory=DecisionCapabilityMatchingConfig,
-    )
-    evolution_headline: DecisionEvolutionHeadlineConfig = Field(
-        default_factory=DecisionEvolutionHeadlineConfig,
     )
 
 
@@ -1607,13 +1386,6 @@ class PlatformToolsConfig(BaseModel):
         default_factory=dict,
         description="Default A2A launch metadata; explicit per-call metadata takes precedence.",
     )
-    a2a_gate_decisions: bool = Field(
-        default=True,
-        description=(
-            "Whether this Ravn may answer workflow gates over A2A. Turned off for agents whose "
-            "gates belong to a person, so the refusal does not rest on the model's judgment."
-        ),
-    )
     a2a_push_callback_url: str = Field(
         default="",
         description=("Public HTTPS callback registered for A2A tasks that advertise push support."),
@@ -1814,14 +1586,6 @@ class OpenClawChannelConfig(BaseModel):
             "— that is the real OpenClaw gateway's port."
         ),
     )
-    path: str = Field(
-        default="/",
-        description=(
-            "URL path of the WebSocket; GET <path>/health answers beside it. The app "
-            "connects at the root. Behind an ingress the resident shares with other "
-            "routes, give the shim its own prefix (e.g. /openclaw)."
-        ),
-    )
     token_env: str = Field(
         default="RAVN_OPENCLAW_TOKEN",
         description=(
@@ -1878,13 +1642,6 @@ class OpenClawChannelConfig(BaseModel):
             "oldest are dropped, with a warning: Forge has not reached this shim for long."
         ),
     )
-
-    @field_validator("path")
-    @classmethod
-    def _path_is_absolute(cls, value: str) -> str:
-        if not value.startswith("/"):
-            raise ValueError(f"gateway.channels.openclaw.path {value!r} must start with '/'")
-        return value
 
 
 class VoiceMinterConfig(BaseModel):
@@ -3145,15 +2902,6 @@ class WakefulnessConfig(BaseModel):
         default=60,
         description="How often (seconds) the trigger checks for silence.",
     )
-    max_transcript_chars: int = Field(
-        default=12000,
-        gt=0,
-        description=(
-            "Upper bound on the characters of operator conversation put into a "
-            "reflection prompt.  The most recent exchange is kept; older text is "
-            "cut first."
-        ),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -3783,14 +3531,6 @@ class ResidentWakefulnessConfig(BaseModel):
             "promoted to environment scope during a dream, policy permitting."
         ),
     )
-    evolution_window_seconds: float = Field(
-        default=604800.0,
-        gt=0,
-        description=(
-            "How far back a dream's evolution report looks when it lists what changed in the "
-            "resident's learned tools. The default is a week."
-        ),
-    )
     dream_snapshot_interval_seconds: float = Field(
         default=300.0,
         gt=0,
@@ -4037,18 +3777,6 @@ class ResidentEvolutionConfig(BaseModel):
             "opportunistic snapshots still fire)."
         ),
     )
-    flock_inventory_interval_seconds: float = Field(
-        default=3600.0,
-        ge=0.0,
-        description=(
-            "How often the whole learned-tool inventory crosses to flock peers, on "
-            "flock.<domain>.<environment>.valkyrie.evolution.skill_inventory, so the "
-            "build_tool gate can see what they run. A changed tool crosses when it "
-            "changes, whatever this is. Every event carries the tool's code, so the "
-            "sweep has to stay small against the flock stream's byte limit. 0 keeps the "
-            "inventory on this cluster, and peers then never hear of this resident's tools."
-        ),
-    )
     learned_tool_execution_backend: Literal[
         "container", "local", "forge", "devrunner", "k8s_job"
     ] = Field(
@@ -4224,11 +3952,8 @@ class ResidentInboxConfig(BaseModel):
     environment_signals_enabled: bool = Field(
         default=False,
         description=(
-            "Persist configured Environment signals through the resident inbox adapter, which "
-            "then becomes their only route to a turn: repeats coalesce into one slot per shape "
-            "and the resident home turn judges them together, with critical observations "
-            "waking it at once. Disabled by default so existing deployments opt into this "
-            "delivery owner explicitly."
+            "Persist configured Environment signals through the resident inbox adapter. "
+            "Disabled by default so existing deployments opt into this delivery owner explicitly."
         ),
     )
     directed_messages_enabled: bool = Field(
@@ -4390,17 +4115,6 @@ class ResidentStateConfig(BaseModel):
         description=(
             "Delay applied when a resident turn sleeps for a scheduled time without "
             "naming an explicit wake_at timestamp."
-        ),
-    )
-    failed_resume_retry_seconds: float = Field(
-        default=300.0,
-        gt=0,
-        description=(
-            "Seconds before a resident case whose resumed turn failed (a scheduled wake or "
-            "an operator answer) is resumed again. The wake or answer stays pending so the "
-            "case is not lost, but a failure that recurs on every attempt otherwise re-queued "
-            "the case the moment it was released: one resident retried a failing case about "
-            "twice a second."
         ),
     )
     repeated_decision_escalate_after: int = Field(
@@ -4922,12 +4636,7 @@ class EnvironmentConfig(BaseModel):
     )
     signal_task_severities: list[str] = Field(
         default_factory=lambda: ["warning", "critical"],
-        description=(
-            "Signal severities that enqueue one autonomous Valkyrie task per observation. "
-            "Ignored when resident_inbox.environment_signals_enabled is set: the inbox then "
-            "coalesces every observation for the resident home turn, and a critical one wakes "
-            "that turn immediately."
-        ),
+        description="Signal severities that should enqueue autonomous Valkyrie tasks.",
     )
     idle_triage_interval_seconds: float = Field(
         default=900.0,
@@ -4939,9 +4648,8 @@ class EnvironmentConfig(BaseModel):
     idle_triage_sample_signals: int = Field(
         default=15,
         description=(
-            "Maximum individual signal lines rendered in an idle triage prompt, and "
-            "object lines in the window a restart folds a per-observation backlog into; "
-            "the rest of the batch is summarized by counts and "
+            "Maximum individual signal lines rendered in an idle triage prompt; "
+            "the rest of the batch is summarized by the severity breakdown and "
             "an explicit overflow line so the prompt stays bounded."
         ),
     )
@@ -4951,10 +4659,7 @@ class EnvironmentConfig(BaseModel):
     )
     idle_triage_max_signal_refs: int = Field(
         default=25,
-        description=(
-            "Maximum signal refs listed in the outcome template of an idle triage or "
-            "restored-backlog window."
-        ),
+        description="Maximum signal refs listed in the idle triage outcome template.",
     )
     signal_subjects: list[str] = Field(
         default_factory=list,
@@ -5070,32 +4775,6 @@ class ResidentDiscoveryConfig(BaseModel):
             ResidentDiscoveryAdapterConfig.model_validate(item) for item in raw_adapters
         ]
         return self
-
-
-class ResidentLogsConfig(BaseModel):
-    """Where the logs of discovered and catalog residents are read from.
-
-    Managed residents' logs come from their control plane. Residents deployed
-    straight from infrastructure are read by placement through this dynamic
-    adapter (for example
-    ``ravn.adapters.resident_logs.loki.LokiResidentLogAdapter`` with
-    ``base_url``). With no adapter, asking for such a resident's logs answers
-    that no log source is configured.
-    """
-
-    adapter: str = Field(
-        default="",
-        description="Fully-qualified class path of the resident log adapter; empty for none.",
-    )
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
-
-    model_config = {"extra": "allow"}
-
-    def adapter_kwargs(self) -> dict[str, Any]:
-        """Return constructor kwargs from explicit kwargs plus extra fields."""
-        extras = self.__pydantic_extra__ or {}
-        return {**self.kwargs, **extras}
 
 
 class _LegacyAliasSettings(BaseSettings):
@@ -5934,7 +5613,6 @@ class Settings(BaseSettings):
     # NIU-436: semantic memory
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
-    decision: DecisionConfig = Field(default_factory=DecisionConfig)
     skill: SkillConfig = Field(default_factory=SkillConfig)
 
     # NIU-501: self-improvement loop
@@ -6016,14 +5694,6 @@ class Settings(BaseSettings):
 
     # Standalone-resident discovery (helm-deployed residents outside Forge).
     resident_discovery: ResidentDiscoveryConfig = Field(default_factory=ResidentDiscoveryConfig)
-    resident_logs: ResidentLogsConfig = Field(default_factory=ResidentLogsConfig)
-    platform_tenant_id: str = Field(
-        default=DEFAULT_PLATFORM_TENANT_ID,
-        description=(
-            "The org that runs this deployment. It owns anything that names no org, "
-            "and it alone may use the Valkyrie dashboard API."
-        ),
-    )
 
     # NIU-435: cascade coordinator / flock delegation / ephemeral spawn
     cascade: CascadeConfig = Field(default_factory=CascadeConfig)

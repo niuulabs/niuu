@@ -601,7 +601,7 @@ export function AdvancedLaunchCatalogPage() {
                         ]}
                       />
                     </DetailPanel>
-                    <DetailPanel title="Session workspace">
+                    <DetailPanel title="Workspace">
                       <KeyValues
                         rows={[
                           ['Source', sourcePath(selected)],
@@ -624,7 +624,7 @@ export function AdvancedLaunchCatalogPage() {
                   </>
                 ) : null}
                 {activeTab === 'workspace' ? (
-                  <DetailPanel title="Session workspace">
+                  <DetailPanel title="Workspace">
                     <KeyValues
                       rows={[
                         ['Source', formatSource(selected)],

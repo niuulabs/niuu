@@ -298,7 +298,7 @@ export function deriveWorkingThesis(artifacts: ParsedArtifact[]): string {
     const paragraph = firstParagraph(artifact.body);
     if (paragraph) return paragraph;
   }
-  return 'Niuu is still building the first useful answer for this campaign.';
+  return 'Ting is still building the first useful answer for this campaign.';
 }
 
 export function inferDomain(source: MimirSource): string {

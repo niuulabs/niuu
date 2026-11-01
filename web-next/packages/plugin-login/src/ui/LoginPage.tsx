@@ -1,29 +1,26 @@
+import type { ComponentType } from 'react';
 import { useAuth } from '@niuulabs/auth';
-import { ContinuityField, NiuuMark, NiuuWordmark } from '@niuulabs/ui';
+import { AmbientTopology } from './AmbientTopology';
+import { AmbientConstellation } from './AmbientConstellation';
+import { AmbientLattice } from './AmbientLattice';
+import { LoginScene, Emblem } from './LoginScene';
+import type { AmbientVariant } from './useAmbient';
 import './LoginPage.css';
-
-const EMBLEM_MARK_SIZE = 57;
-const EMBLEM_WORDMARK_HEIGHT = 34;
-const FEATURES = ['Autonomous', 'Collaborative', 'Persistent', 'Observable', 'Self-hosted'];
 
 interface LoginPageProps {
   /** Override the OIDC error code (default: read from ?error= URL param). */
   oidcError?: string;
   /** Override the OIDC error description (default: read from ?error_description= URL param). */
   oidcErrorDescription?: string;
+  /** Optional legacy ambient background override. */
+  ambient?: AmbientVariant;
 }
 
-/** The NIUU primary lockup: orbit mark and the path-drawn wordmark. */
-function Emblem() {
-  return (
-    <div className="login-page__emblem">
-      <NiuuMark size={EMBLEM_MARK_SIZE} />
-      <h1 className="login-page__wordmark" aria-label="NIUU">
-        <NiuuWordmark height={EMBLEM_WORDMARK_HEIGHT} />
-      </h1>
-    </div>
-  );
-}
+const AMBIENT_MAP: Record<AmbientVariant, ComponentType> = {
+  topology: AmbientTopology,
+  constellation: AmbientConstellation,
+  lattice: AmbientLattice,
+};
 
 function LockIcon() {
   return (
@@ -56,17 +53,18 @@ export function buildBannerText(version = buildVersion, realm = buildRealm): str
 /**
  * Full-viewport login page.
  *
- * On wide screens it is the same stage as Niuu Identity, so pressing the button
- * only changes what is in the panel. On narrow screens the same elements become
- * one centred column around the lockup; see LoginPage.css.
+ * Shows the niuu cube constellation and a sign-in button that
+ * kicks off the configured OIDC flow via `useAuth().login()`.
  *
  * Uses `position: fixed` to overlay the Shell layout when rendered inside it.
  */
 export function LoginPage({
   oidcError: errorProp,
   oidcErrorDescription: descProp,
+  ambient: ambientProp,
 }: LoginPageProps = {}) {
   const { login, loading } = useAuth();
+  const AmbientComponent = ambientProp ? AMBIENT_MAP[ambientProp] : LoginScene;
 
   const params =
     typeof window !== 'undefined'
@@ -77,66 +75,41 @@ export function LoginPage({
 
   return (
     <div className="login-page" data-testid="login-page">
-      <ContinuityField composition="hero" />
+      <AmbientComponent />
 
-      <header className="login-page__head">
-        <Emblem />
-        <div className="login-page__build" data-testid="build-banner">
-          {buildBannerText()}
-        </div>
-      </header>
-
-      <div className="login-page__main">
-        <section className="login-page__copy">
-          <div className="login-page__kicker">niuu · autonomous work</div>
-          <p className="login-page__tag">
-            A place where <br />
-            intelligent systems <br />
-            do real work.
-          </p>
-        </section>
-
-        <main className="login-page__panel">
-          <h2 className="login-page__panel-title">Sign in</h2>
-
-          {oidcError && (
-            <div className="login-page__error" role="alert" data-testid="login-error">
-              <span className="login-page__error-title">Authentication failed</span>
-              {oidcErrorDescription && (
-                <span className="login-page__error-desc">{oidcErrorDescription}</span>
-              )}
-            </div>
-          )}
-
-          <p className="login-page__handoff">You’ll continue to Niuu Identity.</p>
-
-          <div className="login-page__auth">
-            <button
-              className="login-page__btn"
-              onClick={loading ? undefined : login}
-              disabled={loading}
-              aria-label={loading ? 'Redirecting to identity provider…' : 'Continue to sign in'}
-              data-testid="sign-in-btn"
-            >
-              {loading ? <span className="login-page__spinner" aria-hidden /> : <LockIcon />}
-              <span>{loading ? 'Continuing to Niuu Identity…' : 'Continue to sign in'}</span>
-              {!loading && <span aria-hidden>→</span>}
-            </button>
-          </div>
-        </main>
+      <div className="login-page__build login-page__mono" data-testid="build-banner">
+        {buildBannerText()}
       </div>
 
-      <footer className="login-page__strip">
-        <div className="login-page__features">
-          {FEATURES.map((feature, index) => (
-            <span key={feature}>
-              {index !== 0 && <b>·</b>}
-              {feature}
-            </span>
-          ))}
+      <main className="login-page__card">
+        <div className="login-page__kicker">níu · the ninth world</div>
+        <Emblem />
+        <p className="login-page__tag">Where AI agents work, collaborate, and evolve.</p>
+
+        {oidcError && (
+          <div className="login-page__error" role="alert" data-testid="login-error">
+            <span className="login-page__error-title">Authentication failed</span>
+            {oidcErrorDescription && (
+              <span className="login-page__error-desc">{oidcErrorDescription}</span>
+            )}
+          </div>
+        )}
+
+        <div className="login-page__auth">
+          <button
+            className="login-page__btn"
+            onClick={loading ? undefined : login}
+            disabled={loading}
+            aria-label={loading ? 'Redirecting to identity provider…' : 'Continue to sign in'}
+            data-testid="sign-in-btn"
+          >
+            {loading ? <span className="login-page__spinner" aria-hidden /> : <LockIcon />}
+            <span>{loading ? 'Continuing to Niuu Identity…' : 'Continue to sign in'}</span>
+            {!loading && <span aria-hidden>→</span>}
+          </button>
         </div>
-        <span className="login-page__tagline">Continuity / not a session</span>
-      </footer>
+        <p className="login-page__handoff">You’ll continue to Niuu Identity.</p>
+      </main>
     </div>
   );
 }

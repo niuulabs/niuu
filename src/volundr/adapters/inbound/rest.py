@@ -22,7 +22,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from niuu.domain.conversation_timeline import resolve_timeline_turn
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
-from niuu.domain.models import actor_name
 from niuu.domain.notifications import notification_visible_to
 from niuu.domain.services.token_scope import (
     FORGE_NOTIFY_SCOPE,
@@ -1212,9 +1211,6 @@ class WorkflowGateResolveRequest(BaseModel):
     decision: str
     notes: str = ""
     source: str = "human"
-    # The workload a trusted caller such as Ting answers for, when its own credential
-    # does not show it. Claiming one can only narrow what may be answered.
-    actor: str = ""
 
 
 class HelpAnswerRequest(BaseModel):
@@ -3181,7 +3177,6 @@ def create_router(
         session_id: UUID,
         *path_segments: str,
         timeout: float = 30.0,
-        extra_headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         try:
             _, base_url = await forge.get_session_proxy_target(session_id)
@@ -3201,7 +3196,6 @@ def create_router(
             value = request.headers.get(name)
             if value:
                 headers[name] = value
-        headers.update(extra_headers or {})
         body = await request.body()
         try:
             proxy_url, routing_headers = _http_proxy_target(
@@ -3325,51 +3319,6 @@ def create_router(
         response = await _proxy_session_api(request, session_id, "files")
         payload = response.json()
         return payload if isinstance(payload, dict) else {}
-
-    @router.post(
-        "/sessions/{session_id}/room/{operation}",
-        dependencies=[Depends(require_scope(FORGE_SESSION_MESSAGE_SCOPE))],
-        tags=["Sessions"],
-        responses={
-            403: {"model": ErrorResponse},
-            404: {"model": ErrorResponse},
-            502: {"model": ErrorResponse},
-        },
-    )
-    async def post_session_room(
-        request: Request,
-        session_id: UUID = Path(description="Unique session identifier"),
-        operation: Literal["direct", "join", "leave", "workflow-events"] = Path(
-            description="Room operation on the session's broker"
-        ),
-    ) -> Response:
-        """Reach a session's room through Forge, which can always route to its broker.
-
-        A session's advertised origin may serve browsers only, and on a cluster
-        the Forge host does not serve session paths, so services come through here.
-        """
-        principal = await extract_principal(request)
-        session = await forge.get_session(session_id)
-        if session is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session not found: {session_id}",
-            )
-        if session.owner_id != principal.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to reach this session's room",
-            )
-        # Stamped only after the ownership check above, as the gate route stamps
-        # approver: the broker reads its caller's room role from this header.
-        response = await _proxy_session_api(
-            request, session_id, "room", operation, extra_headers={ROOM_ROLE_HEADER: "owner"}
-        )
-        return Response(
-            content=response.content,
-            status_code=response.status_code,
-            media_type=response.headers.get("content-type"),
-        )
 
     @router.post(
         "/sessions/{session_id}/messages",
@@ -4507,7 +4456,6 @@ def create_router(
                 detail="Not authorized to resolve gates for this session",
             )
 
-        actor = principal.actor or body.actor
         headers = {}
         auth = request.headers.get("authorization")
         if auth:
@@ -4545,13 +4493,7 @@ def create_router(
                 response = await client.post(
                     proxy_url,
                     headers=headers,
-                    json={
-                        **body.model_dump(),
-                        "actor": actor,
-                        "decided_by": (
-                            actor_name(actor) if actor else principal.email or principal.user_id
-                        ),
-                    },
+                    json=body.model_dump(),
                 )
                 response.raise_for_status()
                 return response.json()

@@ -1,6 +1,6 @@
 {
-  "python_version": "3.14.10",
-  "source_sha256": "4fae8dc3af30ad4accf6dd20cbd6c80c7882900bb91684072a9ea3475768068c",
+  "python_version": "3.14.9",
+  "source_sha256": "79bda7368e7ac571cc4a0e4048bcfbc6a2765fd037ee282ffdb3dba7e6224d97",
   "patches": [
     {
       "commit": "b234a2b67539f787e191d2ef19a7cbdce32874e7",

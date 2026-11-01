@@ -32,11 +32,6 @@ describe('CallbackPage', () => {
     expect(screen.getByTestId('callback-page')).toBeInTheDocument();
   });
 
-  it('keeps the continuity field between the identity provider and the app', () => {
-    wrap(baseAuth);
-    expect(screen.getByTestId('continuity-field')).toBeInTheDocument();
-  });
-
   it('renders the loading spinner', () => {
     wrap(baseAuth);
     expect(
