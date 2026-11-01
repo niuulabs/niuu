@@ -877,6 +877,8 @@ async def _refresh_campaign_runtime(
     volundr_factory: VolundrFactory,
     principal: Principal,
 ) -> WorkflowCampaign:
+    if not campaign.session_id:
+        return campaign
     adapter = await _resolve_campaign_volundr_adapter(
         volundr_factory=volundr_factory,
         principal=principal,

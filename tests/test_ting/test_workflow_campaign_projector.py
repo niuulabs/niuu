@@ -17,6 +17,7 @@ from ting.domain.services.workflow_campaign_projector import (
     WorkflowCampaignProjector,
     _status_from_session,
 )
+from ting.domain.ticket_coordinator import TICKET_METADATA_KEY
 from ting.ports.volundr import ActivityEvent
 from ting.ports.workflow_campaign_repository import CampaignAlreadyTerminalError
 
@@ -1092,3 +1093,211 @@ async def test_a_stale_event_does_not_reopen_a_finished_campaign() -> None:
 
     assert handled is True
     event_bus.emit.assert_not_awaited()
+
+
+_LAUNCH_LEASE = 60.0
+
+
+class _ForgeListing(_Adapter):
+    """A Forge that fails the test if asked for a session by an empty id."""
+
+    def __init__(
+        self,
+        *,
+        sessions: list | None = None,
+        list_error: Exception | None = None,
+    ) -> None:
+        super().__init__()
+        self._sessions = sessions or []
+        self._list_error = list_error
+        self.list_calls = 0
+
+    async def get_session(self, session_id, *, auth_token=None, principal=None):
+        assert session_id, "get_session was called with an empty session id"
+        return await super().get_session(session_id)
+
+    async def list_sessions(self, *, auth_token=None, principal=None):
+        self.list_calls += 1
+        if self._list_error is not None:
+            raise self._list_error
+        return list(self._sessions)
+
+
+def _launch_projector(
+    adapter: _Adapter,
+    *,
+    connections: dict[str, _Adapter] | None = None,
+) -> tuple[WorkflowCampaignProjector, AsyncMock, AsyncMock]:
+    repo = AsyncMock()
+    repo.save_campaign = AsyncMock(side_effect=lambda campaign: campaign)
+    event_bus = AsyncMock()
+    projector = WorkflowCampaignProjector(
+        repo=repo,
+        volundr_factory=_Factory(adapter, connections=connections),
+        event_bus=event_bus,
+        launch_lease_seconds=_LAUNCH_LEASE,
+    )
+    return projector, repo, event_bus
+
+
+def _unlaunched(seconds_ago: float, *, connection_id: str | None = None) -> WorkflowCampaign:
+    """The row a launch leaves behind when it ends before recording its session."""
+    then = datetime.now(UTC) - timedelta(seconds=seconds_ago)
+    return replace(
+        _campaign(WorkflowCampaignStatus.PENDING, connection_id=connection_id),
+        slug="a2a-d2a47c05dc4f464cad115edc3eee532b",
+        session_id="",
+        session_name="",
+        created_at=then,
+        updated_at=then,
+        last_activity_at=then,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_launch_that_left_no_session_expires_loudly_and_is_counted(
+    monkeypatch, caplog
+) -> None:
+    """Four Research Campaign runs sat PENDING with no session on ymir, and each
+    reconnect asked Forge for session "" and logged the 307 that came back."""
+    counted: list[tuple[str, dict]] = []
+    telemetry = SimpleNamespace(
+        count=lambda name, *, attributes, description="": counted.append((name, attributes)),
+        duration=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "ting.domain.services.workflow_campaign_projector.get_observability", lambda: telemetry
+    )
+    adapter = _ForgeListing()
+    projector, repo, event_bus = _launch_projector(adapter)
+    campaign = _unlaunched(seconds_ago=_LAUNCH_LEASE + 1)
+    repo.list_active_campaigns.return_value = [campaign]
+
+    with caplog.at_level("ERROR"):
+        assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 1
+
+    [failed] = [call.args[0] for call in repo.save_campaign.await_args_list]
+    assert failed.status == WorkflowCampaignStatus.FAILED
+    assert failed.session_id == ""
+    assert "The launch ended without starting a session" in failed.metadata["failure_error"]
+    assert ("ting_a2a_campaigns_expired_total", {"reason": "launch_abandoned"}) in counted
+    [expiry_log] = [r for r in caplog.records if "Expiring workflow campaign" in r.getMessage()]
+    assert expiry_log.levelname == "ERROR"
+    assert "a2a.launch_lease_seconds=60s" in expiry_log.getMessage()
+    assert campaign.slug in expiry_log.getMessage()
+    assert event_bus.emit.await_args.args[0].event == "workflow.campaign.failed"
+    # There is no session to stop, so no stop is sent for an empty id.
+    assert adapter.stop_attempts == []
+
+
+@pytest.mark.asyncio
+async def test_a_reconnect_closes_a_run_with_no_session_once_instead_of_erroring(caplog) -> None:
+    adapter = _ForgeListing()
+    projector, repo, _ = _launch_projector(adapter)
+    campaign = _unlaunched(seconds_ago=_LAUNCH_LEASE + 1)
+    repo.list_active_campaigns.side_effect = [[campaign], []]
+
+    await projector.reconcile_owner(campaign.owner_id)
+    await projector.reconcile_owner(campaign.owner_id)
+
+    [failed] = [call.args[0] for call in repo.save_campaign.await_args_list]
+    assert failed.status == WorkflowCampaignStatus.FAILED
+    assert adapter.list_calls == 1
+    assert "reconciliation failed" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_launch_still_inside_its_lease_is_left_alone() -> None:
+    """The row exists before the session does, so a run with no session may
+    simply be mid-launch. Forge is not asked and the row is not touched."""
+    adapter = _ForgeListing()
+    projector, repo, _ = _launch_projector(adapter)
+    campaign = _unlaunched(seconds_ago=_LAUNCH_LEASE - 30)
+    repo.list_active_campaigns.return_value = [campaign]
+
+    assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 0
+    await projector.reconcile_owner(campaign.owner_id)
+
+    repo.save_campaign.assert_not_awaited()
+    assert adapter.list_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_session_the_launch_never_recorded_is_stopped_with_its_run() -> None:
+    """A launch can die between Forge creating the session and recording it.
+    Nothing tracks that session, so failing the run must not leave it running."""
+    campaign = _unlaunched(seconds_ago=_LAUNCH_LEASE + 1)
+    orphan = SimpleNamespace(
+        id="orphan-session", name="research", tracker_issue_id=f"workflow:{campaign.slug}"
+    )
+    unrelated = SimpleNamespace(id="other", name="other", tracker_issue_id="workflow:a2a-other")
+    adapter = _ForgeListing(sessions=[unrelated, orphan])
+    projector, repo, _ = _launch_projector(adapter)
+    repo.list_active_campaigns.return_value = [campaign]
+
+    assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 1
+
+    saved = [call.args[0] for call in repo.save_campaign.await_args_list]
+    assert saved[0].status == WorkflowCampaignStatus.FAILED
+    assert saved[0].session_id == "orphan-session"
+    assert "without recording session orphan-session" in saved[0].metadata["failure_error"]
+    assert saved[-1].metadata[TERMINAL_SESSION_STOPPED_KEY] is True
+    assert adapter.stopped == ["orphan-session"]
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_no_session_on_a_connection_that_is_gone_still_fails() -> None:
+    projector, repo, _ = _launch_projector(_ForgeListing(), connections={})
+    campaign = _unlaunched(seconds_ago=_LAUNCH_LEASE + 1, connection_id="retired-forge")
+    repo.list_active_campaigns.return_value = [campaign]
+
+    assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 1
+
+    [failed] = [call.args[0] for call in repo.save_campaign.await_args_list]
+    assert failed.status == WorkflowCampaignStatus.FAILED
+    assert "'retired-forge' no longer resolves" in failed.metadata["failure_error"]
+
+
+@pytest.mark.asyncio
+async def test_a_forge_that_cannot_list_does_not_fail_the_run(caplog) -> None:
+    """Whether a session exists is unknown, so the run stays for the next pass
+    and the failure to find out is logged at error."""
+    projector, repo, _ = _launch_projector(_ForgeListing(list_error=ConnectionError("forge down")))
+    campaign = _unlaunched(seconds_ago=_LAUNCH_LEASE + 1)
+    repo.list_active_campaigns.return_value = [campaign]
+
+    with caplog.at_level("ERROR"):
+        assert await projector.expire_stale_campaigns(now=datetime.now(UTC)) == 0
+
+    repo.save_campaign.assert_not_awaited()
+    assert f"Could not check workflow campaign {campaign.slug}" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_settling_merged_runs_skips_a_run_with_no_session() -> None:
+    adapter = _ForgeListing()
+    projector, repo, _ = _launch_projector(adapter)
+    repo.list_active_campaigns.return_value = [
+        replace(
+            _unlaunched(seconds_ago=_LAUNCH_LEASE + 1),
+            status=WorkflowCampaignStatus.BLOCKED,
+            metadata={TICKET_METADATA_KEY: {"sagaId": str(uuid4()), "issueId": "NIU-1"}},
+        )
+    ]
+
+    assert await projector.settle_merged_campaigns() == 0
+
+
+@pytest.mark.asyncio
+async def test_the_launch_lease_alone_keeps_the_sweep_running() -> None:
+    repo = AsyncMock()
+    projector = WorkflowCampaignProjector(
+        repo=repo,
+        volundr_factory=_Factory(_Adapter()),
+        event_bus=AsyncMock(),
+        sweep_interval_seconds=300.0,
+        launch_lease_seconds=_LAUNCH_LEASE,
+    )
+    await projector.start()
+    assert projector._sweep_task is not None
+    await projector.stop()

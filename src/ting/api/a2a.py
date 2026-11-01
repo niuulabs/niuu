@@ -14,6 +14,7 @@ import logging
 import mimetypes
 import posixpath
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from time import monotonic
@@ -342,7 +343,7 @@ class WorkflowTaskHandler(RequestHandler):
             raise InvalidParamsError(
                 f"messageId {message.message_id!r} was reused for different launch content"
             ) from exc
-        if existing is not None and existing.session_id:
+        if existing is not None and (existing.session_id or existing.status in _TERMINAL_STATUSES):
             get_observability().event(
                 "ting.a2a.workflow.launch.reused",
                 attributes={
@@ -461,6 +462,11 @@ class WorkflowTaskHandler(RequestHandler):
                 )
         if existing is None:
             _record_a2a_state_transition(pending)
+        else:
+            # This attempt holds the launch now; the projector times the lease from here.
+            pending = await self._campaign_repo.save_campaign(
+                replace(existing, updated_at=now, last_activity_at=now)
+            )
 
         telemetry = get_observability()
         trace_context = _trace_context(metadata)
@@ -474,61 +480,67 @@ class WorkflowTaskHandler(RequestHandler):
             attributes=attributes,
             carrier=trace_context,
         ) as span:
-            execution_context = await self._workflow_execution_context(metadata, reservation)
-            inherited_result_schema = execution_context.pop("result_schema", {})
-            parent_session_id = str(execution_context.pop("parent_session_id", ""))
-            parent_connection_id = str(execution_context.pop("parent_connection_id", ""))
-            parent_execution = await self._reserve_durable_parent_execution(
-                workflow=workflow,
-                workflow_snapshot=pending.workflow_snapshot,
-                reservation=reservation,
-                prompt=prompt,
-                metadata=metadata,
-            )
-            if parent_execution is not None:
-                launch = parent_launch_body(
-                    parent_execution,
-                    request=self._request,
+            try:
+                execution_context = await self._workflow_execution_context(metadata, reservation)
+                inherited_result_schema = execution_context.pop("result_schema", {})
+                parent_session_id = str(execution_context.pop("parent_session_id", ""))
+                parent_connection_id = str(execution_context.pop("parent_connection_id", ""))
+                parent_execution = await self._reserve_durable_parent_execution(
+                    workflow=workflow,
+                    workflow_snapshot=pending.workflow_snapshot,
+                    reservation=reservation,
                     prompt=prompt,
-                    session_name=_launch_session_name(workflow, prompt, metadata),
-                    repo=str(metadata.get("repo") or ""),
-                    branch=str(metadata.get("branch") or ""),
-                    model=str(metadata.get("model") or ""),
-                    connection_id=resolved_connection_id,
-                    workflow_version=workflow.version,
+                    metadata=metadata,
                 )
-                outbound_trace_context = telemetry.inject() or trace_context
-                if outbound_trace_context:
-                    launch.provenance["trace_context"] = outbound_trace_context
-            else:
-                launch = WorkflowLaunchBody(
-                    prompt=prompt,
-                    sessionName=_launch_session_name(workflow, prompt, metadata),
-                    repo=str(metadata.get("repo") or ""),
-                    branch=str(metadata.get("branch") or ""),
-                    baseBranch=str(metadata.get("baseBranch") or metadata.get("base_branch") or ""),
-                    model=str(metadata.get("model") or ""),
-                    # The already-resolved (and, on a retry, already-persisted)
-                    # connection — never re-derived from raw request metadata —
-                    # so a retry lands on the exact target the first attempt did.
-                    connectionId=resolved_connection_id,
-                    inheritedResultSchema=(
-                        dict(inherited_result_schema)
-                        if isinstance(inherited_result_schema, dict)
-                        else {}
-                    ),
-                    provenance={
-                        "surface": A2A_SURFACE,
-                        "a2a_message_id": message.message_id,
-                        **({"workflow_execution": execution_context} if execution_context else {}),
-                        **(
-                            {"trace_context": outbound_trace_context}
-                            if (outbound_trace_context := telemetry.inject() or trace_context)
+                if parent_execution is not None:
+                    launch = parent_launch_body(
+                        parent_execution,
+                        request=self._request,
+                        prompt=prompt,
+                        session_name=_launch_session_name(workflow, prompt, metadata),
+                        repo=str(metadata.get("repo") or ""),
+                        branch=str(metadata.get("branch") or ""),
+                        model=str(metadata.get("model") or ""),
+                        connection_id=resolved_connection_id,
+                        workflow_version=workflow.version,
+                    )
+                    outbound_trace_context = telemetry.inject() or trace_context
+                    if outbound_trace_context:
+                        launch.provenance["trace_context"] = outbound_trace_context
+                else:
+                    launch = WorkflowLaunchBody(
+                        prompt=prompt,
+                        sessionName=_launch_session_name(workflow, prompt, metadata),
+                        repo=str(metadata.get("repo") or ""),
+                        branch=str(metadata.get("branch") or ""),
+                        baseBranch=str(
+                            metadata.get("baseBranch") or metadata.get("base_branch") or ""
+                        ),
+                        model=str(metadata.get("model") or ""),
+                        # The already-resolved (and, on a retry, already-persisted)
+                        # connection — never re-derived from raw request metadata —
+                        # so a retry lands on the exact target the first attempt did.
+                        connectionId=resolved_connection_id,
+                        inheritedResultSchema=(
+                            dict(inherited_result_schema)
+                            if isinstance(inherited_result_schema, dict)
                             else {}
                         ),
-                    },
-                )
-            try:
+                        provenance={
+                            "surface": A2A_SURFACE,
+                            "a2a_message_id": message.message_id,
+                            **(
+                                {"workflow_execution": execution_context}
+                                if execution_context
+                                else {}
+                            ),
+                            **(
+                                {"trace_context": outbound_trace_context}
+                                if (outbound_trace_context := telemetry.inject() or trace_context)
+                                else {}
+                            ),
+                        },
+                    )
                 # Recovery must look at the same connection the launch will
                 # use — a session a placed (or otherwise resolved) launch
                 # already spawned lives there, not on the metadata-supplied
@@ -595,7 +607,9 @@ class WorkflowTaskHandler(RequestHandler):
                 # `pending` was already persisted (above, or by an earlier
                 # attempt) before this attempt started — a rejected or
                 # errored launch must not leave it stuck PENDING forever,
-                # since every retry would hit the identical failure.
+                # since every retry would hit the identical failure. A process
+                # that dies here never reaches this line; the campaign
+                # projector closes that run once its launch lease has passed.
                 await self._mark_campaign_failed(pending, reason=str(exc))
                 raise
             span.set_attribute("ting.session.id", str(execution.session.id))
@@ -917,11 +931,12 @@ class WorkflowTaskHandler(RequestHandler):
             }
         )
         saved = await self._campaign_repo.save_campaign(updated)
-        await adapter.stop_session(
-            campaign.session_id,
-            auth_token=self._downstream_auth_token(),
-            principal=self._principal,
-        )
+        if campaign.session_id:
+            await adapter.stop_session(
+                campaign.session_id,
+                auth_token=self._downstream_auth_token(),
+                principal=self._principal,
+            )
         await _emit_campaign_event(self._request, "workflow.campaign.updated", saved)
         await self._queue_push(saved)
         return campaign_to_task(saved)
