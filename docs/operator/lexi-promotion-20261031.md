@@ -1,7 +1,7 @@
-# Promotions six to thirteen, and Thor's push gateway (2026-10-30/31)
+# Promotions six to fourteen, and Thor's push gateway (2026-10-30 to 11-01)
 
 This is the record of the promotions that took Thor and mini-m6 from five
-(`e6257217d`) to thirteen (`6ff003fb9`), on 2026-10-30 and 2026-10-31. The runbook is
+(`e6257217d`) to fourteen (`4cd719bad`), from 2026-10-30 to the early hours of 2026-11-01. The runbook is
 [lexi-promotion-20261026.md](lexi-promotion-20261026.md); the busy-lane rule it uses is
 §1.3a. The push gateway is documented in [lexi-push-gateway.md](lexi-push-gateway.md).
 The cutover artifacts stay with each rollout folder on Thor
@@ -17,6 +17,7 @@ The cutover artifacts stay with each rollout folder on Thor
 | nine | `c42970e6c` | `forge-attn-c42970e6` / `forge-m6-attn-c42970e6` | LEX-1186 part 4 (attention pushes marked for the app's notification extension, with `engine`); `send_message` with `instance_id` relays; push gateway operator doc |
 | ten | `b25aec7f6` | `forge-guild-b25aec7f` / never switched | LEX-1738: a member's lane reaches any Guild session by id (relay through the Guild, owner named on a member read, Guild-scope listing includes other nodes, own node first); Spark's missing feed remembered (`feedless_nodes`) |
 | eleven | `5aac51a5f` | `forge-env-5aac51a5` / `forge-m6-env-5aac51a5` | read-state skips feedless nodes (per-route memory); the release dist stager (`scripts/forge_release_dist.py`); push counts per APNs environment (package 2) |
+| fourteen | `4cd719bad` | `forge-projects-4cd719ba` / `forge-m6-projects-4cd719ba` | a session credential with the lifecycle grant may read `GET /projects/{id}` (the project it joins; the create_session 403); a join into a project not homed on the session's node is a clear 403 with the way round |
 | thirteen | `6ff003fb9` | `forge-fallback-6ff003fb` / `forge-m6-fallback-6ff003fb` | the `widget_fallback` token kind (stored, counted per environment, never pushed to); 12-hex SHA-256 token fingerprints on registration and prune log lines, the app's recipe |
 | twelve | `ec03df0c3` | `forge-owners-ec03df0c` / `forge-m6-owners-ec03df0c` | a session read goes to the node remembered owning it (learned from Guild listings); `instance_name` in the MCP session summary; a parent's `guild_instance_id` beside its stored projects id; facades never ask each other in a loop (`X-Niuu-Owner-Probe`) |
 
@@ -43,6 +44,8 @@ The cutover artifacts stay with each rollout folder on Thor
 | 10-31 19:09 | Thor | thirteen: `forge-owners-ec03df0c` → `forge-fallback-6ff003fb`, API-only. PRESERVED (734 sessions). Smoke adds: a registration of an unknown kind answers 422 before anything is stored; no raw token in any registration or prune log line. |
 | 10-31 21:10 to 21:21 | mini | thirteen's first window, called at 21:10 and stood down by the coordinator during Damien's live voice call. The driver had taken the GO and was waiting on the gate, which never re-checks the GO, so it was restarted to wait for a fresh one; nothing switched. |
 | 10-31 22:47 to 22:50 | mini | thirteen's window, called at 22:47:15. Twelve → thirteen (`forge-m6-fallback-6ff003fb`): dark 14 s (stop 22:49:39, ready 22:49:53), ledger 140\|44, 15 sessions, six panes verified at 22:50:20. |
+| 10-31 23:05 | Thor | fourteen: `forge-fallback-6ff003fb` → `forge-projects-4cd719ba`, API-only. PRESERVED (735 sessions). Smoke adds: as the owner, a project read answers from the projects service. |
+| 11-01 00:57 to 01:01 | mini | fourteen's window, called at 00:57:24. Thirteen → fourteen (`forge-m6-projects-4cd719ba`): dark about 8 s (stop 01:00:45, ready 01:00:53), ledger 140\|44, 15 sessions, six panes verified. |
 | 10-31 17:10 to 17:16 | mini | eleven's window, called at 17:10:22. The gate opened at 17:14:53, once lexi-macos's LEX-1741 Mac builds finished. Nine → eleven directly (`forge-m6-env-5aac51a5`): API dark 14 s (stop 17:15:50, ready 17:16:04), ledger 140\|44, 15 sessions before and after, six panes verified at 17:16:31. |
 
 ### Nine on the mini, second by second
