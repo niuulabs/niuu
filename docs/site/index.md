@@ -250,10 +250,6 @@ home:
           entries: GitHub, GitLab, Linear, Jira, Telegram, MCP, A2A, any OIDC provider, any OpenTelemetry backend
         - name: Runs on
           entries: Local processes, Docker, OpenShell, VMs, bare metal, DGX Spark, Kubernetes
-      note: Not every combination has been tested.
-      link:
-        label: What has been verified
-        doc: operations/quickstart-verification/
   evolution:
     label: Continuity and evolution
     title:
@@ -379,24 +375,35 @@ home:
         body: Move from one machine to Kubernetes, where each session runs in its own pod and services can autoscale. Join more machines and clusters, and they run as one environment.
         doc: operations/kubernetes-deployment/
       - title: Security
-        body: Sign in through any OIDC provider, with policies deciding who can do what. Agents use scoped, short-lived credentials. Sessions can run in an OpenShell sandbox with limited network, and tools agents build run isolated.
+        body: Sign in through any OIDC provider, with policies deciding who can do what. Agents use scoped, short-lived credentials. Sessions can run in an OpenShell sandbox with limited network, and tools agents build run isolated. Larger multi-tenant deployments keep secrets in Vault or OpenBao, with access scoped to each session, and give sandboxes SPIFFE identities through SPIRE.
         doc: operations/security-and-permissions/
     note: These apply to a shared deployment. A local install is single-user, with no login.
     direction: "Where this is heading: inviting colleagues into a session from the app, sharing projects, workflows and Workspaces across an organization, managing members from your identity provider, and hosting unrelated customers on one installation. That is direction, not what ships today."
   start:
     label: Get started
     title: Try it on your own machine.
-    body: The shortest way in is a local install and a coding agent. Add workflows, Memory and residents as your work calls for them.
-    needs: You need Git, a C toolchain, uv, Node.js and pnpm. This mode has no login of its own, so keep NIUU on 127.0.0.1, its default.
-    code_title: From source
-    code: |-
-      git clone https://github.com/niuulabs/niuu.git
-      cd niuu
-      uv sync --python 3.12 --extra dev
-      make build-postgres build-web
-      uv run niuu platform init
-      uv run niuu platform up
-    code_note: The build compiles PostgreSQL and the web UI, so give it a while. At the init prompt, press Enter for mini mode.
+    body: The shortest way in is Docker. One command starts everything, and a setup page in your browser connects your models and repositories.
+    options:
+      - id: docker
+        name: Docker
+        title: On any Docker host
+        needs: You need Docker with Compose, on Linux or a Mac.
+        code: |-
+          curl -fsSL https://raw.githubusercontent.com/niuulabs/niuu/dev/scripts/install.sh \
+            | NIUU_IMAGE_TAG=dev sh
+        note: It ends with a setup URL. Open it to finish in your browser. This mode has no login of its own and listens on every network interface, so run it on a network you trust.
+      - id: source
+        name: From source
+        title: From source
+        needs: You need Git, a C toolchain, uv, Node.js and pnpm.
+        code: |-
+          git clone https://github.com/niuulabs/niuu.git
+          cd niuu
+          uv sync --python 3.12 --extra dev
+          make build-postgres build-web
+          uv run niuu platform init
+          uv run niuu platform up
+        note: The build compiles PostgreSQL and the web UI, so give it a while. At the init prompt, press Enter for mini mode. This mode has no login of its own, so keep NIUU on 127.0.0.1, its default.
     actions:
       - label: Follow the quick start
         arrow: →

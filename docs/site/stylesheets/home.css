@@ -129,7 +129,6 @@ html:has(.niuu-home) { scroll-behavior:smooth }
 .niuu-home .built { display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr);gap:8%;margin-top:clamp(72px,8vw,110px) }
 .niuu-home .built h3 { font:300 clamp(26px,2.3vw,36px)/1.18 'Inter Display',Inter,sans-serif;letter-spacing:-.03em;margin:0 0 14px }
 .niuu-home .built p { font-size:15px;line-height:1.75;color:#a8bbc6;margin:0 }
-.niuu-home .built .aside { font-size:13px;margin-top:16px;color:#8ba3b0 }
 .niuu-home .support { margin:0;border-top:1px solid #2b4351 }
 .niuu-home .support div { display:grid;grid-template-columns:150px minmax(0,1fr);gap:20px;padding:13px 0;border-bottom:1px solid #223846 }
 .niuu-home .support dt { font-size:14px;color:#a8bbc6 }
@@ -172,6 +171,9 @@ html:has(.niuu-home) { scroll-behavior:smooth }
 .niuu-home .hero .trust { font-size:12px;line-height:1.6;color:#8ba3b0;margin-top:20px }
 .niuu-home .start { display:grid;grid-template-columns:.95fr 1.05fr;gap:8%;align-items:start }
 .niuu-home .start .hero-cta { margin-top:28px }
+.niuu-home .start > div { min-width:0 }
+.niuu-home .start .view-tabs { margin-top:0 }
+.niuu-home .start .view > .aside:first-child { margin:18px 0 12px }
 .niuu-home .terminal { border:1px solid #2b4351;border-radius:8px;overflow:hidden;background:#07131e }
 .niuu-home .terminal-head { display:flex;justify-content:space-between;align-items:center;padding:9px 14px;border-bottom:1px solid #2b4351;font:500 10px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.14em;color:#82a7b9;text-transform:uppercase }
 .niuu-home .terminal-head button { border:1px solid #3a5565;border-radius:4px;background:transparent;color:#c6d8e1;padding:5px 9px;font:inherit;letter-spacing:.06em;text-transform:none }

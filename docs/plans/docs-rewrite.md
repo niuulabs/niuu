@@ -209,7 +209,7 @@ The landing page states each selling point in a line. The explanation lives here
 | How a resident improves itself and commissions work: friction, tool builds, grants, rollback, peers | `concepts/agents-and-personas.md`, with the operator detail from `docs/operator/valkyrie-self-improvement.md` |
 | The questions a person should be able to ask: what is happening, why, what came of it, when am I needed, what can it do without asking | `operations/observability.md` |
 | Session telemetry and exporting traces, metrics and logs | `operations/observability.md` |
-| OIDC, policies, scoped credentials, sandboxes, what a local install does not protect | `operations/security-and-permissions.md` |
+| OIDC, policies, scoped credentials, sandboxes, secret stores (Vault, OpenBao, Infisical), SPIFFE and SPIRE, what a local install does not protect | `operations/security-and-permissions.md` |
 | Human teams: roles, what belongs to the organization, shared Memory, session participants and their limits | `concepts/teams-and-organizations.md` |
 | Tenancy: who owns what, per-organization model quotas, and what is not one mechanism | `concepts/teams-and-organizations.md`, `operations/security-and-permissions.md` |
 | Which trigger types residents react to | `concepts/agents-and-personas.md` |
@@ -266,7 +266,7 @@ detail. Write the left column as fact and the right column as direction.
 | Human teams | OIDC login with admin, developer and viewer roles. Residents belong to an organization, not a person. Memory instances can be visible to an organization. | Session invites exist in the API with viewer and approver roles, but the app has no screen for them. On Kubernetes they need `room_role_source: remote`, which cannot be combined with `enforce_ownership`, and has not been run on a live cluster. Shared projects, workflows and Workspaces, an Organization page, and provider-sourced membership are design phases 1 and 2. |
 | Multi-tenancy | Sessions, Workspaces, Memory and credentials carry a tenant. Anything naming no organization belongs to the platform organization. Observatory filters per caller, and shared Memory gives other organizations only their own mounts. Model quotas per tenant (`tenant_quotas`). | One organization per user. Invites and several organizations per user are design phases 3 and 4. Whether the event bus is tenant-scoped is unverified, so unrelated customers on one installation stay direction. |
 | Scaling | Local process, Docker, VM, Kubernetes and OpenShell session backends. A pod per Kubernetes session. HPA and PDB templates in the service charts, off by default in most. NATS, RabbitMQ and Redis Streams transports. `niuu join` for machines. | Pairing is CLI-only, and heartbeats need your own supervisor. No throughput or session-count figures exist, so none are claimed. |
-| Security | OIDC through Envoy, IDP-agnostic. Cedar policies. Short-lived workload credentials, scoped for builds, launches and Forge session calls. Ed25519 signing for joined machines. OpenShell egress policy. Learned tools run isolated, with network from their declared reach. | NetworkPolicy templates are off by default, and a plain Kubernetes session has no per-session egress control. Forge session credentials reach only local-process sessions. `host_auth: none` is the local default. No certifications are claimed. |
+| Security | OIDC through Envoy, IDP-agnostic. Cedar policies. Short-lived workload credentials, scoped for builds, launches and Forge session calls. Ed25519 signing for joined machines. OpenShell egress policy. Vault or OpenBao credential stores with session-scoped injection. SPIFFE identities from SPIRE for OpenShell sandbox grants, and SPIFFE mesh identity at the model gateway. Learned tools run isolated, with network from their declared reach. | NetworkPolicy templates are off by default, and a plain Kubernetes session has no per-session egress control. Forge session credentials reach only local-process sessions. `host_auth: none` is the local default. No certifications are claimed. |
 
 The organizations design is `docs/design/organizations/README.md`. It sits
 uncommitted in the main checkout and is not on `dev`, so link it only once it lands.
@@ -275,9 +275,11 @@ uncommitted in the main checkout and is not on `dev`, so link it only once it la
 
 1. **Which install does the landing page lead with?** `releases/latest/download/install.sh`
    is a 404 today because the latest stable release, v1.3.0, predates it. The
-   v1.3.0 macOS binary cannot start its database. Source is the only path that
-   works for a new reader today, so the page leads with it. A stable release
-   would carry `install.sh` and allow one line instead.
+   v1.3.0 macOS binary cannot start its database, and `niuu:latest` dates from
+   July. The page leads with Docker through the script on `dev` and
+   `NIUU_IMAGE_TAG=dev`, then source. A stable release would carry `install.sh`
+   and allow one line instead. `get-started/install.md` still shows the 404
+   command, and the `dev` path has not been run end to end.
 2. **Workspaces is on.** `realms` is enabled in `config.live.json`, and the chart
    no longer hides it, reversing the hide from `f02339e94`. A fresh local install
    now creates a Blank workspace end to end and starts its resident. Templates

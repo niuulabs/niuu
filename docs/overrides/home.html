@@ -188,7 +188,6 @@
             <div><dt>{{ group.name }}</dt><dd>{{ group.entries }}</dd></div>
             {% endfor %}
           </dl>
-          <p class="aside">{{ built.note }} <a class="more" href="{{ built.link.doc | url }}">{{ built.link.label }} →</a></p>
         </div>
       </div>
     </section>
@@ -239,22 +238,31 @@
         <div class="label">{{ start.label }}</div>
         <h2>{{ start.title }}</h2>
         <p class="lede">{{ start.body }}</p>
-        <p class="aside">{{ start.needs }}</p>
         <div class="hero-cta">
           {% for cta in start.actions %}
           <a class="btn {{ cta.style }}" href="{{ cta.doc | url }}">{{ cta.label }} <span>{{ cta.arrow }}</span></a>
           {% endfor %}
         </div>
       </div>
-      <div>
-        <div class="terminal">
-          <div class="terminal-head">
-            <span>{{ start.code_title }}</span>
-            <button type="button" data-copy="#start-code" data-done="Copied">Copy</button>
-          </div>
-          <pre id="start-code"><code>{{ start.code }}</code></pre>
+      <div data-views>
+        <div class="view-tabs" role="tablist" aria-label="Ways to install">
+          {% for option in start.options %}
+          <button type="button" role="tab" id="start-tab-{{ option.id }}" aria-controls="start-{{ option.id }}" aria-selected="{{ 'true' if loop.first else 'false' }}"{% if not loop.first %} tabindex="-1"{% endif %}>{{ option.name }}</button>
+          {% endfor %}
         </div>
-        <p class="aside">{{ start.code_note }}</p>
+        {% for option in start.options %}
+        <div class="view" role="tabpanel" id="start-{{ option.id }}" aria-labelledby="start-tab-{{ option.id }}"{% if not loop.first %} hidden{% endif %}>
+          <p class="aside">{{ option.needs }}</p>
+          <div class="terminal">
+            <div class="terminal-head">
+              <span>{{ option.title }}</span>
+              <button type="button" data-copy="#start-code-{{ option.id }}" data-done="Copied">Copy</button>
+            </div>
+            <pre id="start-code-{{ option.id }}"><code>{{ option.code }}</code></pre>
+          </div>
+          <p class="aside">{{ option.note }}</p>
+        </div>
+        {% endfor %}
       </div>
     </section>
 

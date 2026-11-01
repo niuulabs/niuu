@@ -22,7 +22,7 @@ The page states selling points in a line each. Detail goes to the docs;
 | 4 | The NIUU environment | Six parts of one system. | One drawing of how the parts fit, then what NIUU builds on. |
 | 5 | Use cases | Not just for code. | The range of work, ending on Add your own. |
 | 6 | For teams | From one person to an organization. | Teams, multi-tenancy, scaling and security in one place, for someone evaluating NIUU for a company, with what is direction marked. |
-| 7 | Get started | Try it on your own machine. | One clear path for developers. |
+| 7 | Get started | Try it on your own machine. | Docker first, from source second, in tabs. |
 | 8 | Closing | None | Where to go next, in large links: the four docs areas and GitHub. |
 
 ### Gallery chapters
@@ -91,10 +91,11 @@ along.
 | Workspace with charter, trust, budget and log | **On by default** | `plugin-realms`, `rest_realms.py`. A fresh local install creates a Blank workspace and starts its resident. Templates with standing jobs need the event bus, so they stop at the jobs step locally. |
 | Session telemetry | **On by default** | The Telemetry tab is now a default session tab. Spans are stored by Forge. |
 | OpenTelemetry export | **Off until configured** | `observability.enabled` needs a collector's endpoints, so it cannot default on. The page says "export to", not that it is on. |
-| Security | Ships, with limits | OIDC, Cedar policies, scoped workload tokens, OpenShell egress policy and isolated learned tools. NetworkPolicy templates are off by default, and scoped credentials cover named entry points only. A local install has no login, and the page says so. |
+| Security | Ships, with limits | OIDC, Cedar policies, scoped workload tokens, OpenShell egress policy and isolated learned tools. Vault or OpenBao as the credential store with session-scoped injection (`openbao_credential_store.py`, `openbao_secret_injection.py`, `charts/niuu/values-openbao.yaml`), and SPIFFE JWT-SVIDs from SPIRE for OpenShell sandbox grants (`openshell-runtime.md`). OpenBao is what runs on ymir; plain Vault rests on the API being compatible. NetworkPolicy templates are off by default, and scoped credentials cover named entry points only. A local install has no login, and the page says so. |
 | Multi-tenancy | Ships, with limits | Sessions, Realms, Memory and credentials carry a tenant (`src/niuu/domain/tenancy.py`, migration 000090, `tenant_quotas` in `src/bifrost/config.py`). One organization per user. Isolation is not one single mechanism across all stores. |
 | Unrelated customers on one installation | **Direction** | Whether the event bus is tenant-scoped is unverified. The page lists it as direction. |
 | Team basics: login, roles, organization-owned residents and Memory | Ships | `src/identity/`, `charts/volundr/values.yaml` `roleMapping`, `resident_runtimes` tenant, Memory `visibility = 'tenant'`. |
+| Docker install | Ships, not run end to end here | `scripts/install.sh`, docker mode. The published release has no `install.sh`, and `niuu:latest` dates from July, so the page uses the script on `dev` with `NIUU_IMAGE_TAG=dev`. Script and images checked as public, amd64 and arm64. Docker mode has no login and binds `0.0.0.0` by default, and the page says so. |
 | Inviting a colleague into a session | **Direction on the page** | The API ships (`rest_session_participants.py`, viewer and approver), with no app screen. Kubernetes needs `room_role_source: remote`, unproven on a live cluster and incompatible with `enforce_ownership`, which ymir sets. |
 | Shared projects, workflows and Workspaces; provider-sourced members | **Direction** | Organizations design phases 1 and 2. Everything a person makes is private to them today, apart from Memory marked for the organization. |
 | Scaling | Ships | Session backends in `src/volundr/adapters/outbound/`, HPA and PDB templates in the charts, `docs/operator/joining-machines.md`. The page says services "can autoscale", because the values default off. No numbers are claimed. |
