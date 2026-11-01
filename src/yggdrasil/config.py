@@ -29,7 +29,7 @@ class YggdrasilSettings(BaseSettings):
         description="Seconds between client disconnect checks for idle SSE streams.",
     )
     max_sse_clients: int = Field(
-        default=100,
+        default=10,
         gt=0,
         description="Maximum concurrent realm summary SSE clients.",
     )

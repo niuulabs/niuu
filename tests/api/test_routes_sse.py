@@ -137,8 +137,12 @@ async def test_stream_delivers_a_poll_between_connection_and_first_read_once() -
 
 def test_poll_interval_uses_yggdrasil_environment_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("YGGDRASIL_POLL_INTERVAL", raising=False)
+    monkeypatch.delenv("YGGDRASIL_MAX_SSE_CLIENTS", raising=False)
     assert YggdrasilSettings().poll_interval == 15.0
     assert YggdrasilSettings().stream_disconnect_check_interval == 1.0
+    assert YggdrasilSettings().max_sse_clients == 10
 
     monkeypatch.setenv("YGGDRASIL_POLL_INTERVAL", "2.5")
+    monkeypatch.setenv("YGGDRASIL_MAX_SSE_CLIENTS", "2")
     assert YggdrasilSettings().poll_interval == 2.5
+    assert YggdrasilSettings().max_sse_clients == 2

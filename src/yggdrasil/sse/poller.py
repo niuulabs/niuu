@@ -45,7 +45,7 @@ class RealmPoller:
             self._summaries[summary.realm_id] = summary
             if previous == summary:
                 continue
-            self._connection_manager.broadcast(summary)
+            self._connection_manager.broadcast(summary.realm_id, summary)
 
     def start(self) -> None:
         """Start the configured recurring polling task."""

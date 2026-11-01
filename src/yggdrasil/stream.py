@@ -25,7 +25,7 @@ async def stream_realm_summary(
     realm_id: str,
     connection_manager: ConnectionManager,
     initial_summary: RealmSummary,
-    queue: asyncio.Queue[RealmSummary],
+    queue: asyncio.Queue[RealmSummary | None],
     disconnect_check_interval: float,
 ) -> AsyncGenerator[str, None]:
     """Yield an initial summary followed by changed summaries until disconnect."""
@@ -37,6 +37,8 @@ async def stream_realm_summary(
                 summary = await asyncio.wait_for(queue.get(), disconnect_check_interval)
             except TimeoutError:
                 continue
+            if summary is None:
+                return
             yield format_sse(summary)
     finally:
         connection_manager.disconnect(realm_id, queue)
