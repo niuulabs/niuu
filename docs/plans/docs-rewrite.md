@@ -93,7 +93,7 @@ Verdicts: **Keep** (light pass for names and voice), **Rewrite**, **Merge**,
 
 | Page | Words | Verdict | Why |
 |---|---:|---|---|
-| `index.md` | - | Rewritten | Landing page in this worktree, fifth pass: one story in five steps, each with its own composition. |
+| `index.md` | - | Rewritten | Landing page in this worktree, sixth pass: one story, with one dominant screen per capability. |
 | `overview.md` | 504 | Merge | Into `get-started/introduction.md`, done. The landing page now does its selling. Redirect. |
 | `get-started/introduction.md` | 475 | Rewritten | Sample page. |
 | `get-started/install.md` | 967 | Rewrite | Lead with the path that works today. Remove the `v1.4.0` example, which does not exist. Depends on decision 1. |

@@ -62,12 +62,12 @@ function initSteps(home) {
   const mark = (id) => {
     const current = links.findIndex((link) => link.hash === `#${id}`);
     links.forEach((link, index) => {
-      link.classList.toggle("passed", index < current);
       if (index === current) link.setAttribute("aria-current", "step");
       else link.removeAttribute("aria-current");
     });
-    nav.style.setProperty("--progress", `${(current / links.length) * 100}%`);
-    nav.scrollLeft = links[current].offsetLeft - links[0].offsetLeft;
+    const edge = links[current];
+    nav.style.setProperty("--progress", `${edge.offsetLeft + edge.offsetWidth}px`);
+    nav.scrollLeft = edge.offsetLeft - links[0].offsetLeft;
   };
   const observer = new IntersectionObserver(
     (entries) => {

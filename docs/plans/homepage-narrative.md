@@ -1,11 +1,12 @@
 # Homepage narrative
 
-Status: fifth pass, implemented in this worktree as an uncommitted proposal, 2026-11-01.
-The third pass is live on `dev`.
+Status: sixth pass, implemented in this worktree as an uncommitted proposal, 2026-11-01.
+The fifth pass is live on `dev`.
 
-The fourth pass found the story. This pass makes it feel like a product rather than
-documentation: the narrative is unchanged, and each step now has its own composition,
-sized to how much it has to show, so the page grows as you scroll.
+The fifth pass gave each step its own layout, but too many screens competed for
+attention. This pass gives every capability one dominant screen, keeps the others as
+thumbnails, lifts the ground a shade as the story grows, and makes the end of the page
+the point where NIUU stops looking like an agent tool.
 
 The page states selling points in a line each. Detail goes to the docs;
 `docs-rewrite.md` lists where.
@@ -15,49 +16,73 @@ The page states selling points in a line each. Detail goes to the docs;
 | # | Section | Heading | Job |
 |---|---|---|---|
 | - | Hero | A place where intelligent systems do real work. | What NIUU is. Headline and supporting copy unchanged. |
-| 1 | Gallery | One agent is a starting point. Not the limit. | The centre of the page: five steps, each with its own composition. |
+| 1 | Gallery | One agent is a starting point. Not the limit. | The centre of the page: Agent, Workflows, Collaboration, Continuity, Scale, Environment. |
 | 2 | What NIUU builds on | We extend the best tools. We don't rebuild them. | Harnesses, models, connections and runtimes. |
 | 3 | Use cases | Not just for code. | The range of work, ending on Add your own. |
 | 4 | Get started | Try it on your own machine. | Docker first, from source second, in tabs. |
 | 5 | Closing | None | Where to go next, in large links: the four docs areas and GitHub. |
 
-### Gallery steps
+### Gallery
 
-A sticky rail names the steps and fills as you read. Nothing important sits behind a
-tab any more: every screen is on the page, and clicking one enlarges it. Phones get
-focused crops from `images/home/gallery/*-phone.webp`.
+A quiet bar names where you are, with a thin line filling as you read. It replaced a
+stepper with dots, which read as a wizard. Each capability has one dominant screen.
+Thumbnails swap it, and clicking a screen enlarges it. Phones get focused crops from
+`images/home/gallery/*-phone.webp`.
 
-| Step | Message | Composition |
-|---|---|---|
-| One agent | This is the session you know. | Modest: the session runs off the right edge, with Forge as a small tile under the text. |
-| A process | Work follows a path. | The first full-width moment: a real graph with a run moving through it, then gates and the board as smaller tiles. |
-| A team | Agents delegate and review each other. | The room runs off the left edge, with its four handoffs read beside it, then the coordinator and a decision. |
-| Continuity | What is learned stays. | A mosaic of Memory, evidence, the inbox, a resident and Workspaces, then how a resident commissions work. |
-| An environment | It all fits together. | The largest heading and the drawing of the six parts across organizations and hosts, then four screens, what is in place today and what is planned. |
+| Part | Dominant screen | Thumbnails | Composition |
+|---|---|---|---|
+| Agent | Session | Running now | Text left, screen off the right edge. |
+| Workflows | Run Flow graph with a run moving through it | Gates, Tickets, Decision | Full width on a lifted ground. |
+| Collaboration | Room | Coordinator | Screen off the left edge, handoffs beside it. |
+| Continuity | Memory map | Evidence, Resident, Inbox, Workspaces, Tool builder | Large screen with a column of thumbnails, then how a resident commissions work. |
+| Scale | Your hosts | Add a host | Smaller heading, screen off the right edge. |
+| Environment | The six-part drawing, then the Observatory live map | Trace | The largest heading, the lightest ground and the brand line returning. |
 
-The step order follows the fourth-pass brief, which puts workflows before multi-agent
-collaboration. Jozef's earlier order put multi-agent first.
+The order follows the fourth-pass brief, which puts workflows before multi-agent
+collaboration. Live map now leads Trace, reversing Jozef's earlier flip, because this
+brief asks for a genuine Observatory view as the moment the scale lands.
 
 ### The graph
 
 `partials/niuu-graph-flow.html` draws over the real builder screenshot of Run Flow +
 Security + Memory Curation, a bundled workflow. Its paths and boxes were measured
-from the builder, so the points follow the real edges. The timing shows one run:
-review and security in parallel, a failed security check sent back along the real
-dashed edge, then both passing and converging, which `joinMode: all` on Capture
-post-mortem requires. It is an illustration of how a run moves, and the caption says
-so. It stops with `prefers-reduced-motion`, pauses off-screen, and is hidden on
-phones, which get a static crop. If the workflow or its layout changes, regenerate the
-screenshot and the partial together.
+from the builder, so the points follow the real edges. Each stage shows a state as
+the run passes: Running, Passed, Failed or Waiting. The timing shows one run: review
+and security in parallel, a failed security check sent back along the real dashed
+edge, then both passing and converging, which `joinMode: all` on Capture post-mortem
+requires. It is an illustration of how a run moves.
+Reduced-motion users get one still moment with the same states. It pauses off-screen
+and is hidden on phones, which get a static crop. If the workflow or its layout changes,
+regenerate the screenshot and the partial together.
 
 ### The environment drawing
 
 Every box ships. Organizations are tenants on one installation, each seeing what it
 owns (`src/niuu/domain/tenancy.py`). Forge is `system` and scopes by caller, Observatory
 filters per caller, and shared Memory gives an organization its own mounts. Hosts are
-registered in Platform. What is planned stays out of the drawing and is listed below it
-as "Planned, not shipped". It replaces the earlier six-part drawing and keeps all six
-product names and their links.
+registered in Platform, and models are limited per organization (`tenant_quotas`).
+What is planned stays out of the drawing. Jozef removed the planned line and the local
+install note from the page, so this table is the record of what is direction. The
+drawing keeps all six product names and their links.
+
+### Taking full-page captures
+
+Keep captures under 16,384px tall, Chrome's limit. A 1.5x capture of this page went
+past it and wrapped back to the top, which looked like the hero repeating at the
+bottom. The page itself has one hero. Capture at 1x, or in sections.
+
+## What changed from the fifth pass
+
+| Fifth pass | Decision | Why |
+|---|---|---|
+| Grids of tiles | One dominant screen, with thumbnails | Too many screens competed for attention. |
+| Stepper with dots | A quiet bar with a filling line | It read as a wizard to complete. |
+| One environment step | Scale, then Environment | The turn from one machine to a system needs its own beat. |
+| Motion only on the graph | Stage states as well: Running, Passed, Failed, Waiting | Execution states are what make it look like a run. |
+| Two organizations and hosts | Three organizations, hosts and models | Shows teams, tenants, models and machines together. |
+| Secondary screen lists under Observatory | Observatory live map leads | A real view makes the scale land better than a drawing alone. |
+| One dark ground | The ground lifts a shade as the story grows, and dominant screens get a matte | Dark screens on dark ground lost their edges. |
+| The tool build as a large screen | A thumbnail under Continuity | Less to read past. The four steps carry the story. |
 
 ## What changed from the fourth pass
 
@@ -163,13 +188,16 @@ along.
 
 ## About the screens
 
+The page carries no notes about sample data. Jozef asked for them to go, so this
+section is the record of how each screen was made.
+
 Every screen is the real interface. None is a mockup or an edited picture of one.
 
 - **From a fresh install of current `dev`:** Workflow, Tool builder and the
   Memory page. That page was written from these docs.
 - **Real component, sample conversation:** Room, Session and the Coordinator view
   are the product's `SessionChat` component with a written conversation, because
-  no live agent could run here. The captions say so.
+  no live agent could run here.
 - **Real page, sample hosts:** Platform and its register dialog, with sample hosts
   served at capture time, because the demo build has no shared API.
 - **Real board, sample tickets:** Board, Gate and Coordinator are the real
@@ -179,7 +207,7 @@ Every screen is the real interface. None is a mockup or an edited picture of one
   with spans posted through Forge's span API.
 - **Real interface, sample data:** Residents, Workspaces, the Memory map, Forge
   overview and Observatory come from the demo build, because a fresh install has
-  no residents. The gallery introduction says so.
+  no residents.
 - **Changed at capture time:** names in the sample data were swapped for neutral
   ones (cluster names, the sample user, internal service names, the word
   "steward"), and the clock was set so timestamps read naturally. Nothing else
