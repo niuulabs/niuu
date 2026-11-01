@@ -52,6 +52,21 @@ describe('ConnectionsPanel', () => {
     expect(log.calls).toContain('setRealmProject:host-jozef->project-new');
   });
 
+  it('cannot create the project a second time once the move is done', async () => {
+    const { user, log } = await open();
+    const card = screen.getByTestId('connection-project');
+    await user.selectOptions(within(card).getByRole('combobox'), 'new');
+    await user.type(screen.getByRole('textbox', { name: 'New project name' }), 'Home lab');
+    await user.click(within(card).getByRole('button', { name: 'Move workspace' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('textbox', { name: 'New project name' })).not.toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(within(card).getByRole('button', { name: 'Move workspace' })).toBeDisabled(),
+    );
+    expect(log.calls.filter((call) => call.startsWith('createProject'))).toHaveLength(1);
+  });
+
   it('opens the tracker dialog from the board tab when none is connected', async () => {
     const user = userEvent.setup();
     renderRealms('/realms/host-jozef?tab=board');

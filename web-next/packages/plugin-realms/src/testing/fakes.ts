@@ -88,7 +88,7 @@ export function fakeRealmService(log: CallLog, seed: RealmSummary[] = []): IReal
     },
     async listRealms() {
       log.calls.push('listRealms');
-      return realms;
+      return [...realms];
     },
     async getRealm(slug) {
       const realm = realms.find((entry) => entry.slug === slug);

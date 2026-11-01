@@ -37,7 +37,12 @@ function ProjectCard({ realm }: { realm: RealmSummary }) {
             type="button"
             className={BUTTON}
             disabled={choice.projectId === current || move.isPending}
-            onClick={() => move.mutate(choice)}
+            onClick={() =>
+              move.mutate(choice, {
+                onSuccess: (moved) =>
+                  setChoice({ projectId: moved.project_id ?? '', newProjectName: '' }),
+              })
+            }
           >
             {move.isPending ? 'Moving…' : 'Move workspace'}
           </button>
