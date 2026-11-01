@@ -52,6 +52,7 @@ home:
       - Collaborative
       - Persistent
       - Observable
+      - Scalable
       - Self-hosted
     tagline: Continuity / not just a session
   idea:
@@ -230,9 +231,10 @@ home:
     label: Built on what you have
     title: We extend the best tools. We don't rebuild them.
     body: Keep your agents, models, tracker and infrastructure. NIUU builds on them. Open source and self-hosted.
+    body_more: Start on one machine. Grow to many clusters, run as one environment.
     groups:
       - name: Agent harnesses
-        entries: Claude Code, OpenAI Codex, OpenCode, Pi, xAI Grok Build, Meta Muse Code, DeepSeek Harness
+        entries: Claude Code, OpenAI Codex, OpenCode, Pi, OpenClaw, Hermes, NemoClaw, xAI Grok Build, Meta Muse Code, DeepSeek Harness
       - name: Models
         entries: Anthropic, OpenAI, DeepSeek, xAI, Meta, Ollama and OpenAI-compatible endpoints
       - name: Ticketing and code
@@ -244,7 +246,7 @@ home:
       - name: Observability
         entries: Any OpenTelemetry backend, such as Tempo, Jaeger, Grafana or Honeycomb
       - name: Runs on
-        entries: Local processes, one Docker host, OpenShell sandboxes, Kubernetes
+        entries: Local processes, Docker, OpenShell, VMs, bare metal, DGX Spark, Kubernetes
     note: Not every combination has been tested.
     link:
       label: What has been verified

@@ -184,6 +184,7 @@
       <div class="label">{{ infrastructure.label }}</div>
       <h2>{{ infrastructure.title }}</h2>
       <p class="lede">{{ infrastructure.body }}</p>
+      <p class="lede quiet">{{ infrastructure.body_more }}</p>
       <dl class="support">
         {% for group in infrastructure.groups %}
         <div><dt>{{ group.name }}</dt><dd>{{ group.entries }}</dd></div>

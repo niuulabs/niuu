@@ -204,6 +204,8 @@ The landing page states each selling point in a line. The explanation lives here
 | Tenancy: what is scoped per tenant, and what is not one mechanism | `operations/security-and-permissions.md` |
 | Which trigger types residents react to | `concepts/agents-and-personas.md` |
 | What each integration does, and building on existing tools rather than replacing them | `operations/integrations-and-mcp.md` |
+| Supported harnesses, including OpenClaw, Hermes and NemoClaw, and where each one runs | `concepts/agents-and-personas.md` |
+| Scale: joining machines, many clusters as one environment, VMs, bare metal and DGX Spark | `concepts/platform-model.md`, `operations/kubernetes-deployment.md` |
 | How a Workspace is set up, and local limits | `concepts/sessions-and-workspaces.md` |
 | The operating-system direction | `concepts/operating-system.md` |
 
