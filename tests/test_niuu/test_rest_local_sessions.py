@@ -11,6 +11,11 @@ from httpx import Response
 from tests.test_niuu.test_rest_volundr import _client, _headers, _instance
 
 
+_LOCAL_SESSION_ID = "543dc339-d1b9-4267-9b19-b33190d380e6"
+_REMOTE_SESSION_ID = "a6d44070-a0d9-42d0-a7e4-551c3ebd34cf"
+_UNKNOWN_SESSION_ID = "00000000-0000-4000-8000-000000000000"
+
+
 def local(**kwargs):
     return _instance(
         "local", base_url="embedded://forge", config={"transport": "embedded"}, **kwargs
@@ -109,7 +114,9 @@ def test_malformed_local_payload_fails(payload):
         ],
     ],
 )
-@pytest.mark.parametrize("path", ["/sessions", "/sessions/stream", "/sessions/own"])
+@pytest.mark.parametrize(
+    "path", ["/sessions", "/sessions/stream", f"/sessions/{_LOCAL_SESSION_ID}"]
+)
 @respx.mock
 def test_missing_hidden_disabled_or_ambiguous_local_never_uses_remote(instances, path):
     response = _client(instances, embedded_forge_app=FastAPI()).get(
@@ -119,7 +126,9 @@ def test_missing_hidden_disabled_or_ambiguous_local_never_uses_remote(instances,
     assert not respx.calls
 
 
-@pytest.mark.parametrize("path", ["/sessions", "/sessions/stream", "/sessions/own"])
+@pytest.mark.parametrize(
+    "path", ["/sessions", "/sessions/stream", f"/sessions/{_LOCAL_SESSION_ID}"]
+)
 def test_conflicting_target_or_invalid_scope_rejected(path):
     client = _client([local(), remote()], embedded_forge_app=FastAPI())
     for query in ("scope=local&instance_id=remote", "scope=unknown"):
@@ -145,7 +154,9 @@ def test_matching_explicit_local_id_is_allowed_and_detail_cannot_escape_to_guild
     )
     assert response.status_code == 200 and response.json() == []
     assert response.headers["X-Forge-Session-Scope"] == "local"
-    response = client.get("/api/v1/forge/sessions/foreign?scope=local", headers=_headers())
+    response = client.get(
+        f"/api/v1/forge/sessions/{_UNKNOWN_SESSION_ID}?scope=local", headers=_headers()
+    )
     assert response.status_code == 404
     assert not respx.calls
 
@@ -310,12 +321,12 @@ def test_native_direct_hosts_do_not_duplicate_guild_rows_or_collapse_same_names(
 
 @respx.mock
 def test_explicit_legacy_registry_owner_is_unchanged():
-    selected = respx.get("http://remote.example.test/api/v1/forge/sessions/remote-owned").mock(
-        return_value=Response(200, json={"id": "remote-owned"})
-    )
+    selected = respx.get(
+        f"http://remote.example.test/api/v1/forge/sessions/{_REMOTE_SESSION_ID}"
+    ).mock(return_value=Response(200, json={"id": _REMOTE_SESSION_ID}))
     client = _client([local(), remote()], embedded_forge_app=FastAPI())
     response = client.get(
-        "/api/v1/forge/sessions/remote-owned?instance_id=remote", headers=_headers()
+        f"/api/v1/forge/sessions/{_REMOTE_SESSION_ID}?instance_id=remote", headers=_headers()
     )
     assert response.status_code == 200 and response.json()["instance_id"] == "remote"
     assert selected.call_count == 1
