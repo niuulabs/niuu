@@ -128,3 +128,48 @@ def test_an_unreadable_gateway_log_is_said_not_read_as_no_rejections():
     text = daily.render(WHEN, SINCE, [], push, None, None, [], [])
     assert "Rejections by reason in this window (gateway log): gateway log unreadable" in text
     assert "since the gateway started" in text
+
+
+def test_a_failed_commit_is_described_not_raised(monkeypatch):
+    def failing(config, text, when):
+        raise daily.subprocess.CalledProcessError(
+            1, ["git", "-C", "/w", "commit", "-q", "-m", "x"], stderr="https://u:secret@host"
+        )
+
+    monkeypatch.setattr(daily, "append_to_doc", failing)
+    said = daily.record({}, "text", WHEN)
+    assert said.startswith("NOT recorded") and "git commit exit 1" in said
+    assert "secret" not in said
+
+
+def test_the_message_goes_first_and_a_recording_failure_follows_it(monkeypatch, tmp_path):
+    config = tmp_path / "config.json"
+    config.write_text(daily.json.dumps({"state_file": str(tmp_path / "state.json")}))
+    sent = []
+    monkeypatch.setattr(daily, "gather", lambda c, s, w: ("SUMMARY", {"at": "x"}))
+    monkeypatch.setattr(daily, "send", lambda c, text, w: sent.append(text) or "delivered")
+    monkeypatch.setattr(daily, "record", lambda c, t, w: "NOT recorded (git commit exit 1)")
+
+    assert daily.main(["run", str(config)]) == 1
+
+    assert sent == [
+        "SUMMARY",
+        f"Guild summary {daily.datetime.now(daily.UTC):%Y-%m-%d}: NOT recorded (git commit exit 1)",
+    ]
+    assert daily.json.loads((tmp_path / "state.json").read_text()) == {"at": "x"}
+
+
+def test_a_failed_message_saves_nothing(monkeypatch, tmp_path):
+    config = tmp_path / "config.json"
+    config.write_text(daily.json.dumps({"state_file": str(tmp_path / "state.json")}))
+    monkeypatch.setattr(daily, "gather", lambda c, s, w: ("SUMMARY", {"at": "x"}))
+
+    def down(c, t, w):
+        raise OSError("Forge down")
+
+    monkeypatch.setattr(daily, "send", down)
+    try:
+        daily.main(["run", str(config)])
+    except OSError:
+        pass
+    assert not (tmp_path / "state.json").exists()  # the window is sent next time

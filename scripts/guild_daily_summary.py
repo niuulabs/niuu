@@ -56,6 +56,7 @@ REJECTION = re.compile(
 )
 ROLLOUT_LINE = re.compile(r"^(?P<at>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) (?P<text>.*)$")
 GATEWAY_STARTED = "Push gateway started:"
+DOC = "docs/operator/guild-daily.md"
 
 
 class SummaryError(RuntimeError):
@@ -395,13 +396,16 @@ def append_to_doc(config: dict[str, Any], text: str, when: datetime) -> str:
     tree = os.path.expanduser(config["docs_worktree"])
     branch = config["branch"]
     git = ["git", "-C", tree]
-    if _run([*git, "status", "--porcelain"]).strip():
+    changed = {line[3:] for line in _run([*git, "status", "--porcelain"]).splitlines()}
+    if changed - {DOC}:
         raise SummaryError(f"{tree} has local changes; it must be the summary's own clean worktree")
+    if changed:  # a previous run's section that was never committed: this run rewrites it
+        _run([*git, "reset", "-q", "--hard"])
     _run([*git, "fetch", "-q", "origin", branch])
     _run([*git, "checkout", "-q", "-B", "guild-daily", f"origin/{branch}"])
-    doc = Path(tree) / "docs/operator/guild-daily.md"
+    doc = Path(tree) / DOC
     doc.write_text(doc.read_text() + "\n" + text)
-    _run([*git, "add", "docs/operator/guild-daily.md"])
+    _run([*git, "add", DOC])
     _run(
         [*git, "commit", "-q", "-m", f"docs: Guild summary {when:%Y-%m-%d}\n\n{config['trailer']}"]
     )
@@ -452,14 +456,34 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(text)
         return 0
-    commit = append_to_doc(config, text, when)
-    # Saved once the section exists, so a failed message never repeats a window.
+    # The message first: a failure recording it in the repository never withholds it.
+    delivery = send(config, text, when)
+    # Saved once the coordinator has it, so a window is never sent twice or skipped.
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(state, indent=2))
-    message = f"{text}\nRecorded in docs/operator/guild-daily.md: {commit}."
-    delivery = send(config, message, when)
-    print(f"summary sent ({delivery}); doc {commit}")
-    return 0 if not commit.startswith("NOT") else 1
+    recorded = record(config, text, when)
+    if not recorded.startswith("recorded"):
+        send(config, f"Guild summary {when:%Y-%m-%d}: {recorded}", when)
+    print(f"summary sent ({delivery}); {recorded}")
+    return 0 if recorded.startswith("recorded") else 1
+
+
+def record(config: dict[str, Any], text: str, when: datetime) -> str:
+    """Append the section, and say how that went; a failure is described, never raised."""
+    try:
+        commit = append_to_doc(config, text, when)
+    except subprocess.CalledProcessError as exc:
+        # git's own output can name the remote with credentials: the step and code only.
+        step = exc.cmd[3] if isinstance(exc.cmd, list) and len(exc.cmd) > 3 else "git"
+        return (
+            f"NOT recorded in docs/operator/guild-daily.md (git {step} exit {exc.returncode}; "
+            "see guild-daily.service); the next run rewrites the section"
+        )
+    except (SummaryError, OSError) as exc:
+        return f"NOT recorded in docs/operator/guild-daily.md ({exc})"
+    if commit.startswith("NOT"):
+        return f"{commit} in docs/operator/guild-daily.md"
+    return f"recorded in docs/operator/guild-daily.md as {commit}"
 
 
 if __name__ == "__main__":
