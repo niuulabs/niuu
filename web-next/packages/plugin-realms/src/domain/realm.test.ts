@@ -59,18 +59,17 @@ describe('requiredDraftError', () => {
   };
 
   it('accepts a complete draft', () => {
-    expect(requiredDraftError(complete, true)).toBeNull();
+    expect(requiredDraftError(complete)).toBeNull();
   });
 
   it('names the first missing thing', () => {
-    expect(requiredDraftError({ ...complete, slug: '' }, true)).toMatch(/lowercase/);
-    expect(requiredDraftError({ ...complete, name: ' ' }, true)).toMatch(/name/);
-    expect(requiredDraftError({ ...complete, charter: '' }, true)).toMatch(/charter/);
-    expect(requiredDraftError({ ...complete, repo: '' }, true)).toMatch(/repository/);
-    expect(requiredDraftError({ ...complete, repo: '' }, true, false)).toBeNull();
-    expect(requiredDraftError({ ...complete, trackerBoard: '' }, true)).toMatch(/board/);
-    expect(requiredDraftError({ ...complete, trackerBoard: '' }, false)).toBeNull();
-    expect(requiredDraftError({ ...complete, profileId: '' }, true)).toMatch(/runs/);
-    expect(requiredDraftError({ ...complete, mountTarget: '' }, true)).toMatch(/memory/);
+    expect(requiredDraftError({ ...complete, slug: '' })).toMatch(/lowercase/);
+    expect(requiredDraftError({ ...complete, name: ' ' })).toMatch(/name/);
+    expect(requiredDraftError({ ...complete, charter: '' })).toMatch(/charter/);
+    expect(requiredDraftError({ ...complete, repo: '' })).toMatch(/repository/);
+    expect(requiredDraftError({ ...complete, repo: '' }, false)).toBeNull();
+    expect(requiredDraftError({ ...complete, trackerBoard: '' })).toBeNull();
+    expect(requiredDraftError({ ...complete, profileId: '' })).toMatch(/runs/);
+    expect(requiredDraftError({ ...complete, mountTarget: '' })).toMatch(/memory/);
   });
 });

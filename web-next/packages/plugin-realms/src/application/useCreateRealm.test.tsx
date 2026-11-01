@@ -239,10 +239,60 @@ describe('useCreateRealm', () => {
     expect(result.current.progress.failedStep?.id).toBe('charter');
   });
 
-  it('lists eleven steps, validate first and resident last', () => {
+  it('creates a new project and files the workspace and its tracker under it', async () => {
+    const log = createCallLog();
+    const realms = fakeRealmService(log);
+    const { result } = renderHook(() => useCreateRealm(), {
+      wrapper: wrap(services(log, { 'valkyrie.realms': realms })),
+    });
+
+    await act(async () => {
+      await result.current.run({ ...draft, projectId: 'new', newProjectName: 'Spring catalogue' });
+    });
+
+    expect(log.calls).toContain('createProject:Spring catalogue');
+    expect(log.calls).toContain('importProject:board-1:niuulabs/lexi-api@project-new');
+    expect((await realms.getRealm('lexi-api')).project_id).toBe('project-new');
+  });
+
+  it('joins an existing project without creating one', async () => {
+    const log = createCallLog();
+    const { result } = renderHook(() => useCreateRealm(), { wrapper: wrap(services(log)) });
+
+    await act(async () => {
+      await result.current.run({ ...draft, projectId: 'project-yggdrasil' });
+    });
+
+    expect(log.calls.some((call) => call.startsWith('createProject'))).toBe(false);
+    expect(log.calls).toContain('importProject:board-1:niuulabs/lexi-api@project-yggdrasil');
+  });
+
+  it('needs no tracker', async () => {
+    const log = createCallLog();
+    const { result } = renderHook(() => useCreateRealm(), { wrapper: wrap(services(log)) });
+
+    await act(async () => {
+      await result.current.run({ ...draft, trackerBoard: '' });
+    });
+
+    expect(log.calls.some((call) => call.startsWith('importProject'))).toBe(false);
+  });
+
+  it('imports a tracker with no repository when the template needs none', async () => {
+    const log = createCallLog();
+    const { result } = renderHook(() => useCreateRealm(), { wrapper: wrap(services(log)) });
+
+    await act(async () => {
+      await result.current.run({ ...draft, templateId: 'blank-resident', repo: '', branch: '' });
+    });
+
+    expect(log.calls).toContain('importProject:board-1:');
+  });
+
+  it('lists twelve steps, validate first and resident last', () => {
     expect(RECIPE_STEPS[0]?.id).toBe('validate');
     expect(RECIPE_STEPS.at(-1)?.id).toBe('resident');
-    expect(RECIPE_STEPS).toHaveLength(11);
+    expect(RECIPE_STEPS).toHaveLength(12);
   });
 
   it('writes the charter to memory before starting the resident', () => {

@@ -128,6 +128,9 @@ export interface RealmDraft {
   instanceId: string;
   model: string;
   trust: TrustPreset;
+  /** An existing project's id, `new`, or empty for none. */
+  projectId: string;
+  newProjectName: string;
 }
 
 export const EMPTY_DRAFT: RealmDraft = {
@@ -145,6 +148,8 @@ export const EMPTY_DRAFT: RealmDraft = {
   instanceId: '',
   model: '',
   trust: BALANCED_TRUST,
+  projectId: '',
+  newProjectName: '',
 };
 
 /** The realm page's projection over the objects the recipe created. */
@@ -167,18 +172,13 @@ export interface RealmView {
   runningSessions: number;
 }
 
-export function requiredDraftError(
-  draft: RealmDraft,
-  needsBoard: boolean,
-  needsRepo = true,
-): string | null {
+export function requiredDraftError(draft: RealmDraft, needsRepo = true): string | null {
   if (!isValidSlug(draft.slug)) {
     return 'Give the workspace a name made of lowercase letters, digits, dashes or underscores.';
   }
   if (!draft.name.trim()) return 'Give the workspace a name.';
   if (!draft.charter.trim()) return 'Write a charter: a few sentences about what matters.';
   if (needsRepo && !draft.repo) return 'Pick a repository.';
-  if (needsBoard && !draft.trackerBoard) return 'Pick the tracker board the resident works from.';
   if (!draft.profileId || !draft.instanceId) return 'Pick where the resident runs.';
   if (!draft.mountTarget) return 'Pick where the workspace memory is created.';
   return null;

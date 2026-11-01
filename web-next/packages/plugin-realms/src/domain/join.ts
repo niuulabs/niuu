@@ -1,4 +1,5 @@
 import type { Ravn } from '@niuulabs/plugin-ravn';
+import type { ReviewItem as WorkReviewItem, Saga } from '@niuulabs/plugin-ting';
 import type {
   RealmSummary,
   RealmTrustGrant,
@@ -8,7 +9,17 @@ import type {
 } from '@niuulabs/plugin-valkyrie';
 import { realmSlugForEnvironment } from '@niuulabs/plugin-valkyrie';
 import type { VolundrSession } from '@niuulabs/plugin-volundr';
-import { personaNameFor, residentNameFor, type RealmBinding, type RealmView } from './realm';
+import {
+  personaNameFor,
+  residentNameFor,
+  slugify,
+  type RealmBinding,
+  type RealmView,
+} from './realm';
+import { sessionsWithDescendants } from './sessionTree';
+
+/** What Work stamps on the sessions it starts for a tracker link. */
+const WORK_PROJECT_LABEL = 'work-project:';
 
 /** The realm's own resident in the Valkyrie dashboard, by environment id. */
 export function residentForRealm(
@@ -16,11 +27,12 @@ export function residentForRealm(
   slug: string,
 ): ValkyrieResident | null {
   if (!dashboard) return null;
+  // By name first: one environment can hold two residents, and each has its own workspace.
   return (
+    dashboard.valkyries.find((resident) => slugify(resident.name) === residentNameFor(slug)) ??
     dashboard.valkyries.find(
       (resident) => realmSlugForEnvironment(resident.environmentId) === slug,
     ) ??
-    dashboard.valkyries.find((resident) => resident.name === residentNameFor(slug)) ??
     null
   );
 }
@@ -49,7 +61,7 @@ export function ravnForRealm(
   // match here just because it happens to share this realm's name/persona.
   const unlinked = ravens.filter((ravn) => !ravn.realmId);
   return (
-    unlinked.find((ravn) => ravn.residentName === residentNameFor(slug)) ??
+    unlinked.find((ravn) => slugify(ravn.residentName ?? '') === residentNameFor(slug)) ??
     unlinked.find((ravn) => ravn.personaName === personaNameFor(slug)) ??
     null
   );
@@ -60,6 +72,38 @@ export function sessionsForRealm(sessions: VolundrSession[] | undefined, slug: s
   if (!sessions) return [];
   const persona = personaNameFor(slug);
   return sessions.filter((session) => session.personaName === persona);
+}
+
+/** The Work link of a tracker board, which is how a workspace reaches its tickets. */
+export function workProjectForBoard(sagas: Saga[] | undefined, board: string | undefined) {
+  if (!sagas || !board) return null;
+  return sagas.find((saga) => saga.trackerId === board) ?? null;
+}
+
+/** A workspace's sessions: its resident's, Work's for its board, and all they started. */
+export function workspaceSessions(
+  sessions: VolundrSession[] | undefined,
+  slug: string,
+  workProjectId: string | undefined,
+) {
+  const label = `${WORK_PROJECT_LABEL}${workProjectId}`;
+  const seeds = [
+    ...sessionsForRealm(sessions, slug),
+    ...(sessions ?? []).filter((session) => session.coordination?.labels?.includes(label)),
+  ];
+  return sessionsWithDescendants(
+    sessions,
+    seeds.map((session) => session.id),
+  );
+}
+
+/** What a person has to decide on a workspace's board. */
+export function waitingOnBoard(
+  reviews: WorkReviewItem[] | undefined,
+  workProjectId: string | undefined,
+): WorkReviewItem[] {
+  if (!reviews || !workProjectId) return [];
+  return reviews.filter((item) => item.state === 'waiting' && item.projectId === workProjectId);
 }
 
 const ACTIVE_SESSION_STATES = new Set(['running', 'provisioning', 'ready', 'awaiting_input']);

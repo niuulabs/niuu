@@ -11,7 +11,7 @@ import {
   type ResidentMemberDraft,
 } from '@niuulabs/plugin-ravn';
 import type { ITrackerBrowserService } from '@niuulabs/plugin-ting';
-import { useRealmTrustGrants } from '@niuulabs/plugin-valkyrie';
+import { useRealmTrustGrants, useRealms } from '@niuulabs/plugin-valkyrie';
 import {
   ConfirmRow,
   SectionCard,
@@ -46,6 +46,7 @@ import {
 } from '../domain/realm';
 import { parseSentence } from '../domain/sentence';
 import { REALM_TEMPLATES, templateById } from '../domain/templates';
+import { ProjectPicker } from './ProjectPicker';
 import { RecipeChecklist } from './RecipeChecklist';
 import { WalkthroughRail } from './WalkthroughRail';
 
@@ -73,6 +74,7 @@ interface NewRealmSearch {
   sentence?: string;
   from?: string;
   template?: string;
+  project?: string;
 }
 
 function TemplateStep({
@@ -209,6 +211,19 @@ function ConnectStep({
   return (
     <div className="niuu:flex niuu:flex-col niuu:gap-4" data-testid="wizard-step-connect">
       <SectionCard
+        title="Project"
+        description="The project this workspace serves. Workspaces in one project share its brief."
+      >
+        <ProjectPicker
+          value={draft}
+          onChange={({ projectId, newProjectName }) =>
+            onChange({ ...draft, projectId, newProjectName })
+          }
+          testId="realm-project"
+        />
+      </SectionCard>
+
+      <SectionCard
         title="Repository"
         description={
           template.needsRepo
@@ -226,7 +241,15 @@ function ConnectStep({
               <RepoSelect
                 repos={repos.data ?? []}
                 value={draft.repo}
-                onChange={(repo) => onChange({ ...draft, repo, branch: '' })}
+                onChange={(repo) =>
+                  onChange({
+                    ...draft,
+                    repo,
+                    branch:
+                      repos.data?.find((entry) => `${entry.org}/${entry.name}` === repo)
+                        ?.defaultBranch ?? '',
+                  })
+                }
                 valueMode="slug"
                 testId="realm-repo"
               />
@@ -249,7 +272,7 @@ function ConnectStep({
         title="Tracker board"
         description={
           template.needsBoard
-            ? 'Where work comes from. The resident reads the board and moves tickets as it works.'
+            ? 'Optional. Where work comes from: the resident reads the board and moves tickets as it works.'
             : 'Optional for this template.'
         }
       >
@@ -490,8 +513,8 @@ function LaunchStep({
     'branch',
     'bugBoard',
     'model',
+    'trackerBoard',
     ...(template.needsRepo ? [] : (['repo'] as const)),
-    ...(template.needsBoard ? [] : (['trackerBoard'] as const)),
   ]);
   const source = (key: keyof RealmDraft) =>
     inferred.has(key) ? (
@@ -605,6 +628,7 @@ export function NewRealmPage() {
   const parsed = useMemo(() => (sentence ? parseSentence(sentence) : null), [sentence]);
   const fromSlug = search.from?.trim() || null;
   const fromGrants = useRealmTrustGrants(fromSlug ?? '', fromSlug !== null);
+  const realms = useRealms();
   const fromPersona = useQuery({
     queryKey: ['ravn', 'personas', fromSlug ? personaNameFor(fromSlug) : ''],
     queryFn: () => personas.getPersona(personaNameFor(fromSlug as string)),
@@ -616,7 +640,12 @@ export function NewRealmPage() {
       search.template && REALM_TEMPLATES.some((t) => t.id === search.template)
         ? search.template
         : EMPTY_DRAFT.templateId;
-    const base: RealmDraft = { ...EMPTY_DRAFT, templateId, trust: templateById(templateId).trust };
+    const base: RealmDraft = {
+      ...EMPTY_DRAFT,
+      templateId,
+      trust: templateById(templateId).trust,
+      projectId: search.project ?? '',
+    };
     if (!parsed) return base;
     const trust: TrustPreset = { ...base.trust };
     for (const actionClass of parsed.askBefore)
@@ -660,6 +689,8 @@ export function NewRealmPage() {
           : current.templateId,
       charter: description,
       mountTarget: binding?.mountTarget ?? current.mountTarget,
+      projectId:
+        realms.data?.find((realm) => realm.slug === fromSlug)?.project_id ?? current.projectId,
       trust,
     }));
     setStep('connect');

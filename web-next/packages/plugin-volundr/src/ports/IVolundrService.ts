@@ -26,6 +26,7 @@ import type {
   TrackerIssue,
   ProjectRepoMapping,
   ForgeProject,
+  ForgeProjectChanges,
   SessionProjectMembership,
   VolundrIdentity,
   VolundrUser,
@@ -143,6 +144,9 @@ export interface IVolundrService {
   listUserHome(instanceId: string, path: string): Promise<UserHomeListing>;
   deleteUserHomePath(instanceId: string, path: string): Promise<void>;
   getProjects(options?: SessionReadOptions): Promise<ForgeProject[]>;
+  /** A name is enough. The host is the given instance, else the default one. */
+  createProject(name: string, options?: { instanceId?: string }): Promise<ForgeProject>;
+  updateProject(project: ForgeProject, changes: ForgeProjectChanges): Promise<ForgeProject>;
   getSessionProject(
     sessionId: string,
     options?: SessionReadOptions,

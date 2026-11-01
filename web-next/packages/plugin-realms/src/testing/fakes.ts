@@ -14,11 +14,18 @@ import type {
   Ravn,
   Trigger,
 } from '@niuulabs/plugin-ravn';
-import type { ITrackerBrowserService } from '@niuulabs/plugin-ting';
-import type {
-  IRealmGovernanceService,
-  RealmSummary,
-  RealmTrustGrant,
+import {
+  createMockTingService,
+  createMockWorkService,
+  type ITrackerBrowserService,
+  type ReviewItem as WorkReviewItem,
+} from '@niuulabs/plugin-ting';
+import {
+  createMockOdinReviewService,
+  createSeedRealms,
+  type IRealmGovernanceService,
+  type RealmSummary,
+  type RealmTrustGrant,
 } from '@niuulabs/plugin-valkyrie';
 import { createMockVolundrService, type IVolundrService } from '@niuulabs/plugin-volundr';
 
@@ -28,6 +35,48 @@ export interface CallLog {
 
 export function createCallLog(): CallLog {
   return { calls: [] };
+}
+
+export const WAITING_TICKET: WorkReviewItem = {
+  taskId: 'run-1',
+  kind: 'ticket',
+  title: 'Write the spring lines',
+  workflowName: 'Ticket Work Flow',
+  state: 'waiting',
+  gateLabel: 'Review the result',
+  updatedAt: '2026-11-01T00:00:00Z',
+  projectId: 'link-1',
+  issueId: 'issue-1',
+  identifier: 'NIU-1',
+};
+
+/** Overrides that put `slug` on a board with one ticket at a gate, and no resident asking. */
+export async function workspaceWithWaitingTicket(log: CallLog, slug: string) {
+  const realms = fakeRealmService(log, createSeedRealms());
+  await realms.createTrustGrant(slug, {
+    action_class: 'observe',
+    target: 'niuulabs/volundr',
+    level: 2,
+    limits: { tracker_board: 'board-1' },
+  });
+  return {
+    'valkyrie.realms': realms,
+    'valkyrie.reviews': createMockOdinReviewService([]),
+    ting: {
+      ...createMockTingService(),
+      getSagas: async () => [{ id: 'link-1', trackerId: 'board-1', name: 'Spring board' }],
+    },
+    'ting.work': {
+      ...createMockWorkService(),
+      reviews: async () => ({
+        items: [
+          WAITING_TICKET,
+          { ...WAITING_TICKET, taskId: 'decided', state: 'done' },
+          { ...WAITING_TICKET, taskId: 'elsewhere', projectId: 'link-2' },
+        ],
+      }),
+    },
+  };
 }
 
 export function fakeRealmService(log: CallLog, seed: RealmSummary[] = []): IRealmGovernanceService {
@@ -56,11 +105,20 @@ export function fakeRealmService(log: CallLog, seed: RealmSummary[] = []): IReal
         owner_id: null,
         instance_id: request.instance_id ?? null,
         autonomy_profile: request.autonomy_profile ?? 'balanced',
+        project_id: request.project_id ?? null,
         created_at: '2026-09-13T00:00:00Z',
         updated_at: '2026-09-13T00:00:00Z',
       };
       realms.push(realm);
       return realm;
+    },
+    async setRealmProject(slug, projectId) {
+      log.calls.push(`setRealmProject:${slug}->${projectId}`);
+      const index = realms.findIndex((entry) => entry.slug === slug);
+      const realm = realms[index];
+      if (!realm) throw new Error(`Realm not found: ${slug}`);
+      realms[index] = { ...realm, project_id: projectId };
+      return realms[index];
     },
     async deleteRealm(slug) {
       log.calls.push(`deleteRealm:${slug}`);
@@ -375,8 +433,9 @@ export function fakeTracker(log: CallLog): ITrackerBrowserService {
         },
       ];
     },
-    async importProject(boardId, repos) {
-      log.calls.push(`importProject:${boardId}:${repos.join(',')}`);
+    async importProject(boardId, repos, _baseBranch, _instanceId, options) {
+      const project = options?.forgeProjectId ? `@${options.forgeProjectId}` : '';
+      log.calls.push(`importProject:${boardId}:${repos.join(',')}${project}`);
       return { id: 'saga-1', trackerId: boardId, repos } as never;
     },
   };
@@ -392,6 +451,14 @@ export function fakeVolundr(
     ...createMockVolundrService(),
     async getSessions() {
       return [];
+    },
+    async createProject(name: string) {
+      log.calls.push(`createProject:${name}`);
+      return { id: 'project-new', name, slug: 'new', status: 'active', revision: 1 };
+    },
+    async updateProject(project: { id: string }, changes: Record<string, unknown>) {
+      log.calls.push(`updateProject:${project.id}:${Object.keys(changes).join(',')}`);
+      return { ...project, ...changes };
     },
     async getRepos() {
       return [

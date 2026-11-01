@@ -134,6 +134,7 @@ function renderDialog({
   onOpenChange = vi.fn(),
   onImported = vi.fn(),
   onOpenProject = vi.fn(),
+  forgeProjectId,
 }: {
   tracker?: ITrackerBrowserService;
   workflows?: IWorkflowService;
@@ -141,6 +142,7 @@ function renderDialog({
   onOpenChange?: (open: boolean) => void;
   onImported?: (saga: Saga) => void;
   onOpenProject?: (project: WorkSummary) => void;
+  forgeProjectId?: string;
 } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const result = render(
@@ -159,6 +161,7 @@ function renderDialog({
           onImported={onImported}
           connectedProjects={connectedProjects}
           onOpenProject={onOpenProject}
+          forgeProjectId={forgeProjectId}
         />
       </ServicesProvider>
     </QueryClientProvider>,
@@ -211,6 +214,36 @@ describe('TrackerWorkImportDialog', () => {
     );
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(screen.getByTestId('work-import-repository')).toHaveValue('');
+  });
+
+  it('joins the Forge project it was opened for', async () => {
+    const importProject = vi.fn().mockResolvedValue(importedSaga);
+    const onImported = vi.fn();
+    renderDialog({ tracker: trackerService(importProject), onImported, forgeProjectId: 'forge-1' });
+    await screen.findByText(/Linear main · 2 tickets/);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import project' }));
+
+    await waitFor(() => expect(onImported).toHaveBeenCalled());
+    expect(importProject.mock.calls[0]?.[4]).toMatchObject({ forgeProjectId: 'forge-1' });
+  });
+
+  it('imports a project with no repository', async () => {
+    const importProject = vi.fn().mockResolvedValue(importedSaga);
+    const onImported = vi.fn();
+    renderDialog({ tracker: trackerService(importProject), onImported });
+    await screen.findByText(/Linear main · 2 tickets/);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import project' }));
+
+    await waitFor(() => expect(onImported).toHaveBeenCalledWith(importedSaga));
+    expect(importProject).toHaveBeenCalledWith(
+      'project-same',
+      [],
+      '',
+      undefined,
+      expect.objectContaining({ repoRefs: [] }),
+    );
   });
 
   it('retains form state and shows an import error', async () => {

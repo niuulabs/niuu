@@ -68,6 +68,7 @@ import { estimateWorkflowNodeSize } from '../domain/workflowGeometry';
 // ---------------------------------------------------------------------------
 
 interface RawSaga {
+  project_id?: string;
   id: string;
   tracker_id: string;
   tracker_type?: string;
@@ -528,6 +529,7 @@ function toSaga(raw: RawSaga): Saga {
     }));
   return {
     id: raw.id,
+    projectId: raw.project_id || undefined,
     trackerId: raw.tracker_id,
     trackerType: raw.tracker_type ?? 'linear',
     trackerConnectionId: raw.tracker_connection_id ?? '',
@@ -1361,6 +1363,7 @@ export function buildTrackerHttpAdapter(client: ApiClient): ITrackerBrowserServi
       const raw = await client.post<RawSaga>('/tracker/import', {
         project_id: projectId,
         tracker_connection_id: options?.trackerConnectionId,
+        forge_project_id: options?.forgeProjectId,
         repos: options?.repoRefs?.map((ref) => ref.repo) ?? repos,
         base_branch: options?.repoRefs?.[0]?.branch ?? baseBranch,
         repo_refs: options?.repoRefs,
