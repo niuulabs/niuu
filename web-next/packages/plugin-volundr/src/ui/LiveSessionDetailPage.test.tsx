@@ -1449,13 +1449,13 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute('aria-selected', 'true');
     });
 
-    it('defaults to Chat, Diffs and Files without optional tabs', async () => {
+    it('defaults to Chat, Diffs, Files and Telemetry without optional tabs', async () => {
       localStorage.removeItem('niuu.forge.sessionTabs');
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(
         screen.getAllByRole('tab').map((tab) => tab.textContent?.replace(/\d+/g, '').trim()),
-      ).toEqual(['Chat', 'Diffs', 'Files']);
+      ).toEqual(['Chat', 'Diffs', 'Files', 'Telemetry']);
     });
 
     it('uses browser tab preferences and returns to Chat when the active tab is hidden', async () => {
