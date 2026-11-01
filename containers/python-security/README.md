@@ -1,4 +1,4 @@
-# CPython 3.14.9 security backports
+# CPython 3.14.10 security backports
 
 These build inputs backport one published fix without changing the Python
 interpreter, ABI, reported version, or installed application dependencies.
@@ -9,6 +9,8 @@ base version or module checksum deliberately fails the build until reviewed.
 | --- | --- | --- |
 | CVE-2025-15367 | [b234a2b](https://github.com/python/cpython/commit/b234a2b67539f787e191d2ef19a7cbdce32874e7) | `poplib.py` |
 
+CPython 3.14.10 (CVE-2026-115557) carries `poplib.py` and `tempfile.py`
+unchanged from 3.14.9, so the backport and the hashes below did not move.
 CPython 3.14.9 ships the fixes for CVE-2026-12345 (`tempfile.py`) and
 CVE-2026-87910 (`tarfile.py`, previously backported here), and 3.14.8 shipped
 CVE-2026-17084 (`stringprep.py`), CVE-2026-15806 (`urllib/request.py`),
@@ -29,7 +31,7 @@ have not adopted that behavior because it can reject previously accepted
 inputs. Niuu has no direct POP3 integration; bundled Python now enforces that
 security boundary for callers too.
 
-`build.py` verifies the upstream 3.14.9 source archive and the complete,
+`build.py` verifies the upstream 3.14.10 source archive and the complete,
 unmodified upstream patch against `manifest.json`, applies it with no fuzz,
 runs CPython's affected test suite, and exports only the patched module.
 The build tools and source tree do not enter the final images.
@@ -42,7 +44,7 @@ runs exploit regressions for the backported CVE and the ones fixed upstream.
 
 ## Scanner evidence
 
-Version-based scanners still recognize the real Python 3.14.9 version.
+Version-based scanners still recognize the real Python 3.14.10 version.
 The container scan therefore resolves an immutable image digest and runs the
 same verifier inside that image with networking disabled and a read-only
 filesystem. A failed hash or regression check stops scanning before any fixed

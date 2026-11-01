@@ -1,10 +1,10 @@
 # Security fixes awaiting stable CPython releases; no interpreter ABI changes.
-FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm@sha256:945c2676dc2b18e0c1f16879244122c57c0ffede60006bf3df159c507a31bcae AS python-security
+FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm@sha256:516b51cb9db2ef061e465c803e50f64361b82cefd91e525b889b967b83e83527 AS python-security
 COPY containers/python-security/ /security/
 RUN apt-get update && apt-get install -y --no-install-recommends patch \
     && python /security/build.py /patched-stdlib
 
-FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
+FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
 
 # The sandbox base ships gh v2.102.0 (the latest release), built with Go 1.27.1 and
 # golang.org/x/net v0.58.0 (GO-2026-6603/6604/6611/6612). Replace it with the same
@@ -32,12 +32,12 @@ ARG OS_PACKAGES_REFRESH=
 # Refresh inherited runtime packages and the Python managed by uv.
 RUN apt-get update && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/* \
-    && UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python install 3.14.9 \
-    && PYTHON_BIN=$(UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python find 3.14.9) \
+    && UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python install 3.14.10 \
+    && PYTHON_BIN=$(UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python find 3.14.10) \
     && ln -sf "$PYTHON_BIN" /usr/local/bin/python \
     && ln -sf "$PYTHON_BIN" /usr/local/bin/python3 \
     && ln -sf "$PYTHON_BIN" /sandbox/.venv/bin/python \
-    && sed -i 's/3.14.3/3.14.9/g' /sandbox/.venv/pyvenv.cfg \
+    && sed -i 's/3.14.3/3.14.10/g' /sandbox/.venv/pyvenv.cfg \
     && UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python uninstall 3.14.3 \
     && uv pip install --python /sandbox/.venv/bin/python pip==26.2.2
 
