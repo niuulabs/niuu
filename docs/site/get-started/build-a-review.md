@@ -38,6 +38,10 @@ graph:
 `review` names the kind of decision: `plan`, `code` or `output`. Without
 `panels`, a column shows that kind's usual panels. Several panels show as tabs.
 
+A project does not need a repository. A workflow is taken to work on code, so a
+project without a repository refuses it, unless the workflow says otherwise with
+`requiresRepository: false` under `graph`. The bundled Ticket Work Flow does.
+
 ## Who answers a gate
 
 A gate waits for a person unless the workflow says otherwise. An agent, such as

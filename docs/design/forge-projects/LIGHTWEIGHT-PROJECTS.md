@@ -174,3 +174,40 @@ for the new actions there); the web UI keeps its existing assignment editor; a m
 re-parented session's saved launch brief is cleared (as in contract 1) and is not rebuilt on
 restart; the `forge-coordinator` skill in `xteo/project-lexi` can adopt `projects create` /
 `sessions attach` and the MCP defaults.
+
+---
+
+## Part 4 — Work shares this project
+
+Work (Ting) uses the same project. Forge keeps the identity and the sessions. Each Work tracker
+link keeps its own id, its board and its settings, and points at the project through `project_id`.
+
+- A project started in Forge gains a tracker through `POST /api/v1/tracker/import` with
+  `forge_project_id`. A project can hold several trackers, on different tracker services, each
+  with its own board. Their tickets run on the Forge that holds the project.
+- A tracker project belongs to one project, which is what keeps two boards on the same tracker
+  apart for now. Telling them apart by label is not built.
+- A link imported without a project stands on its own id, and that id becomes its Forge project
+  the first time a ticket starts, so existing projects need no data migration. Work calls each
+  host directly, so tickets spread across several Forges each get their own copy of the project.
+- A ticket coordinator joins as `coordinator`. A workflow session it starts joins as its `worker`.
+  A child session follows the workflow session that launched it, even on another Forge. Work
+  derives all of this from the launch, never from what a model asked for.
+- A coordinator from before this joined its project is added on its next workflow launch.
+- Repositories stay on Work's list for now, because Work allows several and Forge holds one.
+
+---
+
+## Part 5 — Workspaces are how a project is worked
+
+A project holds several Workspaces (realms), each with exactly one resident. `realms.project_id`
+points a Workspace at its Forge project; a Workspace without one stands alone.
+
+- The project owns identity, brief, repository and budget. A Workspace owns its resident, charter,
+  limits, wake conditions and memory, and optionally a tracker and board.
+- A Workspace's tracker is the `tracker_board` in the limits of its latest `observe` grant, so
+  connecting one adds a grant. The Work link joins the project through `forge_project_id`.
+- A resident that is already running, such as one on a cluster, gets a Workspace with no
+  deployment: the slug is the resident's own name, which is how the page finds it again.
+- A project with one Workspace opens straight into it. `/realms/projects/{id}` appears once there
+  is a second.
