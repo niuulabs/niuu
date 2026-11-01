@@ -3326,6 +3326,14 @@ class OpenShellGatewayPodManager(
         ):
             return self._going_sandbox_observation(runtime, profile, sandbox.name)
         if (
+            sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPED
+            and runtime.desired_state is ResidentDesiredState.RUNNING
+        ):
+            # Forge never stops a resident's sandbox, so this one stopped under
+            # it (a node drain leaves it suspended). Later passes see it ready
+            # and start its processes.
+            sandbox = await self._start_stopped_resident_sandbox(runtime, sandbox)
+        if (
             runtime.observed_state is ResidentObservedState.FAILED
             and not runtime.backend_ref
             and runtime.desired_state is ResidentDesiredState.RUNNING
@@ -3681,6 +3689,29 @@ class OpenShellGatewayPodManager(
         sandbox = await asyncio.to_thread(self._client.get_sandbox, sandbox_name)
         return sandbox is None or sandbox.phase == openshell_pb2.SANDBOX_PHASE_DELETING
 
+    async def _start_resident_sandbox(self, sandbox_name: str) -> OpenShellSandbox:
+        """Start a resident's stopped sandbox; it keeps its storage and identity."""
+        try:
+            return await asyncio.to_thread(self._client.start_sandbox, sandbox_name)
+        except grpc.RpcError as exc:
+            raise RuntimeError(
+                f"OpenShell could not start stopped resident sandbox {sandbox_name}: "
+                f"{_rpc_error_text(exc)}. The resident stays down until the gateway's "
+                "StartSandbox succeeds; fix what it reports, then Restart the resident"
+            ) from exc
+
+    async def _start_stopped_resident_sandbox(
+        self,
+        runtime: ResidentRuntime,
+        sandbox: OpenShellSandbox,
+    ) -> OpenShellSandbox:
+        """Start a stopped sandbox, unless a deploy or restart in progress owns it."""
+        lock = self._resident_process_lock(runtime)
+        if lock.locked():
+            return sandbox
+        async with lock:
+            return await self._start_resident_sandbox(sandbox.name)
+
     async def _close_resident_forwarders(self, runtime: ResidentRuntime) -> None:
         runtime_id = str(runtime.id)
         for key in [
@@ -3785,6 +3816,10 @@ class OpenShellGatewayPodManager(
             self._client.get_sandbox,
             self._resident_sandbox_name(runtime),
         )
+        if sandbox is not None and sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPED:
+            # A restart also brings back a sandbox that stopped under the resident.
+            await self._start_resident_sandbox(sandbox.name)
+            sandbox = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
         runtime_id = str(runtime.id)
         if claim is not None and sandbox is not None and not _sandbox_mounts_claim(sandbox, claim):
             # Restart retries a failed workspace migration (or runs it now): the
