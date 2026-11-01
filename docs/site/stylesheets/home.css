@@ -140,9 +140,19 @@ html:has(.niuu-home) { scroll-behavior:smooth }
 .niuu-home .kept { display:grid;grid-template-columns:repeat(2,1fr);gap:22px 24px }
 .niuu-home .kept div { border-top:1px solid #375063;padding-top:12px;color:#b5cad2;font-size:14px;line-height:1.6 }
 .niuu-home .kept strong { display:block;font-size:14px;color:#e8f3f6;font-weight:500;margin-bottom:4px }
-.niuu-home .example { display:grid;grid-template-columns:minmax(260px,1fr) minmax(0,2.4fr);gap:56px;align-items:center;margin-top:clamp(72px,8vw,110px) }
-.niuu-home .example h3 { font-size:22px;margin-bottom:10px }
-.niuu-home .example p { font-size:15px;line-height:1.75;color:#a8bbc6;margin:0 }
+.niuu-home .gallery.plain { background:none;box-shadow:none;clip-path:none }
+.niuu-home .gallery-head.evolve { margin-bottom:0;padding-bottom:clamp(72px,8vw,110px) }
+.niuu-home .gallery-head.evolve h2 { font-size:clamp(35px,3.55vw,58px);letter-spacing:-.039em;margin-top:16px }
+.niuu-home .plain .chapter { border-top:1px solid #1a2f3c }
+.niuu-home .commission { padding:clamp(88px,9vw,132px) var(--edge);border-top:1px solid #1a2f3c }
+.niuu-home .commission-lead { display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);column-gap:8%;align-items:end }
+.niuu-home .commission-lead h3 { font:300 clamp(30px,2.75vw,44px)/1.14 'Inter Display',Inter,sans-serif;letter-spacing:-.034em }
+.niuu-home .commission-lead p { font-size:15px;line-height:1.75;color:#a8bbc6;margin:0 }
+.niuu-home .commission .evolution h4 { font-size:18px;font-weight:450;letter-spacing:-.02em;margin:8px 0 6px }
+.niuu-home .commission .evolution { margin-top:56px }
+.niuu-home .commission .view { margin-top:56px }
+.niuu-home .gallery-foot { padding:0 var(--edge) clamp(96px,10vw,148px) }
+.niuu-home .gallery-foot .direction { margin-top:0 }
 .niuu-home .direction { font-size:14px;line-height:1.7;color:#8ba3b0;max-width:720px;margin:72px 0 0;padding-top:20px;border-top:1px solid #2b4351 }
 .niuu-home .chapter .direction { margin:0 }
 
@@ -174,9 +184,13 @@ html:has(.niuu-home) { scroll-behavior:smooth }
 .niuu-home .closing { position:relative;overflow:hidden;isolation:isolate;border-top:1px solid #1e3342;text-align:left }
 .niuu-home .closing .wave { top:auto;bottom:-120px;height:640px;opacity:.5 }
 .niuu-home .closing:after { content:'';position:absolute;inset:0;background:linear-gradient(90deg,#071019 0%,#071019e0 40%,#07101966 100%);z-index:-1;pointer-events:none }
-.niuu-home .closing h2 { margin-top:0 }
-.niuu-home footer nav { display:flex;gap:24px;flex-wrap:wrap }
-.niuu-home footer nav a:hover { color:var(--mist) }
+.niuu-home .closing-links { display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:32px 24px }
+.niuu-home .closing-links a { display:block;border-top:1px solid #375063;padding-top:18px;transition:border-color .2s }
+.niuu-home .closing-links a:hover { border-top-color:var(--signal) }
+.niuu-home .closing-links strong { display:block;font:300 clamp(22px,1.75vw,28px)/1.2 'Inter Display',Inter,sans-serif;letter-spacing:-.03em;color:var(--strong);white-space:nowrap }
+.niuu-home .closing-links strong span { color:var(--signal);display:inline-block;transition:transform .2s }
+.niuu-home .closing-links a:hover strong span { transform:translateX(4px) }
+.niuu-home .closing-links small { display:block;font-size:14px;line-height:1.6;color:#a8bbc6;margin-top:8px }
 /* Past the container's maximum there is no page edge to bleed into. */
 @media (min-width:1601px) {
   .niuu-home .chapter.right .shot-frame, .niuu-home .chapter.left .shot-frame { border:1px solid #2b4351;border-radius:8px }
@@ -207,7 +221,7 @@ html:has(.niuu-home) { scroll-behavior:smooth }
   .niuu-home .hero p { max-width:450px }
   .niuu-home .wave { width:165%;right:-65%;top:170px;opacity:.55 }
   .niuu-home .hero:after { background:linear-gradient(90deg,#071019 0%,#071019da 49%,#07101944 85%) }
-  .niuu-home .idea-lead, .niuu-home .evolve, .niuu-home .built, .niuu-home .example, .niuu-home .start { grid-template-columns:minmax(0,1fr);gap:32px }
+  .niuu-home .idea-lead, .niuu-home .evolve, .niuu-home .built, .niuu-home .commission-lead, .niuu-home .start { grid-template-columns:minmax(0,1fr);gap:32px }
   .niuu-home .evolution { grid-template-columns:minmax(0,1fr);gap:0;margin-top:44px }
   .niuu-home .evolution:before { left:4px;right:auto;top:8px;bottom:0;width:1px;height:auto;background:#3f6a7f }
   .niuu-home .evolution li { padding:0 0 26px 34px }
@@ -229,8 +243,6 @@ html:has(.niuu-home) { scroll-behavior:smooth }
   .niuu-home .btn { width:100% }
   .niuu-home .cases, .niuu-home .cases.pair { grid-template-columns:minmax(0,1fr) }
   .niuu-home .kept { grid-template-columns:minmax(0,1fr) }
-  .niuu-home footer { display:block }
-  .niuu-home footer nav { margin-top:12px }
 }
 @media (prefers-reduced-motion:reduce) {
   html:has(.niuu-home) { scroll-behavior:auto }

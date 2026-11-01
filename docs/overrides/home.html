@@ -27,6 +27,33 @@
 </a>
 {% endmacro %}
 
+{% macro chapter(chapter) %}
+<article class="chapter {{ chapter.layout }}" id="{{ chapter.id }}" data-views>
+  <div class="chapter-text">
+    <div class="label">{{ chapter.name }}</div>
+    <h3>{{ chapter.title }}</h3>
+    <p>{{ chapter.body }}</p>
+    <a class="more" href="{{ chapter.link.doc | url }}">{{ chapter.link.label }} →</a>
+    {% if chapter.views | length > 1 %}
+    <div class="view-tabs" role="tablist" aria-label="{{ chapter.name }} views">
+      {% for view in chapter.views %}
+      <button type="button" role="tab" id="{{ chapter.id }}-tab-{{ loop.index }}" aria-controls="{{ chapter.id }}-view-{{ loop.index }}" aria-selected="{{ 'true' if loop.first else 'false' }}"{% if not loop.first %} tabindex="-1"{% endif %}>{{ view.name }}</button>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  <div class="chapter-views">
+    {% for view in chapter.views %}
+    <figure class="view"{% if chapter.views | length > 1 %} role="tabpanel" id="{{ chapter.id }}-view-{{ loop.index }}" aria-labelledby="{{ chapter.id }}-tab-{{ loop.index }}"{% endif %}{% if not loop.first %} hidden{% endif %}>
+      {{ shot(view) }}
+      <figcaption>{{ view.caption }}</figcaption>
+    </figure>
+    {% endfor %}
+  </div>
+  {% if chapter.direction %}<p class="direction">{{ chapter.direction }}</p>{% endif %}
+</article>
+{% endmacro %}
+
 {% macro part(entry, class) %}
 <a class="part {{ class }}" href="{{ entry.doc | url }}">
   <span class="glyph">{{ icon(entry.icon, 22) }}</span>
@@ -96,30 +123,46 @@
       <nav class="chapter-nav" aria-label="Features">
         {% for chapter in gallery.chapters %}<a href="#{{ chapter.id }}">{{ chapter.name }}</a>{% endfor %}
       </nav>
-      {% for chapter in gallery.chapters %}
-      <article class="chapter {{ chapter.layout }}" id="{{ chapter.id }}" data-views>
-        <div class="chapter-text">
-          <div class="label">{{ chapter.name }}</div>
-          <h3>{{ chapter.title }}</h3>
-          <p>{{ chapter.body }}</p>
-          <a class="more" href="{{ chapter.link.doc | url }}">{{ chapter.link.label }} →</a>
-          <div class="view-tabs" role="tablist" aria-label="{{ chapter.name }} views">
-            {% for view in chapter.views %}
-            <button type="button" role="tab" id="{{ chapter.id }}-tab-{{ loop.index }}" aria-controls="{{ chapter.id }}-view-{{ loop.index }}" aria-selected="{{ 'true' if loop.first else 'false' }}"{% if not loop.first %} tabindex="-1"{% endif %}>{{ view.name }}</button>
-            {% endfor %}
-          </div>
+      {% for entry in gallery.chapters %}{{ chapter(entry) }}{% endfor %}
+    </section>
+
+    {% set evolution = home.evolution %}
+    <section class="gallery plain" id="evolution">
+      <div class="gallery-head evolve">
+        <div>
+          <div class="label">{{ evolution.label }}</div>
+          <h2>{{ evolution.title | join("<br>") }}</h2>
+          <p class="lede">{{ evolution.body }}</p>
         </div>
-        <div class="chapter-views">
-          {% for view in chapter.views %}
-          <figure class="view" role="tabpanel" id="{{ chapter.id }}-view-{{ loop.index }}" aria-labelledby="{{ chapter.id }}-tab-{{ loop.index }}"{% if not loop.first %} hidden{% endif %}>
-            {{ shot(view) }}
-            <figcaption>{{ view.caption }}</figcaption>
-          </figure>
+        <div class="kept">
+          {% for entry in evolution.kept %}<div><strong>{{ entry.title }}</strong> {{ entry.body }}</div>{% endfor %}
+        </div>
+      </div>
+      {{ chapter(evolution.resident) }}
+      {% set commission = evolution.commission %}
+      <div class="commission">
+        <div class="commission-lead">
+          <h3>{{ commission.title }}</h3>
+          <p>{{ commission.body }}</p>
+        </div>
+        <ol class="evolution">
+          {% for step in commission.steps %}
+          <li>
+            <div class="label">{{ step.name }}</div>
+            <h4>{{ step.title }}</h4>
+            <p>{{ step.body }}</p>
+          </li>
           {% endfor %}
-        </div>
-        {% if chapter.direction %}<p class="direction">{{ chapter.direction }}</p>{% endif %}
-      </article>
-      {% endfor %}
+        </ol>
+        <figure class="view">
+          {{ shot(commission) }}
+          <figcaption>{{ commission.caption }}</figcaption>
+        </figure>
+      </div>
+      {{ chapter(evolution.workspaces) }}
+      <div class="gallery-foot">
+        <p class="direction">{{ evolution.direction }} <a class="more" href="{{ evolution.direction_link.doc | url }}">{{ evolution.direction_link.label }} →</a></p>
+      </div>
     </section>
 
     {% set environment = home.environment %}
@@ -154,33 +197,8 @@
       </div>
     </section>
 
-    {% set evolution = home.evolution %}
-    <section class="section" id="evolution">
-      <div class="evolve">
-        <div>
-          <div class="label">{{ evolution.label }}</div>
-          <h2>{{ evolution.title | join("<br>") }}</h2>
-          <p class="lede">{{ evolution.body }}</p>
-        </div>
-        <div class="kept">
-          {% for entry in evolution.kept %}<div><strong>{{ entry.title }}</strong> {{ entry.body }}</div>{% endfor %}
-        </div>
-      </div>
-      <div class="example">
-        <div>
-          <h3>{{ evolution.example_title }}</h3>
-          <p>{{ evolution.example }}</p>
-        </div>
-        <figure class="view">
-          {{ shot(evolution) }}
-          <figcaption>{{ evolution.caption }}</figcaption>
-        </figure>
-      </div>
-      <p class="direction">{{ evolution.direction }} <a class="more" href="{{ evolution.direction_link.doc | url }}">{{ evolution.direction_link.label }} →</a></p>
-    </section>
-
     {% set use_cases = home.use_cases %}
-    <section class="section band" id="use-cases">
+    <section class="section" id="use-cases">
       <div class="section-lead">
         <div>
           <div class="label">{{ use_cases.label }}</div>
@@ -199,7 +217,7 @@
     </section>
 
     {% set teams = home.teams %}
-    <section class="section" id="teams">
+    <section class="section band" id="teams">
       <div class="section-lead">
         <div>
           <div class="label">{{ teams.label }}</div>
@@ -220,7 +238,7 @@
     </section>
 
     {% set start = home.start %}
-    <section class="section band start" id="start">
+    <section class="section start" id="start">
       <div>
         <div class="label">{{ start.label }}</div>
         <h2>{{ start.title }}</h2>
@@ -246,20 +264,19 @@
 
     <section class="section closing">
       <img class="wave" src="{{ field }}" alt="">
-      <div class="closing-content">
-        <h2>{{ home.closing.title }}</h2>
-        <div class="hero-cta">
-          <a class="btn primary" href="{{ home.closing.action.doc | url }}">{{ home.closing.action.label }} <span>{{ home.closing.action.arrow }}</span></a>
-        </div>
-      </div>
+      <nav class="closing-links" aria-label="Documentation and source">
+        {% for entry in home.closing %}
+        <a href="{{ entry.href or (entry.doc | url) }}">
+          <strong>{{ entry.title }} <span>→</span></strong>
+          <small>{{ entry.body }}</small>
+        </a>
+        {% endfor %}
+      </nav>
     </section>
   </div>
 
   <footer>
     <span>{{ home.footer }}</span>
-    <nav aria-label="Documentation">
-      {% for entry in home.map %}<a href="{{ entry.doc | url }}">{{ entry.title }}</a>{% endfor %}
-    </nav>
   </footer>
 
   <dialog class="enlarge" aria-label="Enlarged screenshot">

@@ -17,29 +17,38 @@ The page states selling points in a line each. Detail goes to the docs;
 |---|---|---|---|
 | - | Hero | A place where intelligent systems do real work. | What NIUU is. Headline and supporting copy unchanged. |
 | 1 | The idea | Agents that work for you, not agents you have to drive. | Why autonomous work needs more than sessions. Session, workflow, team, resident. |
-| 2 | Gallery | See NIUU at work. | The visual centre. Six chapters of real screens. |
-| 3 | The NIUU environment | Six parts of one system. | One drawing of how the parts fit, then what NIUU builds on. |
-| 4 | Continuity and evolution | Work doesn't start over. It evolves. | What carries forward, one concrete example, and the direction, marked as direction. |
+| 2 | Gallery | See NIUU at work. | The visual centre. Seven chapters of real screens, in the order work grows: one agent to a whole environment. |
+| 3 | Continuity and evolution | Work doesn't start over. It evolves. | Residents, how a resident commissions what it needs, and Workspaces. The direction line closes it, marked as direction. |
+| 4 | The NIUU environment | Six parts of one system. | One drawing of how the parts fit, then what NIUU builds on. |
 | 5 | Use cases | Not just for code. | The range of work, ending on Add your own. |
 | 6 | For teams | From one person to an organization. | Teams, multi-tenancy, scaling and security in one place, for someone evaluating NIUU for a company, with what is direction marked. |
 | 7 | Get started | Try it on your own machine. | One clear path for developers. |
-| 8 | Closing | Give your agents somewhere to work. | One invitation. Docs links move to the footer. |
+| 8 | Closing | None | Where to go next, in large links: the four docs areas and GitHub. |
 
 ### Gallery chapters
 
+Jozef set the order: Forge, multi-agent, workflow, ticketing, coordinator, Memory,
+Observatory.
+
 | Chapter | Layout | Views |
 |---|---|---|
-| Residents | Text left, screen bleeds right | Console, Activity, Inbox |
-| Agents together | Screen bleeds left, text right | Room, Workflow |
-| Workspaces | Wide, with one direction line on projects below | All Workspaces, One Workspace |
+| Forge | Text left, screen bleeds right | Running now, Session |
+| Multi-agent | Screen bleeds left, text right | Room |
+| Workflows | Wide | Workflow |
+| Tickets | Text left, screen bleeds right | Board, Gate |
+| Coordinator | Screen bleeds left, text right | Coordinator |
 | Memory | Text left, screen bleeds right | Map, Page |
-| Forge | Screen bleeds left, text right | Running now, Session |
-| Observatory | Wide | Live map, Trace |
+| Observatory | Wide | Trace, Live map |
 
-Every chapter scrolls, so a visitor sees all six without clicking. Tabs show
-more of a chapter, and clicking a screen enlarges it. Phones get focused crops
-from `images/home/gallery/*-phone.webp`, because a full window is unreadable at
-that width.
+Residents and Workspaces are not in that order, so they open and close Continuity
+and evolution, using the same chapter layout. The section moved directly after the
+gallery, because the drawing of the six parts reads better once a visitor has met
+them.
+
+Every chapter scrolls, so a visitor sees them all without clicking. Tabs show more
+of a chapter, and clicking a screen enlarges it. Phones get focused crops from
+`images/home/gallery/*-phone.webp`, because a full window is unreadable at that
+width.
 
 ## What changed from the second pass
 
@@ -55,8 +64,10 @@ that width.
 | Six product cards | Replaced by one drawing | Cards listed six products; the drawing shows one system. |
 | Built on what you have, seven rows | Moved under the environment, four rows | Harnesses, models, connections and runtimes. Every named product stays. |
 | Direction section | One line in Continuity | Still marked as direction, no longer a stop in the story. |
+| One worked example of a tool build | A four-step commissioning story, with the workflow | Jozef asked for the evolution story: a resident can commission work. |
+| No ticket screens | Tickets and Coordinator chapters | Jozef asked to see a workflow applied to a ticket, with the coordinator beside it. |
 | Use cases | Kept, without cards | Asked for near the bottom. |
-| Closing headline and docs map | New headline, map moved to the footer | The old headline echoed the hero. |
+| Closing headline and docs map | Headline removed, the map became the closing section in large links, with GitHub added | The headline echoed the hero, and a reader at the end wants somewhere to go. |
 
 ## Why this is different from agent orchestration
 
@@ -93,6 +104,10 @@ along.
 | Workspaces outside code | **Limited** | Every template requires a repository. The page's example is a resident, not a Workspace. |
 | Projects that hold Workspaces | **Direction** | Built but uncommitted on `feat/projects-without-repo`, tested on mock data only, never run on real sessions. One line in the Workspaces chapter, marked as direction. See "Projects and Workspaces" in `docs-rewrite.md`. |
 | Residents with mandates, Activity and Inbox | Ships | `plugin-valkyrie`, resident runtime |
+| Resident self-improvement | Ships | `src/ravn/adapters/reflection/self_improvement.py`: in its dream a resident judges past fixes, drops one that did not help for good, and acts on recurring friction by changing a learning, retiring a belief, commissioning a tool or filing a defect ticket. |
+| A resident commissions work | Ships | `build_tool` starts a Work workflow over A2A (`src/ravn/adapters/tool_build/a2a.py`). The resident answers builder questions and reviews gates within its `build` grant (`gate_review.py`), verifies the result itself, and three failures in a row roll a tool back (`docs/operator/valkyrie-self-improvement.md`). |
+| Ticket board | Ships, with limits | PR 1209 and fixes. Columns come from `graph.board`, several workflows can sit on one board, and moving a ticket starts its workflow. Proved end to end on a cluster at dev.431 and dev.435. Only system workflows can go on a board, and PR links fail on clusters. The page does not name a tracker for the board, because Linear is the one proved live. |
+| Ticket coordinator | Ships | One long-lived session per ticket (`ticket_coordinators`, persona `ticket-coordinator`). It starts workflows, hands over between them, hears gates through its room, tells the person and closes with the ticket. Proved on the same cluster runs. |
 | Teams through workflows, with review and gates | Ships | 18 bundled workflows, `src/ting/workflows/` |
 | Per-role tools, model and budget | Ships | Workflow stages set persona, model and budget (`src/ting/workflows/*.yaml`). Personas set tools (`src/ravn/personas/developer-security-plan-reviewer.yaml`). |
 | Rooms shared by people and agents | Ships | `niuu.collaboration`, browser and Telegram. `LiveSessionDetailPage` passes participants and mesh events to `SessionChat`, the component in the Room screen. |
@@ -114,9 +129,12 @@ Every screen is the real interface. None is a mockup or an edited picture of one
 
 - **From a fresh install of current `dev`:** Workflow, Tool builder and the
   Memory page. That page was written from these docs.
-- **Real component, sample conversation:** Room and Session are the product's
-  `SessionChat` component with a written conversation, because no live agent
-  could run here. The captions say so.
+- **Real component, sample conversation:** Room, Session and the Coordinator view
+  are the product's `SessionChat` component with a written conversation, because
+  no live agent could run here. The captions say so.
+- **Real board, sample tickets:** Board, Gate and Coordinator are the real
+  `ProjectBoard` and `TicketPanel` on the demo build, with extra sample tickets so
+  every stage shows.
 - **Real tab, sample spans:** Trace is the real Telemetry tab on a real session,
   with spans posted through Forge's span API.
 - **Real interface, sample data:** Residents, Workspaces, the Memory map, Forge

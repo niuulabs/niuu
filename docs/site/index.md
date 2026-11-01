@@ -11,10 +11,10 @@ home:
   nav:
     - label: At work
       href: "#at-work"
+    - label: Residents
+      href: "#evolution"
     - label: Environment
       href: "#environment"
-    - label: Evolution
-      href: "#evolution"
     - label: Use cases
       href: "#use-cases"
     - label: For teams
@@ -69,39 +69,33 @@ home:
     note: Nothing is replaced. You can always step in and chat.
   gallery:
     title: See NIUU at work.
-    body: Six views of one working environment. Real product interfaces, shown with sample data.
+    body: From one agent to a whole environment. Real product interfaces, shown with sample data.
     chapters:
-      - id: residents
-        name: Residents
-        title: Agents that keep a responsibility.
-        body: A resident looks after an environment over time. It watches what changes, judges what matters, acts within its limits and brings you what it can't decide.
+      - id: forge
+        name: Forge
+        title: Where the work runs.
+        body: Forge runs agents on the machine that suits the job. You can see what each one is doing right now, and step into its session at any time.
         layout: right
         link:
-          label: Agents and residents
-          doc: concepts/agents-and-personas/
+          label: Sessions and workspaces
+          doc: concepts/sessions-and-workspaces/
         views:
-          - name: Console
-            image: resident
+          - name: Running now
+            image: forge
             width: 2000
-            height: 1220
-            caption: What a resident uses, what it changed and what it picked up from a peer.
-            alt: The Resident console, with a roster of residents and Sigrun's report, reading Simpler now, 2 duplicate tools retired
-          - name: Activity
-            image: activity
-            width: 2000
-            height: 1220
-            caption: What it decided, and how far each thing it watches has drifted.
-            alt: Resident activity, with recent decisions and the operational state of a cluster, an inbox and a print workshop
-          - name: Inbox
-            image: inbox
-            width: 2000
-            height: 1220
-            caption: A risky action stops here. Your decision goes on record with its reason.
-            alt: The Review inbox with a high-risk action draft and fields to approve or reject with a recorded reason
+            height: 1135
+            caption: What is running, what each agent is doing and how loaded each machine is.
+            alt: The Forge overview with active pods, tokens and cost, a list of in-flight sessions and the load on each host
+          - name: Session
+            image: session
+            width: 1600
+            height: 1120
+            caption: Inside one session. Sample conversation.
+            alt: A session chat where an agent reproduces a failing export, fixes it and points to the diff for review
       - id: together
-        name: Agents together
+        name: Multi-agent
         title: Work that moves between agents.
-        body: Agents share a room with each other and with you. They hand work on, review it and send it back when it falls short. A workflow sets the path and stops at the gates where you decide.
+        body: Agents share a room with each other and with you. They hand work on, review it and send it back when it falls short.
         layout: left
         link:
           label: Workflows and teams
@@ -113,34 +107,57 @@ home:
             height: 1774
             caption: A planner, a coder and a reviewer in one room, with you. Sample conversation.
             alt: A room where a planner splits the work, a coder builds it, a reviewer sends it back, and the planner asks a person to decide
+      - id: workflows
+        name: Workflows
+        title: A path the work has to follow.
+        body: A workflow fixes the stages, who does each one and where a person decides. Agents do the work inside it, each with its own tools and model.
+        layout: wide
+        link:
+          label: Workflows and teams
+          doc: concepts/workflows-and-teams/
+        views:
           - name: Workflow
             image: workflow
             width: 1339
             height: 470
             caption: A workflow that ships with NIUU. It stops at the diamonds for you.
             alt: Ticket Planning Flow as a row of stages for drafting, reviewing and recording a plan, with two You approve gates
-      - id: workspaces
-        name: Workspaces
-        title: A home for ongoing work.
-        body: A Workspace holds the goal, the work in motion and what is known, and a resident looks after it. Whatever needs you is in one place, across all of them.
-        layout: wide
+      - id: tickets
+        name: Tickets
+        title: Your tickets, run by workflows.
+        body: Tickets stay in your tracker and appear on a board whose columns come from your workflows. Move a ticket in and its workflow starts. It stops at the gates where you decide, and asking for changes continues the same run.
+        layout: right
         link:
-          label: Sessions and workspaces
-          doc: concepts/sessions-and-workspaces/
-        direction: "Where this is heading: a project holds several Workspaces, each with its own resident and, if it needs one, its own tracker. A repository becomes optional. That is direction, not what ships today."
+          label: Workflows and teams
+          doc: concepts/workflows-and-teams/
         views:
-          - name: All Workspaces
-            image: workspaces
+          - name: Board
+            image: board
             width: 2000
-            height: 1220
-            caption: Every Workspace, what its resident is doing, and the decisions waiting for you.
-            alt: The Workspaces home with three Workspaces, each kept by a resident, and a list of decisions that need you
-          - name: One Workspace
-            image: workspace
-            width: 2000
-            height: 1220
-            caption: One Workspace, with what its resident did and what it asked for.
-            alt: A Workspace showing what its resident did, with some actions taken alone and others waiting for approval
+            height: 1046
+            caption: Two workflows on one board, and a coordinator on every ticket in motion.
+            alt: A project board with columns from Ticket Planning Flow and Reviewed Delivery Flow, with tickets running or waiting for a person
+          - name: Gate
+            image: gate
+            width: 1884
+            height: 1272
+            caption: At a gate you approve or ask for changes, and see where each answer leads.
+            alt: A ticket at Code review, with its pull request and buttons to request changes or approve and move to Merging
+      - id: coordinator
+        name: Coordinator
+        title: One agent that stays with the ticket.
+        body: Every ticket in motion gets its own coordinator. It starts the workflows, hands over from one to the next, hears each gate and tells you what needs you. Ask it anything about the ticket until the ticket closes.
+        layout: left
+        link:
+          label: Workflows and teams
+          doc: concepts/workflows-and-teams/
+        views:
+          - name: Coordinator
+            image: coordinator
+            width: 1884
+            height: 1932
+            caption: The ticket's coordinator, right beside the board. Sample conversation.
+            alt: A ticket panel open beside the board, where a coordinator reports that a change waits at Code review and answers a question about it
       - id: memory
         name: Memory
         title: Knowledge you can check.
@@ -162,27 +179,6 @@ home:
             height: 1007
             caption: One page, with what is believed, what surrounds it and an append-only evidence list.
             alt: A Memory page with What we believe, the pages around it and an append-only Evidence list
-      - id: forge
-        name: Forge
-        title: Where the work runs.
-        body: Forge runs agents on the machine that suits the job. You can see what each one is doing right now, and step into its session at any time.
-        layout: left
-        link:
-          label: Sessions and workspaces
-          doc: concepts/sessions-and-workspaces/
-        views:
-          - name: Running now
-            image: forge
-            width: 2000
-            height: 1135
-            caption: What is running, what each agent is doing and how loaded each machine is.
-            alt: The Forge overview with active pods, tokens and cost, a list of in-flight sessions and the load on each host
-          - name: Session
-            image: session
-            width: 1600
-            height: 1120
-            caption: Inside one session. Sample conversation.
-            alt: A session chat where an agent reproduces a failing export, fixes it and points to the diff for review
       - id: observatory
         name: Observatory
         title: See the whole environment.
@@ -192,18 +188,18 @@ home:
           label: Shared discovery and topology
           doc: get-started/shared-discovery-and-topology/
         views:
-          - name: Live map
-            image: observatory
-            width: 2000
-            height: 1220
-            caption: Meshes, residents and clusters, with one resident selected.
-            alt: The Observatory live map in 3D with meshes and residents listed, one resident selected and a stream of signals
           - name: Trace
             image: trace
             width: 1800
             height: 1063
             caption: Every turn, tool call and gate on one timeline.
             alt: The Telemetry tab of a session, with a timeline of turns, tool calls, a reviewer and a human gate
+          - name: Live map
+            image: observatory
+            width: 2000
+            height: 1220
+            caption: Meshes, residents and clusters, with one resident selected.
+            alt: The Observatory live map in 3D with meshes and residents listed, one resident selected and a stream of signals
   environment:
     label: The NIUU environment
     title: Six parts of one system.
@@ -273,13 +269,78 @@ home:
         body: Memory keeps what is known, and why.
       - title: Capability
         body: A tool built once can be reused.
-    example_title: A resident finds a gap.
-    example: It commissions a team to build the tool it lacks, verifies the result and adopts it. A peer can adopt that tested tool too, and duplicates are retired.
-    image: toolbuilder
-    width: 1700
-    height: 455
-    alt: The Tool and Skill Builder workflow as a graph of framing, building, reviewing and publishing stages
-    caption: The workflow that builds a missing tool.
+    resident:
+      id: residents
+      name: Residents
+      title: Agents that keep a responsibility.
+      body: A resident is an agent you don't have to start. It looks after an environment over time, watches what changes, judges what matters, acts within its limits and brings you what it can't decide.
+      layout: right
+      link:
+        label: Agents and residents
+        doc: concepts/agents-and-personas/
+      views:
+        - name: Console
+          image: resident
+          width: 2000
+          height: 1220
+          caption: What a resident uses, what it changed and what it picked up from a peer.
+          alt: The Resident console, with a roster of residents and Sigrun's report, reading Simpler now, 2 duplicate tools retired
+        - name: Activity
+          image: activity
+          width: 2000
+          height: 1220
+          caption: What it decided, and how far each thing it watches has drifted.
+          alt: Resident activity, with recent decisions and the operational state of a cluster, an inbox and a print workshop
+        - name: Inbox
+          image: inbox
+          width: 2000
+          height: 1220
+          caption: A risky action stops here. Your decision goes on record with its reason.
+          alt: The Review inbox with a high-risk action draft and fields to approve or reject with a recorded reason
+    commission:
+      title: A resident commissions the work it needs.
+      body: Residents don't wait to be improved. When the same problem keeps coming back, a resident works out what would fix it. It can change what it believes, file a ticket, or commission a tool from a team of agents.
+      steps:
+        - name: Notices
+          title: The same wall again
+          body: It records what keeps getting in its way, and reviews that while it consolidates what it learned.
+        - name: Commissions
+          title: A team builds the fix
+          body: It starts a workflow, and agents build the tool it lacks. It answers their questions and reviews their gates, within the limits you set.
+        - name: Verifies
+          title: It tests the result
+          body: It runs the tests itself before anything is adopted. A tool that keeps failing is rolled back.
+        - name: Evolves
+          title: The next problem starts further along
+          body: A peer can adopt that tested tool, and duplicates are retired. If a fix doesn't help, it is dropped and not tried again.
+      image: toolbuilder
+      width: 1700
+      height: 455
+      alt: The Tool and Skill Builder workflow as a graph of framing, building, reviewing and publishing stages
+      caption: The workflow a resident commissions to build a missing tool.
+    workspaces:
+      id: workspaces
+      name: Workspaces
+      title: A home for ongoing work.
+      body: A Workspace holds the goal, the work in motion and what is known, and a resident looks after it. Whatever needs you is in one place, across all of them.
+      layout: wide
+      link:
+        label: Sessions and workspaces
+        doc: concepts/sessions-and-workspaces/
+      direction: "Where this is heading: a project holds several Workspaces, each with its own resident and, if it needs one, its own tracker. A repository becomes optional. That is direction, not what ships today."
+      views:
+        - name: All Workspaces
+          image: workspaces
+          width: 2000
+          height: 1220
+          caption: Every Workspace, what its resident is doing, and the decisions waiting for you.
+          alt: The Workspaces home with three Workspaces, each kept by a resident, and a list of decisions that need you
+        - name: One Workspace
+          image: workspace
+          width: 2000
+          height: 1220
+          caption: One Workspace, with what its resident did and what it asked for.
+          alt: A Workspace showing what its resident did, with some actions taken alone and others waiting for approval
     direction: Where this is heading is an operating system for agents, with goals, agents, capabilities and memory in one model. That is direction, not what ships today.
     direction_link:
       label: Read the direction
@@ -351,19 +412,20 @@ home:
         style: secondary
         doc: get-started/install/
   closing:
-    title: Give your agents somewhere to work.
-    action:
-      label: Read what NIUU is
-      arrow: →
-      doc: get-started/introduction/
-  map:
     - title: Start here
+      body: Install it and run your first session.
       doc: get-started/introduction/
     - title: Understand NIUU
+      body: How the parts fit together.
       doc: concepts/platform-model/
     - title: Operate
+      body: Deploy it and keep it running.
       doc: operations/docker-mode/
     - title: Reference
+      body: Commands, configuration and APIs.
       doc: reference/cli-niuu/
+    - title: GitHub
+      body: The source, under Apache-2.0.
+      href: https://github.com/niuulabs/niuu
   footer: NIUU · Apache-2.0
 ---

@@ -38,12 +38,14 @@ Use Niuu
     Authenticate an agent       reference/credentials-and-secrets.md (moved)
   Work
     Run a workflow              get-started/workflows-and-teams-step.md
+    Run tickets on a board      guides/tickets-and-boards.md (new)
     Build a review              get-started/build-a-review.md
   Memory
     Add and find knowledge      get-started/durable-memory.md
   Agents
     Run an agent directly       get-started/direct-and-resident-assistants.md (split)
     Keep a resident             new, from the same page
+    How a resident evolves      new, from docs/operator/valkyrie-self-improvement.md
   AI models
     Check models and providers  get-started/model-routing-step.md
   Platform and Observatory
@@ -120,8 +122,8 @@ Verdicts: **Keep** (light pass for names and voice), **Rewrite**, **Merge**,
 |---|---:|---|---|
 | `concepts/platform-model.md` | 789 | Keep | Keep the implementation-name table here, as the one place that maps them. Redraw the architecture diagram (brand). |
 | `concepts/sessions-and-workspaces.md` | 338 | Keep | Light voice pass. |
-| `concepts/agents-and-personas.md` | 474 | Rewrite | Replace "steward" wording. Add the mandate, authority and case model with one worked example. |
-| `concepts/workflows-and-teams.md` | 535 | Keep | Replace "Guild" with Platform in prose. |
+| `concepts/agents-and-personas.md` | 474 | Rewrite | Replace "steward" wording. Add the mandate, authority and case model with one worked example, and how a resident commissions work. |
+| `concepts/workflows-and-teams.md` | 535 | Keep | Replace "Guild" with Platform in prose. Add boards and the ticket coordinator: the landing page links here and no concept page mentions them yet. |
 | `concepts/memory-and-knowledge.md` | 564 | Keep | Align with the UI's words: What we believe, Evidence. |
 | `concepts/model-routing.md` | 214 | Keep | Light pass. |
 | `concepts/git-and-review-flow.md` | 218 | Keep | Move to Use Niuu as a task page. |
@@ -202,6 +204,9 @@ The landing page states each selling point in a line. The explanation lives here
 | Splitting responsibility, per-role tools, model and budget, read-only reviewers | `concepts/workflows-and-teams.md`, `concepts/agents-and-personas.md` |
 | How agents reach people and each other: gates, Review inbox, Telegram, rooms, flock, A2A | `concepts/workflows-and-teams.md`, `concepts/agents-and-personas.md` |
 | Which gates a person must answer, and `automated_approval` | `concepts/workflows-and-teams.md` |
+| Tickets on a board, workflows pinned to it, gates and asking for changes | A new `guides/tickets-and-boards.md`, under Work |
+| The coordinator: when it starts, what it does, how to talk to it, when it closes | The same page, linking to `concepts/workflows-and-teams.md` |
+| How a resident improves itself and commissions work: friction, tool builds, grants, rollback, peers | `concepts/agents-and-personas.md`, with the operator detail from `docs/operator/valkyrie-self-improvement.md` |
 | The questions a person should be able to ask: what is happening, why, what came of it, when am I needed, what can it do without asking | `operations/observability.md` |
 | Session telemetry and exporting traces, metrics and logs | `operations/observability.md` |
 | OIDC, policies, scoped credentials, sandboxes, what a local install does not protect | `operations/security-and-permissions.md` |
