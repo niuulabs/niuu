@@ -38,12 +38,14 @@ Use Niuu
     Authenticate an agent       reference/credentials-and-secrets.md (moved)
   Work
     Run a workflow              get-started/workflows-and-teams-step.md
+    Run tickets on a board      guides/tickets-and-boards.md (new)
     Build a review              get-started/build-a-review.md
   Memory
     Add and find knowledge      get-started/durable-memory.md
   Agents
     Run an agent directly       get-started/direct-and-resident-assistants.md (split)
     Keep a resident             new, from the same page
+    How a resident evolves      new, from docs/operator/valkyrie-self-improvement.md
   AI models
     Check models and providers  get-started/model-routing-step.md
   Platform and Observatory
@@ -51,6 +53,7 @@ Use Niuu
 Understand Niuu
   How it fits together          concepts/platform-model.md
   Sessions and workspaces       concepts/sessions-and-workspaces.md
+  Teams and organizations       concepts/teams-and-organizations.md (new)
   Agents, personas and residents  concepts/agents-and-personas.md
   Workflows and teams           concepts/workflows-and-teams.md
   Memory and knowledge          concepts/memory-and-knowledge.md
@@ -59,6 +62,7 @@ Understand Niuu
 Operate
   Single-host Docker            operations/docker-mode.md
   Kubernetes                    operations/kubernetes-deployment.md
+  Scale a deployment            operations/scaling.md (new)
   OpenShell sandboxes           operations/openshell-runtime.md
   Integrations and MCP          operations/integrations-and-mcp.md
   Security and permissions      operations/security-and-permissions.md
@@ -89,7 +93,7 @@ Verdicts: **Keep** (light pass for names and voice), **Rewrite**, **Merge**,
 
 | Page | Words | Verdict | Why |
 |---|---:|---|---|
-| `index.md` | - | Rewritten | Landing page in this worktree, second pass around responsibility and continuity. |
+| `index.md` | - | Rewritten | Landing page in this worktree, third pass around a feature gallery of real screens. |
 | `overview.md` | 504 | Merge | Into `get-started/introduction.md`, done. The landing page now does its selling. Redirect. |
 | `get-started/introduction.md` | 475 | Rewritten | Sample page. |
 | `get-started/install.md` | 967 | Rewrite | Lead with the path that works today. Remove the `v1.4.0` example, which does not exist. Depends on decision 1. |
@@ -118,12 +122,13 @@ Verdicts: **Keep** (light pass for names and voice), **Rewrite**, **Merge**,
 |---|---:|---|---|
 | `concepts/platform-model.md` | 789 | Keep | Keep the implementation-name table here, as the one place that maps them. Redraw the architecture diagram (brand). |
 | `concepts/sessions-and-workspaces.md` | 338 | Keep | Light voice pass. |
-| `concepts/agents-and-personas.md` | 474 | Rewrite | Replace "steward" wording. Add the mandate, authority and case model with one worked example. |
-| `concepts/workflows-and-teams.md` | 535 | Keep | Replace "Guild" with Platform in prose. |
+| `concepts/agents-and-personas.md` | 474 | Rewrite | Replace "steward" wording. Add the mandate, authority and case model with one worked example, and how a resident commissions work. |
+| `concepts/workflows-and-teams.md` | 535 | Keep | Replace "Guild" with Platform in prose. Add boards and the ticket coordinator: the landing page links here and no concept page mentions them yet. |
 | `concepts/memory-and-knowledge.md` | 564 | Keep | Align with the UI's words: What we believe, Evidence. |
 | `concepts/model-routing.md` | 214 | Keep | Light pass. |
 | `concepts/git-and-review-flow.md` | 218 | Keep | Move to Use Niuu as a task page. |
 | `concepts/operating-system.md` | 714 | Keep | Already separates today from direction. |
+| `concepts/teams-and-organizations.md` | New | Write | Roles, who owns what, what an organization can share today, and what is direction. See "Teams, tenancy, scale and security". |
 
 ### Operate
 
@@ -133,7 +138,8 @@ Verdicts: **Keep** (light pass for names and voice), **Rewrite**, **Merge**,
 | `operations/kubernetes-deployment.md` | 474 | Keep | Add the decision from the dropped step page. |
 | `operations/openshell-runtime.md` | 2354 | Keep | Replace internal names in prose. |
 | `operations/integrations-and-mcp.md` | 1292 | Keep | Review the PAT mention. |
-| `operations/security-and-permissions.md` | 3447 | Rewrite | Accurate, dense, heavy on internal names. Lead with a boundaries table. Review the PAT sections. |
+| `operations/security-and-permissions.md` | 3447 | Rewrite | Accurate, dense, heavy on internal names. Lead with a boundaries table: login, policy, workload credentials, sandboxes, network, machines. Review the PAT sections. |
+| `operations/scaling.md` | New | Write | One machine to Kubernetes, session backends, autoscaling values, event bus transports, and joining machines. Folds in `docs/operator/joining-machines.md`. No throughput numbers until they are measured. |
 | `operations/observability.md` | 1078 | Keep | Replace internal names in prose. |
 | `operations/migrations.md` | 252 | Keep | Light pass. |
 | `operations/production-checklist.md` | 247 | Keep | Light pass. |
@@ -198,24 +204,82 @@ The landing page states each selling point in a line. The explanation lives here
 | Splitting responsibility, per-role tools, model and budget, read-only reviewers | `concepts/workflows-and-teams.md`, `concepts/agents-and-personas.md` |
 | How agents reach people and each other: gates, Review inbox, Telegram, rooms, flock, A2A | `concepts/workflows-and-teams.md`, `concepts/agents-and-personas.md` |
 | Which gates a person must answer, and `automated_approval` | `concepts/workflows-and-teams.md` |
+| Tickets on a board, workflows pinned to it, gates and asking for changes | A new `guides/tickets-and-boards.md`, under Work |
+| The coordinator: when it starts, what it does, how to talk to it, when it closes | The same page, linking to `concepts/workflows-and-teams.md` |
+| How a resident improves itself and commissions work: friction, tool builds, grants, rollback, peers | `concepts/agents-and-personas.md`, with the operator detail from `docs/operator/valkyrie-self-improvement.md` |
 | The questions a person should be able to ask: what is happening, why, what came of it, when am I needed, what can it do without asking | `operations/observability.md` |
 | Session telemetry and exporting traces, metrics and logs | `operations/observability.md` |
-| OIDC, scoped credentials, sandboxes, what a local install does not protect | `operations/security-and-permissions.md` |
-| Tenancy: what is scoped per tenant, and what is not one mechanism | `operations/security-and-permissions.md` |
+| OIDC, policies, scoped credentials, sandboxes, secret stores (Vault, OpenBao, Infisical), SPIFFE and SPIRE, what a local install does not protect | `operations/security-and-permissions.md` |
+| Human teams: roles, what belongs to the organization, shared Memory, session participants and their limits | `concepts/teams-and-organizations.md` |
+| Tenancy: who owns what, per-organization model quotas, and what is not one mechanism | `concepts/teams-and-organizations.md`, `operations/security-and-permissions.md` |
 | Which trigger types residents react to | `concepts/agents-and-personas.md` |
 | What each integration does, and building on existing tools rather than replacing them | `operations/integrations-and-mcp.md` |
 | Supported harnesses, including OpenClaw, Hermes and NemoClaw, and where each one runs | `concepts/agents-and-personas.md` |
-| Scale: joining machines, many clusters as one environment, VMs, bare metal and DGX Spark | `concepts/platform-model.md`, `operations/kubernetes-deployment.md` |
+| Scale: pods per session, autoscaling, joining machines, many clusters as one environment, VMs, bare metal and DGX Spark | `operations/scaling.md`, `concepts/platform-model.md`, `operations/kubernetes-deployment.md` |
 | How a Workspace is set up, and local limits | `concepts/sessions-and-workspaces.md` |
+| Use cases beyond code, each with its workflow or resident | A new `guides/use-cases.md` |
+| Add your own: extending workflows, personas, tools, adapters and plugins | The same page, linking to `concepts/platform-model.md` |
 | The operating-system direction | `concepts/operating-system.md` |
+
+## Projects and Workspaces
+
+The next product model. Write it as direction until Jozef says it is live: the
+code is uncommitted on `feat/projects-without-repo`, it has run on mock data only,
+and Workspaces may be hidden on the live clusters by an infra setting.
+
+- A **project** is what the work is for. It owns its identity, brief, repository
+  and budget, and it does not need a repository.
+- A project holds one or more **Workspaces**. A Workspace is one resident and the
+  job it is given, with its charter, its limits (Auto, Ask, Never), what wakes it
+  and its own memory. A project with one Workspace opens straight into it.
+- A Workspace can have its own **board** and tracker, or none, and two Workspaces
+  in a project can use different trackers. **Tickets** stay in the customer's
+  tracker and show live. A **workflow** is assigned to a board and runs the
+  tickets, and people approve at gates.
+- Residents already on Kubernetes get one Workspace each, in one project for the
+  mesh, and nothing is redeployed.
+
+Not built yet: separating two Workspaces on one tracker by label (use a separate
+tracker project), and connecting project shared memory to residents.
+
+Wording: project, Workspace, resident, board, ticket, workflow. Do not write saga
+or campaign. In public copy, realm is not a synonym for Workspace: in Observatory
+and cluster views it means a network zone.
+
+When it goes live:
+
+| Page | Change |
+|---|---|
+| `concepts/sessions-and-workspaces.md` | Add the project level. Budget moves from Workspace to project, and trust becomes limits. |
+| `concepts/platform-model.md` | Update the Workspaces row, and its Realms implementation name. |
+| `get-started/configure-project.md` | "Project" in this page means a Forge repository setup. Rename or reword it so the two do not collide. |
+| `reference/api.md`, `reference/cli-niuu.md` | They say saga because the API and CLI do. Change them with the rename, not before. |
+| Home | Add projects to the Workspaces chapter, and recapture both Workspace screens. |
+
+## Teams, tenancy, scale and security
+
+The landing page gives these one section, For teams. The pages above carry the
+detail. Write the left column as fact and the right column as direction.
+
+| Theme | Ships today | Direction, or limited |
+|---|---|---|
+| Human teams | OIDC login with admin, developer and viewer roles. Residents belong to an organization, not a person. Memory instances can be visible to an organization. | Session invites exist in the API with viewer and approver roles, but the app has no screen for them. On Kubernetes they need `room_role_source: remote`, which cannot be combined with `enforce_ownership`, and has not been run on a live cluster. Shared projects, workflows and Workspaces, an Organization page, and provider-sourced membership are design phases 1 and 2. |
+| Multi-tenancy | Sessions, Workspaces, Memory and credentials carry a tenant. Anything naming no organization belongs to the platform organization. Observatory filters per caller, and shared Memory gives other organizations only their own mounts. Model quotas per tenant (`tenant_quotas`). | One organization per user. Invites and several organizations per user are design phases 3 and 4. Whether the event bus is tenant-scoped is unverified, so unrelated customers on one installation stay direction. |
+| Scaling | Local process, Docker, VM, Kubernetes and OpenShell session backends. A pod per Kubernetes session. HPA and PDB templates in the service charts, off by default in most. NATS, RabbitMQ and Redis Streams transports. `niuu join` for machines. | Pairing is CLI-only, and heartbeats need your own supervisor. No throughput or session-count figures exist, so none are claimed. |
+| Security | OIDC through Envoy, IDP-agnostic. Cedar policies. Short-lived workload credentials, scoped for builds, launches and Forge session calls. Ed25519 signing for joined machines. OpenShell egress policy. Vault or OpenBao credential stores with session-scoped injection. SPIFFE identities from SPIRE for OpenShell sandbox grants, and SPIFFE mesh identity at the model gateway. Learned tools run isolated, with network from their declared reach. | NetworkPolicy templates are off by default, and a plain Kubernetes session has no per-session egress control. Forge session credentials reach only local-process sessions. `host_auth: none` is the local default. No certifications are claimed. |
+
+The organizations design is `docs/design/organizations/README.md`. It sits
+uncommitted in the main checkout and is not on `dev`, so link it only once it lands.
 
 ## Decisions needed
 
 1. **Which install does the landing page lead with?** `releases/latest/download/install.sh`
    is a 404 today because the latest stable release, v1.3.0, predates it. The
-   v1.3.0 macOS binary cannot start its database. Source is the only path that
-   works for a new reader today, so the page leads with it. A stable release
-   would carry `install.sh` and allow one line instead.
+   v1.3.0 macOS binary cannot start its database, and `niuu:latest` dates from
+   July. The page leads with Docker through the script on `dev` and
+   `NIUU_IMAGE_TAG=dev`, then source. A stable release would carry `install.sh`
+   and allow one line instead. `get-started/install.md` still shows the 404
+   command, and the `dev` path has not been run end to end.
 2. **Workspaces is on.** `realms` is enabled in `config.live.json`, and the chart
    no longer hides it, reversing the hide from `f02339e94`. A fresh local install
    now creates a Blank workspace end to end and starts its resident. Templates
@@ -234,6 +298,12 @@ The landing page states each selling point in a line. The explanation lives here
    defaults to `none`, so anyone on the network reaches an admin agent launcher.
    The landing page therefore uses `niuu platform up` on loopback. `install.md`
    still sends readers to `./start-dev`. Change the default to loopback, or warn.
+
+6. **How much of human collaboration should ship before this is sold?** Jozef
+   asked for it on the page, and today it is mostly direction: a team can sign in
+   and share residents and Memory, but not projects, workflows or Workspaces, and
+   inviting a colleague into a session has no screen. The session-invite UI and
+   design phase 1 are the shortest path to a demonstrable claim.
 
 ## Found on the way
 

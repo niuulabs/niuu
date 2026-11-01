@@ -15,6 +15,53 @@
 {% set orbit = "images/niuu-orbit-gradient.svg" | url %}
 {% set wordmark = "images/niuu-wordmark.svg" | url %}
 {% set field = "images/niuu-continuity-field.svg" | url %}
+
+{# One screen. Phones get a focused crop, because a full window is unreadable at that width. #}
+{% macro shot(view) %}
+{% set src = ('images/home/gallery/' ~ view.image ~ '.webp') | url %}
+<a class="shot-frame" href="{{ src }}" data-enlarge>
+  <picture>
+    <source media="(max-width:780px)" srcset="{{ ('images/home/gallery/' ~ view.image ~ '-phone.webp') | url }}">
+    <img src="{{ src }}" alt="{{ view.alt }}" width="{{ view.width }}" height="{{ view.height }}" loading="lazy">
+  </picture>
+</a>
+{% endmacro %}
+
+{% macro chapter(chapter) %}
+<article class="chapter {{ chapter.layout }}" id="{{ chapter.id }}" data-views>
+  <div class="chapter-text">
+    <div class="label">{{ chapter.name }}</div>
+    <h3>{{ chapter.title }}</h3>
+    <p>{{ chapter.body }}</p>
+    <a class="more" href="{{ chapter.link.doc | url }}">{{ chapter.link.label }} →</a>
+    {% if chapter.views | length > 1 %}
+    <div class="view-tabs" role="tablist" aria-label="{{ chapter.name }} views">
+      {% for view in chapter.views %}
+      <button type="button" role="tab" id="{{ chapter.id }}-tab-{{ loop.index }}" aria-controls="{{ chapter.id }}-view-{{ loop.index }}" aria-selected="{{ 'true' if loop.first else 'false' }}"{% if not loop.first %} tabindex="-1"{% endif %}>{{ view.name }}</button>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  <div class="chapter-views">
+    {% for view in chapter.views %}
+    <figure class="view"{% if chapter.views | length > 1 %} role="tabpanel" id="{{ chapter.id }}-view-{{ loop.index }}" aria-labelledby="{{ chapter.id }}-tab-{{ loop.index }}"{% endif %}{% if not loop.first %} hidden{% endif %}>
+      {{ shot(view) }}
+      <figcaption>{{ view.caption }}</figcaption>
+    </figure>
+    {% endfor %}
+  </div>
+</article>
+{% endmacro %}
+
+{% macro part(entry, class) %}
+<a class="part {{ class }}" href="{{ entry.doc | url }}">
+  <span class="glyph">{{ icon(entry.icon, 22) }}</span>
+  <h3>{{ entry.name }}</h3>
+  <span class="part-line">{{ entry.line }}</span>
+  <p>{{ entry.body }}</p>
+</a>
+{% endmacro %}
+
 <div class="niuu-home"><div class="container">
   <header class="site-head">
     <a href="#top" class="brand" aria-label="NIUU home"><img class="orb" src="{{ orbit }}" alt=""><img class="word" src="{{ wordmark }}" alt="NIUU"></a>
@@ -31,7 +78,6 @@
     <section class="hero">
       <img class="wave" src="{{ field }}" alt="">
       <div class="hero-content">
-        <div class="label">{{ home.hero.label }}</div>
         <h1>{{ home.hero.title | join("<br>") }}</h1>
         <p>{{ home.hero.body }}</p>
         <div class="hero-cta">
@@ -41,46 +87,22 @@
         </div>
         <p class="trust">{{ home.hero.trust }}</p>
       </div>
-      <div class="hero-bottom">
-        <div class="mini-features">
-          {% for feature in home.hero.features %}{% if not loop.first %}<b>·</b>{% endif %}<span>{{ feature }}</span>{% endfor %}
-        </div>
-        <span>{{ home.hero.tagline }}</span>
-      </div>
     </section>
 
-    <section class="section intro" id="idea">
-      <div>
-        <div class="label">{{ home.idea.label }}</div>
-        <h2>{{ home.idea.title | join("<br>") }}</h2>
-        <p class="lede">{{ home.idea.body }}</p>
-        <p class="lede quiet">{{ home.idea.body_more }}</p>
-      </div>
-      <div class="work-visual">
-        <div class="label">{{ home.idea.visual }}</div>
-        <div class="path"></div>
-        <div class="kept">
-          {% for entry in home.idea.kept %}<div><strong>{{ entry.title }}</strong> {{ entry.body }}</div>{% endfor %}
-        </div>
-      </div>
-    </section>
-
-    {% set sessions = home.sessions %}
-    <section class="section band" id="sessions">
-      <div class="sessions-intro">
+    {% set idea = home.idea %}
+    <section class="section" id="idea">
+      <div class="idea-lead">
         <div>
-          <div class="label">{{ sessions.label }}</div>
-          <h2>{{ sessions.title | join("<br>") }}</h2>
-          <p class="lede">{{ sessions.body }}</p>
-          <p class="lede quiet">{{ sessions.body_more }}</p>
+          <div class="label">{{ idea.label }}</div>
+          <h2>{{ idea.title | join("<br>") }}</h2>
         </div>
-        <figure class="shot">
-          <a class="shot-frame" href="{{ ('images/home/' ~ sessions.image) | url }}"><img src="{{ ('images/home/' ~ sessions.image) | url }}" alt="{{ sessions.alt }}" width="1600" height="{{ sessions.height }}" loading="lazy"></a>
-          <figcaption><p class="aside">{{ sessions.caption }}</p></figcaption>
-        </figure>
+        <div>
+          <p class="lede">{{ idea.body }}</p>
+          <p class="lede quiet">{{ idea.body_more }}</p>
+        </div>
       </div>
       <ol class="evolution">
-        {% for stage in sessions.stages %}
+        {% for stage in idea.stages %}
         <li>
           <div class="label">{{ stage.name }}</div>
           <h3>{{ stage.title }}</h3>
@@ -88,156 +110,182 @@
         </li>
         {% endfor %}
       </ol>
-      <p class="aside">{{ sessions.note }}</p>
+      <p class="aside">{{ idea.note }}</p>
     </section>
 
-    {% set workflows = home.workflows %}
-    <section class="section" id="workflows">
-      <div class="label">{{ workflows.label }}</div>
-      <h2>{{ workflows.title | join("<br>") }}</h2>
-      <p class="lede">{{ workflows.body }}</p>
-      <div class="split">
-        <figure class="shot">
-          <a class="shot-frame" href="{{ ('images/home/' ~ workflows.image) | url }}"><img src="{{ ('images/home/' ~ workflows.image) | url }}" alt="{{ workflows.alt }}" width="1800" height="{{ workflows.height }}" loading="lazy"></a>
-          <figcaption><p class="aside">{{ workflows.caption }}</p></figcaption>
-        </figure>
-        <div class="points stacked">
-          {% for point in workflows.points %}<div><h3>{{ point.title }}</h3><p>{{ point.body }}</p></div>{% endfor %}
+    {% set gallery = home.gallery %}
+    <section class="gallery" id="at-work">
+      <div class="gallery-head">
+        <h2>{{ gallery.title }}</h2>
+        <p class="lede">{{ gallery.body }}</p>
+      </div>
+      <nav class="chapter-nav" aria-label="Features">
+        {% for chapter in gallery.chapters %}<a href="#{{ chapter.id }}">{{ chapter.name }}</a>{% endfor %}
+      </nav>
+      {% for entry in gallery.chapters %}{{ chapter(entry) }}{% endfor %}
+    </section>
+
+    {% set evolution = home.evolution %}
+    <section class="gallery plain" id="evolution">
+      <div class="gallery-head evolve">
+        <div>
+          <div class="label">{{ evolution.label }}</div>
+          <h2>{{ evolution.title | join("<br>") }}</h2>
+          <p class="lede">{{ evolution.body }}</p>
+        </div>
+        <div class="kept">
+          {% for entry in evolution.kept %}<div><strong>{{ entry.title }}</strong> {{ entry.body }}</div>{% endfor %}
         </div>
       </div>
+      {{ chapter(evolution.resident) }}
+      {% set commission = evolution.commission %}
+      <div class="commission">
+        <div class="commission-lead">
+          <h3>{{ commission.title }}</h3>
+          <p>{{ commission.body }}</p>
+        </div>
+        <ol class="evolution">
+          {% for step in commission.steps %}
+          <li>
+            <div class="label">{{ step.name }}</div>
+            <h4>{{ step.title }}</h4>
+            <p>{{ step.body }}</p>
+          </li>
+          {% endfor %}
+        </ol>
+        <figure class="view">
+          {{ shot(commission) }}
+          <figcaption>{{ commission.caption }}</figcaption>
+        </figure>
+      </div>
+      {{ chapter(evolution.workspaces) }}
     </section>
 
     {% set environment = home.environment %}
     <section class="section band" id="environment">
-      <div class="label">{{ environment.label }}</div>
-      <h2>{{ environment.title | join("<br>") }}</h2>
-      <p class="lede">{{ environment.body }}</p>
-      <figure class="shot">
-        <a class="shot-frame" href="{{ ('images/home/' ~ environment.image) | url }}"><img src="{{ ('images/home/' ~ environment.image) | url }}" alt="{{ environment.alt }}" width="1800" height="{{ environment.height }}" loading="lazy"></a>
-      </figure>
-      <div class="points">
-        {% for point in environment.points %}<div><h3>{{ point.title }}</h3><p>{{ point.body }}</p></div>{% endfor %}
-      </div>
-      <p class="aside">{{ environment.note }}</p>
-    </section>
-
-    {% set practice = home.practice %}
-    <section class="section" id="practice">
-      <div class="label">{{ practice.label }}</div>
-      <h2>{{ practice.title }}</h2>
-      <p class="lede">{{ practice.body }}</p>
-      <ol class="story">
-        {% for step in practice.story %}
-        <li>
-          <div class="story-text">
-            <h3>{{ step.title }}</h3>
-            <p>{{ step.body }}</p>
-          </div>
-          <a class="shot-frame" href="{{ ('images/home/' ~ step.image) | url }}"><img src="{{ ('images/home/' ~ step.image) | url }}" alt="{{ step.alt }}" width="1800" height="{{ step.height }}" loading="lazy"></a>
-        </li>
-        {% endfor %}
-      </ol>
-    </section>
-
-    {% set trust = home.trust %}
-    <section class="section band" id="trust">
-      <div class="label">{{ trust.label }}</div>
-      <h2>{{ trust.title | join("<br>") }}</h2>
-      <p class="lede">{{ trust.body }}</p>
-      <figure class="shot">
-        <a class="shot-frame" href="{{ ('images/home/' ~ trust.image) | url }}"><img src="{{ ('images/home/' ~ trust.image) | url }}" alt="{{ trust.alt }}" width="1800" height="{{ trust.height }}" loading="lazy"></a>
-        <figcaption><p class="aside">{{ trust.caption }}</p></figcaption>
-      </figure>
-      <div class="points">
-        {% for pillar in trust.pillars %}<div><h3>{{ pillar.title }}</h3><p>{{ pillar.body }}</p></div>{% endfor %}
-      </div>
-    </section>
-
-    <section class="section products-section" id="products">
-      <div class="label">{{ home.products.label }}</div>
       <div class="section-lead">
-        <h2>{{ home.products.title }}</h2>
-        <p class="lede">{{ home.products.body }}</p>
+        <div>
+          <div class="label">{{ environment.label }}</div>
+          <h2>{{ environment.title }}</h2>
+        </div>
+        <p class="lede">{{ environment.body }}</p>
       </div>
-      <div class="product-grid">
-        {% for product in home.products.family %}
-        <a class="product-card" href="{{ product.doc | url }}">
-          <div class="glyph">{{ icon(product.icon, 25) }}</div>
-          <div class="product-number">NIUU / {{ "%02d" | format(loop.index) }}</div>
-          <h3>{{ product.name }}</h3>
-          <div class="product-sub">{{ product.line }}</div>
-          <p>{{ product.body }}</p>
+      <div class="system">
+        {{ part(environment.workspaces, "part-workspaces") }}
+        {% for entry in environment.parts %}{{ part(entry, "part-inner") }}{% endfor %}
+        {{ part(environment.platform, "part-platform") }}
+        {{ part(environment.observatory, "part-observatory") }}
+      </div>
+      {% set built = environment.built %}
+      <div class="built">
+        <div>
+          <h3>{{ built.title }}</h3>
+          <p>{{ built.body }}</p>
+        </div>
+        <div>
+          <dl class="support">
+            {% for group in built.groups %}
+            <div><dt>{{ group.name }}</dt><dd>{{ group.entries }}</dd></div>
+            {% endfor %}
+          </dl>
+        </div>
+      </div>
+    </section>
+
+    {% set use_cases = home.use_cases %}
+    <section class="section" id="use-cases">
+      <div class="section-lead">
+        <div>
+          <div class="label">{{ use_cases.label }}</div>
+          <h2>{{ use_cases.title }}</h2>
+        </div>
+        <p class="lede">{{ use_cases.body }}</p>
+      </div>
+      <div class="cases">
+        {% for case in use_cases.cases %}
+        <a class="case{% if case.own %} own{% endif %}" href="{{ case.doc | url }}">
+          <h3>{{ case.title }}</h3>
+          <p>{{ case.body }}</p>
         </a>
         {% endfor %}
       </div>
     </section>
 
-    <section class="section band" id="direction">
-      <div class="label">{{ home.direction.label }}</div>
-      <h2>{{ home.direction.title }}</h2>
-      <p class="lede">{{ home.direction.body }}</p>
-      <a class="more" href="{{ home.direction.link.doc | url }}">{{ home.direction.link.label }} →</a>
-    </section>
-
-    {% set infrastructure = home.infrastructure %}
-    <section class="section" id="infrastructure">
-      <div class="label">{{ infrastructure.label }}</div>
-      <h2>{{ infrastructure.title }}</h2>
-      <p class="lede">{{ infrastructure.body }}</p>
-      <p class="lede quiet">{{ infrastructure.body_more }}</p>
-      <dl class="support">
-        {% for group in infrastructure.groups %}
-        <div><dt>{{ group.name }}</dt><dd>{{ group.entries }}</dd></div>
+    {% set teams = home.teams %}
+    <section class="section band" id="teams">
+      <div class="section-lead">
+        <div>
+          <div class="label">{{ teams.label }}</div>
+          <h2>{{ teams.title }}</h2>
+        </div>
+        <p class="lede">{{ teams.body }}</p>
+      </div>
+      <div class="cases pair">
+        {% for area in teams.areas %}
+        <a class="case" href="{{ area.doc | url }}">
+          <h3>{{ area.title }}</h3>
+          <p>{{ area.body }}</p>
+        </a>
         {% endfor %}
-      </dl>
-      <p class="aside">{{ infrastructure.note }} <a class="more" href="{{ infrastructure.link.doc | url }}">{{ infrastructure.link.label }} →</a></p>
+      </div>
+      <p class="aside">{{ teams.note }}</p>
+      <p class="direction">{{ teams.direction }}</p>
     </section>
 
     {% set start = home.start %}
-    <section class="section band start" id="start">
+    <section class="section start" id="start">
       <div>
         <div class="label">{{ start.label }}</div>
         <h2>{{ start.title }}</h2>
         <p class="lede">{{ start.body }}</p>
-        <p class="aside">{{ start.needs }} {{ start.needs_note }}</p>
         <div class="hero-cta">
           {% for cta in start.actions %}
           <a class="btn {{ cta.style }}" href="{{ cta.doc | url }}">{{ cta.label }} <span>{{ cta.arrow }}</span></a>
           {% endfor %}
         </div>
       </div>
-      <div>
-        <div class="terminal">
-          <div class="terminal-head">
-            <span>{{ start.code_title }}</span>
-            <button type="button" data-copy="#start-code" data-done="Copied">Copy</button>
-          </div>
-          <pre id="start-code"><code>{{ start.code }}</code></pre>
+      <div data-views>
+        <div class="view-tabs" role="tablist" aria-label="Ways to install">
+          {% for option in start.options %}
+          <button type="button" role="tab" id="start-tab-{{ option.id }}" aria-controls="start-{{ option.id }}" aria-selected="{{ 'true' if loop.first else 'false' }}"{% if not loop.first %} tabindex="-1"{% endif %}>{{ option.name }}</button>
+          {% endfor %}
         </div>
-        <p class="aside">{{ start.code_note }}</p>
+        {% for option in start.options %}
+        <div class="view" role="tabpanel" id="start-{{ option.id }}" aria-labelledby="start-tab-{{ option.id }}"{% if not loop.first %} hidden{% endif %}>
+          <p class="aside">{{ option.needs }}</p>
+          <div class="terminal">
+            <div class="terminal-head">
+              <span>{{ option.title }}</span>
+              <button type="button" data-copy="#start-code-{{ option.id }}" data-done="Copied">Copy</button>
+            </div>
+            <pre id="start-code-{{ option.id }}"><code>{{ option.code }}</code></pre>
+          </div>
+          <p class="aside">{{ option.note }}</p>
+        </div>
+        {% endfor %}
       </div>
     </section>
 
     <section class="section closing">
       <img class="wave" src="{{ field }}" alt="">
-      <div class="closing-content">
-        <h2>{{ home.closing.title | join("<br>") }}</h2>
-        <div class="hero-cta">
-          {% for cta in home.closing.actions %}
-          <a class="btn {{ cta.style }}" href="{{ (cta.doc | url) if cta.doc else cta.href }}">{{ cta.label }} <span>{{ cta.arrow }}</span></a>
-          {% endfor %}
-        </div>
-      </div>
-      <nav class="doc-map" aria-label="Documentation">
-        {% for entry in home.closing.map %}
-        <a href="{{ entry.doc | url }}"><strong>{{ entry.title }}</strong><span>{{ entry.body }}</span></a>
+      <nav class="closing-links" aria-label="Documentation and source">
+        {% for entry in home.closing %}
+        <a href="{{ entry.href or (entry.doc | url) }}">
+          <strong>{{ entry.title }} <span>→</span></strong>
+          <small>{{ entry.body }}</small>
+        </a>
         {% endfor %}
       </nav>
     </section>
   </div>
 
   <footer>
-    {% for line in home.footer %}<span>{{ line }}</span>{% endfor %}
+    <span>{{ home.footer }}</span>
   </footer>
+
+  <dialog class="enlarge" aria-label="Enlarged screenshot">
+    <button type="button" aria-label="Close">Close</button>
+    <img alt="">
+  </dialog>
 </div></div>
 {% endblock %}
