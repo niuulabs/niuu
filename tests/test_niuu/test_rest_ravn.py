@@ -855,6 +855,7 @@ def test_create_raven_syncs_realm_to_remote_target_before_create() -> None:
         "owner_id": realm.owner_id,
         "instance_id": realm.instance_id,
         "autonomy_profile": realm.autonomy_profile,
+        "project_id": None,
     }
     create_body = json.loads(create_route.calls.last.request.read())
     assert create_body["realm_id"] == str(realm.id)

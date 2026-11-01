@@ -37,7 +37,7 @@ from ting.domain.workflow_board import SESSION_GONE_REASON
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.ticket_coordinator_repository import TicketCoordinatorRepository
 from ting.ports.tracker import TrackerPort, TrackerResolution
-from ting.ports.volundr import PublicSessionLogEntry, PublicSessionLogPage
+from ting.ports.volundr import ForgeProjectRef, PublicSessionLogEntry, PublicSessionLogPage
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.system_workflows import load_system_workflows
 
@@ -278,6 +278,11 @@ def _adapter(
         )
     )
     adapter.spawn_session = AsyncMock(return_value=SimpleNamespace(id="coordinator-session"))
+    adapter.ensure_project = AsyncMock(
+        side_effect=lambda project_id, name, **_: ForgeProjectRef(
+            id=project_id, name=name, instance_id=name
+        )
+    )
     adapter.send_directed_room_message = AsyncMock()
     adapter.start_session = AsyncMock()
     adapter.stop_session = AsyncMock()
@@ -1668,3 +1673,92 @@ def test_a_widget_page_is_served_as_data_only_when_installed() -> None:
     missing = client.get(f"{url}/acme-print/other", headers=HEADERS)
     assert missing.status_code == 404
     assert "not installed" in missing.json()["detail"]
+
+
+def test_a_project_without_a_repository_starts_a_workflow_that_needs_none() -> None:
+    snapshot = _snapshot()
+    snapshot["graph"] = {**snapshot["graph"], "requiresRepository": False}
+    saga = replace(_saga(snapshot), repos=[], base_branch="")
+    adapter = _adapter([])
+    client = _client(
+        saga,
+        issues=[_issue(status_type="unstarted")],
+        runs=[],
+        adapter=adapter,
+        coordinators=_Coordinators(),
+    )
+
+    assert _start(client, saga).status_code == 200
+    assert adapter.spawn_session.await_args.args[0].repo == ""
+
+
+def test_a_workflow_that_needs_a_repository_cannot_start_without_one() -> None:
+    saga = replace(_saga(_snapshot()), repos=[], base_branch="")
+    adapter = _adapter([])
+    client = _client(
+        saga,
+        issues=[_issue(status_type="unstarted")],
+        runs=[],
+        adapter=adapter,
+        coordinators=_Coordinators(),
+    )
+
+    response = _start(client, saga)
+
+    assert response.status_code == 409
+    assert "needs a repository" in response.json()["detail"]
+    adapter.spawn_session.assert_not_awaited()
+
+
+def test_a_ticket_starts_on_the_forge_its_project_names() -> None:
+    saga = replace(_saga(_snapshot()), instance_id="forge-b")
+    primary = _adapter([], name="forge-a")
+    named = _adapter([], name="forge-b")
+    client = _client(
+        saga,
+        issues=[_issue(status_type="unstarted")],
+        runs=[],
+        adapter=primary,
+        forges=[primary, named],
+        coordinators=_Coordinators(),
+    )
+    client.app.state.volundr_factory.for_connection = AsyncMock(return_value=named)
+
+    assert _start(client, saga).status_code == 200
+    named.spawn_session.assert_awaited_once()
+    primary.spawn_session.assert_not_awaited()
+
+
+def test_a_project_whose_forge_is_gone_never_starts_on_another() -> None:
+    saga = replace(_saga(_snapshot()), instance_id="forge-b")
+    primary = _adapter([], name="forge-a")
+    client = _client(
+        saga,
+        issues=[_issue(status_type="unstarted")],
+        runs=[],
+        adapter=primary,
+        coordinators=_Coordinators(),
+    )
+    client.app.state.volundr_factory.for_connection = AsyncMock(return_value=None)
+
+    assert _start(client, saga).status_code == 503
+    primary.spawn_session.assert_not_awaited()
+
+
+def test_a_forge_that_refuses_the_project_stops_the_start_loudly() -> None:
+    saga = _saga(_snapshot())
+    adapter = _adapter([])
+    adapter.ensure_project.side_effect = httpx.HTTPError("Forge could not create the project")
+    client = _client(
+        saga,
+        issues=[_issue(status_type="unstarted")],
+        runs=[],
+        adapter=adapter,
+        coordinators=_Coordinators(),
+    )
+
+    response = _start(client, saga)
+
+    assert response.status_code == 502
+    assert "could not create the project" in response.json()["detail"]
+    adapter.spawn_session.assert_not_awaited()

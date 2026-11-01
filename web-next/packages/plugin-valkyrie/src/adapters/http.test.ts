@@ -11,6 +11,7 @@ function makeClient() {
     basePath: '/api/v1/ravn/odin',
     get: vi.fn(),
     post: vi.fn(),
+    patch: vi.fn(),
     put: vi.fn(),
     delete: vi.fn(),
   };
@@ -336,6 +337,18 @@ describe('buildRealmGovernanceHttpAdapter', () => {
     await adapter.listTrustGrants('asgard');
     expect(realmsClient.get).toHaveBeenCalledWith('/realms/asgard/trust-grants');
     expect(workflowsClient.get).not.toHaveBeenCalled();
+  });
+
+  it('moves a realm into a project by its encoded slug', async () => {
+    const realmsClient = makeClient();
+    const workflowsClient = makeClient();
+    realmsClient.patch.mockResolvedValue({ slug: 'realm/with slash' });
+    const adapter = buildRealmGovernanceHttpAdapter(realmsClient, workflowsClient);
+
+    await adapter.setRealmProject('realm/with slash', 'project-1');
+    expect(realmsClient.patch).toHaveBeenCalledWith('/realms/realm%2Fwith%20slash/project', {
+      project_id: 'project-1',
+    });
   });
 
   it('deletes a realm by its encoded slug', async () => {

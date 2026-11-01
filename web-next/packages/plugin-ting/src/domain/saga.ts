@@ -38,6 +38,8 @@ export type SagaRepoRef = z.infer<typeof sagaRepoRefSchema>;
 export const sagaSchema = z.object({
   /** Unique identifier (UUID). */
   id: z.string().uuid(),
+  /** The Forge project this work belongs to. */
+  projectId: z.string().optional(),
   /** External tracker issue/milestone ID. */
   trackerId: z.string(),
   /** Tracker system type (e.g. "linear", "github"). */

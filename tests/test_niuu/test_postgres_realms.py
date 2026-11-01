@@ -38,6 +38,7 @@ def _realm_row(**kwargs) -> MagicMock:
         "instance_id": "inst-1",
         "autonomy_profile": "balanced",
         "tenant_id": "tenant-1",
+        "project_id": None,
         "created_at": _NOW,
         "updated_at": _NOW,
     }

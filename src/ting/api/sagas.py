@@ -62,7 +62,12 @@ from ting.domain.tracker_routing import (
     select_tracker_for_saga,
 )
 from ting.domain.utils import _session_name, _slugify
-from ting.domain.workflow_board import WorkflowBoardError, module_widgets_of, project_board
+from ting.domain.workflow_board import (
+    WorkflowBoardError,
+    module_widgets_of,
+    project_board,
+    repository_gap,
+)
 from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_name_from_snapshot
 from ting.ports.git import GitPort
 from ting.ports.llm import LLMPort
@@ -1883,6 +1888,9 @@ def create_sagas_router() -> APIRouter:
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
+        gap = repository_gap(replace(saga, board_workflows=pins))
+        if gap is not None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=gap)
         installed = getattr(request.app.state, "review_widgets", {})
         missing = sorted(module_widgets_of(board) - installed.keys()) if board else []
         if missing:
@@ -1937,6 +1945,11 @@ def create_sagas_router() -> APIRouter:
             workflow_version_value=body.workflow_version,
             use_default_when_missing=False,
         )
+        gap = repository_gap(
+            replace(saga, workflow_id=workflow_id, workflow_snapshot=workflow_snapshot)
+        )
+        if gap is not None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=gap)
 
         await repo.update_saga_workflow(
             parsed_id,
@@ -2014,18 +2027,16 @@ def create_sagas_router() -> APIRouter:
             if not repo_ref or repo_ref in repo_branches:
                 continue
             repo_branches[repo_ref] = branch_name.strip() or default_branch
-        if not repo_branches:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="At least one repository is required",
-            )
 
         updated_saga = replace(
             saga,
             repos=list(repo_branches),
             repo_branches=repo_branches,
-            base_branch=next(iter(repo_branches.values())),
+            base_branch=next(iter(repo_branches.values()), default_branch),
         )
+        gap = repository_gap(updated_saga)
+        if gap is not None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=gap)
         await repo.save_saga(updated_saga)
 
         project = await _find_project(updated_saga, adapters)

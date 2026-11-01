@@ -14,7 +14,12 @@ from niuu.domain.models import Principal
 from ravn.adapters.personas.loader import PersonaConfig
 from ravn.domain.persona_document import portable_persona_from_config
 from ting.adapters.volundr_http import VolundrHTTPAdapter
-from ting.ports.volundr import ActivityStreamConnected, SpawnRequest
+from ting.ports.volundr import (
+    ActivityStreamConnected,
+    ForgeProjectRef,
+    SessionMembership,
+    SpawnRequest,
+)
 
 BASE_URL = "http://volundr.test:8000"
 SESSIONS_URL = f"{BASE_URL}/api/v1/forge/sessions"
@@ -1403,3 +1408,171 @@ class TestSubscribeActivity:
                 items.append(item)
 
         assert items == []
+
+
+PROJECTS_URL = f"{BASE_URL}/api/v1/forge/projects"
+FLAGS_URL = f"{BASE_URL}/api/v1/forge/feature-flags"
+PROJECT_ID = "5c3115f1-0b77-44c3-a4a6-ae4eca22239a"
+
+
+def _flags(instance_id: str | None = "forge-host") -> httpx.Response:
+    return httpx.Response(200, json={"project_instance_id": instance_id})
+
+
+@respx.mock
+async def test_get_project_returns_the_project_and_its_host_id(
+    adapter: VolundrHTTPAdapter,
+) -> None:
+    respx.get(f"{PROJECTS_URL}/{PROJECT_ID}").mock(
+        return_value=httpx.Response(200, json={"id": PROJECT_ID, "name": "Shop"})
+    )
+    respx.get(FLAGS_URL).mock(return_value=_flags())
+
+    project = await adapter.get_project(PROJECT_ID)
+
+    assert project == ForgeProjectRef(id=PROJECT_ID, name="Shop", instance_id="forge-host")
+
+
+@respx.mock
+async def test_get_project_answers_none_for_a_project_this_forge_does_not_know(
+    adapter: VolundrHTTPAdapter,
+) -> None:
+    respx.get(f"{PROJECTS_URL}/{PROJECT_ID}").mock(return_value=httpx.Response(404))
+
+    assert await adapter.get_project(PROJECT_ID) is None
+
+
+@respx.mock
+async def test_a_forge_without_projects_says_so(adapter: VolundrHTTPAdapter) -> None:
+    respx.get(f"{PROJECTS_URL}/{PROJECT_ID}").mock(
+        return_value=httpx.Response(200, json={"id": PROJECT_ID, "name": "Shop"})
+    )
+    respx.get(FLAGS_URL).mock(return_value=_flags(None))
+
+    with pytest.raises(httpx.HTTPError, match="serves no projects"):
+        await adapter.get_project(PROJECT_ID)
+
+
+@respx.mock
+async def test_ensure_project_leaves_a_known_project_alone(adapter: VolundrHTTPAdapter) -> None:
+    respx.get(f"{PROJECTS_URL}/{PROJECT_ID}").mock(
+        return_value=httpx.Response(200, json={"id": PROJECT_ID, "name": "Shop"})
+    )
+    respx.get(FLAGS_URL).mock(return_value=_flags())
+    created = respx.post(PROJECTS_URL)
+
+    project = await adapter.ensure_project(PROJECT_ID, "Other name")
+
+    assert project.name == "Shop"
+    assert not created.called
+
+
+@respx.mock
+async def test_ensure_project_creates_it_under_works_id(adapter: VolundrHTTPAdapter) -> None:
+    respx.get(f"{PROJECTS_URL}/{PROJECT_ID}").mock(return_value=httpx.Response(404))
+    respx.get(FLAGS_URL).mock(return_value=_flags())
+    created = respx.post(PROJECTS_URL).mock(
+        return_value=httpx.Response(201, json={"id": PROJECT_ID, "name": "Shop"})
+    )
+
+    project = await adapter.ensure_project(PROJECT_ID, "Shop")
+
+    assert json.loads(created.calls.last.request.content) == {"id": PROJECT_ID, "name": "Shop"}
+    assert project.instance_id == "forge-host"
+
+
+@respx.mock
+async def test_ensure_project_reports_why_forge_refused(adapter: VolundrHTTPAdapter) -> None:
+    respx.get(f"{PROJECTS_URL}/{PROJECT_ID}").mock(return_value=httpx.Response(404))
+    respx.post(PROJECTS_URL).mock(
+        return_value=httpx.Response(409, json={"detail": "Project ID already taken"})
+    )
+
+    with pytest.raises(httpx.HTTPStatusError, match="Project ID already taken"):
+        await adapter.ensure_project(PROJECT_ID, "Shop")
+
+
+@respx.mock
+async def test_session_project_reads_the_membership(adapter: VolundrHTTPAdapter) -> None:
+    respx.get(f"{SESSIONS_URL}/ses-1/project").mock(
+        return_value=httpx.Response(
+            200, json={"revision": 1, "coordination": {"project_id": PROJECT_ID}}
+        )
+    )
+    respx.get(f"{SESSIONS_URL}/ses-2/project").mock(
+        return_value=httpx.Response(200, json={"revision": 0, "coordination": None})
+    )
+
+    assert await adapter.session_project("ses-1") == PROJECT_ID
+    assert await adapter.session_project("ses-2") is None
+
+
+@respx.mock
+async def test_join_project_leaves_a_member_alone(adapter: VolundrHTTPAdapter) -> None:
+    respx.get(f"{SESSIONS_URL}/ses-1/project").mock(
+        return_value=httpx.Response(
+            200, json={"revision": 3, "coordination": {"project_id": PROJECT_ID}}
+        )
+    )
+    assigned = respx.put(f"{SESSIONS_URL}/ses-1/project")
+
+    await adapter.join_project("ses-1", PROJECT_ID, role="coordinator")
+
+    assert not assigned.called
+
+
+@respx.mock
+async def test_join_project_assigns_at_the_session_revision(adapter: VolundrHTTPAdapter) -> None:
+    respx.get(f"{SESSIONS_URL}/ses-1/project").mock(
+        return_value=httpx.Response(200, json={"revision": 2, "coordination": None})
+    )
+    assigned = respx.put(f"{SESSIONS_URL}/ses-1/project").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    await adapter.join_project("ses-1", PROJECT_ID, role="coordinator")
+
+    assert json.loads(assigned.calls.last.request.content) == {
+        "project_id": PROJECT_ID,
+        "expected_revision": 2,
+        "role": "coordinator",
+    }
+
+
+@respx.mock
+async def test_a_launch_carries_its_project_and_parent(adapter: VolundrHTTPAdapter) -> None:
+    created = respx.post(SESSIONS_URL).mock(
+        return_value=httpx.Response(
+            201, json={"id": "ses-1", "name": "work", "status": "created", "source": {}}
+        )
+    )
+
+    await adapter.spawn_session(
+        SpawnRequest(
+            name="work",
+            repo="",
+            branch="",
+            model="m",
+            tracker_issue_id="NIU-1",
+            tracker_issue_url="",
+            system_prompt="",
+            initial_prompt="go",
+            base_branch="",
+            membership=SessionMembership(
+                project_id=PROJECT_ID,
+                role="worker",
+                parent_instance_id="forge-host",
+                parent_session_id="coordinator-1",
+                objective="Delivery",
+                labels=("work-project:p1",),
+            ),
+        )
+    )
+
+    assert json.loads(created.calls.last.request.content)["coordination"] == {
+        "project_id": PROJECT_ID,
+        "role": "worker",
+        "objective": "Delivery",
+        "labels": ["work-project:p1"],
+        "parent": {"instance_id": "forge-host", "session_id": "coordinator-1"},
+    }

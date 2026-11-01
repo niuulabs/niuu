@@ -124,10 +124,10 @@ class PostgresSagaRepository(SagaRepository):
                  repos, feature_branch, base_branch, status, created_at, owner_id,
                  workflow_id, workflow_version, workflow_snapshot, instance_id,
                  repo_branches, target_tags, target_match, tenant_id, tracker_connection_id,
-                 plan_slug)
+                 plan_slug, project_id)
             VALUES
                 ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15::uuid,
-                 $16::jsonb, $17, $18, $19, $20, $21)
+                 $16::jsonb, $17, $18, $19, $20, $21, $22)
             ON CONFLICT (id) DO UPDATE SET
                 tracker_id = EXCLUDED.tracker_id,
                 tracker_type = EXCLUDED.tracker_type,
@@ -146,7 +146,8 @@ class PostgresSagaRepository(SagaRepository):
                 repo_branches = EXCLUDED.repo_branches,
                 target_tags = EXCLUDED.target_tags,
                 target_match = EXCLUDED.target_match,
-                plan_slug = EXCLUDED.plan_slug
+                plan_slug = EXCLUDED.plan_slug,
+                project_id = EXCLUDED.project_id
                 WHERE sagas.tenant_id = EXCLUDED.tenant_id
                   AND sagas.owner_id IS NOT DISTINCT FROM EXCLUDED.owner_id
             """,
@@ -171,6 +172,7 @@ class PostgresSagaRepository(SagaRepository):
             saga.tenant_id,
             saga.tracker_connection_id,
             saga.plan_slug,
+            saga.project_id,
         )
         if result == "INSERT 0 0":
             raise AuthorizationDeniedError("Resource ownership is immutable")
@@ -533,6 +535,7 @@ class PostgresSagaRepository(SagaRepository):
             target_tags=list(row.get("target_tags") or []),
             target_match=str(row.get("target_match") or "all"),
             plan_slug=row.get("plan_slug"),
+            project_id=row.get("project_id"),
             board_workflows=PostgresSagaRepository._decode_board_workflows(
                 row.get("board_workflows")
             ),

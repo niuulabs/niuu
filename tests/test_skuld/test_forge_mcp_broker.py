@@ -407,6 +407,7 @@ class TestForgeProxy:
                 ("POST", f"{base}/messages"): record("message", {"status": "delivered"}),
                 ("GET", f"{base}/message-deliveries/r-1"): record("delivery", {"status": "ok"}),
                 ("POST", "/api/v1/forge/sessions"): record("create", {"id": PEER_ID}),
+                ("GET", f"/api/v1/forge/sessions/{SESSION_ID}"): record("own", {"id": SESSION_ID}),
                 ("POST", f"{base}/start"): record("start", {"id": PEER_ID}),
                 ("POST", f"{base}/stop"): record("stop", {"id": PEER_ID}),
             }

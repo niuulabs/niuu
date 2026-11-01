@@ -10,6 +10,7 @@ import {
 } from '@niuulabs/plugin-valkyrie';
 import type { ISessionStore, Session, SessionState } from '@niuulabs/plugin-volundr';
 import { homePlugin } from './plugin';
+import { createCallLog, workspaceWithWaitingTicket } from '../testing/fakes';
 import { renderRealms } from '../testing/renderRealms';
 
 function session(id: string, state: SessionState, lastActivityAt: string): Session {
@@ -147,6 +148,17 @@ describe('HomePage', () => {
       expect(screen.getByTestId('home-chips')).toHaveTextContent('1 repositories'),
     );
     expect(screen.getByTestId('home-chips')).not.toHaveTextContent('boards');
+  });
+
+  it('puts a ticket at a gate among what needs you', async () => {
+    const log = createCallLog();
+    const services = await workspaceWithWaitingTicket(log, 'valhalla');
+    renderRealms('/home', { ...withSessions, ...services }, log);
+    expect(await screen.findByTestId('needs-you-ticket-run-1')).toHaveTextContent('Valhalla');
+    expect(screen.getByRole('link', { name: 'Review' })).toHaveAttribute(
+      'href',
+      '/ting/review/link-1/issue-1',
+    );
   });
 
   it('answers an ask and drops the row before the server replies', async () => {

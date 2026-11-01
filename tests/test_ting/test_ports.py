@@ -67,6 +67,10 @@ class TestVolundrPort:
     def test_methods_exist(self) -> None:
         methods = {
             "spawn_session",
+            "get_project",
+            "ensure_project",
+            "session_project",
+            "join_project",
             "resolve_delivery_ref",
             "validate_delivery_evidence",
             "describe_delivery_policy",

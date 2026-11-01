@@ -260,6 +260,7 @@ export type {
   SecretType,
   SessionSource,
   ForgeProject,
+  ForgeProjectChanges,
   SessionProjectMembership,
   SessionDefinition,
   SessionOrigin,

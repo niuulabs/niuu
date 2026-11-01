@@ -3,7 +3,6 @@ import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import {
-  AlertCircle,
   ArrowLeft,
   ArrowRight,
   ChevronRight,
@@ -19,7 +18,6 @@ import {
 import { EmptyState, ErrorState, LoadingState, Modal, relTime } from '@niuulabs/ui';
 import type { IDispatchBus } from '../ports';
 import type {
-  SourceCoverage,
   WorkCollection,
   WorkDetail,
   WorkResourceKind,
@@ -29,6 +27,7 @@ import type {
 import { CONDITION_LABEL, KIND_LABEL, type WorkView } from '../domain/workBoard';
 import { mergeWorkPages, useWorkCollection, useWorkDetail } from './useWork';
 import { ProjectBoard } from './ProjectBoard';
+import { WorkCoverageNotices } from './WorkCoverageNotices';
 import { TrackerWorkImportDialog } from './TrackerWorkImportDialog';
 import { WorkCampaignResults } from './WorkCampaignResults';
 import {
@@ -149,38 +148,6 @@ function WorkSection({
           <WorkRow key={item.id} item={item} onSelect={() => onSelect(item)} />
         ))}
       </div>
-    </section>
-  );
-}
-
-function CoverageNotices({
-  coverage,
-  onRetry,
-}: {
-  coverage: SourceCoverage[];
-  onRetry?: () => void;
-}) {
-  const incomplete = coverage.filter((entry) => entry.status !== 'complete');
-  if (incomplete.length === 0) return null;
-  return (
-    <section className="ting-work-coverage" aria-label="Source coverage">
-      {incomplete.map((entry) => (
-        <div key={`${entry.source}:${entry.connectionId ?? ''}`} role="status">
-          <AlertCircle aria-hidden="true" />
-          <span>
-            <strong>{entry.source}</strong>{' '}
-            {entry.error?.message ??
-              (entry.status === 'partial'
-                ? 'returned partial results'
-                : 'is currently unavailable')}
-          </span>
-          {onRetry ? (
-            <button type="button" onClick={onRetry}>
-              Retry
-            </button>
-          ) : null}
-        </div>
-      ))}
     </section>
   );
 }
@@ -392,7 +359,7 @@ function WorkDetailView({
             <WorkViewToggle view={view} onChange={onViewChange} />
           </div>
         </header>
-        <CoverageNotices coverage={detail.coverage} onRetry={() => void onRefresh()} />
+        <WorkCoverageNotices coverage={detail.coverage} onRetry={() => void onRefresh()} />
         {actionError ? (
           <p className="ting-work-action-error" role="alert">
             {actionError}
@@ -458,7 +425,7 @@ function WorkDetailView({
         </div>
       </header>
 
-      <CoverageNotices coverage={detail.coverage} onRetry={() => void onRefresh()} />
+      <WorkCoverageNotices coverage={detail.coverage} onRetry={() => void onRefresh()} />
       {actionError ? (
         <p className="ting-work-action-error" role="alert">
           {actionError}
@@ -640,7 +607,7 @@ function WorkOverview({
         <WorkViewToggle view={view} onChange={onViewChange} />
       </div>
 
-      <CoverageNotices coverage={collection.coverage} onRetry={onRetry} />
+      <WorkCoverageNotices coverage={collection.coverage} onRetry={onRetry} />
 
       {collection.projects.length > 0 ? (
         <section className="ting-work-mobile-projects" aria-labelledby="mobile-projects-title">

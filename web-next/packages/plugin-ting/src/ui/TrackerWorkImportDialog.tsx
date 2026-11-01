@@ -35,12 +35,15 @@ export function TrackerWorkImportDialog({
   onImported,
   connectedProjects,
   onOpenProject,
+  forgeProjectId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onImported: (saga: Saga) => void;
   connectedProjects: WorkSummary[];
   onOpenProject: (project: WorkSummary) => void;
+  /** Forge project the tracker joins; omitted, it stands on its own. */
+  forgeProjectId?: string;
 }) {
   const tracker = useService<ITrackerBrowserService>('ting.tracker');
   const repos = useService<RepoCatalogService>('niuu.repos');
@@ -111,11 +114,14 @@ export function TrackerWorkImportDialog({
   const selectedTargetMissing = Boolean(targetId && !selectedTarget);
   const selectedVersionUnavailable = Boolean(workflowId && versionsQuery.isError);
   const canImport = Boolean(
+    projectsQuery.isSuccess &&
+    reposQuery.isSuccess &&
+    workflowsQuery.isSuccess &&
+    targetsQuery.isSuccess &&
     selectedProject &&
     !selectedProjectMissing &&
     !existingProject &&
-    repo.trim() &&
-    branch.trim() &&
+    (!repo.trim() || branch.trim()) &&
     !selectedTargetMissing &&
     !selectedWorkflowMissing &&
     !selectedVersionUnavailable &&
@@ -150,12 +156,13 @@ export function TrackerWorkImportDialog({
       const target = selectedTarget;
       const saga = await tracker.importProject(
         selectedProject.id,
-        [repo],
+        repo ? [repo] : [],
         branch,
         target?.instanceId ?? undefined,
         {
-          repoRefs: [{ repo, branch }],
+          repoRefs: repo ? [{ repo, branch }] : [],
           trackerConnectionId: selectedProject.trackerConnectionId,
+          ...(forgeProjectId ? { forgeProjectId } : {}),
           target: target
             ? { mode: 'instance', instanceId: target.instanceId ?? target.connectionId }
             : { mode: 'default' },
@@ -177,7 +184,7 @@ export function TrackerWorkImportDialog({
       open={open}
       onOpenChange={setOpen}
       title="Bring in a tracker project"
-      description="Connect its tickets to a repository and workflow. Importing does not start execution."
+      description="Connect its tickets to a workflow, and a repository if the work needs one. Importing does not start execution."
       className="niuu:max-w-[900px]"
       actions={[
         { label: 'Cancel', variant: 'secondary', disabled: busy },
@@ -261,7 +268,7 @@ export function TrackerWorkImportDialog({
               </p>
             </div>
             <label>
-              <span>Repository</span>
+              <span>Repository (optional)</span>
               <RepoSelect
                 repos={catalog}
                 value={repo}

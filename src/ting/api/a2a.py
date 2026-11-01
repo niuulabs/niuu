@@ -13,6 +13,7 @@ import json
 import logging
 import mimetypes
 import posixpath
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from time import monotonic
@@ -88,6 +89,7 @@ from ting.domain.a2a_launch import A2ALaunchReservation
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.execution_snapshot import pinned_child_workflow
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus, WorkflowDefinition
+from ting.domain.services.ticket_coordinator import child_membership, ticket_membership
 from ting.domain.services.ticket_review import campaign_reviews, pending_documents
 from ting.domain.services.workflow_campaign_lifecycle import (
     stop_terminal_campaign_session,
@@ -109,7 +111,7 @@ from ting.domain.workflow_snapshot import (
 )
 from ting.ports.a2a_launch import A2ALaunchReservationRepository
 from ting.ports.a2a_push import A2APushDispatcherPort
-from ting.ports.volundr import VolundrFactory, VolundrPort
+from ting.ports.volundr import SessionMembership, VolundrFactory, VolundrPort
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_execution import WorkflowExecutionRepository
 from ting.ports.workflow_repository import WorkflowRepository
@@ -474,6 +476,8 @@ class WorkflowTaskHandler(RequestHandler):
         ) as span:
             execution_context = await self._workflow_execution_context(metadata, reservation)
             inherited_result_schema = execution_context.pop("result_schema", {})
+            parent_session_id = str(execution_context.pop("parent_session_id", ""))
+            parent_connection_id = str(execution_context.pop("parent_connection_id", ""))
             parent_execution = await self._reserve_durable_parent_execution(
                 workflow=workflow,
                 workflow_snapshot=pending.workflow_snapshot,
@@ -567,6 +571,12 @@ class WorkflowTaskHandler(RequestHandler):
                         pinned_workflow_snapshot=pending.workflow_snapshot,
                         trusted_workflow_execution=bool(execution_context or parent_execution),
                         launch_slug=_launch_slug(reservation),
+                        session_membership=await self._session_membership(
+                            metadata,
+                            workflow,
+                            parent_session_id=parent_session_id,
+                            parent_connection_id=parent_connection_id,
+                        ),
                     )
                 if parent_execution is not None:
                     execution_repo = self._workflow_execution_repo()
@@ -709,6 +719,58 @@ class WorkflowTaskHandler(RequestHandler):
                 f"{asked.name if asked else requested}. Start that workflow instead.",
             )
         return saga_id, ticket[1]
+
+    async def _session_membership(
+        self,
+        metadata: dict[str, Any],
+        workflow: WorkflowDefinition,
+        *,
+        parent_session_id: str,
+        parent_connection_id: str,
+    ) -> Callable[[VolundrPort], Awaitable[SessionMembership | None]] | None:
+        """Where the launched session joins Forge's project. Ting decides, never a model."""
+        auth_token = self._downstream_auth_token()
+        ticket = ticket_of(metadata)
+        if ticket is not None:
+            state = self._request.app.state
+            saga_id = UUID(ticket[0])
+            saga = await state.saga_repo.get_saga(saga_id, owner_id=self._principal.user_id)
+            if saga is None:
+                return None
+            coordinator = await state.ticket_coordinator_repo.get(saga_id, ticket[1])
+
+            async def under_coordinator(volundr: VolundrPort) -> SessionMembership:
+                return await ticket_membership(
+                    volundr,
+                    saga,
+                    coordinator,
+                    workflow.name,
+                    auth_token=auth_token,
+                    principal=self._principal,
+                )
+
+            return under_coordinator
+        if not parent_session_id:
+            return None
+
+        async def under_parent(volundr: VolundrPort) -> SessionMembership | None:
+            parent_forge = (
+                await self._volundr_factory.for_connection(
+                    self._principal.user_id, parent_connection_id
+                )
+                if parent_connection_id
+                else None
+            )
+            return await child_membership(
+                volundr,
+                parent_forge or volundr,
+                parent_session_id,
+                workflow.name,
+                auth_token=auth_token,
+                principal=self._principal,
+            )
+
+        return under_parent
 
     async def _outstanding_request(self, saga_id: UUID, issue_id: str) -> str | None:
         """The workflow Ting asked a ticket's coordinator to start, until a run answers it."""
@@ -1539,6 +1601,8 @@ class WorkflowTaskHandler(RequestHandler):
             "child_intent_id": str(child.intent_id),
             "child_task_id": reservation.task_id,
             "result_schema": execution.policy.result_schema,
+            "parent_session_id": execution.parent_session_id,
+            "parent_connection_id": execution.connection_id,
         }
 
     @staticmethod

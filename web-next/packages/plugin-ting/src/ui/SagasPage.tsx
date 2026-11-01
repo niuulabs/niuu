@@ -314,7 +314,6 @@ function SagasPageContent() {
     : '';
   const canImportSelectedProject =
     effectiveSelectedProject !== null &&
-    selectedRepoRefs.length > 0 &&
     selectedRepoRefs.every((entry) => entry.repo.trim() && entry.branch.trim()) &&
     (targetMode !== 'instance' || Boolean(selectedInstanceId.trim())) &&
     (targetMode !== 'tags' || targetTags.length > 0) &&

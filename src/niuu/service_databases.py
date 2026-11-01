@@ -242,6 +242,11 @@ NIUU_SHARED_BOOTSTRAP_SQL: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_ravn_personas_owner_updated
         ON ravn_personas(owner_id, updated_at DESC);
     """,
+    # Mirrors migrations/000091_realm_project.up.sql.
+    """
+    ALTER TABLE realms ADD COLUMN IF NOT EXISTS project_id UUID;
+    CREATE INDEX IF NOT EXISTS idx_realms_project_id ON realms (project_id);
+    """,
     # Mirrors migrations/000090_realm_tenancy.up.sql for a database with no
     # resident_runtimes table. Runs on every start, so it stays idempotent.
     """

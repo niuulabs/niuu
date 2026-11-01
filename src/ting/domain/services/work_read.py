@@ -49,6 +49,7 @@ from ting.domain.workflow_board import (
     place_on_project,
     place_ticket,
     project_board,
+    repository_gap,
     ticket_is_closed,
 )
 from ting.domain.workflow_execution import ExecutionState, WorkflowExecution
@@ -1348,11 +1349,12 @@ def _task_from_issue(
         actions.append("openSession")
     if run is not None and run.status.value in {"REVIEW", "ESCALATED"}:
         actions.append("review")
-    if ready and saga.repos:
+    has_workflow = saga.workflow_id is not None or bool(saga.board_workflows)
+    if ready and (saga.repos or (has_workflow and repository_gap(saga) is None)):
         dispatch = DispatchRef(
             saga_id=str(saga.id),
             issue_id=issue.id,
-            repo=saga.repos[0],
+            repo=saga.repos[0] if saga.repos else "",
             connection_id=saga.instance_id,
             workflow_id=str(saga.workflow_id) if saga.workflow_id else None,
         )

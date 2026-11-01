@@ -694,6 +694,7 @@ async def _sync_realm_to_instance(
             "owner_id": realm.owner_id,
             "instance_id": realm.instance_id,
             "autonomy_profile": realm.autonomy_profile,
+            "project_id": str(realm.project_id) if realm.project_id else None,
         },
         embedded_app=embedded_app,
     )

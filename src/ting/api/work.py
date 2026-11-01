@@ -24,7 +24,7 @@ from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.research import resolve_workflow_campaign_repo
 from ting.api.sagas import resolve_saga_repo
 from ting.api.tracker import resolve_trackers
-from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
+from ting.domain.models import Saga, WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.dispatch_service import DispatchService
 from ting.domain.services.review_list import ReviewKind, ReviewState, review_list, review_run
 from ting.domain.services.ticket_coordinator import (
@@ -57,6 +57,7 @@ from ting.domain.workflow_board import (
     BoardTicketState,
     BoardWorkflow,
     ProjectBoard,
+    repository_gap,
 )
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.ticket_coordinator_repository import TicketCoordinatorRepository
@@ -663,6 +664,16 @@ async def _forge_adapter(request: Request, principal: Principal) -> VolundrPort 
     return await factory.primary_for_principal(principal)
 
 
+async def _project_forge(request: Request, principal: Principal, saga: Saga) -> VolundrPort | None:
+    """The Forge a project's tickets run on: the one it names, else the user's primary."""
+    if not saga.instance_id:
+        return await _forge_adapter(request, principal)
+    factory = getattr(request.app.state, "volundr_factory", None)
+    if factory is None:
+        return None
+    return await factory.for_connection(principal.user_id, saga.instance_id)
+
+
 def _blocked_reason(session: VolundrSession | None) -> str | None:
     """Why a flock stopped, when its last outcome before going idle was a blocked verdict."""
     metadata = getattr(session, "activity_metadata", None)
@@ -1126,18 +1137,21 @@ def create_work_router() -> APIRouter:
         tracker_resolution: TrackerResolution = Depends(resolve_work_trackers),
     ) -> TicketStartResponse:
         """Hand a ticket to its coordinator, which starts the workflow of the dropped column."""
-        adapter = await _forge_adapter(request, principal)
-        sessions = _forge_sessions(request, principal)
-        if adapter is None or sessions is None:
-            raise HTTPException(status_code=503, detail="No Forge connection is available")
         saga = await saga_repo.get_saga(saga_id, owner_id=principal.user_id)
         if saga is None:
             raise HTTPException(status_code=404, detail=f"Project work not found: {saga_id}")
-        if (saga.workflow_id is None and not saga.board_workflows) or not saga.repos:
+        adapter = await _project_forge(request, principal, saga)
+        sessions = _forge_sessions(request, principal)
+        if adapter is None or sessions is None:
+            raise HTTPException(status_code=503, detail="No Forge connection is available")
+        if saga.workflow_id is None and not saga.board_workflows:
             raise HTTPException(
                 status_code=409,
-                detail="Give this project a workflow and a repository before starting tickets",
+                detail="Give this project a workflow before starting tickets",
             )
+        gap = repository_gap(saga)
+        if gap is not None:
+            raise HTTPException(status_code=409, detail=gap)
         service = _service(
             principal=principal,
             saga_repo=saga_repo,
