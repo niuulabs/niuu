@@ -25,6 +25,7 @@ _DEFAULT_ANALYSE_PROMPT = "Describe this image in detail."
 _DEFAULT_COMPARE_PROMPT = "Describe the meaningful differences between these images."
 _PATH_READ_OVERAGE_BYTES = 1
 _NO_FOLLOW_FLAG = getattr(os, "O_NOFOLLOW", None)
+_DIRECTORY_FLAG = getattr(os, "O_DIRECTORY", None)
 
 
 class ImageSourceError(ValueError):
@@ -100,17 +101,40 @@ class _VisionToolBase(ToolPort):
             path = resolve_safe(source, self._workspace)
         except PathSecurityError as exc:
             raise ImageSourceError(str(exc)) from None
-        if not path.is_file():
-            raise ImageSourceError(f"image path is not a file: {source}")
-        if _NO_FOLLOW_FLAG is None:
-            raise ImageSourceError("secure workspace image reads require O_NOFOLLOW support")
+        if _NO_FOLLOW_FLAG is None or _DIRECTORY_FLAG is None:
+            raise ImageSourceError(
+                "secure workspace image reads require O_NOFOLLOW and O_DIRECTORY support"
+            )
         try:
-            descriptor = os.open(path, os.O_RDONLY | _NO_FOLLOW_FLAG)
+            descriptor = self._open_workspace_file(path)
             with os.fdopen(descriptor, "rb") as image_file:
                 image = image_file.read(self._max_image_bytes + _PATH_READ_OVERAGE_BYTES)
         except OSError as exc:
             raise ImageSourceError(f"could not read image: {exc}") from None
         return self._validated_bytes(image)
+
+    def _open_workspace_file(self, path: Path) -> int:
+        """Open a resolved workspace file without following any path-component symlink."""
+        workspace = self._workspace.resolve()
+        try:
+            components = path.relative_to(workspace).parts
+        except ValueError as exc:
+            raise ImageSourceError(f"image path is outside the workspace: {path}") from exc
+        if not components:
+            raise ImageSourceError(f"image path is not a file: {path}")
+
+        directory_flags = os.O_RDONLY | _NO_FOLLOW_FLAG | _DIRECTORY_FLAG
+        directory_descriptor = os.open(workspace, directory_flags)
+        try:
+            for component in components[:-1]:
+                next_descriptor = os.open(component, directory_flags, dir_fd=directory_descriptor)
+                os.close(directory_descriptor)
+                directory_descriptor = next_descriptor
+            return os.open(
+                components[-1], os.O_RDONLY | _NO_FOLLOW_FLAG, dir_fd=directory_descriptor
+            )
+        finally:
+            os.close(directory_descriptor)
 
     def _data_uri(self, source: str) -> bytes:
         header, separator, encoded = source.partition(",")
