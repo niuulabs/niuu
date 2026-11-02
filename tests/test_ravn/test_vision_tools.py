@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from io import BytesIO
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -103,6 +105,38 @@ async def test_oversize_image_fails_without_sending_it_to_the_model(tmp_path) ->
     assert result.is_error
     assert "vision.max_image_bytes" in result.content
     assert "not sent" in result.content
+    vision.analyse.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_workspace_file_replaced_after_size_check_is_not_sent_to_model(
+    tmp_path, monkeypatch
+) -> None:
+    class ReplacedPath:
+        def is_file(self) -> bool:
+            return True
+
+        def stat(self) -> SimpleNamespace:
+            return SimpleNamespace(st_size=len(_PNG))
+
+        def read_bytes(self) -> bytes:
+            return _PNG + b"replacement"
+
+        def open(self, mode: str) -> BytesIO:
+            assert mode == "rb"
+            return BytesIO(_PNG + b"replacement")
+
+    monkeypatch.setattr(
+        "ravn.adapters.tools.vision.resolve_safe",
+        lambda source, workspace: ReplacedPath(),
+    )
+    vision = AsyncMock()
+    tool = VisionAnalyseTool(vision, workspace=tmp_path, max_image_bytes=len(_PNG))
+
+    result = await tool.execute({"image_source": "image.png"})
+
+    assert result.is_error
+    assert "vision.max_image_bytes" in result.content
     vision.analyse.assert_not_awaited()
 
 

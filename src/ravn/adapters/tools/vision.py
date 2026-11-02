@@ -22,6 +22,7 @@ from ravn.ports.vision import VisionPort
 
 _DEFAULT_ANALYSE_PROMPT = "Describe this image in detail."
 _DEFAULT_COMPARE_PROMPT = "Describe the meaningful differences between these images."
+_PATH_READ_OVERAGE_BYTES = 1
 
 
 class ImageSourceError(ValueError):
@@ -100,15 +101,11 @@ class _VisionToolBase(ToolPort):
         if not path.is_file():
             raise ImageSourceError(f"image path is not a file: {source}")
         try:
-            size = path.stat().st_size
-            if size > self._max_image_bytes:
-                raise ImageTooLargeError(
-                    f"image is {size} bytes, exceeding vision.max_image_bytes="
-                    f"{self._max_image_bytes}; it was not sent to the model"
-                )
-            return path.read_bytes()
+            with path.open("rb") as image_file:
+                image = image_file.read(self._max_image_bytes + _PATH_READ_OVERAGE_BYTES)
         except OSError as exc:
             raise ImageSourceError(f"could not read image: {exc}") from None
+        return self._validated_bytes(image)
 
     def _data_uri(self, source: str) -> bytes:
         header, separator, encoded = source.partition(",")
