@@ -186,19 +186,18 @@ def _build_issues_router(
         if not connections:
             return []
 
-        results: list[TrackerIssue] = []
+        # Two connections can reach one account, so the same issue may come back twice.
+        results: dict[tuple[str, str], TrackerIssue] = {}
         for conn in connections:
             if not conn.enabled:
-                continue
-            # Only load adapters from volundr's package
-            if not conn.adapter.startswith("volundr."):
                 continue
             try:
                 adapter = await tracker_factory.create(conn)
                 issues = await adapter.search_issues(q)
             except Exception as exc:
                 raise _tracker_failure(conn.id, "search issues", exc) from exc
-            results.extend(issues)
+            for issue in issues:
+                results.setdefault((issue.id, issue.url), issue)
         if deprecated:
             warn_on_legacy_route(
                 request,
@@ -209,7 +208,7 @@ def _build_issues_router(
                 ),
                 route_logger=logger,
             )
-        return results
+        return list(results.values())
 
     @router.post("/issues", response_model=TrackerIssue, status_code=status.HTTP_201_CREATED)
     async def create_issue(
@@ -221,9 +220,7 @@ def _build_issues_router(
             principal.user_id,
             integration_type=IntegrationType.ISSUE_TRACKER,
         )
-        eligible = [
-            conn for conn in connections if conn.enabled and conn.adapter.startswith("volundr.")
-        ]
+        eligible = [conn for conn in connections if conn.enabled]
         conn = _select_create_connection(eligible, data.connection_id)
         try:
             adapter = await tracker_factory.create(conn)
@@ -258,8 +255,6 @@ def _build_issues_router(
         )
         for conn in connections:
             if not conn.enabled:
-                continue
-            if not conn.adapter.startswith("volundr."):
                 continue
             try:
                 adapter = await tracker_factory.create(conn)
@@ -306,10 +301,6 @@ def _build_issues_router(
         )
         for conn in connections:
             if not conn.enabled:
-                continue
-            # Connections backed by other packages' adapters (e.g. Ting's) are
-            # served by those packages' APIs, not this router.
-            if not conn.adapter.startswith("volundr."):
                 continue
             try:
                 adapter = await tracker_factory.create(conn)

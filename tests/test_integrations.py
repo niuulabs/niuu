@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import httpx
@@ -17,6 +18,7 @@ from niuu.adapters.http_integrations import (
     HTTPIntegrationRepository,
     UnsupportedIntegrationQueryError,
 )
+from tracker.ports import IssueTrackerProvider
 from volundr.adapters.inbound.rest_integrations import (
     create_integrations_router,
 )
@@ -208,6 +210,50 @@ class TestTrackerFactory:
 
         with pytest.raises(ValueError, match="not found"):
             await factory.create(conn)
+
+    @pytest.mark.parametrize(
+        ("adapter", "config", "provider_name"),
+        [
+            ("ting.adapters.linear.LinearTrackerAdapter", {"team_id": "t1"}, "linear"),
+            (
+                "ting.adapters.jira.JiraTrackerAdapter",
+                {
+                    "site_url": "https://acme.atlassian.net",
+                    "email": "me@acme.test",
+                    "api_token": "test-token",
+                },
+                "jira",
+            ),
+        ],
+    )
+    async def test_ting_tracker_class_resolves_to_the_shared_provider(
+        self,
+        tracker_factory: TrackerFactory,
+        sample_connection: IntegrationConnection,
+        adapter: str,
+        config: dict[str, str],
+        provider_name: str,
+    ):
+        conn = replace(sample_connection, adapter=adapter, config=config)
+
+        provider = await tracker_factory.create(conn)
+
+        assert isinstance(provider, IssueTrackerProvider)
+        assert provider.provider_name == provider_name
+
+    async def test_third_party_adapter_is_built_from_its_own_class(
+        self,
+        tracker_factory: TrackerFactory,
+        sample_connection: IntegrationConnection,
+    ):
+        conn = replace(sample_connection, adapter="acme.trackers.AcmeTracker")
+        acme_class = MagicMock()
+
+        with patch("tracker.factory._import_class", return_value=acme_class) as import_class:
+            provider = await tracker_factory.create(conn)
+
+        import_class.assert_called_once_with("acme.trackers.AcmeTracker")
+        assert provider is acme_class.return_value
 
 
 # --- TrackerService with factory tests ---

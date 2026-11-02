@@ -51,6 +51,10 @@ def _make_connection(
     )
 
 
+def _make_third_party_connection(conn_id: str = "conn-acme") -> IntegrationConnection:
+    return replace(_make_connection(conn_id=conn_id), adapter="acme.trackers.AcmeTracker")
+
+
 def _make_issue(
     issue_id: str = "issue-1",
     title: str = "Fix the bug",
@@ -181,19 +185,68 @@ class TestSearchIssues:
         assert "conn-1" in resp.json()["detail"]
         assert "credential linear-token missing" in resp.json()["detail"]
 
-    def test_search_skips_non_volundr_adapters(self):
+    def test_search_serves_a_third_party_adapter(self):
         app, integration_repo, tracker_factory = _make_app()
-        connection = replace(
-            _make_connection(), adapter="ting.adapters.linear.LinearTrackerAdapter"
-        )
+        connection = _make_third_party_connection()
         integration_repo.list_connections.return_value = [connection]
+        adapter = AsyncMock()
+        adapter.search_issues.return_value = [_make_issue(issue_id="acme-1")]
+        tracker_factory.create.return_value = adapter
         client = TestClient(app)
 
         resp = client.get(f"{PREFIX}/issues?q=bug", headers=AUTH)
 
         assert resp.status_code == 200
-        assert resp.json() == []
-        tracker_factory.create.assert_not_called()
+        assert [issue["id"] for issue in resp.json()] == ["acme-1"]
+        tracker_factory.create.assert_awaited_once_with(connection)
+
+    def test_search_fails_with_502_when_a_third_party_adapter_cannot_be_built(self):
+        app, integration_repo, tracker_factory = _make_app()
+        integration_repo.list_connections.return_value = [_make_third_party_connection()]
+        tracker_factory.create.side_effect = ImportError("No module named 'acme'")
+        client = TestClient(app)
+
+        resp = client.get(f"{PREFIX}/issues?q=bug", headers=AUTH)
+
+        assert resp.status_code == 502
+        assert "conn-acme" in resp.json()["detail"]
+        assert "No module named 'acme'" in resp.json()["detail"]
+
+    def test_search_returns_an_issue_once_when_two_connections_reach_it(self):
+        app, integration_repo, tracker_factory = _make_app()
+        integration_repo.list_connections.return_value = [
+            _make_connection(conn_id="conn-1"),
+            _make_connection(conn_id="conn-2"),
+        ]
+        adapter = AsyncMock()
+        adapter.search_issues.return_value = [_make_issue(issue_id="same")]
+        tracker_factory.create.return_value = adapter
+        client = TestClient(app)
+
+        resp = client.get(f"{PREFIX}/issues?q=bug", headers=AUTH)
+
+        assert resp.status_code == 200
+        assert [issue["id"] for issue in resp.json()] == ["same"]
+
+    def test_search_keeps_same_id_from_different_trackers(self):
+        app, integration_repo, tracker_factory = _make_app()
+        integration_repo.list_connections.return_value = [
+            _make_connection(conn_id="conn-1"),
+            _make_connection(conn_id="conn-2"),
+        ]
+        adapter1 = AsyncMock()
+        adapter1.search_issues.return_value = [_make_issue(issue_id="10001")]
+        other_site = _make_issue(issue_id="10001")
+        other_site.url = "https://other.atlassian.net/browse/NIU-42"
+        adapter2 = AsyncMock()
+        adapter2.search_issues.return_value = [other_site]
+        tracker_factory.create.side_effect = [adapter1, adapter2]
+        client = TestClient(app)
+
+        resp = client.get(f"{PREFIX}/issues?q=bug", headers=AUTH)
+
+        assert resp.status_code == 200
+        assert len(resp.json()) == 2
 
 
 class TestGetIssue:
@@ -264,6 +317,19 @@ class TestGetIssue:
             "Issue tracker connection conn-1 failed to get issue NIU-1092: "
             "RuntimeError: 401 Unauthorized"
         )
+
+    def test_serves_a_third_party_adapter(self):
+        app, integration_repo, tracker_factory = _make_app()
+        integration_repo.list_connections.return_value = [_make_third_party_connection()]
+        adapter = AsyncMock()
+        adapter.get_issue.return_value = _make_issue(issue_id="acme-1")
+        tracker_factory.create.return_value = adapter
+        client = TestClient(app)
+
+        resp = client.get(f"{PREFIX}/issues/acme-1", headers=AUTH)
+
+        assert resp.status_code == 200
+        assert resp.json()["id"] == "acme-1"
 
     def test_returns_404_when_not_found(self):
         app, integration_repo, tracker_factory = _make_app()
@@ -381,14 +447,24 @@ class TestUpdateIssueStatus:
             "Status 'Cancelled' not found. Available: Todo, Done, Canceled"
         )
 
-    def test_update_skips_disabled_foreign_and_unmatched_connections(self):
+    def test_update_serves_a_third_party_adapter(self):
+        app, integration_repo, tracker_factory = _make_app()
+        integration_repo.list_connections.return_value = [_make_third_party_connection()]
+        adapter = AsyncMock()
+        adapter.get_issue.return_value = _make_issue(issue_id="acme-1")
+        adapter.update_issue_status.return_value = _make_issue(issue_id="acme-1", status="Done")
+        tracker_factory.create.return_value = adapter
+        client = TestClient(app)
+
+        resp = client.patch(f"{PREFIX}/issues/acme-1", json={"status": "Done"}, headers=AUTH)
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "Done"
+
+    def test_update_skips_disabled_and_unmatched_connections(self):
         app, integration_repo, tracker_factory = _make_app()
         integration_repo.list_connections.return_value = [
             _make_connection(conn_id="conn-1", enabled=False),
-            replace(
-                _make_connection(conn_id="conn-ting"),
-                adapter="ting.adapters.linear.LinearTrackerAdapter",
-            ),
             _make_connection(conn_id="conn-2"),
             _make_connection(conn_id="conn-3"),
         ]
@@ -471,6 +547,41 @@ class TestEditIssue:
 
 
 class TestCreateIssue:
+    def test_creates_in_a_third_party_connection(self):
+        app, integration_repo, tracker_factory = _make_app()
+        integration_repo.list_connections.return_value = [_make_third_party_connection()]
+        adapter = AsyncMock()
+        adapter.create_issue.return_value = _make_issue(issue_id="acme-1")
+        tracker_factory.create.return_value = adapter
+        client = TestClient(app)
+
+        resp = client.post(
+            f"{PREFIX}/issues",
+            json={"title": "T", "description": "D", "team": "NIU"},
+            headers=AUTH,
+        )
+
+        assert resp.status_code == 201
+        assert resp.json()["id"] == "acme-1"
+
+    def test_counts_a_third_party_connection_when_choosing_where_to_create(self):
+        app, integration_repo, tracker_factory = _make_app()
+        integration_repo.list_connections.return_value = [
+            _make_connection(conn_id="conn-1"),
+            _make_third_party_connection(),
+        ]
+        client = TestClient(app)
+
+        resp = client.post(
+            f"{PREFIX}/issues",
+            json={"title": "T", "description": "D", "team": "NIU"},
+            headers=AUTH,
+        )
+
+        assert resp.status_code == 400
+        assert "conn-acme" in resp.json()["detail"]
+        tracker_factory.create.assert_not_called()
+
     BODY = {
         "title": "Tracker API lacks create",
         "description": "## Acceptance criteria\n- [ ] POST works",
@@ -484,10 +595,6 @@ class TestCreateIssue:
         integration_repo.list_connections.return_value = [
             _make_connection(conn_id="conn-1"),
             _make_connection(conn_id="conn-off", enabled=False),
-            replace(
-                _make_connection(conn_id="conn-ting"),
-                adapter="ting.adapters.linear.LinearTrackerAdapter",
-            ),
         ]
         mock_adapter = AsyncMock()
         created = _make_issue(issue_id="new-1")
