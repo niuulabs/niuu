@@ -251,14 +251,6 @@ class VisionConfig(BaseModel):
             "they are sent to a model; reduce the image or raise vision.max_image_bytes."
         ),
     )
-    max_redirects: int = Field(
-        default=10,
-        ge=0,
-        description=(
-            "Maximum validated HTTP redirects for a URL image. Each redirect target is "
-            "rechecked against web_fetch URL security; raise this only for a known redirect chain."
-        ),
-    )
 
 
 class FileToolsConfig(BaseModel):

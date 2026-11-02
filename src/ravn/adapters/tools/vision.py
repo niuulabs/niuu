@@ -37,7 +37,6 @@ class _VisionToolBase(ToolPort):
         *,
         workspace: Path,
         max_image_bytes: int,
-        max_redirects: int,
         allow_private_addresses: bool = False,
         timeout: float = 30.0,
         permission: PermissionPort | None = None,
@@ -45,7 +44,6 @@ class _VisionToolBase(ToolPort):
         self._vision = vision
         self._workspace = workspace
         self._max_image_bytes = max_image_bytes
-        self._max_redirects = max_redirects
         self._allow_private_addresses = allow_private_addresses
         self._timeout = timeout
         self._permission = permission
@@ -53,6 +51,19 @@ class _VisionToolBase(ToolPort):
     @property
     def required_permission(self) -> str:
         return "file:read"
+
+    def required_permission_for(self, input: dict) -> str:
+        sources = (
+            input.get("image_source"),
+            input.get("image_a"),
+            input.get("image_b"),
+        )
+        if any(
+            isinstance(source, str) and source.startswith(("http://", "https://"))
+            for source in sources
+        ):
+            return "web:fetch"
+        return self.required_permission
 
     async def _image(self, source: object) -> bytes:
         if isinstance(source, bytes):
@@ -121,10 +132,13 @@ class _VisionToolBase(ToolPort):
             raise ImageSourceError("Permission denied: vision URL input requires web:fetch")
 
         current_url = source
-        redirects = 0
+        visited_urls: set[str] = set()
         try:
             async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=False) as client:
                 while True:
+                    if current_url in visited_urls:
+                        raise ImageSourceError("could not fetch image URL: redirect cycle detected")
+                    visited_urls.add(current_url)
                     url_error = _validate_url(
                         current_url,
                         allow_private_addresses=self._allow_private_addresses,
@@ -138,12 +152,7 @@ class _VisionToolBase(ToolPort):
                                 raise ImageSourceError(
                                     "could not fetch image URL: redirect has no location"
                                 )
-                            if redirects >= self._max_redirects:
-                                raise ImageSourceError(
-                                    "could not fetch image URL: vision.max_redirects was exhausted"
-                                )
                             current_url = urljoin(str(response.url), location)
-                            redirects += 1
                             continue
                         response.raise_for_status()
                         content_length = response.headers.get("content-length")

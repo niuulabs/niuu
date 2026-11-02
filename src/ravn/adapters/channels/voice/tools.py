@@ -193,9 +193,10 @@ class VoiceToolBridge:
         tool = self._tools.get(name)
         if tool is None:
             raise UnknownToolError(name)
-        if not await self._permission.check(tool.required_permission):
+        required_permission = tool.required_permission_for(args)
+        if not await self._permission.check(required_permission):
             return ToolOutcome(
-                f"Permission denied: {name} needs {tool.required_permission}", is_error=True
+                f"Permission denied: {name} needs {required_permission}", is_error=True
             )
 
         async def _execute() -> Any:

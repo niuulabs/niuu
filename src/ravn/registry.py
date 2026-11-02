@@ -83,7 +83,7 @@ class ToolRegistry:
             )
 
         state: dict = dict(agent_state) if agent_state else {}
-        state.setdefault("required_permission", tool.required_permission)
+        state.setdefault("required_permission", tool.required_permission_for(input))
         state.setdefault("_started_at", time.monotonic())
 
         try:

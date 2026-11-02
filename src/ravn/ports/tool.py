@@ -34,6 +34,15 @@ class ToolPort(ABC):
         """Permission string that must be granted before this tool executes."""
         raise NotImplementedError
 
+    def required_permission_for(self, input: dict) -> str:
+        """Return the permission required for a specific tool invocation.
+
+        Most tools have one permission regardless of their input. Source-multiplexing
+        tools may override this to make the dispatcher enforce the permission matching
+        the requested source before execution begins.
+        """
+        return self.required_permission
+
     @property
     def parallelisable(self) -> bool:
         """Whether this tool can run concurrently with other tools in the same batch.

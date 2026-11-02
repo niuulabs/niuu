@@ -1950,9 +1950,10 @@ class RavnAgent:
             )
         )
 
-        granted = await self._permission.check(tool.required_permission)
+        required_permission = tool.required_permission_for(tool_call.input)
+        granted = await self._permission.check(required_permission)
         if not granted:
-            error = PermissionDeniedError(tool_call.name, tool.required_permission)
+            error = PermissionDeniedError(tool_call.name, required_permission)
             result = ToolResult(
                 tool_call_id=tool_call.id,
                 content=str(error),

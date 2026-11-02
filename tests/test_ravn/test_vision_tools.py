@@ -12,12 +12,14 @@ from httpx import ConnectError, Request, Response
 
 from ravn.adapters.permission.allow_deny import AllowAllPermission, AllowListPermission
 from ravn.adapters.tools.browser import BrowserScreenshotTool, BrowserSessionManager
+from ravn.adapters.tools.hooks import HookPipeline, PermissionHook
 from ravn.adapters.tools.vision import VisionAnalyseTool, VisionCompareTool, VisionOcrTool
 from ravn.adapters.vision.anthropic import AnthropicVisionAdapter
 from ravn.adapters.vision.ollama import OllamaVisionAdapter
 from ravn.cli.tool_builders import _build_tools
 from ravn.config import Settings
 from ravn.domain.models import Session
+from ravn.registry import ToolRegistry
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"image"
 
@@ -33,7 +35,6 @@ def _tool(
         vision,
         workspace=tmp_path,
         max_image_bytes=len(_PNG) + 1,
-        max_redirects=1,
         permission=permission,
     )
 
@@ -89,7 +90,6 @@ async def test_oversize_image_fails_without_sending_it_to_the_model(tmp_path) ->
         vision,
         workspace=tmp_path,
         max_image_bytes=len(_PNG) - 1,
-        max_redirects=1,
     )
 
     result = await tool.execute(
@@ -162,6 +162,64 @@ async def test_url_images_fetch_when_web_fetch_permission_is_granted(tmp_path, m
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_registry_dispatch_uses_web_fetch_permission_for_url_images(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "ravn.adapters.tools.vision._validate_url",
+        lambda url, *, allow_private_addresses: None,
+    )
+    respx.get("https://image.example/chart.png").mock(return_value=Response(200, content=_PNG))
+    vision = AsyncMock()
+    vision.analyse.return_value = "chart"
+    tool = _tool(
+        VisionAnalyseTool,
+        tmp_path,
+        vision,
+        permission=AllowListPermission({"web:fetch"}),
+    )
+    registry = ToolRegistry(
+        HookPipeline(pre_hooks=[PermissionHook(AllowListPermission({"web:fetch"}))])
+    )
+    registry.register(tool)
+
+    result = await registry.dispatch(
+        "vision_analyse",
+        {"image_source": "https://image.example/chart.png"},
+        call_id="vision-url",
+    )
+
+    assert not result.is_error
+    vision.analyse.assert_awaited_once_with(_PNG, "Describe this image in detail.")
+
+
+@pytest.mark.asyncio
+async def test_registry_dispatch_denies_url_images_with_file_read_only(tmp_path) -> None:
+    vision = AsyncMock()
+    tool = _tool(
+        VisionAnalyseTool,
+        tmp_path,
+        vision,
+        permission=AllowListPermission({"file:read"}),
+    )
+    registry = ToolRegistry(
+        HookPipeline(pre_hooks=[PermissionHook(AllowListPermission({"file:read"}))])
+    )
+    registry.register(tool)
+
+    result = await registry.dispatch(
+        "vision_analyse",
+        {"image_source": "https://image.example/chart.png"},
+        call_id="vision-url",
+    )
+
+    assert result.is_error
+    assert "web:fetch" in result.content
+    vision.analyse.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_redirect_to_private_url_is_rejected_before_request(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         "ravn.adapters.tools.vision._validate_url",
@@ -185,6 +243,27 @@ async def test_redirect_to_private_url_is_rejected_before_request(tmp_path, monk
     assert result.is_error
     assert result.content.startswith("Blocked:")
     assert not private.called
+    vision.analyse.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_redirect_cycle_fails_without_a_guessed_redirect_limit(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ravn.adapters.tools.vision._validate_url",
+        lambda url, *, allow_private_addresses: None,
+    )
+    redirect = respx.get("https://image.example/chart.png").mock(
+        return_value=Response(302, headers={"location": "/chart.png"})
+    )
+    vision = AsyncMock()
+    tool = _tool(VisionAnalyseTool, tmp_path, vision, permission=AllowAllPermission())
+
+    result = await tool.execute({"image_source": "https://image.example/chart.png"})
+
+    assert result.is_error
+    assert result.content == "could not fetch image URL: redirect cycle detected"
+    assert redirect.call_count == 1
     vision.analyse.assert_not_awaited()
 
 
