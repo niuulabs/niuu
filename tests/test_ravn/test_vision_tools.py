@@ -396,6 +396,9 @@ async def test_anthropic_adapter_sends_image_to_bifrost_with_configured_alias() 
     assert result == "chart summary"
     body = json.loads(route.calls[0].request.content)
     assert body["model"] == "vision-alias"
+    # Bifröst accepts an uncapped request and resolves the required Anthropic
+    # positive output cap from its model catalog before contacting Anthropic.
+    assert body["max_tokens"] is None
     assert body["messages"][0]["content"][0]["source"]["data"] == base64.b64encode(_PNG).decode()
 
 
