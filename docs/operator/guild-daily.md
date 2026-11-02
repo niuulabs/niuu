@@ -51,3 +51,16 @@ unit, or a size command and a count command for a log without timestamps). To pa
   - Feedless nodes: 582bf8d0-41fb-4c5d-ad4c-e5cdbbdeb0c8; unreachable: none
 
 - **Promotions**: rolled back 2 (10-31 16:09 Thor forge-guild-b25aec7f; 10-31 17:42 Thor forge-owners-28e97992); completed 13 (10-31 07:36 mini forge-relay-58debfa5; 10-31 07:44 Thor forge-names-39ab05da; 10-31 12:32 Thor forge-attn-c42970e6; 10-31 15:33 mini forge-attn-c42970e6; 10-31 16:13 Thor forge-guild-b25aec7f; 10-31 16:27 Thor forge-env-5aac51a5; 10-31 17:16 mini forge-env-5aac51a5; 10-31 18:58 mini forge-owners-ec03df0c; 10-31 19:02 Thor forge-owners-ec03df0c; 10-31 19:09 Thor forge-fallback-6ff003fb; 10-31 22:50 mini forge-fallback-6ff003fb; 10-31 23:05 Thor forge-projects-4cd719ba; 11-01 01:01 mini forge-projects-4cd719ba)
+
+## Guild summary 2026-11-02 (2026-11-01 06:33 to 2026-11-02 06:30 UTC)
+
+- **Thor**: ok, forge-projects-4cd719ba (4cd719bad, not dirty); ledger 118; 78 sessions (16 running); 5xx 8 (0 during cutovers or rollbacks, 0 in known storms, 8 other: GET /s/{id}/api/conversation/history ×4, GET /api/v1/forge/sessions/{id}/conversation ×3, GET /api/v1/forge/sessions/{id} ×1)
+- **mini-m6**: ok, forge-m6-projects-4cd719ba (4cd719bad, not dirty); ledger 140|44; 15 sessions (6 running); 5xx 0
+
+- **Push gateway** (running), since 11-01 06:33: alerts_sent 49, alerts_suppressed 7, live_activity_updates 349, background_wakes 42, apns_rejections 13, tokens_pruned 13, node_failures 13
+  - APNs answers per environment, since 11-01 06:33: production: accepted 440, rejected 13
+  - Rejections by reason in this window (gateway log): HTTP 410 ExpiredToken (token pruned) ×13
+  - Registered tokens: production: alert 1, live_activity 7, live_activity_start 1, widget_fallback 1
+  - Feedless nodes: 582bf8d0-41fb-4c5d-ad4c-e5cdbbdeb0c8; unreachable: none
+
+- **Promotions**: rolled back 0; completed 0
