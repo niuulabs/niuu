@@ -10,6 +10,7 @@ import yaml
 
 CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "volundr"
 RESIDENT_ISSUER = "https://kubernetes.default.svc"
+BIFROST_URL = ("--set", "bifrost.url=http://bifrost.test")
 
 
 class TestChartMetadata:
@@ -491,6 +492,7 @@ class TestRbacTemplate:
                 "template",
                 "test",
                 str(CHART_DIR),
+                *BIFROST_URL,
                 "--namespace",
                 "forge",
                 "--set",
@@ -570,7 +572,7 @@ class TestConfigMapTemplate:
 
     def test_empty_resident_profiles_render_as_list(self):
         result = subprocess.run(
-            ["helm", "template", "test", str(CHART_DIR)],
+            ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL],
             check=True,
             capture_output=True,
             text=True,
@@ -586,12 +588,48 @@ class TestConfigMapTemplate:
 
         assert config["resident_runtimes"]["profiles"] == []
 
+    def test_missing_bifrost_url_fails_the_render_and_names_the_value(self):
+        result = subprocess.run(
+            ["helm", "template", "test", str(CHART_DIR)],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode != 0
+        assert "bifrost.url must be the URL of the Bifrost service" in result.stderr
+
+    def test_bifrost_url_is_rendered_with_tpl(self):
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "--set",
+                "bifrost.url=http://{{ .Release.Name }}-bifrost",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        configmap = next(
+            doc
+            for doc in yaml.safe_load_all(result.stdout)
+            if doc
+            and doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+
+        assert yaml.safe_load(configmap["data"]["config.yaml"])["bifrost"]["url"] == (
+            "http://test-bifrost"
+        )
+
     def test_resident_a2a_settings_render_into_config(self):
         from volundr.config import ResidentRuntimesConfig
 
         def render(*extra: str) -> dict:
             result = subprocess.run(
-                ["helm", "template", "test", str(CHART_DIR), *extra],
+                ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL, *extra],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -625,7 +663,7 @@ class TestConfigMapTemplate:
 
         def render(*extra: str) -> dict:
             result = subprocess.run(
-                ["helm", "template", "test", str(CHART_DIR), *extra],
+                ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL, *extra],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -691,6 +729,7 @@ class TestConfigMapTemplate:
                 "template",
                 "test",
                 str(CHART_DIR),
+                *BIFROST_URL,
                 "--set",
                 "push.enabled=true",
                 "--set-json",
@@ -724,7 +763,7 @@ class TestConfigMapTemplate:
 
         def render(*extra: str) -> list[dict]:
             result = subprocess.run(
-                ["helm", "template", "test", str(CHART_DIR), *extra],
+                ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL, *extra],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -794,7 +833,7 @@ class TestConfigMapTemplate:
 
         def render(*extra: str) -> dict:
             result = subprocess.run(
-                ["helm", "template", "test", str(CHART_DIR), *extra],
+                ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL, *extra],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -836,7 +875,7 @@ class TestConfigMapTemplate:
         entirely, matching ObservabilityConfig's own "unset, not disabled"
         default."""
         result = subprocess.run(
-            ["helm", "template", "test", str(CHART_DIR)],
+            ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL],
             check=True,
             capture_output=True,
             text=True,
@@ -859,6 +898,7 @@ class TestConfigMapTemplate:
                 "template",
                 "test",
                 str(CHART_DIR),
+                *BIFROST_URL,
                 "--set",
                 "config.observability.enabled=true",
                 "--set",
@@ -891,6 +931,7 @@ class TestConfigMapTemplate:
                 "template",
                 "test",
                 str(CHART_DIR),
+                *BIFROST_URL,
                 "--namespace",
                 "forge",
                 "--set",
@@ -934,6 +975,7 @@ class TestConfigMapTemplate:
                 "template",
                 "test",
                 str(CHART_DIR),
+                *BIFROST_URL,
                 "--set",
                 "workflowExecutionCredentials.projectionKwargs.namespace=sessions",
             ],
@@ -974,6 +1016,7 @@ class TestConfigMapTemplate:
                 "template",
                 "test",
                 str(CHART_DIR),
+                *BIFROST_URL,
                 "-f",
                 str(CHART_DIR / "ci-values.yaml"),
                 *overrides,
@@ -1017,6 +1060,7 @@ class TestConfigMapTemplate:
                 "template",
                 "test",
                 str(CHART_DIR),
+                *BIFROST_URL,
                 "--set",
                 (
                     "residentRuntimeSessionControllers[0].adapter="
@@ -1057,6 +1101,7 @@ class TestConfigMapTemplate:
                 "template",
                 "test",
                 str(CHART_DIR),
+                *BIFROST_URL,
                 "--set",
                 (
                     "residentRuntimeSessionControllers[0].adapter="
@@ -1104,7 +1149,7 @@ class TestConfigMapTemplate:
     @staticmethod
     def _rbac(*overrides: str) -> list[dict]:
         result = subprocess.run(
-            ["helm", "template", "test", str(CHART_DIR), *overrides],
+            ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL, *overrides],
             check=True,
             capture_output=True,
             text=True,
@@ -1352,7 +1397,16 @@ class TestRavnResidentSessions:
     @staticmethod
     def _render(*overrides: str) -> list[dict]:
         result = subprocess.run(
-            ["helm", "template", "test", str(CHART_DIR), "--namespace", "volundr", *overrides],
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                *BIFROST_URL,
+                "--namespace",
+                "volundr",
+                *overrides,
+            ],
             check=True,
             capture_output=True,
             text=True,
@@ -1401,7 +1455,7 @@ class TestPreviewCacheStorage:
     @staticmethod
     def _render(*overrides: str) -> tuple[dict, dict]:
         result = subprocess.run(
-            ["helm", "template", "test", str(CHART_DIR), *overrides],
+            ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL, *overrides],
             check=True,
             capture_output=True,
             text=True,
@@ -1636,7 +1690,7 @@ class TestNewValuesDefaults:
 
 
 def _rendered_configmap(*extra_args: str) -> dict:
-    command = ["helm", "template", "test", str(CHART_DIR), *extra_args]
+    command = ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL, *extra_args]
     docs = list(yaml.safe_load_all(subprocess.check_output(command)))
     return next(
         yaml.safe_load(d["data"]["config.yaml"])
@@ -1718,6 +1772,7 @@ class TestResidentWorkloadIdentityMapping:
                 "template",
                 "test",
                 str(CHART_DIR),
+                *BIFROST_URL,
                 "--set",
                 f"workloadIdentity.residentMapping.issuer={RESIDENT_ISSUER}",
                 *extra_args,
@@ -1765,6 +1820,7 @@ class TestResidentWorkloadIdentityMapping:
                 "template",
                 "test",
                 str(CHART_DIR),
+                *BIFROST_URL,
                 "--set",
                 "workloadIdentity.residentMapping.enabled=true",
             ],
@@ -1782,6 +1838,7 @@ class TestResidentWorkloadIdentityMapping:
                 "template",
                 "test",
                 str(CHART_DIR),
+                *BIFROST_URL,
                 "--set",
                 "workloadIdentity.residentMapping.enabled=true",
                 "--set",
@@ -1873,7 +1930,7 @@ class TestWorkloadIdentityTenantResolver:
     @staticmethod
     def _config(*extra_args: str) -> dict:
         result = subprocess.run(
-            ["helm", "template", "test", str(CHART_DIR), *extra_args],
+            ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL, *extra_args],
             check=True,
             capture_output=True,
             text=True,
@@ -1919,6 +1976,7 @@ class TestWorkloadIdentityTenantResolver:
                 "template",
                 "test",
                 str(CHART_DIR),
+                *BIFROST_URL,
                 "--set",
                 "workloadIdentity.tenantResolver.secretKwargs[0].kwarg=dsn",
                 "--set",
@@ -1945,7 +2003,7 @@ class TestGuildMembership:
     @staticmethod
     def _config(chart: str, *overrides: str) -> dict:
         result = subprocess.run(
-            ["helm", "template", "test", str(CHART_DIR.parent / chart), *overrides],
+            ["helm", "template", "test", str(CHART_DIR.parent / chart), *BIFROST_URL, *overrides],
             check=True,
             capture_output=True,
             text=True,
@@ -1988,6 +2046,7 @@ class TestGuildMembership:
                 "template",
                 "test",
                 str(CHART_DIR),
+                *BIFROST_URL,
                 "--set",
                 "guild.url=https://yggdrasil.niuu.world",
             ],
@@ -2033,7 +2092,7 @@ class TestStorageContributorHomePlacement:
 
 
 def _rendered_volundr_deployment(*extra_args: str) -> dict:
-    command = ["helm", "template", "test", str(CHART_DIR), *extra_args]
+    command = ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL, *extra_args]
     docs = list(yaml.safe_load_all(subprocess.check_output(command)))
     return next(
         d

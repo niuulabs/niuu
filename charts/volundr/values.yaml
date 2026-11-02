@@ -322,8 +322,8 @@ provisioning:
 realmDetailStreamIntervalSeconds: 15.0
 
 bifrost:
-  # -- Base URL for the co-hosted Bifrost API Volundr reads models from
-  url: "http://127.0.0.1:8080"
+  # -- Required. Base URL of the Bifrost service Volundr reads models from; rendered with tpl
+  url: ""
   # -- HTTP timeout for catalog fetches
   timeoutSeconds: 10.0
   # -- Interval between successful model catalog refreshes

@@ -47,6 +47,8 @@ def test_auth_migration_copies_match(chart, names, variant):
                     str(ROOT / "charts" / chart),
                     "--set",
                     "migrations.enabled=true",
+                    "--set",
+                    "bifrost.url=http://bifrost.test",
                 ]
             )
         )

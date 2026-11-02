@@ -569,7 +569,7 @@ data:
         {{- toYaml (.Values.workflowExecutionCredentials.admissionRoles | default (list "volundr:developer")) | nindent 8 }}
 
     bifrost:
-      url: {{ .Values.bifrost.url | quote }}
+      url: {{ tpl (required "bifrost.url must be the URL of the Bifrost service; Volundr does not host Bifrost" .Values.bifrost.url) . | quote }}
       timeout_seconds: {{ .Values.bifrost.timeoutSeconds | default 10.0 }}
       catalog_refresh_interval_seconds: {{ .Values.bifrost.catalogRefreshIntervalSeconds | default 60.0 }}
       auth:

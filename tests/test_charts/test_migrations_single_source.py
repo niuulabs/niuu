@@ -69,6 +69,8 @@ def test_rendered_chart_migrations_equal_the_source(chart: str) -> None:
             str(ROOT / "charts" / chart),
             "--set",
             "migrations.enabled=true",
+            "--set",
+            "bifrost.url=http://bifrost.test",
             "--show-only",
             "templates/migrations-configmap.yaml",
         ],
