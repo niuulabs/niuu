@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -112,7 +112,13 @@ async def test_oversize_image_fails_without_sending_it_to_the_model(tmp_path) ->
 async def test_workspace_file_replaced_after_size_check_is_not_sent_to_model(
     tmp_path, monkeypatch
 ) -> None:
+    replacement = tmp_path / "replacement.png"
+    replacement.write_bytes(_PNG + b"replacement")
+
     class ReplacedPath:
+        def __fspath__(self) -> str:
+            return str(replacement)
+
         def is_file(self) -> bool:
             return True
 
@@ -121,10 +127,6 @@ async def test_workspace_file_replaced_after_size_check_is_not_sent_to_model(
 
         def read_bytes(self) -> bytes:
             return _PNG + b"replacement"
-
-        def open(self, mode: str) -> BytesIO:
-            assert mode == "rb"
-            return BytesIO(_PNG + b"replacement")
 
     monkeypatch.setattr(
         "ravn.adapters.tools.vision.resolve_safe",
@@ -137,6 +139,34 @@ async def test_workspace_file_replaced_after_size_check_is_not_sent_to_model(
 
     assert result.is_error
     assert "vision.max_image_bytes" in result.content
+    vision.analyse.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_workspace_file_swapped_for_outside_symlink_is_not_sent_to_model(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "image.png"
+    source.write_bytes(_PNG)
+    outside = tmp_path.parent / "outside.png"
+    outside.write_bytes(_PNG)
+
+    from ravn.adapters.tools.vision import resolve_safe
+
+    def swap_after_validation(source: str, workspace: Path) -> Path:
+        validated = resolve_safe(source, workspace)
+        validated.unlink()
+        validated.symlink_to(outside)
+        return validated
+
+    monkeypatch.setattr("ravn.adapters.tools.vision.resolve_safe", swap_after_validation)
+    vision = AsyncMock()
+    tool = VisionAnalyseTool(vision, workspace=tmp_path, max_image_bytes=len(_PNG) + 1)
+
+    result = await tool.execute({"image_source": source.name})
+
+    assert result.is_error
+    assert "could not read image" in result.content
     vision.analyse.assert_not_awaited()
 
 

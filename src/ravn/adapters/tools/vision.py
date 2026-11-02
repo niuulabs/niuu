@@ -6,6 +6,7 @@ import asyncio
 import base64
 import binascii
 import json
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote_to_bytes, urljoin
@@ -23,6 +24,7 @@ from ravn.ports.vision import VisionPort
 _DEFAULT_ANALYSE_PROMPT = "Describe this image in detail."
 _DEFAULT_COMPARE_PROMPT = "Describe the meaningful differences between these images."
 _PATH_READ_OVERAGE_BYTES = 1
+_NO_FOLLOW_FLAG = getattr(os, "O_NOFOLLOW", None)
 
 
 class ImageSourceError(ValueError):
@@ -100,8 +102,11 @@ class _VisionToolBase(ToolPort):
             raise ImageSourceError(str(exc)) from None
         if not path.is_file():
             raise ImageSourceError(f"image path is not a file: {source}")
+        if _NO_FOLLOW_FLAG is None:
+            raise ImageSourceError("secure workspace image reads require O_NOFOLLOW support")
         try:
-            with path.open("rb") as image_file:
+            descriptor = os.open(path, os.O_RDONLY | _NO_FOLLOW_FLAG)
+            with os.fdopen(descriptor, "rb") as image_file:
                 image = image_file.read(self._max_image_bytes + _PATH_READ_OVERAGE_BYTES)
         except OSError as exc:
             raise ImageSourceError(f"could not read image: {exc}") from None
