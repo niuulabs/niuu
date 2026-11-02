@@ -80,9 +80,14 @@ class PermissionHook(PreToolHookPort):
         args: dict,
         agent_state: dict,
     ) -> dict:
-        required = agent_state.get("required_permission", "")
-        granted = await self._permission.check(required)
-        if not granted:
+        required_permissions = agent_state.get(
+            "required_permissions",
+            (agent_state.get("required_permission", ""),),
+        )
+        for required in required_permissions:
+            granted = await self._permission.check(required)
+            if granted:
+                continue
             raise PermissionDeniedError(tool_name, required)
         return args
 

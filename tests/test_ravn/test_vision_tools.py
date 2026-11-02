@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from unittest.mock import AsyncMock, MagicMock
@@ -16,6 +17,7 @@ from ravn.adapters.tools.hooks import HookPipeline, PermissionHook
 from ravn.adapters.tools.vision import VisionAnalyseTool, VisionCompareTool, VisionOcrTool
 from ravn.adapters.vision.anthropic import AnthropicVisionAdapter
 from ravn.adapters.vision.ollama import OllamaVisionAdapter
+from ravn.cap_telemetry import cap_hit_counts
 from ravn.cli.tool_builders import _build_tools
 from ravn.config import Settings
 from ravn.domain.models import Session
@@ -30,12 +32,14 @@ def _tool(
     vision,
     *,
     permission=None,
+    timeout: float = 30.0,
 ):
     return tool_type(
         vision,
         workspace=tmp_path,
         max_image_bytes=len(_PNG) + 1,
         permission=permission,
+        timeout=timeout,
     )
 
 
@@ -219,6 +223,64 @@ async def test_registry_dispatch_denies_url_images_with_file_read_only(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_registry_dispatch_denies_mixed_sources_without_file_read(tmp_path) -> None:
+    (tmp_path / "local.png").write_bytes(_PNG)
+    vision = AsyncMock()
+    tool = _tool(
+        VisionCompareTool,
+        tmp_path,
+        vision,
+        permission=AllowListPermission({"web:fetch"}),
+    )
+    registry = ToolRegistry(
+        HookPipeline(pre_hooks=[PermissionHook(AllowListPermission({"web:fetch"}))])
+    )
+    registry.register(tool)
+
+    result = await registry.dispatch(
+        "vision_compare",
+        {"image_a": "local.png", "image_b": "https://image.example/chart.png"},
+        call_id="vision-mixed",
+    )
+
+    assert result.is_error
+    assert "file:read" in result.content
+    vision.compare.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_registry_dispatch_allows_mixed_sources_with_both_permissions(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / "local.png").write_bytes(_PNG)
+    monkeypatch.setattr(
+        "ravn.adapters.tools.vision._validate_url",
+        lambda url, *, allow_private_addresses: None,
+    )
+    respx.get("https://image.example/chart.png").mock(return_value=Response(200, content=_PNG))
+    vision = AsyncMock()
+    vision.compare.return_value = "same"
+    permission = AllowListPermission({"file:read", "web:fetch"})
+    tool = _tool(VisionCompareTool, tmp_path, vision, permission=permission)
+    registry = ToolRegistry(HookPipeline(pre_hooks=[PermissionHook(permission)]))
+    registry.register(tool)
+
+    result = await registry.dispatch(
+        "vision_compare",
+        {"image_a": "local.png", "image_b": "https://image.example/chart.png"},
+        call_id="vision-mixed",
+    )
+
+    assert not result.is_error
+    vision.compare.assert_awaited_once_with(
+        _PNG,
+        _PNG,
+        "Describe the meaningful differences between these images.",
+    )
+
+
+@pytest.mark.asyncio
 @respx.mock
 async def test_redirect_to_private_url_is_rejected_before_request(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
@@ -264,6 +326,41 @@ async def test_redirect_cycle_fails_without_a_guessed_redirect_limit(tmp_path, m
     assert result.is_error
     assert result.content == "could not fetch image URL: redirect cycle detected"
     assert redirect.call_count == 1
+    vision.analyse.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_distinct_redirect_chain_obeys_one_operation_timeout(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ravn.adapters.tools.vision._validate_url",
+        lambda url, *, allow_private_addresses: None,
+    )
+
+    async def delayed_redirect(location: str) -> Response:
+        await asyncio.sleep(0.02)
+        return Response(302, headers={"location": location})
+
+    respx.get("https://image.example/one.png").mock(
+        side_effect=lambda request: delayed_redirect("https://image.example/two.png")
+    )
+    respx.get("https://image.example/two.png").mock(
+        side_effect=lambda request: delayed_redirect("https://image.example/three.png")
+    )
+    vision = AsyncMock()
+    tool = _tool(
+        VisionAnalyseTool,
+        tmp_path,
+        vision,
+        permission=AllowAllPermission(),
+        timeout=0.03,
+    )
+
+    result = await tool.execute({"image_source": "https://image.example/one.png"})
+
+    assert result.is_error
+    assert result.content == "vision URL retrieval timed out after 0.03s"
+    assert cap_hit_counts() == {"tools.web.fetch.timeout": 1}
     vision.analyse.assert_not_awaited()
 
 
