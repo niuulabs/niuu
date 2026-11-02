@@ -10,6 +10,7 @@ import pytest
 import respx
 from httpx import ConnectError, Request, Response
 
+from ravn.adapters.permission.allow_deny import AllowAllPermission, AllowListPermission
 from ravn.adapters.tools.browser import BrowserScreenshotTool, BrowserSessionManager
 from ravn.adapters.tools.vision import VisionAnalyseTool, VisionCompareTool, VisionOcrTool
 from ravn.adapters.vision.anthropic import AnthropicVisionAdapter
@@ -21,8 +22,20 @@ from ravn.domain.models import Session
 _PNG = b"\x89PNG\r\n\x1a\n" + b"image"
 
 
-def _tool(tool_type: type[VisionAnalyseTool | VisionCompareTool | VisionOcrTool], tmp_path, vision):
-    return tool_type(vision, workspace=tmp_path, max_image_bytes=len(_PNG) + 1)
+def _tool(
+    tool_type: type[VisionAnalyseTool | VisionCompareTool | VisionOcrTool],
+    tmp_path,
+    vision,
+    *,
+    permission=None,
+):
+    return tool_type(
+        vision,
+        workspace=tmp_path,
+        max_image_bytes=len(_PNG) + 1,
+        max_redirects=1,
+        permission=permission,
+    )
 
 
 @pytest.mark.asyncio
@@ -72,7 +85,12 @@ async def test_compare_reads_workspace_images_and_ocr_accepts_raw_screenshot_byt
 @pytest.mark.asyncio
 async def test_oversize_image_fails_without_sending_it_to_the_model(tmp_path) -> None:
     vision = AsyncMock()
-    tool = VisionAnalyseTool(vision, workspace=tmp_path, max_image_bytes=len(_PNG) - 1)
+    tool = VisionAnalyseTool(
+        vision,
+        workspace=tmp_path,
+        max_image_bytes=len(_PNG) - 1,
+        max_redirects=1,
+    )
 
     result = await tool.execute(
         {"image_source": f"data:image/png;base64,{base64.b64encode(_PNG).decode()}"}
@@ -87,7 +105,7 @@ async def test_oversize_image_fails_without_sending_it_to_the_model(tmp_path) ->
 @pytest.mark.asyncio
 async def test_url_images_use_web_fetch_ssrf_validation(tmp_path, monkeypatch) -> None:
     vision = AsyncMock()
-    tool = _tool(VisionAnalyseTool, tmp_path, vision)
+    tool = _tool(VisionAnalyseTool, tmp_path, vision, permission=AllowAllPermission())
     monkeypatch.setattr(
         "ravn.adapters.tools.vision._validate_url",
         lambda url, *, allow_private_addresses: (
@@ -99,6 +117,74 @@ async def test_url_images_use_web_fetch_ssrf_validation(tmp_path, monkeypatch) -
 
     assert result.is_error
     assert "Blocked:" in result.content
+    vision.analyse.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_url_images_require_web_fetch_permission_even_with_file_read(tmp_path) -> None:
+    vision = AsyncMock()
+    tool = _tool(
+        VisionAnalyseTool,
+        tmp_path,
+        vision,
+        permission=AllowListPermission({"file:read"}),
+    )
+
+    result = await tool.execute({"image_source": "https://image.example/chart.png"})
+
+    assert result.is_error
+    assert result.content == "Permission denied: vision URL input requires web:fetch"
+    vision.analyse.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_url_images_fetch_when_web_fetch_permission_is_granted(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ravn.adapters.tools.vision._validate_url",
+        lambda url, *, allow_private_addresses: None,
+    )
+    respx.get("https://image.example/chart.png").mock(return_value=Response(200, content=_PNG))
+    vision = AsyncMock()
+    vision.analyse.return_value = "chart"
+    tool = _tool(
+        VisionAnalyseTool,
+        tmp_path,
+        vision,
+        permission=AllowListPermission({"web:fetch"}),
+    )
+
+    result = await tool.execute({"image_source": "https://image.example/chart.png"})
+
+    assert not result.is_error
+    vision.analyse.assert_awaited_once_with(_PNG, "Describe this image in detail.")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_redirect_to_private_url_is_rejected_before_request(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ravn.adapters.tools.vision._validate_url",
+        lambda url, *, allow_private_addresses: (
+            "Blocked: 127.0.0.1 resolves to a private/reserved address"
+            if "127.0.0.1" in url
+            else None
+        ),
+    )
+    respx.get("https://image.example/chart.png").mock(
+        return_value=Response(302, headers={"location": "http://127.0.0.1/private.png"})
+    )
+    private = respx.get("http://127.0.0.1/private.png").mock(
+        return_value=Response(200, content=_PNG)
+    )
+    vision = AsyncMock()
+    tool = _tool(VisionAnalyseTool, tmp_path, vision, permission=AllowAllPermission())
+
+    result = await tool.execute({"image_source": "https://image.example/chart.png"})
+
+    assert result.is_error
+    assert result.content.startswith("Blocked:")
+    assert not private.called
     vision.analyse.assert_not_awaited()
 
 

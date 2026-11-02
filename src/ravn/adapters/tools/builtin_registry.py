@@ -235,8 +235,10 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "vision": ctx["vision"],
             "workspace": ctx["workspace"],
             "max_image_bytes": s.vision.max_image_bytes,
+            "max_redirects": s.vision.max_redirects,
             "allow_private_addresses": s.tools.web.fetch.allow_private_addresses,
             "timeout": s.tools.web.fetch.timeout,
+            "permission": ctx["permission"],
         },
     ),
     "vision_compare": BuiltinToolDef(
@@ -247,8 +249,10 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "vision": ctx["vision"],
             "workspace": ctx["workspace"],
             "max_image_bytes": s.vision.max_image_bytes,
+            "max_redirects": s.vision.max_redirects,
             "allow_private_addresses": s.tools.web.fetch.allow_private_addresses,
             "timeout": s.tools.web.fetch.timeout,
+            "permission": ctx["permission"],
         },
     ),
     "vision_ocr": BuiltinToolDef(
@@ -259,8 +263,10 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "vision": ctx["vision"],
             "workspace": ctx["workspace"],
             "max_image_bytes": s.vision.max_image_bytes,
+            "max_redirects": s.vision.max_redirects,
             "allow_private_addresses": s.tools.web.fetch.allow_private_addresses,
             "timeout": s.tools.web.fetch.timeout,
+            "permission": ctx["permission"],
         },
     ),
     "todo_write": BuiltinToolDef(

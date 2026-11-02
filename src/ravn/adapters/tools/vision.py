@@ -7,13 +7,14 @@ import binascii
 import json
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote_to_bytes
+from urllib.parse import unquote_to_bytes, urljoin
 
 import httpx
 
 from ravn.adapters.tools.file_security import PathSecurityError, resolve_safe
 from ravn.adapters.tools.web_fetch import _validate_url
 from ravn.domain.models import ToolResult
+from ravn.ports.permission import PermissionPort
 from ravn.ports.tool import ToolPort
 from ravn.ports.vision import VisionPort
 
@@ -36,14 +37,18 @@ class _VisionToolBase(ToolPort):
         *,
         workspace: Path,
         max_image_bytes: int,
+        max_redirects: int,
         allow_private_addresses: bool = False,
         timeout: float = 30.0,
+        permission: PermissionPort | None = None,
     ) -> None:
         self._vision = vision
         self._workspace = workspace
         self._max_image_bytes = max_image_bytes
+        self._max_redirects = max_redirects
         self._allow_private_addresses = allow_private_addresses
         self._timeout = timeout
+        self._permission = permission
 
     @property
     def required_permission(self) -> str:
@@ -110,30 +115,54 @@ class _VisionToolBase(ToolPort):
         return ((self._max_image_bytes + 2) // 3) * 4
 
     async def _url(self, source: str) -> bytes:
-        url_error = _validate_url(
-            source,
-            allow_private_addresses=self._allow_private_addresses,
-        )
-        if url_error:
-            raise ImageSourceError(url_error)
+        if self._permission is None:
+            raise ImageSourceError("vision URL input requires permission enforcement")
+        if not await self._permission.check("web:fetch"):
+            raise ImageSourceError("Permission denied: vision URL input requires web:fetch")
+
+        current_url = source
+        redirects = 0
         try:
-            async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=True) as client:
-                async with client.stream("GET", source) as response:
-                    response.raise_for_status()
-                    content_length = response.headers.get("content-length")
-                    if content_length and int(content_length) > self._max_image_bytes:
-                        raise ImageTooLargeError(
-                            f"image is {content_length} bytes, exceeding vision.max_image_bytes="
-                            f"{self._max_image_bytes}; it was not sent to the model"
-                        )
-                    image = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        image.extend(chunk)
-                        if len(image) > self._max_image_bytes:
+            async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=False) as client:
+                while True:
+                    url_error = _validate_url(
+                        current_url,
+                        allow_private_addresses=self._allow_private_addresses,
+                    )
+                    if url_error:
+                        raise ImageSourceError(url_error)
+                    async with client.stream("GET", current_url) as response:
+                        if response.is_redirect:
+                            location = response.headers.get("location")
+                            if not location:
+                                raise ImageSourceError(
+                                    "could not fetch image URL: redirect has no location"
+                                )
+                            if redirects >= self._max_redirects:
+                                raise ImageSourceError(
+                                    "could not fetch image URL: vision.max_redirects was exhausted"
+                                )
+                            current_url = urljoin(str(response.url), location)
+                            redirects += 1
+                            continue
+                        response.raise_for_status()
+                        content_length = response.headers.get("content-length")
+                        if content_length and int(content_length) > self._max_image_bytes:
                             raise ImageTooLargeError(
-                                f"image exceeds vision.max_image_bytes={self._max_image_bytes}; "
-                                "it was not sent to the model"
+                                f"image is {content_length} bytes, exceeding "
+                                "vision.max_image_bytes="
+                                f"{self._max_image_bytes}; it was not sent to the model"
                             )
+                        image = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            image.extend(chunk)
+                            if len(image) > self._max_image_bytes:
+                                raise ImageTooLargeError(
+                                    "image exceeds vision.max_image_bytes="
+                                    f"{self._max_image_bytes}; "
+                                    "it was not sent to the model"
+                                )
+                        return bytes(image)
         except ImageSourceError:
             raise
         except httpx.HTTPStatusError as exc:
@@ -144,7 +173,6 @@ class _VisionToolBase(ToolPort):
             raise ImageSourceError("could not fetch image URL: network request failed") from None
         except ValueError:
             raise ImageSourceError("could not fetch image URL: invalid response headers") from None
-        return bytes(image)
 
     @staticmethod
     def _result(operation: str, content: str) -> ToolResult:
