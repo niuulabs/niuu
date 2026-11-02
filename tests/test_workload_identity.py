@@ -1010,6 +1010,8 @@ def _render_chart(chart: str) -> str:
             f"workloadIdentity.issuer={EXCHANGE_ISSUER}",
             "--set",
             "workloadIdentity.signingKey.existingSecret=workload-key",
+            "--set",
+            "bifrost.url=http://bifrost.test",
         ],
         check=False,
         capture_output=True,

@@ -36,20 +36,34 @@ def trust_screen(workspace: Path, *, yes=False, reverse=False, numbered=False) -
     )
 
 
+# For a test that reaches the startup deadline on purpose.
+EXPIRING_READY_TIMEOUT_S = 0.15
+
+
 class StartupTransport(FakeTmuxInteractiveTransport):
     """Replays captured frames in order (the last one repeats).
 
     Stability and settle windows are zero here, so a key needs exactly two identical
     consecutive captures of the menu — the frame lists below repeat a menu frame
     wherever a key is expected.
+
+    A script finishes in milliseconds, so the default deadline only has to outlast a
+    stalled CI worker; a test about the deadline passes EXPIRING_READY_TIMEOUT_S.
     """
 
-    def __init__(self, workspace: Path, screens: list[str], **kwargs):
+    def __init__(
+        self,
+        workspace: Path,
+        screens: list[str],
+        *,
+        repl_ready_timeout_s: float = 5.0,
+        **kwargs,
+    ):
         kwargs.setdefault("workspace_trust_stable_s", 0.0)
         kwargs.setdefault("workspace_trust_settle_s", 0.0)
         super().__init__(str(workspace), **kwargs)
         self.screens = deque(screens)
-        self._repl_ready_timeout_s = 0.15
+        self._repl_ready_timeout_s = repl_ready_timeout_s
         self._menu_poll_step_s = 0.001
 
     async def _capture_pane_text(self, pane_id=None):
@@ -146,7 +160,9 @@ async def test_native_control_at_boot_returns_from_start_without_keys(tmp_path):
 
 
 async def test_native_control_does_not_satisfy_callers_about_to_type(tmp_path):
-    transport = StartupTransport(tmp_path, [QUESTION_SCREEN])
+    transport = StartupTransport(
+        tmp_path, [QUESTION_SCREEN], repl_ready_timeout_s=EXPIRING_READY_TIMEOUT_S
+    )
     transport._repl_ready_markers = ("fakeagent ready",)
     transport._pending_tty_prompts["tty-1"] = {"kind": "ask_user_question"}
     try:
@@ -192,7 +208,10 @@ async def test_stuck_trust_screen_retries_a_bounded_number_of_times(tmp_path, se
 async def test_stuck_trust_screen_waits_out_the_settle_interval(tmp_path, selected_yes):
     """Within one settle interval a dropped key is never repeated."""
     transport = StartupTransport(
-        tmp_path, [trust_screen(tmp_path, yes=selected_yes)], workspace_trust_settle_s=60.0
+        tmp_path,
+        [trust_screen(tmp_path, yes=selected_yes)],
+        workspace_trust_settle_s=60.0,
+        repl_ready_timeout_s=EXPIRING_READY_TIMEOUT_S,
     )
     try:
         with pytest.raises(RuntimeError, match="Workspace trust did not complete"):
@@ -232,6 +251,7 @@ async def test_startup_menu_without_trust_does_not_receive_seed_or_chat(tmp_path
         tmp_path,
         ["Choose login method\n❯ Claude account\n  API key"],
         initial_prompt="Review this",
+        repl_ready_timeout_s=EXPIRING_READY_TIMEOUT_S,
     )
     try:
         with pytest.raises(RuntimeError, match="not ready for input"):
@@ -249,7 +269,9 @@ async def test_startup_menu_without_trust_does_not_receive_seed_or_chat(tmp_path
 async def test_custom_ready_marker_is_required_after_trust(tmp_path, monkeypatch):
     monkeypatch.setenv("SKULD__TMUX_REPL_READY_MARKER", "Ready for input")
     yes = trust_screen(tmp_path, yes=True)
-    transport = StartupTransport(tmp_path, [yes, yes, "❯"])
+    transport = StartupTransport(
+        tmp_path, [yes, yes, "❯"], repl_ready_timeout_s=EXPIRING_READY_TIMEOUT_S
+    )
     try:
         with pytest.raises(RuntimeError, match="Workspace trust did not complete"):
             await transport.start()
@@ -320,6 +342,7 @@ async def test_trust_confirmation_does_not_answer_a_following_startup_menu(tmp_p
         tmp_path,
         [yes, yes, "Choose login method\n❯ Claude account\n  API key"],
         initial_prompt="Review this",
+        repl_ready_timeout_s=EXPIRING_READY_TIMEOUT_S,
     )
     try:
         with pytest.raises(RuntimeError, match="Workspace trust did not complete"):
@@ -332,7 +355,10 @@ async def test_trust_confirmation_does_not_answer_a_following_startup_menu(tmp_p
 
 async def test_failed_confirmation_send_is_not_replayed_before_it_settles(tmp_path, monkeypatch):
     transport = StartupTransport(
-        tmp_path, [trust_screen(tmp_path, yes=True)], workspace_trust_settle_s=60.0
+        tmp_path,
+        [trust_screen(tmp_path, yes=True)],
+        workspace_trust_settle_s=60.0,
+        repl_ready_timeout_s=EXPIRING_READY_TIMEOUT_S,
     )
     attempts = []
 
