@@ -119,6 +119,17 @@ def _build_web_search_kwargs(settings: Settings, _ctx: dict[str, Any]) -> dict[s
     return {"provider": provider, "num_results": ws_cfg.num_results}
 
 
+def _build_vision_port(settings: Settings) -> Any:
+    """Construct the configured VisionPort without coupling tools to its adapter."""
+    from ravn.cli.commands import _import_class, _inject_secrets  # noqa: PLC0415
+
+    config = settings.vision
+    cls = _import_class(config.adapter)
+    kwargs = _inject_secrets(dict(config.kwargs), config.secret_kwargs_env)
+    kwargs.setdefault("model", config.default_model or settings.effective_model())
+    return cls(**kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -214,6 +225,42 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "timeout": s.tools.web.fetch.timeout,
             "user_agent": s.tools.web.fetch.user_agent,
             "content_budget": s.tools.web.fetch.content_budget,
+        },
+    ),
+    "vision_analyse": BuiltinToolDef(
+        adapter="ravn.adapters.tools.vision.VisionAnalyseTool",
+        groups=frozenset({"core"}),
+        required_context=frozenset({"vision"}),
+        kwargs_fn=lambda s, ctx: {
+            "vision": ctx["vision"],
+            "workspace": ctx["workspace"],
+            "max_image_bytes": s.vision.max_image_bytes,
+            "allow_private_addresses": s.tools.web.fetch.allow_private_addresses,
+            "timeout": s.tools.web.fetch.timeout,
+        },
+    ),
+    "vision_compare": BuiltinToolDef(
+        adapter="ravn.adapters.tools.vision.VisionCompareTool",
+        groups=frozenset({"core"}),
+        required_context=frozenset({"vision"}),
+        kwargs_fn=lambda s, ctx: {
+            "vision": ctx["vision"],
+            "workspace": ctx["workspace"],
+            "max_image_bytes": s.vision.max_image_bytes,
+            "allow_private_addresses": s.tools.web.fetch.allow_private_addresses,
+            "timeout": s.tools.web.fetch.timeout,
+        },
+    ),
+    "vision_ocr": BuiltinToolDef(
+        adapter="ravn.adapters.tools.vision.VisionOcrTool",
+        groups=frozenset({"core"}),
+        required_context=frozenset({"vision"}),
+        kwargs_fn=lambda s, ctx: {
+            "vision": ctx["vision"],
+            "workspace": ctx["workspace"],
+            "max_image_bytes": s.vision.max_image_bytes,
+            "allow_private_addresses": s.tools.web.fetch.allow_private_addresses,
+            "timeout": s.tools.web.fetch.timeout,
         },
     ),
     "todo_write": BuiltinToolDef(

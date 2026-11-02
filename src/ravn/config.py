@@ -221,6 +221,38 @@ class ToolAdapterConfig(BaseModel):
     secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
 
 
+class VisionConfig(BaseModel):
+    """On-demand multimodal image analysis configuration."""
+
+    adapter: str = Field(
+        default="ravn.adapters.vision.anthropic.AnthropicVisionAdapter",
+        description="Fully-qualified VisionPort adapter class, normally routed through Bifröst.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional kwargs forwarded to the configured VisionPort adapter.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps VisionPort constructor kwarg names to credential environment variables.",
+    )
+    default_model: str = Field(
+        default="",
+        description=(
+            "Model or Bifröst alias used for vision. Empty uses llm.model so model routing "
+            "remains centralized in Bifröst."
+        ),
+    )
+    max_image_bytes: int = Field(
+        default=5 * 1024 * 1024,
+        gt=0,
+        description=(
+            "Largest image accepted by vision tools. Oversized images are rejected before "
+            "they are sent to a model; reduce the image or raise vision.max_image_bytes."
+        ),
+    )
+
+
 class FileToolsConfig(BaseModel):
     """File operation tool limits and thresholds."""
 
@@ -5591,6 +5623,7 @@ class Settings(BaseSettings):
 
     # Core sections
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    vision: VisionConfig = Field(default_factory=VisionConfig)
 
     # New NIU-427 sections
     context: ContextConfig = Field(default_factory=ContextConfig)

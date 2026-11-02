@@ -120,6 +120,9 @@ def _build_tools(
             _resident_ravn_state_dir(workspace, settings) / "kubernetes_route_recovery.json"
         ),
     }
+    from ravn.adapters.tools.builtin_registry import _build_vision_port  # noqa: PLC0415
+
+    runtime_ctx["vision"] = _build_vision_port(settings)
     runtime_ctx["capability_tools_provider"] = lambda: runtime_ctx.get("capability_tools", [])
 
     # Learned tools: 'dispatch' (default) keeps them out of the per-turn tool
