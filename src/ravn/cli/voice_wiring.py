@@ -12,12 +12,18 @@ from __future__ import annotations
 from typing import Any
 
 from niuu.utils import import_class
+from ravn.adapters.channels.voice.calls import (
+    CallPresenceRegistry,
+    CallRequester,
+    ResidentCallRequests,
+)
 from ravn.adapters.channels.voice.gateway import VoiceGateway
 from ravn.adapters.channels.voice.prompt import VoicePersona, VoicePromptComposer
 from ravn.adapters.channels.voice.room import VoiceRoomCopier
 from ravn.adapters.channels.voice.store import VoiceCallStore
 from ravn.adapters.channels.voice.tools import VoiceConversationTools, VoiceToolBridge
-from ravn.config import Settings, VoiceChannelConfig
+from ravn.config import Settings, VoiceCallsConfig, VoiceChannelConfig
+from ravn.ports.call_push import CallPushPort, NullCallPush
 from ravn.ports.realtime_voice import RealtimeCredentialMinterPort
 
 
@@ -87,6 +93,18 @@ def _compose(
     composer = VoicePromptComposer(
         persona, models=config.models, time_zone=config.time_zone, tool_names=bridge.names
     )
+    presences = CallPresenceRegistry()
+    calls = (
+        CallRequester(
+            store,
+            presences,
+            config.calls,
+            name=persona.display_name,
+            push=build_call_push(config.calls),
+        )
+        if config.calls.enabled
+        else None
+    )
     return VoiceGateway(
         config,
         persona=persona,
@@ -95,7 +113,39 @@ def _compose(
         store=store,
         minters=minters,
         room=build_room_copier(config),
+        presences=presences,
+        calls=calls,
     )
+
+
+def build_call_push(config: VoiceCallsConfig) -> CallPushPort:
+    """How the resident rings the phone when no socket can carry a call request.
+
+    Nothing until ``voice.calls.push`` names an adapter: the notification's alert is
+    the fallback.
+    """
+    return NullCallPush()
+
+
+def build_resident_call_requests(settings: Settings) -> ResidentCallRequests | None:
+    """The ``notify`` tool's call requests, when this resident places calls.
+
+    ``None`` without an enabled voice channel with ``calls.enabled``: notify then
+    offers no ``speak``. The caller owns the result and closes it.
+    """
+    voice = settings.gateway.channels.voice
+    if not voice.enabled or not voice.calls.enabled:
+        return None
+    store = VoiceCallStore(voice.store_path)
+    try:
+        return ResidentCallRequests(
+            store,
+            resident_id=voice.calls.resident_id,
+            expires_after_seconds=voice.calls.expires_after_seconds,
+        )
+    except BaseException:
+        store.close()
+        raise
 
 
 def build_minters(config: VoiceChannelConfig) -> dict[str, RealtimeCredentialMinterPort]:

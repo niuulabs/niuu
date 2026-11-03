@@ -120,6 +120,20 @@ data:
           room_broker_url: "http://127.0.0.1:8081"
           room_participant_id: {{ .Values.resident.flock.peerId | default (printf "flock-%s" $persona) | quote }}
           {{- end }}
+          {{- with .Values.resident.voice.calls }}
+          {{- if .enabled }}
+          {{- if not $.Values.session.id }}
+          {{- fail "resident.voice.calls.enabled needs session.id: the phone binds a call to the resident by its id" }}
+          {{- end }}
+          calls:
+            enabled: true
+            resident_id: {{ $.Values.session.id | quote }}
+            host: {{ .host | quote }}
+            max_per_hour: {{ .maxPerHour }}
+            min_gap_minutes: {{ .minGapMinutes }}
+            expires_after_seconds: {{ .expiresAfterSeconds }}
+          {{- end }}
+          {{- end }}
         {{- end }}
       {{- if .Values.resident.platform.enabled }}
       platform:

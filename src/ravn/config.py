@@ -1892,6 +1892,62 @@ class VoiceMinterConfig(BaseModel):
     )
 
 
+class VoiceCallsConfig(BaseModel):
+    """Calls the resident places itself: ``notify`` with ``speak`` rings the owner's phone.
+
+    The gateway decides once per request and sends ``call.request`` over the phone's
+    standby socket; the phone still applies its own allow-list, Focus, quiet hours
+    and rate cap, and answers ``call.result``. These are the server's own guardrails.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Offer speak on notify and place calls. Off: notify has no speak.",
+    )
+    resident_id: str = Field(
+        default="",
+        description=(
+            "This resident's id (its Forge runtime id): the call.request's session.id, which "
+            "the phone matches against the resident it selected for voice, and the anchor of "
+            "the notification id Forge derives. Required when enabled."
+        ),
+    )
+    host: str = Field(
+        default="",
+        description="The cluster the resident runs in, as the phone names it (session.host).",
+    )
+    max_per_hour: int = Field(
+        default=3, ge=1, description="Most calls placed in any rolling hour; the rest wait."
+    )
+    min_gap_minutes: float = Field(
+        default=10.0,
+        ge=0,
+        description="Least time between two calls (the phone's own window); a request waits.",
+    )
+    expires_after_seconds: int = Field(
+        default=300,
+        ge=30,
+        description="A request not delivered by then is dropped (its expiresAt).",
+    )
+    result_timeout_seconds: float = Field(
+        default=20.0,
+        gt=0,
+        description="How long a socket delivery waits for call.result before ringing by push once.",
+    )
+    poll_interval_seconds: float = Field(
+        default=1.0, gt=0, description="How often queued requests are looked at."
+    )
+
+    @model_validator(mode="after")
+    def _enabled_needs_an_id(self) -> VoiceCallsConfig:
+        if self.enabled and not self.resident_id:
+            raise ValueError(
+                "gateway.channels.voice.calls.enabled needs resident_id: the phone binds a "
+                "call to the resident it selected by that id"
+            )
+        return self
+
+
 class VoiceChannelConfig(BaseModel):
     """Realtime voice channel — makes the resident the agent service of a voice client.
 
@@ -1968,6 +2024,10 @@ class VoiceChannelConfig(BaseModel):
     user_id_header: str = Field(
         default="x-auth-user-id",
         description="Header the gateway projects the verified caller's user id into.",
+    )
+    calls: VoiceCallsConfig = Field(
+        default_factory=VoiceCallsConfig,
+        description="Calls the resident places itself (notify with speak).",
     )
 
 

@@ -687,6 +687,18 @@ resident:
     minters: {}
     # -- Copy each call's speech into the resident's room transcript.
     roomCopy: true
+    # -- Calls the resident places itself: notify with speak rings the owner's phone over its
+    # standby socket. The phone still decides (its allow-list, Focus, quiet hours).
+    calls:
+      enabled: false
+      # -- The cluster the resident runs in, as the phone shows it (call.request session.host).
+      host: ""
+      # -- Most calls in any rolling hour; the rest wait for the window.
+      maxPerHour: 3
+      # -- Least minutes between two calls (the phone's own window).
+      minGapMinutes: 10
+      # -- Seconds after which an undelivered request is dropped (its expiresAt).
+      expiresAfterSeconds: 300
   # -- Seconds between the resident's own stewardship/home-wake passes.
   # Empty uses ravn's own default (resident_state.stewardship_interval_seconds).
   stewardshipIntervalSeconds: ""

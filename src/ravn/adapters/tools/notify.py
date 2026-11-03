@@ -10,6 +10,11 @@ turn runs in (the main room when it runs in none).
 The tool holds no credential: Forge reads the outbox with the connection it
 already authenticates to this resident, so there is nothing for the model to
 leak and nothing to configure per cluster.
+
+When the resident places calls (``gateway.channels.voice.calls.enabled``), the tool
+also offers ``speak``: the notification is queued as always, and a call request is
+queued for the voice gateway, which rings the owner's phone and says the text first
+(:mod:`ravn.adapters.channels.voice.calls`). Without calls there is no ``speak``.
 """
 
 from __future__ import annotations
@@ -25,16 +30,19 @@ from niuu.domain.notifications import (
     MAX_LINK_LABEL_CHARS,
     MAX_LINK_URL_CHARS,
     MAX_LINKS,
+    MAX_SPEAK_TEXT_CHARS,
     MAX_TITLE_CHARS,
     NotificationDraft,
     NotificationLinkKind,
     NotificationSeverity,
+    SpeakPriority,
 )
 from niuu.domain.resident_notifications import MAX_IDEMPOTENCY_KEY_CHARS
 from niuu.forge_mcp.guidance import (
     COMPACT_NOTIFICATION_GUIDANCE,
     NOTIFICATION_TRIGGER_GUIDANCE,
 )
+from ravn.adapters.channels.voice.calls import ResidentCallRequests
 from ravn.domain.models import ToolResult
 from ravn.domain.notification_channel import current_notification_channel
 from ravn.ports.resident_notifications import ResidentNotificationOutboxPort
@@ -102,12 +110,59 @@ _INPUT_SCHEMA = {
     "required": ["kind", "title"],
 }
 
+_SPEAK_GUIDANCE = (
+    "speak: also call your owner's phone and say this first, aloud. Use it only when "
+    'your owner asked to be called about something ("call me when the deploy is '
+    'done") or something time-sensitive needs their spoken answer now; never for an '
+    "FYI, a progress update or something that can wait for them to read. Write it as "
+    "you would say it: one to three short spoken sentences, no markdown, no links. "
+    "The notification is still sent and stays the record. Their phone decides whether "
+    "it rings (who may call, Do Not Disturb, quiet hours) and at most a few calls an "
+    "hour go out; the rest are dropped after a few minutes, so a call is never certain."
+)
+
+_SPEAK_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "description": "Call the owner and say this first. Only when they asked for a call, "
+    "or it is time-sensitive and needs their spoken answer.",
+    "properties": {
+        "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": MAX_SPEAK_TEXT_CHARS,
+            "description": "What you say first, as spoken words.",
+        },
+        "priority": {
+            "type": "string",
+            "enum": [priority.value for priority in SpeakPriority],
+            "default": SpeakPriority.NOW.value,
+            "description": "now = as soon as allowed; next_window = when the next call may go.",
+        },
+    },
+    "required": ["text"],
+}
+
+_INPUT_SCHEMA_WITH_SPEAK = {
+    **_INPUT_SCHEMA,
+    "properties": {**_INPUT_SCHEMA["properties"], "speak": _SPEAK_SCHEMA},
+}
+
 
 class ResidentNotifyTool(ToolPort):
-    """Queue a notification for the resident's owner in its notification outbox."""
+    """Queue a notification for the resident's owner in its notification outbox.
 
-    def __init__(self, outbox: ResidentNotificationOutboxPort) -> None:
+    With *calls*, ``speak`` is offered and a notification that carries it also queues
+    a call request.
+    """
+
+    def __init__(
+        self,
+        outbox: ResidentNotificationOutboxPort,
+        calls: ResidentCallRequests | None = None,
+    ) -> None:
         self._outbox = outbox
+        self._calls = calls
 
     @property
     def name(self) -> str:
@@ -115,11 +170,13 @@ class ResidentNotifyTool(ToolPort):
 
     @property
     def description(self) -> str:
-        return _DESCRIPTION
+        if self._calls is None:
+            return _DESCRIPTION
+        return _DESCRIPTION + "\n\n" + _SPEAK_GUIDANCE
 
     @property
     def input_schema(self) -> dict:
-        return _INPUT_SCHEMA
+        return _INPUT_SCHEMA if self._calls is None else _INPUT_SCHEMA_WITH_SPEAK
 
     @property
     def required_permission(self) -> str:
@@ -131,6 +188,8 @@ class ResidentNotifyTool(ToolPort):
 
     async def execute(self, input: dict) -> ToolResult:
         fields = dict(input or {})
+        if "speak" in fields and self._calls is None:
+            return _error("speak is not available: this resident places no calls")
         idempotency_key = str(fields.pop("idempotency_key", "") or uuid4().hex)
         if len(idempotency_key) > MAX_IDEMPOTENCY_KEY_CHARS:
             return _error(f"idempotency_key is at most {MAX_IDEMPOTENCY_KEY_CHARS} characters")
@@ -140,17 +199,24 @@ class ResidentNotifyTool(ToolPort):
             return _error(f"Invalid notification: {exc.errors(include_url=False)}")
         if draft.kind not in AGENT_KINDS:
             return _error(f"Kind {draft.kind.value!r} is derived by Forge and cannot be sent")
+        channel = current_notification_channel.get()
         entry = await self._outbox.notify(
             draft=draft,
             idempotency_key=idempotency_key,
-            channel=current_notification_channel.get(),
+            channel=channel,
         )
-        return ToolResult(
-            tool_call_id="",
-            content=json.dumps(
-                {"state": "queued", "idempotency_key": entry.idempotency_key, "seq": entry.seq}
-            ),
-        )
+        result: dict = {
+            "state": "queued",
+            "idempotency_key": entry.idempotency_key,
+            "seq": entry.seq,
+        }
+        if draft.speak is not None and self._calls is not None:
+            request = self._calls.request(
+                speak=draft.speak, idempotency_key=entry.idempotency_key, channel=channel
+            )
+            # A retry of the same notification asked already: one call, not two.
+            result["call"] = "requested" if request is not None else "already_requested"
+        return ToolResult(tool_call_id="", content=json.dumps(result))
 
 
 def _error(message: str) -> ToolResult:

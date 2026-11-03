@@ -1737,11 +1737,31 @@ class TestResidentVoice:
 
         assert "room_broker_url" not in channel
 
+    def test_calls_are_off_by_default(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(tmp_path, self._values())
+        channel = _ravn_config_from_rendered(rendered)["gateway"]["channels"]["voice"]
+
+        assert "calls" not in channel
+
+    def test_calls_render_the_residents_id_and_guardrails(self, tmp_path: Path) -> None:
+        from ravn.config import VoiceChannelConfig
+
+        values = self._values(calls={"enabled": True, "host": "valhalla", "maxPerHour": 2})
+        values["session"]["id"] = "0b6f8c1e-5a2d-4f39-8e7a-3c9d1f2a6b54"
+        rendered = _render_skuld_chart(tmp_path, values)
+        channel = _ravn_config_from_rendered(rendered)["gateway"]["channels"]["voice"]
+        calls = VoiceChannelConfig(**channel).calls
+
+        assert calls.enabled and calls.resident_id == "0b6f8c1e-5a2d-4f39-8e7a-3c9d1f2a6b54"
+        assert calls.host == "valhalla" and calls.max_per_hour == 2
+        assert calls.min_gap_minutes == 10 and calls.expires_after_seconds == 300
+
     @pytest.mark.parametrize(
         ("change", "message"),
         [
             ({"minters": {}}, "resident.voice.enabled needs resident.voice.minters"),
             ({"owner": ""}, "resident.voice.enabled needs session.ownerId"),
+            ({"calls": {"enabled": True}}, "resident.voice.calls.enabled needs session.id"),
         ],
     )
     def test_voice_that_cannot_serve_fails_to_render(
