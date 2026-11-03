@@ -526,9 +526,10 @@ function toDate(value?: Date | string | null): Date | undefined {
 const GATE_PENDING = 'pending';
 
 /**
- * A human gate the session waits on, as its activity metadata reports it. Brokers that
- * predate reporting gates as `awaiting_input` stay `idle` at an open gate, but record the
- * gate under `help_needed` with its status; only a pending one waits on a person.
+ * A human gate the session's activity metadata records as pending. Brokers that predate
+ * reporting gates as `awaiting_input` stay `idle` at an open gate and record it under
+ * `help_needed`, but never clear that record once the gate is decided: it only says where
+ * to look, and the session's gates say whether one still waits.
  */
 function waitsAtGate(metadata: Record<string, unknown> | null | undefined): boolean {
   const help = metadata?.help_needed;
@@ -597,8 +598,8 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     turnStartedAt: session.turnStartedAt ?? session.turn_started_at ?? null,
     needsAttention:
       Boolean(session.needsAttention ?? session.needs_attention) ||
-      (session.activityState ?? session.activity_state) === 'awaiting_input' ||
-      (session.status === 'running' && waitsAtGate(session.activity_metadata)),
+      (session.activityState ?? session.activity_state) === 'awaiting_input',
+    gateRecorded: session.status === 'running' && waitsAtGate(session.activity_metadata),
     ownerId: session.ownerId ?? session.owner_id ?? undefined,
     tenantId: session.tenantId ?? session.tenant_id ?? undefined,
     instanceId: session.instanceId ?? session.instance_id ?? undefined,
@@ -1393,6 +1394,37 @@ export function buildVolundrHttpAdapter(
       : forgeClient.get<SessionPayload[]>(endpoint);
   }
 
+  // Whether a session whose metadata records a gate really waits at one, from its gates.
+  const gateVerdicts = new Map<string, boolean>();
+
+  function withGateVerdict(session: VolundrSession): VolundrSession {
+    if (!session.gateRecorded || session.needsAttention) return session;
+    return gateVerdicts.get(session.id) ? { ...session, needsAttention: true } : session;
+  }
+
+  async function confirmRecordedGates(
+    sessions: VolundrSession[],
+    signal?: AbortSignal,
+  ): Promise<VolundrSession[]> {
+    await Promise.all(
+      sessions
+        .filter((session) => session.gateRecorded && !session.needsAttention)
+        .map(async (session) => {
+          const path = sessionPath(session.id, '/workflow/gates', session.instanceId);
+          const payload = await (signal
+            ? forgeClient.get<WorkflowGateListPayload>(path, { signal })
+            : forgeClient.get<WorkflowGateListPayload>(path));
+          gateVerdicts.set(
+            session.id,
+            (payload.gates ?? [])
+              .map(normalizeWorkflowGate)
+              .some((gate) => gate.status === 'pending' && gate.pending_behavior === 'help_needed'),
+          );
+        }),
+    );
+    return sessions.map(withGateVerdict);
+  }
+
   async function loadSessions(
     endpoint: string,
     options?: { instanceId?: string; signal?: AbortSignal },
@@ -1400,9 +1432,12 @@ export function buildVolundrHttpAdapter(
     const scoped = options?.instanceId
       ? `${endpoint}${endpoint.includes('?') ? '&' : '?'}instance_id=${encodeURIComponent(options.instanceId)}`
       : endpoint;
-    const sessions = (await readSessionList(scoped, options?.signal))
-      .map(normalizeSession)
-      .map(keepNewerActivity);
+    const sessions = (
+      await confirmRecordedGates(
+        (await readSessionList(scoped, options?.signal)).map(normalizeSession),
+        options?.signal,
+      )
+    ).map(keepNewerActivity);
     if (options?.instanceId) {
       for (const [id, session] of sessionCache) {
         if (session.instanceId === options.instanceId) sessionCache.delete(id);
@@ -1438,7 +1473,7 @@ export function buildVolundrHttpAdapter(
       throw new Error(`Invalid session changes from ${instanceId}`);
     }
     const listed = new Set(payload.ids);
-    const sessions = payload.sessions.map(normalizeSession);
+    const sessions = await confirmRecordedGates(payload.sessions.map(normalizeSession), signal);
     // Mirror loadSessions/listArchivedSessions: this host's cached membership is
     // exactly what it lists now.
     if (archived) {
@@ -1480,7 +1515,8 @@ export function buildVolundrHttpAdapter(
       publishSessions();
       return null;
     }
-    const fetched = normalizeSession(session);
+    const [fetched] = await confirmRecordedGates([normalizeSession(session)], options?.signal);
+    if (!fetched) throw new Error(`Session ${id} could not be read`);
     if (options?.instanceId && fetched.instanceId && fetched.instanceId !== options.instanceId) {
       throw new Error(
         `Session ${id} was returned by ${fetched.instanceId}, expected ${options.instanceId}`,
@@ -1651,7 +1687,9 @@ export function buildVolundrHttpAdapter(
             return;
           }
           if (eventType === 'session_created' || eventType === 'session_updated') {
-            const session = keepNewerActivity(normalizeSession(payload as SessionPayload));
+            const session = keepNewerActivity(
+              withGateVerdict(normalizeSession(payload as SessionPayload)),
+            );
             sessionCache.set(session.id, session);
             publishSessions();
             return;

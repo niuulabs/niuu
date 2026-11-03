@@ -1195,39 +1195,72 @@ describe('buildVolundrHttpAdapter', () => {
     expect(client.get).not.toHaveBeenCalledWith('/sessions/shared-id');
   });
 
-  it.each([
-    ['pending', 'running', true],
-    ['approved', 'running', false],
-    ['pending', 'stopped', false],
-  ] as const)(
-    'reads a human gate %s in an %s idle session as waiting on the person: %s',
-    async (gateStatus, status, waits) => {
-      const client = makeClient();
-      client.get.mockResolvedValueOnce({
-        id: 's1',
-        name: 'tracker-delivery-flow',
-        source: { type: 'git', repo: 'https://github.com/niuulabs/niuu', branch: 'regin' },
-        status,
-        model: 'gpt-5.6-terra',
-        activity_state: 'idle',
-        needs_attention: false,
-        activity_metadata: {
-          help_needed: {
-            reason: 'needs_human_approval',
-            context: {
-              mode: 'human_approval',
-              gate_label: 'Delivery blocked',
-              gate_status: gateStatus,
-            },
+  function gateSession(gateStatus: string, status = 'running') {
+    return {
+      id: 's1',
+      name: 'tracker-delivery-flow',
+      source: { type: 'git', repo: 'https://github.com/niuulabs/niuu', branch: 'regin' },
+      status,
+      model: 'gpt-5.6-terra',
+      activity_state: 'idle',
+      needs_attention: false,
+      activity_metadata: {
+        help_needed: {
+          reason: 'needs_human_approval',
+          context: {
+            mode: 'human_approval',
+            gate_label: 'Delivery blocked',
+            gate_status: gateStatus,
           },
         },
+      },
+    };
+  }
+
+  it.each([
+    ['pending', true],
+    ['approved', false],
+  ] as const)(
+    'confirms a gate its metadata records against its gates: %s there waits on the person: %s',
+    async (liveStatus, waits) => {
+      const client = makeClient();
+      client.get.mockResolvedValueOnce(gateSession('pending')).mockResolvedValueOnce({
+        gates: [
+          {
+            id: 'g1',
+            label: 'Delivery blocked',
+            status: liveStatus,
+            pending_behavior: 'help_needed',
+          },
+        ],
       });
 
       const session = await buildVolundrHttpAdapter(client).getSession('s1');
 
+      expect(client.get).toHaveBeenLastCalledWith('/sessions/s1/workflow/gates');
       expect(session.needsAttention).toBe(waits);
     },
   );
+
+  it('asks nothing more of a session whose metadata records no pending gate', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce(gateSession('approved'));
+
+    const session = await buildVolundrHttpAdapter(client).getSession('s1');
+
+    expect(client.get).toHaveBeenCalledTimes(1);
+    expect(session.needsAttention).toBe(false);
+  });
+
+  it('does not ask a stopped session for its gates', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce(gateSession('pending', 'stopped'));
+
+    const session = await buildVolundrHttpAdapter(client).getSession('s1');
+
+    expect(client.get).toHaveBeenCalledTimes(1);
+    expect(session.needsAttention).toBe(false);
+  });
 
   it('does not read a question without a gate as a waiting gate', async () => {
     const client = makeClient();

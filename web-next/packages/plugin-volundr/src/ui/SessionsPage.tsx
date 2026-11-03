@@ -635,6 +635,9 @@ export function SessionsPage() {
       ),
   );
   const allSessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data]);
+  const attentionCount = allSessions.filter((session) =>
+    matchesSessionFilter(session, 'attention'),
+  ).length;
   const stoppedSessionCount = useMemo(
     () => allSessions.filter((session) => session.state === 'terminated').length,
     [allSessions],
@@ -964,56 +967,6 @@ export function SessionsPage() {
                 </TooltipProvider>
               </div>
 
-              <div className="forge-session-filters" aria-label="Session states">
-                {[SESSION_FILTERS.slice(0, 4), SESSION_FILTERS.slice(4)].map((values, index) => (
-                  <div className="forge-session-filter-group" key={index}>
-                    {values.map((value) => (
-                      <button
-                        key={value}
-                        type="button"
-                        aria-pressed={filter === value}
-                        data-testid={`session-filter-${value}`}
-                        data-filter={value}
-                        onClick={() => setFilter(value)}
-                      >
-                        {FILTER_LABELS[value]}
-                        <span>
-                          {
-                            allSessions.filter((session) => matchesSessionFilter(session, value))
-                              .length
-                          }
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ))}
-              </div>
-              <div className="forge-session-grouping">
-                <span id="forge-group-label">Group by</span>
-                <div
-                  className="forge-session-group-options"
-                  role="group"
-                  aria-labelledby="forge-group-label"
-                  data-testid="pod-group-mode"
-                >
-                  {SIDEBAR_MODES.map((mode) => {
-                    const active = sidebarMode === mode;
-                    return (
-                      <button
-                        key={mode}
-                        type="button"
-                        onClick={() => setSidebarMode(mode)}
-                        className="forge-session-group-option"
-                        data-testid={`pod-group-mode-${mode}`}
-                        aria-pressed={active}
-                      >
-                        {SIDEBAR_MODE_LABELS[mode]}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
               <div className="niuu:px-2.5 niuu:pb-1">
                 <div className="niuu:flex niuu:items-center niuu:gap-2">
                   <div className="forge-session-search niuu:flex niuu:min-w-0 niuu:flex-1 niuu:items-center niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] niuu:focus-within:border-brand/50 niuu:focus-within:ring-1 niuu:focus-within:ring-brand/20">
@@ -1023,7 +976,7 @@ export function SessionsPage() {
                     />
                     <input
                       type="search"
-                      placeholder="filter by name / repo / branch / host"
+                      placeholder="Filter sessions"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       className="niuu:min-w-0 niuu:flex-1 niuu:bg-transparent niuu:py-0.5 niuu:pr-1 niuu:text-[11px] niuu:text-text-primary niuu:placeholder:text-text-muted niuu:focus:outline-none"
@@ -1031,6 +984,50 @@ export function SessionsPage() {
                       aria-label="Filter sessions"
                     />
                   </div>
+                </div>
+                <div className="forge-session-filters">
+                  <select
+                    className="forge-session-group-select"
+                    aria-label="Show sessions"
+                    title="Show sessions"
+                    data-testid="session-filter"
+                    value={filter}
+                    onChange={(event) => setFilter(event.target.value as SessionFilter)}
+                  >
+                    {SESSION_FILTERS.map((value) => (
+                      <option key={value} value={value} data-testid={`session-filter-${value}`}>
+                        {FILTER_LABELS[value]} ·{' '}
+                        {
+                          allSessions.filter((session) => matchesSessionFilter(session, value))
+                            .length
+                        }
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="forge-session-group-select"
+                    aria-label="Group sessions by"
+                    title="Group sessions by"
+                    data-testid="pod-group-mode"
+                    value={sidebarMode}
+                    onChange={(event) => setSidebarMode(event.target.value as SidebarMode)}
+                  >
+                    {SIDEBAR_MODES.map((mode) => (
+                      <option key={mode} value={mode} data-testid={`pod-group-mode-${mode}`}>
+                        By {SIDEBAR_MODE_LABELS[mode].toLowerCase()}
+                      </option>
+                    ))}
+                  </select>
+                  {attentionCount > 0 && filter !== 'attention' ? (
+                    <button
+                      type="button"
+                      className="forge-session-needs-you"
+                      data-testid="session-filter-needs-you"
+                      onClick={() => setFilter('attention')}
+                    >
+                      Needs you {attentionCount}
+                    </button>
+                  ) : null}
                 </div>
               </div>
 

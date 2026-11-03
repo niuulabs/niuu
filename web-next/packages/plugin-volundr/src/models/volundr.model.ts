@@ -223,6 +223,8 @@ export interface VolundrSession {
   turnStartedAt?: string | null;
   /** True when the session is blocked waiting on the user (awaiting_input). */
   needsAttention?: boolean;
+  /** Its broker's metadata records a pending human gate; its gates say whether one still waits. */
+  gateRecorded?: boolean;
   ownerId?: string;
   tenantId?: string;
   instanceId?: string;

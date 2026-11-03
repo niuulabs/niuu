@@ -63,7 +63,7 @@ export function matchesSessionFilter(session: Session, filter: SessionFilter): b
   }
 }
 
-export const SIDEBAR_WIDTH = { default: 340, min: 280, max: 640, keyboardStep: 20 } as const;
+export const SIDEBAR_WIDTH = { default: 272, min: 232, max: 640, keyboardStep: 20 } as const;
 export function sidebarWidth(value: string | number): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return SIDEBAR_WIDTH.default;

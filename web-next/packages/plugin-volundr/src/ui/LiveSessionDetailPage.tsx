@@ -91,10 +91,9 @@ import { sessionModelLabel } from '../domain/sessionModelLabel';
 import {
   buildAttentionItems,
   latestChecklist,
-  runningPeers,
   type SessionGateSummary,
 } from '../domain/sessionAttention';
-import { SessionAttentionPanel } from './SessionAttentionPanel';
+import { SessionAttentionPanel, sessionPanelHasContent } from './SessionAttentionPanel';
 
 export type LiveSessionTab =
   'chat' | 'terminal' | 'diffs' | 'files' | 'chronicles' | 'telemetry' | 'logs';
@@ -3302,7 +3301,6 @@ function LiveSessionDetailPageInner({
     workflowGates,
   ]);
   const checklist = useMemo(() => latestChecklist(chat.messages), [chat.messages]);
-  const peers = useMemo(() => runningPeers(chat.participants), [chat.participants]);
   const sessionDetail = sessionQuery.data;
   const costValue =
     sessionDetail?.costCents != null ? formatCurrencyCents(sessionDetail.costCents) : null;
@@ -3320,6 +3318,12 @@ function LiveSessionDetailPageInner({
     diffs: fileChangeCount(sessionDetail?.files),
     chronicles: sessionDetail?.events.length ? sessionDetail.events.length : undefined,
   };
+  const panelHasContent = sessionPanelHasContent({
+    items: attentionItems,
+    ticket: sessionTrackerIssue,
+    checklist,
+    changedFiles: tabCounts.diffs,
+  });
   const headerMessageCount = useMemo(() => {
     if (visibleMessageCount != null) return visibleMessageCount;
     if (canReplayTranscript) return replayMessages.length;
@@ -3690,12 +3694,20 @@ function LiveSessionDetailPageInner({
                 active={showInternalMessages}
                 onClick={handleToggleInternalMessages}
               />
-              <SessionToolbarButton
-                icon={PanelRight}
-                title={showPanel ? 'Hide session panel' : 'Show session panel'}
-                active={showPanel}
-                onClick={() => setPanelVisibility(showPanel ? '0' : '1')}
-              />
+              {panelHasContent ? (
+                <SessionToolbarButton
+                  icon={PanelRight}
+                  title={showPanel ? 'Hide session panel' : 'Show session panel'}
+                  active={showPanel}
+                  tone={!showPanel && attentionItems.length > 0 ? 'brand' : 'neutral'}
+                  label={
+                    !showPanel && attentionItems.length > 0
+                      ? `Needs you ${attentionItems.length}`
+                      : undefined
+                  }
+                  onClick={() => setPanelVisibility(showPanel ? '0' : '1')}
+                />
+              ) : null}
               {canShowResendPromptToFlock && (
                 <SessionToolbarButton
                   icon={MessageCircleReply}
@@ -3992,10 +4004,9 @@ function LiveSessionDetailPageInner({
               </div>
             )}
           </div>
-          {showPanel ? (
+          {showPanel && panelHasContent ? (
             <SessionAttentionPanel
               items={attentionItems}
-              peers={peers}
               ticket={sessionTrackerIssue}
               checklist={checklist}
               changedFiles={tabCounts.diffs}
@@ -4003,6 +4014,7 @@ function LiveSessionDetailPageInner({
               onOpenChat={() => openTab('chat')}
               onOpenDiffs={() => openTab('diffs')}
               onRespondPermission={chat.respondToPermission}
+              onClose={() => setPanelVisibility('0')}
             />
           ) : null}
         </div>

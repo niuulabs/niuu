@@ -260,7 +260,7 @@ describe('SessionsPage', () => {
         .map((row) => row.dataset.testid),
     ).toEqual(['pod-entry-idle-pin', 'pod-entry-active-pin', 'pod-entry-archived-pin']);
     for (const mode of ['state', 'repo', 'forge', 'project']) {
-      fireEvent.click(screen.getByTestId(`pod-group-mode-${mode}`));
+      fireEvent.change(screen.getByTestId('pod-group-mode'), { target: { value: mode } });
       for (const filter of [
         'live',
         'active',
@@ -271,14 +271,14 @@ describe('SessionsPage', () => {
         'all',
         'archived',
       ]) {
-        fireEvent.click(screen.getByTestId(`session-filter-${filter}`));
+        fireEvent.change(screen.getByTestId('session-filter'), { target: { value: filter } });
         expect(screen.getAllByTestId('pod-entry-active-pin')).toHaveLength(1);
         expect(within(pinned).getByTestId('pod-entry-archived-pin')).toBeInTheDocument();
       }
     }
     fireEvent.click(within(pinned).getByRole('button', { name: /^Pinned/ }));
     expect(within(pinned).queryByTestId('pod-entry-active-pin')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('pod-group-mode-state'));
+    fireEvent.change(screen.getByTestId('pod-group-mode'), { target: { value: 'state' } });
     expect(within(pinned).getByRole('button', { name: /^Pinned/ })).toHaveAttribute(
       'aria-expanded',
       'false',
@@ -457,7 +457,7 @@ describe('SessionsPage', () => {
 
     wrap(store);
     await waitFor(() => expect(screen.getByTestId('pod-group-mode-repo')).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId('pod-group-mode-repo'));
+    fireEvent.change(screen.getByTestId('pod-group-mode'), { target: { value: 'repo' } });
 
     await waitFor(() => expect(screen.getByTestId('pod-group-alpha')).toBeInTheDocument());
     expect(screen.getByTestId('pod-group-alpha-count')).toHaveTextContent('2');
@@ -493,7 +493,7 @@ describe('SessionsPage', () => {
 
     wrap(store);
     await waitFor(() => expect(screen.getByTestId('pod-group-mode-forge')).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId('pod-group-mode-forge'));
+    fireEvent.change(screen.getByTestId('pod-group-mode'), { target: { value: 'forge' } });
 
     await waitFor(() => expect(screen.getByTestId('pod-group-guild-alpha')).toBeInTheDocument());
     expect(screen.getByTestId('pod-group-guild-alpha-count')).toHaveTextContent('2');
@@ -731,13 +731,13 @@ describe('Forge session review controls', () => {
   it('defaults to live sessions, counts filters, preserves selection and composes search', async () => {
     wrap(createSessionStoreWithSessions(sessions));
     await screen.findByTestId('pod-entry-working');
-    expect(screen.getByTestId('session-filter-live')).toHaveTextContent('Live3');
+    expect(screen.getByTestId('session-filter-live')).toHaveTextContent('Live · 3');
     expect(screen.queryByTestId('pod-entry-stopped')).not.toBeInTheDocument();
     expect(screen.queryByTestId('pod-entry-archived')).not.toBeInTheDocument();
     expect(screen.getByTestId('pod-entry-working')).not.toHaveTextContent('dev-user');
     expect(screen.getByTestId('pod-entry-working')).toHaveTextContent('Thor');
     expect(screen.getByTestId('pod-entry-working')).toHaveTextContent('~/repos/niuu');
-    fireEvent.click(screen.getByTestId('session-filter-all'));
+    fireEvent.change(screen.getByTestId('session-filter'), { target: { value: 'all' } });
     expect(screen.getByTestId('pod-entry-archived')).toBeInTheDocument();
     fireEvent.change(screen.getByTestId('pod-search'), { target: { value: 'Release review' } });
     expect(screen.getByTestId('pod-entry-working')).toBeInTheDocument();
@@ -779,15 +779,15 @@ describe('Forge session review controls', () => {
     wrap(createSessionStoreWithSessions(sessions));
     await screen.findByTestId('pod-entry-working');
     const separator = screen.getByRole('separator', { name: 'Resize session list' });
-    expect(separator).toHaveAttribute('aria-valuenow', '340');
+    expect(separator).toHaveAttribute('aria-valuenow', '272');
     fireEvent.keyDown(separator, { key: 'ArrowRight' });
-    expect(localStorage.getItem('niuu.forge.sidebarWidth')).toBe('360');
+    expect(localStorage.getItem('niuu.forge.sidebarWidth')).toBe('292');
     fireEvent.keyDown(separator, { key: 'End' });
     expect(separator).toHaveAttribute('aria-valuenow', '640');
     fireEvent.keyDown(separator, { key: 'ArrowRight' });
     expect(separator).toHaveAttribute('aria-valuenow', '640');
     fireEvent.doubleClick(separator);
-    expect(separator).toHaveAttribute('aria-valuenow', '340');
+    expect(separator).toHaveAttribute('aria-valuenow', '272');
     fireEvent.click(
       within(screen.getByTestId('pod-group-working')).getByRole('button', { expanded: true }),
     );
@@ -817,7 +817,7 @@ describe('Forge session review controls', () => {
     wrap(createSessionStoreWithSessions(sessions), service);
     fireEvent.click(await screen.findByTestId('pod-entry-working-archive'));
     await waitFor(() => expect(calls).toEqual(['stop', 'archive']));
-    fireEvent.click(screen.getByTestId('session-filter-archived'));
+    fireEvent.change(screen.getByTestId('session-filter'), { target: { value: 'archived' } });
     fireEvent.click(screen.getByRole('button', { name: 'Restore Old session' }));
     await waitFor(() => expect(service.restoreSession).toHaveBeenCalledWith('archived'));
   });
@@ -871,7 +871,7 @@ it('groups registered projects as a collapsible session tree and keeps settings 
   wrap(createSessionStoreWithSessions(sessions), service);
   await screen.findByTestId('pod-entry-parent');
   expect(service.getProjects).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByTestId('pod-group-mode-project'));
+  fireEvent.change(screen.getByTestId('pod-group-mode'), { target: { value: 'project' } });
   await screen.findByTestId('pod-group-lexi');
   expect(screen.getByTestId('pod-group-no-project')).toHaveTextContent('Independent');
   fireEvent.click(screen.getByRole('button', { name: 'Collapse child sessions of Coordinator' }));

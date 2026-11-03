@@ -8,6 +8,41 @@
   background: var(--color-bg-secondary);
 }
 
+.niuu-session-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  padding: 8px 8px 8px 14px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.niuu-session-panel__head button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.niuu-session-panel__head button:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.niuu-session-panel__head svg {
+  width: 16px;
+  height: 16px;
+}
+
 .niuu-session-panel__section {
   border-bottom: 1px solid var(--color-border-subtle);
   padding: 12px 14px;

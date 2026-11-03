@@ -1,5 +1,5 @@
-import { Check, Circle, CircleDot, ExternalLink, FileDiff } from 'lucide-react';
-import type { PermissionBehavior, RoomParticipant } from '@niuulabs/ui';
+import { Check, ChevronRight, Circle, CircleDot, ExternalLink, FileDiff } from 'lucide-react';
+import type { PermissionBehavior } from '@niuulabs/ui';
 import type { TrackerIssue } from '../models/volundr.model';
 import type { ChecklistItem, SessionAttentionItem } from '../domain/sessionAttention';
 import './SessionAttentionPanel.css';
@@ -70,9 +70,23 @@ function PanelSection({ title, children }: { title: string; children: React.Reac
   );
 }
 
+/** Whether the panel has anything the session's other columns do not already show. */
+export function sessionPanelHasContent({
+  items,
+  ticket,
+  checklist,
+  changedFiles,
+}: {
+  items: readonly SessionAttentionItem[];
+  ticket?: TrackerIssue;
+  checklist: readonly ChecklistItem[];
+  changedFiles?: number;
+}): boolean {
+  return items.length > 0 || Boolean(ticket) || checklist.length > 0 || Boolean(changedFiles);
+}
+
 export function SessionAttentionPanel({
   items,
-  peers,
   ticket,
   checklist,
   changedFiles,
@@ -80,9 +94,9 @@ export function SessionAttentionPanel({
   onOpenChat,
   onOpenDiffs,
   onRespondPermission,
+  onClose,
 }: {
   items: readonly SessionAttentionItem[];
-  peers: readonly RoomParticipant[];
   ticket?: TrackerIssue;
   checklist: readonly ChecklistItem[];
   changedFiles?: number;
@@ -90,6 +104,7 @@ export function SessionAttentionPanel({
   onOpenChat: () => void;
   onOpenDiffs: () => void;
   onRespondPermission: (requestId: string, behavior: PermissionBehavior) => void;
+  onClose: () => void;
 }) {
   const doneCount = checklist.filter((item) => item.status === 'completed').length;
   return (
@@ -98,8 +113,14 @@ export function SessionAttentionPanel({
       aria-label="Session overview"
       data-testid="session-attention-panel"
     >
-      <PanelSection title={items.length > 0 ? `Needs you (${items.length})` : 'Needs you'}>
-        {items.length > 0 ? (
+      <div className="niuu-session-panel__head">
+        <span>{items.length > 0 ? `Needs you (${items.length})` : 'Overview'}</span>
+        <button type="button" aria-label="Hide session panel" title="Hide" onClick={onClose}>
+          <ChevronRight aria-hidden="true" />
+        </button>
+      </div>
+      {items.length > 0 ? (
+        <PanelSection title="Waiting on you">
           <ul>
             {items.map((item) => (
               <AttentionRow
@@ -111,10 +132,8 @@ export function SessionAttentionPanel({
               />
             ))}
           </ul>
-        ) : (
-          <p className="niuu-session-panel__quiet">Nothing is waiting on you.</p>
-        )}
-      </PanelSection>
+        </PanelSection>
+      ) : null}
 
       {ticket ? (
         <PanelSection title="Ticket">
@@ -145,19 +164,6 @@ export function SessionAttentionPanel({
                 </li>
               );
             })}
-          </ul>
-        </PanelSection>
-      ) : null}
-
-      {peers.length > 0 ? (
-        <PanelSection title="Running">
-          <ul className="niuu-session-panel__peers">
-            {peers.map((peer) => (
-              <li key={peer.peerId}>
-                <span>{peer.displayName || peer.persona}</span>
-                {peer.status ? <small>{peer.status}</small> : null}
-              </li>
-            ))}
           </ul>
         </PanelSection>
       ) : null}

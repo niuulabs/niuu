@@ -1833,17 +1833,40 @@ describe('LiveSessionDetailPage', () => {
         expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute('aria-selected', 'true');
       });
 
-      it('remembers being hidden', async () => {
-        mockChatState();
+      it('remembers being hidden, and says what waits while it is', async () => {
+        mockChatState({
+          pendingInputRequests: [
+            { requestId: 'input-1', questions: [{ prompt: 'Which branch?', choices: [] }] },
+          ],
+        });
         wrap('test-session-id-1234');
-        await screen.findByTestId('session-attention-panel');
+        const panel = await screen.findByTestId('session-attention-panel');
 
-        fireEvent.click(screen.getByRole('button', { name: 'Hide session panel' }));
+        fireEvent.click(within(panel).getByRole('button', { name: 'Hide session panel' }));
 
         expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
         expect(localStorage.getItem('niuu.forge.panel')).toBe('0');
-        fireEvent.click(screen.getByRole('button', { name: 'Show session panel' }));
+        const show = screen.getByRole('button', { name: 'Show session panel' });
+        expect(show).toHaveTextContent('Needs you 1');
+        fireEvent.click(show);
         expect(screen.getByTestId('session-attention-panel')).toBeInTheDocument();
+      });
+
+      it('gives the columns the space when the panel has nothing of its own', async () => {
+        mockChatState();
+        const store = buildSessionStore(RUNNING_SESSION);
+        const unchanged = await store.getSession!('test-session-id-1234');
+        wrap('test-session-id-1234', {
+          sessionStore: {
+            getSession: vi
+              .fn()
+              .mockResolvedValue(unchanged ? { ...unchanged, files: undefined } : null),
+          },
+        });
+        await screen.findByTestId('live-session-detail-page');
+
+        expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: /session panel/ })).not.toBeInTheDocument();
       });
     });
 
