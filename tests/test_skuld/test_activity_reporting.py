@@ -395,7 +395,9 @@ class TestAttentionAndHeartbeat:
             await test_broker._exit_attention("askq-1")
 
         assert test_broker._pending_attention == {"perm-2": "permission"}
-        mock_report.assert_not_called()
+        # Still blocked: the only report is a forced awaiting_input refresh, so
+        # open_controls (F12d) drops the answered gate without leaving awaiting_input.
+        mock_report.assert_awaited_once_with("awaiting_input", extra_metadata=None, force=True)
 
     @pytest.mark.asyncio
     async def test_ask_user_question_event_enters_awaiting_input(self, test_broker):
@@ -822,18 +824,40 @@ class TestProvisioningAndStoppedStates:
         assert idle_calls == []
 
     @pytest.mark.asyncio
-    async def test_transport_stopped_event_reports_stopped(self, test_broker):
-        """A transport_stopped event reports the terminal 'stopped' activity state."""
-        with patch.object(
-            test_broker, "_report_activity_state", new_callable=AsyncMock
-        ) as mock_report:
+    async def test_transport_stopped_event_reports_stopped_and_exits(self, test_broker):
+        """A dead transport reports 'stopped' and the broker exits (LEX-1699), so the
+        pod manager reconciles the session instead of a corpse staying 'running'."""
+        with (
+            patch.object(
+                test_broker, "_report_activity_state", new_callable=AsyncMock
+            ) as mock_report,
+            patch("skuld.broker._exit_own_process") as kill,
+        ):
             await test_broker._handle_cli_event(
-                {"type": "transport_stopped", "reason": "tmux_session_gone"}
+                {"type": "transport_stopped", "reason": "claude_exited", "exit_status": "143"}
             )
+            await asyncio.sleep(0)  # let the scheduled exit run (against the mock)
 
         stopped_calls = [c for c in mock_report.call_args_list if c[0][0] == "stopped"]
         assert len(stopped_calls) == 1
-        assert stopped_calls[0][1]["extra_metadata"]["reason"] == "tmux_session_gone"
+        assert stopped_calls[0][1]["extra_metadata"] == {
+            "reason": "claude_exited",
+            "exit_status": "143",
+        }
+        kill.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_transport_stopped_keeps_serving_when_told_to(self, test_broker):
+        test_broker._settings.exit_when_transport_stops = False
+        with (
+            patch.object(test_broker, "_report_activity_state", new_callable=AsyncMock),
+            patch("skuld.broker._exit_own_process") as kill,
+        ):
+            await test_broker._handle_cli_event(
+                {"type": "transport_stopped", "reason": "tmux_session_gone"}
+            )
+            await asyncio.sleep(0)
+        kill.assert_not_called()
 
 
 class TestTurnStartActive:

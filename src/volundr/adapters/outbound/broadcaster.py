@@ -240,7 +240,7 @@ class InMemoryEventBroadcaster(EventBroadcaster):
             data={
                 "id": str(session.id),
                 "name": session.name,
-                "model": session.model,
+                "model": session.effective_model,
                 "repo": session.repo,
                 "branch": session.branch,
                 "status": session.status.value,
@@ -255,6 +255,7 @@ class InMemoryEventBroadcaster(EventBroadcaster):
                 ),
                 "message_count": session.message_count,
                 "tokens_used": session.tokens_used,
+                "context": session.context.model_dump(),
                 "pod_name": session.pod_name,
                 "error": session.error,
                 "source": session.source.model_dump() if session.source else None,
@@ -278,6 +279,16 @@ class InMemoryEventBroadcaster(EventBroadcaster):
                 # Derived "this session needs you" flag so a client can light up a
                 # badge from session_updated alone, without re-deriving the rule.
                 "needs_attention": session.needs_attention,
+                # Agent-maintained descriptions. Always all four keys (null when unset):
+                # clients treat a present null as "cleared" and a missing key as "unchanged".
+                "short_description": session.short_description,
+                "description": session.description,
+                "short_description_updated_at": _iso(session.short_description_updated_at),
+                "description_updated_at": _iso(session.description_updated_at),
+                # G10 (F12d): the inputs every reader needs to derive "working" alike.
+                "last_work_at": _iso(session.last_work_at),
+                "tool_open": session.tool_open,
+                "open_controls": session.open_controls,
             },
             timestamp=datetime.now(UTC),
         )
@@ -441,3 +452,7 @@ class InMemoryEventBroadcaster(EventBroadcaster):
             event.t,
         )
         await self.publish(realtime_event)
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None

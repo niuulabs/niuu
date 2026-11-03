@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import ValidationError
@@ -56,17 +56,29 @@ def test_composition_builds_service_from_config():
             ]
         }
     )
-    service = _create_notification_service(
-        settings, MagicMock(), broadcaster=MagicMock(), integration_repository=None
+    service, image_worker = _create_notification_service(
+        settings,
+        MagicMock(),
+        broadcaster=MagicMock(),
+        integration_repository=None,
+        session_lookup=AsyncMock(return_value=None),
     )
     assert [(s.name, s.label) for s in service._sinks] == [("ops", "Ops"), ("page", "page")]
+    assert service._image_scheduler is image_worker
+    assert image_worker._settings.fetch_timeout_seconds == (
+        settings.notifications.images.fetch_timeout_seconds
+    )
     assert service._engine_resolver(Session(name="s", session_definition="skuldCodex")) == "codex"
     assert service._reply_title_chars == settings.notifications.reply_ready.title_chars
 
     disabled = Settings(notifications={"enabled": False})
     assert (
         _create_notification_service(
-            disabled, MagicMock(), broadcaster=MagicMock(), integration_repository=None
+            disabled,
+            MagicMock(),
+            broadcaster=MagicMock(),
+            integration_repository=None,
+            session_lookup=AsyncMock(return_value=None),
         )
         is None
     )
@@ -306,3 +318,17 @@ class TestOdinReviewRelayComposition:
         assert relay is not None
         assert any("push.enabled is false" in r.message for r in caplog.records)
         await relay._source.close()
+
+
+def test_image_defaults_and_timing():
+    from volundr.config import NotificationImagesConfig
+
+    images = NotificationsConfig().images
+    assert images.thumbnail_max_side == 320
+    assert images.allow_private_networks is False
+    assert images.fetch_timeout_seconds < images.lease_seconds
+    assert images.cache_max_age_seconds == 31_536_000
+    with pytest.raises(ValidationError, match="fetch_timeout_seconds must be shorter"):
+        NotificationImagesConfig(fetch_timeout_seconds=60, lease_seconds=60)
+    with pytest.raises(ValidationError):
+        NotificationImagesConfig(thumbnail_jpeg_quality=100)

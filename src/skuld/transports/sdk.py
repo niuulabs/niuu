@@ -24,6 +24,7 @@ from typing import Any
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from claude_agent_sdk.types import (
     AssistantMessage,
+    ConversationResetMessage,
     RateLimitEvent,
     ResultMessage,
     ServerToolResultBlock,
@@ -177,6 +178,16 @@ def _to_stream_json(message: object) -> dict[str, Any] | None:
 
     if isinstance(message, SystemMessage):
         return dict(message.data)
+
+    if isinstance(message, ConversationResetMessage):
+        # Native totals restart with this conversation. Preserve its identity so
+        # the durable usage projection does not mistake a reset for compaction.
+        return {
+            "type": "conversation_reset",
+            "session_id": message.session_id,
+            "new_conversation_id": message.new_conversation_id,
+            "uuid": message.uuid,
+        }
 
     if isinstance(message, ResultMessage):
         payload = {

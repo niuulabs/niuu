@@ -562,8 +562,14 @@ kbd {
 }
 
 /* Xteo: LexiDesignKit's navy surfaces, with the brighter native macOS text ramp.
- * Keep foreground accents distinct from deeper filled-button blue. */
-[data-theme='xteo'] {
+ * Keep foreground accents distinct from deeper filled-button blue.
+ * The midnight/deep/dark blue themes start from this layout and override surfaces below. */
+:is(
+  [data-theme='xteo'],
+  [data-theme='midnight-blue'],
+  [data-theme='deep-blue'],
+  [data-theme='dark-blue']
+) {
   --color-bg-primary: #0a0e1a;
   --color-bg-secondary: #0f1525;
   --color-bg-tertiary: #141b2d;
@@ -616,6 +622,71 @@ kbd {
   --ops-text-body: var(--color-text-secondary);
   --ops-text-muted: var(--color-text-muted);
   --ops-text-faint: var(--color-text-faint);
+}
+
+/* Desktop blue alternatives from LexiDesignKit/MacBluePalette.swift (1e43b94e).
+ * Preserve the readable text ramp and shared blue layouts above. Surface and
+ * accent roles use the native dark palettes; identity/status colors stay distinct. */
+[data-theme='midnight-blue'] {
+  --color-bg-primary: #101216;
+  --color-bg-secondary: #15181d;
+  --color-bg-tertiary: #1b1f26;
+  --color-bg-elevated: #252b34;
+  --color-border: #343d4a;
+  --color-border-subtle: #2b323c;
+  --color-code-surface: #12151b;
+  --color-panel-quiet: #0f1217;
+  --color-sent-surface: #233044;
+  --brand-300: #a0b9da;
+  --brand-400: #91aed4;
+  --brand-500: #7199cd;
+  --brand-600: #315f9b;
+}
+
+[data-theme='deep-blue'] {
+  --color-bg-primary: #0d1320;
+  --color-bg-secondary: #121b2b;
+  --color-bg-tertiary: #19253a;
+  --color-bg-elevated: #24334c;
+  --color-border: #344b70;
+  --color-border-subtle: #293d5b;
+  --color-code-surface: #101a2b;
+  --color-panel-quiet: #0c1524;
+  --color-sent-surface: #203a62;
+  /* Keep small metadata readable on the richer sent-message surface. */
+  --color-text-faint: #9aa6bb;
+  --brand-300: #95c0ff;
+  --brand-400: #7fb5ff;
+  --brand-500: #6ea9ff;
+  --brand-600: #2467c7;
+}
+
+[data-theme='dark-blue'] {
+  --color-bg-primary: #0c1018;
+  --color-bg-secondary: #121721;
+  --color-bg-tertiary: #1a2230;
+  --color-bg-elevated: #243043;
+  --color-border: #38485d;
+  --color-border-subtle: #2c3a4c;
+  --color-code-surface: #0e1520;
+  --color-panel-quiet: #0a101b;
+  --color-sent-surface: #1d2c43;
+  --brand-300: #b0c5e0;
+  --brand-400: #a3b8d3;
+  --brand-500: #8da7c8;
+  --brand-600: #2d507d;
+}
+
+:is([data-theme='midnight-blue'], [data-theme='deep-blue'], [data-theme='dark-blue']) {
+  --brand-100: color-mix(in srgb, var(--brand-300) 35%, white);
+  --brand-200: color-mix(in srgb, var(--brand-300) 65%, white);
+  --brand-700: color-mix(in srgb, var(--brand-600) 85%, black);
+  --brand-800: color-mix(in srgb, var(--brand-600) 65%, black);
+  --brand-900: color-mix(in srgb, var(--brand-600) 45%, black);
+  --color-brand: var(--brand-500);
+  --color-border-quiet: color-mix(in srgb, var(--color-border-subtle) 65%, var(--color-bg-primary));
+  --color-selection-surface: var(--color-bg-secondary);
+  --color-selection-edge: var(--color-border);
 }
 
 [data-theme='light'] {

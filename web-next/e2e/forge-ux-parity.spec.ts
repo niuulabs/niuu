@@ -35,6 +35,21 @@ const parts = [
   },
 ];
 
+const THEME_LABELS: Record<string, string> = {
+  'midnight-blue': 'Midnight Blue',
+  'deep-blue': 'Deep Blue',
+  'dark-blue': 'Dark Blue',
+  xteo: 'blue',
+  ice: 'Native dark',
+  light: 'Light',
+};
+
+async function chooseTheme(page: Page, theme: string) {
+  await page.getByRole('button', { name: 'Color theme', exact: true }).click();
+  await page.getByRole('button', { name: THEME_LABELS[theme], exact: true }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+}
+
 async function fixture(page: Page, rich = false) {
   const mutations: string[] = [];
   const sessions = [
@@ -78,7 +93,7 @@ async function fixture(page: Page, rich = false) {
     route.fulfill({
       json: {
         ...baseConfig,
-        theme: 'xteo',
+        theme: 'midnight-blue',
         services: {
           ...baseConfig.services,
           setup: { mode: 'http', baseUrl: '/api/v1/niuu/setup' },
@@ -438,12 +453,12 @@ test('phone layout uses a full-width list and detail back navigation', async ({
   await expect(page.getByTestId('pod-list-sidebar')).toBeVisible();
 });
 
-test('xTeo and Native dark switch across the shell and document previews and survive reload', async ({
+test('Midnight Blue and Native dark switch across the shell and document previews and survive reload', async ({
   page,
 }, testInfo) => {
   await fixture(page, true);
   await page.goto('/volundr/sessions/review');
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'xteo');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'midnight-blue');
   await expect(page.getByRole('heading', { name: 'Forge presentation review' })).toBeVisible();
   await expect(page.locator('.niuu-chat-md-callout')).toHaveAttribute('data-callout', 'NOTE');
   await expect(page.locator('.niuu-chat-md-table')).toBeVisible();
@@ -453,11 +468,10 @@ test('xTeo and Native dark switch across the shell and document previews and sur
   await expect(page.getByRole('img', { name: 'Mermaid diagram', exact: true })).toBeVisible();
   await page.getByRole('heading', { name: 'Forge presentation review' }).scrollIntoViewIfNeeded();
   await page.screenshot({ path: testInfo.outputPath('xteo-rich-markdown.png') });
-  await page.getByRole('combobox', { name: 'Color theme' }).selectOption('ice');
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'ice');
+  await chooseTheme(page, 'ice');
   await page.reload();
-  await expect(page.getByRole('combobox', { name: 'Color theme' })).toHaveValue('ice');
-  await page.getByRole('combobox', { name: 'Color theme' }).selectOption('xteo');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'ice');
+  await chooseTheme(page, 'midnight-blue');
   await page.getByRole('button', { name: 'review notes', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: 'Review notes', exact: true })).toBeVisible();
@@ -482,12 +496,12 @@ test('phone review keeps theme switch, Chat tab, toolbar and full file preview u
   await page.setViewportSize({ width: 390, height: 844 });
   await fixture(page);
   await page.goto('/volundr/sessions/review');
-  const theme = page.getByRole('combobox', { name: 'Color theme' });
+  const theme = page.getByRole('button', { name: 'Color theme', exact: true });
   await expect(theme).toBeVisible();
   const themeBox = (await theme.boundingBox())!;
   expect(themeBox.x + themeBox.width).toBeLessThanOrEqual(390);
-  await theme.selectOption('ice');
-  await theme.selectOption('xteo');
+  await chooseTheme(page, 'ice');
+  await chooseTheme(page, 'midnight-blue');
   const disconnect = page
     .locator('.niuu-shell__topbar')
     .getByRole('button', { name: 'Disconnect' });
@@ -523,7 +537,7 @@ test('sidebar prioritizes live filters, settings, project trees and searchable i
   const sidebar = page.getByRole('navigation', { name: 'Session list' });
   await expect(sidebar.locator('[data-filter]')).toHaveText([
     'Live3',
-    'Active1',
+    'Working1',
     'Idle1',
     'Needs you1',
     'Stopped1',
@@ -690,7 +704,7 @@ test('session rows align name and state above agent, host, folder and age with o
   expect(actionsBox.x + actionsBox.width).toBeGreaterThan(stateBox.x + stateBox.width);
   expect((await row.boundingBox())!.width).toBeGreaterThan(300);
   await page.screenshot({ path: testInfo.outputPath('session-row-hover.png') });
-  await page.getByRole('combobox', { name: 'Color theme' }).selectOption('ice');
+  await chooseTheme(page, 'ice');
   await expect(row.locator('.forge-session-harness')).toHaveCSS('color', blue);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(host).toBeVisible();
@@ -1021,13 +1035,13 @@ test('keeps top-level navigation and visible account controls clear at every wid
   const header = page.locator('.niuu-shell__topbar');
   const tabs = page.locator('.niuu-shell__tabs');
   const account = header.getByRole('button', { name: 'Disconnect', exact: true });
-  const theme = header.getByRole('combobox', { name: 'Color theme' });
+  const theme = header.getByRole('button', { name: 'Color theme', exact: true });
   const command = header.getByRole('button', { name: 'Open command palette' });
   await expect(account).toBeVisible();
   await expect(theme).toBeVisible();
   await expect(command).toBeVisible();
   await expect(page.getByText('Private connection', { exact: true })).toHaveCount(0);
-  await expect(theme.locator('option:checked')).toHaveText('blue');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'midnight-blue');
   for (const width of [1440, 1024, 820, 761, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
     const headerBox = (await header.boundingBox())!;
@@ -1054,4 +1068,152 @@ test('keeps top-level navigation and visible account controls clear at every wid
         animations: 'disabled',
       });
   }
+});
+
+test('compact composer grows with dictation, caps its height and shrinks after sending', async ({
+  page,
+}, testInfo) => {
+  await fixture(page);
+  await page.goto('/volundr/sessions/review');
+  const input = page.getByRole('textbox', { name: 'Message', exact: true });
+  const composer = page.getByTestId('chat-input');
+  const send = page.getByRole('button', { name: 'Send message', exact: true });
+  await expect(input).toBeEnabled();
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await input.fill('');
+    await expect.poll(async () => (await composer.boundingBox())!.height).toBeLessThanOrEqual(56);
+    const inputBox = (await input.boundingBox())!;
+    const sendBox = (await send.boundingBox())!;
+    expect(
+      Math.abs(inputBox.y + inputBox.height / 2 - sendBox.y - sendBox.height / 2),
+    ).toBeLessThan(2);
+    await expect(page.locator('.niuu-chat-input-area-outer')).toHaveCSS('border-top-width', '0px');
+    await input.fill('A short voice note');
+    await expect.poll(async () => (await composer.boundingBox())!.height).toBeLessThanOrEqual(56);
+    await input.fill('A longer dictated note with enough words to wrap naturally. '.repeat(5));
+    await expect.poll(async () => (await composer.boundingBox())!.height).toBeGreaterThan(56);
+    await input.fill('Another line of the dictated note.\n'.repeat(30));
+    await expect.poll(async () => (await input.boundingBox())!.height).toBe(200);
+    expect(await input.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+    await input.fill('');
+    await expect.poll(async () => (await composer.boundingBox())!.height).toBeLessThanOrEqual(56);
+    await input.fill('Ready to continue.');
+    await send.click();
+    await expect(input).toHaveValue('');
+    await expect.poll(async () => (await composer.boundingBox())!.height).toBeLessThanOrEqual(56);
+    await page.screenshot({ path: testInfo.outputPath(`compact-composer-${width}.png`) });
+  }
+  // Resizing a sidebar/window must reflow an existing draft without another keystroke.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await input.fill('A draft that should reflow as the viewport narrows. '.repeat(3));
+  const wideHeight = (await input.boundingBox())!.height;
+  await page.setViewportSize({ width: 390, height: 900 });
+  await expect.poll(async () => (await input.boundingBox())!.height).toBeGreaterThan(wideHeight);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect.poll(async () => (await input.boundingBox())!.height).toBe(wideHeight);
+});
+
+test('every palette styles the whole session, retains drafts and survives reloads', async ({
+  page,
+}, testInfo) => {
+  await fixture(page);
+  await page.goto('/volundr/sessions/review');
+  const input = page.getByRole('textbox', { name: 'Message', exact: true });
+  await expect(input).toBeEnabled();
+  await input.fill('Keep this draft while comparing palettes.');
+  for (const [theme, background, panel] of [
+    ['xteo', 'rgb(10, 14, 26)', 'rgb(12, 17, 30)'],
+    ['midnight-blue', 'rgb(16, 18, 22)', 'rgb(15, 18, 23)'],
+    ['deep-blue', 'rgb(13, 19, 32)', 'rgb(12, 21, 36)'],
+    ['dark-blue', 'rgb(12, 16, 24)', 'rgb(10, 16, 27)'],
+  ] as const) {
+    await chooseTheme(page, theme);
+    await expect(input).toHaveValue('Keep this draft while comparing palettes.');
+    await expect(page.locator('.niuu-shell')).toHaveCSS('background-color', background);
+    await expect(page.locator('body')).toHaveCSS('background-color', background);
+    await expect(page.getByTestId('chat-input')).toHaveCSS('background-color', panel);
+    await expect(page.locator('.forge-session-list')).toHaveCSS('background-color', panel);
+    await expect(page.getByTestId('chat-input')).toHaveCSS('box-shadow', 'none');
+    expect(await page.evaluate(() => localStorage.getItem('niuu.theme'))).toBe(theme);
+    await page.screenshot({
+      path: testInfo.outputPath(`palette-${theme}.png`),
+      animations: 'disabled',
+    });
+  }
+  await chooseTheme(page, 'light');
+  await expect(input).toHaveValue('Keep this draft while comparing palettes.');
+  await expect(page.locator('.niuu-shell')).toHaveCSS('background-color', 'rgb(247, 247, 247)');
+  await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(247, 247, 247)');
+  await expect(page.locator('html')).toHaveCSS('color-scheme', 'light');
+  await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await chooseTheme(page, 'dark-blue');
+  await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark-blue');
+  await expect(page.getByTestId('chat-input')).toHaveCSS('background-color', 'rgb(10, 16, 27)');
+  await chooseTheme(page, 'ice');
+  await expect(page.locator('.niuu-shell')).toHaveCSS('background-color', 'rgb(9, 9, 11)');
+});
+
+test('midnight is the default and the phone viewport cannot scroll into a white page', async ({
+  page,
+}, testInfo) => {
+  await fixture(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/volundr/sessions/review');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'midnight-blue');
+  await page.getByRole('button', { name: 'Color theme', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Midnight Blue', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await page.keyboard.press('Escape');
+  const measure = () =>
+    page.evaluate(() => {
+      const root = document.documentElement;
+      const body = document.body;
+      const surface = getComputedStyle(root).getPropertyValue('--color-bg-primary').trim();
+      window.scrollTo(0, 1000);
+      return {
+        surface,
+        rootBackground: getComputedStyle(root).backgroundColor,
+        bodyBackground: getComputedStyle(body).backgroundColor,
+        overscroll: getComputedStyle(root).overscrollBehaviorY,
+        bodyOverflow: getComputedStyle(body).overflowY,
+        scrollY: window.scrollY,
+        contentHeight: root.scrollHeight,
+        viewport: window.innerHeight,
+        // The shell may sit below host chrome, but it must reach the bottom edge.
+        shellBottom: document.querySelector('.niuu-shell')!.getBoundingClientRect().bottom,
+        browserColor: document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.content,
+      };
+    });
+  for (const [theme, background] of [
+    ['midnight-blue', 'rgb(16, 18, 22)'],
+    ['deep-blue', 'rgb(13, 19, 32)'],
+    ['light', 'rgb(247, 247, 247)'],
+  ] as const) {
+    if (theme !== 'midnight-blue') await chooseTheme(page, theme);
+    const metrics = await measure();
+    expect(metrics.rootBackground).toBe(background);
+    expect(metrics.bodyBackground).toBe(background);
+    expect(metrics.overscroll).toBe('none');
+    expect(metrics.bodyOverflow).toBe('hidden');
+    expect(metrics.scrollY).toBe(0);
+    expect(metrics.contentHeight).toBeLessThanOrEqual(metrics.viewport);
+    expect(metrics.shellBottom).toBe(metrics.viewport);
+    expect(metrics.browserColor).toBe(metrics.surface);
+  }
+  await page.setViewportSize({ width: 390, height: 600 });
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.querySelector('.niuu-shell')!.getBoundingClientRect().bottom),
+    )
+    .toBe(600);
+  await chooseTheme(page, 'midnight-blue');
+  await page.screenshot({
+    path: testInfo.outputPath('midnight-phone.png'),
+    animations: 'disabled',
+  });
 });

@@ -6,6 +6,8 @@
 * ``/notifications/rules``                   owner-scoped delivery rule CRUD
 * ``GET  /notifications/sinks``              sinks a rule may name
 * ``GET  /notifications/{id}/deliveries``    outbox rows for one notification
+* ``GET  /notifications/{id}/image``         the stored image (``?variant=thumb`` for the
+  thumbnail); readable by exactly those who may read the notification
 * ``GET  /sessions/{id}/notifications``      one session's notifications, ascending
 * ``POST /sessions/{id}/notifications``      direct submit with an idempotency key
 """
@@ -22,11 +24,14 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, st
 from pydantic import BaseModel, ConfigDict, Field
 
 from niuu.domain.notifications import (
+    NOTIFICATION_IMAGE_MIME_TYPES,
+    NotificationAsk,
     NotificationDraft,
     NotificationKind,
     NotificationLink,
     NotificationSeverity,
     NotificationSource,
+    NotificationSpeak,
 )
 from niuu.domain.services.token_scope import (
     FORGE_NOTIFY_SCOPE,
@@ -40,6 +45,8 @@ from volundr.domain.notifications import (
     DeliveryStatus,
     Notification,
     NotificationDelivery,
+    NotificationImageState,
+    NotificationImageVariant,
     NotificationNotFoundError,
     NotificationQuery,
     NotificationQuietHours,
@@ -54,6 +61,42 @@ from volundr.domain.services.notifications import NotificationService
 from volundr.domain.services.session import SessionAccessDeniedError, SessionService
 
 MAX_IDEMPOTENCY_KEY_CHARS = 200
+
+
+class NotificationImageResponse(BaseModel):
+    """A stored notification image: where to load it and its shape."""
+
+    url: str = Field(description="Forge-relative URL of the stored image")
+    thumbnail_url: str = Field(description="Forge-relative URL of its thumbnail")
+    mime: str
+    width: int
+    height: int
+    alt: str | None = None
+
+
+class NotificationInputRequestResponse(BaseModel):
+    """The pending runtime request a system attention item stands for."""
+
+    kind: str = Field(description="question, confirmation, permission or workflow_gate")
+    request_id: str | None = Field(
+        default=None,
+        description=(
+            "The pending request's id, as the session's question/permission card carries "
+            "it; answer it there (ask_user_answer / permission response). For "
+            "workflow_gate it is the gate's id: decide it on the session's "
+            "workflow/gates/{request_id}/resolve route. Null when the runtime reported none."
+        ),
+    )
+
+
+class NotificationResolveRequest(BaseModel):
+    """Body of ``PUT /notifications/{id}/resolve``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    resolution: str | None = Field(
+        default=None, max_length=500, description="Why it is resolved, in a few words."
+    )
 
 
 class NotificationResponse(BaseModel):
@@ -111,7 +154,74 @@ class NotificationResponse(BaseModel):
             "(POST {decision: answered, answer})."
         ),
     )
+    question: bool | None = Field(
+        default=None,
+        description="true: the notice declares a Question for the user (F11b); null: unset",
+    )
+    about_question: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "{id: question:<host>:<uuid>, action: remind|replace|relay|resolved|withdrawn}: "
+            "the earlier question this notice refers to; null when none"
+        ),
+    )
+    ask: NotificationAsk | None = Field(
+        default=None,
+        description="Structured question/action items when question=true; null for legacy notices.",
+    )
+    input_request: NotificationInputRequestResponse | None = Field(
+        default=None,
+        description=(
+            "Set on a system attention item: the runtime request (AskUserQuestion, "
+            "confirmation, permission) the session or resident is blocked on, or the "
+            "workflow gate waiting for a person's review; null otherwise."
+        ),
+    )
     created_at: datetime
+    image: NotificationImageResponse | None = Field(
+        default=None,
+        description="The stored image; null when none was attached or none is stored (yet).",
+    )
+    image_state: NotificationImageState | None = Field(
+        default=None,
+        description=(
+            "pending (Forge is copying it), ready (stored; see image) or failed (see "
+            "image_error); null when no image was attached."
+        ),
+    )
+    image_error: str | None = Field(
+        default=None, description="Why the attached image could not be stored."
+    )
+    speak: NotificationSpeak | None = Field(
+        default=None,
+        description=(
+            "{text, priority: now|next_window}: what a voice client may say aloud for "
+            "this notification and how soon; null when none. Forge never speaks it."
+        ),
+    )
+    resolved: bool = Field(
+        default=False,
+        description="The incident is over (LEX-1442): an alarm no surface should keep raising.",
+    )
+    resolved_at: datetime | None = None
+    resolved_by_notification_id: UUID | None = Field(
+        default=None,
+        description="The notification that resolved this one; null when resolved by hand.",
+    )
+    resolution: str | None = Field(
+        default=None, description="Free text given when an operator resolved it by hand."
+    )
+    stale: bool = Field(
+        default=False,
+        description=(
+            "An unresolved alarm older than notifications.stale_after_seconds whose session "
+            "has posted a newer milestone: probably over. Display only."
+        ),
+    )
+    resolves: list[str] | None = Field(
+        default=None,
+        description="Notification or correlation ids this notification resolved, as sent.",
+    )
     read: bool
     instance_id: str | None = Field(
         default=None,
@@ -248,8 +358,10 @@ def create_notifications_router(
     prefix: str = "/api/v1/forge",
     default_page_size: int,
     max_page_size: int,
+    image_cache_max_age_seconds: int,
 ) -> APIRouter:
-    """Create the notification feed, read-state, rules and submit routes."""
+    """Create the notification feed, read-state, rules, submit and image routes."""
+    image_cache_control = f"private, max-age={image_cache_max_age_seconds}, immutable"
     router = APIRouter(prefix=prefix, tags=["Notifications"])
     # Every served item names this node's Guild instance, like the Guild feed's.
     instance_fields = notification_service.instance_fields
@@ -282,6 +394,10 @@ def create_notifications_router(
         session_id: UUID | None = Query(default=None),
         project_id: str | None = Query(default=None, min_length=1),
         unread: bool | None = Query(default=None),
+        unresolved: bool | None = Query(
+            default=None,
+            description="true: only notifications not resolved yet; false: only resolved.",
+        ),
         principal: Principal = Depends(extract_principal),
     ) -> NotificationFeedResponse:
         """The caller's notification feed with its read watermark and unread count."""
@@ -299,6 +415,7 @@ def create_notifications_router(
             session_id=session_id,
             project_id=project_id,
             unread=unread,
+            unresolved=unresolved,
         )
         feed = await notification_service.list_feed(principal, query)
         return NotificationFeedResponse(
@@ -345,6 +462,34 @@ def create_notifications_router(
         except NotificationValidationError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc))
         return NotificationReadStateResponse.build(state)
+
+    @router.put(
+        "/notifications/{notification_id}/resolve",
+        response_model=NotificationResponse,
+        responses={404: {"description": "Not found"}},
+    )
+    async def resolve_notification(
+        notification_id: UUID,
+        body: NotificationResolveRequest | None = None,
+        principal: Principal = Depends(extract_principal),
+    ) -> NotificationResponse:
+        """Mark a notification resolved by hand: its incident is over (LEX-1442).
+
+        Idempotent; the first resolution is kept. Not open to session credentials (they
+        resolve through ``notify`` ``resolves``). The resolved row is sent again on the
+        live stream so clients replace it.
+        """
+        try:
+            notification = await notification_service.resolve(
+                principal, notification_id, resolution=body.resolution if body else None
+            )
+        except NotificationNotFoundError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        state = await notification_service.get_read_state(principal)
+        read_ids = await notification_service.read_ids(principal, [notification])
+        return NotificationResponse.build(
+            notification, state.read_through_seq, read_ids, instance_fields
+        )
 
     @router.put(
         "/notifications/{notification_id}/read",
@@ -439,6 +584,41 @@ def create_notifications_router(
         except NotificationNotFoundError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
         return [NotificationDeliveryResponse.build(delivery) for delivery in deliveries]
+
+    @router.get(
+        "/notifications/{notification_id}/image",
+        response_class=Response,
+        dependencies=[Depends(require_scope(FORGE_SESSION_READ_SCOPE))],
+        responses={
+            200: {
+                "description": "The stored image bytes",
+                "content": {mime: {} for mime in sorted(NOTIFICATION_IMAGE_MIME_TYPES)},
+            },
+            404: {"description": "No such notification for this reader, or no stored image"},
+        },
+    )
+    async def get_notification_image(
+        notification_id: UUID = Path(description="Notification id"),
+        variant: NotificationImageVariant = Query(
+            default=NotificationImageVariant.ORIGINAL,
+            description="``thumb`` for the thumbnail (long side bounded), else the image",
+        ),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """A notification's stored image, for whoever may read the notification.
+
+        The bytes of a stored image never change, so the response may be cached
+        for a long time; a 404 (not stored yet) is not cacheable.
+        """
+        try:
+            image = await notification_service.image_content(principal, notification_id, variant)
+        except NotificationNotFoundError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        return Response(
+            content=image.content,
+            media_type=image.mime,
+            headers={"Cache-Control": image_cache_control, "X-Content-Type-Options": "nosniff"},
+        )
 
     @router.get(
         "/sessions/{session_id}/notifications",

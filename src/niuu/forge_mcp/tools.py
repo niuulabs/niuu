@@ -16,23 +16,50 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from niuu.domain.artifact_reports import ARTIFACT_REPORT_TYPES, ArtifactReport
 from niuu.domain.notifications import (
     AGENT_KINDS,
+    ASK_DEFAULT_NONE,
+    ASK_ITEM_ID_PATTERN,
+    MAX_ASK_BYTES,
+    MAX_ASK_HEADER_CHARS,
+    MAX_ASK_ITEM_ID_CHARS,
+    MAX_ASK_ITEMS,
+    MAX_ASK_OPTION_DESCRIPTION_CHARS,
+    MAX_ASK_OPTION_LABEL_CHARS,
+    MAX_ASK_OPTIONS,
+    MAX_ASK_TEXT_CHARS,
     MAX_BODY_CHARS,
     MAX_CORRELATION_ID_CHARS,
+    MAX_IMAGE_ALT_CHARS,
+    MAX_IMAGE_URL_CHARS,
     MAX_LINK_LABEL_CHARS,
     MAX_LINK_URL_CHARS,
     MAX_LINKS,
+    MAX_RESOLVES,
+    MAX_SPEAK_TEXT_CHARS,
     MAX_TITLE_CHARS,
+    PRESENTED_FILE_ID_PATTERN,
+    QUESTION_REF_PATTERN,
     NotificationDraft,
     NotificationKind,
     NotificationLinkKind,
     NotificationSeverity,
     NotificationSource,
+    QuestionAction,
+    SpeakPriority,
+)
+from niuu.domain.session_description import (
+    DESCRIPTION_FIELDS,
+    DESCRIPTION_MAX_CHARS,
+    SHORT_DESCRIPTION_MAX_CHARS,
 )
 from niuu.forge_mcp.guidance import (
     COMPACT_NOTIFICATION_GUIDANCE,
+    NOTIFICATION_IMAGE_GUIDANCE,
     NOTIFICATION_TRIGGER_GUIDANCE,
+    QUESTION_GUIDANCE,
+    QUESTION_STANDARD,
 )
 from niuu.forge_mcp.models import (
     FlockError,
@@ -43,6 +70,7 @@ from niuu.forge_mcp.models import (
     ToolResult,
 )
 from niuu.forge_mcp.ports import ForgeClient, ForgeMcpFlock, ForgeMcpHost
+from niuu.forge_mcp.question_lint import LintedNotification, lint_question
 
 # Wire-format patterns Forge itself enforces (request ids) or that keep ids from
 # being spliced into a REST path; they are protocol shape, not tunables.
@@ -120,6 +148,9 @@ class _ListNotificationsArgs(_Args):
     session_id: str | None = None
     project_id: str | None = None
     unread: bool | None = None
+    # LEX-1442: an agent checking "what is still open" should not see incidents that
+    # are over. Ask for unresolved=false (or null) to see resolved ones too.
+    unresolved: bool | None = True
 
     @field_validator("session_id")
     @classmethod
@@ -200,6 +231,18 @@ class _FlockOutcomesArgs(_Args):
     wait_s: float | None = Field(default=None, ge=0)
 
 
+class _DescribeSessionArgs(_Args):
+    short_description: str | None = None
+    description: str | None = None
+
+    def changes(self) -> dict[str, str | None]:
+        return {
+            name: getattr(self, name)
+            for name in DESCRIPTION_FIELDS
+            if name in self.model_fields_set
+        }
+
+
 # --------------------------------------------------------------------------- schemas
 
 _SESSION_ID_SCHEMA = {
@@ -224,15 +267,111 @@ def _object(properties: dict[str, Any], required: Iterable[str] = ()) -> dict[st
     }
 
 
+_ASK_SCHEMA = _object(
+    {
+        "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": MAX_ASK_ITEMS,
+            "description": "Items with unique stable ids, in answer order.",
+            "items": _object(
+                {
+                    "id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_ASK_ITEM_ID_CHARS,
+                        "pattern": ASK_ITEM_ID_PATTERN,
+                    },
+                    "kind": {"type": "string", "enum": ["question", "action"]},
+                    "text": {"type": "string", "minLength": 1, "maxLength": MAX_ASK_TEXT_CHARS},
+                    "header": {"type": "string", "minLength": 1, "maxLength": MAX_ASK_HEADER_CHARS},
+                    "options": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": MAX_ASK_OPTIONS,
+                        "description": "Choices with unique, nonblank labels within this item.",
+                        "items": _object(
+                            {
+                                "label": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": MAX_ASK_OPTION_LABEL_CHARS,
+                                },
+                                "description": {
+                                    "type": "string",
+                                    "maxLength": MAX_ASK_OPTION_DESCRIPTION_CHARS,
+                                },
+                                "recommended": {
+                                    "type": "boolean",
+                                    "description": "Your recommendation; mark exactly one.",
+                                },
+                            },
+                            required=("label",),
+                        ),
+                    },
+                    "multi_select": {"type": "boolean", "default": False},
+                    "allow_text": {"type": "boolean", "default": True},
+                    "default": {
+                        **_object(
+                            {
+                                "option": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": MAX_ASK_OPTION_LABEL_CHARS,
+                                    "description": f"An option label, or {ASK_DEFAULT_NONE!r}.",
+                                },
+                                "after": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 64,
+                                    "description": (
+                                        "ISO-8601 timestamp with timezone, or a duration "
+                                        "from now (PT4H, P1D)."
+                                    ),
+                                },
+                            },
+                            required=("option", "after"),
+                        ),
+                        "description": "What happens if the user does not answer, and when.",
+                    },
+                    "deadline": {
+                        "type": "string",
+                        "maxLength": 64,
+                        "description": "Optional ISO-8601 timestamp the answer is needed by.",
+                    },
+                },
+                required=("id", "kind", "text"),
+            ),
+        },
+    },
+    required=("items",),
+)
+_ASK_SCHEMA["description"] = (
+    f"Structured question/action items; requires question=true. At most {MAX_ASK_BYTES} "
+    "UTF-8 bytes as compact JSON. An action asks the user to report completion, never executes it."
+)
+_ASK_SCHEMA["properties"]["items"]["items"]["allOf"] = [
+    {
+        "if": {
+            "properties": {"kind": {"const": "question"}, "allow_text": {"const": False}},
+            "required": ["kind", "allow_text"],
+        },
+        "then": {"required": ["options"]},
+    }
+]
+
 _NOTIFY_SCHEMA = _object(
     {
         "kind": {
             "type": "string",
             "enum": sorted(kind.value for kind in AGENT_KINDS),
             "description": (
-                "milestone = meaningful work finished; decision = a significant choice you "
-                "made; attention = blocked or need the user's input; error = a failure the "
-                "user must know about; info = a brief FYI."
+                "milestone = meaningful work finished; decision = the user must choose; "
+                "attention = the user must act or unblock; error = a failure the user must "
+                "know about; info = a brief FYI (including a choice you already made). "
+                "decision and attention require question=true and an ask with 2-4 options, "
+                "one recommended, and a default; without an ask, a question in the title or "
+                "options in the body, they are recorded as info."
             ),
         },
         "severity": {
@@ -280,11 +419,109 @@ _NOTIFY_SCHEMA = _object(
         "correlation_id": {
             "type": "string",
             "maxLength": MAX_CORRELATION_ID_CHARS,
-            "description": "Optional id tying related notifications together (e.g. a PR number).",
+            "description": (
+                "One incident = one id (a ticket or PR number) on every notification about "
+                "it. A later milestone with the same id resolves the incident's attention, "
+                "error and critical notifications."
+            ),
         },
+        "image": {
+            **_object(
+                {
+                    "file_id": {
+                        "type": "string",
+                        "pattern": PRESENTED_FILE_ID_PATTERN,
+                        "description": "The file_id present-file returned for the image.",
+                    },
+                    "url": {
+                        "type": "string",
+                        "pattern": "^https://",
+                        "maxLength": MAX_IMAGE_URL_CHARS,
+                        "description": "An https:// URL of an image already online.",
+                    },
+                    "alt": {
+                        "type": "string",
+                        "maxLength": MAX_IMAGE_ALT_CHARS,
+                        "description": "Short description of what the image shows.",
+                    },
+                }
+            ),
+            "description": (
+                "Optional image shown with the notification: exactly one of file_id "
+                "(from present-file) or url, plus alt text. Forge keeps its own copy."
+            ),
+        },
+        "speak": {
+            **_object(
+                {
+                    "text": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_SPEAK_TEXT_CHARS,
+                        "description": "What Lexi says aloud, written to be heard.",
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": [priority.value for priority in SpeakPriority],
+                        "default": SpeakPriority.NOW.value,
+                        "description": "now (default) or next_window (the next good moment).",
+                    },
+                },
+                required=("text",),
+            ),
+            "description": (
+                "Optional: ask for this notification to be spoken aloud to the user on "
+                "their phone, only when it is worth interrupting them by voice. Forge only "
+                "records the intent; the user's phone decides whether and when to speak it."
+            ),
+        },
+        "question": {
+            "type": "boolean",
+            "description": (
+                "true: this notice asks the user a Question they must answer. It stays "
+                "open in their Needs-you list until resolved. Omit it for announcements."
+            ),
+        },
+        "ask": _ASK_SCHEMA,
+        "resolves": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": MAX_RESOLVES,
+            "items": {"type": "string", "minLength": 1, "maxLength": MAX_CORRELATION_ID_CHARS},
+            "description": (
+                "What this notification closes: notification ids, or correlation ids (every "
+                "earlier notification of that incident). A milestone with a correlation_id "
+                "already closes that incident's attention, error and critical items."
+            ),
+        },
+        "about_question": _object(
+            {
+                "id": {
+                    "type": "string",
+                    "pattern": QUESTION_REF_PATTERN,
+                    "description": (
+                        "The host-qualified question ref question:<host>:<notification_id>, "
+                        "e.g. question:thor:<uuid>. A bare uuid is refused."
+                    ),
+                },
+                "action": {
+                    "type": "string",
+                    "enum": [action.value for action in QuestionAction],
+                    "description": (
+                        "remind, replace, resolved, withdrawn: only the session that asked; "
+                        "relay: any session filed in the same project, on any host."
+                    ),
+                },
+            },
+            required=("id", "action"),
+        ),
     },
     required=("kind", "title"),
 )
+# Keep the root an ordinary object schema: Claude Code 2.1.309 silently drops
+# this whole tool from its catalog when the root includes an allOf conditional.
+# NotificationDraft still enforces ask -> question=true before any side effect;
+# the ask description advertises that constraint to every MCP client.
 
 _NOTIFY_DESCRIPTION = """\
 Notify the user about THIS session. The notification appears inline in the \
@@ -292,14 +529,35 @@ conversation, in the Forge Notifications feed across every session and host, and
 may reach the user's phone or chat through their delivery rules.
 
 Link artifacts (PR URLs, files you presented with present-file via kind=file and \
-file_id, other sessions) in `links`.
+file_id, other sessions) in `links`. Attach an image with `image: {file_id}` from \
+present-file, or `image: {url}`, and add `alt` text.
 
 Returns {notification_id, turn_id, session_seq, state}. state=committed means \
 Forge recorded it; state=pending means it is saved in this session's durable log \
 and will reach Forge automatically when Forge is reachable — do not resend it."""
 _NOTIFY_DESCRIPTION += (
-    "\n\n" + NOTIFICATION_TRIGGER_GUIDANCE + "\n\n" + COMPACT_NOTIFICATION_GUIDANCE
+    "\n\n"
+    + NOTIFICATION_TRIGGER_GUIDANCE
+    + "\n\nThe question standard: "
+    + QUESTION_STANDARD
+    + "\n\n"
+    + QUESTION_GUIDANCE
+    + "\n\n"
+    + COMPACT_NOTIFICATION_GUIDANCE
+    + "\n\n"
+    + NOTIFICATION_IMAGE_GUIDANCE
 )
+
+
+def _with_lint(result: dict[str, Any], linted: LintedNotification) -> dict[str, Any]:
+    """The notify result plus the question-standard verdict, when there is one."""
+    if not linted.warnings:
+        return result
+    out = {**result, "warnings": list(linted.warnings)}
+    if linted.downgraded_from is not None:
+        out["kind"] = linted.draft.kind.value
+        out["requested_kind"] = linted.downgraded_from.value
+    return out
 
 
 _FEED_NOTIFY_SCHEMA = {
@@ -332,12 +590,22 @@ Record a notification in the Forge Notifications feed for a session you own \
 is not added to the session's transcript. It appears in the feed across every \
 host and may reach the owner's phone or chat through their delivery rules.
 
-Link artifacts in `links`.
+Link artifacts in `links`. Attach an image with `image: {file_id}` from \
+present-file, or `image: {url}`, and add `alt` text.
 
 idempotency_key is required: retrying with the same key returns the notification \
 already recorded. Returns {notification_id, seq, session_id, state}."""
 _FEED_NOTIFY_DESCRIPTION += (
-    "\n\n" + NOTIFICATION_TRIGGER_GUIDANCE + "\n\n" + COMPACT_NOTIFICATION_GUIDANCE
+    "\n\n"
+    + NOTIFICATION_TRIGGER_GUIDANCE
+    + "\n\nThe question standard: "
+    + QUESTION_STANDARD
+    + "\n\n"
+    + QUESTION_GUIDANCE
+    + "\n\n"
+    + COMPACT_NOTIFICATION_GUIDANCE
+    + "\n\n"
+    + NOTIFICATION_IMAGE_GUIDANCE
 )
 
 
@@ -361,6 +629,78 @@ class ToolSpec:
         return {"name": self.name, "description": description, "inputSchema": self.input_schema}
 
 
+_DESCRIBE_SESSION_DESCRIPTION = (
+    "Set what your own Forge session is doing, so anyone glancing at the session list "
+    "(web, phone) can tell. Keep `short_description` current: set it when you start, "
+    "whenever the phase of the work changes, when you are blocked ('Blocked on …') and "
+    "when you finish ('Done: …'). One plain-text line naming the current step and the "
+    f"goal; it is folded to one line and cut at {SHORT_DESCRIPTION_MAX_CHARS} characters. "
+    "Use `description` for the fuller status someone opening the session would want "
+    f"(markdown, up to {DESCRIPTION_MAX_CHARS} characters). Send only the keys you are "
+    "changing: an omitted key is kept, null clears it. Setting the same text again is "
+    "harmless. This is not a notification and interrupts no one."
+)
+
+_DESCRIBE_SESSION_SCHEMA = _object(
+    {
+        "short_description": {
+            "type": ["string", "null"],
+            "description": (
+                "One line: what this session is doing now and its goal, e.g. "
+                "'Adding retry to the upload client; tests next'. null clears it."
+            ),
+        },
+        "description": {
+            "type": ["string", "null"],
+            "description": "Fuller status in markdown: progress, decisions, next steps. "
+            "null clears it.",
+        },
+    }
+)
+
+
+class _ReportArtifactArgs(_Args):
+    url: str
+    title: str
+    provider_version: str | None = None
+    version_label: str | None = None
+    type: str | None = None
+
+
+_REPORT_ARTIFACT_DESCRIPTION = (
+    "Report a claude.ai artifact this session made or updated, when Forge cannot see "
+    "the publish itself (it was published another way, or your engine has no Artifact "
+    "tool). Publishes made with the claude.ai Artifact tool, and files you present with "
+    "present-file, are recorded automatically: do not report those. The report appears "
+    "in the control plane's Artifacts list with this session as its producer. It is not "
+    "a notification; use `notify` to tell the user about it. Reporting the same version "
+    "again is harmless."
+)
+
+_REPORT_ARTIFACT_SCHEMA = _object(
+    {
+        "url": {
+            "type": "string",
+            "description": "The artifact's durable URL: https://claude.ai/artifact/<id>.",
+        },
+        "title": {"type": "string", "description": "The artifact's title, one line."},
+        "provider_version": {
+            "type": ["string", "null"],
+            "description": "The provider's version string, when the publish returned one.",
+        },
+        "version_label": {
+            "type": ["string", "null"],
+            "description": "A human label for this version (e.g. 'v21'), if you use one.",
+        },
+        "type": {
+            "type": ["string", "null"],
+            "enum": [*ARTIFACT_REPORT_TYPES, None],
+            "description": "What kind of artifact it is, when you know.",
+        },
+    },
+    required=("url", "title"),
+)
+
 TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="environment",
@@ -380,12 +720,25 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         args_model=_NotifyArgs,
     ),
     ToolSpec(
+        name="report_artifact",
+        description=_REPORT_ARTIFACT_DESCRIPTION,
+        input_schema=_REPORT_ARTIFACT_SCHEMA,
+        args_model=_ReportArtifactArgs,
+    ),
+    ToolSpec(
+        name="describe_session",
+        description=_DESCRIBE_SESSION_DESCRIPTION,
+        input_schema=_DESCRIBE_SESSION_SCHEMA,
+        args_model=_DescribeSessionArgs,
+    ),
+    ToolSpec(
         name="list_notifications",
         description=(
             "List Forge notifications you can see, newest first (bounded). Use it to check "
             "what was already reported before notifying again, or what other sessions "
             "raised. Page older items with `before` (the previous next_before) or catch up "
-            "with `after` (a seq)."
+            "with `after` (a seq). Resolved notifications (an incident that is over) are "
+            "left out unless you pass unresolved=false (only resolved) or null (all)."
         ),
         input_schema=_object(
             {
@@ -407,6 +760,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
                 "session_id": _SESSION_ID_SCHEMA,
                 "project_id": {"type": "string"},
                 "unread": {"type": "boolean"},
+                "unresolved": {"type": ["boolean", "null"], "default": True},
             }
         ),
         args_model=_ListNotificationsArgs,
@@ -470,7 +824,11 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
             "as operator-authorized steering, not as a verified agent identity, so say who "
             "you are and why in the content. Reuse the same request_id when retrying so it "
             "is never delivered twice (one is generated and returned if you omit it); "
-            "check delivery with message_status."
+            "check delivery with message_status. Who you can reach: any session of your "
+            "owner on your own Forge node; on another node of your Guild, only your parent "
+            "session and the sessions of your own project (your node relays it, and the "
+            "message starts with your session and node). Anything else is refused with the "
+            "reason; a cross-node delivery's status is in this call's answer."
         ),
         input_schema=_object(
             {
@@ -652,10 +1010,19 @@ FEED_NOTIFY_SPEC = ToolSpec(
 )
 
 
+#: Tools that write the caller's own durable transcript, so only a session's own broker
+#: (transcript mode) can serve them.
+TRANSCRIPT_ONLY_TOOLS = frozenset({"report_artifact"})
+
+
 def _specs_for(mode: ForgeMcpNotifyMode) -> tuple[ToolSpec, ...]:
     if mode is ForgeMcpNotifyMode.TRANSCRIPT:
         return TOOL_SPECS
-    return tuple(FEED_NOTIFY_SPEC if spec.name == "notify" else spec for spec in TOOL_SPECS)
+    return tuple(
+        FEED_NOTIFY_SPEC if spec.name == "notify" else spec
+        for spec in TOOL_SPECS
+        if spec.name not in TRANSCRIPT_ONLY_TOOLS
+    )
 
 
 # --------------------------------------------------------------------------- projections
@@ -674,6 +1041,7 @@ def _session_summary(raw: dict[str, Any]) -> dict[str, Any]:
     summary = {
         "id": raw.get("id"),
         "instance_id": raw.get("instance_id"),
+        "instance_name": raw.get("instance_name"),
         "name": raw.get("name"),
         "status": raw.get("status"),
         "activity_state": raw.get("activity_state"),
@@ -693,6 +1061,12 @@ def _session_summary(raw: dict[str, Any]) -> dict[str, Any]:
         "last_active": raw.get("last_active"),
         "message_count": raw.get("message_count"),
         "error": raw.get("error"),
+        "short_description": raw.get("short_description"),
+        "description": raw.get("description"),
+        "short_description_updated_at": raw.get("short_description_updated_at"),
+        "description_updated_at": raw.get("description_updated_at"),
+        "last_work_at": raw.get("last_work_at"),
+        "tool_open": raw.get("tool_open") or None,
     }
     return {key: value for key, value in summary.items() if value not in (None, {}, "")}
 
@@ -727,8 +1101,15 @@ def _notification_summary(raw: dict[str, Any], *, max_body_chars: int) -> dict[s
         "source",
         "title",
         "links",
+        "image_state",
+        "image_error",
+        "speak",
         "created_at",
         "read",
+        "correlation_id",
+        "resolved_at",
+        "resolved_by_notification_id",
+        "stale",
     )
     summary = {key: raw.get(key) for key in keys if raw.get(key) is not None}
     body = str(raw.get("body") or "")
@@ -778,6 +1159,8 @@ class ForgeMcpToolbox:
         self._handlers: dict[str, Callable[[Any], Awaitable[ToolResult]]] = {
             "environment": self._environment,
             "notify": notify,
+            "describe_session": self._describe_session,
+            "report_artifact": self._report_artifact,
             "list_notifications": self._list_notifications,
             "list_sessions": self._list_sessions,
             "get_session": self._get_session,
@@ -843,8 +1226,8 @@ class ForgeMcpToolbox:
         return self._ok(environment)
 
     async def _notify(self, args: _NotifyArgs) -> ToolResult:
-        draft = NotificationDraft.model_validate(args.model_dump())
-        return self._ok(await self._host.notify(draft))
+        linted = lint_question(NotificationDraft.model_validate(args.model_dump()))
+        return self._ok(_with_lint(await self._host.notify(linted.draft), linted))
 
     async def _feed_notify(self, args: _FeedNotifyArgs) -> ToolResult:
         session_id = args.session_id or self._host.session_id
@@ -853,22 +1236,62 @@ class ForgeMcpToolbox:
                 "notify needs session_id: name the session the notification is about "
                 "(its id from list_sessions)."
             )
-        draft = NotificationDraft.model_validate(
-            args.model_dump(exclude={"idempotency_key", "session_id", "instance_id"})
+        linted = lint_question(
+            NotificationDraft.model_validate(
+                args.model_dump(exclude={"idempotency_key", "session_id", "instance_id"})
+            )
         )
         recorded = await self._client.submit_notification(
             session_id,
-            draft,
+            linted.draft,
             idempotency_key=args.idempotency_key,
             instance_id=args.instance_id,
         )
         return self._ok(
+            _with_lint(
+                {
+                    "notification_id": recorded.get("id"),
+                    "seq": recorded.get("seq"),
+                    "session_id": recorded.get("session_id"),
+                    "source": recorded.get("source"),
+                    "state": "committed",
+                },
+                linted,
+            )
+        )
+
+    async def _report_artifact(self, args: _ReportArtifactArgs) -> ToolResult:
+        try:
+            report = ArtifactReport.model_validate(args.model_dump())
+        except ValidationError as exc:
+            return ToolResult.error(_validation_text("report_artifact", exc))
+        return self._ok(await self._host.report_artifact(report))
+
+    async def _describe_session(self, args: _DescribeSessionArgs) -> ToolResult:
+        session_id = self._host.session_id
+        if not session_id:
+            return ToolResult.error(
+                "describe_session describes your own Forge session, and this agent is "
+                "not running in one."
+            )
+        changes = args.changes()
+        if not changes:
+            return ToolResult.error(
+                "describe_session needs short_description, description, or both (null clears one)."
+            )
+        stored = await self._client.update_description(session_id, changes)
+        return self._ok(
             {
-                "notification_id": recorded.get("id"),
-                "seq": recorded.get("seq"),
-                "session_id": recorded.get("session_id"),
-                "source": recorded.get("source"),
-                "state": "committed",
+                "session_id": session_id,
+                **{
+                    key: stored.get(key)
+                    for key in (
+                        "short_description",
+                        "description",
+                        "short_description_updated_at",
+                        "description_updated_at",
+                    )
+                },
             }
         )
 
@@ -893,6 +1316,8 @@ class ForgeMcpToolbox:
             params["project_id"] = args.project_id
         if args.unread is not None:
             params["unread"] = "true" if args.unread else "false"
+        if args.unresolved is not None:
+            params["unresolved"] = "true" if args.unresolved else "false"
         page = await self._client.list_notifications(params)
         items = page.get("items") if isinstance(page.get("items"), list) else []
         body_chars = self._limits.transcript_turn_max_chars

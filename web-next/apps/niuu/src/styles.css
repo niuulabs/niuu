@@ -9,6 +9,21 @@
     box-sizing: border-box;
   }
 
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
   body {
     margin: 0;
     padding: 0;

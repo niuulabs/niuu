@@ -1,5 +1,6 @@
 """FastAPI composition and HTTP route handlers for the Skuld broker."""
 
+import asyncio
 import json
 import logging
 import mimetypes
@@ -27,6 +28,11 @@ from niuu.build_identity import build_identity
 from niuu.domain.conversation_timeline import resolve_timeline_turn
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
+from niuu.domain.presented_files import (
+    PRESENTED_FILE_LIVE_CACHE,
+    PRESENTED_FILES_QUOTA_STATUS,
+    presented_file_safety_headers,
+)
 from niuu.domain.text_projection import projection_revision
 from niuu.room_access import ROOM_ROLE_HEADER, ROOM_ROLE_RANK, required_role_for_route
 from skuld.conversation_models import ConversationTurn
@@ -40,6 +46,15 @@ from skuld.path_security import (
     UnsafePathError,
     resolve_contained_path,
     resolve_path_in_roots,
+)
+from skuld.presented_durable import (
+    SIDECARS,
+    PresentedFileQuotaRefusedError,
+    pending_record,
+    pending_uploads,
+    retry_presented_upload,
+    upload_presented_file,
+    write_pending_record,
 )
 from skuld.room_role_port import RoomRoleResolutionError
 from skuld.service_manager import ServiceCreateRequest, ServiceStatus
@@ -765,7 +780,13 @@ async def download_send_user_file(tool_use_id: str, file_uuid: str) -> FileRespo
     media_type = str(attachment.get("media_type") or "").strip()
     if not media_type:
         media_type = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
-    return FileResponse(resolved, filename=resolved.name, media_type=media_type)
+    # The media type is the agent's own claim: never let it run on the origin (judge R16-1).
+    return FileResponse(
+        resolved,
+        filename=resolved.name,
+        media_type=media_type,
+        headers=presented_file_safety_headers(media_type),
+    )
 
 
 # --- Capabilities API ---
@@ -978,6 +999,8 @@ register_forge_mcp_routes(app, lambda: broker, dependencies=_LOOPBACK_GUARD)
 _PRESENTED_ID_RE = re.compile(r"^pf_[0-9a-f]{32}$")
 # file_id -> staged realpath. Rebuilt from the self-describing staging dir on startup.
 _presented_registry: dict[str, str] = {}
+# Background durable-upload retries (F2), held so they are not garbage-collected.
+_presented_upload_tasks: set[asyncio.Task] = set()
 
 
 _PRESENTED_DIR_MODE = 0o700
@@ -1017,13 +1040,60 @@ def _rebuild_presented_registry() -> None:
                 safe_entry = resolve_contained_path(root, entry.name, strict=True)
             except UnsafePathError:
                 continue
-            files = [
-                item for item in safe_entry.iterdir() if item.is_file() and not item.is_symlink()
-            ]
-            if files:
-                _presented_registry[entry.name] = str(files[0])
+            # The staged bytes are always ``content``; skip sidecars such as the
+            # durable receipt (F2) so a rebuild never serves one in their place.
+            files = sorted(
+                item
+                for item in safe_entry.iterdir()
+                if item.is_file()
+                and not item.is_symlink()
+                and item.name not in SIDECARS
+                and not item.name.startswith(".")
+            )
+            preferred = [item for item in files if item.name == "content"]
+            if preferred or files:
+                _presented_registry[entry.name] = str((preferred or files)[0])
     except (OSError, UnsafePathError) as exc:  # pragma: no cover - best-effort recovery
         logger.warning("present-file: registry rebuild failed: %s", repr(exc))
+
+
+def _schedule_presented_retry(file_id: str, staged: Path, *, name: str, mime: str) -> None:
+    task = asyncio.create_task(
+        retry_presented_upload(broker, file_id, staged, name=name, mime=mime),
+        name=f"present-file-durable-{file_id}",
+    )
+    _presented_upload_tasks.add(task)
+    task.add_done_callback(_presented_upload_tasks.discard)
+
+
+def _resume_presented_uploads() -> int:
+    """Re-queue durable uploads that had not landed when the broker last stopped (F2).
+
+    Call from the running event loop, after the registry rebuild."""
+    if not broker.volundr_api_url or not broker.session_id:
+        return 0
+    try:
+        root = _presented_staging_dir()
+    except (OSError, UnsafePathError) as exc:
+        logger.warning("present-file: cannot scan staging for uploads: %s", repr(exc))
+        return 0
+    pending = [item for item in pending_uploads(root) if _PRESENTED_ID_RE.fullmatch(item[0])]
+    if not pending:
+        return 0
+    logger.info("present-file: resuming %d durable uploads", len(pending))
+
+    async def resume_one_by_one() -> None:
+        # One at a time: a restart with many files must not read them all into memory
+        # at once, or send Forge a burst of uploads.
+        for file_id, staged, name, mime in pending:
+            await retry_presented_upload(
+                broker, file_id, staged, name=name, mime=mime, immediate=True
+            )
+
+    task = asyncio.create_task(resume_one_by_one(), name="present-file-durable-resume")
+    _presented_upload_tasks.add(task)
+    task.add_done_callback(_presented_upload_tasks.discard)
+    return len(pending)
 
 
 @app.post("/api/present-file", dependencies=_LOOPBACK_GUARD)
@@ -1053,7 +1123,14 @@ async def present_file(body: dict) -> dict:
     elif candidate_source.startswith(home_prefix):
         safe_source = Path(candidate_source)
     else:
-        raise HTTPException(400, "path is outside the session roots")
+        # LEX-1515: say which roots are allowed and how to get a scratch file in.
+        raise HTTPException(
+            400,
+            "path is outside the session roots: present-file accepts files under the "
+            f"session workspace ({workspace_root}) or home ({home_root}). Copy scratch "
+            "files there first, e.g. mkdir -p ~/tmp && cp /tmp/report.pdf ~/tmp/ "
+            "(/tmp is outside both, on macOS and Linux).",
+        )
     if not safe_source.exists():
         raise HTTPException(404, "no such file")
     if not safe_source.is_file():
@@ -1071,13 +1148,40 @@ async def present_file(body: dict) -> dict:
         dest_dir = _presented_staging_dir() / file_id
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = resolve_contained_path(dest_dir, "content", allow_root=False)
-        shutil.copyfile(safe_source, dest)
+        partial = resolve_contained_path(dest_dir, ".content.partial", allow_root=False)
+        # The pending record first, then the copy under a temporary name made visible
+        # by one rename: a restart resumes every complete copy, never a partial one.
+        write_pending_record(dest, name=name, mime=mime)
+        shutil.copyfile(safe_source, partial)
+        os.replace(partial, dest)
     except (OSError, UnsafePathError) as exc:
         logger.warning("present-file: staging copy failed: %s", repr(exc))
         raise HTTPException(500, "could not stage file") from None
     _presented_registry[file_id] = str(dest)
 
-    turn = _build_present_file_turn(file_id, name, mime, size, caption)
+    # F2: hand Forge a durable copy so the file outlives this broker; its URL goes in
+    # the turn. A failure never fails present-file: it is retried in the background.
+    try:
+        receipt = await upload_presented_file(
+            broker,
+            file_id,
+            dest,
+            name=name,
+            mime=mime,
+            timeout=broker._settings.presented_durable.inline_upload_timeout_seconds,
+        )
+    except PresentedFileQuotaRefusedError as exc:
+        # LEX-1514: the host has no room for another durable copy. Fail present-file
+        # loudly (the shim exits non-zero with this text) instead of presenting a file
+        # that disappears when the session stops.
+        _presented_registry.pop(file_id, None)
+        shutil.rmtree(dest_dir, ignore_errors=True)
+        raise HTTPException(PRESENTED_FILES_QUOTA_STATUS, str(exc)) from None
+    if receipt is None and broker.volundr_api_url:
+        _schedule_presented_retry(file_id, dest, name=name, mime=mime)
+    url = (receipt or {}).get("url") or None
+
+    turn = _build_present_file_turn(file_id, name, mime, size, caption, url=url)
     broker._append_turn(turn)
     await broker._channels.broadcast({"type": "conversation.turn", "turn": asdict(turn)})
     logger.info(
@@ -1086,16 +1190,28 @@ async def present_file(body: dict) -> dict:
         size,
         file_id,
     )
-    return {"file_id": file_id, "name": name, "size": size, "mime": mime}
+    result: dict = {"file_id": file_id, "name": name, "size": size, "mime": mime}
+    if url:
+        result["url"] = url
+    result["durable"] = receipt is not None
+    return result
 
 
 def _build_present_file_turn(
-    file_id: str, name: str, mime: str, size: int, caption: str | None
+    file_id: str,
+    name: str,
+    mime: str,
+    size: int,
+    caption: str | None,
+    *,
+    url: str | None = None,
 ) -> ConversationTurn:
     """Build a turn shared by live memory, durable log, and broadcast paths."""
     tool_input: dict = {"file_id": file_id, "name": name, "mime": mime, "size": size}
     if caption:
         tool_input["caption"] = caption
+    if url:
+        tool_input["url"] = url
     part = {"id": file_id, "name": "present_file", "type": "tool_use", "input": tool_input}
     return ConversationTurn(
         id=str(uuid.uuid4()),
@@ -1123,10 +1239,21 @@ async def download_presented_file(file_id: str) -> FileResponse:
         raise HTTPException(410, "file no longer available") from None
     if safe_path.is_symlink() or not safe_path.is_file():
         raise HTTPException(410, "file no longer available")
+    # The name and type recorded at staging (the staged bytes are always called ``content``).
+    recorded = pending_record(safe_path) or {}
+    name = recorded.get("name") or safe_path.name
+    media_type = recorded.get("mime") or mimetypes.guess_type(name)[0] or "application/octet-stream"
+    # Agent-supplied: rendered inline like Forge's durable copy, never run on the origin
+    # (judge R16-1). Every proxy in front of the broker inherits the policy.
     return FileResponse(
         path=safe_path,
-        filename=safe_path.name,
-        media_type=mimetypes.guess_type(safe_path.name)[0] or "application/octet-stream",
+        filename=name,
+        media_type=media_type,
+        content_disposition_type="inline",
+        headers={
+            "cache-control": PRESENTED_FILE_LIVE_CACHE,
+            **presented_file_safety_headers(media_type),
+        },
     )
 
 

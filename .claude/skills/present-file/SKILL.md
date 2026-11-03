@@ -5,7 +5,7 @@ description: Hand the user a file from a Forge session — it appears in their L
 
 # present-file — deliver a file to the user
 
-In a Forge coding session you can hand the user any file on the host and it shows up in their app
+In a Forge coding session you can hand the user a file and it shows up in their app
 as a tappable card that opens in the built-in file preview (QuickLook). This is the in-app,
 durable analogue of the harness `SendUserFile` tool — it works over the Forge data plane, so it
 reaches the Lexi app (not just claude.ai).
@@ -16,20 +16,24 @@ reaches the Lexi app (not just claude.ai).
 present-file <path> [--caption "short note"] [--title "Display Name.ext"]
 ```
 
-- `<path>` — any file on the host. **Absolute or relative; inside OR outside the workspace** — a
-  `/tmp` scratch artifact works exactly like a repo file (the broker stages a copy).
+- `<path>` — absolute or relative, but it **must be under the session workspace or your home
+  directory**. Anything else (including `/tmp`, on macOS and Linux) is refused with
+  `path is outside the session roots`. Write scratch artifacts to `~/tmp/` instead
+  (`mkdir -p ~/tmp`); the broker stages its own copy either way.
 - `--caption` — a short line shown under the card (optional).
 - `--title` — override the display name (defaults to the file's basename).
 
 On success it prints `{"file_id": "...", "name": "...", "size": ..., "mime": "..."}`. On failure it
-prints the error and exits non-zero (missing file → exit 4, too large → the broker returns 413).
+prints the error and exits non-zero: missing file → exit 4, outside the workspace and home → 400
+(the message names both roots and the remedy), too large → 413, and the host's presented-file quota
+full → 507 (`presented_files.max_total_bytes`).
 
 ## Examples
 
 ```bash
-present-file /tmp/report.pdf --caption "The Q3 analysis you asked for."
+present-file ~/tmp/report.pdf --caption "The Q3 analysis you asked for."
 present-file apps/chat/build-screenshots/build-42/dashboard.png --title "Build 42 — Dashboard"
-present-file /tmp/diagram.svg
+mkdir -p ~/tmp && cp /tmp/diagram.svg ~/tmp/ && present-file ~/tmp/diagram.svg
 ```
 
 ## When to use it

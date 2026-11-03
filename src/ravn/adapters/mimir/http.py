@@ -374,6 +374,11 @@ class HttpMimirAdapter(MimirPort):
             response = await self._request("POST", "/mimir/lint/fix")
         else:
             response = await self._request("GET", "/mimir/lint")
+        if response.status_code == 501:
+            # The remote mount has no lint (a gbrain backend behind Mímir). That
+            # is what it is, not a failure: say so in the type the port uses for
+            # it, so an aggregate can report the mount as unsupported.
+            raise NotImplementedError(_error_detail(response))
         response.raise_for_status()
         data = response.json()
         issues = [
@@ -534,6 +539,16 @@ class HttpMimirAdapter(MimirPort):
 # ---------------------------------------------------------------------------
 # Parse helpers
 # ---------------------------------------------------------------------------
+
+
+def _error_detail(response: httpx.Response) -> str:
+    """The remote's own explanation of an error response, or its status line."""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return str(detail) if detail else f"{response.status_code} from {response.request.url}"
 
 
 def _encode_path(path: str) -> str:

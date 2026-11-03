@@ -1,0 +1,18 @@
+{
+  "agents": [
+    {
+      "id": "01a09fd1-c5c9-7973-8202-06e43bc1857f",
+      "kind": "subagent",
+      "name": "/root/app_server_protocol",
+      "status": "running",
+      "parent_id": "01a09fd1-38e6-7b13-84c0-bbf0df249a47"
+    },
+    {
+      "id": "01a09fd1-f13b-73d3-87d8-366f5b4eedf5",
+      "kind": "subagent",
+      "name": "/root/niuu_projection",
+      "status": "running",
+      "parent_id": "01a09fd1-38e6-7b13-84c0-bbf0df249a47"
+    }
+  ]
+}

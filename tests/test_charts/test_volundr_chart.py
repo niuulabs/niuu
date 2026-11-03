@@ -11,6 +11,20 @@ import yaml
 CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "volundr"
 RESIDENT_ISSUER = "https://kubernetes.default.svc"
 BIFROST_URL = ("--set", "bifrost.url=http://bifrost.test")
+#: The smallest cluster setup for durable presented files: the quota, session
+#: credentials, and their projection into session pods.
+PRESENTED_FILES_ON = (
+    "--set",
+    "presentedFiles.enabled=true",
+    "--set",
+    "presentedFiles.maxTotalBytes=5368709120",
+    "--set",
+    "forgeMcp.session_tokens.enabled=true",
+    "--set",
+    "sessionCredentialProjection.enabled=true",
+    "--set",
+    "podManager.kwargs.namespace=volundr-sessions",
+)
 
 
 class TestChartMetadata:
@@ -658,6 +672,49 @@ class TestConfigMapTemplate:
         assert configured.a2a_public_base_url == "https://guild.example"
         assert configured.a2a_reply_timeout_seconds == 20
 
+    def test_artifact_and_presented_file_sections_render_into_config(self):
+        from volundr.config import ArtifactsConfig, HostIdentityConfig, PresentedFilesConfig
+
+        def render(*extra: str) -> dict:
+            result = subprocess.run(
+                ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL, *extra],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+            configmap = next(
+                doc
+                for doc in documents
+                if doc.get("kind") == "ConfigMap"
+                and doc.get("metadata", {}).get("name") == "test-volundr"
+            )
+            return yaml.safe_load(configmap["data"]["config.yaml"])
+
+        default = render()
+        assert not {"artifacts", "presented_files", "host_identity"} & set(default)
+        config = render(
+            "--set-json",
+            'artifacts={"hold_seconds":60,"backfill_on_start":true}',
+            *PRESENTED_FILES_ON,
+            "--set",
+            "presentedFiles.publicBaseUrl=https://forge.example.com",
+            "--set-json",
+            'hostIdentity={"host":"thor","tailnet_name":"thor.t.ts.net"}',
+        )
+        artifacts = ArtifactsConfig.model_validate(config["artifacts"])
+        assert (artifacts.hold_seconds, artifacts.backfill_on_start) == (60, True)
+        files = PresentedFilesConfig.model_validate(config["presented_files"])
+        assert files.enabled and files.public_base_url == "https://forge.example.com"
+        assert files.public_access.value == "authenticated"
+        assert files.max_total_bytes == 5368709120 and files.max_bytes == 52428800
+        assert files.store == {
+            "adapter": "volundr.adapters.outbound.postgres_presented_files."
+            "PostgresPresentedFileStore",
+            "root": "/volundr/presented-files",
+        }
+        assert HostIdentityConfig.model_validate(config["host_identity"]).host == "thor"
+
     def test_notifications_section_renders_into_config(self):
         from volundr.config import NotificationsConfig
 
@@ -827,6 +884,54 @@ class TestConfigMapTemplate:
             {"name": "phone", "label": "Mine", "adapter": "a.B"}
         ]
         assert Settings(push=own["push"], notifications=own["notifications"])
+
+    def test_push_gateway_renders_without_the_needs_input_sink(self, tmp_path):
+        from tests.helpers.apns_keys import write_p8
+        from volundr.config import Settings
+
+        key = write_p8(tmp_path)
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                *BIFROST_URL,
+                "--set",
+                "push.enabled=true",
+                "--set",
+                "push.deviceRegistry=postgres",
+                "--set-json",
+                'push.apns={"team_id":"ABCDE12345","key_id":"KEY1234567",'
+                f'"bundle_id":"com.example.app","private_key_path":"{key}"}}',
+                "--set-json",
+                'push.gateway={"enabled":true,"guild_url":"http://niuu-guild:8080",'
+                '"origin_label":"Forge","alerts":{"rate_limit":null},'
+                '"live_activity":{"start":{"enabled":true},"relevance_score":10}}',
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        configmap = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+        # The gateway alerts for the needs-input moment itself: no push sink is added.
+        assert "notifications" not in config
+        push = Settings(push=config["push"]).push
+        assert push.enabled and push.gateway.enabled
+        assert push.device_registry == "postgres"
+        assert push.apns.key_id == "KEY1234567"
+        assert push.apns.private_key_path == str(key)
+        assert push.gateway.guild_url == "http://niuu-guild:8080"
+        assert push.gateway.alerts.rate_limit is None
+        assert push.gateway.live_activity.start.enabled is True
+        assert push.gateway.live_activity.relevance_score == 10
 
     def test_forge_mcp_section_renders_into_config(self):
         from volundr.config import ForgeMcpConfig
@@ -1481,6 +1586,18 @@ class TestPreviewCacheStorage:
         config = yaml.safe_load(configmap["data"]["config.yaml"])
 
         assert config["preview_cache_dir"] == "/custom/preview"
+
+    def test_configmap_leaves_preview_edges_to_defaults(self):
+        configmap, _ = self._render()
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+
+        assert "tool_result_preview" not in config
+
+    def test_configmap_renders_preview_edges(self):
+        configmap, _ = self._render("--set", "previewCache.edges.max_edge=2048")
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+
+        assert config["tool_result_preview"] == {"max_edge": 2048}
 
     def test_deployment_mounts_preview_cache_emptydir_at_configured_path(self):
         _, deployment = self._render()
@@ -2164,3 +2281,133 @@ class TestRavnFlockLlmConfigByDefinition:
         assert config["ravn_flock_llm_config_by_definition"] == {
             "skuldCodex": {"model": "gpt-5.6-terra"}
         }
+
+
+def _rendered_documents(*extra_args: str) -> list[dict]:
+    command = ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL, *extra_args]
+    return [doc for doc in yaml.safe_load_all(subprocess.check_output(command)) if doc]
+
+
+def _render_failure(*extra_args: str) -> str:
+    result = subprocess.run(
+        ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL, *extra_args],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0, "the chart rendered a configuration it must refuse"
+    return result.stderr
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestPresentedFilesOnACluster:
+    """Durable presented files on a cluster Forge: a shared volume, the Postgres store,
+    and every session broker holding the credential it uploads with."""
+
+    def test_off_by_default_with_no_volume_or_credential_projection(self):
+        docs = _rendered_documents()
+        assert "presented_files" not in _rendered_configmap()
+        assert "projection_adapter" not in _rendered_configmap()["forge_mcp"]["session_tokens"]
+        names = {doc["metadata"]["name"] for doc in docs}
+        assert "test-volundr-presented-files" not in names
+        assert "test-volundr-session-credentials" not in names
+
+    def test_the_volume_is_claimed_kept_and_mounted_where_the_store_writes(self):
+        docs = _rendered_documents(*PRESENTED_FILES_ON)
+        claim = next(
+            doc
+            for doc in docs
+            if doc["kind"] == "PersistentVolumeClaim"
+            and doc["metadata"]["name"] == "test-volundr-presented-files"
+        )
+        assert claim["spec"]["accessModes"] == ["ReadWriteMany"]
+        assert claim["spec"]["resources"]["requests"]["storage"] == "10Gi"
+        # Copies outlive their sessions; an uninstall must not delete them.
+        assert claim["metadata"]["annotations"]["helm.sh/resource-policy"] == "keep"
+        pod = _rendered_volundr_deployment(*PRESENTED_FILES_ON)["spec"]["template"]["spec"]
+        volundr = next(c for c in pod["containers"] if c["name"] == "volundr")
+        mount = next(m for m in volundr["volumeMounts"] if m["name"] == "presented-files")
+        config = _rendered_configmap(*PRESENTED_FILES_ON)["presented_files"]
+        assert mount["mountPath"] == config["store"]["root"] == "/volundr/presented-files"
+        volume = next(v for v in pod["volumes"] if v["name"] == "presented-files")
+        assert volume["persistentVolumeClaim"]["claimName"] == "test-volundr-presented-files"
+
+    def test_an_existing_claim_is_used_and_none_is_created(self):
+        args = (*PRESENTED_FILES_ON, "--set", "presentedFiles.persistence.existingClaim=mine")
+        docs = _rendered_documents(*args)
+        assert not [
+            doc
+            for doc in docs
+            if doc["kind"] == "PersistentVolumeClaim" and "presented" in doc["metadata"]["name"]
+        ]
+        pod = _rendered_volundr_deployment(*args)["spec"]["template"]["spec"]
+        volume = next(v for v in pod["volumes"] if v["name"] == "presented-files")
+        assert volume["persistentVolumeClaim"]["claimName"] == "mine"
+
+    def test_session_credentials_are_projected_into_the_session_namespace(self):
+        from volundr.config import ForgeMcpConfig
+
+        docs = _rendered_documents(*PRESENTED_FILES_ON)
+        tokens = ForgeMcpConfig.model_validate(
+            _rendered_configmap(*PRESENTED_FILES_ON)["forge_mcp"]
+        ).session_tokens
+        assert tokens.enabled
+        assert tokens.projection_adapter == (
+            "volundr.adapters.outbound.execution_credential_k8s."
+            "KubernetesExecutionCredentialProjection"
+        )
+        assert tokens.projection_kwargs == {
+            "namespace": "volundr-sessions",
+            "mount_path": "/var/run/secrets/niuu-forge-session",
+            "secret_prefix": "forge-session",
+            "volume_prefix": "forge-session",
+            "purpose": "forge-session-credential",
+        }
+        role = next(
+            doc
+            for doc in docs
+            if doc["kind"] == "Role"
+            and doc["metadata"]["name"] == "test-volundr-session-credentials"
+        )
+        assert role["metadata"]["namespace"] == "volundr-sessions"
+        assert role["rules"] == [
+            {
+                "apiGroups": [""],
+                "resources": ["secrets"],
+                "verbs": ["get", "create", "patch", "delete"],
+            }
+        ]
+        binding = next(
+            doc
+            for doc in docs
+            if doc["kind"] == "RoleBinding"
+            and doc["metadata"]["name"] == "test-volundr-session-credentials"
+        )
+        assert binding["metadata"]["namespace"] == "volundr-sessions"
+        assert binding["roleRef"]["name"] == "test-volundr-session-credentials"
+
+    @pytest.mark.parametrize(
+        ("drop", "extra", "message"),
+        [
+            ("presentedFiles.maxTotalBytes=5368709120", (), "presentedFiles.maxTotalBytes"),
+            ("forgeMcp.session_tokens.enabled=true", (), "Forge session credentials"),
+            ("sessionCredentialProjection.enabled=true", (), "sessionCredentialProjection"),
+            (
+                None,
+                ("presentedFiles.persistence.accessMode=ReadWriteOnce", "rollout.colocate=false"),
+                "ReadWriteOnce mounts on one node only",
+            ),
+        ],
+    )
+    def test_a_configuration_no_upload_could_succeed_in_is_refused(self, drop, extra, message):
+        args: list[str] = []
+        pairs = list(zip(PRESENTED_FILES_ON[::2], PRESENTED_FILES_ON[1::2], strict=True))
+        for flag, value in pairs:
+            if value != drop:
+                args += [flag, value]
+        for value in extra:
+            args += ["--set", value]
+        assert message in _render_failure(*args)
+
+    def test_read_write_once_is_accepted_with_colocated_pods(self):
+        args = (*PRESENTED_FILES_ON, "--set", "presentedFiles.persistence.accessMode=ReadWriteOnce")
+        assert _rendered_configmap(*args)["presented_files"]["enabled"] is True

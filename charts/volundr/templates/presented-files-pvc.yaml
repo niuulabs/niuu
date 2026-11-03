@@ -1,0 +1,22 @@
+{{- if and .Values.presentedFiles.enabled (not .Values.presentedFiles.persistence.existingClaim) }}
+# Durable presented files (F2): the bytes of every copy Forge keeps. Every Forge
+# replica mounts it; the records and the quota live in Forge's database.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "volundr.presentedFilesPvcName" . }}
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+  annotations:
+    # Copies outlive their sessions: uninstalling the release must not delete them.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - {{ .Values.presentedFiles.persistence.accessMode }}
+  {{- with .Values.presentedFiles.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.presentedFiles.persistence.size }}
+{{- end }}

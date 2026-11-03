@@ -139,11 +139,24 @@
   outline-offset: 2px;
 }
 
-[data-theme='xteo'] .ting-workflow-catalog__sidebar {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .ting-workflow-catalog__sidebar {
   background: var(--color-panel-quiet);
 }
 
-[data-theme='xteo'] .ting-workflow-catalog__sidebar button[data-selected='true'] {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .ting-workflow-catalog__sidebar
+  button[data-selected='true'] {
   border-color: transparent;
   background: var(--color-selection-surface);
   box-shadow: inset 3px 0 var(--color-selection-edge);

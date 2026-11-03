@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from typing import Any
 
 from niuu.adapters.workload_identity.key_file import (
     SigningKeyFileError,
@@ -18,7 +19,7 @@ from niuu.utils import import_class, resolve_secret_kwargs
 from volundr.adapters.outbound.contributors.workflow_execution_credentials import (
     WorkflowExecutionCredentialContributor,
 )
-from volundr.config import Settings
+from volundr.config import ALLOW_ALL_IDENTITY_ADAPTERS, Settings
 from volundr.domain.models import ResidentBackend, ResidentEngine
 from volundr.domain.ports import (
     ArchiveStorePort,
@@ -37,6 +38,7 @@ from volundr.domain.ports import (
     SecretInjectionPort,
     SessionContributor,
 )
+from volundr.domain.presented_files import PresentedFileStore
 from volundr.domain.services.integration_registry import IntegrationRegistry
 from volundr.domain.services.oauth_clients import (
     SOURCE_CONFIGURED,
@@ -106,6 +108,70 @@ def _create_forge_session_tokens(
         audiences=cfg.audiences,
         ttl_seconds=cfg.ttl_seconds,
         key_source=KEY_SOURCE_KEY_FILE,
+    )
+
+
+def _create_forge_session_projection(
+    settings: Settings,
+) -> ExecutionCredentialProjectionPort | None:
+    """The projection that mounts session credentials into session pods, if configured."""
+    cfg = settings.forge_mcp.session_tokens
+    if not cfg.enabled or not cfg.projection_adapter.strip():
+        return None
+    projection = import_class(cfg.projection_adapter)(
+        **resolve_secret_kwargs(cfg.projection_kwargs, cfg.projection_secret_kwargs_env)
+    )
+    if not isinstance(projection, ExecutionCredentialProjectionPort):
+        raise TypeError(
+            f"Forge session credential projection {cfg.projection_adapter} must implement "
+            "ExecutionCredentialProjectionPort"
+        )
+    logger.info(
+        "Forge session credentials: projected by %s", cfg.projection_adapter.rsplit(".", 1)[-1]
+    )
+    return projection
+
+
+async def create_presented_file_store(settings: Settings, pool: Any) -> PresentedFileStore | None:
+    """Forge's store of durable presented files (F2), or ``None`` when they are off.
+
+    Every store gets Forge's database pool and ``read_chunk_bytes``. A store that
+    cannot hold the quota, or cannot be written, is fatal now rather than an HTTP 500
+    on the first upload.
+    """
+    config = settings.presented_files
+    if not config.enabled:
+        return None
+    store_config = dict(config.store)
+    store_cls = import_class(store_config.pop("adapter"))
+    store = store_cls(pool=pool, read_chunk_bytes=config.read_chunk_bytes, **store_config)
+    if not isinstance(store, PresentedFileStore):
+        raise TypeError(
+            f"presented_files.store.adapter {store_cls.__name__} must implement PresentedFileStore"
+        )
+    await store.ensure_capacity(config.max_total_bytes)
+    return store
+
+
+def require_presented_file_uploads(
+    settings: Settings, *, delivers_session_credential: bool
+) -> None:
+    """Refuse durable presented files that no broker could upload.
+
+    Brokers upload durable copies with their session credential. Behind an
+    authenticating identity nothing else reliably reaches Forge (a browser login
+    expires, a headless session has none), so every upload would be refused and no
+    copy would ever be kept. Forge's allow-all identity admits the broker's own call.
+    """
+    if settings.identity.adapter in ALLOW_ALL_IDENTITY_ADAPTERS:
+        return
+    if delivers_session_credential:
+        return
+    raise RuntimeError(
+        "presented_files.enabled needs session brokers to hold their Forge session "
+        "credential: enable forge_mcp.session_tokens and, for pod managers that do not "
+        "deliver it themselves (Flux, Kubernetes), set "
+        "forge_mcp.session_tokens.projection_adapter"
     )
 
 

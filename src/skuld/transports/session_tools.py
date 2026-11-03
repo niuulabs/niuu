@@ -22,30 +22,45 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from niuu.question_standard import QUESTION_STANDARD
 from skuld.session_runtime import write_private_file
 from skuld.transports.mcp_config import build_claude_mcp_payload
 
 PRESENT_FILE_URL_ENV = "FORGE_PRESENT_FILE_URL"
+FORGE_DESCRIBE_URL_ENV = "FORGE_DESCRIBE_URL"
 BROKER_TOKEN_FILE_ENV = "FORGE_BROKER_TOKEN_FILE"
 CLAUDE_MCP_CONFIG_FILE = "claude-mcp.json"
 
 PRESENT_FILE_INSTRUCTION = """\
 FILE DELIVERY: when you produce a file the user should SEE or open (a report, image, PDF, diagram, \
 screenshot, chart, or build artifact), run `present-file <path> [--caption "…"] [--title "…"]`. It \
-surfaces the file in the user's app as a tappable card that opens in the file preview, and accepts \
-ANY path, including scratch files outside the workspace (e.g. /tmp). Use it for finished \
-deliverables the user would want to open — not for routine tool output or intermediate files."""
+surfaces the file in the user's app as a tappable card that opens in the file preview. The path \
+must be under the session workspace or your home directory: write scratch files to ~/tmp/, not \
+/tmp, which is refused. Use it for finished deliverables the user would want to open — not for \
+routine tool output or intermediate files."""
 
 FORGE_NOTIFY_INSTRUCTION = """\
 NOTIFICATIONS: the `{server}` MCP server's `notify` tool sends the user a notification about this \
 session (inline in the chat, in the Forge Activities feed and, through their rules, on their \
 phone). Notify only when the user would want to be interrupted: when the task they asked for is \
 done (kind=milestone, title = the outcome; Forge sends nothing when a turn ends, so this is their \
-"done" signal), when you need them (kind=attention to unblock or approve, kind=decision to choose, \
-with your recommendation), and when a failure stops the work (kind=error). Never notify for turn \
+"done" signal), when you need them (kind=decision to choose, kind=attention to act or unblock: \
+both are questions, sent with question=true and an ask, see below), and when a failure stops the \
+work (kind=error). Never notify for turn \
 ends, chat replies, plans or progress; if in doubt, don't. Title: the outcome or the ask in one \
 plain line; body: at most one short sentence of new context. Link artifacts (PRs, presented \
-files). The same server's `environment` tool describes where this session runs."""
+files). The same server's `environment` tool describes where this session runs.
+
+QUESTIONS: """ + QUESTION_STANDARD.replace("{", "{{").replace("}", "}}")
+
+
+SESSION_DESCRIPTION_INSTRUCTION = """\
+SESSION DESCRIPTION: keep a one-line description of what this session is doing current, so anyone \
+glancing at the session list (web, phone) can tell. Run `forge-describe --short "…"` when you \
+start, whenever the phase of the work changes, when blocked ("Blocked on …") and when done \
+("Done: …"); add `--long "…"` or `--long-file <path>` for the fuller status (markdown) someone \
+opening the session would want. The `{server}` MCP server's `describe_session` tool does the \
+same."""
 
 
 FLOCK_BROKER_INSTRUCTION = """\
@@ -64,12 +79,13 @@ member's."""
 def capability_instructions(*, forge_mcp_server: str | None, flock_broker: bool = False) -> str:
     """The capability text for a session.
 
-    present-file always; notify when the MCP is on; flock delegation when the MCP
-    is on and the session brokers a Ravn flock.
+    present-file always; notify and descriptions when the MCP is on; flock
+    delegation when the MCP is on and the session brokers a Ravn flock.
     """
     parts = [PRESENT_FILE_INSTRUCTION]
     if forge_mcp_server:
         parts.append(FORGE_NOTIFY_INSTRUCTION.format(server=forge_mcp_server))
+        parts.append(SESSION_DESCRIPTION_INSTRUCTION.format(server=forge_mcp_server))
     if forge_mcp_server and flock_broker:
         parts.append(FLOCK_BROKER_INSTRUCTION.format(server=forge_mcp_server))
     return "\n\n".join(parts)

@@ -14,6 +14,37 @@ describe('ChatInput', () => {
     expect(screen.getByTestId('chat-textarea')).toBeInTheDocument();
   });
 
+  it('grows the textarea to its content and re-measures when its width changes', () => {
+    let notify: ResizeObserverCallback = () => {};
+    const original = global.ResizeObserver;
+    global.ResizeObserver = class {
+      constructor(callback: ResizeObserverCallback) {
+        notify = callback;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver;
+    try {
+      render(<ChatInput {...defaultProps} />);
+      const textarea = screen.getByTestId('chat-textarea') as HTMLTextAreaElement;
+      let scrollHeight = 64;
+      Object.defineProperty(textarea, 'scrollHeight', { get: () => scrollHeight });
+      fireEvent.change(textarea, { target: { value: 'a long line' } });
+      expect(textarea.style.height).toBe('64px');
+
+      scrollHeight = 120;
+      const resize = (width: number) =>
+        notify([{ contentRect: { width } } as ResizeObserverEntry], {} as ResizeObserver);
+      resize(0);
+      expect(textarea.style.height).toBe('64px');
+      resize(320);
+      expect(textarea.style.height).toBe('120px');
+    } finally {
+      global.ResizeObserver = original;
+    }
+  });
+
   it('renders send button', () => {
     render(<ChatInput {...defaultProps} />);
     expect(screen.getByTestId('send-btn')).toBeInTheDocument();

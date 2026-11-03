@@ -1,13 +1,73 @@
 """PostgreSQL repository for persisted session trace spans."""
 
 import json
-from datetime import UTC
+from datetime import UTC, datetime
 from uuid import UUID
 
 import asyncpg
 
 from volundr.domain.models import SessionSpan, SessionSpanStatus
 from volundr.domain.ports import SessionSpanRepository
+
+# The union of each session's assistant-turn intervals inside [$2, $3]: clip every span to
+# the window, then merge overlaps (a new group starts where no earlier interval reaches).
+WORKED_SECONDS_SQL = """
+WITH spans AS (
+    SELECT sp.session_id, sp.started_at, sp.ended_at,
+           lead(sp.started_at) OVER (
+               PARTITION BY sp.session_id ORDER BY sp.started_at
+           ) AS next_start
+    FROM session_spans sp
+    WHERE sp.session_id = ANY($1::uuid[]) AND sp.kind = 'turn.assistant'
+),
+clipped AS (
+    SELECT sp.session_id,
+           greatest(sp.started_at, $2) AS s,
+           least(
+               CASE
+                   WHEN sp.ended_at IS NOT NULL THEN sp.ended_at
+                   -- The latest turn may still be running: to now while its session
+                   -- works, else to the session's last activity.
+                   WHEN sp.next_start IS NULL THEN
+                       CASE WHEN se.status = 'running'
+                                 AND se.activity_state IS DISTINCT FROM 'idle'
+                            THEN $3 ELSE se.last_active END
+                   -- An older turn left open (its end event was lost) lasted as long as
+                   -- the last tool call recorded inside it, never past the next turn.
+                   ELSE least(coalesce(evidence.last_end, sp.started_at), sp.next_start)
+               END,
+               $3
+           ) AS e
+    FROM spans sp
+    JOIN sessions se ON se.id = sp.session_id
+    LEFT JOIN LATERAL (
+        SELECT max(coalesce(t.ended_at, t.started_at)) AS last_end
+        FROM session_spans t
+        WHERE sp.ended_at IS NULL AND sp.next_start IS NOT NULL
+          AND t.session_id = sp.session_id AND t.kind <> 'turn.assistant'
+          AND t.started_at >= sp.started_at AND t.started_at < sp.next_start
+    ) evidence ON true
+    WHERE sp.started_at < $3
+      AND coalesce(sp.ended_at, sp.next_start, $3) > $2
+),
+ordered AS (
+    SELECT session_id, s, e,
+           max(e) OVER (PARTITION BY session_id ORDER BY s, e
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS reach
+    FROM clipped WHERE e > s
+),
+grouped AS (
+    SELECT session_id, s, e,
+           sum(CASE WHEN reach IS NULL OR s > reach THEN 1 ELSE 0 END)
+               OVER (PARTITION BY session_id ORDER BY s, e) AS grp
+    FROM ordered
+),
+merged AS (
+    SELECT session_id, max(e) - min(s) AS span FROM grouped GROUP BY session_id, grp
+)
+SELECT session_id, floor(extract(epoch FROM sum(span)))::bigint AS seconds
+FROM merged GROUP BY session_id
+"""
 
 
 class PostgresSpanRepository(SessionSpanRepository):
@@ -119,6 +179,14 @@ class PostgresSpanRepository(SessionSpanRepository):
             session_id,
         )
         return int(result.split()[-1])
+
+    async def worked_seconds(
+        self, session_ids: list[UUID], *, since: datetime, until: datetime
+    ) -> dict[UUID, int]:
+        if not session_ids:
+            return {}
+        rows = await self._pool.fetch(WORKED_SECONDS_SQL, session_ids, since, until)
+        return {row["session_id"]: int(row["seconds"]) for row in rows}
 
     @staticmethod
     def _row_to_span(row: asyncpg.Record) -> SessionSpan:

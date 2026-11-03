@@ -498,3 +498,42 @@ def test_d6_conversation_endpoint_fallback_to_rebuilt_log() -> None:
     mod = importlib.import_module("tests.test_adapters.test_rest_conversation_fallback")
     assert hasattr(mod, "test_dead_session_conversation_falls_back_to_rebuilt_log")
     assert hasattr(mod, "test_dead_session_conversation_uses_shared_reducer_output")
+
+
+# --------------------------------------------------------------------------- D7
+
+
+@pytest.mark.integration
+@pytest.mark.tmux
+@pytest.mark.asyncio
+async def test_d7_agent_exit_stops_the_broker_instead_of_serving_a_corpse() -> None:
+    """D7 (LEX-1699): when Claude's pane dies, the broker reports activity 'stopped'
+    with the reason and exits, so Forge reconciles the session as stopped rather than
+    reporting a dead pane as 'running' and queueing messages for it."""
+    _require_tmux()
+    from unittest.mock import patch
+
+    with patch("skuld.broker._exit_own_process") as kill:
+        async with BrokerHarness(
+            hooks=True, idle_timeout_s=0.3, exit_when_transport_stops=True
+        ) as h:
+            client = await h.connect()
+            client.send({"type": "message", "content": "work:5"})
+            await client.wait_for(
+                lambda frames: any(_frame_shows(f, "working") for f in frames),
+                timeout=8.0,
+            )
+            h.crash_agent()
+
+            for _ in range(100):
+                if kill.called:
+                    break
+                await asyncio.sleep(0.1)
+            stopped = [
+                e.payload
+                for e in h.event_log_entries()
+                if getattr(e, "kind", None) == "transport_stopped"
+            ]
+
+    kill.assert_called_once_with()
+    assert stopped and stopped[-1]["reason"] == "claude_exited"

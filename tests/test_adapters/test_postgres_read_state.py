@@ -100,7 +100,10 @@ async def test_listing_is_one_bulk_query_scoped_to_reader():
 
 def test_projection_uses_only_new_inserted_final_events_not_imports_or_retries():
     assert "ON CONFLICT (session_id, seq) DO NOTHING" in _INSERT_SQL
-    assert "FROM inserted i" in _INSERT_SQL and "i.seq > s.latest_final_seq" in _INSERT_SQL
+    assert "FROM inserted i" in _INSERT_SQL and "f.seq > s.latest_final_seq" in _INSERT_SQL
+    # Work facts (G10, F12d) fold in the same single update, from inserted rows only.
+    assert "FROM facts f" in _INSERT_SQL and "last_work_at = CASE WHEN f.is_work" in _INSERT_SQL
+    assert "last_work_at" not in _IMPORT_INSERT_SQL
     assert "final_output" in _INSERT_SQL and "'public'" in _INSERT_SQL
     assert "jsonb_typeof" in _INSERT_SQL
     assert "latest_final_seq" not in _IMPORT_INSERT_SQL

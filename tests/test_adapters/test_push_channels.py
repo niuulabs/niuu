@@ -14,6 +14,7 @@ from volundr.adapters.outbound.push_channels import (
     WebhookNotificationChannel,
 )
 from volundr.domain.models import DevicePlatform, DeviceToken, PushMessage
+from volundr.domain.push import PushTokenKind
 
 # A throwaway EC P-256 private key (test-only) for the APNs ES256 JWT path.
 _TEST_P8 = """-----BEGIN PRIVATE KEY-----
@@ -176,6 +177,57 @@ class TestApnsChannel:
         await channel.send(_message(), [device])
 
         assert client.post.call_args[1]["headers"]["apns-topic"] == "com.niuu.forge.widget"
+
+    async def test_only_alert_tokens_receive_the_alert(self):
+        client = MagicMock()
+        client.post = AsyncMock(return_value=MagicMock(status_code=200))
+        channel = self._channel(client)
+        others = [
+            DeviceToken(owner_id="u", platform=DevicePlatform.IOS, token=kind.value, kind=kind)
+            for kind in PushTokenKind
+            if kind is not PushTokenKind.ALERT
+        ]
+
+        await channel.send(_message(), others)
+        client.post.assert_not_called()
+
+        await channel.send(_message(), [*others, _ios_device("alert")])
+        assert client.post.call_count == 1
+        assert client.post.call_args[0][0].endswith("/3/device/alert")
+
+    def test_key_from_a_file(self, tmp_path):
+        path = tmp_path / "AuthKey_KEY123.p8"
+        path.write_text(_TEST_P8)
+        channel = ApnsNotificationChannel(
+            team_id="TEAM123",
+            key_id="KEY123",
+            bundle_id="com.niuu.forge",
+            private_key_path=str(path),
+        )
+        assert channel._auth_token().count(".") == 2
+
+    @pytest.mark.parametrize(
+        "keys",
+        [{}, {"private_key": _TEST_P8, "private_key_path": "/etc/key.p8"}],
+    )
+    def test_exactly_one_key_source_is_required(self, keys):
+        with pytest.raises(ValueError, match="exactly one of private_key_path and private_key"):
+            ApnsNotificationChannel(
+                team_id="TEAM123", key_id="KEY123", bundle_id="com.niuu.forge", **keys
+            )
+
+    def test_a_wrong_key_is_refused_when_the_channel_is_built(self, tmp_path):
+        with pytest.raises(ValueError, match="not an unencrypted PEM private key"):
+            ApnsNotificationChannel(
+                team_id="TEAM123", key_id="KEY123", bundle_id="com.niuu.forge", private_key="nope"
+            )
+        with pytest.raises(ValueError, match="cannot be read"):
+            ApnsNotificationChannel(
+                team_id="TEAM123",
+                key_id="KEY123",
+                bundle_id="com.niuu.forge",
+                private_key_path=str(tmp_path / "missing.p8"),
+            )
 
 
 class TestApnsCategory:

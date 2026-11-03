@@ -16,8 +16,10 @@ from volundr.domain.services.notification_dispatcher import NotificationDispatch
 from volundr.notification_composition import (
     NotificationDelivery,
     create_notification_delivery,
+    create_notification_image_worker,
     create_push_channel,
     dispatcher_settings,
+    image_worker_settings,
     notification_renderer,
 )
 
@@ -142,3 +144,51 @@ def test_main_builds_a_push_channel_for_push_sinks():
             credential_store=None,
             device_repository=MagicMock(),
         )
+
+
+def test_image_worker_is_built_from_config():
+    from volundr.adapters.outbound.notification_image_fetcher import (
+        HttpNotificationImageFetcher,
+    )
+    from volundr.adapters.outbound.pillow_notification_images import (
+        PillowNotificationImageProcessor,
+    )
+
+    settings = Settings(
+        openshell_internal_gateway_url="http://gw.internal:8080",
+        notifications={
+            "images": {
+                "fetch_timeout_seconds": 7,
+                "lease_seconds": 30,
+                "batch_size": 3,
+                "max_redirects": 1,
+                "allow_private_networks": True,
+                "thumbnail_max_side": 200,
+                "thumbnail_jpeg_quality": 70,
+            }
+        },
+    )
+    lookup = AsyncMock(return_value=None)
+    notifications, images, broadcaster = MagicMock(), MagicMock(), MagicMock()
+    worker = create_notification_image_worker(
+        settings,
+        notifications=notifications,
+        images=images,
+        session_lookup=lookup,
+        broadcaster=broadcaster,
+    )
+    assert worker._images is images and worker._notifications is notifications
+    assert worker._broadcaster is broadcaster
+    assert worker._settings == image_worker_settings(settings.notifications.images)
+    assert (worker._settings.batch_size, worker._settings.lease_seconds) == (3, 30)
+    fetcher = worker._fetcher
+    assert isinstance(fetcher, HttpNotificationImageFetcher)
+    assert (fetcher._gateway_url, fetcher._timeout, fetcher._max_redirects) == (
+        "http://gw.internal:8080",
+        7,
+        1,
+    )
+    assert fetcher._allow_private_networks is True and fetcher._session_lookup is lookup
+    processor = worker._processor
+    assert isinstance(processor, PillowNotificationImageProcessor)
+    assert (processor._thumbnail_side, processor._jpeg_quality) == (200, 70)

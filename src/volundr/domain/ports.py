@@ -7,7 +7,7 @@ Adapters implement these interfaces.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -97,6 +97,7 @@ from volundr.domain.models import (  # noqa: F401
     WorkspaceStatus,
 )
 from volundr.domain.projects import SessionCoordination
+from volundr.domain.push import PushTokenKind
 from volundr.domain.session_participants import ParticipantRole, SessionParticipant
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 
@@ -160,6 +161,27 @@ class SessionRepository(ABC):
 
         Preserve runtime fields; invalidate the old launch brief. None means conflict.
         Ordinary updates must never overwrite this independently managed state.
+        """
+
+    @abstractmethod
+    async def update_description(
+        self, session_id: UUID, changes: dict[str, str | None], now: datetime
+    ) -> Session | None:
+        """Write only the given description keys (normalized; ``None`` clears).
+
+        A key's ``*_updated_at`` stamp (and ``updated_at``) moves to ``now`` only
+        when its stored value actually changes. Returns the stored session, or
+        ``None`` when it no longer exists. Ordinary updates never write these columns.
+        """
+
+    @abstractmethod
+    async def update_forge_mcp_grants(
+        self, session_id: UUID, grants: list[str], now: datetime
+    ) -> Session | None:
+        """Replace only ``workload_config.forge_mcp.grants``; keep the launch id.
+
+        Returns the stored session, or ``None`` when it no longer exists. The
+        running launch's credential is unchanged; the next start mints from these.
         """
 
     @abstractmethod
@@ -726,19 +748,64 @@ class EventBroadcaster(ABC):
 
 
 class DeviceTokenRepository(ABC):
-    """Persistence port for per-user push device registrations."""
+    """Persistence port for per-user push device registrations.
+
+    A registration is one ``(token, kind)``. A registry that keeps only alert
+    tokens (the owners' push-device integrations) refuses any other kind.
+    """
 
     @abstractmethod
     async def upsert(self, device: DeviceToken) -> DeviceToken:
-        """Register a device, or refresh it if the (owner, token) already exists."""
+        """Register a token, or refresh it if the (token, kind) already exists.
+
+        The row moves to ``device.owner_id``: a token belongs to whoever is signed
+        in on that install now. A Live Activity token replaces the owner's earlier
+        token for the same ``activity_id``."""
 
     @abstractmethod
-    async def list_for_owner(self, owner_id: str) -> list[DeviceToken]:
-        """Return every device registered by an owner."""
+    async def list_for_owner(
+        self, owner_id: str, *, kinds: Sequence[PushTokenKind] | None = None
+    ) -> list[DeviceToken]:
+        """Return an owner's registrations, optionally only those of ``kinds``."""
 
     @abstractmethod
-    async def delete(self, owner_id: str, token: str) -> bool:
-        """Remove a device registration. Returns True if one was deleted."""
+    async def delete(self, owner_id: str, token: str, *, kind: PushTokenKind | None = None) -> bool:
+        """Remove an owner's registration(s) of a token. True if any was deleted."""
+
+
+class PushTokenRegistry(DeviceTokenRepository):
+    """A device registry the push gateway can drive: every token kind, plus throttles.
+
+    The throttle methods serve pushes iOS budgets (widget reloads, Live Activity
+    push-to-start): a push is *claimed* before it is sent, so two workers never
+    send the same one twice.
+    """
+
+    @abstractmethod
+    async def delete_registration(self, device_id: UUID) -> bool:
+        """Remove one registration by id (a token APNs reported as dead)."""
+
+    @abstractmethod
+    async def claim_push(self, device_id: UUID, *, min_interval_seconds: float) -> bool:
+        """Claim a throttled push for a token.
+
+        True when at least ``min_interval_seconds`` passed since its last claim; the
+        claim is recorded. False otherwise, and the token is marked as owing a push
+        (see :meth:`claim_owed_pushes`)."""
+
+    @abstractmethod
+    async def release_push(self, device_id: UUID) -> None:
+        """Undo a claim whose push was not delivered, so the next attempt may send."""
+
+    @abstractmethod
+    async def claim_owed_pushes(
+        self, kind: PushTokenKind, *, min_interval_seconds: float
+    ) -> list[DeviceToken]:
+        """Claim every token of ``kind`` that owes a push and whose interval elapsed."""
+
+    @abstractmethod
+    async def count_by_environment(self) -> dict[str, dict[str, int]]:
+        """Registered tokens per APNs environment and kind (no tokens, only counts)."""
 
 
 class NotificationChannel(ABC):
@@ -1316,6 +1383,30 @@ class SessionEventLogRepository(ABC):
         rows = await self.read_after(session_id, after_seq=low, limit=max(wanted) - low)
         return [row for row in rows if row.seq in wanted]
 
+    async def read_after_excluding(
+        self,
+        session_id: UUID,
+        after_seq: int = 0,
+        limit: int = 1000,
+        exclude_kinds: frozenset[str] = frozenset(),
+    ) -> list[SessionLogEntry]:
+        """Like :meth:`read_after`, skipping rows whose ``kind`` is in ``exclude_kinds``.
+
+        Up to ``limit`` KEPT rows; an empty list means the log is exhausted. This
+        concrete default filters :meth:`read_after` pages so in-memory fakes inherit it;
+        SQL adapters override it to filter in the query.
+        """
+        kept: list[SessionLogEntry] = []
+        while len(kept) < limit:
+            page = await self.read_after(session_id, after_seq=after_seq, limit=limit)
+            if not page:
+                break
+            after_seq = page[-1].seq
+            kept.extend(row for row in page if row.kind not in exclude_kinds)
+            if len(page) < limit:
+                break
+        return kept[:limit]
+
     async def import_history(
         self, session_id: UUID, source_id: str, entries: list[SessionLogEntry]
     ) -> int:
@@ -1402,6 +1493,19 @@ class SessionSpanRepository(ABC):
     @abstractmethod
     async def delete_by_session(self, session_id: UUID) -> int:
         """Delete all spans for a session. Returns count deleted."""
+
+    @abstractmethod
+    async def worked_seconds(
+        self, session_ids: list[UUID], *, since: datetime, until: datetime
+    ) -> dict[UUID, int]:
+        """Seconds each session spent in assistant turns between ``since`` and ``until``.
+
+        The union of its ``turn.assistant`` spans, clipped to the window, so concurrent
+        turns (teammates) count once. A span still open counts up to ``until`` only while
+        its session is running and not idle; otherwise up to the session's last activity,
+        so a span that was never closed cannot count forever. Sessions with no work in
+        the window are absent.
+        """
 
 
 class AdminSettingsRepository(ABC):

@@ -41,6 +41,7 @@ def _session(session_id: str, **extra: Any) -> dict[str, Any]:
     return {
         "id": session_id,
         "instance_id": "node-a",
+        "instance_name": "Node A",
         "name": "peer",
         "status": "running",
         "model": "claude-opus-5",
@@ -115,6 +116,17 @@ class FakeClient(ForgeClient):
         self._record("submit_notification", (session_id, draft, idempotency_key, instance_id))
         return {"id": "nid-feed", "seq": 12, "session_id": session_id, "source": "agent"}
 
+    async def update_description(self, session_id, changes):
+        self._record("update_description", (session_id, changes))
+        stamp = "2026-10-16T12:00:00+00:00"
+        return _session(
+            session_id,
+            short_description=changes.get("short_description"),
+            description=changes.get("description"),
+            short_description_updated_at=stamp if "short_description" in changes else None,
+            description_updated_at=stamp if "description" in changes else None,
+        )
+
 
 class FakeHost(ForgeMcpHost):
     def __init__(self) -> None:
@@ -145,6 +157,8 @@ class TestToolList:
         assert set(TOOL_NAMES) == {
             "environment",
             "notify",
+            "report_artifact",
+            "describe_session",
             "list_notifications",
             "list_sessions",
             "get_session",
@@ -285,6 +299,7 @@ class TestReads:
             "session_id": PEER,
             "project_id": "p",
             "unread": "true",
+            "unresolved": "true",
         }
         items = result.structured["items"]
         assert len(items) == 3
@@ -298,6 +313,7 @@ class TestReads:
         assert result.structured["total"] == 5 and result.structured["returned"] == 2
         session = result.structured["sessions"][0]
         assert session["instance_id"] == "node-a"
+        assert session["instance_name"] == "Node A"
         assert session["project_id"] == "proj-1"
         assert "chat_endpoint" not in session
         assert "access_token" not in json.dumps(result.structured)
@@ -512,7 +528,9 @@ class TestFeedNotify:
         assert schema["required"] == ["kind", "title", "idempotency_key"]
         assert {"session_id", "instance_id", "idempotency_key"} <= set(schema["properties"])
         assert "feed-only" in notify["description"]
-        assert [tool["name"] for tool in toolbox.list_tools()] == list(TOOL_NAMES)
+        assert [tool["name"] for tool in toolbox.list_tools()] == [
+            name for name in TOOL_NAMES if name != "report_artifact"
+        ]
 
     def test_transcript_mode_keeps_the_session_schema(self) -> None:
         toolbox, _, _ = _toolbox()
@@ -681,3 +699,67 @@ class TestFlockTools:
         result = await toolbox.call("flock_outcomes", {"after": 4, "wait_s": 1})
         assert result.is_error
         assert "do not report a verdict" in result.text
+
+
+class TestDescribeSession:
+    async def test_writes_only_the_sent_keys_of_the_own_session(self) -> None:
+        toolbox, client, _ = _toolbox()
+        result = await toolbox.call("describe_session", {"short_description": "Fixing CI"})
+        assert not result.is_error
+        assert client.calls == [("update_description", (SELF, {"short_description": "Fixing CI"}))]
+        assert result.structured["session_id"] == SELF
+        assert result.structured["short_description"] == "Fixing CI"
+        assert result.structured["short_description_updated_at"] is not None
+        assert result.structured["description"] is None
+
+    async def test_null_clears_and_both_keys_travel_together(self) -> None:
+        toolbox, client, _ = _toolbox()
+        await toolbox.call("describe_session", {"short_description": None, "description": "## s"})
+        assert client.calls[0][1] == (SELF, {"short_description": None, "description": "## s"})
+
+    async def test_needs_no_grant_and_is_offered_to_every_session(self) -> None:
+        toolbox, _, _ = _toolbox()
+        spec = next(t for t in toolbox.list_tools() if t["name"] == "describe_session")
+        assert "grant" not in spec["description"]
+        assert "Blocked on" in spec["description"] and "Done:" in spec["description"]
+        environment = await toolbox.call("environment", {})
+        assert "describe_session" in environment.structured["tools"]
+
+    async def test_an_empty_call_is_refused_without_a_write(self) -> None:
+        toolbox, client, _ = _toolbox()
+        result = await toolbox.call("describe_session", {})
+        assert result.is_error and "short_description" in result.text
+        assert client.calls == []
+
+    async def test_unknown_keys_are_invalid(self) -> None:
+        toolbox, client, _ = _toolbox()
+        result = await toolbox.call("describe_session", {"summary": "x"})
+        assert result.is_error and "Invalid arguments" in result.text
+        assert client.calls == []
+
+    async def test_outside_a_session_the_call_explains(self) -> None:
+        toolbox, client = _feed_toolbox(_SessionlessHost())
+        result = await toolbox.call("describe_session", {"short_description": "x"})
+        assert result.is_error and "own Forge session" in result.text
+        assert client.calls == []
+
+    async def test_forge_refusal_is_a_tool_error(self) -> None:
+        toolbox, client, _ = _toolbox()
+        client.fail = ForgeApiError("not yours", status=403)
+        result = await toolbox.call("describe_session", {"description": "x"})
+        assert result.is_error and "Forge answered 403" in result.text
+
+    async def test_session_summaries_carry_the_descriptions(self) -> None:
+        toolbox, client, _ = _toolbox()
+        stored = await client.update_description(PEER, {"short_description": "Reviewing PR"})
+        client.calls.clear()
+
+        async def get_session(session_id, *, instance_id):
+            return stored
+
+        client.get_session = get_session
+        result = await toolbox.call("get_session", {"session_id": PEER})
+        session = result.structured["session"]
+        assert session["short_description"] == "Reviewing PR"
+        assert session["short_description_updated_at"] == "2026-10-16T12:00:00+00:00"
+        assert "description" not in session  # unset fields are omitted from summaries

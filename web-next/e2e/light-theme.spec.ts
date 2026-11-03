@@ -7,6 +7,9 @@ async function selectTheme(page: Page, theme: string) {
       name: (
         {
           niuu: 'NIUU',
+          'midnight-blue': 'Midnight Blue',
+          'deep-blue': 'Deep Blue',
+          'dark-blue': 'Dark Blue',
           xteo: 'blue',
           ice: 'Native dark',
           amber: 'Amber',
@@ -40,7 +43,16 @@ test('offers Light in the palette picker and preserves navigation and layout', a
   const navigation = page.locator('.niuu-shell__rail');
   const labels = await navigation.innerText();
   const bounds = await navigation.boundingBox();
-  for (const theme of ['ice', 'amber', 'spring', 'xteo', 'light']) {
+  for (const theme of [
+    'midnight-blue',
+    'deep-blue',
+    'dark-blue',
+    'ice',
+    'amber',
+    'spring',
+    'xteo',
+    'light',
+  ]) {
     await selectTheme(page, theme);
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
     await expect(page.locator('.niuu-shell')).toHaveAttribute('data-theme', theme);
@@ -82,7 +94,17 @@ test('borderless icon button opens all palettes and supports keyboard selection'
   await picker.focus();
   await page.keyboard.press('Enter');
   const options = page.locator('.niuu-shell__theme-option');
-  await expect(options).toHaveText(['NIUU', 'blue', 'Native dark', 'Amber', 'Spring', 'Light']);
+  await expect(options).toHaveText([
+    'NIUU',
+    'Midnight Blue',
+    'Deep Blue',
+    'Dark Blue',
+    'blue',
+    'Native dark',
+    'Amber',
+    'Spring',
+    'Light',
+  ]);
   await page.getByRole('button', { name: 'Light', exact: true }).focus();
   await page.keyboard.press('Enter');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');

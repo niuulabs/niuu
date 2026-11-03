@@ -1,0 +1,14 @@
+{
+  "pid": 837899,
+  "exe": "/home/thor/.codex/packages/standalone/releases/0.154.0-aarch64-unknown-linux-musl/bin/codex",
+  "version": "codex-cli 0.154.0",
+  "argv_command": [
+    "/home/thor/.local/bin/codex",
+    "app-server"
+  ],
+  "config_paths": {
+    "CODEX_HOME": "/home/thor/.codex"
+  },
+  "schema_generation": "offline stable + experimental; no model turns or service connections",
+  "binary_sha256": "9b7c1c7abdc26fc3c4f47c77656a8e9121def5483dbae830ef1ee561758448a9"
+}
