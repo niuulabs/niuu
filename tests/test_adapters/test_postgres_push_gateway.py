@@ -89,18 +89,22 @@ class TestRecord:
     async def test_inserts_new_rows_and_advances_positions_in_one_transaction(
         self, repository, conn
     ):
-        new, seen = guild_notification("n-1", seq=4), guild_notification("n-0", seq=3)
+        new = guild_notification("n-1", seq=4, tenant_id="acme")
+        seen = guild_notification("n-0", seq=3)
         conn.fetchval.side_effect = ["n-1", None]
 
         fresh = await repository.record([new, seen], {THOR: 4})
 
         assert fresh == [new]
         conn.transaction.assert_called_once()
-        sql, instance_id, notification_id, owner_id, notified_at, payload = (
+        sql, instance_id, notification_id, owner_id, notified_at, payload, tenant_id = (
             conn.fetchval.call_args_list[0][0]
         )
         assert "ON CONFLICT (instance_id, notification_id) DO NOTHING" in sql
         assert (instance_id, notification_id, owner_id) == (THOR, "n-1", "dev-user")
+        # Each alert row belongs to its notification's org.
+        assert tenant_id == "acme"
+        assert json.loads(payload)["tenant_id"] == "acme"
         assert notified_at == new.created_at
         assert json.loads(payload)["title"] == "Build finished"
         saved = conn.execute.call_args[0]
@@ -183,6 +187,19 @@ class TestCountsAndPruning:
         sql, owner, since = pool.fetchval.call_args[0]
         assert "status = 'sent' AND settled_at >= $2" in sql
         assert (owner, since) == ("dev-user", NOW)
+
+    async def test_alerts_are_counted_per_org_and_status(self, repository, pool):
+        pool.fetch.return_value = [
+            {"tenant": "acme", "status": "sent", "n": 3},
+            {"tenant": "acme", "status": "suppressed", "n": 1},
+            {"tenant": "", "status": "sent", "n": 2},
+        ]
+
+        assert await repository.count_by_tenant() == {
+            "acme": {"sent": 3, "suppressed": 1},
+            "": {"sent": 2},
+        }
+        assert "GROUP BY 1, 2" in pool.fetch.call_args[0][0]
 
     async def test_prune_reports_how_many(self, repository, pool):
         pool.execute.return_value = "DELETE 12"

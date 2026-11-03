@@ -199,6 +199,8 @@ class TestAlertPayload:
             "session_id": SESSION,
             "notification_id": "1a97554b-96b1-5fac-baa4-5bf53ba35d92",
             "instance_id": INSTANCE,
+            # The notification's org: the app routes the alert to it.
+            "tenant_id": "default",
             "kind": "decision",
         }
 
