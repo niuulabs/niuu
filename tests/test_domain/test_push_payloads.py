@@ -441,6 +441,7 @@ class TestWidgetAndTopics:
             "live_activity": "live_activity",
             "live_activity_start": "live_activity_start",
             "widget": "widget",
+            "voip": "voip",
         }
 
     def test_topics(self):

@@ -11,10 +11,18 @@ The server binds loopback. The pod's nginx forwards ``/voice/`` here, behind the
 gateway's JWT check, which projects the verified caller into ``user_id_header``.
 Only the resident's owner is served (``owner_id``): a call mints the owner's
 provider credentials and runs the resident's tools. ``auth`` is answered ``auth.ok``.
+
+The gateway also holds the phone's sockets, so the resident can call the owner on its
+own initiative (``voice.calls``): ``call.presence`` registers a socket that can take a
+``call.request``, the :class:`~ravn.adapters.channels.voice.calls.CallRequester` sends
+one, and ``call.result`` is recorded by request id, whichever socket it arrives on.
+Every send on a socket holds that socket's lock, so a request never interleaves with
+an answer.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -27,13 +35,19 @@ from fastapi import Body, FastAPI, Query, Request, WebSocket, WebSocketDisconnec
 from fastapi.responses import JSONResponse
 
 from ravn.adapters.channels.voice import protocol as wire
+from ravn.adapters.channels.voice.calls import CallPresenceRegistry, CallRequester
 from ravn.adapters.channels.voice.prompt import (
     UnsupportedProviderError,
     VoicePersona,
     VoicePromptComposer,
 )
 from ravn.adapters.channels.voice.room import VoiceRoomCopier
-from ravn.adapters.channels.voice.store import UnknownCallError, VoiceCallStore
+from ravn.adapters.channels.voice.store import (
+    CALL_OUTCOMES,
+    UnknownCallError,
+    VoiceCallStore,
+    now_ms,
+)
 from ravn.adapters.channels.voice.tools import (
     UnknownToolError,
     VoiceToolBridge,
@@ -50,14 +64,31 @@ MINT_PROVIDERS = {"xai": "grok", "openai": "gpt-realtime"}
 VOICE_TOOL_PROFILE = "voice"
 #: WebSocket close code for a caller who is not the resident's owner.
 _CLOSE_FORBIDDEN = 4403
+#: Why ``push.register`` registers nothing here (the phone registers its tokens with Forge).
+_PUSH_REGISTER_REASON = "push tokens are registered with Forge"
+#: The ``session.start`` metadata key naming the call request a call answers.
+_AMBIENT_REQUEST_ID = "ambientRequestId"
 
 
 @dataclass
 class _Connection:
-    """Per-socket state: the tool allowlist the app may set with ``tools.enable``."""
+    """Per-socket state: the socket, its send lock, and the tool allowlist (``tools.enable``)."""
 
+    websocket: WebSocket | None = None
     allowlist: set[str] | None = None
     started: float = field(default_factory=time.monotonic)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    async def send(self, message: dict[str, Any]) -> bool:
+        """Send one frame under the socket's lock; ``False`` when the socket is gone."""
+        if self.websocket is None:
+            return False
+        async with self.lock:
+            try:
+                await self.websocket.send_json(message)
+            except (RuntimeError, WebSocketDisconnect, OSError):
+                return False
+        return True
 
 
 class VoiceGateway:
@@ -73,6 +104,8 @@ class VoiceGateway:
         store: VoiceCallStore,
         minters: dict[str, RealtimeCredentialMinterPort],
         room: VoiceRoomCopier | None,
+        presences: CallPresenceRegistry | None = None,
+        calls: CallRequester | None = None,
     ) -> None:
         if not getattr(config, "owner_id", ""):
             raise ValueError(
@@ -91,6 +124,8 @@ class VoiceGateway:
         self._store = store
         self._minters = minters
         self._room = room
+        self._presences = presences if presences is not None else CallPresenceRegistry()
+        self._calls = calls
         self._connections: set[int] = set()
         self._started = time.monotonic()
         self._app = self._build_app()
@@ -124,9 +159,18 @@ class VoiceGateway:
             self._persona.name,
             sorted(self._minters),
         )
+        requester = (
+            asyncio.create_task(self._calls.run(), name="voice-calls")
+            if self._calls is not None
+            else None
+        )
         try:
             await server.serve()
         finally:
+            if requester is not None:
+                requester.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    _ = await requester
             await self.aclose()
 
     async def aclose(self) -> None:
@@ -158,6 +202,7 @@ class VoiceGateway:
                 "status": "ok",
                 "uptime": int(time.monotonic() - self._started),
                 "connections": len(self._connections),
+                "presences": len(self._presences),
                 "sessions": sum(
                     1
                     for call in self._store.calls(self._config.history_max_limit)
@@ -296,19 +341,21 @@ class VoiceGateway:
             await websocket.close(code=_CLOSE_FORBIDDEN)
             return
         await websocket.accept()
-        connection = _Connection()
+        connection = _Connection(websocket=websocket)
         key = id(connection)
         self._connections.add(key)
         try:
             while True:
                 raw = await websocket.receive_text()
+                self._presences.touch(connection)
                 response = await self._answer(connection, raw)
-                if response is not None:
-                    await websocket.send_json(response)
+                if response is not None and not await connection.send(response):
+                    break
         except WebSocketDisconnect:
             # The app closing its socket is the normal end of a connection.
             pass
         finally:
+            self._presences.drop(connection)
             self._connections.discard(key)
             with contextlib.suppress(RuntimeError):
                 await websocket.close()
@@ -330,7 +377,7 @@ class VoiceGateway:
 
     async def _dispatch(
         self, connection: _Connection, message_type: str, message_id: str, payload: dict[str, Any]
-    ) -> dict:
+    ) -> dict | None:
         match message_type:
             case wire.AUTH:
                 return wire.frame(wire.AUTH_OK, message_id)
@@ -377,9 +424,59 @@ class VoiceGateway:
                 raise wire.ProtocolError(
                     "This resident's voice tools have no groups", wire.ErrorCodes.INVALID_PARAMS
                 )
+            case wire.CALL_PRESENCE:
+                return self._presence(connection, message_id, payload)
+            case wire.PUSH_REGISTER:
+                # The tokens are dropped unread and never logged: the phone registers them
+                # with Forge, whose push gateway holds them per owner.
+                return wire.frame(
+                    wire.PUSH_REGISTER_RESULT,
+                    message_id,
+                    {"registered": False, "reason": _PUSH_REGISTER_REASON},
+                )
+            case wire.CALL_RESULT:
+                self._call_result(message_id, payload)
+                return None
         raise wire.ProtocolError(f"Unknown message: {message_type}", wire.ErrorCodes.UNKNOWN_TYPE)
 
     # -- handlers --------------------------------------------------------
+
+    def _presence(self, connection: _Connection, message_id: str, payload: dict[str, Any]) -> dict:
+        try:
+            registered = self._presences.update(
+                payload, connection=connection, send=connection.send
+            )
+        except ValueError as exc:
+            raise wire.ProtocolError(str(exc), wire.ErrorCodes.INVALID_PARAMS) from exc
+        result: dict[str, Any] = {"registered": registered}
+        if not registered:
+            result["reason"] = "only an iPhone takes this resident's calls"
+        return wire.frame(wire.CALL_PRESENCE_RESULT, message_id, result)
+
+    def _call_result(self, message_id: str, payload: dict[str, Any]) -> None:
+        """Record the phone's answer by request id; an event, so nothing is sent back."""
+        request_id = str(payload.get("id") or message_id)
+        outcome = payload.get("outcome")
+        reason = payload.get("reason") if isinstance(payload.get("reason"), str) else None
+        if outcome not in CALL_OUTCOMES:
+            logger.info("call.result %s names no known outcome: ignored", request_id)
+            return
+        if outcome == "refused" and reason == "duplicate":
+            # A push that followed a socket delivery: the phone answers the first one.
+            logger.info(
+                "call.result %s: duplicate delivery, waiting for the first answer", request_id
+            )
+            return
+        recorded = self._store.record_call_result(
+            request_id, outcome=outcome, reason=reason, at_ms=now_ms()
+        )
+        logger.info(
+            "call.result %s: %s%s%s",
+            request_id,
+            outcome,
+            f" ({reason})" if reason else "",
+            "" if recorded else " (no open request with that id: ignored)",
+        )
 
     def _context(self) -> dict[str, Any]:
         persona = self._persona
@@ -445,6 +542,9 @@ class VoiceGateway:
             provider=str(payload.get("provider") or ""),
             metadata=metadata,
         )
+        request_id = metadata.get(_AMBIENT_REQUEST_ID)
+        if isinstance(request_id, str) and request_id:
+            self._store.link_call_request(request_id, call_id)
         return wire.frame(
             wire.SESSION_STARTED, message_id, {"session": self._store.session_json(call)}
         )

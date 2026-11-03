@@ -28,6 +28,7 @@ from volundr.domain.ports import DeviceTokenRepository, EventBroadcaster, PushTo
 from volundr.domain.services.push_gateway import (
     AlertSettings,
     BackgroundSettings,
+    CallSettings,
     LiveActivitySettings,
     PushGateway,
     PushGatewaySettings,
@@ -97,7 +98,7 @@ def create_reader_auth(gateway: PushGatewayConfig) -> HttpAuthPort:
 def push_gateway_settings(push: PushNotificationConfig, *, instance_id: str) -> PushGatewaySettings:
     gateway: PushGatewayConfig = push.gateway
     alerts, live, widgets = gateway.alerts, gateway.live_activity, gateway.widgets
-    background = gateway.background
+    background, calls = gateway.background, gateway.calls
     return PushGatewaySettings(
         bundle_id=push.apns.bundle_id,
         instance_id=instance_id,
@@ -152,6 +153,11 @@ def push_gateway_settings(push: PushNotificationConfig, *, instance_id: str) -> 
             enabled=background.enabled,
             priority=background.priority,
             min_interval_seconds=background.min_interval_seconds,
+        ),
+        calls=CallSettings(
+            enabled=calls.enabled,
+            max_per_hour=calls.max_per_hour,
+            ring_seconds=calls.ring_seconds,
         ),
     )
 

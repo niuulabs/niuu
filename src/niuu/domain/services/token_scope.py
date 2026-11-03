@@ -82,6 +82,11 @@ FORGE_SESSION_READ_SCOPE = "forge:session:read"
 FORGE_SESSION_MESSAGE_SCOPE = "forge:session:message"
 FORGE_SESSION_LIFECYCLE_SCOPE = "forge:session:lifecycle"
 
+#: Ring the token's own owner's phone with a resident's ``call.request`` (a VoIP push
+#: from the Guild push gateway). It reaches no other owner, so any workload mapping may
+#: grant it; the route also requires a resident's delegated credential.
+FORGE_PUSH_CALL_SCOPE = "forge:push:call"
+
 #: The claim value of the push gateway's cross-tenant notification reader.
 NOTIFICATION_DELIVERY_TOKEN_USE = "notification_delivery"
 #: Read every owner's notification feed (with each owner's read state) and every
@@ -98,6 +103,7 @@ VALKYRIE_BUILD_SCOPES: frozenset[str] = frozenset(
         "ting:workflow:coordinate",
         TOPOLOGY_PUSH_SCOPE,
         NODE_JOIN_SCOPE,
+        FORGE_PUSH_CALL_SCOPE,
     }
 )
 
@@ -393,6 +399,7 @@ def credential_allows_route(token: str, method: str, path: str) -> bool:
         ("PUT", r"/api/v1/niuu/observatory/fragments/[^/?%]+", "observatory:topology:push"),
         ("DELETE", r"/api/v1/niuu/observatory/fragments/[^/?%]+", "observatory:topology:push"),
         ("POST", r"/api/v1/niuu/guild/join", NODE_JOIN_SCOPE),
+        ("POST", r"/api/v1/forge/push/call", FORGE_PUSH_CALL_SCOPE),
     ]
     granted = credential_scopes(claims)
     return any(
@@ -450,6 +457,7 @@ def require_scope(scope: str, *alternatives: str) -> Callable[..., Awaitable[Non
 
 __all__ = [
     "FORGE_NOTIFY_SCOPE",
+    "FORGE_PUSH_CALL_SCOPE",
     "FORGE_SESSION_LIFECYCLE_SCOPE",
     "FORGE_SESSION_MESSAGE_SCOPE",
     "FORGE_SESSION_READ_SCOPE",

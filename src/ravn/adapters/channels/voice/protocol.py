@@ -25,6 +25,10 @@ VOICE_EPHEMERAL = "voice.ephemeral"
 GATEWAY_CREDENTIALS = "gateway.credentials"
 DICTATION_CREDENTIAL = "dictation.credential"
 MEMORY_ENROLLMENT = "memory.enrollment"
+CALL_PRESENCE = "call.presence"
+PUSH_REGISTER = "push.register"
+#: An event: the phone's one answer to a ``call.request``, never replied to.
+CALL_RESULT = "call.result"
 
 # Resident → client.
 AUTH_OK = "auth.ok"
@@ -40,6 +44,10 @@ SESSION_LOG_ACK = "session.log.ack"
 SESSION_ENDED = "session.ended"
 VOICE_EPHEMERAL_RESULT = "voice.ephemeral.result"
 GATEWAY_CREDENTIALS_RESULT = "gateway.credentials.result"
+CALL_PRESENCE_RESULT = "call.presence.result"
+PUSH_REGISTER_RESULT = "push.register.result"
+#: Sent on the resident's own initiative: ask the phone to call (see ``voice.calls``).
+CALL_REQUEST = "call.request"
 ERROR = "error"
 
 
