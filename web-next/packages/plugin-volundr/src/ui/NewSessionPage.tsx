@@ -20,6 +20,13 @@ import type { IVolundrService } from '../ports/IVolundrService';
 import type { SessionDefinition } from '../models/volundr.model';
 import { deriveCliTool, getDefinitionRune, validateSessionName } from './launchWizardModel';
 import {
+  PROVIDER_SETTINGS_PATH,
+  availableEngines,
+  launchModel,
+  quickLaunchIntegrationIds,
+  selectedEngineProvider,
+} from './launchEngines';
+import {
   defaultTargetId,
   quickLaunchName,
   quickLaunchSource,
@@ -89,6 +96,16 @@ export function NewSessionPage() {
     queryKey: ['volundr', 'targets'],
     queryFn: () => volundr.getTargets(),
   });
+  // The session carries the connected AI account that powers its engine and the
+  // Git account that lists the repository, as every other launch does.
+  const integrationsQuery = useQuery({
+    queryKey: ['volundr', 'integrations'],
+    queryFn: () => volundr.getIntegrations(),
+  });
+  const integrationCatalogQuery = useQuery({
+    queryKey: ['volundr', 'integration-catalog'],
+    queryFn: () => volundr.getIntegrationCatalog(),
+  });
   const reposQuery = useQuery({
     queryKey: ['niuu', 'repos'],
     queryFn: () => repoCatalog.getRepos(),
@@ -101,6 +118,13 @@ export function NewSessionPage() {
   const sessionsQuery = useSessionList();
 
   const definitions = useMemo(() => definitionsQuery.data ?? [], [definitionsQuery.data]);
+  const integrations = useMemo(() => integrationsQuery.data ?? [], [integrationsQuery.data]);
+  // Only engines this person can run: not Ting's batch or remote-control
+  // engines, and only those a connected provider powers.
+  const engines = useMemo(
+    () => availableEngines(definitions, integrations, integrationCatalogQuery.data ?? []),
+    [definitions, integrations, integrationCatalogQuery.data],
+  );
   const repos = useMemo(() => reposQuery.data ?? [], [reposQuery.data]);
   const personas = personasQuery.data ?? [];
   const targets = useMemo(
@@ -112,11 +136,19 @@ export function NewSessionPage() {
     [sessionsQuery.data],
   );
 
-  const selectedDefinition: SessionDefinition | undefined =
-    definitions.find((definition) => definition.key === definitionKey) ?? definitions[0];
+  const selectedEngine =
+    engines.find((engine) => engine.definition.key === definitionKey) ?? engines[0];
+  const selectedDefinition: SessionDefinition | undefined = selectedEngine?.definition;
+  const enginesPending =
+    definitionsQuery.isPending || integrationsQuery.isPending || integrationCatalogQuery.isPending;
   const sessionName = quickLaunchName('', repo);
   const nameError = validateSessionName(sessionName);
-  const loadError = definitionsQuery.error ?? targetsQuery.error ?? reposQuery.error;
+  const loadError =
+    definitionsQuery.error ??
+    targetsQuery.error ??
+    reposQuery.error ??
+    integrationsQuery.error ??
+    integrationCatalogQuery.error;
   const canStart =
     task.trim().length > 0 &&
     repo.trim().length > 0 &&
@@ -127,14 +159,23 @@ export function NewSessionPage() {
 
   async function handleStart() {
     if (!canStart) return;
+    const provider = selectedEngineProvider(selectedEngine, []);
     await launch(
       {
         name: sessionName,
         source: quickLaunchSource(false, repo, branch),
         definition: selectedDefinition,
+        model: launchModel(selectedEngine, provider, ''),
         instanceId: defaultTargetId(targets),
         initialPrompt: task,
         personaName,
+        integrationIds: quickLaunchIntegrationIds({
+          provider,
+          integrations,
+          repos,
+          repoUrl: repo.trim(),
+          local: false,
+        }),
       },
       backTo ? { returnTo: backTo } : {},
     );
@@ -242,13 +283,13 @@ export function NewSessionPage() {
           <span className="niuu:text-xs niuu:font-semibold niuu:text-text-primary">
             Who works on it
           </span>
-          {definitionsQuery.isPending ? <LoadingState label="Loading engines…" /> : null}
+          {enginesPending ? <LoadingState label="Loading engines…" /> : null}
           <div
             role="radiogroup"
             aria-label="Who works on it"
             className="niuu:grid niuu:grid-cols-1 niuu:gap-3 niuu:sm:grid-cols-3"
           >
-            {definitions.map((definition) => {
+            {engines.map(({ definition }) => {
               const active = definition.key === selectedDefinition?.key;
               return (
                 <button
@@ -283,9 +324,22 @@ export function NewSessionPage() {
               );
             })}
           </div>
-          {!definitionsQuery.isPending && definitions.length === 0 ? (
+          {!enginesPending && definitions.length === 0 ? (
             <p role="status" className="niuu:text-xs niuu:text-text-muted">
               No session engines are configured.
+            </p>
+          ) : null}
+          {!enginesPending && definitions.length > 0 && engines.length === 0 ? (
+            <p
+              role="status"
+              className="niuu:text-xs niuu:text-text-muted"
+              data-testid="new-session-no-provider"
+            >
+              None of your connected AI providers can run a session engine.{' '}
+              <a href={PROVIDER_SETTINGS_PATH} className="niuu:text-brand-300">
+                Connect one
+              </a>
+              .
             </p>
           ) : null}
         </div>

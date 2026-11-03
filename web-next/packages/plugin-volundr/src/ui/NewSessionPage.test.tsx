@@ -149,6 +149,16 @@ describe('NewSessionPage', () => {
     });
     expect(request.definition).toBe('skuldCodex');
     expect(request.initialPrompt).toBe('Fix the failing auth tests');
+    // The session carries the AI account that powers Codex, as every launch does.
+    const catalog = await service.getIntegrationCatalog();
+    const openaiSlugs = catalog
+      .filter((entry) => entry.integrationType === 'ai_provider' && entry.modelVendor === 'openai')
+      .map((entry) => entry.slug);
+    const openaiIds = (await service.getIntegrations())
+      .filter((connection) => openaiSlugs.includes(connection.slug))
+      .map((connection) => connection.id);
+    expect(openaiIds.length).toBeGreaterThan(0);
+    expect(request.integrationIds?.some((id) => openaiIds.includes(id))).toBe(true);
     await waitFor(() =>
       expect(navigate).toHaveBeenCalledWith({
         to: '/volundr/sessions/$sessionId',
