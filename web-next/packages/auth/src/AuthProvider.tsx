@@ -30,6 +30,22 @@ async function renew(mgr: UserManager, purpose: string): Promise<User | null> {
   }
 }
 
+/**
+ * Exchange each authorization code once. Keycloak treats a second exchange of the
+ * same code as a replay and revokes the session the first one created, so the
+ * next token refresh fails with "Session doesn't have required client". React
+ * runs effects twice in development, which would otherwise exchange it twice.
+ */
+const signinCallbacks = new Map<string, Promise<User>>();
+
+function completeSignin(mgr: UserManager, callbackSearch: string): Promise<User> {
+  const pending = signinCallbacks.get(callbackSearch);
+  if (pending) return pending;
+  const exchange = mgr.signinRedirectCallback();
+  signinCallbacks.set(callbackSearch, exchange);
+  return exchange;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const config = useConfig();
   const oidcConfig: OidcConfig | null = useMemo(() => getOidcConfig(config), [config]);
@@ -75,7 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const params = new URLSearchParams(window.location.search);
         if (params.has('code') || params.has('error')) {
-          const callbackUser = await mgr.signinRedirectCallback();
+          const callbackUser = await completeSignin(mgr, window.location.search);
           if (!cancelled) setUser(callbackUser);
           window.history.replaceState({}, document.title, window.location.pathname);
           if (!cancelled) setLoading(false);

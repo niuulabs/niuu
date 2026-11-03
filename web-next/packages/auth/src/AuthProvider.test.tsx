@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -243,6 +244,38 @@ describe('AuthProvider', () => {
     expect(token).toHaveTextContent('callback-token');
     expect(mockMgr.signinRedirectCallback).toHaveBeenCalled();
     expect(window.history.replaceState).toHaveBeenCalled();
+  });
+
+  it('exchanges an authorization code once when the callback runs twice', async () => {
+    Object.defineProperty(window, 'location', {
+      value: {
+        search: '?code=strict-mode-code&state=xyz',
+        pathname: '/',
+        origin: 'http://localhost:5173',
+      },
+      writable: true,
+    });
+    window.history.replaceState = vi.fn();
+
+    vi.mocked(getOidcConfig).mockReturnValue(oidcConfig);
+    const callbackUser = { expired: false, access_token: 'once-token' };
+    const mockMgr = createMockManager({
+      signinRedirectCallback: vi.fn().mockResolvedValue(callbackUser),
+    });
+    vi.mocked(getUserManager).mockReturnValue(mockMgr as never);
+
+    render(
+      <StrictMode>
+        <ConfigProvider value={baseConfig}>
+          <AuthProvider>
+            <AuthStatus />
+          </AuthProvider>
+        </ConfigProvider>
+      </StrictMode>,
+    );
+
+    expect(await screen.findByTestId('token')).toHaveTextContent('once-token');
+    expect(mockMgr.signinRedirectCallback).toHaveBeenCalledTimes(1);
   });
 
   it('calls signinRedirect when login is invoked', async () => {
