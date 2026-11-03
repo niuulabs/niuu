@@ -335,7 +335,10 @@ class CliTransportAgent(ExecutionAgentPort):
         self._turn_result_payload: dict[str, Any] = {}
         # Construction is configuration-only. Read the capability declaration
         # now so callers can inspect the canonical profile before ``start``.
-        self._harness_capabilities = self._create_transport().capabilities
+        # Probe without claiming a workflow thread: the real transport claims it.
+        self._harness_capabilities = self._construct_transport(
+            dict(self._transport_kwargs)
+        ).capabilities
         self._harness_turn_active = False
         self._harness_closed = False
 
@@ -875,6 +878,9 @@ class CliTransportAgent(ExecutionAgentPort):
             self._resumed_thread = self._claim_thread()
             if self._resumed_thread:
                 kwargs["resume_session_id"] = self._resumed_thread
+        return self._construct_transport(kwargs)
+
+    def _construct_transport(self, kwargs: dict[str, Any]) -> CLITransport:
         sig = inspect.signature(self._transport_binding.cls)
         filtered = {key: value for key, value in kwargs.items() if key in sig.parameters}
         return self._transport_binding.cls(**filtered)
