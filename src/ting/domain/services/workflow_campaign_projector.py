@@ -15,6 +15,7 @@ from ting.domain.services.workflow_campaign_lifecycle import (
     stop_terminal_campaign_session,
     terminal_session_cleanup_needed,
 )
+from ting.domain.workflow_snapshot import workflow_artifact_paths_from_snapshot
 from ting.ports.a2a_push import A2APushDispatcherPort
 from ting.ports.event_bus import EventBusPort, TingEvent
 from ting.ports.volundr import ActivityEvent, VolundrFactory
@@ -230,23 +231,39 @@ class WorkflowCampaignProjector:
         elif authoritative_completion is not None and (
             "delivery" not in event.metadata or delivery is not None
         ):
-            metadata = dict(campaign.metadata)
-            if delivery is not None:
-                metadata["delivery"] = delivery
-            await self._save_transition(
-                campaign,
-                WorkflowCampaignStatus.COMPLETED,
-                metadata=metadata,
+            missing_artifacts = _missing_required_planning_artifacts(
+                campaign, authoritative_completion
             )
+            if missing_artifacts:
+                await self._save_failure(
+                    campaign,
+                    _planning_artifact_publication_failure(missing_artifacts),
+                )
+            else:
+                metadata = dict(campaign.metadata)
+                if delivery is not None:
+                    metadata["delivery"] = delivery
+                await self._save_transition(
+                    campaign,
+                    WorkflowCampaignStatus.COMPLETED,
+                    metadata=metadata,
+                )
         elif event.session_status == "stopped":
             await self._save_transition(campaign, WorkflowCampaignStatus.BLOCKED)
         elif event.session_status in {"completed", "complete", "succeeded"}:
-            metadata = _with_delivery(campaign, event.metadata)
-            await self._save_transition(
-                campaign,
-                WorkflowCampaignStatus.COMPLETED,
-                metadata=metadata,
-            )
+            missing_artifacts = _missing_required_planning_artifacts(campaign, None)
+            if missing_artifacts:
+                await self._save_failure(
+                    campaign,
+                    _planning_artifact_publication_failure(missing_artifacts),
+                )
+            else:
+                metadata = _with_delivery(campaign, event.metadata)
+                await self._save_transition(
+                    campaign,
+                    WorkflowCampaignStatus.COMPLETED,
+                    metadata=metadata,
+                )
         elif campaign.status == WorkflowCampaignStatus.PENDING and event.state in {
             "active",
             "idle",
@@ -348,6 +365,17 @@ class WorkflowCampaignProjector:
 
         if next_status == WorkflowCampaignStatus.FAILED:
             await self._save_failure(campaign, activity_metadata, session_name=session.name)
+            return
+        completion = (
+            authoritative_completion if next_status == WorkflowCampaignStatus.COMPLETED else None
+        )
+        missing_artifacts = _missing_required_planning_artifacts(campaign, completion)
+        if missing_artifacts:
+            await self._save_failure(
+                campaign,
+                _planning_artifact_publication_failure(missing_artifacts),
+                session_name=session.name,
+            )
             return
         await self._save_transition(
             campaign,
@@ -591,6 +619,42 @@ def _record_a2a_state_transition(campaign: WorkflowCampaign) -> None:
         description="Time from A2A SendMessage campaign creation to terminal state.",
     )
 
+
+
+def _missing_required_planning_artifacts(
+    campaign: WorkflowCampaign,
+    completion: dict | None,
+) -> tuple[str, ...]:
+    """Return declared plan artifacts absent from a terminal runtime proof."""
+    snapshot = campaign.workflow_snapshot
+    graph = snapshot.get("graph") if isinstance(snapshot, dict) else None
+    if not isinstance(graph, dict) or graph.get("executionContract") != "developer-planning/v1":
+        return ()
+
+    artifact_slug = str(campaign.metadata.get("a2a_workflow_slug") or campaign.slug).strip()
+    declared = tuple(
+        workflow_artifact_paths_from_snapshot(campaign.workflow_snapshot, slug=artifact_slug)
+    )
+    if not declared:
+        return ()
+    actual = completion.get("artifact_paths") if isinstance(completion, dict) else []
+    actual_paths = (
+        {str(path).strip() for path in actual if isinstance(path, str)}
+        if isinstance(actual, list)
+        else set()
+    )
+    return tuple(path for path in declared if path not in actual_paths)
+
+
+def _planning_artifact_publication_failure(missing_artifacts: tuple[str, ...]) -> dict[str, object]:
+    """Build a traceable terminal failure without exposing plan content."""
+    missing = ", ".join(missing_artifacts)
+    return {
+        "error": f"Approved planning artifact was not durably published: {missing}",
+        "failure_workflow_node_id": "planning-complete",
+        "failure_kind": "artifact_publication",
+        "failure_reason_supplied": True,
+    }
 
 def _with_delivery(campaign: WorkflowCampaign, activity_metadata: dict) -> dict:
     metadata = dict(campaign.metadata)

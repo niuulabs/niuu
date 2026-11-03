@@ -2910,6 +2910,54 @@ class TestTaskArtifacts:
         )
         return client, campaign
 
+    def test_completed_planning_task_keeps_authorized_approved_plan_durable(
+        self, tmp_path: Path
+    ) -> None:
+        workflow = _mimir_workflow(tmp_path)
+        workflow.graph["executionContract"] = "developer-planning/v1"
+        workflow.graph["artifactPaths"] = ["planning/{slug}/approved-plan.md"]
+        campaign = _make_campaign(
+            slug=self._SLUG,
+            status=WorkflowCampaignStatus.COMPLETED,
+            metadata={"a2a_workflow_slug": self._SLUG},
+            workflow_snapshot=build_workflow_snapshot(workflow),
+        )
+        plan_path = f"planning/{self._SLUG}/approved-plan.md"
+        plan = """# Approved plan
+
+Revision: plan-7
+
+Scope: durable A2A projection.
+
+Acceptance: authorized reads survive restart.
+
+Reviews: architecture pass; correctness pass; security pass.
+"""
+        artifact_dir = tmp_path / "wiki" / "planning" / self._SLUG
+        artifact_dir.mkdir(parents=True)
+        (artifact_dir / "approved-plan.md").write_text(plan, encoding="utf-8")
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+            settings=Settings(auth=AuthConfig(allow_anonymous_dev=False)),
+        )
+
+        first = _rpc(client, "GetTask", {"id": campaign.slug})
+        second = _rpc(client, "GetTask", {"id": campaign.slug})
+        denied = _rpc(
+            client,
+            "GetTask",
+            {"id": campaign.slug},
+            headers=_headers(user_id="other-user"),
+        )
+
+        assert first.json()["result"]["status"]["state"] == "TASK_STATE_COMPLETED"
+        first_artifact = first.json()["result"]["artifacts"][0]
+        assert first_artifact["artifactId"] == plan_path
+        assert first_artifact["parts"][0]["text"] == plan
+        assert second.json()["result"]["artifacts"] == first.json()["result"]["artifacts"]
+        assert "error" in denied.json()
+
+
     def test_artifact_at_inline_threshold_is_text_part(self, tmp_path: Path) -> None:
         client, campaign = self._client_with_files(
             tmp_path,

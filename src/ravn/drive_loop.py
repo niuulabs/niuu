@@ -4394,6 +4394,12 @@ class DriveLoop:
             allowed_topics = self._workflow_allowed_outcomes_resolver(task, persona_config)
 
         page_write_fields = task.tool_outcomes.get(_MIMIR_PAGE_WRITTEN_OUTCOME) or {}
+        written_page_path = str(page_write_fields.get("page_path") or "").strip()
+        if written_page_path:
+            # This reference is supplied by the successful Mímir tool result,
+            # never by the model's outcome. Workflow terminals use it to prove
+            # that a declared artifact was actually persisted before completion.
+            outcome_fields["artifact_paths"] = [written_page_path]
         verdict = str(
             outcome_fields.get("verdict", "") or outcome_fields.get("decision", "") or ""
         ).strip()

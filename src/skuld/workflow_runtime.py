@@ -373,6 +373,8 @@ def _merge_workflow_terminal_outcomes(outcomes: list[dict[str, Any]]) -> dict[st
     tests: list[bool] = []
     scope_values: list[float] = []
     checks: list[dict[str, Any]] = []
+    artifact_paths: list[str] = []
+    seen_artifact_paths: set[str] = set()
 
     for outcome in outcomes:
         event_type = str(outcome.get("event_type") or "").strip()
@@ -402,6 +404,18 @@ def _merge_workflow_terminal_outcomes(outcomes: list[dict[str, Any]]) -> dict[st
         if isinstance(candidate_scope, (int, float)):
             scope_values.append(float(candidate_scope))
 
+        fields = outcome.get("fields")
+        candidate_artifacts = fields.get("artifact_paths") if isinstance(fields, dict) else None
+        if isinstance(candidate_artifacts, list):
+            for artifact_path in candidate_artifacts:
+                if not isinstance(artifact_path, str):
+                    continue
+                normalized_path = artifact_path.strip()
+                if not normalized_path or normalized_path in seen_artifact_paths:
+                    continue
+                seen_artifact_paths.add(normalized_path)
+                artifact_paths.append(normalized_path)
+
         checks.append(
             {
                 "persona": persona,
@@ -423,6 +437,8 @@ def _merge_workflow_terminal_outcomes(outcomes: list[dict[str, Any]]) -> dict[st
         merged["tests_passing"] = all(tests)
     if scope_values:
         merged["scope_adherence"] = min(scope_values)
+    if artifact_paths:
+        merged["artifact_paths"] = artifact_paths
     # A child workflow's final coordinator emits the typed, unsigned result.
     # Preserve only this explicitly named object. Ting independently projects
     # authenticated reviewer outcomes into signed receipts before the result

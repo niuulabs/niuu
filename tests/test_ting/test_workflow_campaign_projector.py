@@ -25,13 +25,18 @@ def _campaign(
     status: WorkflowCampaignStatus = WorkflowCampaignStatus.RUNNING,
     connection_id: str | None = None,
     completion_event: str = "",
+    execution_contract: str = "",
+    artifact_paths: list[str] | None = None,
 ) -> WorkflowCampaign:
     now = datetime.now(UTC)
     workflow_snapshot: dict = {}
     if completion_event:
-        workflow_snapshot = {
-            "graph": {"nodes": [{"id": "done", "kind": "end", "completionEvent": completion_event}]}
-        }
+        graph = {"nodes": [{"id": "done", "kind": "end", "completionEvent": completion_event}]}
+        if execution_contract:
+            graph["executionContract"] = execution_contract
+        if artifact_paths is not None:
+            graph["artifactPaths"] = artifact_paths
+        workflow_snapshot = {"graph": graph}
     return WorkflowCampaign(
         id=uuid4(),
         slug="tool-build-test",
@@ -415,6 +420,70 @@ def _authoritative_delivery_metadata(delivery: dict) -> dict:
         "outcome_valid": True,
         "delivery": delivery,
     }
+
+
+@pytest.mark.asyncio
+async def test_planning_completion_requires_published_plan_artifact() -> None:
+    campaign = _campaign(
+        completion_event="developer.plan.approved",
+        execution_contract="developer-planning/v1",
+        artifact_paths=["planning/{slug}/approved-plan.md"],
+    )
+    projector, repo, _ = _projector(_Adapter())
+    repo.get_active_campaign_by_session.return_value = campaign
+
+    await projector.handle_activity(
+        ActivityEvent(
+            campaign.session_id,
+            "idle",
+            {
+                "completion_source": "ravn_flock",
+                "completion_event_type": "developer.plan.approved",
+                "completion_peer_id": "workflow-stop:planning-complete",
+                "outcome_valid": True,
+                "structured_outcome": {
+                    "authoritative": True,
+                    "artifact_paths": ["planning/tool-build-test/approved-plan.md"],
+                },
+            },
+            campaign.owner_id,
+        ),
+        campaign.owner_id,
+    )
+
+    saved = repo.save_campaign.await_args.args[0]
+    assert saved.status is WorkflowCampaignStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_planning_completion_fails_when_plan_artifact_was_not_published() -> None:
+    campaign = _campaign(
+        completion_event="developer.plan.approved",
+        execution_contract="developer-planning/v1",
+        artifact_paths=["planning/{slug}/approved-plan.md"],
+    )
+    projector, repo, _ = _projector(_Adapter())
+    repo.get_active_campaign_by_session.return_value = campaign
+
+    await projector.handle_activity(
+        ActivityEvent(
+            campaign.session_id,
+            "idle",
+            {
+                "completion_source": "ravn_flock",
+                "completion_event_type": "developer.plan.approved",
+                "completion_peer_id": "workflow-stop:planning-complete",
+                "outcome_valid": True,
+                "structured_outcome": {"authoritative": True},
+            },
+            campaign.owner_id,
+        ),
+        campaign.owner_id,
+    )
+
+    saved = repo.save_campaign.await_args.args[0]
+    assert saved.status is WorkflowCampaignStatus.FAILED
+    assert "durably published" in saved.metadata["failure_error"]
 
 
 @pytest.mark.asyncio

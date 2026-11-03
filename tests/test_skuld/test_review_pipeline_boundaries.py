@@ -563,11 +563,13 @@ def test_workflow_terminal_preserves_only_explicit_child_result_object():
                         "candidateSha": "a" * 40,
                     },
                     "untrustedExtra": "discarded",
+                    "artifact_paths": ["planning/task/approved-plan.md"],
                 },
             }
         ]
     )
 
+    assert result["artifact_paths"] == ["planning/task/approved-plan.md"]
     assert result["result"] == {
         "attemptId": "attempt-1",
         "candidateSha": "a" * 40,

@@ -2064,6 +2064,9 @@ page_path: council
             canonical_event.payload["fields"]["page_path"]
             == "council/example/opinions/opinion-b.md"
         )
+        assert canonical_event.payload["fields"]["artifact_paths"] == [
+            "council/example/opinions/opinion-b.md"
+        ]
         assert canonical_event.payload["valid"] is True
         assert alias_topic == "council.b.opinion.submitted"
         assert alias_event.payload["event_type"] == "council.b.opinion.submitted"
