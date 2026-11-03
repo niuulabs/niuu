@@ -3,6 +3,11 @@
 Layout: ``{root}/{session_id}/{file_id}/content`` plus ``meta.json`` beside it. The
 content is written to a temporary file and renamed into place, so a reader never sees
 a partial file. Directories are private to the Forge user.
+
+The store serves **one Forge process**: its :meth:`exclusive` section is an in-process
+lock, so a second process writing the same directory could overrun the quota. A mini
+Forge is one process; a cluster Forge (several replicas, or two pods during a rolling
+update) uses ``postgres_presented_files.PostgresPresentedFileStore``.
 """
 
 from __future__ import annotations
@@ -13,6 +18,8 @@ import json
 import os
 import shutil
 import tempfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
@@ -21,6 +28,7 @@ from volundr.domain.presented_files import (
     PresentedFile,
     PresentedFileConflictError,
     PresentedFileStore,
+    PresentedFileStoreUnavailableError,
     is_presented_file_id,
 )
 
@@ -32,8 +40,43 @@ _META = "meta.json"
 class LocalPresentedFileStore(PresentedFileStore):
     """Store presented files under a local directory."""
 
-    def __init__(self, root: str = "~/.niuu/presented-files") -> None:
+    def __init__(self, root: str = "~/.niuu/presented-files", pool: object = None) -> None:
+        # ``pool``: the composition root hands every store Forge's database pool; a
+        # local directory needs none.
         self._root = Path(root).expanduser()
+        self._lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def exclusive(self) -> AsyncIterator[None]:
+        async with self._lock:
+            yield
+
+    async def ensure_capacity(self, max_total_bytes: int) -> None:
+        await asyncio.to_thread(self._ensure_capacity, max_total_bytes, None)
+
+    def _ensure_capacity(self, max_total_bytes: int, used: int | None) -> None:
+        """The root must be a writable directory whose free space, plus what copies
+        already use (``used``; ``None`` sums the directory), holds ``max_total_bytes``."""
+        try:
+            self._root.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
+            fd, probe = tempfile.mkstemp(dir=self._root, prefix=".probe-")
+            os.close(fd)
+            os.unlink(probe)
+            free = shutil.disk_usage(self._root).free
+        except OSError as exc:
+            raise PresentedFileStoreUnavailableError(
+                f"presented_files.store.root {str(self._root)!r} is not a writable "
+                f"directory ({exc}); point it at a persistent volume Forge can write"
+            ) from exc
+        if used is None:
+            used = self._total_bytes()
+        if free + used < max_total_bytes:
+            raise PresentedFileStoreUnavailableError(
+                f"presented_files.max_total_bytes={max_total_bytes} does not fit "
+                f"presented_files.store.root {str(self._root)!r}: {free} bytes free plus "
+                f"{used} already stored. Lower max_total_bytes or give the store a "
+                "larger volume."
+            )
 
     def _dir(self, session_id: UUID, file_id: str) -> Path:
         if not is_presented_file_id(file_id):

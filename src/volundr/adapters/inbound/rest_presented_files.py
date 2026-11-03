@@ -108,7 +108,7 @@ def create_presented_files_router(
         mime = (request.headers.get("content-type") or "").split(";")[0].strip()
         mime = mime or "application/octet-stream"
         try:
-            async with quota.lock:
+            async with store.exclusive():
                 await quota.admit(store, session_id, file_id, len(data))
                 record = await store.put(session_id, file_id, name=name, mime=mime, data=data)
         except PresentedFileQuotaError as exc:

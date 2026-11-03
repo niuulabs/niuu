@@ -34,7 +34,7 @@ from uuid import UUID
 from niuu.domain.artifact_reports import REPORT_ARTIFACT_TOOL_NAME, report_from_turn
 from niuu.domain.notifications import NOTIFICATION_TURN_KIND
 from volundr.domain.models import SessionLogEntry
-from volundr.domain.presented_files import validate_public_base_url
+from volundr.domain.presented_files import presented_file_path, recorded_durable_url
 
 #: Fixed namespaces: ids derived from an occurrence are stable across replays, restarts and
 #: releases. ``NS_BURST`` is the platform reference's (``platform/api/bursts.py``).
@@ -454,9 +454,12 @@ def suppression_bounds(
 
 
 def publications_from_entry(
-    entry: SessionLogEntry, catalog: TypeCatalog
+    entry: SessionLogEntry, catalog: TypeCatalog, *, presented_file_base_url: str = ""
 ) -> list[PublicationCandidate]:
-    """Every publication one stored log row carries (often none). Never raises."""
+    """Every publication one stored log row carries (often none). Never raises.
+
+    ``presented_file_base_url`` is ``presented_files.public_base_url``: a present_file
+    turn's recorded URL is kept only when it is this Forge's own URL for the file."""
     payload = entry.payload
     if not isinstance(payload, dict):
         return []
@@ -465,7 +468,7 @@ def publications_from_entry(
             found = _from_hook(entry, payload, catalog)
             return [found] if found is not None else []
         if payload.get("type") == TURN_KIND:
-            return _from_turn(entry, payload)
+            return _from_turn(entry, payload, presented_file_base_url)
     except (TypeError, ValueError, AttributeError):
         return []
     return []
@@ -544,7 +547,9 @@ def _from_hook(
     )
 
 
-def _from_turn(entry: SessionLogEntry, payload: dict) -> list[PublicationCandidate]:
+def _from_turn(
+    entry: SessionLogEntry, payload: dict, presented_file_base_url: str
+) -> list[PublicationCandidate]:
     turn = payload.get("turn")
     if not isinstance(turn, dict):
         return []
@@ -556,7 +561,7 @@ def _from_turn(entry: SessionLogEntry, payload: dict) -> list[PublicationCandida
             continue
         name = part.get("name")
         if name == PRESENT_FILE_TOOL_NAME:
-            presented = _present_file(entry, part, ordinal)
+            presented = _present_file(entry, part, ordinal, presented_file_base_url)
             if presented is not None:
                 found.append(presented)
                 ordinal += 1
@@ -589,18 +594,9 @@ def _from_turn(entry: SessionLogEntry, payload: dict) -> list[PublicationCandida
     return found
 
 
-def _durable_url(value: Any) -> str | None:
-    """A present_file turn's durable URL (F2), only if it is a valid tailnet http(s) URL."""
-    url = _text(value)
-    if not url:
-        return None
-    try:
-        return validate_public_base_url(url) or None
-    except ValueError:
-        return None
-
-
-def _present_file(entry: SessionLogEntry, part: dict, ordinal: int) -> PublicationCandidate | None:
+def _present_file(
+    entry: SessionLogEntry, part: dict, ordinal: int, base_url: str
+) -> PublicationCandidate | None:
     tool_input = part.get("input")
     tool_input = tool_input if isinstance(tool_input, dict) else {}
     file_id = _text(tool_input.get("file_id")) or _text(part.get("id"))
@@ -614,9 +610,10 @@ def _present_file(entry: SessionLogEntry, part: dict, ordinal: int) -> Publicati
         provider=Provider.FORGE_FILE,
         provider_key=file_id,
         at=_aware(entry.ts),
-        # F2: the durable, phone-reachable URL the broker recorded, else the route.
-        url=_durable_url(tool_input.get("url"))
-        or f"/api/v1/forge/sessions/{entry.session_id}/files/presented/{file_id}",
+        # F2: the durable URL the broker recorded when it is this Forge's own URL for
+        # this file, else the relative route.
+        url=recorded_durable_url(_text(tool_input.get("url")), base_url, entry.session_id, file_id)
+        or presented_file_path(entry.session_id, file_id),
         title=_text(tool_input.get("name")),
         tool_use_id=file_id,
         artifact_type=ArtifactType.FILE,

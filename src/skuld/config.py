@@ -721,8 +721,16 @@ class ForgeMcpConfig(BaseModel):
         default="",
         description=(
             "Scoped session-bound Forge token (SKULD__FORGE_MCP__TOKEN), minted by Forge "
-            "at launch. Used only as the bearer for MCP-proxied Forge calls; empty uses "
-            "the broker's own credential (and offers no grants)."
+            "at launch. The bearer for MCP-proxied Forge calls and durable presented-file "
+            "uploads; empty uses the broker's own credential (and offers no grants)."
+        ),
+    )
+    token_file: str = Field(
+        default="",
+        description=(
+            "File holding the session token, for session pods where Forge mounts it "
+            "from a Kubernetes Secret instead of the environment. Read once at start; "
+            "a missing or empty file is fatal. Ignored when token is set."
         ),
     )
     runtime_dir: str = Field(
@@ -805,6 +813,23 @@ class ForgeMcpConfig(BaseModel):
         if value.strip().startswith("["):
             return json.loads(value)
         return [part.strip() for part in value.split(",") if part.strip()]
+
+    @model_validator(mode="after")
+    def _token_from_file(self) -> "ForgeMcpConfig":
+        if self.token or not self.token_file:
+            return self
+        path = Path(self.token_file).expanduser()
+        try:
+            token = path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise ValueError(
+                f"forge_mcp.token_file {str(path)!r} cannot be read ({exc}); Forge mounts "
+                "the session credential there, so the session pod is missing its Secret"
+            ) from exc
+        if not token:
+            raise ValueError(f"forge_mcp.token_file {str(path)!r} is empty")
+        self.token = token
+        return self
 
 
 class CodexAuthConfig(BaseModel):

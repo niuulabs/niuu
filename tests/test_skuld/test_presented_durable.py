@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from skuld.config import PresentedDurableConfig
+from skuld.config import ForgeMcpConfig, PresentedDurableConfig
 from skuld.presented_durable import (
     DURABLE_MARKER,
     PENDING_MARKER,
@@ -25,7 +25,7 @@ from skuld.presented_durable import (
 URL = "http://thor.tail737f2a.ts.net:8380/api/v1/forge/sessions/s/files/presented/pf_x"
 
 
-def _broker(response=None, exc=None, *, api="http://forge", retry_attempts=2):
+def _broker(response=None, exc=None, *, api="http://forge", retry_attempts=2, token=""):
     client = MagicMock()
     if exc is not None:
         client.put = AsyncMock(side_effect=exc)
@@ -40,7 +40,8 @@ def _broker(response=None, exc=None, *, api="http://forge", retry_attempts=2):
                 retry_attempts=retry_attempts,
                 retry_backoff_seconds=0.001,
                 retry_backoff_max_seconds=0.002,
-            )
+            ),
+            forge_mcp=ForgeMcpConfig(token=token),
         ),
         client=client,
     )
@@ -76,6 +77,17 @@ async def test_upload_puts_bytes_and_writes_the_receipt(staged):
     # Already durable: no second upload.
     await upload_presented_file(broker, "pf_x", staged, name="n", mime="m")
     assert broker.client.put.await_count == 1
+    # Without a session credential the broker's own client credential is used.
+    assert "Authorization" not in call.kwargs["headers"]
+
+
+async def test_upload_authenticates_with_the_session_credential(staged):
+    # On a cluster the session credential is the only bearer that always reaches Forge:
+    # a browser login expires and a headless session has none.
+    broker = _broker(_ok(), token="session-token")
+    await upload_presented_file(broker, "pf_x", staged, name="n", mime="m")
+    headers = broker.client.put.await_args.kwargs["headers"]
+    assert headers["Authorization"] == "Bearer session-token"
 
 
 @pytest.mark.parametrize(

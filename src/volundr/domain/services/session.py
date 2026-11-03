@@ -44,6 +44,7 @@ from volundr.domain.models import (
     SessionSpec,
     SessionStatus,
     TenantRole,
+    _merge_pod_specs,
 )
 from volundr.domain.ports import (
     AuthorizationPort,
@@ -78,6 +79,7 @@ from volundr.domain.services.forge_session_launch import (
     without_forge_mcp,
 )
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
+from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjectionPort
 
 if TYPE_CHECKING:
     from niuu.ports.user_integration import UserIntegrationPort
@@ -190,7 +192,15 @@ class SessionService:
         audit_repository: AuditRepository | None = None,
         user_integration: UserIntegrationPort | None = None,
         presented_file_store: PresentedFileStore | None = None,
+        forge_session_projection: ExecutionCredentialProjectionPort | None = None,
     ):
+        if forge_session_projection is not None and not forge_session_projection.supports(
+            runtime_backend
+        ):
+            raise ValueError(
+                "forge_mcp.session_tokens.projection_adapter does not support runtime "
+                f"backend {runtime_backend!r}; configure a projection for that backend"
+            )
         self._repository = repository
         self._presented_file_store = presented_file_store
         self._pod_manager = pod_manager
@@ -214,6 +224,7 @@ class SessionService:
         self._span_repository = span_repository
         self._notification_recorder = notification_recorder
         self._forge_session_tokens = forge_session_tokens
+        self._forge_session_projection = forge_session_projection
         self._forge_mcp_default_grants = frozenset(normalize_grants(forge_mcp_default_grants))
         self._forge_mcp_role_grants = {
             role: frozenset(normalize_grants(grants))
@@ -1569,7 +1580,7 @@ class SessionService:
             contributions.append(contribution)
 
         spec = SessionSpec.merge(contributions)
-        spec.forge_session = self._mint_forge_session(session)
+        spec.forge_session = await self._deliver_forge_session(session, spec)
         if session.coordination and (
             project_context := session.workload_config.get("project_context")
         ):
@@ -1745,11 +1756,44 @@ class SessionService:
                 return spec
         return self._launch_spec_provider.get_default("session")
 
+    @property
+    def delivers_forge_session(self) -> bool:
+        """Whether a launched broker receives its session credential: the pod manager
+        hands it over itself, or a projection mounts it into the session pod."""
+        if self._forge_session_tokens is None:
+            return False
+        if getattr(self._pod_manager, "delivers_forge_session_token", False):
+            return True
+        return self._forge_session_projection is not None
+
+    async def _deliver_forge_session(
+        self, session: Session, spec: SessionSpec
+    ) -> IssuedForgeSessionToken | None:
+        """Mint this launch's credential and hand it to the broker.
+
+        A pod manager that delivers it itself gets it on the spec (never in values).
+        Otherwise the projection publishes it (a Kubernetes Secret) and the spec only
+        names the mounted file, so the token never enters values or a manifest.
+        """
+        credential = self._mint_forge_session(session)
+        if credential is None:
+            return None
+        if getattr(self._pod_manager, "delivers_forge_session_token", False):
+            return credential
+        projected = await self._forge_session_projection.project(
+            session_id=session.id,
+            token=credential.token,
+            runtime_backend=self._runtime_backend,
+        )
+        spec.pod_spec = _merge_pod_specs(spec.pod_spec, projected.pod_spec)
+        forge_mcp = spec.values.setdefault("forgeMcp", {})
+        forge_mcp["tokenFile"] = projected.token_file
+        forge_mcp["grants"] = sorted(grant.value for grant in credential.grants)
+        return None
+
     def _mint_forge_session(self, session: Session) -> IssuedForgeSessionToken | None:
         """Mint this launch's scoped credential, when a broker can receive one."""
-        if self._forge_session_tokens is None:
-            return None
-        if not getattr(self._pod_manager, "delivers_forge_session_token", False):
+        if not self.delivers_forge_session:
             return None
         launch_id = launch_id_of(session.workload_config)
         if launch_id is None:
@@ -1811,8 +1855,12 @@ class SessionService:
     ) -> None:
         """Run contributor cleanup in reverse config order.
 
-        Failures are logged but don't block other contributors.
+        Contributor failures are logged but don't block other contributors. The
+        projected session credential is removed first, and a failure to remove it
+        raises.
         """
+        if self._forge_session_projection is not None:
+            await self._forge_session_projection.remove(session.id)
         if self._communication_route_repository is not None:
             try:
                 await self._communication_route_repository.deactivate_routes_for_session(session.id)

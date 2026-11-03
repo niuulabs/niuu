@@ -5,19 +5,22 @@ served only while the broker runs, so a link to it dies with the session. Forge 
 its own durable copy of every presented file, keyed by ``(session_id, file_id)``, and
 serves it whether or not the session is still running.
 
-Each copy has an absolute URL on the host's tailnet name (``Artifact.url``: http(s),
-a ``*.ts.net`` MagicDNS name or a Tailscale address, never ``*.xteo.mesh`` or anything
-public), so a phone on the tailnet opens it in Safari and nothing else can.
+Each copy may have an absolute URL (``Artifact.url``) on an origin where access is
+controlled: the host's tailnet name (a ``*.ts.net`` MagicDNS name or a Tailscale
+address, ``public_access: tailnet``), or the Forge's own https origin behind the
+platform's OIDC (``public_access: authenticated``, a cluster Forge). Without one, the
+file keeps its relative route.
 """
 
 from __future__ import annotations
 
-import asyncio
 import ipaddress
 import re
 from abc import ABC, abstractmethod
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 from uuid import UUID
@@ -25,13 +28,27 @@ from uuid import UUID
 from niuu.domain.presented_files import PRESENTED_FILE_ID_PATTERN
 
 _PRESENTED_FILE_ID = re.compile(PRESENTED_FILE_ID_PATTERN)
-#: Durable presented files are user content: their URLs may only name a Tailscale host,
-#: so a link never resolves to anything public.
+#: Durable presented files are user content: their URLs name only an origin where access
+#: is controlled, so a link never resolves to anything open to the public.
 _TAILNET_NAME_SUFFIX = ".ts.net"
 _TAILNET_NETWORKS = (
     ipaddress.ip_network("100.64.0.0/10"),
     ipaddress.ip_network("fd7a:115c:a1e0::/48"),
 )
+
+
+class PresentedFilesAccess(StrEnum):
+    """What controls access to ``presented_files.public_base_url``."""
+
+    #: The tailnet: a ``*.ts.net`` name or a Tailscale address (a mini Forge such as Thor).
+    TAILNET = "tailnet"
+    #: The platform's OIDC: an https origin where every request passes Envoy's JWT check
+    #: (a cluster Forge). Forge's own identity must authenticate, never allow-all.
+    AUTHENTICATED = "authenticated"
+
+
+class PresentedFileStoreUnavailableError(RuntimeError):
+    """The configured store cannot hold what ``presented_files`` asks of it (fatal at start)."""
 
 
 class PresentedFileConflictError(ValueError):
@@ -53,9 +70,11 @@ class PresentedFileQuotaError(Exception):
 class PresentedFileQuota:
     """The host's total budget for durable copies (LEX-1514).
 
-    ``admit`` and the store write it guards run under one lock, so two uploads cannot
-    both fit into the last free bytes. A refusal raises and is counted; nothing is ever
-    evicted to make room: copies go only with their session's delete.
+    ``admit`` and the store write it guards run inside the store's
+    :meth:`PresentedFileStore.exclusive` section, so two uploads cannot both fit into
+    the last free bytes, whichever Forge replica takes them. A refusal raises and is
+    counted; nothing is ever evicted to make room: copies go only with their session's
+    delete.
     """
 
     def __init__(self, max_total_bytes: int) -> None:
@@ -63,14 +82,13 @@ class PresentedFileQuota:
             raise ValueError("presented_files.max_total_bytes must be positive")
         self.max_total_bytes = max_total_bytes
         self.refusals = 0
-        self.lock = asyncio.Lock()
 
     async def admit(
         self, store: PresentedFileStore, session_id: UUID, file_id: str, size: int
     ) -> None:
         """Raise :class:`PresentedFileQuotaError` when this new copy does not fit.
 
-        Call with :attr:`lock` held, and keep it held through the write. Re-storing an
+        Call inside ``store.exclusive()`` and keep it through the write. Re-storing an
         id that is already stored adds nothing, so it is always admitted.
         """
         if await store.get(session_id, file_id) is not None:
@@ -128,6 +146,16 @@ class PresentedFileStore(ABC):
     async def total_bytes(self) -> int:
         """Bytes of every copy currently stored (the quota's usage)."""
 
+    @abstractmethod
+    def exclusive(self) -> AbstractAsyncContextManager[None]:
+        """The section quota admission and :meth:`put` run in, exclusive across every
+        Forge process that writes this store."""
+
+    @abstractmethod
+    async def ensure_capacity(self, max_total_bytes: int) -> None:
+        """Raise :class:`PresentedFileStoreUnavailableError` unless the store is writable
+        and can hold ``max_total_bytes`` of copies (checked once, at start)."""
+
 
 def is_tailnet_host(host: str) -> bool:
     """A ``*.ts.net`` MagicDNS name, or an address in Tailscale's ranges."""
@@ -139,22 +167,38 @@ def is_tailnet_host(host: str) -> bool:
     return any(address in network for network in _TAILNET_NETWORKS)
 
 
-def validate_public_base_url(value: str) -> str:
-    """Normalize the configured base URL; empty means "no absolute URL"."""
+def validate_public_base_url(
+    value: str, access: PresentedFilesAccess = PresentedFilesAccess.TAILNET
+) -> str:
+    """Normalize the configured base URL; empty means "no absolute URL".
+
+    ``tailnet`` accepts only a Tailscale host. ``authenticated`` accepts only https: the
+    origin is reachable from anywhere, so its bytes and bearer must never travel in
+    clear. Whether that origin really authenticates is the operator's declaration,
+    checked against Forge's identity adapter at start (``Settings``).
+    """
     value = (value or "").strip().rstrip("/")
     if not value:
         return ""
     parts = urlsplit(value)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise ValueError("presented_files.public_base_url must be an http(s) URL with a host")
+    if parts.query or parts.fragment:
+        raise ValueError("presented_files.public_base_url must not carry a query or fragment")
+    if access is PresentedFilesAccess.AUTHENTICATED:
+        if parts.scheme != "https":
+            raise ValueError(
+                "presented_files.public_access: authenticated needs an https "
+                f"presented_files.public_base_url; got {parts.scheme!r}"
+            )
+        return value
     if not is_tailnet_host(parts.hostname):
         raise ValueError(
             "presented_files.public_base_url must name this host on the tailnet (a *.ts.net "
-            "MagicDNS name or a 100.64.0.0/10 / fd7a:115c:a1e0::/48 address), never a public "
-            f"or *.xteo.mesh name; got {parts.hostname!r}"
+            "MagicDNS name or a 100.64.0.0/10 / fd7a:115c:a1e0::/48 address); got "
+            f"{parts.hostname!r}. For a Forge behind the platform's OIDC (a cluster), set "
+            "presented_files.public_access: authenticated and its own https origin."
         )
-    if parts.query or parts.fragment:
-        raise ValueError("presented_files.public_base_url must not carry a query or fragment")
     return value
 
 
@@ -166,9 +210,26 @@ def presented_file_path(session_id: UUID, file_id: str, *, prefix: str = "/api/v
 def durable_file_url(
     public_base_url: str, session_id: UUID, file_id: str, *, prefix: str = "/api/v1/forge"
 ) -> str | None:
-    """The absolute, phone-reachable URL of a presented file, or ``None`` when no base
-    URL is configured (callers then keep the relative route)."""
-    base = validate_public_base_url(public_base_url)
+    """The absolute URL of a presented file, or ``None`` when no base URL is configured
+    (callers then keep the relative route). ``public_base_url`` is the validated
+    ``presented_files.public_base_url``."""
+    base = (public_base_url or "").strip().rstrip("/")
     if not base:
         return None
     return base + presented_file_path(session_id, file_id, prefix=prefix)
+
+
+def recorded_durable_url(
+    recorded: str | None, public_base_url: str, session_id: UUID, file_id: str
+) -> str | None:
+    """The absolute URL a ``present_file`` turn recorded, only when it is exactly this
+    Forge's own URL for that very file.
+
+    The turn is written by the session, so its ``url`` is never trusted as a link: one
+    that names any other host, session or file, or an origin this Forge is no longer
+    configured with, is dropped and the relative route is kept.
+    """
+    expected = durable_file_url(public_base_url, session_id, file_id)
+    if expected is None or not recorded:
+        return None
+    return expected if recorded.strip() == expected else None

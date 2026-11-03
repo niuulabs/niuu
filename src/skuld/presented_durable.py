@@ -2,10 +2,11 @@
 
 The broker stages every ``present-file`` copy next to itself, which only serves while
 the broker runs. Right after staging, it uploads the bytes to Forge
-(``PUT /sessions/{id}/files/presented/{file_id}``); Forge keeps them and answers with
-the durable URL on the host's tailnet name. A failed upload is retried in the
-background and never fails ``present-file`` itself: the live broker still serves the
-staged copy, and the Forge route serves the durable one as soon as it lands.
+(``PUT /sessions/{id}/files/presented/{file_id}``) with its session-bound credential;
+Forge keeps them and answers with the durable URL, when it has one configured. A
+failed upload is retried in the background and never fails ``present-file`` itself:
+the live broker still serves the staged copy, and the Forge route serves the durable
+one as soon as it lands.
 """
 
 from __future__ import annotations
@@ -143,13 +144,19 @@ async def upload_presented_file(
     if existing is not None:
         return existing
     settings = broker._settings.presented_durable
+    headers = {"content-type": mime, NAME_HEADER: quote(name, safe="")}
+    # The session credential is bound to this session and outlives any browser login:
+    # on a cluster it is the only bearer that always reaches Forge.
+    session_token = broker._settings.forge_mcp.token
+    if session_token:
+        headers["Authorization"] = f"Bearer {session_token}"
     try:
         data = await asyncio.to_thread(staged.read_bytes)
         client = await broker._get_http_client()
         response = await client.put(
             f"{FORGE_SESSIONS_PATH}/{broker.session_id}/files/presented/{file_id}",
             content=data,
-            headers={"content-type": mime, NAME_HEADER: quote(name, safe="")},
+            headers=headers,
             timeout=timeout or settings.upload_timeout_seconds,
         )
     except Exception as exc:  # network, auth refresh or file errors: retry later

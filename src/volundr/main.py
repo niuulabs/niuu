@@ -163,6 +163,7 @@ from volundr.composition_builders import (  # noqa: F401
     _create_contributors,
     _create_credential_enrollment_runner,
     _create_external_session_providers,
+    _create_forge_session_projection,
     _create_forge_session_tokens,
     _create_gateway_adapter,
     _create_http_auth_adapter,
@@ -175,7 +176,9 @@ from volundr.composition_builders import (  # noqa: F401
     _runtime_backend,
     _validate_remote_room_role_config,
     create_oauth_client_registry,
+    create_presented_file_store,
     integration_database_pool,
+    require_presented_file_uploads,
     with_oauth_device_runner,
 )
 from volundr.config import Settings
@@ -1321,11 +1324,8 @@ def create_app(
             )
 
             # Durable presented files (F2): Forge's own copy of every present-file.
-            presented_file_store = None
-            if settings.presented_files.enabled:
-                store_config = dict(settings.presented_files.store)
-                store_cls = import_class(store_config.pop("adapter"))
-                presented_file_store = store_cls(**store_config)
+            presented_file_store = await create_presented_file_store(settings, pool)
+            if presented_file_store is not None:
                 app.state.presented_file_store = presented_file_store
                 app.state.presented_file_quota = PresentedFileQuota(
                     settings.presented_files.max_total_bytes
@@ -1357,7 +1357,12 @@ def create_app(
                 forge_mcp_role_grants=settings.forge_mcp.role_grants,
                 audit_repository=PostgresAuditRepository(pool),
                 presented_file_store=presented_file_store,
+                forge_session_projection=_create_forge_session_projection(settings),
             )
+            if presented_file_store is not None:
+                require_presented_file_uploads(
+                    settings, delivers_session_credential=session_service.delivers_forge_session
+                )
             # Local-process brokers notify the session service when they exit so
             # the DB row is reconciled promptly (pod-status authoritative) rather
             # than waiting for the periodic sweep.

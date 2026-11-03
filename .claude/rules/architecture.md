@@ -117,13 +117,19 @@ principal for "this one session".
   exist, be on the same launch, and not be stopped or archived, so restarting a
   session revokes the previous launch's token.
 
-Known gap (deliberate, for now): only the local process pod manager delivers
-the credential to the broker (`delivers_forge_session_token`). The Kubernetes,
-Flux and OpenShell pod managers do not, so sessions they launch have no Forge
-MCP credential. The Volundr chart therefore leaves `session_tokens` off unless
-workload identity signs with a configured key. When adding a NEW Forge route a
-session broker may call, add it to the allow-list and give it a
-`require_scope(...)` naming a `forge:*` scope.
+Delivery: the local process pod manager hands the credential to the broker in
+its environment (`delivers_forge_session_token`). For Flux and Kubernetes session
+pods, `forge_mcp.session_tokens.projection_adapter`
+(`KubernetesExecutionCredentialProjection`, the Volundr chart's
+`sessionCredentialProjection`) writes it to one Secret per session and mounts it
+read-only; the HelmRelease values carry only the file path (Skuld's
+`forge_mcp.token_file`), never the token, and the Secret is deleted when the
+session stops. The broker uses it for Forge MCP calls and for durable
+presented-file uploads. Known gap (deliberate, for now): the OpenShell pod
+manager delivers neither, so its sessions have no Forge MCP credential. The
+Volundr chart leaves `session_tokens` off unless workload identity signs with a
+configured key. When adding a NEW Forge route a session broker may call, add it
+to the allow-list and give it a `require_scope(...)` naming a `forge:*` scope.
 
 ### Exception: Ed25519 node-request signing (`niuu join`)
 

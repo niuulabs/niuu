@@ -77,6 +77,7 @@ def create_artifact_service(
         emit_batch_size=config.emit_batch_size,
         backfill_page_size=config.backfill_page_size,
         max_emit_failures=config.max_emit_failures,
+        presented_file_base_url=settings.presented_files.public_base_url,
     )
 
 
