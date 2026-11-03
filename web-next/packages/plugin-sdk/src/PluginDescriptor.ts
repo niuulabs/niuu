@@ -24,28 +24,6 @@ export interface PluginTab {
    * `undefined` (or 0) to hide the badge.
    */
   useCount?: () => number | null | undefined;
-  /**
-   * Show this tab only while Simple mode is on. Advanced mode hides it, so a
-   * plugin can offer a simplified page under its own id without changing the
-   * tabs Advanced users know.
-   */
-  simpleOnly?: boolean;
-}
-
-/** How a plugin appears while Simple mode is on. */
-export interface PluginSimpleMode {
-  /** Tab ids to keep; all tabs when omitted. */
-  tabs?: string[];
-  /** Replaces the rune in the rail and topbar: a picture of what the plugin does. */
-  icon?: ReactNode;
-  /** Replaces `title` in the rail tooltip and topbar (e.g. "Sessions" for Völundr). */
-  title?: string;
-  /** Replaces `subtitle` in the rail tooltip and topbar. */
-  subtitle?: string;
-  /** Show this plugin only in Simple mode; Advanced hides it from the rail. */
-  only?: boolean;
-  /** The index route (`/`) lands here while Simple mode is on. */
-  landing?: boolean;
 }
 
 export interface PluginDescriptor {
@@ -68,16 +46,6 @@ export interface PluginDescriptor {
    * Defaults to `'top'`.
    */
   position?: 'top' | 'bottom';
-
-  /**
-   * How this plugin appears in Simple mode. A plugin that declares `simple`
-   * stays in the rail with only the listed tab ids (all tabs when omitted);
-   * a plugin without it is hidden from the rail while Simple mode is on.
-   * Routes are unaffected: deep links keep working in either mode.
-   * `icon` replaces the rune in the rail and topbar while Simple mode is on:
-   * a picture of what the plugin does, for people who do not read runes yet.
-   */
-  simple?: PluginSimpleMode;
 
   routes?: (rootRoute: AnyRoute) => AnyRoute[];
 

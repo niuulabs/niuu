@@ -34,7 +34,7 @@ type RepoCatalogService = {
   getBranches(repoUrl: string): Promise<string[]>;
 };
 
-interface SimpleLaunchSearch {
+interface NewSessionSearch {
   repo?: string;
   branch?: string;
   persona?: string;
@@ -65,8 +65,8 @@ function definitionLine(definition: SessionDefinition): string {
 const PRIMARY_BTN =
   'niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-full niuu:border niuu:border-brand niuu:bg-brand niuu:px-5 niuu:py-2.5 niuu:text-sm niuu:font-medium niuu:text-bg-primary niuu:transition-opacity niuu:hover:opacity-90 niuu:disabled:cursor-not-allowed niuu:disabled:opacity-50';
 
-export function SimpleLaunchPage() {
-  const search = useSearch({ strict: false }) as SimpleLaunchSearch;
+export function NewSessionPage() {
+  const search = useSearch({ strict: false }) as NewSessionSearch;
   const volundr = useService<IVolundrService>('volundr');
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const personaCatalog = useOptionalService<IPersonaCatalog>('ravn.personas');
@@ -162,7 +162,7 @@ export function SimpleLaunchPage() {
   return (
     <div
       className="niuu:mx-auto niuu:flex niuu:w-full niuu:max-w-5xl niuu:gap-10 niuu:px-8 niuu:py-10"
-      data-testid="simple-launch-page"
+      data-testid="new-session-page"
     >
       <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col niuu:gap-6">
         <div className="niuu:flex niuu:flex-col niuu:gap-2">
@@ -188,7 +188,7 @@ export function SimpleLaunchPage() {
             }}
             rows={6}
             placeholder="e.g. Fix the failing auth tests and explain what was wrong."
-            data-testid="simple-launch-task"
+            data-testid="new-session-task"
           />
         </Field>
 
@@ -205,7 +205,7 @@ export function SimpleLaunchPage() {
                   setBranch(selected?.defaultBranch ?? '');
                 }}
                 valueMode="cloneUrl"
-                testId="simple-launch-repo"
+                testId="new-session-repo"
               />
             ) : (
               <Input
@@ -213,7 +213,7 @@ export function SimpleLaunchPage() {
                 value={repo}
                 onChange={(event) => setRepo(event.target.value)}
                 placeholder="https://git.example.com/group/repository.git"
-                data-testid="simple-launch-repo-input"
+                data-testid="new-session-repo-input"
               />
             )}
           </Field>
@@ -225,14 +225,14 @@ export function SimpleLaunchPage() {
                 selectedRepos={repo}
                 value={branch}
                 onChange={setBranch}
-                testId="simple-launch-branch"
+                testId="new-session-branch"
               />
             ) : (
               <Input
                 aria-label="Branch"
                 value={branch}
                 onChange={(event) => setBranch(event.target.value)}
-                data-testid="simple-launch-branch-input"
+                data-testid="new-session-branch-input"
               />
             )}
           </Field>
@@ -257,7 +257,7 @@ export function SimpleLaunchPage() {
                   role="radio"
                   aria-checked={active}
                   onClick={() => setDefinitionKey(definition.key)}
-                  data-testid={`simple-launch-engine-${deriveCliTool(definition.key)}`}
+                  data-testid={`new-session-engine-${deriveCliTool(definition.key)}`}
                   className={cn(
                     'niuu:flex niuu:flex-col niuu:gap-1.5 niuu:rounded-xl niuu:border niuu:bg-bg-primary niuu:p-4 niuu:text-left niuu:transition-colors',
                     active
@@ -296,7 +296,7 @@ export function SimpleLaunchPage() {
               aria-label="Work as"
               value={personaName}
               onChange={(event) => setPersonaName(event.target.value)}
-              data-testid="simple-launch-persona"
+              data-testid="new-session-persona"
               className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
             >
               <option value="">No persona</option>
@@ -327,7 +327,7 @@ export function SimpleLaunchPage() {
           <p
             role="alert"
             className="niuu:text-xs niuu:text-critical"
-            data-testid="simple-launch-error"
+            data-testid="new-session-error"
           >
             {error}
           </p>
@@ -339,7 +339,7 @@ export function SimpleLaunchPage() {
             onClick={() => void handleStart()}
             disabled={!canStart}
             className={PRIMARY_BTN}
-            data-testid="simple-launch-start"
+            data-testid="new-session-start"
           >
             {creating ? 'Starting…' : 'Start session'}
             <ArrowRight className="niuu:h-4 niuu:w-4" aria-hidden="true" />
@@ -348,7 +348,7 @@ export function SimpleLaunchPage() {
             type="button"
             onClick={() => setWizardOpen(true)}
             className="niuu:text-xs niuu:text-text-muted niuu:underline niuu:underline-offset-4 niuu:hover:text-text-primary"
-            data-testid="simple-launch-more-options"
+            data-testid="new-session-more-options"
           >
             More options
           </button>
@@ -374,7 +374,7 @@ export function SimpleLaunchPage() {
           </ol>
         </section>
 
-        <section className="niuu:flex niuu:flex-col niuu:gap-3" data-testid="simple-launch-recent">
+        <section className="niuu:flex niuu:flex-col niuu:gap-3" data-testid="new-session-recent">
           <h2 className="niuu:m-0 niuu:text-xs niuu:font-semibold niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-muted">
             Recent
           </h2>

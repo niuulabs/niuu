@@ -2,7 +2,6 @@ import { useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePluginCtx, useService } from '@niuulabs/plugin-sdk';
-import { useUiMode } from '@niuulabs/shell';
 import {
   MessageRow,
   ResidentLogsView,
@@ -433,7 +432,6 @@ export function RealmPage() {
   const board = useTrackerBoard(data.view?.binding?.trackerBoard || null);
   const walkthrough = useWalkthrough(FIRST_REALM_WALKTHROUGH);
   const ctx = usePluginCtx();
-  const mode = useUiMode();
   const search = useSearch({ strict: false }) as { tab?: string };
   const [tab, setTab] = useState<RealmTab>(
     REALM_TABS.find((entry) => entry === search.tab) ?? 'overview',
@@ -492,33 +490,6 @@ export function RealmPage() {
     ),
   ]);
 
-  // Simple mode has whole pages for these; Advanced keeps the dialogs it knows.
-  const startSession = () => {
-    if (mode === 'advanced') {
-      setLaunchOpen(true);
-      return;
-    }
-    void navigate({
-      to: '/volundr/sessions/new' as never,
-      search: {
-        repo: view.binding?.repo ?? '',
-        branch: view.binding?.branch ?? '',
-        persona: view.personaName,
-      } as never,
-    });
-  };
-
-  const runWorkflow = () => {
-    if (mode === 'advanced') {
-      setPickerOpen(true);
-      return;
-    }
-    void navigate({
-      to: '/ting/workflows' as never,
-      search: { repo: view.binding?.repo ?? '' } as never,
-    });
-  };
-
   const switchTab = (next: RealmTab) => {
     if (next === 'memory' && data.mountName) ctx.setTweak('activeMount', data.mountName);
     setTab(next);
@@ -572,7 +543,7 @@ export function RealmPage() {
             <button
               type="button"
               className={BUTTON}
-              onClick={startSession}
+              onClick={() => setLaunchOpen(true)}
               data-testid="realm-launch-session"
             >
               Session
@@ -580,8 +551,8 @@ export function RealmPage() {
             <button
               type="button"
               className={BUTTON}
-              onClick={runWorkflow}
-              disabled={mode === 'advanced' && !workflows.data}
+              onClick={() => setPickerOpen(true)}
+              disabled={!workflows.data}
               title="Run a workflow in this workspace"
               data-testid="realm-run-workflow"
             >

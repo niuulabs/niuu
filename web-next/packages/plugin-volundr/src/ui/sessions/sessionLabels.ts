@@ -142,77 +142,8 @@ export function forgeGroupLabel(session: Session): string {
 }
 
 // ---------------------------------------------------------------------------
-// Filtering and Simple-mode grouping
+// Grouping
 // ---------------------------------------------------------------------------
-
-/** The client-side search both session lists use: name, id, repo, forge. */
-export function filterSessionsByQuery(sessions: Session[], query: string): Session[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return sessions;
-  return sessions.filter(
-    (session) =>
-      session.id.toLowerCase().includes(q) ||
-      session.name?.toLowerCase().includes(q) ||
-      session.personaName.toLowerCase().includes(q) ||
-      session.preview?.toLowerCase().includes(q) ||
-      session.clusterName?.toLowerCase().includes(q) ||
-      session.clusterId?.toLowerCase().includes(q),
-  );
-}
-
-/** How long a finished session stays in "Done today". */
-export const DONE_TODAY_WINDOW_MS = 24 * 60 * 60 * 1000;
-
-const RUNNING_STATES: SessionState[] = [
-  'running',
-  'provisioning',
-  'requested',
-  'ready',
-  'idle',
-  'terminating',
-];
-const DONE_STATES: SessionState[] = ['terminated', 'failed'];
-
-export interface SimpleSessionGroups {
-  needsYou: Session[];
-  running: Session[];
-  doneToday: Session[];
-  older: Session[];
-  archived: Session[];
-}
-
-/** The five buckets the Simple-mode session list shows, newest first in each. */
-export function groupForSimpleMode(sessions: Session[], now = Date.now()): SimpleSessionGroups {
-  const groups: SimpleSessionGroups = {
-    needsYou: [],
-    running: [],
-    doneToday: [],
-    older: [],
-    archived: [],
-  };
-
-  for (const session of sessions) {
-    if (session.state === 'awaiting_input') {
-      groups.needsYou.push(session);
-      continue;
-    }
-    if (RUNNING_STATES.includes(session.state)) {
-      groups.running.push(session);
-      continue;
-    }
-    if (DONE_STATES.includes(session.state)) {
-      const recent = now - sessionActivityTs(session) < DONE_TODAY_WINDOW_MS;
-      (recent ? groups.doneToday : groups.older).push(session);
-      continue;
-    }
-    groups.archived.push(session);
-  }
-
-  for (const bucket of Object.values(groups)) {
-    bucket.sort(compareSessionsByActivity);
-  }
-  return groups;
-}
 
 export function groupByForge(sessions: Session[]): SessionSection[] {
   const grouped = new Map<string, Session[]>();

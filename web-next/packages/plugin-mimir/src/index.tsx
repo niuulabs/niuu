@@ -27,10 +27,7 @@ export const mimirPlugin = definePlugin({
   title: 'Memory',
   subtitle: 'what is known',
   // Memory: what the platform and its residents know. The Memory scene
-  // (Explore/Focus/Ask/Replay) is the home for both Simple and Advanced mode.
-  simple: {
-    tabs: ['memory'],
-  },
+  // (Explore/Focus/Ask/Replay) is its home.
   tabs: [
     { id: 'memory', label: 'Explore', path: '/mimir' },
     { id: 'registry', label: 'Library', path: '/mimir/registry' },
@@ -47,12 +44,12 @@ export const mimirPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/mimir',
-      // Explore/Focus/Ask/Replay all deep-link through these, in both modes.
+      // Explore/Focus/Ask/Replay all deep-link through these.
       validateSearch: validateMemoryViewSearch,
       component: MemoryExploreView,
     }),
-    // Reading a page works in either mode: a link from a realm, a session, or
-    // the scene's Focus panel lands on the same screen.
+    // A link from a realm, a session, or the scene's Focus panel lands on the
+    // same screen.
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/mimir/read',

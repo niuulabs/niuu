@@ -174,10 +174,10 @@ test('plan wizard can approve into the launched state', async ({ page }) => {
 test('workflow catalog opens the existing builder', async ({ page }) => {
   await page.goto('/ting/workflows');
 
-  await expect(page.getByTestId('simple-workflows-page')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('workflow-catalog-page')).toBeVisible({ timeout: 5000 });
   await expect(page.getByTestId('ting-tab-builder')).toHaveText(/Builder/);
-  await expect(page.getByTestId('simple-workflow-edit')).toHaveText('Open in builder');
-  await page.getByTestId('simple-workflow-edit').click();
+  await expect(page.getByTestId('catalog-workflow-edit')).toHaveText('Open in builder');
+  await page.getByTestId('catalog-workflow-edit').click();
   await expect(page).toHaveURL(/\/ting\/workflows\/build\?id=/);
   await expect(page.getByTestId('workflow-builder-page')).toBeVisible({ timeout: 5000 });
   await expect(page.getByTestId('workflow-builder')).toBeVisible();

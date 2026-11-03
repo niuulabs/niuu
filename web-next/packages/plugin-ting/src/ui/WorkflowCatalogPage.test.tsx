@@ -6,7 +6,7 @@ import type { RepoRecord } from '@niuulabs/ui';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ResearchCampaign, SpecCampaign, TrackerIssue, TrackerProject } from '../ports';
 import type { Workflow } from '../domain/workflow';
-import { SimpleWorkflowsPage } from './SimpleWorkflowsPage';
+import { WorkflowCatalogPage } from './WorkflowCatalogPage';
 
 const mockNavigate = vi.fn();
 const mockSearch = vi.hoisted(() => ({
@@ -210,14 +210,14 @@ function renderPage(services: Record<string, unknown> = makeServices()) {
   render(
     <QueryClientProvider client={client}>
       <ServicesProvider services={services}>
-        <SimpleWorkflowsPage />
+        <WorkflowCatalogPage />
       </ServicesProvider>
     </QueryClientProvider>,
   );
   return services;
 }
 
-describe('SimpleWorkflowsPage', () => {
+describe('WorkflowCatalogPage', () => {
   beforeEach(() => {
     mockNavigate.mockReset();
     mockSearch.current = {};
@@ -229,13 +229,13 @@ describe('SimpleWorkflowsPage', () => {
     renderPage();
 
     await waitFor(() =>
-      expect(screen.getByTestId(`simple-workflow-${buildWorkflow.id}`)).toBeInTheDocument(),
+      expect(screen.getByTestId(`catalog-workflow-${buildWorkflow.id}`)).toBeInTheDocument(),
     );
     // Only the human gate counts — the automated one does not stop for anyone.
-    expect(screen.getByTestId(`simple-workflow-${buildWorkflow.id}`)).toHaveTextContent(
+    expect(screen.getByTestId(`catalog-workflow-${buildWorkflow.id}`)).toHaveTextContent(
       '1 gates · 2 stages · ran 1×',
     );
-    expect(screen.getByTestId(`simple-workflow-${buildWorkflow.id}`)).toHaveAttribute(
+    expect(screen.getByTestId(`catalog-workflow-${buildWorkflow.id}`)).toHaveAttribute(
       'data-selected',
       'true',
     );
@@ -246,7 +246,7 @@ describe('SimpleWorkflowsPage', () => {
 
   it('opens workflow import from the simple catalog', () => {
     renderPage();
-    fireEvent.click(screen.getByTestId('simple-workflow-import'));
+    fireEvent.click(screen.getByTestId('catalog-workflow-import'));
     expect(screen.getByRole('dialog', { name: 'Import workflow' })).toBeInTheDocument();
   });
 
@@ -273,7 +273,7 @@ describe('SimpleWorkflowsPage', () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByTestId(`simple-workflow-${twoGates.id}`)).toBeInTheDocument(),
+      expect(screen.getByTestId(`catalog-workflow-${twoGates.id}`)).toBeInTheDocument(),
     );
     expect(screen.getAllByText('Plan · Build').length).toBeGreaterThan(0);
     expect(screen.getByText('Stops for you at 2 gates')).toBeInTheDocument();
@@ -291,7 +291,7 @@ describe('SimpleWorkflowsPage', () => {
       screen.getByText('It runs start to finish without stopping for you.'),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId(`simple-workflow-${buildWorkflow.id}`));
+    fireEvent.click(screen.getByTestId(`catalog-workflow-${buildWorkflow.id}`));
     expect(mockNavigate).toHaveBeenCalledWith({
       to: '/ting/workflows',
       search: { workflow: buildWorkflow.id },
@@ -301,9 +301,9 @@ describe('SimpleWorkflowsPage', () => {
   it('creates a workflow and opens it in the builder', async () => {
     const services = makeServices();
     renderPage(services);
-    await waitFor(() => expect(screen.getByTestId('simple-workflow-new')).toBeEnabled());
+    await waitFor(() => expect(screen.getByTestId('catalog-workflow-new')).toBeEnabled());
 
-    fireEvent.click(screen.getByTestId('simple-workflow-new'));
+    fireEvent.click(screen.getByTestId('catalog-workflow-new'));
 
     await waitFor(() => expect(mockNavigate).toHaveBeenCalled());
     const call = mockNavigate.mock.calls[0]?.[0] as { to: string; search: { id: string } };
@@ -314,10 +314,10 @@ describe('SimpleWorkflowsPage', () => {
   it('prefills the prompt from a tracker issue', async () => {
     renderPage();
     await waitFor(() =>
-      expect(screen.getByTestId('simple-workflow-pick-issue')).toBeInTheDocument(),
+      expect(screen.getByTestId('catalog-workflow-pick-issue')).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByTestId('simple-workflow-pick-issue'));
+    fireEvent.click(screen.getByTestId('catalog-workflow-pick-issue'));
     await waitFor(() =>
       expect(screen.getByTestId(`workflow-issue-${issue.id}`)).toBeInTheDocument(),
     );
@@ -338,21 +338,21 @@ describe('SimpleWorkflowsPage', () => {
     renderPage(services);
 
     await waitFor(() =>
-      expect(screen.getByTestId(`simple-workflow-${buildWorkflow.id}`)).toBeInTheDocument(),
+      expect(screen.getByTestId(`catalog-workflow-${buildWorkflow.id}`)).toBeInTheDocument(),
     );
-    expect(screen.queryByTestId('simple-workflow-pick-issue')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('catalog-workflow-pick-issue')).not.toBeInTheDocument();
   });
 
   it('launches with repo and branch from the url and opens the session', async () => {
     mockSearch.current = { repo: repos[0]!.cloneUrl, branch: 'feat/x' };
     const services = makeServices();
     renderPage(services);
-    await waitFor(() => expect(screen.getByTestId('simple-workflow-launch')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('catalog-workflow-launch')).toBeInTheDocument());
 
     fireEvent.change(screen.getByTestId('workflow-launch-prompt'), {
       target: { value: '  Ship the gate fix.  ' },
     });
-    fireEvent.click(screen.getByTestId('simple-workflow-launch'));
+    fireEvent.click(screen.getByTestId('catalog-workflow-launch'));
 
     const workflows = services['ting.workflows'] as { launchWorkflow: ReturnType<typeof vi.fn> };
     await waitFor(() =>
@@ -378,12 +378,12 @@ describe('SimpleWorkflowsPage', () => {
       },
     });
     renderPage(services);
-    await waitFor(() => expect(screen.getByTestId('simple-workflow-launch')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('catalog-workflow-launch')).toBeInTheDocument());
 
     fireEvent.change(screen.getByTestId('workflow-launch-prompt'), {
       target: { value: 'Ship it.' },
     });
-    fireEvent.click(screen.getByTestId('simple-workflow-launch'));
+    fireEvent.click(screen.getByTestId('catalog-workflow-launch'));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('cluster is full');
     expect(mockNavigate).not.toHaveBeenCalled();

@@ -3,7 +3,6 @@ export {
   type PluginDescriptor,
   type PluginCtx,
   type PluginTab,
-  type PluginSimpleMode,
 } from './PluginDescriptor';
 export { PluginCtxProvider, usePluginCtx } from './PluginCtxContext';
 export {

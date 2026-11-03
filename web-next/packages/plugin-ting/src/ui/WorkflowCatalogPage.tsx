@@ -1,5 +1,5 @@
 /**
- * SimpleWorkflowsPage — the Simple-mode face of /ting/workflows.
+ * WorkflowCatalogPage — /ting/workflows.
  *
  * One workflow at a time: what it is, how it runs (stages and the gates that
  * wait for you), a launch card, and the runs recorded for it. The builder is
@@ -30,9 +30,9 @@ import { WorkflowIssuePicker, issueLaunchPrompt } from './WorkflowIssuePicker';
 import { WorkflowImportDialog } from './WorkflowImportDialog';
 import { usePersonasBrowser } from './settings/usePersonasBrowser';
 import { useWorkflowRegistryMounts } from './useWorkflowRegistryMounts';
-import './SimpleWorkflowsPage.css';
+import './WorkflowCatalogPage.css';
 
-interface SimpleWorkflowsSearch {
+interface WorkflowCatalogSearch {
   workflow?: string;
   repo?: string;
   branch?: string;
@@ -90,7 +90,7 @@ function WorkflowOptionCard({
   return (
     <button
       type="button"
-      data-testid={`simple-workflow-${workflow.id}`}
+      data-testid={`catalog-workflow-${workflow.id}`}
       data-selected={selected ? 'true' : undefined}
       onClick={onSelect}
       className={cn(
@@ -132,9 +132,9 @@ function useWorkflowRunCounts(): Record<string, number> {
   return counts;
 }
 
-export function SimpleWorkflowsPage() {
+export function WorkflowCatalogPage() {
   const navigate = useNavigate();
-  const search = useSearch({ strict: false }) as SimpleWorkflowsSearch;
+  const search = useSearch({ strict: false }) as WorkflowCatalogSearch;
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const tracker = useOptionalService<ITrackerBrowserService>('ting.tracker');
   const { data: workflows, isLoading, isError, error } = useWorkflows();
@@ -203,14 +203,14 @@ export function SimpleWorkflowsPage() {
     !launchWorkflow.isPending;
 
   return (
-    <div data-testid="simple-workflows-page" className="ting-workflow-catalog">
+    <div data-testid="workflow-catalog-page" className="ting-workflow-catalog">
       <aside className="ting-workflow-catalog__sidebar" aria-label="Workflow catalog">
         <div className="ting-workflow-catalog__heading">
           <h2>Workflows</h2>
           <div className="niuu:flex niuu:items-center niuu:gap-2">
             <button
               type="button"
-              data-testid="simple-workflow-import"
+              data-testid="catalog-workflow-import"
               onClick={() => setImportOpen(true)}
               className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:text-text-secondary niuu:cursor-pointer niuu:hover:text-text-primary"
             >
@@ -218,7 +218,7 @@ export function SimpleWorkflowsPage() {
             </button>
             <button
               type="button"
-              data-testid="simple-workflow-new"
+              data-testid="catalog-workflow-new"
               onClick={handleNew}
               disabled={createWorkflow.isPending}
               className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:text-text-secondary niuu:cursor-pointer niuu:hover:text-text-primary niuu:disabled:opacity-50"
@@ -282,7 +282,7 @@ export function SimpleWorkflowsPage() {
               <Link
                 to="/ting/workflows/build"
                 search={{ id: selected.id }}
-                data-testid="simple-workflow-edit"
+                data-testid="catalog-workflow-edit"
                 className="ting-workflow-catalog__builder"
               >
                 <WorkflowIcon size={15} aria-hidden="true" /> Open in builder
@@ -306,7 +306,7 @@ export function SimpleWorkflowsPage() {
                 {tracker ? (
                   <button
                     type="button"
-                    data-testid="simple-workflow-pick-issue"
+                    data-testid="catalog-workflow-pick-issue"
                     onClick={() => setIssuePickerOpen(true)}
                     className="ting-workflow-catalog__pick-issue"
                   >
@@ -315,7 +315,7 @@ export function SimpleWorkflowsPage() {
                 ) : null}
                 {workflowHasUnresolvedRequirements(selected) ? (
                   <p
-                    data-testid="simple-workflow-unresolved"
+                    data-testid="catalog-workflow-unresolved"
                     className="niuu:mt-0 niuu:mb-3 niuu:rounded-md niuu:border niuu:border-warning/40 niuu:bg-warning/10 niuu:p-2.5 niuu:text-xs niuu:text-warning"
                   >
                     Resolve imported persona dependencies and local bindings in the Builder before
@@ -342,7 +342,7 @@ export function SimpleWorkflowsPage() {
                   </span>
                   <button
                     type="button"
-                    data-testid="simple-workflow-launch"
+                    data-testid="catalog-workflow-launch"
                     disabled={!canLaunch}
                     onClick={() => void handleLaunch()}
                     className="ting-workflow-catalog__launch-button"

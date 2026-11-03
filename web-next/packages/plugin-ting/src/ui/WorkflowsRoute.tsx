@@ -1,11 +1,11 @@
 /**
- * WorkflowsRoute — the stable workflow catalog in either interface mode.
+ * WorkflowsRoute — the stable workflow catalog.
  * Full-screen authoring remains at /ting/workflows/build.
  *
  * Owner: plugin-ting.
  */
 
-import { SimpleWorkflowsPage } from './SimpleWorkflowsPage';
+import { WorkflowCatalogPage } from './WorkflowCatalogPage';
 import { WorkflowBuilderPage } from './WorkflowBuilderPage';
 import { useSearch } from '@tanstack/react-router';
 
@@ -14,5 +14,5 @@ export function WorkflowsRoute() {
   if (typeof search.id === 'string' && search.id.trim()) {
     return <WorkflowBuilderPage />;
   }
-  return <SimpleWorkflowsPage />;
+  return <WorkflowCatalogPage />;
 }

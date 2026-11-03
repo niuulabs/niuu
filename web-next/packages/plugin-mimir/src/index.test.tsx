@@ -35,8 +35,7 @@ describe('mimirPlugin', () => {
     expect(home.options.component).toBe(MemoryExploreView);
   });
 
-  it('Memory is the only Simple-mode tab, and tabs are Memory + Registry', () => {
-    expect(mimirPlugin.simple?.tabs).toEqual(['memory']);
+  it('has Memory and Registry tabs', () => {
     expect(mimirPlugin.tabs?.map((t) => t.id)).toEqual(['memory', 'registry']);
     expect(mimirPlugin.tabs?.map((t) => t.path)).toEqual(['/mimir', '/mimir/registry']);
   });

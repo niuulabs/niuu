@@ -271,7 +271,7 @@ describe('QuickLaunch', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Advanced launch' }));
     expect(await screen.findByRole('dialog')).toHaveAccessibleName('Launch pod');
   });
-  it('opens a prefilled launch (Simple mode, Realms) straight in the advanced wizard', async () => {
+  it('opens a prefilled launch (Workspaces) straight in the advanced wizard', async () => {
     setup(
       {},
       <LaunchWizard

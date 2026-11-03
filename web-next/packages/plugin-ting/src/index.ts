@@ -69,9 +69,6 @@ export const tingPlugin = definePlugin({
   icon: createElement(WorkIcon),
   title: 'Work',
   subtitle: 'run and oversee work',
-  simple: {
-    tabs: ['work', 'reviews', 'workflows', 'builder'],
-  },
   tabs: [
     { id: 'work', label: 'Board', path: '/ting/work' },
     { id: 'reviews', label: 'Reviews', path: '/ting/plan' },
@@ -451,7 +448,7 @@ export {
   type WorkflowLaunchFormProps,
 } from './ui/WorkflowLaunchForm';
 export { WorkflowStrip, gateWaitsForPerson, type WorkflowStripProps } from './ui/WorkflowStrip';
-export { SimpleWorkflowsPage } from './ui/SimpleWorkflowsPage';
+export { WorkflowCatalogPage } from './ui/WorkflowCatalogPage';
 export { BoardWorkflowsCard } from './ui/BoardWorkflowsCard';
 export { TrackerBoard, useTrackerBoard } from './ui/TrackerBoard';
 export { TrackerWorkImportDialog } from './ui/TrackerWorkImportDialog';

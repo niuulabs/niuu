@@ -152,7 +152,7 @@ describe('useCreateRealm', () => {
     expect(log.calls).toContain('createRealm:lexi-api');
     expect(log.calls.at(-1)).toBe('deploy:lexi-api:realm-lexi-api:realm-1');
     expect(result.current.progress.failedStep?.id).toBe('resident');
-    expect(result.current.progress.failedStep?.advancedPath).toBe('/ravn/ravens');
+    expect(result.current.progress.failedStep?.detailPath).toBe('/ravn/ravens');
   });
 
   it('fails the jobs step when trigger execution is disabled for this deployment', async () => {
@@ -169,10 +169,10 @@ describe('useCreateRealm', () => {
 
     // The trigger was still created (nothing is rolled back) — only the
     // recipe step is reported as failed, so an operator can see the
-    // half-finished state via the 'jobs' step's advancedPath.
+    // half-finished state via the 'jobs' step's detailPath.
     expect(log.calls).toContain('createTrigger:cron:realm-lexi-api');
     expect(result.current.progress.failedStep?.id).toBe('jobs');
-    expect(result.current.progress.failedStep?.advancedPath).toBe('/ravn');
+    expect(result.current.progress.failedStep?.detailPath).toBe('/ravn');
   });
 
   it('surfaces a store-unavailable (503) trigger create as the jobs step failing clearly', async () => {

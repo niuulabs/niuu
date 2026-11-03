@@ -5,6 +5,6 @@
  */
 
 @import 'tailwindcss' prefix(niuu);
-@config "../tailwind.config.ts";
 
 @import './Shell.css';
+@config "../tailwind.config.ts";

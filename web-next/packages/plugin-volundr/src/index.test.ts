@@ -1,5 +1,4 @@
 import { createRootRoute } from '@tanstack/react-router';
-import { UI_MODE_STORAGE_KEY } from '@niuulabs/shell';
 import { afterEach, describe, expect, it } from 'vitest';
 import { volundrPlugin } from './index';
 import { useUnreadNotificationCount } from './ui/hooks/useNotifications';
@@ -19,12 +18,11 @@ describe('volundrPlugin', () => {
     localStorage.clear();
   });
 
-  it('is called Sessions, with only the sessions tab in Simple mode', () => {
+  it('is called Forge', () => {
     expect(volundrPlugin).toMatchObject({
       title: 'Forge',
       subtitle: 'build and execute',
     });
-    expect(volundrPlugin.simple).toMatchObject({ tabs: ['sessions'] });
   });
 
   it('keeps Overview at the beginning of the tab list while sessions use their dedicated route', () => {
@@ -70,13 +68,7 @@ describe('volundr root redirect', () => {
     return (root?.options as { beforeLoad: unknown }).beforeLoad;
   }
 
-  it('sends Simple mode to the session list', () => {
-    localStorage.setItem(UI_MODE_STORAGE_KEY, 'simple');
-    expect(redirectTarget(rootBeforeLoad())).toBe('/volundr/sessions');
-  });
-
-  it('keeps Advanced mode on the forge', () => {
-    localStorage.setItem(UI_MODE_STORAGE_KEY, 'advanced');
+  it('sends the plugin root to the forge', () => {
     expect(redirectTarget(rootBeforeLoad())).toBe('/volundr/forge');
   });
 });
