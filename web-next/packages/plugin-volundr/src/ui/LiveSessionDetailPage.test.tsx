@@ -1377,8 +1377,23 @@ describe('LiveSessionDetailPage', () => {
 
       await screen.findByTestId('live-session-detail-page');
       await waitFor(() => {
-        expect(screen.getByText('Failed to load saved transcript.')).toBeInTheDocument();
+        expect(
+          screen.getByText(/Failed to load saved transcript: history failed/),
+        ).toBeInTheDocument();
       });
+    });
+
+    it('does not ask for a transcript a session that failed before starting never had', async () => {
+      const getConversationHistory = vi.fn().mockRejectedValue(new Error('Not authorized'));
+      wrap('test-session-id-1234', {
+        session: { ...STOPPED_SESSION, status: 'failed', messageCount: 0 },
+        volundr: { getConversationHistory },
+      });
+
+      expect(await screen.findByTestId('failed-before-start')).toHaveTextContent(
+        'failed before it started',
+      );
+      expect(getConversationHistory).not.toHaveBeenCalled();
     });
 
     it('shows a transcript loading state for stopped sessions while replay is pending', async () => {
