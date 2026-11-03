@@ -3,17 +3,19 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { useService } from '@niuulabs/plugin-sdk';
 import type { IRunLogService, IWorkflowService, ProjectSessions } from '../ports';
 import {
-  artifactsFromOutcomes,
+  artifactsFromPublications,
+  isReadable,
   newestFirst,
   runRef,
   type Artifact,
-  type RunOutcome,
+  type ArtifactVersion,
+  type Publication,
   type RunRef,
 } from '../domain/artifacts';
 import { mergeWorkPages, useReviews, useWorkCollection } from './useWork';
 
-/** A running run's log grows; it is read again on this cadence while it is on screen. */
-const LIVE_RUN_REFRESH_MS = 15000;
+/** A running run may present again; what it presented is read again on this cadence. */
+const LIVE_REFRESH_MS = 15000;
 
 export interface ArtifactProject {
   id: string;
@@ -59,20 +61,14 @@ function projectBySession(projects: readonly ProjectSessions[] | undefined) {
   return map;
 }
 
-function outcomesQuery(runLog: IRunLogService, run: RunRef) {
-  return {
-    queryKey: ['ting', 'artifacts', 'outcomes', run.slug],
-    queryFn: ({ signal }: { signal: AbortSignal }) =>
-      runLog.outcomes(run.sessionId, run.instanceId, signal),
-    // A finished run's log no longer changes.
-    staleTime: runIsSettled(run) ? Infinity : 0,
-    refetchInterval: runIsSettled(run) ? (false as const) : LIVE_RUN_REFRESH_MS,
-  };
+/** The hosts runs live on; `null` is the host this UI talks to. */
+function hostsOf(runs: readonly RunRef[]): (string | null)[] {
+  return [...new Set(runs.map((run) => run.instanceId))];
 }
 
 /**
- * Every artifact across the runs Work knows, newest first, with the runs that could not be
- * read. Given a project, only the runs whose session is in it are read.
+ * Every artifact across the runs Work knows, newest first, with the hosts that could not
+ * be read. Given a project, only the runs whose session is in it are listed.
  */
 export function useArtifacts(projectId?: string) {
   const runLog = useService<IRunLogService>('ting.runLog');
@@ -91,46 +87,92 @@ export function useArtifacts(projectId?: string) {
       .filter((run): run is RunRef => run !== null)
       .filter((run) => !inProject || inProject.has(run.sessionId));
   }, [work.data, projects.data, projectId]);
-  const outcomes = useQueries({ queries: runs.map((run) => outcomesQuery(runLog, run)) });
+  const hosts = useMemo(() => hostsOf(runs), [runs]);
+  const live = runs.some((run) => !runIsSettled(run));
+  const feeds = useQueries({
+    queries: hosts.map((host) => ({
+      queryKey: ['ting', 'artifacts', 'publications', host],
+      queryFn: ({ signal }: { signal: AbortSignal }) => runLog.publications(host, { signal }),
+      refetchInterval: live ? LIVE_REFRESH_MS : (false as const),
+    })),
+  });
   const sessionProjects = useMemo(() => projectBySession(projects.data), [projects.data]);
 
   const rows = useMemo(() => {
+    const byHost = new Map<string | null, Publication[]>();
+    hosts.forEach((host, index) => {
+      const data = feeds[index]?.data;
+      if (data) byHost.set(host, data);
+    });
     const all: ArtifactRow[] = [];
-    runs.forEach((run, index) => {
-      const data = outcomes[index]?.data;
-      if (!data) return;
-      for (const artifact of artifactsFromOutcomes(run, data, waiting)) {
+    for (const run of runs) {
+      const published = byHost.get(run.instanceId);
+      if (!published) continue;
+      for (const artifact of artifactsFromPublications(run, published, waiting)) {
         all.push({ ...artifact, project: sessionProjects.get(run.sessionId) ?? null });
       }
-    });
-    return newestFirst(all) as ArtifactRow[];
-  }, [runs, outcomes, waiting, sessionProjects]);
+    }
+    return newestFirst(all);
+  }, [runs, hosts, feeds, waiting, sessionProjects]);
 
-  const unreadable = runs.flatMap((run, index) => {
-    const error = outcomes[index]?.error;
+  const unreadable = hosts.flatMap((host, index) => {
+    const error = feeds[index]?.error;
     if (!error) return [];
-    return [{ run, reason: error instanceof Error ? error.message : String(error) }];
+    return [{ host, reason: error instanceof Error ? error.message : String(error) }];
   });
-  const reading = outcomes.filter((query) => query.isPending).length;
   return {
     rows,
-    loading: work.isPending || (Boolean(projectId) && projects.isPending),
-    reading,
-    runCount: runs.length,
+    loading:
+      work.isPending ||
+      (Boolean(projectId) && projects.isPending) ||
+      feeds.some((query) => query.isPending),
     unreadable,
     error: work.error ?? projects.error,
   };
 }
 
-/** One run's outcomes, for its artifacts' review page. */
-export function useRunOutcomes(run: RunRef | null) {
+/** What one run presented, for its review page. */
+export function useRunPublications(run: RunRef | null) {
   const runLog = useService<IRunLogService>('ting.runLog');
   return useQuery({
-    ...(run
-      ? outcomesQuery(runLog, run)
-      : { queryKey: ['ting', 'artifacts', 'outcomes', null], queryFn: async () => [] }),
+    queryKey: ['ting', 'artifacts', 'run-publications', run?.slug ?? null],
+    queryFn: ({ signal }) =>
+      runLog.publications(run!.instanceId, { sessionId: run!.sessionId, signal }),
     enabled: run !== null,
-  }) as ReturnType<typeof useQuery<RunOutcome[]>>;
+    refetchInterval: run && !runIsSettled(run) ? LIVE_REFRESH_MS : false,
+  });
+}
+
+/**
+ * The text of every readable version, by revision id. A presented file never changes
+ * under its id, so each is read once.
+ */
+export function useArtifactTexts(run: RunRef | null, artifacts: readonly Artifact[]) {
+  const runLog = useService<IRunLogService>('ting.runLog');
+  const versions: ArtifactVersion[] = artifacts
+    .flatMap((artifact) => artifact.versions)
+    .filter(isReadable);
+  const texts = useQueries({
+    queries: versions.map((version) => ({
+      queryKey: ['ting', 'artifacts', 'text', run?.sessionId ?? null, version.revisionId],
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        runLog.presentedText(run!.sessionId, run!.instanceId, version.revisionId, signal),
+      enabled: run !== null,
+      staleTime: Infinity,
+    })),
+  });
+  const map = new Map<string, string>();
+  versions.forEach((version, index) => {
+    const data = texts[index]?.data;
+    if (typeof data === 'string') map.set(version.revisionId, data);
+  });
+  const failed = versions.flatMap((version, index) => {
+    const error = texts[index]?.error;
+    return error
+      ? [{ version, reason: error instanceof Error ? error.message : String(error) }]
+      : [];
+  });
+  return { texts: map, failed, reading: texts.some((query) => query.isPending) };
 }
 
 /** The run behind a slug, from the runs Work already lists. */

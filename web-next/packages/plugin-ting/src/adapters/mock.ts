@@ -2460,11 +2460,14 @@ function mockReviewList(tasks: readonly WorkTask[], runWaiting: boolean): Review
   };
 }
 
-/** Demo runs have no Forge session log to read, so they produce no artifacts. */
+/** Demo runs have no Forge to present files to, so they produce no artifacts. */
 export function createMockRunLogService(): IRunLogService {
   return {
-    async outcomes() {
+    async publications() {
       return [];
+    },
+    async presentedText() {
+      throw new Error('Demo runs present no files.');
     },
     async projectSessions() {
       return [];

@@ -6,77 +6,70 @@ function client(get: ApiClient['get'], post: ApiClient['post'] = vi.fn()): ApiCl
   return { get, post, put: vi.fn(), patch: vi.fn(), delete: vi.fn() } as unknown as ApiClient;
 }
 
-const entry = (seq: number, kind: string, payload: Record<string, unknown> = {}) => ({
+const row = (seq: number, overrides: Record<string, unknown> = {}) => ({
   seq,
-  kind,
-  ts: `2026-11-02T23:0${seq}:00Z`,
-  payload,
+  session_id: 's1',
+  provider_key: 's1:plan',
+  revision_id: `pf_${seq}`,
+  title: 'plan.md',
+  url: `/api/v1/forge/sessions/s1/files/presented/pf_${seq}`,
+  at: `2026-11-02T23:0${seq}:00Z`,
+  mime: 'text/markdown',
+  version_label: `v${seq}`,
+  source: 'present_file',
+  ...overrides,
 });
 
 describe('buildRunLogHttpAdapter', () => {
-  it("reads a run's outcomes from every page of its session log", async () => {
+  it('reads every page of the presented-file publications on one host', async () => {
     const get = vi
       .fn()
-      .mockResolvedValueOnce({
-        entries: [
-          entry(1, 'user'),
-          entry(2, 'room_outcome', {
-            eventType: 'plan.revised',
-            participantId: 'flock-planner',
-            participant: { participant_type: 'ravn' },
-            fields: { plan: 'a\nb' },
-          }),
-        ],
-        scanned_through: 2,
-        has_more: true,
-      })
-      .mockResolvedValueOnce({
-        entries: [
-          entry(3, 'room_outcome', {
-            eventType: 'plan.approved',
-            participant: { peer_id: 'workflow-runtime', participant_type: 'workflow' },
-          }),
-        ],
-        scanned_through: 3,
-        has_more: false,
-      });
+      .mockResolvedValueOnce({ items: [row(1)], next_after: 7, has_more: true })
+      .mockResolvedValueOnce({ items: [row(2)], next_after: 9, has_more: false });
 
-    const outcomes = await buildRunLogHttpAdapter(client(get)).outcomes('s 1', 'valhalla');
+    const publications = await buildRunLogHttpAdapter(client(get)).publications('valhalla');
 
     expect(get).toHaveBeenNthCalledWith(
       1,
-      '/sessions/s%201/log/page?after=0&show_internal=true&instance_id=valhalla',
+      '/artifact-publications?source=present_file&instance_id=valhalla&after=0',
       { signal: undefined },
     );
     expect(get).toHaveBeenNthCalledWith(
       2,
-      '/sessions/s%201/log/page?after=2&show_internal=true&instance_id=valhalla',
+      '/artifact-publications?source=present_file&instance_id=valhalla&after=7',
       { signal: undefined },
     );
-    expect(outcomes).toEqual([
+    expect(publications).toEqual([
       {
-        seq: 2,
-        at: '2026-11-02T23:02:00Z',
-        eventType: 'plan.revised',
-        participantId: 'flock-planner',
-        participantType: 'ravn',
-        fields: { plan: 'a\nb' },
+        seq: 1,
+        sessionId: 's1',
+        providerKey: 's1:plan',
+        revisionId: 'pf_1',
+        title: 'plan.md',
+        url: '/api/v1/forge/sessions/s1/files/presented/pf_1',
+        at: '2026-11-02T23:01:00Z',
+        mime: 'text/markdown',
+        versionLabel: 'v1',
       },
-      {
-        seq: 3,
-        at: '2026-11-02T23:03:00Z',
-        eventType: 'plan.approved',
-        participantId: 'workflow-runtime',
-        participantType: 'workflow',
-        fields: {},
-      },
+      expect.objectContaining({ seq: 2, revisionId: 'pf_2', versionLabel: 'v2' }),
     ]);
   });
 
-  it('reads a single-host log without naming an instance', async () => {
-    const get = vi.fn().mockResolvedValue({ entries: [], scanned_through: 0, has_more: false });
-    await buildRunLogHttpAdapter(client(get)).outcomes('s1', null);
-    expect(get).toHaveBeenCalledWith('/sessions/s1/log/page?after=0&show_internal=true', {
+  it("narrows to one session's publications on the default host", async () => {
+    const get = vi.fn().mockResolvedValue({ items: [], next_after: 0, has_more: false });
+    const signal = new AbortController().signal;
+    await buildRunLogHttpAdapter(client(get)).publications(null, { sessionId: 's 1', signal });
+    expect(get).toHaveBeenCalledWith(
+      '/artifact-publications?source=present_file&session_id=s+1&after=0',
+      { signal },
+    );
+  });
+
+  it('reads the text of a presented file from its session', async () => {
+    const get = vi.fn().mockResolvedValue('# Plan');
+    const text = await buildRunLogHttpAdapter(client(get)).presentedText('s 1', 'valhalla', 'pf_1');
+    expect(text).toBe('# Plan');
+    expect(get).toHaveBeenCalledWith('/sessions/s%201/files/presented/pf_1?instance_id=valhalla', {
       signal: undefined,
     });
   });

@@ -24,11 +24,12 @@ const STATUS_ORDER: readonly ArtifactStatus[] = ['waiting', 'inProgress', 'done'
 
 function artifactLine(row: ArtifactRow): ListRow {
   const versions = row.versions.length;
+  const latest = row.versions[versions - 1];
   return {
     key: row.id,
     kind: row.title,
-    title: row.subject,
-    byline: `${row.producer} · ${row.run.title}${versions > 1 ? ` · ${versions} versions` : ''}`,
+    title: row.run.title,
+    byline: `${latest?.name ?? row.key}${versions > 1 ? ` · ${latest?.label} of ${versions} versions` : ''}`,
     status: row.status,
     project: row.project,
     updatedAt: row.updatedAt,
@@ -44,7 +45,9 @@ function gateLine(item: ReviewItem): ListRow {
     title: `${item.identifier ? `${item.identifier} · ` : ''}${item.title}`,
     byline: `${item.workflowName}${item.gateLabel ? ` · ${item.gateLabel}` : ''}`,
     status: 'waiting',
-    project: item.projectId ? { id: item.projectId, name: item.projectName ?? item.projectId } : null,
+    project: item.projectId
+      ? { id: item.projectId, name: item.projectName ?? item.projectId }
+      : null,
     updatedAt: item.updatedAt,
     href: reviewPath(item),
   };
@@ -160,28 +163,30 @@ export function ArtifactList({ projectId }: { projectId?: string }) {
 
       {artifacts.error ? (
         <p role="alert" className="ting-artifacts__alert">
-          {artifacts.error instanceof Error ? artifacts.error.message : 'Artifacts could not be read.'}
+          {artifacts.error instanceof Error
+            ? artifacts.error.message
+            : 'Artifacts could not be read.'}
         </p>
       ) : null}
       {artifacts.unreadable.length > 0 ? (
         <details role="alert" className="ting-artifacts__alert">
           <summary>
-            {artifacts.unreadable.length} run{artifacts.unreadable.length === 1 ? "'s" : "s'"} log
-            could not be read, so {artifacts.unreadable.length === 1 ? 'its' : 'their'} artifacts are
+            The artifacts of {artifacts.unreadable.length} Forge host
+            {artifacts.unreadable.length === 1 ? '' : 's'} could not be read, so the runs there are
             not listed.
           </summary>
           <ul>
-            {artifacts.unreadable.map(({ run, reason }) => (
-              <li key={run.slug}>
-                {run.title}: {reason}
+            {artifacts.unreadable.map(({ host, reason }) => (
+              <li key={host ?? 'default'}>
+                {host ?? 'This host'}: {reason}
               </li>
             ))}
           </ul>
         </details>
       ) : null}
-      {artifacts.loading || artifacts.reading > 0 ? (
+      {artifacts.loading ? (
         <p role="status" className="ting-artifacts__progress">
-          Read {artifacts.runCount - artifacts.reading} of {artifacts.runCount} run logs…
+          Reading artifacts…
         </p>
       ) : null}
 
@@ -209,10 +214,10 @@ export function ArtifactList({ projectId }: { projectId?: string }) {
         </section>
       ))}
 
-      {!artifacts.loading && artifacts.reading === 0 && shown.length === 0 ? (
+      {!artifacts.loading && shown.length === 0 ? (
         <p className="ting-artifacts__empty">
           {rows.length === 0
-            ? 'No run has produced an artifact yet.'
+            ? 'No run has presented a document yet.'
             : 'Nothing matches these filters.'}
         </p>
       ) : null}

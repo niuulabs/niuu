@@ -1,19 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
+  answersPendingGate,
+  artifactKeysShown,
   artifactReview,
-  artifactsFromOutcomes,
+  artifactsFromPublications,
   artifactStatus,
-  documentFieldsShown,
-  feedbackFor,
-  launchPrompt,
+  gatesWithArtifacts,
+  isReadable,
   newestFirst,
-  producerName,
   revisionPrompt,
-  runBrief,
   runRef,
-  type RunOutcome,
+  versionDocument,
+  type Publication,
   type RunRef,
 } from './artifacts';
+import type { ReviewRevision, RunReview } from './review';
 import type { WorkSummary } from './work';
 
 const RUN: RunRef = {
@@ -29,120 +30,104 @@ const RUN: RunRef = {
   updatedAt: '2026-11-02T23:44:00Z',
 };
 
-function outcome(seq: number, overrides: Partial<RunOutcome>): RunOutcome {
+const NONE = new Set<string>();
+
+function publication(seq: number, overrides: Partial<Publication> = {}): Publication {
   return {
     seq,
+    sessionId: 'session-1',
+    providerKey: 'session-1:plan',
+    revisionId: `pf_${seq}`,
+    title: 'plan.md',
+    url: `/api/v1/forge/sessions/session-1/files/presented/pf_${seq}`,
     at: `2026-11-02T23:${String(seq).padStart(2, '0')}:00Z`,
-    eventType: 'developer.plan.revised',
-    participantId: 'flock-developer-analyst',
-    participantType: 'ravn',
-    fields: {},
+    mime: 'text/markdown',
+    versionLabel: `v${seq}`,
     ...overrides,
   };
 }
 
-const NONE = new Set<string>();
-
-const LOG: RunOutcome[] = [
-  outcome(1, {
-    participantId: 'skuld-1',
-    participantType: 'skuld',
-    eventType: 'delivery.requested',
-    fields: {
-      prompt:
-        '# Workflow Launch\n\nWorkflow: Developer Planning\n\n## Prompt\nPlan NIU-296\nRead the ticket.\n\n## Expectations\nFollow the graph.',
-    },
+const PRESENTED: Publication[] = [
+  publication(3, { revisionId: 'pf_3', versionLabel: 'v2' }),
+  publication(1, { revisionId: 'pf_1', versionLabel: 'v1' }),
+  // A republish of v2 is the same version.
+  publication(4, { revisionId: 'pf_3', versionLabel: 'v2' }),
+  publication(2, {
+    providerKey: 'pf_2',
+    revisionId: 'pf_2',
+    title: 'diagram.png',
+    mime: 'image/png',
+    versionLabel: null,
   }),
-  // A single-line plan: its longest text is the document, not the digest or the summary.
-  outcome(2, {
-    fields: {
-      plan: 'P-1: add the adapter. P-2: validate the realm id before polling it.',
-      ticket_digest: 'Plan NIU-296 only',
-      summary: 'First draft of the plan for review',
-      verdict: 'ready_for_review',
-      base_sha: '4671b57',
-    },
-  }),
-  outcome(3, {
-    participantId: 'flock-developer-architecture-reviewer',
-    eventType: 'plan.review.completed',
-    fields: { summary: 'Signal parsing is underspecified.', verdict: 'changes_required' },
-  }),
-  outcome(4, {
-    fields: {
-      plan: 'P-1: add the adapter.\nP-2: parse signals strictly.',
-      verdict: 'ready_for_review',
-    },
-  }),
-  outcome(5, {
-    participantId: 'workflow-runtime',
-    participantType: 'workflow',
-    eventType: 'developer.plan.approved',
-    fields: { summary: 'Approved after review', verdict: 'approved' },
-  }),
+  publication(5, { sessionId: 'other-session', providerKey: 'other-session:plan' }),
 ];
 
-describe('artifacts from a run log', () => {
-  it('makes one artifact per agent field, each report of it a version', () => {
-    const [plan, ...others] = artifactsFromOutcomes(RUN, LOG, NONE);
-    expect(others).toEqual([]);
-    expect(plan).toMatchObject({
-      id: 'a2a-1/flock-developer-analyst/plan',
-      title: 'Plan',
-      producer: 'Developer analyst',
-      subject: 'Plan NIU-296',
-      status: 'inProgress',
-      updatedAt: '2026-11-02T23:04:00Z',
-    });
-    expect(plan!.versions.map((version) => [version.number, version.seq, version.verdict])).toEqual(
-      [
-        [1, 2, 'ready_for_review'],
-        [2, 4, 'ready_for_review'],
-      ],
-    );
-  });
+function gateRevision(overrides: Partial<ReviewRevision>): ReviewRevision {
+  return {
+    number: 1,
+    gateId: 'g1',
+    activationId: 'act-1',
+    requestedAt: '2026-11-02T23:10:00Z',
+    status: 'pending',
+    summary: '',
+    decidedBy: '',
+    notes: '',
+    decidedAt: '',
+    fields: { plan: 'the plan copied into the outcome' },
+    ...overrides,
+  };
+}
 
-  it('keeps what the others said, between the versions it answers', () => {
-    const [plan] = artifactsFromOutcomes(RUN, LOG, NONE);
-    expect(plan!.feedback.map((item) => [item.from, item.verdict])).toEqual([
-      ['Developer architecture reviewer', 'changes_required'],
-      ['Workflow', 'approved'],
+function planGate(revisions: ReviewRevision[]): RunReview {
+  return {
+    columnId: 'plan-review',
+    title: 'Plan review',
+    review: 'plan',
+    workflowName: 'Developer Planning',
+    taskId: 'a2a-1',
+    sessionId: 'session-1',
+    panels: [{ widget: 'document', title: 'Plan', source: { kind: 'outcome', value: 'plan' } }],
+    revisions,
+  };
+}
+
+const SHOWN_V1 = {
+  artifactKey: 'plan',
+  providerKey: 'session-1:plan',
+  revisionId: 'pf_1',
+  name: 'plan.md',
+  versionLabel: 'v1',
+  mime: 'text/markdown',
+  url: null,
+};
+
+describe('artifacts from publications', () => {
+  it("makes one artifact per key of the run's own session, each file a version", () => {
+    const [plan, diagram] = artifactsFromPublications(RUN, PRESENTED, NONE);
+    expect(plan).toMatchObject({ id: 'session-1:plan', key: 'plan', title: 'Plan' });
+    expect(plan!.versions.map((version) => [version.revisionId, version.label])).toEqual([
+      ['pf_1', 'v1'],
+      ['pf_3', 'v2'],
     ]);
-    expect(feedbackFor(plan!, plan!.versions[0]!).map((item) => item.seq)).toEqual([3]);
-    expect(feedbackFor(plan!, plan!.versions[1]!).map((item) => item.seq)).toEqual([5]);
+    expect(plan!.updatedAt).toBe('2026-11-02T23:03:00Z');
+    // A file presented without a key stands alone, named after itself.
+    expect(diagram).toMatchObject({ key: 'pf_2', title: 'diagram.png' });
+    expect(diagram!.versions[0]!.label).toBe('v1');
+    expect(artifactsFromPublications(RUN, [], NONE)).toEqual([]);
   });
 
-  it('takes every multi-line field of an outcome as its own document', () => {
-    const artifacts = artifactsFromOutcomes(
-      RUN,
-      [
-        outcome(1, {
-          participantId: 'flock-reviewer',
-          fields: { comments: '## Major\n- one', findings: '## High\n- two', summary: 'x y' },
-        }),
-      ],
-      NONE,
+  it('reads text documents on the page and links everything else', () => {
+    const [plan, diagram] = artifactsFromPublications(RUN, PRESENTED, NONE);
+    const v1 = plan!.versions[0]!;
+    const image = diagram!.versions[0]!;
+    expect(isReadable(v1)).toBe(true);
+    expect(isReadable({ ...v1, mime: null })).toBe(true);
+    expect(isReadable(image)).toBe(false);
+    expect(versionDocument(v1, '# Plan')).toBe('# Plan');
+    expect(versionDocument(image, undefined)).toBe(
+      '[Open diagram.png](/api/v1/forge/sessions/session-1/files/presented/pf_2)',
     );
-    expect(artifacts.map((artifact) => artifact.title).sort()).toEqual(['Comments', 'Findings']);
-  });
-
-  it('finds nothing in identifiers, verdicts or a lone summary', () => {
-    expect(
-      artifactsFromOutcomes(
-        RUN,
-        [
-          outcome(1, {
-            fields: { verdict: 'approved', base_sha: 'abc', summary: 'All good here' },
-          }),
-        ],
-        NONE,
-      ),
-    ).toEqual([]);
-  });
-
-  it('subjects a run with no brief by its title', () => {
-    const [plan] = artifactsFromOutcomes(RUN, LOG.slice(1), NONE);
-    expect(plan!.subject).toBe('Developer Planning');
+    expect(versionDocument({ ...image, url: null }, undefined)).toBe('diagram.png');
   });
 });
 
@@ -167,74 +152,88 @@ describe('artifact status', () => {
   });
 });
 
-describe('run briefs', () => {
-  it("reads the person's prompt out of Ting's launch brief", () => {
-    expect(runBrief(LOG)).toBe('Plan NIU-296\nRead the ticket.');
-    expect(launchPrompt('Just do it')).toBe('Just do it');
-    expect(launchPrompt('# Workflow Launch\n\n## Prompt\nLast section')).toBe('Last section');
-    expect(runBrief([])).toBe('');
-  });
-
-  it('asks a new run to revise a version against the notes', () => {
-    const [plan] = artifactsFromOutcomes(RUN, LOG, NONE);
-    const prompt = revisionPrompt(plan!, plan!.versions[1]!, 'Plan NIU-296', 'Name the setting.');
-    expect(prompt).toContain('Plan NIU-296');
-    expect(prompt).toContain('version 2 from run a2a-1');
-    expect(prompt).toContain("Reviewer's notes:\nName the setting.");
-    expect(prompt).toContain('Previous plan:\nP-1: add the adapter.\nP-2: parse signals strictly.');
-  });
-});
-
-describe('artifacts in the review workspace', () => {
-  it('reads as a review, its latest version answering a waiting gate', () => {
-    const [plan] = artifactsFromOutcomes(RUN, LOG, NONE);
-    const review = artifactReview(plan!, { id: 'gate-7', activationId: 'act-7' });
-    expect(review.panels).toEqual([
-      { widget: 'document', title: 'Plan', source: { kind: 'outcome', value: 'plan' } },
-    ]);
-    const [first, latest] = review.revisions;
-    expect(first).toMatchObject({ gateId: `${plan!.id}#1`, status: 'Ready for review' });
-    expect(first!.notes).toBe(
-      'Developer architecture reviewer · Changes required: Signal parsing is underspecified.',
-    );
-    expect(latest).toMatchObject({ gateId: 'gate-7', activationId: 'act-7', status: 'pending' });
-    expect(latest!.fields.plan).toContain('parse signals strictly');
-  });
-
-  it('has no gate to answer when the run waits on none', () => {
-    const [plan] = artifactsFromOutcomes(RUN, LOG, NONE);
-    expect(artifactReview(plan!, null).revisions.every((item) => item.status !== 'pending')).toBe(
-      true,
-    );
-  });
-
-  it("knows which fields a gate's own review already shows", () => {
-    expect(
-      documentFieldsShown([
-        {
-          columnId: 'c',
-          title: 'Review',
-          review: null,
-          workflowName: 'w',
-          taskId: 't',
-          sessionId: 's',
-          panels: [
-            { widget: 'document', title: 'Plan', source: { kind: 'outcome', value: 'plan' } },
-            { widget: 'diff', title: 'Diff' },
-          ],
-          revisions: [],
-        },
+describe('reviewing artifacts', () => {
+  it("carries the decision of the gate that showed each version", () => {
+    const [plan] = artifactsFromPublications(RUN, PRESENTED, NONE);
+    const gates = [
+      planGate([
+        gateRevision({
+          status: 'changes_requested',
+          notes: 'tighten it',
+          decidedBy: 'jozef',
+          artifacts: [SHOWN_V1],
+        }),
+        gateRevision({
+          number: 2,
+          gateId: 'g2',
+          activationId: 'act-2',
+          artifacts: [{ ...SHOWN_V1, revisionId: 'pf_3', versionLabel: 'v2' }],
+        }),
       ]),
-    ).toEqual(new Set(['plan']));
+    ];
+    const texts = new Map([['pf_1', '# Plan v1']]);
+    const review = artifactReview(plan!, gates, texts);
+    const [first, second] = review.revisions;
+    expect(first).toMatchObject({
+      gateId: 'g1',
+      status: 'changes_requested',
+      notes: 'tighten it',
+      decidedBy: 'jozef',
+      summary: 'v1',
+      fields: { plan: '# Plan v1' },
+    });
+    expect(second).toMatchObject({ gateId: 'g2', activationId: 'act-2', status: 'pending' });
+    expect(answersPendingGate(review)).toBe(true);
+    expect(review.panels[0]!.source).toEqual({ kind: 'outcome', value: 'plan' });
+  });
+
+  it('is only presented when no gate showed it', () => {
+    const [plan] = artifactsFromPublications(RUN, PRESENTED, NONE);
+    const review = artifactReview(plan!, [], new Map());
+    expect(review.revisions.map((revision) => [revision.gateId, revision.status])).toEqual([
+      ['session-1:plan#1', 'Presented'],
+      ['session-1:plan#2', 'Presented'],
+    ]);
+    expect(answersPendingGate(review)).toBe(false);
+  });
+
+  it("reads a gate's panel from the version it showed, keeping the outcome otherwise", () => {
+    const presented = artifactsFromPublications(RUN, PRESENTED, NONE);
+    const gates = [
+      planGate([
+        gateRevision({ artifacts: [SHOWN_V1] }),
+        gateRevision({ number: 2, gateId: 'g2' }),
+        gateRevision({ number: 3, artifacts: [{ ...SHOWN_V1, revisionId: 'pf_gone' }] }),
+      ]),
+    ];
+    const [gate] = gatesWithArtifacts(gates, presented, new Map([['pf_1', '# Plan v1']]));
+    expect(gate!.revisions.map((revision) => revision.fields.plan)).toEqual([
+      '# Plan v1',
+      'the plan copied into the outcome',
+      'the plan copied into the outcome',
+    ]);
+    expect(artifactKeysShown(gates)).toEqual(new Set(['plan']));
+    expect(artifactKeysShown([planGate([gateRevision({})])])).toEqual(new Set());
+  });
+
+  it('asks a new run to revise a version against the notes, under the same key', () => {
+    const [plan] = artifactsFromPublications(RUN, PRESENTED, NONE);
+    const prompt = revisionPrompt(plan!, plan!.versions[1]!, '# Plan v2', 'Plan NIU-296', 'Fix P-2');
+    expect(prompt).toContain('Plan NIU-296');
+    expect(prompt).toContain('v2 from run a2a-1');
+    expect(prompt).toContain('artifact key plan');
+    expect(prompt).toContain("Reviewer's notes:\nFix P-2");
+    expect(prompt).toContain('Previous plan:\n# Plan v2');
   });
 });
 
 describe('helpers', () => {
-  it('names producers and orders artifacts newest first', () => {
-    expect(producerName('flock-developer-analyst')).toBe('Developer analyst');
-    const [plan] = artifactsFromOutcomes(RUN, LOG, NONE);
-    const older = { ...plan!, id: 'older', updatedAt: '2026-01-01T00:00:00Z' };
-    expect(newestFirst([older, plan!]).map((item) => item.id)).toEqual([plan!.id, 'older']);
+  it('orders artifacts newest first', () => {
+    const [plan, diagram] = artifactsFromPublications(RUN, PRESENTED, NONE);
+    expect(newestFirst([diagram!, plan!]).map((item) => item.id)).toEqual([
+      plan!.id,
+      diagram!.id,
+    ]);
   });
 
   it('turns a Work run into a run reference, or nothing without a session', () => {

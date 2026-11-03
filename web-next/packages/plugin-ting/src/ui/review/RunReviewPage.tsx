@@ -3,19 +3,21 @@ import { useMemo } from 'react';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { isPending, type RunReview, type RunReviews } from '../../domain/review';
 import {
+  artifactKeysShown,
   artifactReview,
-  artifactsFromOutcomes,
-  documentFieldsShown,
+  artifactsFromPublications,
+  gatesWithArtifacts,
   revisionPrompt,
-  runBrief,
+  versionDocument,
   type Artifact,
-  type RunOutcome,
+  type Publication,
   type RunRef,
 } from '../../domain/artifacts';
 import { useRunGateDecision, useRunReviews } from '../useWork';
 import {
+  useArtifactTexts,
   useRun,
-  useRunOutcomes,
+  useRunPublications,
   useSendToRun,
   useStartRevision,
   useWaiting,
@@ -33,19 +35,19 @@ function runEnded(run: RunRef): boolean {
 }
 
 function noteForRun(artifact: Artifact, notes: string): string {
-  const version = artifact.versions.length;
-  return `Notes on the ${artifact.title.toLowerCase()} (version ${version}) from ${artifact.producer}:\n\n${notes}`;
+  const latest = artifact.versions[artifact.versions.length - 1];
+  return `Notes on the ${artifact.title.toLowerCase()} (${latest?.label ?? 'latest version'}, artifact key ${artifact.key}):\n\n${notes}`;
 }
 
 function RunWorkspace({
   record,
   run,
-  outcomes,
+  publications,
   initialReview,
 }: {
   record: RunReviews;
   run: RunRef;
-  outcomes: readonly RunOutcome[];
+  publications: readonly Publication[];
   initialReview: string | null;
 }) {
   const navigate = useNavigate();
@@ -54,17 +56,19 @@ function RunWorkspace({
   const message = useSendToRun(run);
   const revise = useStartRevision();
   const gate = pendingGate(record.reviews);
-  const brief = runBrief(outcomes) || record.run.prompt;
+  const brief = record.run.prompt;
 
-  const artifacts = useMemo(() => {
-    const shown = documentFieldsShown(record.reviews);
-    return artifactsFromOutcomes(run, outcomes, waiting).filter(
-      (artifact) => !shown.has(artifact.field),
-    );
-  }, [run, outcomes, waiting, record.reviews]);
+  const presented = useMemo(
+    () => artifactsFromPublications(run, publications, waiting),
+    [run, publications, waiting],
+  );
+  const read = useArtifactTexts(run, presented);
+  // A gate that shows an artifact reads it in its own panel; the rest get a tab each.
+  const shownByGates = artifactKeysShown(record.reviews);
+  const artifacts = presented.filter((artifact) => !shownByGates.has(artifact.key));
   const reviews = [
-    ...record.reviews,
-    ...artifacts.map((artifact) => artifactReview(artifact, gate)),
+    ...gatesWithArtifacts(record.reviews, presented, read.texts),
+    ...artifacts.map((artifact) => artifactReview(artifact, record.reviews, read.texts)),
   ];
 
   function send(review: RunReview): ReviewSend | null {
@@ -72,7 +76,7 @@ function RunWorkspace({
     if (!artifact) return null;
     if (!runEnded(run)) {
       return {
-        title: `Send back to ${artifact.producer}`,
+        title: 'Send back to the run',
         hint: 'The run is still working. Your notes arrive in its chat as your next message.',
         label: 'Send to the run',
         busy: message.isPending,
@@ -82,6 +86,7 @@ function RunWorkspace({
     }
     const latest = artifact.versions[artifact.versions.length - 1];
     if (!run.workflowId || !latest) return null;
+    const document = versionDocument(latest, read.texts.get(latest.revisionId));
     return {
       title: 'Start a revision',
       hint: `This run has ended. A new ${record.run.workflowName} run starts from its brief, this version and your notes.`,
@@ -92,7 +97,7 @@ function RunWorkspace({
         revise.mutate(
           {
             workflowId: run.workflowId!,
-            prompt: revisionPrompt(artifact, latest, brief, notes),
+            prompt: revisionPrompt(artifact, latest, document, brief, notes),
             repo: record.run.repo || undefined,
             branch: record.run.branch || undefined,
             connectionId: run.instanceId ?? undefined,
@@ -108,6 +113,18 @@ function RunWorkspace({
     };
   }
 
+  const unread =
+    read.failed.length > 0 ? (
+      <p className="ting-review__error" role="alert">
+        {read.failed
+          .map(
+            ({ version, reason }) =>
+              `${version.name} (${version.label}) could not be read: ${reason}`,
+          )
+          .join(' ')}
+      </p>
+    ) : null;
+
   if (reviews.length === 0) {
     return (
       <p className="ting-review__state">
@@ -117,36 +134,39 @@ function RunWorkspace({
     );
   }
   return (
-    <ReviewWorkspace
-      subject={{
-        identifier: null,
-        title: record.run.workflowName,
-        gate,
-        pullRequestUrl: null,
-        canAsk: false,
-      }}
-      board={null}
-      reviews={reviews}
-      initialReview={initialReview}
-      railLabel="Run"
-      rail={
-        <>
-          {brief ? (
-            <details className="ting-review__brief">
-              <summary>What it was asked to do</summary>
-              <p>{brief}</p>
-            </details>
-          ) : null}
-          {record.run.startedBy ? <span>Started by {record.run.startedBy}</span> : null}
-          {record.run.branch ? <span>On {record.run.branch}</span> : null}
-          <Link to={`/volundr/sessions/${record.run.sessionId}` as never}>Open the session</Link>
-        </>
-      }
-      deciding={decide.isPending}
-      decisionFailure={decide.error}
-      onDecide={(decision, onSuccess) => decide.mutate(decision, { onSuccess })}
-      send={send}
-    />
+    <>
+      {unread}
+      <ReviewWorkspace
+        subject={{
+          identifier: null,
+          title: record.run.workflowName,
+          gate,
+          pullRequestUrl: null,
+          canAsk: false,
+        }}
+        board={null}
+        reviews={reviews}
+        initialReview={initialReview}
+        railLabel="Run"
+        rail={
+          <>
+            {brief ? (
+              <details className="ting-review__brief">
+                <summary>What it was asked to do</summary>
+                <p>{brief}</p>
+              </details>
+            ) : null}
+            {record.run.startedBy ? <span>Started by {record.run.startedBy}</span> : null}
+            {record.run.branch ? <span>On {record.run.branch}</span> : null}
+            <Link to={`/volundr/sessions/${record.run.sessionId}` as never}>Open the session</Link>
+          </>
+        }
+        deciding={decide.isPending}
+        decisionFailure={decide.error}
+        onDecide={(decision, onSuccess) => decide.mutate(decision, { onSuccess })}
+        send={send}
+      />
+    </>
   );
 }
 
@@ -157,9 +177,9 @@ export function RunReviewPage() {
   const record = useRunReviews(slug);
   const runs = useRun(slug);
   const run = runs.run;
-  const outcomes = useRunOutcomes(run);
+  const publications = useRunPublications(run);
 
-  if (record.isLoading || runs.loading || outcomes.isLoading) {
+  if (record.isLoading || runs.loading || publications.isLoading) {
     return <p className="ting-review__state">Loading the run…</p>;
   }
   if (record.error || !record.data) {
@@ -174,15 +194,17 @@ export function RunReviewPage() {
       <p className="ting-review__state" role="alert">
         {runs.error instanceof Error
           ? runs.error.message
-          : `Run ${slug} is not among the runs Work lists, so its log cannot be found.`}
+          : `Run ${slug} is not among the runs Work lists, so its session cannot be found.`}
       </p>
     );
   }
-  if (outcomes.error) {
+  if (publications.error) {
     return (
       <p className="ting-review__state" role="alert">
-        The run&apos;s log could not be read:{' '}
-        {outcomes.error instanceof Error ? outcomes.error.message : String(outcomes.error)}
+        What the run presented could not be read:{' '}
+        {publications.error instanceof Error
+          ? publications.error.message
+          : String(publications.error)}
       </p>
     );
   }
@@ -197,7 +219,7 @@ export function RunReviewPage() {
       <RunWorkspace
         record={record.data}
         run={run}
-        outcomes={outcomes.data ?? []}
+        publications={publications.data ?? []}
         initialReview={search.artifact ?? null}
       />
     </div>

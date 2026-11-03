@@ -14,7 +14,7 @@ import type { TrackerProject, TrackerMilestone, TrackerIssue } from './domain/tr
 import type { Workflow } from './domain/workflow';
 import type { GateDecision, WorkCollection, WorkDetail, WorkResourceKind } from './domain/work';
 import type { ReviewList, ReviewWidget, RunReviews, TicketReviews } from './domain/review';
-import type { RunOutcome } from './domain/artifacts';
+import type { Publication } from './domain/artifacts';
 
 /** The sessions in one Forge project, so runs can be grouped by the project they work in. */
 export interface ProjectSessions {
@@ -23,13 +23,20 @@ export interface ProjectSessions {
   sessionIds: string[];
 }
 
-/** What a run recorded in its Forge session log, and the run's session itself; Forge owns both. */
+/** What runs presented as Forge artifacts, and a run's session itself; Forge owns both. */
 export interface IRunLogService {
-  outcomes(
+  /** Every presented-file publication on one Forge, or one session's when given. */
+  publications(
+    instanceId: string | null,
+    options?: { sessionId?: string; signal?: AbortSignal },
+  ): Promise<Publication[]>;
+  /** The text of one presented file. */
+  presentedText(
     sessionId: string,
     instanceId: string | null,
+    fileId: string,
     signal?: AbortSignal,
-  ): Promise<RunOutcome[]>;
+  ): Promise<string>;
   projectSessions(): Promise<ProjectSessions[]>;
   sendMessage(sessionId: string, instanceId: string | null, content: string): Promise<void>;
 }

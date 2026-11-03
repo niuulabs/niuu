@@ -5,7 +5,7 @@ import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import type { IRunLogService, IWorkService, IWorkflowService } from '../../ports';
 import type { ReviewRevision, RunReviews } from '../../domain/review';
 import type { WorkSummary } from '../../domain/work';
-import type { RunOutcome } from '../../domain/artifacts';
+import type { Publication } from '../../domain/artifacts';
 import { RunReviewPage } from './RunReviewPage';
 
 const navigate = vi.hoisted(() => vi.fn());
@@ -85,43 +85,41 @@ function campaign(status: string, condition: WorkSummary['condition']): WorkSumm
   };
 }
 
-function outcome(overrides: Partial<RunOutcome>): RunOutcome {
+function presented(seq: number, overrides: Partial<Publication> = {}): Publication {
   return {
-    seq: 1,
-    at: '2026-10-31T09:30:00Z',
-    eventType: 'plan.revised',
-    participantId: 'flock-planner',
-    participantType: 'ravn',
-    fields: {},
+    seq,
+    sessionId: 'session-9',
+    providerKey: 'session-9:plan',
+    revisionId: `pf_${seq}`,
+    title: 'plan.md',
+    url: `/api/v1/forge/sessions/session-9/files/presented/pf_${seq}`,
+    at: `2026-10-31T09:3${seq}:00Z`,
+    mime: 'text/markdown',
+    versionLabel: `v${seq}`,
     ...overrides,
   };
 }
 
-const PLAN_OUTCOMES: RunOutcome[] = [
-  outcome({
-    seq: 1,
-    participantId: 'skuld-9',
-    participantType: 'skuld',
-    eventType: 'delivery.requested',
-    fields: {
-      prompt: '# Workflow Launch\n\n## Prompt\nPlan the CORS change\n\n## Expectations\nx',
-    },
-  }),
-  outcome({ seq: 2, fields: { plan: 'Step one\nStep two', verdict: 'ready_for_review' } }),
-];
+const PLAN: Publication[] = [presented(1)];
+const TEXTS: Record<string, string> = { pf_1: 'Step one\nStep two', pf_2: 'Step one, better' };
+const presentedText = vi.fn(async (_session: string, _host: string | null, fileId: string) => {
+  const text = TEXTS[fileId];
+  if (text === undefined) throw new Error(`No file ${fileId}`);
+  return text;
+});
 
 function setup({
   runReviews = vi.fn().mockResolvedValue(record()),
   decideRunGate = vi.fn(),
   status = ['blocked', 'needsAttention'] as [string, WorkSummary['condition']],
-  outcomes = vi.fn().mockResolvedValue([]),
+  publications = vi.fn().mockResolvedValue([]),
   sendMessage = vi.fn().mockResolvedValue(undefined),
   launchWorkflow = vi.fn(),
 }: {
   runReviews?: IWorkService['runReviews'];
   decideRunGate?: IWorkService['decideRunGate'];
   status?: [string, WorkSummary['condition']];
-  outcomes?: IRunLogService['outcomes'];
+  publications?: IRunLogService['publications'];
   sendMessage?: IRunLogService['sendMessage'];
   launchWorkflow?: IWorkflowService['launchWorkflow'];
 } = {}) {
@@ -138,7 +136,8 @@ function setup({
     }),
   } as unknown as IWorkService;
   const runLog = {
-    outcomes,
+    publications,
+    presentedText,
     projectSessions: vi.fn().mockResolvedValue([]),
     sendMessage,
   } as unknown as IRunLogService;
@@ -154,7 +153,7 @@ function setup({
       </ServicesProvider>
     </QueryClientProvider>,
   );
-  return { decideRunGate, sendMessage, launchWorkflow };
+  return { decideRunGate, sendMessage, launchWorkflow, publications };
 }
 
 describe('RunReviewPage', () => {
@@ -245,36 +244,47 @@ describe('RunReviewPage', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Run not found: a2a-9');
   });
 
-  it("says when the run's log cannot be read", async () => {
-    setup({ outcomes: vi.fn().mockRejectedValue(new Error('Resident runtime not found')) });
+  it('says when what the run presented cannot be read', async () => {
+    setup({ publications: vi.fn().mockRejectedValue(new Error('Forge unavailable')) });
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      "The run's log could not be read: Resident runtime not found",
+      'What the run presented could not be read: Forge unavailable',
     );
   });
 
-  it('shows what an agent produced, with each version', async () => {
-    search.value = { artifact: 'a2a-9/flock-planner/plan' };
+  it("reads one session's presented files and shows each version's text", async () => {
+    search.value = { artifact: 'session-9:plan' };
+    const { publications } = setup({
+      runReviews: vi.fn().mockResolvedValue(record({ reviews: [] })),
+      status: ['running', 'active'],
+      publications: vi.fn().mockResolvedValue([...PLAN, presented(2)]),
+    });
+
+    expect(await screen.findByText(/Step one, better/)).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'r2' })).toBeInTheDocument();
+    expect(publications).toHaveBeenCalledWith('valhalla', expect.objectContaining({ sessionId: 'session-9' }));
+    expect(screen.getByText('Plan NIU-1125 only')).toBeInTheDocument();
+  });
+
+  it('says which version could not be read', async () => {
     setup({
       runReviews: vi.fn().mockResolvedValue(record({ reviews: [] })),
       status: ['running', 'active'],
-      outcomes: vi.fn().mockResolvedValue(PLAN_OUTCOMES),
+      publications: vi.fn().mockResolvedValue([presented(7)]),
     });
 
-    expect(await screen.findByText(/Step one/)).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'r1' })).toBeInTheDocument();
-    expect(screen.getByText('Plan the CORS change')).toBeInTheDocument();
+    expect(await screen.findByText(/plan\.md \(v7\) could not be read: No file pf_7/)).toBeInTheDocument();
   });
 
   it('sends notes on a running artifact to the run', async () => {
     const { sendMessage } = setup({
       runReviews: vi.fn().mockResolvedValue(record({ reviews: [] })),
       status: ['running', 'active'],
-      outcomes: vi.fn().mockResolvedValue(PLAN_OUTCOMES),
+      publications: vi.fn().mockResolvedValue(PLAN),
     });
 
     expect(
-      await screen.findByRole('heading', { name: 'Send back to Planner' }),
+      await screen.findByRole('heading', { name: 'Send back to the run' }),
     ).toBeInTheDocument();
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Name the setting.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send to the run' }));
@@ -283,7 +293,7 @@ describe('RunReviewPage', () => {
       expect(sendMessage).toHaveBeenCalledWith(
         'session-9',
         'valhalla',
-        'Notes on the plan (version 1) from Planner:\n\nName the setting.',
+        'Notes on the plan (v1, artifact key plan):\n\nName the setting.',
       ),
     );
   });
@@ -293,11 +303,11 @@ describe('RunReviewPage', () => {
     setup({
       runReviews: vi.fn().mockResolvedValue(record({ reviews: [] })),
       status: ['completed', 'completed'],
-      outcomes: vi.fn().mockResolvedValue(PLAN_OUTCOMES),
+      publications: vi.fn().mockResolvedValue(PLAN),
       launchWorkflow,
     });
 
-    expect(await screen.findByRole('heading', { name: 'Start a revision' })).toBeInTheDocument();
+    expect(await screen.findByText(/Step two/)).toBeInTheDocument();
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Name the setting.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Start a revision' }));
 
@@ -310,18 +320,34 @@ describe('RunReviewPage', () => {
       connectionId: 'valhalla',
       workflowVersion: '1.2.0',
     });
-    expect(request.prompt).toContain('Plan the CORS change');
+    expect(request.prompt).toContain('Plan NIU-1125 only');
     expect(request.prompt).toContain("Reviewer's notes:\nName the setting.");
     expect(request.prompt).toContain('Previous plan:\nStep one\nStep two');
   });
 
-  it('answers a waiting gate from the artifact it is about', async () => {
+  it('answers a waiting gate from the artifact version it shows', async () => {
+    const waiting = record();
+    waiting.reviews[0]!.revisions = [
+      revision({
+        artifacts: [
+          {
+            artifactKey: 'plan',
+            providerKey: 'session-9:plan',
+            revisionId: 'pf_1',
+            name: 'plan.md',
+            versionLabel: 'v1',
+            mime: 'text/markdown',
+            url: null,
+          },
+        ],
+      }),
+    ];
     const { decideRunGate } = setup({
-      runReviews: vi.fn().mockResolvedValue(record()),
-      outcomes: vi.fn().mockResolvedValue(PLAN_OUTCOMES),
+      runReviews: vi.fn().mockResolvedValue(waiting),
+      publications: vi.fn().mockResolvedValue(PLAN),
       decideRunGate: vi.fn().mockResolvedValue(undefined),
     });
-    search.value = { artifact: 'a2a-9/flock-planner/plan' };
+    search.value = { artifact: 'session-9:plan' };
 
     fireEvent.click(await screen.findByRole('tab', { name: 'Plan' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
@@ -332,6 +358,38 @@ describe('RunReviewPage', () => {
         expect.objectContaining({ gateId: 'gate-1', decision: 'approve' }),
       ),
     );
+  });
+
+  it("reads a gate's plan panel from the version it showed, not the outcome copy", async () => {
+    const gate = record();
+    gate.reviews[0]!.panels = [
+      { widget: 'document', title: 'Plan', source: { kind: 'outcome', value: 'plan' } },
+    ];
+    gate.reviews[0]!.revisions = [
+      revision({
+        fields: { plan: 'copied outcome' },
+        artifacts: [
+          {
+            artifactKey: 'plan',
+            providerKey: 'session-9:plan',
+            revisionId: 'pf_2',
+            name: 'plan.md',
+            versionLabel: 'v2',
+            mime: 'text/markdown',
+            url: null,
+          },
+        ],
+      }),
+    ];
+    setup({
+      runReviews: vi.fn().mockResolvedValue(gate),
+      publications: vi.fn().mockResolvedValue([...PLAN, presented(2)]),
+    });
+
+    expect(await screen.findByText(/Step one, better/)).toBeInTheDocument();
+    expect(screen.queryByText('copied outcome')).not.toBeInTheDocument();
+    // The plan is read in the gate's own panel, so it has no second tab.
+    expect(screen.queryByRole('tab', { name: 'Plan' })).not.toBeInTheDocument();
   });
 
   it('says so when Work does not list the run', async () => {

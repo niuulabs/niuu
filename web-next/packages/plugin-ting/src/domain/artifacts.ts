@@ -1,42 +1,36 @@
 import type { WorkSummary } from './work';
-import { REVISION_PENDING, type RunReview } from './review';
+import { REVISION_PENDING, type ReviewRevision, type RunReview } from './review';
 
 /**
- * Artifacts are what agents produce in a workflow run, read from the outcomes the run
- * already records in its session log. An artifact is one agent's multi-line output
- * field (a plan, a spec, the details of a code change); each time that agent reports
- * the field again is a new version, and what the other agents say in between is its
- * history. Nothing is stored for this: the run's log is the record.
+ * Artifacts are the documents agents present in a workflow run (a plan, a spec, a
+ * report), as Forge records them: one artifact publication per presented file
+ * (`GET /artifact-publications`). Files an agent presents under one artifact key are
+ * one artifact, each file a version of it; Ting's gate reviews name the version a
+ * person decided on. Outcome fields stay in the run's log as its record and are not
+ * listed here.
  */
 
-/** One `room_outcome` from a run's session log. */
-export interface RunOutcome {
+/** One Forge artifact publication of a presented file. */
+export interface Publication {
   seq: number;
+  sessionId: string;
+  providerKey: string;
+  revisionId: string;
+  title: string | null;
+  url: string | null;
   at: string;
-  eventType: string;
-  participantId: string;
-  /** `ravn` for an agent; `skuld` posts the brief and `workflow` decides the run. */
-  participantType: string;
-  fields: Record<string, unknown>;
+  mime: string | null;
+  versionLabel: string | null;
 }
 
 export interface ArtifactVersion {
   number: number;
-  seq: number;
+  revisionId: string;
+  label: string;
   at: string;
-  text: string;
-  eventType: string;
-  verdict: string | null;
-}
-
-/** What another participant said about the work, in order. */
-export interface ArtifactFeedback {
-  seq: number;
-  at: string;
-  from: string;
-  eventType: string;
-  verdict: string | null;
-  summary: string;
+  name: string;
+  mime: string | null;
+  url: string | null;
 }
 
 export type ArtifactStatus = 'waiting' | 'inProgress' | 'done' | 'failed';
@@ -55,17 +49,13 @@ export interface RunRef {
 }
 
 export interface Artifact {
-  /** `<run slug>/<producer>/<field>`, stable across versions. */
+  /** Forge's `provider_key`: stable across versions. */
   id: string;
+  /** The agent's own name for it (`plan`), or the file's id when it was presented once. */
+  key: string;
   run: RunRef;
-  field: string;
   title: string;
-  /** What the run was asked to do, in one line: its brief's first line, or the run's title. */
-  subject: string;
-  producerId: string;
-  producer: string;
   versions: ArtifactVersion[];
-  feedback: ArtifactFeedback[];
   status: ArtifactStatus;
   updatedAt: string;
 }
@@ -77,43 +67,9 @@ export const ARTIFACT_STATUS_LABEL: Record<ArtifactStatus, string> = {
   failed: 'Run failed',
 };
 
-const AGENT_PARTICIPANT = 'ravn';
-
 function humanize(value: string): string {
   const words = value.replace(/[_.-]+/g, ' ').trim();
   return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
-/** `flock-developer-analyst` reads as "Developer analyst". */
-export function producerName(participantId: string): string {
-  return humanize(participantId.replace(/^flock-/, ''));
-}
-
-function text(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
-
-/** Every outcome carries a one-line summary of itself; it describes the work, it is not it. */
-const SUMMARY_FIELD = 'summary';
-
-/**
- * The documents in an outcome: its multi-line text, or, when it has none, its longest
- * text. Identifiers and verdicts are single words and never count.
- */
-function documentFields(fields: Record<string, unknown>): string[] {
-  const prose = Object.entries(fields)
-    .filter(([name]) => name !== SUMMARY_FIELD)
-    .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
-    .map(([name, value]) => [name, value.trim()] as const)
-    .filter(([, value]) => /\s/.test(value));
-  const multiLine = prose.filter(([, value]) => value.includes('\n')).map(([name]) => name);
-  if (multiLine.length > 0) return multiLine;
-  const longest = [...prose].sort((left, right) => right[1].length - left[1].length)[0];
-  return longest ? [longest[0]] : [];
-}
-
-function verdictOf(fields: Record<string, unknown>): string | null {
-  return text(fields.verdict) || null;
 }
 
 const BLOCKED = 'blocked';
@@ -149,175 +105,201 @@ export function runRef(item: WorkSummary): RunRef | null {
   };
 }
 
-/** Every artifact a run's agents produced, newest version last in each. */
-export function artifactsFromOutcomes(
+/** A keyed file's provider key is `<session>:<key>`; an unkeyed one is the file's own id. */
+function artifactKey(publication: Publication): string {
+  const prefix = `${publication.sessionId}:`;
+  return publication.providerKey.startsWith(prefix)
+    ? publication.providerKey.slice(prefix.length)
+    : publication.providerKey;
+}
+
+/** Every artifact a run's agents presented, versions oldest first. */
+export function artifactsFromPublications(
   run: RunRef,
-  outcomes: readonly RunOutcome[],
+  publications: readonly Publication[],
   waitingSlugs: ReadonlySet<string>,
 ): Artifact[] {
-  const ordered = [...outcomes].sort((left, right) => left.seq - right.seq);
-  const subject =
-    runBrief(ordered)
-      .split('\n')
-      .map((line) => line.trim())
-      .find(Boolean) ?? run.title;
-  const byId = new Map<string, Artifact>();
-  for (const outcome of ordered) {
-    if (outcome.participantType !== AGENT_PARTICIPANT) continue;
-    for (const field of documentFields(outcome.fields)) {
-      const id = `${run.slug}/${outcome.participantId}/${field}`;
-      const artifact = byId.get(id) ?? {
-        id,
-        run,
-        field,
-        title: humanize(field),
-        subject,
-        producerId: outcome.participantId,
-        producer: producerName(outcome.participantId),
-        versions: [],
-        feedback: [],
-        status: artifactStatus(run, waitingSlugs),
-        updatedAt: outcome.at,
-      };
-      artifact.versions.push({
-        number: artifact.versions.length + 1,
-        seq: outcome.seq,
-        at: outcome.at,
-        text: text(outcome.fields[field]),
-        eventType: outcome.eventType,
-        verdict: verdictOf(outcome.fields),
-      });
-      artifact.updatedAt = outcome.at;
-      byId.set(id, artifact);
+  const byKey = new Map<string, Artifact>();
+  const ordered = publications
+    .filter((publication) => publication.sessionId === run.sessionId)
+    .sort((left, right) => left.seq - right.seq);
+  for (const publication of ordered) {
+    const key = artifactKey(publication);
+    const name = publication.title ?? key;
+    const artifact = byKey.get(publication.providerKey) ?? {
+      id: publication.providerKey,
+      key,
+      run,
+      title: key === publication.revisionId ? name : humanize(key),
+      versions: [],
+      status: artifactStatus(run, waitingSlugs),
+      updatedAt: publication.at,
+    };
+    // A republish of the same file is the same version.
+    if (artifact.versions.some((version) => version.revisionId === publication.revisionId)) {
+      continue;
     }
+    const number = artifact.versions.length + 1;
+    artifact.versions.push({
+      number,
+      revisionId: publication.revisionId,
+      label: publication.versionLabel ?? `v${number}`,
+      at: publication.at,
+      name,
+      mime: publication.mime,
+      url: publication.url,
+    });
+    artifact.updatedAt = publication.at;
+    byKey.set(publication.providerKey, artifact);
   }
-  for (const artifact of byId.values()) {
-    const first = artifact.versions[0]?.seq ?? 0;
-    artifact.feedback = ordered
-      .filter((outcome) => outcome.seq > first && outcome.participantId !== artifact.producerId)
-      .filter((outcome) => outcome.participantType !== 'skuld')
-      .map((outcome) => ({
-        seq: outcome.seq,
-        at: outcome.at,
-        from:
-          outcome.participantType === AGENT_PARTICIPANT
-            ? producerName(outcome.participantId)
-            : 'Workflow',
-        eventType: outcome.eventType,
-        verdict: verdictOf(outcome.fields),
-        summary: text(outcome.fields.summary),
-      }));
-  }
-  return [...byId.values()];
+  return [...byKey.values()];
 }
 
-const PROMPT_HEADING = '## Prompt';
-
-/**
- * What the person asked for. Ting wraps a launch's prompt in a brief with sections
- * (`_build_workflow_initiative_context` in `src/ting/api/workflows.py`); the person's
- * own words are its Prompt section.
- */
-export function launchPrompt(brief: string): string {
-  const lines = brief.split('\n');
-  const start = lines.findIndex((line) => line.trim() === PROMPT_HEADING);
-  if (start < 0) return brief.trim();
-  const rest = lines.slice(start + 1);
-  const end = rest.findIndex((line) => line.startsWith('## '));
-  return (end < 0 ? rest : rest.slice(0, end)).join('\n').trim();
+export function newestFirst<T extends { updatedAt: string }>(artifacts: readonly T[]): T[] {
+  return [...artifacts].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
-/** What the run was started to do, from the dispatch outcome. */
-export function runBrief(outcomes: readonly RunOutcome[]): string {
-  const dispatch = outcomes.find((outcome) => outcome.participantType === 'skuld');
-  if (!dispatch) return '';
-  return launchPrompt(text(dispatch.fields.prompt) || text(dispatch.fields.task_description));
+const TEXT_TYPES = /^(text\/|application\/(json|x-yaml|yaml|xml|markdown))/i;
+
+/** Whether a version is read on the page; anything else opens as a file. */
+export function isReadable(version: ArtifactVersion): boolean {
+  return TEXT_TYPES.test(version.mime ?? 'text/plain');
 }
 
-/** Feedback that arrived after one version and before the next. */
-export function feedbackFor(artifact: Artifact, version: ArtifactVersion): ArtifactFeedback[] {
-  const next = artifact.versions.find((item) => item.number === version.number + 1);
-  return artifact.feedback.filter(
-    (item) => item.seq > version.seq && (next === undefined || item.seq < next.seq),
-  );
+/** What the review page shows for a version: its text, or a link to open the file. */
+export function versionDocument(version: ArtifactVersion, text: string | undefined): string {
+  if (isReadable(version) && text !== undefined) return text;
+  return version.url ? `[Open ${version.name}](${version.url})` : version.name;
 }
 
 /** What a new run is asked to do when a finished artifact is sent back for revision. */
 export function revisionPrompt(
   artifact: Artifact,
   version: ArtifactVersion,
+  document: string,
   brief: string,
   notes: string,
 ): string {
+  const name = artifact.title.toLowerCase();
   return [
     brief.trim(),
-    `Revise the ${artifact.title.toLowerCase()} below (version ${version.number} from run ${artifact.run.slug}) to address the reviewer's notes. Keep what the notes do not question.`,
+    `Revise the ${name} below (${version.label} from run ${artifact.run.slug}) to address the reviewer's notes. Keep what the notes do not question. Present the revision under artifact key ${artifact.key}.`,
     `Reviewer's notes:\n${notes.trim()}`,
-    `Previous ${artifact.title.toLowerCase()}:\n${version.text}`,
+    `Previous ${name}:\n${document}`,
   ]
     .filter(Boolean)
     .join('\n\n');
 }
 
-export function newestFirst(artifacts: readonly Artifact[]): Artifact[] {
-  return [...artifacts].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-}
-
-/** A gate the run is waiting on, which an artifact's latest version is answered through. */
-export interface PendingGate {
-  id: string;
-  activationId: string;
+/** The gate revision that put this exact version in front of a person, if one did. */
+function deciding(
+  artifact: Artifact,
+  version: ArtifactVersion,
+  gates: readonly RunReview[],
+): ReviewRevision | null {
+  for (const review of gates) {
+    for (const revision of review.revisions) {
+      const shown = revision.artifacts ?? [];
+      if (
+        shown.some(
+          (item) => item.providerKey === artifact.id && item.revisionId === version.revisionId,
+        )
+      ) {
+        return revision;
+      }
+    }
+  }
+  return null;
 }
 
 /**
  * An artifact in the shape the review workspace reads, so it is reviewed on the same
- * page, with the same notes and marks, as a gate's own document.
+ * page, with the same notes and marks, as a gate's own document. A version a gate
+ * showed carries that gate's decision; the pending one answers the gate.
  */
-export function artifactReview(artifact: Artifact, gate: PendingGate | null): RunReview {
-  const latest = artifact.versions.length;
+export function artifactReview(
+  artifact: Artifact,
+  gates: readonly RunReview[],
+  texts: ReadonlyMap<string, string>,
+): RunReview {
   return {
     columnId: artifact.id,
     title: artifact.title,
     review: null,
-    workflowName: `${artifact.producer} · ${artifact.run.title}`,
+    workflowName: artifact.run.title,
     taskId: artifact.run.slug,
     sessionId: artifact.run.sessionId,
     panels: [
       {
         widget: 'document',
         title: artifact.title,
-        source: { kind: 'outcome', value: artifact.field },
+        source: { kind: 'outcome', value: artifact.key },
       },
     ],
     revisions: artifact.versions.map((version) => {
-      const answersGate = gate !== null && version.number === latest;
+      const gate = deciding(artifact, version, gates);
+      const document = versionDocument(version, texts.get(version.revisionId));
       return {
         number: version.number,
-        gateId: answersGate ? gate.id : `${artifact.id}#${version.number}`,
-        activationId: answersGate ? gate.activationId : '',
+        gateId: gate?.gateId ?? `${artifact.id}#${version.number}`,
+        activationId: gate?.activationId ?? '',
         requestedAt: version.at,
-        status: answersGate ? REVISION_PENDING : humanize(version.verdict ?? 'reported'),
-        summary: '',
-        decidedBy: '',
-        notes: feedbackFor(artifact, version)
-          .map(
-            (item) =>
-              `${item.from}${item.verdict ? ` · ${humanize(item.verdict)}` : ''}${item.summary ? `: ${item.summary}` : ''}`,
-          )
-          .join('\n'),
-        decidedAt: '',
-        fields: { [artifact.field]: version.text },
+        status: gate?.status ?? 'Presented',
+        summary: version.label,
+        decidedBy: gate?.decidedBy ?? '',
+        notes: gate?.notes ?? '',
+        decidedAt: gate?.decidedAt ?? '',
+        fields: { [artifact.key]: document },
       };
     }),
   };
 }
 
-/** Fields a gate's own review already shows, which need no second tab. */
-export function documentFieldsShown(reviews: readonly RunReview[]): Set<string> {
-  return new Set(
+/** Whether any of these gate revisions is the pending one. */
+export function answersPendingGate(review: RunReview): boolean {
+  return review.revisions.some((revision) => revision.status === REVISION_PENDING);
+}
+
+/**
+ * A gate's document panel reads the version the gate showed of the artifact presented
+ * under that panel's field, instead of the copy in the agent's outcome; a gate that
+ * showed no such version keeps its outcome field.
+ */
+export function gatesWithArtifacts(
+  gates: readonly RunReview[],
+  artifacts: readonly Artifact[],
+  texts: ReadonlyMap<string, string>,
+): RunReview[] {
+  const versions = new Map(
+    artifacts.flatMap((artifact) =>
+      artifact.versions.map((version) => [`${artifact.id}|${version.revisionId}`, version]),
+    ),
+  );
+  return gates.map((review) => ({
+    ...review,
+    revisions: review.revisions.map((revision) => {
+      const fields = { ...revision.fields };
+      for (const shown of revision.artifacts ?? []) {
+        const version = versions.get(`${shown.providerKey}|${shown.revisionId}`);
+        if (!version) continue;
+        fields[shown.artifactKey] = versionDocument(version, texts.get(version.revisionId));
+      }
+      return { ...revision, fields };
+    }),
+  }));
+}
+
+/** Artifact keys a gate's own document panels already show, which need no second tab. */
+export function artifactKeysShown(reviews: readonly RunReview[]): Set<string> {
+  const fields = new Set(
     reviews
       .flatMap((review) => review.panels)
       .filter((panel) => panel.widget === 'document' && panel.source?.kind === 'outcome')
       .map((panel) => panel.source!.value),
   );
+  const keys = reviews
+    .flatMap((review) => review.revisions)
+    .flatMap((revision) => revision.artifacts ?? [])
+    .map((artifact) => artifact.artifactKey);
+  return new Set(keys.filter((key) => fields.has(key)));
 }

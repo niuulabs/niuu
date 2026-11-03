@@ -1,6 +1,17 @@
 import type { ReviewPanel } from './work';
 
 /** One version of the work, as a person saw it at one gate. */
+/** A document version a gate showed: Forge's artifact publication by key and revision. */
+export interface ReviewArtifact {
+  artifactKey: string;
+  providerKey: string;
+  revisionId: string;
+  name: string;
+  versionLabel: string | null;
+  mime: string | null;
+  url: string | null;
+}
+
 export interface ReviewRevision {
   number: number;
   gateId: string;
@@ -12,6 +23,8 @@ export interface ReviewRevision {
   notes: string;
   decidedAt: string;
   fields: Record<string, string>;
+  /** The artifact versions this gate opening showed (none from an older Ting). */
+  artifacts?: ReviewArtifact[];
 }
 
 /** Everything one gate column of one run has put in front of a person. */

@@ -23,10 +23,11 @@ describe('ProjectPage', () => {
   });
 
   it("lists the project's artifacts, read only from its own runs", async () => {
-    const outcomes = vi.fn().mockResolvedValue([]);
+    const publications = vi.fn().mockResolvedValue([]);
     renderRealms('/realms/projects/project-yggdrasil', {
       'ting.runLog': {
-        outcomes,
+        publications,
+        presentedText: vi.fn(),
         projectSessions: vi
           .fn()
           .mockResolvedValue([
@@ -37,9 +38,9 @@ describe('ProjectPage', () => {
     });
     const page = await screen.findByTestId('project-page');
     expect(
-      await within(page).findByText('No run has produced an artifact yet.'),
+      await within(page).findByText('No run has presented a document yet.'),
     ).toBeInTheDocument();
-    expect(outcomes).not.toHaveBeenCalled();
+    expect(publications).not.toHaveBeenCalled();
   });
 
   it('saves the brief and the repository on the project', async () => {
