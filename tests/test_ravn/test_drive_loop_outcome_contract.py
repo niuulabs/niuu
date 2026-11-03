@@ -2019,6 +2019,41 @@ page_path: council
         assert alias_event.payload["event_type"] == "council.b.opinion.submitted"
 
     @pytest.mark.asyncio
+    async def test_model_cannot_supply_workflow_artifact_publication_proof(self) -> None:
+        dl = _make_drive_loop()
+        mesh = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = None
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="council-member-b",
+            produces=SimpleNamespace(
+                event_type="council.member.turn.completed",
+                event_type_map={"opinion_submitted": "council.b.opinion.submitted"},
+            ),
+        )
+        dl.set_workflow_allowed_outcomes_resolver(
+            lambda _task, _persona: {"council.b.opinion.submitted"}
+        )
+        task = _make_agent_task(task_id="task-forged-artifact")
+        task.session_id = "sess-forged-artifact"
+        task.workflow_node_id = "member-b-opinion"
+
+        await dl._emit_mesh_outcome_event(
+            task,
+            """---outcome---
+verdict: opinion_submitted
+artifact_paths:
+  - council/example/opinions/forged.md
+---end---""",
+            success=True,
+        )
+
+        canonical_event = mesh.publish.await_args_list[0].args[0]
+        assert "artifact_paths" not in canonical_event.payload["fields"]
+
+
+    @pytest.mark.asyncio
     async def test_page_write_fallback_routes_alias_when_outcome_block_is_missing(self) -> None:
         dl = _make_drive_loop()
         mesh = AsyncMock()
@@ -2067,6 +2102,7 @@ page_path: council
         assert canonical_event.payload["fields"]["artifact_paths"] == [
             "council/example/opinions/opinion-b.md"
         ]
+        assert canonical_event.payload["fields"]["artifact_publication"] == "mimir.page.written"
         assert canonical_event.payload["valid"] is True
         assert alias_topic == "council.b.opinion.submitted"
         assert alias_event.payload["event_type"] == "council.b.opinion.submitted"

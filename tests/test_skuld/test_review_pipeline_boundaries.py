@@ -564,12 +564,14 @@ def test_workflow_terminal_preserves_only_explicit_child_result_object():
                     },
                     "untrustedExtra": "discarded",
                     "artifact_paths": ["planning/task/approved-plan.md"],
+                    "artifact_publication": "mimir.page.written",
                 },
             }
         ]
     )
 
     assert result["artifact_paths"] == ["planning/task/approved-plan.md"]
+    assert result["artifact_publication"] == "mimir.page.written"
     assert result["result"] == {
         "attemptId": "attempt-1",
         "candidateSha": "a" * 40,

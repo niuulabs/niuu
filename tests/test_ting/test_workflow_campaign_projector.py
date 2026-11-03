@@ -444,6 +444,7 @@ async def test_planning_completion_requires_published_plan_artifact() -> None:
                 "structured_outcome": {
                     "authoritative": True,
                     "artifact_paths": ["planning/tool-build-test/approved-plan.md"],
+                    "artifact_publication": "mimir.page.written",
                 },
             },
             campaign.owner_id,
@@ -474,7 +475,12 @@ async def test_planning_completion_fails_when_plan_artifact_was_not_published() 
                 "completion_event_type": "developer.plan.approved",
                 "completion_peer_id": "workflow-stop:planning-complete",
                 "outcome_valid": True,
-                "structured_outcome": {"authoritative": True},
+                "structured_outcome": {
+                    "authoritative": True,
+                    # This mimics a model-forged path. The terminal projector
+                    # accepts only the Mímir tool-result provenance marker.
+                    "artifact_paths": ["planning/tool-build-test/approved-plan.md"],
+                },
             },
             campaign.owner_id,
         ),

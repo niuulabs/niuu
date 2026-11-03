@@ -406,7 +406,11 @@ def _merge_workflow_terminal_outcomes(outcomes: list[dict[str, Any]]) -> dict[st
 
         fields = outcome.get("fields")
         candidate_artifacts = fields.get("artifact_paths") if isinstance(fields, dict) else None
-        if isinstance(candidate_artifacts, list):
+        artifact_published = (
+            isinstance(fields, dict)
+            and fields.get("artifact_publication") == "mimir.page.written"
+        )
+        if artifact_published and isinstance(candidate_artifacts, list):
             for artifact_path in candidate_artifacts:
                 if not isinstance(artifact_path, str):
                     continue
@@ -439,6 +443,7 @@ def _merge_workflow_terminal_outcomes(outcomes: list[dict[str, Any]]) -> dict[st
         merged["scope_adherence"] = min(scope_values)
     if artifact_paths:
         merged["artifact_paths"] = artifact_paths
+        merged["artifact_publication"] = "mimir.page.written"
     # A child workflow's final coordinator emits the typed, unsigned result.
     # Preserve only this explicitly named object. Ting independently projects
     # authenticated reviewer outcomes into signed receipts before the result

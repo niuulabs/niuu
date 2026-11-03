@@ -4393,6 +4393,11 @@ class DriveLoop:
         if self._workflow_allowed_outcomes_resolver is not None:
             allowed_topics = self._workflow_allowed_outcomes_resolver(task, persona_config)
 
+        # ``artifact_paths`` is publication evidence, not model output. A model can
+        # name a page it did not write, so discard it before adding a reference
+        # observed from a successful task-bound Mímir tool result.
+        outcome_fields.pop("artifact_paths", None)
+        outcome_fields.pop("artifact_publication", None)
         page_write_fields = task.tool_outcomes.get(_MIMIR_PAGE_WRITTEN_OUTCOME) or {}
         written_page_path = str(page_write_fields.get("page_path") or "").strip()
         if written_page_path:
@@ -4400,6 +4405,7 @@ class DriveLoop:
             # never by the model's outcome. Workflow terminals use it to prove
             # that a declared artifact was actually persisted before completion.
             outcome_fields["artifact_paths"] = [written_page_path]
+            outcome_fields["artifact_publication"] = _MIMIR_PAGE_WRITTEN_OUTCOME
         verdict = str(
             outcome_fields.get("verdict", "") or outcome_fields.get("decision", "") or ""
         ).strip()

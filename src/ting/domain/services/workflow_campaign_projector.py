@@ -637,7 +637,12 @@ def _missing_required_planning_artifacts(
     )
     if not declared:
         return ()
-    actual = completion.get("artifact_paths") if isinstance(completion, dict) else []
+    actual = (
+        completion.get("artifact_paths")
+        if isinstance(completion, dict)
+        and completion.get("artifact_publication") == "mimir.page.written"
+        else []
+    )
     actual_paths = (
         {str(path).strip() for path in actual if isinstance(path, str)}
         if isinstance(actual, list)
