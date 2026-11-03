@@ -319,6 +319,18 @@ class TicketStartResponse(_ResponseModel):
     session_id: str
 
 
+class ReviewArtifactResponse(_ResponseModel):
+    """A document version the gate shows: Forge's publication by key and revision."""
+
+    artifact_key: str
+    provider_key: str
+    revision_id: str
+    name: str
+    version_label: str | None
+    mime: str | None
+    url: str | None
+
+
 class ReviewRevisionResponse(_ResponseModel):
     number: int
     gate_id: str
@@ -330,6 +342,7 @@ class ReviewRevisionResponse(_ResponseModel):
     notes: str
     decided_at: str
     fields: dict[str, str]
+    artifacts: list[ReviewArtifactResponse] = []
 
 
 class RunReviewResponse(_ResponseModel):

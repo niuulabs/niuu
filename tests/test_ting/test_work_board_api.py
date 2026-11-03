@@ -1534,6 +1534,59 @@ def test_a_run_with_no_ticket_shows_its_gate_for_review() -> None:
     assert body["unreadableRuns"] == []
 
 
+def test_a_run_review_names_the_artifact_version_it_shows() -> None:
+    saga = _planned_saga()
+    adapter = _adapter([])
+    file_id = "pf_" + "a" * 32
+    part = {
+        "id": file_id,
+        "type": "tool_use",
+        "name": "present_file",
+        "input": {
+            "file_id": file_id,
+            "name": "plan.md",
+            "mime": "text/markdown",
+            "artifact_key": "plan",
+            "version_label": "v1",
+        },
+    }
+    adapter.get_public_session_log_page = AsyncMock(
+        return_value=_log(
+            ("conversation.turn", {"type": "conversation.turn", "turn": {"parts": [part]}}),
+            (
+                "workflow_gate",
+                {
+                    "gate": {
+                        "id": "gate-1",
+                        "activation_id": "activation-1",
+                        "node_id": "merge-gate",
+                        "status": "pending",
+                    }
+                },
+            ),
+        )
+    )
+    client = _run_client(_ticketless_run(saga), adapter)
+
+    body = client.get(
+        "/api/v1/ting/work/runs/a2a-run/reviews",
+        headers={**HEADERS, "authorization": "Bearer token"},
+    ).json()
+
+    (review,) = body["reviews"]
+    assert review["revisions"][0]["artifacts"] == [
+        {
+            "artifactKey": "plan",
+            "providerKey": "run-session:plan",
+            "revisionId": file_id,
+            "name": "plan.md",
+            "versionLabel": "v1",
+            "mime": "text/markdown",
+            "url": None,
+        }
+    ]
+
+
 def test_another_owners_run_is_not_found() -> None:
     client = _run_client(None, _adapter([]))
     repo = client.app.dependency_overrides[resolve_workflow_campaign_repo]()

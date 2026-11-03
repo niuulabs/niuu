@@ -331,6 +331,12 @@ async def _run_daemon(
         if cron_tools:
             tools.extend(_filter_tools(cron_tools, settings, resolved_persona))
 
+        # A persona presents documents only when it lists present_file (its own judgment
+        # of what a person should read); the tool exists only where Forge configured it.
+        present_file_tool = getattr(drive_loop, "_present_file_tool", None)
+        if present_file_tool is not None:
+            tools.extend(_filter_tools([present_file_tool], settings, resolved_persona))
+
         # Like a Forge session's notify, offered to every persona wherever the outbox
         # exists; only an explicit disable or a persona's forbidden_tools drops it.
         if resident_notification_outbox is not None and _notify_tool_allowed(

@@ -3,7 +3,7 @@ id: 96ecf5df-18a0-542b-9df6-aef6aef6a5db
 name: Specification Stack
 description: End-to-end specification workflow that produces a PRD, SRD, SDD, and delivery breakdown with
   explicit review and approval gates between each artifact.
-version: 1.0.2
+version: 1.1.0
 persona_dependencies:
   specification-breakdown-critic:
     id: specification-breakdown-critic
@@ -32,8 +32,8 @@ persona_dependencies:
     path: personas/specification-prd-critic.yaml
   specification-publisher:
     id: specification-publisher
-    revision: content-aaf26d20aba79f4e
-    digest: sha256:aaf26d20aba79f4ec5692660d010d021fd862c5eb0b0034702aaf5321d55d3f0
+    revision: content-3aaab11de9cdc5ea
+    digest: sha256:3aaab11de9cdc5eac5803cc5dbd6bb351d6bf0b9b84b5faac1baae3f20ba842f
     path: personas/specification-publisher.yaml
   specification-sdd-author:
     id: specification-sdd-author

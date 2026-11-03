@@ -13,6 +13,7 @@ import asyncio
 import logging
 import socket
 import uuid
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -26,6 +27,9 @@ from skuld.config import MeshConfig
 from sleipnir.ports.events import SleipnirSubscriber
 
 logger = logging.getLogger("skuld.mesh_adapter")
+
+#: A broker-side answer to one mesh RPC ``type`` a flock member may send.
+RpcHandler = Callable[[dict], Awaitable[dict]]
 
 
 class SkuldMeshAdapter:
@@ -42,8 +46,10 @@ class SkuldMeshAdapter:
         transport: CLITransport,
         config: MeshConfig,
         session_id: str,
+        rpc_handlers: Mapping[str, RpcHandler] | None = None,
     ) -> None:
         self._participant = participant
+        self._rpc_handlers = dict(rpc_handlers or {})
         self._mesh: MeshPort | None = participant.mesh
         self._transport = transport
         self._config = config
@@ -148,6 +154,10 @@ class SkuldMeshAdapter:
 
         if msg_type == "work_request":
             return await self._handle_work_request(message)
+
+        handler = self._rpc_handlers.get(msg_type)
+        if handler is not None:
+            return await handler(message)
 
         return {"error": "unknown_message_type", "type": msg_type}
 

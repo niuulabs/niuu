@@ -29,6 +29,7 @@ from fastapi import WebSocket, WebSocketDisconnect  # noqa: F401
 from niuu.domain.conversation_timeline import TIMELINE_KEY, project_timeline, stamp_parts, timeline
 from niuu.domain.logging import LoggingConfig
 from niuu.domain.outcome import parse_outcome_block
+from niuu.domain.presented_files import PRESENT_FILE_RPC_TYPE
 from niuu.domain.text_projection import projection_revision
 from niuu.domain.transcript_reducer import (
     TurnAccumulator,
@@ -1171,6 +1172,9 @@ class Broker(
             transport=self._transport,
             config=mesh_cfg,
             session_id=self.session_id,
+            # Flock members share the workspace, not this broker's loopback secret:
+            # their present-file comes over the mesh they already speak.
+            rpc_handlers={PRESENT_FILE_RPC_TYPE: _present_peer_file},
         )
 
         try:
@@ -5996,6 +6000,13 @@ class Broker(
             )
         except (OSError, TypeError, ValueError):
             logger.exception("Failed to recover pending control state")
+
+
+async def _present_peer_file(message: dict) -> dict:
+    """A flock member's present-file over the mesh (bound late: the API binds the broker)."""
+    from skuld.broker_api import present_peer_file  # noqa: PLC0415
+
+    return await present_peer_file(message)
 
 
 # Global broker instance; deployment trust is composed outside the graph/runtime.

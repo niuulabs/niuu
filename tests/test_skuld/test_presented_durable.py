@@ -17,6 +17,7 @@ from skuld.presented_durable import (
     REFUSED_MARKER,
     durable_record,
     pending_uploads,
+    presented_versions,
     retry_presented_upload,
     upload_presented_file,
     write_pending_record,
@@ -437,3 +438,26 @@ def test_present_file_fails_loudly_when_the_quota_is_full(client, tmp_path, monk
     assert len(bmod.broker._conversation_turns) == turns_before  # nothing presented
     assert api_mod._presented_registry == {}
     assert not any((tmp_path / "staging").glob("pf_*"))
+
+
+def test_presented_versions_count_the_files_staged_under_a_key(tmp_path):
+    root = tmp_path / "staging"
+    assert presented_versions(root, "plan") == 0
+    for index, key in enumerate(["plan", "plan", "spec", None]):
+        entry = root / f"pf_{index}"
+        entry.mkdir(parents=True)
+        write_pending_record(
+            entry / "content", name="plan.md", mime="text/markdown", artifact_key=key
+        )
+    (root / "pf_torn").mkdir()
+    (root / "pf_torn" / "presented.json").write_text("{")
+    (root / "pf_empty").mkdir()
+    assert presented_versions(root, "plan") == 2
+    assert presented_versions(root, "spec") == 1
+
+
+def test_a_keyed_pending_record_that_cannot_be_written_raises(tmp_path):
+    with pytest.raises(OSError):
+        write_pending_record(
+            tmp_path / "missing" / "content", name="a", mime="text/plain", artifact_key="plan"
+        )

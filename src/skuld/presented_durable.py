@@ -70,10 +70,20 @@ def durable_record(staged: Path) -> dict[str, Any] | None:
     return record if isinstance(record, dict) else None
 
 
-def write_pending_record(staged: Path, *, name: str, mime: str) -> None:
-    """Record the upload's name and mime beside the staged copy."""
+def write_pending_record(
+    staged: Path, *, name: str, mime: str, artifact_key: str | None = None
+) -> None:
+    """Record the upload's name and mime beside the staged copy.
+
+    A keyed file's record also numbers its version (:func:`presented_versions`), so for
+    one a failed write raises instead of leaving the next version misnumbered."""
+    record: dict[str, str] = {"name": name, "mime": mime}
+    if artifact_key is not None:
+        record["artifact_key"] = artifact_key
+        (staged.parent / PENDING_MARKER).write_text(json.dumps(record))
+        return
     try:
-        (staged.parent / PENDING_MARKER).write_text(json.dumps({"name": name, "mime": mime}))
+        (staged.parent / PENDING_MARKER).write_text(json.dumps(record))
     except OSError as exc:
         logger.warning(
             "present-file: no pending record for %s, so a restart cannot resume its upload: %s",
@@ -91,6 +101,29 @@ def pending_record(staged: Path) -> dict[str, str] | None:
     if not isinstance(record, dict) or not record.get("name") or not record.get("mime"):
         return None
     return {"name": str(record["name"]), "mime": str(record["mime"])}
+
+
+def presented_versions(root: Path, artifact_key: str) -> int:
+    """How many files this broker has staged under ``artifact_key`` (the staging dir is
+    durable across restarts, so the count is too)."""
+    count = 0
+    try:
+        entries = list(root.iterdir())
+    except FileNotFoundError:
+        return 0
+    for entry in entries:
+        marker = entry / PENDING_MARKER
+        if entry.is_symlink() or not entry.is_dir() or marker.is_symlink():
+            continue
+        try:
+            record = json.loads(marker.read_text())
+        except FileNotFoundError:
+            continue
+        except ValueError:
+            continue  # a torn pre-key record; it names no artifact
+        if isinstance(record, dict) and record.get("artifact_key") == artifact_key:
+            count += 1
+    return count
 
 
 def is_refused(staged: Path) -> bool:

@@ -650,6 +650,8 @@ def _build_ravn_config(
             ],
         },
         "cascade": {"enabled": True},
+        # Members present documents through the session broker, over this mesh.
+        "present_file": {"enabled": True, "broker_peer_id": skuld_peer_id},
         "gateway": {
             "enabled": True,
             "channels": {

@@ -332,6 +332,27 @@ def _derive_capabilities(
     return list(profile_cfg.include_groups)
 
 
+def _build_present_file_tool(settings: Settings, mesh: Any) -> Any | None:
+    """The ``present_file`` tool when configured; configured without a mesh is fatal."""
+    config = settings.present_file
+    if not config.enabled:
+        return None
+    if mesh is None:
+        raise RuntimeError(
+            "present_file.enabled needs the flock mesh (mesh.enabled) to reach the session "
+            "broker; enable the mesh, or disable present_file"
+        )
+    from ravn.adapters.tools.present_file import PresentFileTool  # noqa: PLC0415
+
+    return PresentFileTool(
+        mesh,
+        broker_peer_id=config.broker_peer_id,
+        own_peer_id=settings.mesh.own_peer_id,
+        workspace_root=settings.permission.workspace_root,
+        timeout_s=config.timeout_s,
+    )
+
+
 def _wire_cascade(
     drive_loop: Any,
     settings: Settings,
@@ -414,6 +435,7 @@ def _wire_cascade(
 
     # Store all tools on drive_loop for agent_factory to pick up
     drive_loop._cascade_tools = cascade_tools + mesh_routing_tools
+    drive_loop._present_file_tool = _build_present_file_tool(settings, mesh)
 
     # Wire the mesh RPC handler
     async def _handle_mesh_rpc(message: dict) -> dict:

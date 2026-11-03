@@ -2227,6 +2227,41 @@ class InitiativeConfig(BaseModel):
     )
 
 
+class PresentFileConfig(BaseModel):
+    """The ``present_file`` tool: hand a document to the session's people as a file.
+
+    In a Forge flock session the session's broker (Skuld) stages the file, makes it
+    durable in Forge and records it as an artifact publication. The member asks it over
+    the flock mesh, which it already speaks; Forge configures this section."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Offer the present_file tool (a Forge flock session sets this).",
+    )
+    broker_peer_id: str = Field(
+        default="",
+        description="Mesh peer id of the session broker that presents files (Skuld).",
+    )
+    timeout_s: float = Field(
+        default=60.0,
+        gt=0,
+        description=(
+            "Seconds to wait for the broker's answer. Bounded by the broker's staging copy "
+            "plus its inline durable upload (Skuld presented_durable."
+            "inline_upload_timeout_seconds); a timeout fails the tool and names this knob."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _broker_named_when_enabled(self) -> PresentFileConfig:
+        if self.enabled and not self.broker_peer_id.strip():
+            raise ValueError(
+                "present_file.enabled needs present_file.broker_peer_id (the session "
+                "broker's mesh peer id); set it, or disable present_file"
+            )
+        return self
+
+
 class CascadeConfig(BaseModel):
     """Cascade system configuration (NIU-435).
 
@@ -6010,6 +6045,9 @@ class Settings(BaseSettings):
 
     # NIU-435: cascade coordinator / flock delegation / ephemeral spawn
     cascade: CascadeConfig = Field(default_factory=CascadeConfig)
+
+    # Documents a member hands the session's people through its broker (Forge artifacts).
+    present_file: PresentFileConfig = Field(default_factory=PresentFileConfig)
 
     # NIU-504/NIU-537: task interruption / resume / named checkpoint snapshots
     checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)

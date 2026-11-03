@@ -44,6 +44,7 @@ from volundr.domain.artifacts import (
     Origin,
     Provider,
     PublicationCandidate,
+    PublicationFilter,
     PublicationSource,
     choose_burst,
     opened,
@@ -259,6 +260,23 @@ def _session_scope(scope: NotificationScope | None, params: list[Any], alias: st
     return f"EXISTS (SELECT 1 FROM sessions s WHERE s.id = {alias} AND {owner})"
 
 
+def _publication_filter(where: PublicationFilter | None, params: list[Any]) -> str:
+    """The ``AND ...`` clauses for ``where`` (empty when it narrows nothing)."""
+    if where is None:
+        return ""
+    clauses: list[str] = []
+    if where.session_ids:
+        params.append(list(where.session_ids))
+        clauses.append(f"p.session_id = ANY(${len(params)}::uuid[])")
+    if where.source is not None:
+        params.append(where.source.value)
+        clauses.append(f"p.source = ${len(params)}")
+    if where.provider_key is not None:
+        params.append(where.provider_key)
+        clauses.append(f"p.provider_key = ${len(params)}")
+    return "".join(f" AND {clause}" for clause in clauses)
+
+
 class PostgresArtifactPublicationRepository(ArtifactPublicationRepository):
     def __init__(self, pool: asyncpg.Pool, **_extra: object) -> None:
         self._pool = pool
@@ -347,13 +365,19 @@ class PostgresArtifactPublicationRepository(ArtifactPublicationRepository):
         return burst.burst_id
 
     async def list_after(
-        self, scope: NotificationScope | None, *, after: int, limit: int
+        self,
+        scope: NotificationScope | None,
+        *,
+        after: int,
+        limit: int,
+        where: PublicationFilter | None = None,
     ) -> list[ArtifactPublication]:
         params: list[Any] = [after]
         visible = _session_scope(scope, params, "p.session_id")
+        narrowed = _publication_filter(where, params)
         params.append(limit)
         sql = (
-            f"{SELECT_PUBLICATIONS_SQL} WHERE p.seq > $1 AND {visible} "
+            f"{SELECT_PUBLICATIONS_SQL} WHERE p.seq > $1 AND {visible}{narrowed} "
             f"ORDER BY p.seq LIMIT ${len(params)}"
         )
         rows = await self._pool.fetch(sql, *params)

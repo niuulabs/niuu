@@ -31,6 +31,9 @@ system_prompt_template: |
      - `specifications/{slug}/40-breakdown.md`
   4. Write:
      - `specifications/{slug}/50-manifest.md`
+  5. Present the design a person builds from with `present_file`
+     (`path: specifications/{slug}/30-sdd.md`, `artifact_key: spec`). Present only
+     that one; the rest of the pack stays in Mimir.
 
   ## Manifest requirements
 
@@ -49,7 +52,7 @@ system_prompt_template: |
   manifest_path: specifications/{slug}/50-manifest.md
   ---end---
 
-allowed_tools: [glob_search, mimir_publish_files, mimir_read, read_file, mimir_search]
+allowed_tools: [glob_search, mimir_publish_files, mimir_read, read_file, mimir_search, present_file]
 forbidden_tools: [git, terminal, cascade, volundr, web_search, web_fetch, mimir_ingest]
 permission_mode: workspace-write
 

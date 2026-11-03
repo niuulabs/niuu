@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 from uuid import uuid4
 
@@ -10,14 +11,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
-from tests.support.artifacts import T0, candidate, hook_row, service
+from tests.support.artifacts import T0, candidate, hook_row, service, session_uuid
 from volundr.adapters.inbound.rest_artifacts import (
     InstanceIdentity,
     create_artifacts_router,
     create_instance_router,
 )
 from volundr.adapters.outbound.memory_artifacts import InMemoryArtifactPublicationRepository
-from volundr.domain.artifacts import Origin
+from volundr.domain.artifacts import Origin, Provider, PublicationSource
 
 PREFIX = "/api/v1/forge"
 
@@ -26,10 +27,12 @@ class RecordingRepo(InMemoryArtifactPublicationRepository):
     def __init__(self) -> None:
         super().__init__()
         self.scopes: list = []
+        self.wheres: list = []
 
-    async def list_after(self, scope, *, after, limit):
+    async def list_after(self, scope, *, after, limit, where=None):
         self.scopes.append(scope)
-        return await super().list_after(scope, after=after, limit=limit)
+        self.wheres.append(where)
+        return await super().list_after(scope, after=after, limit=limit, where=where)
 
     async def list_bursts_after(self, scope, *, after, limit):
         self.scopes.append(scope)
@@ -99,6 +102,52 @@ async def test_publications_page_with_cursor_and_owner_scope(env):
 
     scope = repo.scopes[0]
     assert (scope.user_id, scope.is_admin) == ("owner-a", False)
+
+
+async def test_publications_narrow_by_session_source_and_key(env):
+    client, svc, repo = env
+    await svc.record(
+        [
+            (candidate("K", "s1", 1, T0), Origin.LIVE),
+            (
+                replace(
+                    candidate("s2:plan", "s2", 2, T0 + timedelta(seconds=1)),
+                    source=PublicationSource.PRESENT_FILE,
+                    provider=Provider.FORGE_FILE,
+                    provider_version="pf_" + "a" * 32,
+                ),
+                Origin.LIVE,
+            ),
+            (candidate("K", "s3", 3, T0 + timedelta(seconds=2)), Origin.LIVE),
+        ]
+    )
+
+    by_session = client.get(
+        f"{PREFIX}/artifact-publications",
+        params=[("session_id", str(session_uuid("s1"))), ("session_id", str(session_uuid("s2")))],
+        headers=headers(),
+    ).json()
+    assert [item["session_seq"] for item in by_session["items"]] == [1, 2]
+
+    presented = client.get(
+        f"{PREFIX}/artifact-publications",
+        params={"source": "present_file"},
+        headers=headers(),
+    ).json()
+    [item] = presented["items"]
+    assert item["provider_key"] == "s2:plan"
+    assert item["revision_id"] == "pf_" + "a" * 32
+
+    by_key = client.get(
+        f"{PREFIX}/artifact-publications", params={"provider_key": "K"}, headers=headers()
+    ).json()
+    assert [item["session_seq"] for item in by_key["items"]] == [1, 3]
+    assert repo.wheres[-1].provider_key == "K"
+
+    bad = client.get(
+        f"{PREFIX}/artifact-publications", params={"source": "nope"}, headers=headers()
+    )
+    assert bad.status_code == 422
 
 
 def test_publications_limit_is_bounded(env):

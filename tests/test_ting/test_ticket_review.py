@@ -108,6 +108,49 @@ def test_a_revision_is_what_stood_when_the_gate_opened() -> None:
     assert second.pending
 
 
+def _presented(
+    seq: int, key: str | None, file_hex: str, label: str = "v1"
+) -> PublicSessionLogEntry:
+    part_input: dict[str, Any] = {"file_id": "pf_" + file_hex * 32, "name": "plan.md"}
+    if key:
+        part_input.update({"artifact_key": key, "version_label": label})
+    part = {"id": "pf_x", "type": "tool_use", "name": "present_file", "input": part_input}
+    return _entry(
+        seq, "conversation.turn", {"type": "conversation.turn", "turn": {"parts": [part]}}
+    )
+
+
+def _other_gate(seq: int, gate_id: str) -> PublicSessionLogEntry:
+    gate = {"id": gate_id, "node_id": "code-review-gate", "status": "pending"}
+    return _entry(seq, "workflow_gate", {"gate": gate})
+
+
+def test_a_revision_names_the_artifact_versions_the_gate_shows() -> None:
+    entries = [
+        _presented(1, "plan", "a", "v1"),
+        _presented(2, None, "c"),
+        _gate(3, "g1", "pending"),
+        _gate(4, "g1", "changes_requested", notes="tighten it"),
+        _presented(5, "plan", "b", "v2"),
+        _presented(6, "risks", "d", "v1"),
+        _gate(7, "g2", "pending"),
+        _gate(8, "g3", "pending"),  # reopened with nothing new presented
+        _presented(9, "plan", "e", "v3"),
+        _other_gate(10, "code-1"),  # another gate owns what came before it
+        _gate(11, "g4", "pending"),
+    ]
+    first, second, third, fourth = column_revisions(COLUMN, entries)
+    assert [(a.provider_key, a.revision_id, a.version_label) for a in first.artifacts] == [
+        ("s1:plan", "pf_" + "a" * 32, "v1")
+    ]
+    assert [(a.artifact_key, a.version_label) for a in second.artifacts] == [
+        ("plan", "v2"),
+        ("risks", "v1"),
+    ]
+    assert third.artifacts == second.artifacts
+    assert [a.version_label for a in fourth.artifacts] == ["v2", "v1"]
+
+
 def test_drafts_the_agents_passed_between_them_are_not_revisions() -> None:
     entries = [_draft(seq, f"draft {seq}") for seq in range(1, 69)]
 

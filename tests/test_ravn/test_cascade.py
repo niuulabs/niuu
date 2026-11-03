@@ -37,7 +37,7 @@ from ravn.adapters.tools.cascade_tools import (
     TaskStopTool,
     build_cascade_tools,
 )
-from ravn.config import InitiativeConfig, Settings
+from ravn.config import InitiativeConfig, PresentFileConfig, Settings
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.drive_loop import DriveLoop
@@ -918,6 +918,7 @@ async def test_mesh_rpc_task_dispatch():
     from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
 
     settings = MagicMock(spec=Settings)
+    settings.present_file = PresentFileConfig()
     settings.cascade = MagicMock()
     settings.cascade.enabled = True
     settings.mesh = MagicMock()
@@ -958,6 +959,7 @@ async def test_mesh_rpc_work_request_generates_request_id():
     from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
 
     settings = MagicMock(spec=Settings)
+    settings.present_file = PresentFileConfig()
     settings.cascade = MagicMock()
     settings.cascade.enabled = True
     settings.mesh = MagicMock()
@@ -992,6 +994,7 @@ async def test_mesh_rpc_directed_message_queues_without_waiting_for_result():
     from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
 
     settings = MagicMock(spec=Settings)
+    settings.present_file = PresentFileConfig()
     settings.cascade = MagicMock()
     settings.cascade.enabled = True
     settings.mesh = MagicMock()
@@ -1031,6 +1034,7 @@ async def test_mesh_rpc_task_status():
     from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
 
     settings = MagicMock(spec=Settings)
+    settings.present_file = PresentFileConfig()
     settings.cascade = MagicMock()
     settings.cascade.enabled = True
     settings.mesh = MagicMock()
@@ -1057,6 +1061,7 @@ async def test_mesh_rpc_task_list():
     from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
 
     settings = MagicMock(spec=Settings)
+    settings.present_file = PresentFileConfig()
     settings.cascade = MagicMock()
     settings.cascade.enabled = True
     settings.mesh = MagicMock()
@@ -1086,6 +1091,7 @@ async def test_mesh_rpc_task_cancel():
     from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
 
     settings = MagicMock(spec=Settings)
+    settings.present_file = PresentFileConfig()
     settings.cascade = MagicMock()
     settings.cascade.enabled = True
     settings.mesh = MagicMock()
@@ -1109,6 +1115,7 @@ async def test_mesh_rpc_unknown_type():
     from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
 
     settings = MagicMock(spec=Settings)
+    settings.present_file = PresentFileConfig()
     settings.cascade = MagicMock()
     settings.cascade.enabled = True
     settings.mesh = MagicMock()

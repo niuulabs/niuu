@@ -4,6 +4,12 @@ Ting stores none of this. Every outcome and every gate frame is already in
 Forge's durable log, which outlives the session, so a review is a projection of
 that log: a revision is what stood when a gate opened, not every draft the
 planner and the agent reviewer passed between them.
+
+A revision also names the artifact versions the gate puts in front of a person:
+the documents the agents presented (``present_file`` with an artifact key) since
+the run's previous gate opened, plus the latest version of whatever this gate
+showed before. Each is Forge's publication by ``provider_key`` and
+``revision_id``, so a decision on the gate is a decision on those versions.
 """
 
 from __future__ import annotations
@@ -13,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from niuu.domain.models import Principal
+from niuu.domain.presented_files import PresentedArtifact, presented_artifacts
 from niuu.domain.workflow_gate import WORKFLOW_GATE_FRAME
 from ting.domain.models import WorkflowCampaign
 from ting.domain.workflow_board import (
@@ -29,6 +36,7 @@ from ting.domain.workflow_board import (
 from ting.ports.volundr import PublicSessionLogEntry, VolundrPort
 
 _OUTCOME_FRAME = "room_outcome"
+_TURN_FRAME = "conversation.turn"
 _UNDECLARED_GATE_PANELS = (ReviewPanel(widget=WIDGET_SUMMARY, title="Summary"),)
 
 
@@ -46,6 +54,7 @@ class ReviewRevision:
     notes: str
     decided_at: str
     fields: Mapping[str, str] = field(default_factory=dict)
+    artifacts: tuple[PresentedArtifact, ...] = ()
 
     @property
     def pending(self) -> bool:
@@ -76,7 +85,12 @@ def _outcome_fields(column: BoardColumn) -> frozenset[str]:
     return frozenset(field for panel in column.panels if (field := _outcome_field(panel)))
 
 
-def _revision(number: int, gate: Mapping[str, Any], fields: Mapping[str, str]) -> ReviewRevision:
+def _revision(
+    number: int,
+    gate: Mapping[str, Any],
+    fields: Mapping[str, str],
+    artifacts: tuple[PresentedArtifact, ...],
+) -> ReviewRevision:
     return ReviewRevision(
         number=number,
         gate_id=str(gate.get("id") or ""),
@@ -88,6 +102,7 @@ def _revision(number: int, gate: Mapping[str, Any], fields: Mapping[str, str]) -
         notes=str(gate.get("notes") or ""),
         decided_at=str(gate.get("updated_at") or ""),
         fields=fields,
+        artifacts=artifacts,
     )
 
 
@@ -95,12 +110,23 @@ def column_revisions(
     column: BoardColumn,
     entries: Iterable[PublicSessionLogEntry],
 ) -> tuple[ReviewRevision, ...]:
-    """Pair each opening of a column's gate with the fields that stood at that moment."""
+    """Pair each opening of a column's gate with the fields and artifact versions that
+    stood at that moment."""
     wanted = _outcome_fields(column)
     latest: dict[str, str] = {}
     gates: dict[str, Mapping[str, Any]] = {}
     shown: dict[str, dict[str, str]] = {}
+    # Versions presented since any gate last opened, and what this column showed.
+    presented: dict[str, PresentedArtifact] = {}
+    column_artifacts: dict[str, PresentedArtifact] = {}
+    shown_artifacts: dict[str, tuple[PresentedArtifact, ...]] = {}
+    opened: set[str] = set()
     for entry in sorted(entries, key=lambda item: item.seq):
+        turn = entry.payload.get("turn") if entry.kind == _TURN_FRAME else None
+        if isinstance(turn, Mapping):
+            for artifact in presented_artifacts(entry.session_id, turn):
+                presented[artifact.artifact_key] = artifact
+            continue
         if entry.kind == _OUTCOME_FRAME:
             fields = entry.payload.get("fields")
             if not isinstance(fields, Mapping):
@@ -116,13 +142,23 @@ def column_revisions(
         if entry.kind != WORKFLOW_GATE_FRAME:
             continue
         gate = entry.payload.get("gate")
-        if not isinstance(gate, Mapping) or gate.get("node_id") != column.gate_node_id:
+        if not isinstance(gate, Mapping):
             continue
         gate_id = str(gate.get("id") or "")
+        first_opening = gate_id not in opened
+        opened.add(gate_id)
+        if gate.get("node_id") != column.gate_node_id:
+            if first_opening:
+                presented.clear()  # another gate opened: what came before was its to show
+            continue
         gates[gate_id] = gate
         shown.setdefault(gate_id, dict(latest))
+        if first_opening:
+            column_artifacts.update(presented)
+            presented.clear()
+            shown_artifacts[gate_id] = tuple(column_artifacts.values())
     return tuple(
-        _revision(number, gate, shown[gate_id])
+        _revision(number, gate, shown[gate_id], shown_artifacts.get(gate_id, ()))
         for number, (gate_id, gate) in enumerate(gates.items(), start=1)
     )
 

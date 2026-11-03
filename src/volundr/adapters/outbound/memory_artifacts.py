@@ -25,6 +25,7 @@ from volundr.domain.artifacts import (
     BurstPolicy,
     Origin,
     PublicationCandidate,
+    PublicationFilter,
     announces,
     choose_burst,
     opened,
@@ -171,10 +172,16 @@ class InMemoryArtifactPublicationRepository(ArtifactPublicationRepository):
         self._state.burst_rev[burst.burst_id] = self._state.rev
 
     async def list_after(
-        self, scope: NotificationScope | None, *, after: int, limit: int
+        self,
+        scope: NotificationScope | None,
+        *,
+        after: int,
+        limit: int,
+        where: PublicationFilter | None = None,
     ) -> list[ArtifactPublication]:
         rows = sorted(self._state.publications.values(), key=lambda pub: pub.seq)
-        return [pub for pub in rows if pub.seq > after][:limit]
+        wanted = where or PublicationFilter()
+        return [pub for pub in rows if pub.seq > after and wanted.matches(pub)][:limit]
 
     async def list_bursts_after(
         self, scope: NotificationScope | None, *, after: int, limit: int

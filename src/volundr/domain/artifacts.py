@@ -33,6 +33,12 @@ from uuid import UUID
 
 from niuu.domain.artifact_reports import REPORT_ARTIFACT_TOOL_NAME, report_from_turn
 from niuu.domain.notifications import NOTIFICATION_TURN_KIND
+from niuu.domain.presented_files import (
+    PRESENTED_ARTIFACT_KEY_FIELD,
+    PRESENTED_ARTIFACT_KEY_PATTERN,
+    PRESENTED_VERSION_LABEL_FIELD,
+    presented_artifact_provider_key,
+)
 from volundr.domain.models import SessionLogEntry
 from volundr.domain.presented_files import presented_file_path, recorded_durable_url
 
@@ -55,6 +61,8 @@ ARTIFACT_TOOL_NAME = "Artifact"
 PRESENT_FILE_TOOL_NAME = "present_file"
 HOOK_KIND = "claude_hook"
 TURN_KIND = "conversation.turn"
+
+_ARTIFACT_KEY = re.compile(PRESENTED_ARTIFACT_KEY_PATTERN)
 
 _CLAUDE_ARTIFACT_URL = re.compile(
     r"^https://claude\.ai/(?:code/)?artifact/(?P<key>[A-Za-z0-9]+)(?:[/?#].*)?$"
@@ -253,6 +261,22 @@ class ArtifactPublication:
 
 
 @dataclass(frozen=True)
+class PublicationFilter:
+    """What a feed reader narrows publications to; an empty field does not narrow."""
+
+    session_ids: tuple[UUID, ...] = ()
+    source: PublicationSource | None = None
+    provider_key: str | None = None
+
+    def matches(self, publication: ArtifactPublication) -> bool:
+        if self.session_ids and publication.session_id not in self.session_ids:
+            return False
+        if self.source is not None and publication.source is not self.source:
+            return False
+        return self.provider_key is None or publication.provider_key == self.provider_key
+
+
+@dataclass(frozen=True)
 class Burst:
     """A persisted burst (``forge_artifact_bursts``); its id never changes."""
 
@@ -336,7 +360,12 @@ def burst_id_for(host: str, provider_key: str, session_id: UUID | str, session_s
 
 def revision_id(candidate: PublicationCandidate, host: str) -> str:
     """One revision per provider version (a republish is a second publication of it);
-    without a version, the publication is its own revision (design §5.1)."""
+    without a version, the publication is its own revision (design §5.1).
+
+    A file presented under an artifact key is a revision of that artifact named by the
+    file's own id, so a reviewer can name the version it saw without asking Forge."""
+    if candidate.provider is Provider.FORGE_FILE and candidate.provider_version:
+        return candidate.provider_version
     scope = f"{candidate.provider.value}:{candidate.provider_key}"
     if candidate.provider_version:
         basis = f"{scope}|{candidate.provider_version}"
@@ -602,13 +631,22 @@ def _present_file(
     file_id = _text(tool_input.get("file_id")) or _text(part.get("id"))
     if not file_id or not file_id.startswith("pf_"):
         return None
+    # A keyed file is one version of the agent's artifact; an unkeyed one stands alone.
+    artifact_key = _text(tool_input.get(PRESENTED_ARTIFACT_KEY_FIELD))
+    keyed = artifact_key is not None and _ARTIFACT_KEY.fullmatch(artifact_key) is not None
     return PublicationCandidate(
         session_id=entry.session_id,
         session_seq=entry.seq,
         ordinal=ordinal,
         source=PublicationSource.PRESENT_FILE,
         provider=Provider.FORGE_FILE,
-        provider_key=file_id,
+        provider_key=(
+            presented_artifact_provider_key(entry.session_id, artifact_key)
+            if keyed and artifact_key
+            else file_id
+        ),
+        provider_version=file_id if keyed else None,
+        version_label=_text(tool_input.get(PRESENTED_VERSION_LABEL_FIELD)) if keyed else None,
         at=_aware(entry.ts),
         # F2: the durable URL the broker recorded when it is this Forge's own URL for
         # this file, else the relative route.

@@ -461,6 +461,34 @@ class TestWorkRequestHandling:
         assert result["error"] == "unknown_message_type"
 
     @pytest.mark.asyncio
+    async def test_registered_rpc_types_reach_their_handler(
+        self, mock_mesh, mock_transport, mesh_config
+    ):
+        from niuu.mesh.participant import MeshParticipant
+
+        seen: list[dict] = []
+
+        async def present(message: dict) -> dict:
+            seen.append(message)
+            return {"status": "complete", "file_id": "pf_1"}
+
+        adapter = SkuldMeshAdapter(
+            participant=MeshParticipant(
+                mesh=mock_mesh, discovery=None, peer_id=mesh_config.peer_id
+            ),
+            transport=mock_transport,
+            config=mesh_config,
+            session_id="test-session-42",
+            rpc_handlers={"present_file": present},
+        )
+        await adapter.start()
+
+        message = {"type": "present_file", "path": "docs/plan.md"}
+        assert await adapter._handle_rpc(message) == {"status": "complete", "file_id": "pf_1"}
+        assert seen == [message]
+        assert (await adapter._handle_rpc({"type": "other"}))["error"] == "unknown_message_type"
+
+    @pytest.mark.asyncio
     async def test_work_request_restores_callback(self, adapter, mock_transport):
         """Verify original event callback is restored after work request."""
         await adapter.start()

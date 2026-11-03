@@ -49,13 +49,15 @@ def _ravn_config_has_mimir(config_path: str) -> bool:
 # shims) with the broker's per-start secret read from FORGE_BROKER_TOKEN_FILE; the broker stages
 # + emits the card. A pure-stdlib python3 script → no curl/jq dependency, no bash-quoting fragility.
 _PRESENT_FILE_SHIM = '''#!/usr/bin/env python3
-"""present-file <path> [--caption ...] [--title ...] — show a file to the user in Lexi."""
+"""present-file <path> [--caption ...] [--title ...] [--key ...] — show the user a file.
+
+--key names a document you revise: each present under one key is its next version."""
 import json, os, sys, urllib.request, urllib.error
 
 
 def main() -> None:
     args = sys.argv[1:]
-    path = caption = title = None
+    path = caption = title = key = None
     i = 0
     while i < len(args):
         a = args[i]
@@ -63,6 +65,10 @@ def main() -> None:
             caption = args[i + 1] if i + 1 < len(args) else None; i += 2
         elif a == "--title":
             title = args[i + 1] if i + 1 < len(args) else None; i += 2
+        elif a == "--key":
+            key = args[i + 1] if i + 1 < len(args) else None; i += 2
+        elif a.startswith("--key="):
+            key = a.split("=", 1)[1]; i += 1
         elif a.startswith("--caption="):
             caption = a.split("=", 1)[1]; i += 1
         elif a.startswith("--title="):
@@ -70,7 +76,10 @@ def main() -> None:
         else:
             path = a; i += 1
     if not path:
-        print('usage: present-file <path> [--caption "..."] [--title "..."]', file=sys.stderr)
+        print(
+            'usage: present-file <path> [--caption "..."] [--title "..."] [--key name]',
+            file=sys.stderr,
+        )
         sys.exit(2)
     url = os.environ.get("FORGE_PRESENT_FILE_URL")
     if not url:
@@ -91,6 +100,8 @@ def main() -> None:
         payload["caption"] = caption
     if title:
         payload["title"] = title
+    if key:
+        payload["artifact_key"] = key
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode(), headers=headers, method="POST",
     )

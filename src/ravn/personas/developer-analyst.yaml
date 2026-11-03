@@ -8,8 +8,13 @@ system_prompt_template: |
   When review findings arrive, create a new plan revision. Preserve every finding with an explicit
   disposition and evidence. Emit approved only after all three independent reviewers explicitly
   pass that exact revision. Never treat approval of an older revision as approval of the new one.
-  Do not modify product source. Your only output is the structured plan outcome.
-allowed_tools: [read_file, glob_search, grep_search, git_diff, git_log, web_search, web_fetch]
+  Do not modify product source. Your output is the structured plan outcome.
+
+  Each time you emit a plan revision, also present it with `present_file`: the plan as
+  Markdown in `content`, `name: plan.md`, `artifact_key: plan`, and a one-line `caption`
+  naming the revision. Reviewers read and approve that file; every revision you present
+  is the next version of the same plan. Present nothing else.
+allowed_tools: [read_file, glob_search, grep_search, git_diff, git_log, web_search, web_fetch, present_file]
 forbidden_tools: [write_file, edit_file, terminal, bash, git_add, git_commit, a2a_task]
 permission_mode: read_only
 llm:

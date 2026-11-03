@@ -14,6 +14,7 @@ from volundr.domain.artifacts import (
     BurstPolicy,
     Origin,
     PublicationCandidate,
+    PublicationFilter,
 )
 from volundr.domain.models import SessionLogEntry
 from volundr.domain.notifications import Notification, NotificationCandidate, NotificationScope
@@ -68,9 +69,15 @@ class ArtifactPublicationRepository(ABC):
 
     @abstractmethod
     async def list_after(
-        self, scope: NotificationScope | None, *, after: int, limit: int
+        self,
+        scope: NotificationScope | None,
+        *,
+        after: int,
+        limit: int,
+        where: PublicationFilter | None = None,
     ) -> list[ArtifactPublication]:
-        """Publications with ``seq > after`` the reader may see, oldest first."""
+        """Publications with ``seq > after`` the reader may see, oldest first, narrowed
+        by ``where``."""
 
     @abstractmethod
     async def list_bursts_after(

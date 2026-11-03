@@ -29,9 +29,14 @@ from niuu.domain.conversation_timeline import resolve_timeline_turn
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
 from niuu.domain.presented_files import (
+    PRESENTED_ARTIFACT_KEY_FIELD,
+    PRESENTED_ARTIFACT_KEY_PATTERN,
     PRESENTED_FILE_LIVE_CACHE,
     PRESENTED_FILES_QUOTA_STATUS,
+    PRESENTED_VERSION_LABEL_FIELD,
+    presented_artifact_provider_key,
     presented_file_safety_headers,
+    presented_version_label,
 )
 from niuu.domain.text_projection import projection_revision
 from niuu.room_access import ROOM_ROLE_HEADER, ROOM_ROLE_RANK, required_role_for_route
@@ -52,6 +57,7 @@ from skuld.presented_durable import (
     PresentedFileQuotaRefusedError,
     pending_record,
     pending_uploads,
+    presented_versions,
     retry_presented_upload,
     upload_presented_file,
     write_pending_record,
@@ -997,6 +1003,7 @@ register_forge_mcp_routes(app, lambda: broker, dependencies=_LOOPBACK_GUARD)
 # is the in-app analogue of the harness SendUserFile tool.
 
 _PRESENTED_ID_RE = re.compile(r"^pf_[0-9a-f]{32}$")
+_ARTIFACT_KEY_RE = re.compile(PRESENTED_ARTIFACT_KEY_PATTERN)
 # file_id -> staged realpath. Rebuilt from the self-describing staging dir on startup.
 _presented_registry: dict[str, str] = {}
 # Background durable-upload retries (F2), held so they are not garbage-collected.
@@ -1101,14 +1108,74 @@ async def present_file(body: dict) -> dict:
     """Stage a host file, emit a durable present_file turn, and return its id/metadata.
 
     Loopback, in-session agent only (the `present-file` shim curls this). Body:
-    ``{ "path": "<absolute host path>", "caption"?: str, "title"?: str }``.
+    ``{ "path": "<absolute host path>", "caption"?: str, "title"?: str,
+    "artifact_key"?: str }``. With an ``artifact_key`` the file is the next version of
+    that artifact (see :func:`present_host_file`).
     """
     raw_path = str((body or {}).get("path") or "").strip()
     if not raw_path:
         raise HTTPException(400, "path is required")
-    caption = str((body or {}).get("caption") or "").strip() or None
-    title = str((body or {}).get("title") or "").strip() or None
+    return await present_host_file(
+        raw_path,
+        caption=str((body or {}).get("caption") or "").strip() or None,
+        title=str((body or {}).get("title") or "").strip() or None,
+        artifact_key=_artifact_key((body or {}).get(PRESENTED_ARTIFACT_KEY_FIELD)),
+    )
 
+
+def _artifact_key(raw: object) -> str | None:
+    """A present-file request's artifact key, or ``None``; a malformed one is a 400."""
+    key = str(raw or "").strip()
+    if not key:
+        return None
+    if _ARTIFACT_KEY_RE.fullmatch(key) is None:
+        raise HTTPException(
+            400,
+            "artifact_key must be letters, digits, '.', '_' or '-', starting with a letter "
+            "or digit (e.g. plan, spec, research-report)",
+        )
+    return key
+
+
+async def present_peer_file(message: dict) -> dict:
+    """A flock member's present-file, asked over the mesh (``type: present_file``).
+
+    Members share this session's workspace volume but mount it at their own path, so
+    ``path`` is relative to the workspace. The reply carries what the shim's caller
+    gets, or ``{"status": "error", "error": ...}`` naming what to fix."""
+    raw_path = str(message.get("path") or "").strip()
+    try:
+        if not raw_path or os.path.isabs(raw_path):
+            raise HTTPException(
+                400, "path must be relative to the session workspace (e.g. docs/plan.md)"
+            )
+        result = await present_host_file(
+            os.path.join(broker.workspace_dir, raw_path),
+            caption=str(message.get("caption") or "").strip() or None,
+            title=str(message.get("title") or "").strip() or None,
+            artifact_key=_artifact_key(message.get(PRESENTED_ARTIFACT_KEY_FIELD)),
+            # The member shares the workspace, never this broker's home (its credentials).
+            allow_home=False,
+        )
+    except HTTPException as exc:
+        return {"status": "error", "error": str(exc.detail), "http_status": exc.status_code}
+    return {"status": "complete", **result}
+
+
+async def present_host_file(
+    raw_path: str,
+    *,
+    caption: str | None,
+    title: str | None,
+    artifact_key: str | None,
+    allow_home: bool = True,
+) -> dict:
+    """Stage ``raw_path`` (under the workspace, or home when ``allow_home``), make it
+    durable, append its turn.
+
+    A keyed file is the next version of that artifact: Forge records it under the
+    session-scoped key with the file's id as the revision, and this broker labels it
+    ``v<n>`` from the copies it has staged under the key. Raises ``HTTPException``."""
     workspace_root = os.path.realpath(os.path.abspath(broker.workspace_dir))
     home_root = os.path.realpath(os.path.abspath(broker._settings.home_path))
     candidate_source = os.path.realpath(os.path.abspath(os.path.expanduser(raw_path)))
@@ -1118,10 +1185,16 @@ async def present_file(body: dict) -> dict:
         safe_source = Path(workspace_root)
     elif candidate_source.startswith(workspace_prefix):
         safe_source = Path(candidate_source)
-    elif candidate_source == home_root:
+    elif allow_home and candidate_source == home_root:
         safe_source = Path(home_root)
-    elif candidate_source.startswith(home_prefix):
+    elif allow_home and candidate_source.startswith(home_prefix):
         safe_source = Path(candidate_source)
+    elif not allow_home:
+        raise HTTPException(
+            400,
+            "path is outside the session workspace: a flock member presents files it "
+            f"wrote under the shared workspace ({workspace_root}).",
+        )
     else:
         # LEX-1515: say which roots are allowed and how to get a scratch file in.
         raise HTTPException(
@@ -1142,16 +1215,22 @@ async def present_file(body: dict) -> dict:
     file_id = "pf_" + uuid.uuid4().hex
     name = title or safe_source.name
     mime = mimetypes.guess_type(safe_source.name)[0] or "application/octet-stream"
+    version_label: str | None = None
 
     # Stage a COPY so a later /tmp GC or edit cannot change/lose what the user tapped.
     try:
-        dest_dir = _presented_staging_dir() / file_id
+        staging = _presented_staging_dir()
+        dest_dir = staging / file_id
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = resolve_contained_path(dest_dir, "content", allow_root=False)
         partial = resolve_contained_path(dest_dir, ".content.partial", allow_root=False)
+        # Counting and recording run with no await between them, so two presents of
+        # one key never take the same number.
+        if artifact_key is not None:
+            version_label = presented_version_label(presented_versions(staging, artifact_key) + 1)
         # The pending record first, then the copy under a temporary name made visible
         # by one rename: a restart resumes every complete copy, never a partial one.
-        write_pending_record(dest, name=name, mime=mime)
+        write_pending_record(dest, name=name, mime=mime, artifact_key=artifact_key)
         shutil.copyfile(safe_source, partial)
         os.replace(partial, dest)
     except (OSError, UnsafePathError) as exc:
@@ -1181,7 +1260,16 @@ async def present_file(body: dict) -> dict:
         _schedule_presented_retry(file_id, dest, name=name, mime=mime)
     url = (receipt or {}).get("url") or None
 
-    turn = _build_present_file_turn(file_id, name, mime, size, caption, url=url)
+    turn = _build_present_file_turn(
+        file_id,
+        name,
+        mime,
+        size,
+        caption,
+        url=url,
+        artifact_key=artifact_key,
+        version_label=version_label,
+    )
     broker._append_turn(turn)
     await broker._channels.broadcast({"type": "conversation.turn", "turn": asdict(turn)})
     logger.info(
@@ -1194,6 +1282,12 @@ async def present_file(body: dict) -> dict:
     if url:
         result["url"] = url
     result["durable"] = receipt is not None
+    if artifact_key is not None:
+        # What a reviewer names this version by: Forge's artifact and revision ids.
+        result[PRESENTED_ARTIFACT_KEY_FIELD] = artifact_key
+        result["provider_key"] = presented_artifact_provider_key(broker.session_id, artifact_key)
+        result["revision_id"] = file_id
+        result[PRESENTED_VERSION_LABEL_FIELD] = version_label
     return result
 
 
@@ -1205,6 +1299,8 @@ def _build_present_file_turn(
     caption: str | None,
     *,
     url: str | None = None,
+    artifact_key: str | None = None,
+    version_label: str | None = None,
 ) -> ConversationTurn:
     """Build a turn shared by live memory, durable log, and broadcast paths."""
     tool_input: dict = {"file_id": file_id, "name": name, "mime": mime, "size": size}
@@ -1212,6 +1308,9 @@ def _build_present_file_turn(
         tool_input["caption"] = caption
     if url:
         tool_input["url"] = url
+    if artifact_key:
+        tool_input[PRESENTED_ARTIFACT_KEY_FIELD] = artifact_key
+        tool_input[PRESENTED_VERSION_LABEL_FIELD] = version_label
     part = {"id": file_id, "name": "present_file", "type": "tool_use", "input": tool_input}
     return ConversationTurn(
         id=str(uuid.uuid4()),

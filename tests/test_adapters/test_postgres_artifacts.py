@@ -37,7 +37,13 @@ from volundr.adapters.outbound.postgres_notifications import (
     INSERT_NOTIFICATION_SQL,
 )
 from volundr.domain.artifact_ports import ArtifactStoreUnavailableError, EmitOutcome, LogCursor
-from volundr.domain.artifacts import Origin, Provider, PublicationSource, publication_id
+from volundr.domain.artifacts import (
+    Origin,
+    Provider,
+    PublicationFilter,
+    PublicationSource,
+    publication_id,
+)
 from volundr.domain.notifications import NotificationCandidate, NotificationScope
 
 SID = uuid.UUID("11111111-2222-3333-4444-555555555555")
@@ -230,6 +236,24 @@ async def test_list_after_scopes_by_session_owner(scope, needle, args):
     sql = pool.fetch.await_args.args[0]
     assert needle in sql and pool.fetch.await_args.args[1:] == args
     assert row.burst_id == BID
+
+
+async def test_list_after_narrows_by_filter():
+    pool, _ = _pool()
+    pool.fetch.return_value = []
+    repo = PostgresArtifactPublicationRepository(pool)
+    sid = uuid.uuid4()
+    where = PublicationFilter(
+        session_ids=(sid,), source=PublicationSource.PRESENT_FILE, provider_key="k"
+    )
+    await repo.list_after(None, after=3, limit=10, where=where)
+    sql = pool.fetch.await_args.args[0]
+    assert "p.session_id = ANY($2::uuid[])" in sql
+    assert "p.source = $3" in sql and "p.provider_key = $4" in sql and "LIMIT $5" in sql
+    assert pool.fetch.await_args.args[1:] == (3, [sid], "present_file", "k", 10)
+
+    await repo.list_after(None, after=0, limit=10, where=PublicationFilter())
+    assert "ANY(" not in pool.fetch.await_args.args[0]
 
 
 async def test_burst_reads():

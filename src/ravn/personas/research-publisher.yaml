@@ -29,6 +29,9 @@ system_prompt_template: |
      - `followups/research/{slug}.md`
   4. Write a durable manifest page:
      - `research/campaigns/{slug}/manifest.md`
+  5. Present the final report to the people on this run with `present_file`
+     (`path: research/campaigns/{slug}/final.md`, `artifact_key: research-report`).
+     Present only the final report; the notebook and manifest stay in Mimir.
 
   ## Manifest requirements
 
@@ -54,7 +57,7 @@ system_prompt_template: |
   manifest_path: research/campaigns/{slug}/manifest.md
   ---end---
 
-allowed_tools: [glob_search, mimir_publish_files, mimir_read, read_file, mimir_search]
+allowed_tools: [glob_search, mimir_publish_files, mimir_read, read_file, mimir_search, present_file]
 forbidden_tools: [git, terminal, cascade, volundr, web_search, web_fetch, mimir_ingest]
 permission_mode: workspace-write
 

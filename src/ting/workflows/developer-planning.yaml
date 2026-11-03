@@ -2,12 +2,12 @@ schema_version: 2
 id: 195d5026-7adb-4ce7-97ee-fb1e18ea4c3a
 name: Developer Planning
 description: Investigate a delivery request and produce an exact-revision plan approved by three independent reviewers.
-version: 1.0.1
+version: 1.1.0
 persona_dependencies:
   developer-analyst:
     id: developer-analyst
-    revision: content-00aa4026904f070d
-    digest: sha256:00aa4026904f070dda97baf44f3720076b3c47361e452417ffcbf25345070e0f
+    revision: content-3f871dbbe714a246
+    digest: sha256:3f871dbbe714a246dca9a4ea335d9b441fec525ba832ddab72362f9636b59f16
     path: personas/developer-analyst.yaml
   developer-architecture-reviewer:
     id: developer-architecture-reviewer

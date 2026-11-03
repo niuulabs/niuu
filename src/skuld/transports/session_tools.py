@@ -37,7 +37,9 @@ screenshot, chart, or build artifact), run `present-file <path> [--caption "…"
 surfaces the file in the user's app as a tappable card that opens in the file preview. The path \
 must be under the session workspace or your home directory: write scratch files to ~/tmp/, not \
 /tmp, which is refused. Use it for finished deliverables the user would want to open — not for \
-routine tool output or intermediate files."""
+routine tool output or intermediate files. A document you will revise (a plan, a spec, a \
+report) gets `--key <name>` (e.g. `--key plan`): each later present with the same key is its \
+next version, so a reviewer sees v1, v2… of one document instead of unrelated files."""
 
 FORGE_NOTIFY_INSTRUCTION = """\
 NOTIFICATIONS: the `{server}` MCP server's `notify` tool sends the user a notification about this \

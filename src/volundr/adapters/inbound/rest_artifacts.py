@@ -1,6 +1,7 @@
 """REST adapter for artifact publications (F1), their bursts (F1n) and host identity (F7).
 
-* ``GET  /artifact-publications``           the publication feed, ``after=<seq>`` (oldest first)
+* ``GET  /artifact-publications``           the publication feed, ``after=<seq>`` (oldest first),
+  narrowed by ``session_id`` (repeatable), ``source`` and ``provider_key``
 * ``GET  /artifact-bursts``                 bursts in change order, ``after=<rev>``
 * ``GET  /artifact-bursts/{burst_id}``      one burst with its publications
 * ``POST /artifact-publications/backfill``  admin: replay the durable log (always silent)
@@ -24,6 +25,7 @@ from pydantic import BaseModel, Field
 from niuu.domain.notifications import NOTIFICATION_ADMIN_ROLE
 from niuu.domain.services.token_scope import FORGE_SESSION_READ_SCOPE, require_scope
 from volundr.adapters.inbound.auth import extract_principal
+from volundr.domain.artifacts import PublicationFilter, PublicationSource
 from volundr.domain.models import Principal
 from volundr.domain.notifications import NotificationScope
 from volundr.domain.services.artifacts import ArtifactService
@@ -64,9 +66,21 @@ def create_artifacts_router(
     async def list_publications(
         after: int = Query(default=0, ge=0, description="Return rows with seq > after"),
         limit: int = Query(default=default_page_size, ge=1, le=max_page_size),
+        session_id: list[UUID] = Query(
+            default_factory=list, description="Only these sessions' publications (repeatable)"
+        ),
+        source: PublicationSource | None = Query(
+            default=None, description="Only publications read from this row shape"
+        ),
+        provider_key: str | None = Query(
+            default=None, description="Only this artifact's publications (its versions)"
+        ),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        items = await service.list_after(_scope(principal), after=after, limit=limit)
+        where = PublicationFilter(
+            session_ids=tuple(session_id), source=source, provider_key=provider_key
+        )
+        items = await service.list_after(_scope(principal), after=after, limit=limit, where=where)
         return {
             "host": service.host,
             "items": [item.wire() for item in items],

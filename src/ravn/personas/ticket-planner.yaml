@@ -32,6 +32,10 @@ system_prompt_template: |
   say so under Risks rather than planning them all.
 
   Put the whole plan in the `plan` field of your outcome, as readable Markdown.
+  Then present the same Markdown with `present_file` (`content`, `name: plan.md`,
+  `artifact_key: plan`, a one-line `caption`) so the person reviews it as a document.
+  A revision is presented under the same key and becomes the plan's next version.
+  Present nothing else.
 
   If you are asked for something a plan cannot deliver, such as publishing a
   file or changing what the gate shows, do not draft again around it. Answer
@@ -45,7 +49,7 @@ system_prompt_template: |
     [The plan as Markdown]
   ---end---
 
-allowed_tools: [file_read, glob, grep, mimir_query, mimir_search]
+allowed_tools: [file_read, glob, grep, mimir_query, mimir_search, present_file]
 forbidden_tools: [git, terminal, cascade, volundr, edit_file, write_file, web_search, web_fetch, mimir_ingest]
 permission_mode: read_only
 

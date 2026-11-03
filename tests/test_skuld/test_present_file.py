@@ -237,3 +237,75 @@ def test_the_session_prompt_states_where_present_file_reads_from():
     assert "workspace or your home directory" in text
     assert "~/tmp/" in text
     assert "ANY path" not in text
+
+
+def test_keyed_presents_are_numbered_versions_of_one_artifact(client, tmp_path):
+    from skuld import broker as bmod
+
+    src = tmp_path / "plan.md"
+    src.write_text("# Plan v1")
+    first = client.post("/api/present-file", json={"path": str(src), "artifact_key": "plan"})
+    src.write_text("# Plan v2")
+    second = client.post("/api/present-file", json={"path": str(src), "artifact_key": "plan"})
+    other = client.post("/api/present-file", json={"path": str(src), "artifact_key": "spec"})
+    plain = client.post("/api/present-file", json={"path": str(src)})
+    assert {r.status_code for r in (first, second, other, plain)} == {200}
+
+    one, two = first.json(), second.json()
+    provider_key = f"{bmod.broker.session_id}:plan"
+    assert (one["provider_key"], one["revision_id"], one["version_label"]) == (
+        provider_key,
+        one["file_id"],
+        "v1",
+    )
+    assert (two["provider_key"], two["version_label"]) == (provider_key, "v2")
+    assert other.json()["version_label"] == "v1"
+    assert "provider_key" not in plain.json() and "version_label" not in plain.json()
+
+    parts = [frame["turn"]["parts"][0]["input"] for frame in client.logged]
+    assert [(p.get("artifact_key"), p.get("version_label")) for p in parts] == [
+        ("plan", "v1"),
+        ("plan", "v2"),
+        ("spec", "v1"),
+        (None, None),
+    ]
+
+
+def test_malformed_artifact_key_is_refused(client, tmp_path):
+    src = tmp_path / "plan.md"
+    src.write_text("x")
+    response = client.post("/api/present-file", json={"path": str(src), "artifact_key": "../p"})
+    assert response.status_code == 400
+    assert "artifact_key" in response.json()["detail"]
+    assert client.logged == []
+
+
+async def test_a_flock_member_presents_a_workspace_file_over_the_mesh(client, tmp_path):
+    from skuld import broker_api as api_mod
+
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "plan.md").write_text("# Plan")
+    reply = await api_mod.present_peer_file(
+        {"type": "present_file", "path": "docs/plan.md", "artifact_key": "plan", "title": "Plan"}
+    )
+    assert reply["status"] == "complete"
+    assert (reply["name"], reply["version_label"]) == ("Plan", "v1")
+    assert client.logged[0]["turn"]["parts"][0]["input"]["artifact_key"] == "plan"
+
+
+async def test_a_flock_member_cannot_present_outside_the_workspace(client, tmp_path, monkeypatch):
+    from skuld import broker as bmod
+    from skuld import broker_api as api_mod
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(bmod.broker, "workspace_dir", str(workspace))
+    (tmp_path / "secret.txt").write_text("token")
+
+    absolute = await api_mod.present_peer_file({"path": str(tmp_path / "secret.txt")})
+    escaped = await api_mod.present_peer_file({"path": "../secret.txt"})
+    missing = await api_mod.present_peer_file({})
+    assert [r["status"] for r in (absolute, escaped, missing)] == ["error"] * 3
+    assert "relative" in absolute["error"] and "outside the session workspace" in escaped["error"]
+    assert escaped["http_status"] == 400
+    assert client.logged == []

@@ -42,6 +42,7 @@ from volundr.domain.artifacts import (
     BurstPolicy,
     Origin,
     PublicationCandidate,
+    PublicationFilter,
     TypeCatalog,
     burst_correlation_id,
     burst_dedupe_key,
@@ -197,9 +198,14 @@ class ArtifactService:
     # -- reads -----------------------------------------------------------------
 
     async def list_after(
-        self, scope: NotificationScope | None, *, after: int, limit: int
+        self,
+        scope: NotificationScope | None,
+        *,
+        after: int,
+        limit: int,
+        where: PublicationFilter | None = None,
     ) -> list[ArtifactPublication]:
-        return await self._repository.list_after(scope, after=after, limit=limit)
+        return await self._repository.list_after(scope, after=after, limit=limit, where=where)
 
     async def list_bursts_after(
         self, scope: NotificationScope | None, *, after: int, limit: int

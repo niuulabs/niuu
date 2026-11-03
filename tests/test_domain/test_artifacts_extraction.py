@@ -183,6 +183,48 @@ class TestTurnRows:
         assert pub.url.endswith("/files/presented/pf_" + "a" * 32)
         assert not pub.forms_bursts
 
+    def test_keyed_present_file_is_a_version_of_its_artifact(self):
+        def presented(file_id: str, label: str, seq: int) -> SessionLogEntry:
+            part_input = {
+                "file_id": file_id,
+                "name": "plan.md",
+                "mime": "text/markdown",
+                "artifact_key": "plan",
+                "version_label": label,
+            }
+            turn = {
+                "id": f"t{seq}",
+                "parts": [
+                    {"id": file_id, "name": "present_file", "type": "tool_use", "input": part_input}
+                ],
+            }
+            return _turn(turn, seq=seq)
+
+        first = _one(presented("pf_" + "a" * 32, "v1", 3))
+        second = _one(presented("pf_" + "b" * 32, "v2", 8))
+        assert first.provider_key == second.provider_key == f"{SID}:plan"
+        assert (first.provider_version, first.version_label) == ("pf_" + "a" * 32, "v1")
+        assert revision_id(first, "thor") == "pf_" + "a" * 32
+        assert revision_id(second, "thor") == "pf_" + "b" * 32
+        assert second.url.endswith("/files/presented/pf_" + "b" * 32)
+
+    def test_malformed_artifact_key_leaves_the_file_unkeyed(self):
+        file_id = "pf_" + "c" * 32
+        turn = {
+            "id": "t",
+            "parts": [
+                {
+                    "id": file_id,
+                    "name": "present_file",
+                    "type": "tool_use",
+                    "input": {"file_id": file_id, "artifact_key": "../plan", "version_label": "v1"},
+                }
+            ],
+        }
+        pub = _one(_turn(turn))
+        assert (pub.provider_key, pub.provider_version, pub.version_label) == (file_id, None, None)
+        assert revision_id(pub, "thor").startswith("rev_")
+
     def test_present_file_without_file_id_is_ignored(self):
         turn = {
             "id": "t",

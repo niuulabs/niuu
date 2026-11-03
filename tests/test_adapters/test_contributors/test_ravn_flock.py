@@ -635,6 +635,11 @@ class TestContributorOutput:
             "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
         }
         ravn_config = yaml.safe_load(_extract_mounted_config(result.pod_spec, "coder"))
+        # Members present documents through the broker, over the flock mesh.
+        assert ravn_config["present_file"] == {
+            "enabled": True,
+            "broker_peer_id": env_names["SKULD__MESH__PEER_ID"],
+        }
         assert ravn_config["workflow"]["result_schema"] == {
             "type": "object",
             "properties": {"evidence": {"type": "array", "items": {"type": "string"}}},
