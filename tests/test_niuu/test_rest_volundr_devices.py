@@ -303,6 +303,13 @@ def _push_node(calls: list[dict[str, Any]], *, push: bool = True) -> FastAPI:
             return JSONResponse({"detail": "You have no registered widget token"}, status_code=404)
         return {"kind": body.get("kind", "alert"), "sent": 1, "accepted": 1, "devices": []}
 
+    @app.post("/api/v1/forge/push/call")
+    async def ring(request: Request, body: dict):
+        record(request, body=body)
+        if body.get("request_id") == "over-the-cap":
+            return JSONResponse({"detail": "Too many calls"}, status_code=429)
+        return {"sent": True, "tokens": 1, "results": []}
+
     return app
 
 
@@ -420,6 +427,7 @@ def test_a_node_without_push_answers_503_through_the_facade():
         ("DELETE", f"{URL}/0a1b2c3d"),
         ("GET", "/api/v1/forge/push/status"),
         ("POST", "/api/v1/forge/push/test"),
+        ("POST", "/api/v1/forge/push/call"),
     ],
 )
 def test_a_session_credential_may_not_use_the_device_or_push_routes(method, path):
@@ -490,3 +498,25 @@ def test_unregister_of_an_alert_token_passes_its_kind_to_every_node():
     assert response.status_code == 204
     assert calls[0]["query"] == {"kind": "alert"}
     assert remote.calls.last.request.url.params["kind"] == "alert"
+
+
+def test_a_residents_ring_reaches_the_push_node():
+    """A resident's call.request reaches the push gateway node through the facade
+    (yggdrasil.niuu.world/api/v1/forge is the facade); its answer comes back as is."""
+    calls: list[dict[str, Any]] = []
+    client = _client([GATEWAY, REMOTE], embedded_forge_app=_push_node(calls))
+    frame = {"type": "call.request", "id": "req-1", "payload": {"id": "req-1", "text": "Hi"}}
+
+    rung = client.post(
+        "/api/v1/forge/push/call", json={"request_id": "req-1", "frame": frame}, headers=_headers()
+    )
+    capped = client.post(
+        "/api/v1/forge/push/call",
+        json={"request_id": "over-the-cap", "frame": frame},
+        headers=_headers(),
+    )
+
+    assert rung.status_code == 200 and rung.json()["sent"] is True
+    assert capped.status_code == 429
+    assert [call["path"] for call in calls] == ["/api/v1/forge/push/call"] * 2
+    assert calls[0]["body"] == {"request_id": "req-1", "frame": frame}
