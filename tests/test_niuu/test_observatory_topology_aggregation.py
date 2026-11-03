@@ -14,7 +14,12 @@ import pytest
 from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from identity.models import Principal
 from niuu.adapters.memory_observatory_fragments import InMemoryObservatoryFragmentRepository
-from niuu.domain.models import InstanceKind, InstanceVisibility, RegisteredInstance
+from niuu.domain.models import (
+    InstanceHealthStatus,
+    InstanceKind,
+    InstanceVisibility,
+    RegisteredInstance,
+)
 from niuu.domain.observatory import (
     FragmentMeta,
     ObservatoryFragment,
@@ -27,7 +32,13 @@ from niuu.domain.services.observatory_topology import ObservatoryTopologyAggrega
 NOW = datetime(2026, 8, 1, 12, 0, 0, tzinfo=UTC)
 
 
-def _instance(instance_id: str, *, cluster: str = "ymir") -> RegisteredInstance:
+def _instance(
+    instance_id: str,
+    *,
+    cluster: str = "ymir",
+    health: InstanceHealthStatus = InstanceHealthStatus.UNKNOWN,
+    last_error: str | None = None,
+) -> RegisteredInstance:
     return RegisteredInstance(
         id=instance_id,
         kind=InstanceKind.OBSERVATORY,
@@ -43,6 +54,9 @@ def _instance(instance_id: str, *, cluster: str = "ymir") -> RegisteredInstance:
         tags=[],
         created_at=NOW,
         updated_at=NOW,
+        health=health,
+        last_checked_at=NOW if health is not InstanceHealthStatus.UNKNOWN else None,
+        last_error=last_error,
     )
 
 
@@ -177,6 +191,85 @@ class TestPullAggregation:
         assert snapshot.nodes == []
         assert snapshot.partial is False
         assert snapshot.timestamp
+
+
+class TestKnownUnreachableSources:
+    """A source the health loop already found down must not hold every snapshot.
+
+    Eitri's Observatory timed out on every poll, so every snapshot took the
+    full client timeout (5.3 s on ymir) to report what the health check had
+    already recorded. It is still reported — as failed, with a
+    ``source_unreachable`` warning and ``partial`` — just not dialled.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_source_the_health_check_found_down_is_not_dialled(self) -> None:
+        client = _StubClient({"obs-a": _fragment("obs-a", node_ids=["a-1"])})
+        service = ObservatoryTopologyAggregationService(
+            client=client,  # type: ignore[arg-type]
+            max_concurrency=4,
+        )
+
+        snapshot = await service.get_snapshot(
+            [
+                _instance("obs-a", health=InstanceHealthStatus.OK),
+                _instance(
+                    "obs-eitri",
+                    health=InstanceHealthStatus.UNREACHABLE,
+                    last_error="ReadTimeout",
+                ),
+            ],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
+
+        assert client.calls == ["obs-a"]
+        assert {node.id for node in snapshot.nodes} == {"a-1"}
+
+    @pytest.mark.asyncio
+    async def test_the_skipped_source_stays_reported_as_failed(self) -> None:
+        service = _service({})
+
+        snapshot = await service.get_snapshot(
+            [
+                _instance(
+                    "obs-eitri",
+                    health=InstanceHealthStatus.UNREACHABLE,
+                    last_error="ReadTimeout",
+                )
+            ],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
+
+        assert snapshot.partial is True
+        assert snapshot.sources[0].status == "failed"
+        assert snapshot.sources[0].message == (
+            "not polled: the health check at 2026-08-01T12:00:00Z found it unreachable "
+            "(ReadTimeout)"
+        )
+        assert [(w.source_id, w.code) for w in snapshot.warnings] == [
+            ("obs-eitri", "source_unreachable")
+        ]
+        assert snapshot.warnings[0].message.startswith("Observatory obs-eitri: not polled")
+
+    @pytest.mark.asyncio
+    async def test_a_source_without_a_verdict_is_still_dialled(self) -> None:
+        """``unknown`` claims nothing, so it is asked rather than assumed down."""
+        client = _StubClient({"obs-new": RuntimeError("connection refused")})
+        service = ObservatoryTopologyAggregationService(
+            client=client,  # type: ignore[arg-type]
+            max_concurrency=4,
+        )
+
+        snapshot = await service.get_snapshot(
+            [_instance("obs-new")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
+
+        assert client.calls == ["obs-new"]
+        assert snapshot.sources[0].message == "connection refused"
 
 
 class TestPushedFragments:

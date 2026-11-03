@@ -251,7 +251,30 @@ Useful summary.
         issues: [{ id: 'L1', severity: 'error', message: 'Broken', page: '/a' }],
         pages_checked: 1,
       }),
-    ).toMatchObject({ pagesChecked: 1, summary: { error: 1, warn: 0, info: 0 } });
+    ).toMatchObject({ pagesChecked: 1, summary: { error: 1, warn: 0, info: 0 }, mounts: [] });
+    expect(
+      toLintReport({
+        issues: [],
+        pages_checked: 0,
+        mounts: [
+          {
+            name: 'gbrain-kanuck',
+            status: 'unsupported',
+            pages_checked: 0,
+            issues: 0,
+            detail: 'gbrain has no equivalent for lint.',
+          },
+        ],
+      }).mounts,
+    ).toEqual([
+      {
+        name: 'gbrain-kanuck',
+        status: 'unsupported',
+        pagesChecked: 0,
+        issues: 0,
+        detail: 'gbrain has no equivalent for lint.',
+      },
+    ]);
 
     expect(
       toEmbeddingResult({

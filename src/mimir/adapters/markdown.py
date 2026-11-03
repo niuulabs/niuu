@@ -55,6 +55,7 @@ except ImportError:
 from mimir.config import EvidenceConfig, RankingConfig
 from mimir.learning import consolidate_source as compute_source_consolidation
 from mimir.ranking import apply_boosts, tokenize, zone_factor
+from niuu.domain.knowledge_graph import KnowledgeGraph, project_pages
 from niuu.domain.knowledge_graph import extract_typed_edges as _extract_typed_edges
 from niuu.domain.mimir import (
     OPERATIONAL_SOURCE_TYPES,
@@ -791,6 +792,24 @@ class MarkdownMimirAdapter(MimirPort):
         content = page_path.read_text(encoding="utf-8")
         meta = self._build_page_meta(page_path, content)
         return MimirPage(meta=meta, content=content)
+
+    async def get_graph(self) -> KnowledgeGraph:
+        """Project the wiki into the exploration graph in one pass off the event loop.
+
+        The port default lists the pages and then calls ``get_page`` once per
+        page, each a blocking read on the event loop: 1.6 s for yggdrasil's
+        1,958 pages, every time the graph was asked for, stalling every other
+        request meanwhile. One threaded walk reads each body once.
+        """
+        return await asyncio.to_thread(self._graph_sync)
+
+    def _graph_sync(self) -> KnowledgeGraph:
+        return project_pages(
+            [
+                MimirPage(meta=meta, content=content)
+                for meta, content in self._list_pages_with_content()
+            ]
+        )
 
     async def read_page(self, path: str) -> str:
         """Return the raw Markdown content of the page at *path*."""

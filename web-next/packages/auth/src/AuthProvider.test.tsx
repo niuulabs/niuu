@@ -42,6 +42,7 @@ function createMockManager(overrides: Record<string, unknown> = {}) {
     signinRedirectCallback: vi.fn(),
     signoutRedirect: vi.fn(),
     signinSilent: vi.fn(),
+    removeUser: vi.fn().mockResolvedValue(undefined),
     events: {
       addUserLoaded: vi.fn(),
       addUserUnloaded: vi.fn(),
@@ -213,6 +214,8 @@ describe('AuthProvider', () => {
       expect.stringContaining('restoring the stored session failed'),
       expect.any(Error),
     );
+    // The dead session is dropped, so the next page load does not retry it.
+    expect(mockMgr.removeUser).toHaveBeenCalled();
     consoleSpy.mockRestore();
   });
 

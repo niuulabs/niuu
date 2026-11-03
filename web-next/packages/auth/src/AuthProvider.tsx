@@ -16,13 +16,16 @@ import styles from './AuthProvider.module.css';
 
 /**
  * Renew with the refresh token. A failure means the identity provider ended the
- * session (idle or max lifetime), so the user has to sign in again; say why.
+ * session (idle or max lifetime, or a sign-in elsewhere replaced it), so the user
+ * has to sign in again; say why once, and drop the dead session so the next page
+ * load does not try it again.
  */
 async function renew(mgr: UserManager, purpose: string): Promise<User | null> {
   try {
     return await mgr.signinSilent();
   } catch (err) {
     console.error(`OIDC: ${purpose} failed; the user must sign in again.`, err);
+    await mgr.removeUser();
     return null;
   }
 }

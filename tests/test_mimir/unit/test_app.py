@@ -95,6 +95,24 @@ def test_create_app_exposes_api_v1_mimir_routes(tmp_path: Path) -> None:
         assert client.get("/api/v1/mimir/mcp").status_code == 405
 
 
+def test_create_app_compresses_large_json(tmp_path: Path) -> None:
+    """The page listing and graph shipped raw: 880 KB and 1.1 MB on yggdrasil."""
+    wiki = tmp_path / "mimir" / "wiki" / "notes"
+    wiki.mkdir(parents=True)
+    for index in range(80):
+        (wiki / f"page-{index}.md").write_text(f"# Page {index}\n\nA summary of page {index}.\n")
+    app = create_app(MimirServiceConfig(path=str(tmp_path / "mimir")))
+    with TestClient(app) as client:
+        compressed = client.get("/api/v1/mimir/pages", headers={"accept-encoding": "gzip"})
+        stream = client.get(
+            "/api/v1/mimir/pages",
+            headers={"accept-encoding": "gzip", "accept": "text/event-stream"},
+        )
+    assert compressed.headers["content-encoding"] == "gzip"
+    assert len(compressed.json()) == 80
+    assert "content-encoding" not in stream.headers
+
+
 def test_create_app_exposes_settings_schema(tmp_path: Path) -> None:
     config = MimirServiceConfig(path=str(tmp_path / "mimir"), name="shared", role="shared")
     app = create_app(config)

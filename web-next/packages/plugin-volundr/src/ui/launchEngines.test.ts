@@ -174,14 +174,16 @@ describe('describeEngineProviders', () => {
 });
 
 describe('hidden engines', () => {
-  it('keeps batch and remote-control definitions out of the launch dialogs', () => {
+  it('keeps batch, remote-control and reviewer definitions out of the launch dialogs', () => {
     const batch = { ...definition('skuldCodexExec', ['openai']), labels: ['session', 'batch'] };
     const remote = {
       ...definition('skuldClaudeRemote', ['anthropic']),
       labels: ['session', 'remote-control'],
     };
+    // Provider-neutral, so only its label keeps it out.
+    const reviewer = { ...definition('skuldReviewer', []), labels: ['reviewer'] };
     const engines = availableEngines(
-      [...DEFINITIONS, batch, remote],
+      [...DEFINITIONS, batch, remote, reviewer],
       [connection('claude-code'), connection('codex')],
       CATALOG,
     );

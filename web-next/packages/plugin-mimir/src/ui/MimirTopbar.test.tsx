@@ -82,6 +82,7 @@ describe('MimirTopbar', () => {
           issues: [],
           pagesChecked: 0,
           summary: { error: 0, warn: 0, info: 0 },
+          mounts: [],
         }),
       },
     };

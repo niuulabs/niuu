@@ -324,6 +324,25 @@ async def test_lint_returns_report(adapter: HttpMimirAdapter) -> None:
     assert report.pages_checked == 5
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_lint_on_a_mount_without_lint_is_not_implemented(adapter: HttpMimirAdapter) -> None:
+    """A remote 501 is the mount saying it has no lint, which an aggregate reports."""
+    respx.get("http://mimir.test/mimir/lint").mock(
+        return_value=Response(501, json={"detail": "gbrain has no equivalent for lint."})
+    )
+    with pytest.raises(NotImplementedError, match="gbrain has no equivalent for lint"):
+        await adapter.lint()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_lint_501_without_a_detail_names_the_status(adapter: HttpMimirAdapter) -> None:
+    respx.get("http://mimir.test/mimir/lint").mock(return_value=Response(501, text="nope"))
+    with pytest.raises(NotImplementedError, match="501 from http://mimir.test/mimir/lint"):
+        await adapter.lint()
+
+
 # ---------------------------------------------------------------------------
 # HttpMimirAdapter — auth header
 # ---------------------------------------------------------------------------
