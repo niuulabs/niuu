@@ -2439,6 +2439,30 @@ def test_feature_flags_mirror_the_nodes_voice_reads() -> None:
 
 
 @respx.mock
+def test_feature_flags_mirror_the_push_gateway_nodes_push_kinds() -> None:
+    """The phone registers its voip token where the facade says push_voip: the
+    facade sends non-alert registrations on to the push gateway node."""
+    gateway = _client([_instance("ymir", base_url="http://ymir", is_default=True)])
+    respx.get("http://ymir/api/v1/forge/feature-flags").mock(
+        return_value=Response(
+            200, json={"capabilities": {"push_installs": True, "push_voip": True}}
+        )
+    )
+    node = _client([_instance("valhalla", base_url="http://valhalla", is_default=True)])
+    respx.get("http://valhalla/api/v1/forge/feature-flags").mock(
+        return_value=Response(200, json={"capabilities": {"push_installs": False}})
+    )
+
+    gateway_caps = gateway.get("/api/v1/forge/feature-flags", headers=_headers()).json()[
+        "capabilities"
+    ]
+    node_caps = node.get("/api/v1/forge/feature-flags", headers=_headers()).json()["capabilities"]
+
+    assert gateway_caps["push_installs"] is True and gateway_caps["push_voip"] is True
+    assert node_caps["push_installs"] is False and node_caps["push_voip"] is False
+
+
+@respx.mock
 def test_voice_conversation_passes_through_without_aggregate_timings() -> None:
     client = _client([_instance("beta", base_url="http://beta")])
     respx.get("http://beta/api/v1/forge/sessions/s2").mock(
