@@ -265,6 +265,38 @@ class TestOdinReviewRelayComposition:
         assert relay._source._auth.headers() == {"Authorization": "Bearer from-env"}
         await relay._source.close()
 
+    async def test_the_push_sink_rule_is_given_only_without_the_gateway(self):
+        from volundr.main import _create_odin_review_relay
+
+        notifications = {
+            "odin_review_relay": self.RELAY,
+            "sinks": [
+                {
+                    "name": "push",
+                    "adapter": (
+                        "volundr.adapters.outbound.push_notification_sink.PushNotificationSink"
+                    ),
+                }
+            ],
+        }
+        sink_push = Settings(notifications=notifications, push={"enabled": True})
+        gateway = sink_push.model_copy(
+            update={
+                "push": sink_push.push.model_copy(
+                    update={"gateway": sink_push.push.gateway.model_copy(update={"enabled": True})}
+                )
+            }
+        )
+
+        through_sink = _create_odin_review_relay(sink_push, MagicMock(), MagicMock())
+        through_gateway = _create_odin_review_relay(gateway, MagicMock(), MagicMock())
+
+        # The gateway pushes each question's notification; its node has no push sink.
+        assert through_sink._push_sink == sink_push.push.attention_sink
+        assert through_gateway._push_sink is None
+        await through_sink._source.close()
+        await through_gateway._source.close()
+
     def test_enabled_without_the_notification_service_is_fatal(self):
         from volundr.main import _create_odin_review_relay
 
