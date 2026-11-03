@@ -38,7 +38,11 @@ class LocalPresentedFileStore(PresentedFileStore):
     def _dir(self, session_id: UUID, file_id: str) -> Path:
         if not is_presented_file_id(file_id):
             raise ValueError("invalid presented file id")
-        return self._root / str(UUID(str(session_id))) / file_id
+        root = os.path.realpath(self._root)
+        path = os.path.realpath(os.path.join(root, str(UUID(str(session_id))), file_id))
+        if not path.startswith(root + os.sep):
+            raise ValueError("presented file path escapes the store root")
+        return Path(path)
 
     async def put(
         self, session_id: UUID, file_id: str, *, name: str, mime: str, data: bytes

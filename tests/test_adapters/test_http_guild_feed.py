@@ -271,8 +271,9 @@ class TestEvents:
     async def test_yields_the_node_of_each_notification_event(self, monkeypatch):
         seen: dict = {}
 
-        async def events(url, headers):
+        async def events(client, url, headers):
             seen["url"], seen["headers"] = url, dict(headers)
+            seen["client"] = client
             yield "session_updated", {"instance_id": THOR}
             yield "session_notification", {"id": "n-1", "instance_id": MINI}
             yield "heartbeat", {}
@@ -284,10 +285,14 @@ class TestEvents:
         assert [instance async for instance in feed.notification_events()] == [MINI, ""]
         assert seen["url"] == f"{GUILD}/api/v1/forge/sessions/stream?all_instances=true"
         assert seen["headers"] == {"authorization": "Bearer pat-123"}
+        assert isinstance(seen["client"], httpx.AsyncClient)
+        assert seen["client"].timeout.read == 5
+        await seen["client"].aclose()
         await feed.close()
 
     async def test_a_lost_stream_is_a_feed_error(self, monkeypatch):
-        async def events(url, headers):
+        async def events(client, url, headers):
+            await client.aclose()
             raise httpx.ReadTimeout("idle")
             yield  # pragma: no cover
 

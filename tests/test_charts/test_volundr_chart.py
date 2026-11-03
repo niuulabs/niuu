@@ -663,7 +663,7 @@ class TestConfigMapTemplate:
 
         def render(*extra: str) -> dict:
             result = subprocess.run(
-                ["helm", "template", "test", str(CHART_DIR), *extra],
+                ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL, *extra],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -878,6 +878,7 @@ class TestConfigMapTemplate:
                 "template",
                 "test",
                 str(CHART_DIR),
+                *BIFROST_URL,
                 "--set",
                 "push.enabled=true",
                 "--set",

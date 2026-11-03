@@ -73,6 +73,7 @@ class HttpGuildFeed(GuildFeed):
             build_remote_url(guild_url, FORGE_API_PREFIX, STREAM_PATH) + "?all_instances=true"
         )
         self._headers = {"authorization": f"Bearer {reader_token}"} if reader_token else {}
+        self._timeout_seconds = timeout_seconds
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
 
@@ -172,7 +173,11 @@ class HttpGuildFeed(GuildFeed):
 
     async def notification_events(self) -> AsyncIterator[str]:
         try:
-            async for name, payload in remote_events(self._stream_url, self._headers):
+            # remote_events closes the client it reads from, so each stream gets its own.
+            stream_client = httpx.AsyncClient(timeout=self._timeout_seconds)
+            async for name, payload in remote_events(
+                stream_client, self._stream_url, self._headers
+            ):
                 if name != NOTIFICATION_EVENT:
                     continue
                 instance_id = payload.get("instance_id")

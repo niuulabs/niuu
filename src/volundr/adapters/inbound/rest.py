@@ -1108,7 +1108,7 @@ def _registered_environment(
     logger.warning(
         "Push registration of a %s token for owner %s has %s environment (%r); stored as the "
         "registry's default (production). The app should send sandbox or production.",
-        kind.value,
+        _sanitize_log(kind.value),
         _sanitize_log(owner_id),
         "no" if value is None else "an unknown",
         _sanitize_log(value or ""),
@@ -4268,9 +4268,9 @@ def create_router(
         )
         logger.info(
             "Relayed message from session %s on %s to %s",
-            sender.session_id,
+            _sanitize_log(sender.session_id),
             _sanitize_log(sender.instance_name),
-            session_id,
+            _sanitize_log(session_id),
         )
         return await send_session_message(
             request,
@@ -4579,10 +4579,10 @@ def create_router(
             if total is not None:
                 out["total_turns"] = total
             logger.info(
-                "[perf] conversation tail session=%s tail=%d windowed=%s fetch=%sms turns=%d",
+                "[perf] conversation tail session=%s tail=%s windowed=%s fetch=%sms turns=%d",
                 _sanitize_log(session_id),
-                tail,
-                windowed,
+                _sanitize_log(tail),
+                _sanitize_log(windowed),
                 (f"{fetch_ms:.1f}" if fetch_ms is not None else "-"),
                 len(turns),
             )
@@ -4866,7 +4866,7 @@ def create_router(
         logger.info(
             "[perf] attachments session=%s kind=%s items=%d turns=%d ms=%.1f",
             _sanitize_log(session_id),
-            kind or "all",
+            _sanitize_log(kind or "all"),
             len(items),
             index.get("total_turns", 0),
             (time.perf_counter() - started) * 1000.0,

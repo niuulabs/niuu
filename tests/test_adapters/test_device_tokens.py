@@ -161,7 +161,8 @@ async def test_delete_returns_true_when_removed(repository, mock_pool):
 
 async def test_delete_returns_true_when_several_kinds_were_removed(repository, mock_pool):
     mock_pool.execute.return_value = "DELETE 2"
-    assert await repository.delete("user-1", "tok") is True
+    deleted = await repository.delete("user-1", "tok")
+    assert deleted is True
 
 
 async def test_delete_returns_false_when_absent(repository, mock_pool):
@@ -173,7 +174,8 @@ async def test_delete_returns_false_when_absent(repository, mock_pool):
 async def test_delete_one_kind(repository, mock_pool):
     mock_pool.execute.return_value = "DELETE 1"
 
-    assert await repository.delete("user-1", "tok", kind=PushTokenKind.WIDGET) is True
+    deleted = await repository.delete("user-1", "tok", kind=PushTokenKind.WIDGET)
+    assert deleted is True
 
     sql, *args = mock_pool.execute.call_args[0]
     assert "AND kind = $3" in sql

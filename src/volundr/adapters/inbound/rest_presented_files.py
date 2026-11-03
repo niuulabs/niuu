@@ -36,6 +36,12 @@ from volundr.domain.services.session import SessionAccessDeniedError, SessionSer
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_log(value: object) -> str:
+    """Sanitize a value for safe log output (prevent log injection)."""
+    return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
 NAME_HEADER = PRESENTED_FILE_NAME_HEADER
 MAX_NAME_CHARS = 255
 
@@ -109,8 +115,8 @@ def create_presented_files_router(
             logger.error(
                 "presented file refused by quota: session=%s file=%s size=%d used=%d "
                 "limit=%d refusals=%d",
-                session_id,
-                file_id,
+                _sanitize_log(session_id),
+                _sanitize_log(file_id),
                 exc.size,
                 exc.used,
                 exc.limit,
@@ -130,7 +136,10 @@ def create_presented_files_router(
             await store.delete_session(session_id)
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Session not found: {session_id}")
         logger.info(
-            "presented file stored: session=%s file=%s size=%d", session_id, file_id, len(data)
+            "presented file stored: session=%s file=%s size=%d",
+            _sanitize_log(session_id),
+            _sanitize_log(file_id),
+            len(data),
         )
         return PresentedFileStoredResponse(
             file_id=record.file_id,

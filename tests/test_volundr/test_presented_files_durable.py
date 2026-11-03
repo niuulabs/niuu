@@ -135,6 +135,21 @@ async def test_store_ignores_symlinked_content(tmp_path):
     assert await store.get(sid, FILE_ID) is None
 
 
+async def test_store_never_reads_or_writes_outside_its_root(tmp_path):
+    store = LocalPresentedFileStore(root=str(tmp_path / "store"))
+    sid = uuid4()
+    outside = tmp_path / "outside"
+    (outside / FILE_ID).mkdir(parents=True)
+    (outside / FILE_ID / "content").write_text("no")
+    (outside / FILE_ID / "meta.json").write_text("{}")
+    (tmp_path / "store").mkdir()
+    os.symlink(outside, tmp_path / "store" / str(sid))
+
+    assert await store.get(sid, FILE_ID) is None
+    with pytest.raises(ValueError, match="escapes the store root"):
+        await store.put(sid, FILE_ID, name="a.txt", mime="text/plain", data=b"a")
+
+
 async def test_store_ignores_corrupt_metadata(tmp_path):
     store = LocalPresentedFileStore(root=str(tmp_path))
     sid = uuid4()
