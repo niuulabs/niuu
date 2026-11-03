@@ -127,3 +127,31 @@ def test_the_operator_test_frame_can_name_a_session():
         "t-1", host="ymir", now=NOW, ring_seconds=60, session_id=RAVN, session_name="Sidekick"
     )
     assert test["payload"]["session"] == {"host": "ymir", "id": RAVN, "name": "Sidekick"}
+
+
+#: Phase 1's golden frame (tests/ravn/fixtures/voice/call_request.json), the one the
+#: resident's voice gateway sends and the app's wire test decodes.
+GOLDEN = {
+    "type": "call.request",
+    "id": "7f3c2a9e-1b4d-4c8e-9a51-2d6f0e8b4c13",
+    "payload": {
+        "id": "7f3c2a9e-1b4d-4c8e-9a51-2d6f0e8b4c13",
+        "source": "resident",
+        "session": {
+            "host": "valhalla",
+            "id": "0b6f8c1e-5a2d-4f39-8e7a-3c9d1f2a6b54",
+            "name": "Sidekick",
+        },
+        "text": "The deploy finished and every check is green.",
+        "notificationId": "01177db3-f589-59a9-bf46-c3e6c106e6e6",
+        "priority": "now",
+        "expiresAt": "2026-11-03T15:04:05Z",
+    },
+}
+
+
+def test_the_golden_frame_is_rung_as_it_is():
+    call = validate_call_request(GOLDEN["id"], GOLDEN, now=NOW)
+
+    assert call.session_id == "0b6f8c1e-5a2d-4f39-8e7a-3c9d1f2a6b54"
+    assert voip_payload(call.frame) == GOLDEN
