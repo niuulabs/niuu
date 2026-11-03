@@ -72,6 +72,18 @@ Check `GET /s/{id}/api/capabilities`: `runtime_options: true` gates the new surf
 - Choices persist through broker restart unless the operator changes the launch
   model. Native account availability can change: refresh and display rejection,
   never substitute another model or permission policy.
+- Claude sessions (tmux transport) expose the same shape with `source: "catalog"`:
+  Claude Code publishes no model catalog, so `models` are the product's Claude
+  entries in `niuu.domain.reasoning.MODEL_EFFORTS` (`name` is the model id,
+  `default` marks the launch model, no service tiers). `current.model` follows the
+  native transcript, so a `/model` typed in the terminal shows after the next
+  reply. A model change types `/model <id>` into the CLI between turns (400 while
+  Claude is working) and waits for its acknowledgement. Not offered
+  behind a model gateway (`runtime_options: false`).
+- The session's `model` in `GET /api/v1/forge/sessions`, the session GET and the
+  `session_updated` event is the model **in effect**: the last one the runtime
+  reported (a reply's `message.model`, or an acknowledged change between turns),
+  else the launch model. The launch model stays stored; restart launches with it.
 
 ## Approvals, questions and notices
 

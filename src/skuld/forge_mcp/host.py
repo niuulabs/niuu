@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from niuu.build_identity import build_identity
+from niuu.domain.artifact_reports import ArtifactReport, build_report_turn
 from niuu.domain.notifications import NotificationDraft, build_notification_turn
 from niuu.domain.services.forge_session_token import SESSION_ID_CLAIM
 from niuu.forge_mcp.credentials import is_forge_session_claims, token_scopes, unverified_claims
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
     from skuld.broker import Broker
 
 NOTIFICATION_TURN_PREFIX = "nt_"
+REPORT_TURN_PREFIX = "ar_"
 STATE_COMMITTED = "committed"
 STATE_PENDING = "pending"
 
@@ -163,6 +165,39 @@ class BrokerForgeMcpHost(ForgeMcpHost):
             "notification_id": notification["notification_id"],
             "turn_id": turn_id,
             "session_seq": entry["seq"],
+            "state": STATE_COMMITTED if stored else STATE_PENDING,
+        }
+
+    async def report_artifact(self, report: ArtifactReport) -> dict[str, Any]:
+        """Append the report's durable turn; Forge's artifact projector records it (F1)."""
+        broker = self._broker
+        if not (broker._settings.event_log_enabled and broker.volundr_api_url):
+            raise ForgeApiError(
+                "this session has no durable Forge log, so a report could never reach Forge",
+                status=503,
+            )
+        turn_id = f"{REPORT_TURN_PREFIX}{uuid.uuid4().hex}"
+        turn = ConversationTurn(
+            **build_report_turn(report, turn_id=turn_id, created_at=datetime.now(UTC).isoformat())
+        )
+        entry = broker._append_turn(turn)
+        if entry is None:
+            raise ForgeApiError("the durable log refused the report turn", status=503)
+        receipt = broker._watch_event_log_entry(entry)
+        await broker._channels.broadcast({"type": "conversation.turn", "turn": asdict(turn)})
+        stored = await broker._await_event_log_receipt(
+            receipt, broker._settings.forge_mcp.notify_confirm_timeout_s
+        )
+        if stored is False:
+            raise ForgeApiError(
+                "the report's log entry was not stored (dropped while Forge was unreachable, "
+                "or its sequence conflicted)",
+                status=409,
+            )
+        return {
+            "turn_id": turn_id,
+            "session_seq": entry["seq"],
+            "url": report.url,
             "state": STATE_COMMITTED if stored else STATE_PENDING,
         }
 

@@ -1,0 +1,409 @@
+{
+ "fixture": "burst identity and membership v1 (judge R6-2): Forge F1n and CP C4 share bursts.py's rule",
+ "spec": "platform/design.md \u00a7V11.2 = model/bursts.md",
+ "golden": {
+  "manifest": "fixtures/capture-manifest-v1.json",
+  "replay": "probes/out/slice0-burst-replay.json",
+  "expect": {
+   "bursts": 33,
+   "notices": 25
+  }
+ },
+ "cases": [
+  {
+   "id": "B1",
+   "title": "Two sessions publish the same artifact a minute apart: one burst, one notice (judge R6-2)",
+   "steps": [
+    {
+     "publish": {
+      "name": "a",
+      "key": "K",
+      "session": "s1",
+      "seq": 10,
+      "at": 0
+     }
+    },
+    {
+     "publish": {
+      "name": "b",
+      "key": "K",
+      "session": "s2",
+      "seq": 11,
+      "at": 60
+     }
+    },
+    {
+     "tick": 600
+    }
+   ],
+   "expect": {
+    "bursts": 1,
+    "notices": 1,
+    "same": [
+     [
+      "a",
+      "b"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "B2",
+   "title": "A late live row: seq 20 at 12:10 opened the burst; seq 10 at 12:00 arrives later, live, and joins it with the id unchanged (judge R6-2)",
+   "steps": [
+    {
+     "publish": {
+      "name": "late20",
+      "key": "K",
+      "session": "s1",
+      "seq": 20,
+      "at": 600
+     }
+    },
+    {
+     "tick": 780
+    },
+    {
+     "snapshot_ids": [
+      "late20"
+     ]
+    },
+    {
+     "publish": {
+      "name": "early10",
+      "key": "K",
+      "session": "s1",
+      "seq": 10,
+      "at": 0
+     }
+    },
+    {
+     "restart": true
+    },
+    {
+     "tick": 3600
+    }
+   ],
+   "expect": {
+    "bursts": 1,
+    "notices": 1,
+    "same": [
+     [
+      "late20",
+      "early10"
+     ]
+    ],
+    "unchanged": [
+     "late20"
+    ]
+   }
+  },
+  {
+   "id": "B3",
+   "title": "A live row bridging two emitted bursts joins the most recent; neither is merged or renamed (model/bursts.md rule 5)",
+   "steps": [
+    {
+     "publish": {
+      "name": "x",
+      "key": "K",
+      "session": "s1",
+      "seq": 1,
+      "at": 0
+     }
+    },
+    {
+     "tick": 180
+    },
+    {
+     "publish": {
+      "name": "y",
+      "key": "K",
+      "session": "s1",
+      "seq": 2,
+      "at": 3000
+     }
+    },
+    {
+     "tick": 3180
+    },
+    {
+     "snapshot_ids": [
+      "x",
+      "y"
+     ]
+    },
+    {
+     "publish": {
+      "name": "bridge",
+      "key": "K",
+      "session": "s1",
+      "seq": 3,
+      "at": 1500
+     }
+    },
+    {
+     "tick": 7200
+    }
+   ],
+   "expect": {
+    "bursts": 2,
+    "notices": 2,
+    "same": [
+     [
+      "y",
+      "bridge"
+     ]
+    ],
+    "different": [
+     [
+      "x",
+      "y"
+     ]
+    ],
+    "unchanged": [
+     "x",
+     "y"
+    ],
+    "bridges": true
+   }
+  },
+  {
+   "id": "B4",
+   "title": "Backfilled history is grouped silently",
+   "steps": [
+    {
+     "publish": {
+      "name": "h1",
+      "key": "K",
+      "session": "s1",
+      "seq": 1,
+      "at": 0,
+      "origin": "backfill"
+     }
+    },
+    {
+     "publish": {
+      "name": "h2",
+      "key": "K",
+      "session": "s1",
+      "seq": 2,
+      "at": 600,
+      "origin": "backfill"
+     }
+    },
+    {
+     "publish": {
+      "name": "h3",
+      "key": "K",
+      "session": "s1",
+      "seq": 3,
+      "at": 5400,
+      "origin": "backfill"
+     }
+    },
+    {
+     "tick": 12000
+    }
+   ],
+   "expect": {
+    "bursts": 2,
+    "notices": 0,
+    "same": [
+     [
+      "h1",
+      "h2"
+     ]
+    ],
+    "different": [
+     [
+      "h1",
+      "h3"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "B5",
+   "title": "A live publication 31 min after the last opens a new burst and a second notice",
+   "steps": [
+    {
+     "publish": {
+      "name": "a",
+      "key": "K",
+      "session": "s1",
+      "seq": 1,
+      "at": 0
+     }
+    },
+    {
+     "tick": 180
+    },
+    {
+     "publish": {
+      "name": "b",
+      "key": "K",
+      "session": "s1",
+      "seq": 2,
+      "at": 1860
+     }
+    },
+    {
+     "tick": 2400
+    }
+   ],
+   "expect": {
+    "bursts": 2,
+    "notices": 2,
+    "different": [
+     [
+      "a",
+      "b"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "B6",
+   "title": "A restart during the 120 s hold emits exactly once",
+   "steps": [
+    {
+     "publish": {
+      "name": "a",
+      "key": "K",
+      "session": "s1",
+      "seq": 1,
+      "at": 0
+     }
+    },
+    {
+     "tick": 60
+    },
+    {
+     "restart": true
+    },
+    {
+     "tick": 130
+    },
+    {
+     "restart": true
+    },
+    {
+     "tick": 300
+    }
+   ],
+   "expect": {
+    "bursts": 1,
+    "notices": 1
+   }
+  },
+  {
+   "id": "B7",
+   "title": "An agent notice linking the artifact within the hold suppresses the generated notice",
+   "steps": [
+    {
+     "publish": {
+      "name": "a",
+      "key": "K",
+      "session": "s1",
+      "seq": 1,
+      "at": 0
+     }
+    },
+    {
+     "notice": {
+      "key": "K",
+      "at": 60
+     }
+    },
+    {
+     "tick": 300
+    }
+   ],
+   "expect": {
+    "bursts": 1,
+    "notices": 0
+   }
+  },
+  {
+   "id": "B8",
+   "title": "Replaying an already-assigned publication changes nothing (rebuild is idempotent)",
+   "steps": [
+    {
+     "publish": {
+      "name": "a",
+      "key": "K",
+      "session": "s1",
+      "seq": 1,
+      "at": 0
+     }
+    },
+    {
+     "tick": 200
+    },
+    {
+     "publish": {
+      "name": "a2",
+      "key": "K",
+      "session": "s1",
+      "seq": 1,
+      "at": 0
+     }
+    },
+    {
+     "tick": 400
+    }
+   ],
+   "expect": {
+    "bursts": 1,
+    "notices": 1,
+    "same": [
+     [
+      "a",
+      "a2"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "B9",
+   "title": "A backfilled row inside a live burst's window forms its own silent backfill burst; the live burst is untouched (model rule 6)",
+   "steps": [
+    {
+     "publish": {
+      "name": "live",
+      "key": "K",
+      "session": "s1",
+      "seq": 20,
+      "at": 600
+     }
+    },
+    {
+     "tick": 780
+    },
+    {
+     "publish": {
+      "name": "old",
+      "key": "K",
+      "session": "s1",
+      "seq": 10,
+      "at": 0,
+      "origin": "backfill"
+     }
+    },
+    {
+     "tick": 3600
+    }
+   ],
+   "expect": {
+    "bursts": 2,
+    "notices": 1,
+    "different": [
+     [
+      "live",
+      "old"
+     ]
+    ]
+   }
+  }
+ ]
+}

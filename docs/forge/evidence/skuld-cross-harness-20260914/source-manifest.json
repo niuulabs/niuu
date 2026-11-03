@@ -1,0 +1,162 @@
+[
+  {
+    "name": "pi-rpc",
+    "requested_url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/docs/rpc.md",
+    "final_url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/docs/rpc.md",
+    "sha256": "15fcd26bee72777b373fd5f2edd77091a01cadd4de95e48b08422ced0552a28d",
+    "bytes": 42698,
+    "retrieved_at": "2026-09-14T22:48:55.922009+00:00"
+  },
+  {
+    "name": "pi-readme",
+    "requested_url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/README.md",
+    "final_url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/README.md",
+    "sha256": "b5daa09877da34d122818e03436b51755bc1b5044ae8ab810df63f02888f1ebe",
+    "bytes": 33107,
+    "retrieved_at": "2026-09-14T22:48:56.095572+00:00"
+  },
+  {
+    "name": "pi-subagent-example",
+    "requested_url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/examples/extensions/subagent/README.md",
+    "final_url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/examples/extensions/subagent/README.md",
+    "sha256": "6a888330bf974657751e09f5d375a9039872d59d6606fc217c5105c7eca51b1a",
+    "bytes": 6298,
+    "retrieved_at": "2026-09-14T22:48:56.310388+00:00"
+  },
+  {
+    "name": "pi-plan-example",
+    "requested_url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/examples/extensions/plan-mode/README.md",
+    "final_url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/examples/extensions/plan-mode/README.md",
+    "sha256": "1ff8d611b8fbafef4ca1e3dbc72136fbcc166461b69f859b5e961b15147bff39",
+    "bytes": 2009,
+    "retrieved_at": "2026-09-14T22:48:56.507928+00:00"
+  },
+  {
+    "name": "claude-teams",
+    "requested_url": "https://code.claude.com/docs/en/agent-teams.md",
+    "final_url": "https://code.claude.com/docs/en/agent-teams.md",
+    "sha256": "5b0e96d7dd9d36179705b2ebb99af2ff13cb9d902c15944a816285d5110e62bc",
+    "bytes": 41274,
+    "retrieved_at": "2026-09-14T22:48:56.689732+00:00"
+  },
+  {
+    "name": "claude-tasks",
+    "requested_url": "https://code.claude.com/docs/en/agent-sdk/todo-tracking.md",
+    "final_url": "https://code.claude.com/docs/en/agent-sdk/todo-tracking.md",
+    "sha256": "62c37c4a0e0c113eb21600c9b532e06be7349b7611996dfe9bc09ca01b83e69f",
+    "bytes": 19339,
+    "retrieved_at": "2026-09-14T22:48:56.844561+00:00"
+  },
+  {
+    "name": "claude-hooks",
+    "requested_url": "https://code.claude.com/docs/en/hooks.md",
+    "final_url": "https://code.claude.com/docs/en/hooks.md",
+    "sha256": "9611fc034105246f293245d3938daa0f1042911f0cd15653e9648a3d3d7e851d",
+    "bytes": 322622,
+    "retrieved_at": "2026-09-14T22:48:57.047602+00:00"
+  },
+  {
+    "name": "grok-task",
+    "requested_url": "https://raw.githubusercontent.com/xai-org/grok-build/37949780c144e37df692e3d669051a21fec24f20/crates/codegen/xai-grok-shell/src/extensions/task.rs",
+    "final_url": "https://raw.githubusercontent.com/xai-org/grok-build/37949780c144e37df692e3d669051a21fec24f20/crates/codegen/xai-grok-shell/src/extensions/task.rs",
+    "sha256": "8f302dc0ee1534d0b12d74c993b675240cea1b706eb8c13f57995d6c186e9ca5",
+    "bytes": 35032,
+    "retrieved_at": "2026-09-14T22:49:31.647735+00:00"
+  },
+  {
+    "name": "grok-message",
+    "requested_url": "https://raw.githubusercontent.com/xai-org/grok-build/37949780c144e37df692e3d669051a21fec24f20/crates/codegen/xai-grok-shell/src/extensions/subagent_message.rs",
+    "final_url": "https://raw.githubusercontent.com/xai-org/grok-build/37949780c144e37df692e3d669051a21fec24f20/crates/codegen/xai-grok-shell/src/extensions/subagent_message.rs",
+    "sha256": "71eb1fb57aa1cc0296f01ca1de061e0221eb699c3fdad2a027cc7c6e1b0df6c6",
+    "bytes": 5211,
+    "retrieved_at": "2026-09-14T22:49:31.666320+00:00"
+  },
+  {
+    "name": "muse-msp",
+    "requested_url": "https://raw.githubusercontent.com/meta-models/muse-code-sdk/fbce769ccb75ab971d00e01a00fe076de4c773fc/schema/msp/msp.d.ts",
+    "final_url": "https://raw.githubusercontent.com/meta-models/muse-code-sdk/fbce769ccb75ab971d00e01a00fe076de4c773fc/schema/msp/msp.d.ts",
+    "sha256": "3ecfe349a8f76d934318c580c19ed6e120deaf834a8aa83578f54d09297134e8",
+    "bytes": 103484,
+    "retrieved_at": "2026-09-14T22:49:31.694689+00:00"
+  },
+  {
+    "name": "muse-changelog",
+    "requested_url": "https://raw.githubusercontent.com/meta-models/muse-code-sdk/fbce769ccb75ab971d00e01a00fe076de4c773fc/CHANGELOG.md",
+    "final_url": "https://raw.githubusercontent.com/meta-models/muse-code-sdk/fbce769ccb75ab971d00e01a00fe076de4c773fc/CHANGELOG.md",
+    "sha256": "cd3c5f31ec196a2bdfe5186550f64802c6fc7366ca08164ff332937fa125f294",
+    "bytes": 34472,
+    "retrieved_at": "2026-09-14T22:49:31.716417+00:00"
+  },
+  {
+    "name": "ntm-readme",
+    "requested_url": "https://raw.githubusercontent.com/Dicklesworthstone/ntm/74ceb3236416f503797344a5a8a8d94ee061f584/README.md",
+    "final_url": "https://raw.githubusercontent.com/Dicklesworthstone/ntm/74ceb3236416f503797344a5a8a8d94ee061f584/README.md",
+    "bytes": 34450,
+    "sha256": "1b7699812719ab1a2f1ba4a6ecdc8900f9f3502c02a5f88c033ce4774bab6629",
+    "retrieved_at": "2026-09-14T22:58:30.591725+00:00"
+  },
+  {
+    "name": "ntm-controller",
+    "requested_url": "https://raw.githubusercontent.com/Dicklesworthstone/ntm/74ceb3236416f503797344a5a8a8d94ee061f584/internal/cli/controller.go",
+    "final_url": "https://raw.githubusercontent.com/Dicklesworthstone/ntm/74ceb3236416f503797344a5a8a8d94ee061f584/internal/cli/controller.go",
+    "bytes": 15668,
+    "sha256": "edf6f04555ff4964472ccd9a2c49ee095c227ed697b44dc5a0e18446cca45210",
+    "retrieved_at": "2026-09-14T22:59:02.750344+00:00"
+  },
+  {
+    "name": "ntm-controller-test",
+    "requested_url": "https://raw.githubusercontent.com/Dicklesworthstone/ntm/74ceb3236416f503797344a5a8a8d94ee061f584/internal/cli/controller_test.go",
+    "final_url": "https://raw.githubusercontent.com/Dicklesworthstone/ntm/74ceb3236416f503797344a5a8a8d94ee061f584/internal/cli/controller_test.go",
+    "bytes": 17810,
+    "sha256": "783a1afe5201f78842d7bf45c9e682fd029f920d89c86a35fc8569bedc580fa8",
+    "retrieved_at": "2026-09-14T22:59:02.770046+00:00"
+  },
+  {
+    "name": "ntm-restore",
+    "requested_url": "https://raw.githubusercontent.com/Dicklesworthstone/ntm/74ceb3236416f503797344a5a8a8d94ee061f584/internal/checkpoint/restore.go",
+    "final_url": "https://raw.githubusercontent.com/Dicklesworthstone/ntm/74ceb3236416f503797344a5a8a8d94ee061f584/internal/checkpoint/restore.go",
+    "bytes": 27174,
+    "sha256": "e5b7e0da730154de0c4ae79d780e1ead374dcfb6a4b2f35a3c758ca8c859f71f",
+    "retrieved_at": "2026-09-14T22:59:02.789215+00:00"
+  },
+  {
+    "name": "codex-multi-agents",
+    "requested_url": "https://raw.githubusercontent.com/openai/codex/rust-v0.154.0/codex-rs/core/src/session/multi_agents.rs",
+    "final_url": "https://raw.githubusercontent.com/openai/codex/rust-v0.154.0/codex-rs/core/src/session/multi_agents.rs",
+    "bytes": 9211,
+    "sha256": "8e74c565c293fba9b51708c7c1ae1312b1003d53cc01b27eb80fe53bbc40c7bd",
+    "retrieved_at": "2026-09-14T23:00:14.951990+00:00"
+  },
+  {
+    "name": "codex-agent-control",
+    "requested_url": "https://raw.githubusercontent.com/openai/codex/rust-v0.154.0/codex-rs/core/src/agent/control.rs",
+    "final_url": "https://raw.githubusercontent.com/openai/codex/rust-v0.154.0/codex-rs/core/src/agent/control.rs",
+    "bytes": 34471,
+    "sha256": "22bd12703bac1518fdfe427f8179aa411e80976c936feda0dc6ec3212e93bec5",
+    "retrieved_at": "2026-09-14T23:00:14.972758+00:00"
+  },
+  {
+    "name": "codex-message-tool",
+    "requested_url": "https://raw.githubusercontent.com/openai/codex/rust-v0.154.0/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs",
+    "final_url": "https://raw.githubusercontent.com/openai/codex/rust-v0.154.0/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs",
+    "bytes": 4671,
+    "sha256": "3ccc114be697cb4428016b30535f71cfcf31f861dbc2eedc29b99f2a48fc57a9",
+    "retrieved_at": "2026-09-14T23:02:51.835744+00:00"
+  },
+  {
+    "name": "codex-spawn-reload",
+    "requested_url": "https://raw.githubusercontent.com/openai/codex/rust-v0.154.0/codex-rs/core/src/agent/control/spawn.rs",
+    "final_url": "https://raw.githubusercontent.com/openai/codex/rust-v0.154.0/codex-rs/core/src/agent/control/spawn.rs",
+    "bytes": 56235,
+    "sha256": "06e4de6a6d5c7bb1633bfd417ecaa5e3b5609af0cbbd3dc6048d76ef7c9dde99",
+    "retrieved_at": "2026-09-14T23:02:51.862152+00:00"
+  },
+  {
+    "name": "codex-native-wait",
+    "requested_url": "https://raw.githubusercontent.com/openai/codex/rust-v0.154.0/codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
+    "final_url": "https://raw.githubusercontent.com/openai/codex/rust-v0.154.0/codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
+    "bytes": 6712,
+    "sha256": "6b4c6cc9d86c915e5a591ad5103a65a28b62874c66d8aa81302e4e584f504dcb",
+    "retrieved_at": "2026-09-14T23:02:51.884000+00:00"
+  }
+]

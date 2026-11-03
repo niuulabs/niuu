@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
+from collections import Counter
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any, Literal
@@ -32,6 +34,7 @@ from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.auth import extract_principal, presented_session_claims
 from niuu.adapters.inbound.forge_notification_feed import (
+    FEEDLESS_INSTANCES_HEADER,
     CursorError,
     InstancePage,
     decode_cursor,
@@ -53,8 +56,13 @@ from niuu.adapters.inbound.remote_urls import (
     forward_websocket_identity_headers as _forward_websocket_headers,
 )
 from niuu.adapters.inbound.source_health import (
+    SOURCE_FAILURES_HEADER,
+    SourceFailure,
+    describe_remote_failure,
     instance_source_failures,
     set_source_health_header,
+    source_failure,
+    source_failures_header_value,
 )
 from niuu.adapters.inbound.ws_forge_replay import forward_replay
 from niuu.adapters.outbound.guild_transport import (
@@ -63,13 +71,31 @@ from niuu.adapters.outbound.guild_transport import (
 )
 from niuu.domain.guild_membership import GuildInstance, GuildMembership
 from niuu.domain.models import InstanceKind, Principal, RegisteredInstance
-from niuu.domain.notifications import notification_visible_to
+from niuu.domain.notifications import notification_image_url, notification_visible_to
+from niuu.domain.presented_files import (
+    PRESENTED_FILE_CACHE_POLICIES,
+    PRESENTED_FILE_DEFAULT_MAX_BYTES,
+    PRESENTED_FILE_ID_PATTERN,
+    PRESENTED_FILE_LIVE_CACHE,
+    PRESENTED_FILE_NAME_HEADER,
+    presented_file_safety_headers,
+)
 from niuu.domain.services.forge_session_policy import policy_refusal
 from niuu.domain.services.instances import InstanceService
 from niuu.domain.services.token_scope import FORGE_SESSION_TOKEN_USE
+from niuu.domain.session_owners import SessionOwners
 from niuu.forge_mcp.credentials import token_scopes
+from niuu.ports.instances import InvalidInstanceIdError
+
+logger = logging.getLogger(__name__)
 
 UNAVAILABLE_INSTANCES_HEADER = "X-Forge-Unavailable-Instances"
+#: The push-token kind every node pushes to; other kinds serve only the push gateway.
+ALERT_TOKEN_KIND = "alert"
+#: Marks a facade's owner probe of another node, and its owner-hint question to the
+#: Guild: the facade answering it reports only its own nodes and never asks back,
+#: so two facades cannot ask each other in a loop (LEX-1738).
+OWNER_PROBE_HEADER = "X-Niuu-Owner-Probe"
 #: The Forge-hosted MCP endpoint, under the Forge API prefix on every node.
 MCP_PATH = "/mcp"
 NOTIFICATION_EVENT = "session_notification"
@@ -121,6 +147,15 @@ LOCAL_NODE_ONLY_DETAIL = (
     "session's own Forge node, so this request cannot go to instance {instance_id}. "
     "Use a PAT or your own identity to act on other nodes."
 )
+RELAY_LOGIN_REQUIRED_DETAIL = (
+    "The node that owns session {session_id} requires a login, and a session credential "
+    "is valid only on its own node. Messages between sessions on different nodes of such "
+    "a Guild need a node credential, which is not configured (LEX-1710 follow-up)."
+)
+#: Seconds to ask the Guild which node owns a session, for a member's clear refusal.
+OWNER_HINT_TIMEOUT_SECONDS = 5.0
+#: Seconds a relayed session message may take end to end (delivery waits for the ACK).
+RELAY_TIMEOUT_SECONDS = 60.0
 #: WebSocket close code mirroring HTTP 403, and the close-frame reason bound.
 _WS_FORBIDDEN = 4403
 _WS_REASON_CHARS = 120
@@ -163,6 +198,13 @@ def _strip_instance_hints(payload: Any) -> Any:
     ):
         sanitized.pop(key, None)
     return sanitized
+
+
+FORGE_READ_MS_HEADER = "X-Forge-Read-Ms"
+
+
+def _read_ms(started: float) -> str:
+    return f"{(time.perf_counter() - started) * 1000.0:.1f}"
 
 
 def _with_instance(
@@ -304,6 +346,19 @@ def _upstream_detail(response: httpx.Response) -> str:
     return text or response.reason_phrase
 
 
+def _route_missing(response: httpx.Response) -> bool:
+    """The owning host predates this route (FastAPI's bare 404/405, not a domain 404)."""
+    if response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED:
+        return True
+    if response.status_code != status.HTTP_404_NOT_FOUND:
+        return False
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    return isinstance(payload, dict) and payload.get("detail") == "Not Found"
+
+
 def _ensure_remote_success(response: httpx.Response) -> None:
     if response.status_code < 400:
         return
@@ -344,6 +399,13 @@ def _event_visible(name: str, data: Any, principal: Principal) -> bool:
     )
 
 
+def _tag_event(name: str, data: Any, instance: RegisteredInstance) -> Any:
+    """Tag a live event with its node; notifications also get node-routed image URLs."""
+    if name == NOTIFICATION_EVENT:
+        return _tag_notification(data, instance)
+    return _with_instance(data, instance)
+
+
 def _fleet_request(request: Request) -> bool:
     params = request.query_params
     return (
@@ -370,6 +432,35 @@ def _tag_items(payload: Any, instance: RegisteredInstance) -> Any:
     return [_with_instance(item, instance, rebase_chat_endpoint=False) for item in payload]
 
 
+def _tag_notification(item: Any, instance: RegisteredInstance) -> Any:
+    """Tag a notification with its node and route its image URLs to that node.
+
+    A node serves ``/api/v1/forge/notifications/{id}/image``; through this facade the
+    same path needs ``instance_id`` so the request reaches the node holding the image.
+    """
+    tagged = _with_instance(item, instance, rebase_chat_endpoint=False)
+    if not isinstance(tagged, dict):
+        return tagged
+    image = tagged.get("image")
+    notification_id = tagged.get("id")
+    if not isinstance(image, dict) or not isinstance(notification_id, str):
+        return tagged
+    tagged["image"] = {
+        **image,
+        "url": notification_image_url(notification_id, instance_id=instance.id),
+        "thumbnail_url": notification_image_url(
+            notification_id, thumbnail=True, instance_id=instance.id
+        ),
+    }
+    return tagged
+
+
+def _tag_notifications(payload: Any, instance: RegisteredInstance) -> list[Any]:
+    if not isinstance(payload, list):
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Unexpected Forge notification response")
+    return [_tag_notification(item, instance) for item in payload]
+
+
 def _instance_page(response: httpx.Response, instance: RegisteredInstance) -> InstancePage | None:
     """Parse one node's feed page, or ``None`` when it is malformed."""
     try:
@@ -386,7 +477,7 @@ def _instance_page(response: httpx.Response, instance: RegisteredInstance) -> In
         return None
     return InstancePage(
         items=[
-            _with_instance(item, instance, rebase_chat_endpoint=False)
+            _tag_notification(item, instance)
             for item in payload["items"]
             if isinstance(item, dict) and type(item.get("seq")) is int
         ],
@@ -470,6 +561,26 @@ def _uses_embedded_transport(instance: RegisteredInstance) -> bool:
     return str(instance.config.get("transport", "")).strip().lower() == "embedded"
 
 
+def _route_is_missing(response: httpx.Response) -> bool:
+    """A 404 for the route itself (an older Forge), not for something the route looked up."""
+    if response.status_code != status.HTTP_404_NOT_FOUND:
+        return False
+    try:
+        return response.json() == {"detail": "Not Found"}
+    except ValueError:
+        return False
+
+
+def _session_list_payload(response: httpx.Response) -> list[dict[str, Any]]:
+    """A node's session listing, or ValueError naming what it answered instead."""
+    if response.status_code != status.HTTP_200_OK:
+        raise ValueError(f"HTTP {response.status_code}")
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise ValueError("session listing is not a list")
+    return [item for item in payload if isinstance(item, dict)]
+
+
 async def _request_remote(
     instance: RegisteredInstance,
     request: Request,
@@ -484,9 +595,10 @@ async def _request_remote(
     extra_headers: dict[str, str] | None = None,
     embedded_app: ASGIApp | None = None,
     timeout: float = 30.0,
+    node_relay: bool = False,
 ) -> httpx.Response:
     embedded = _uses_embedded_transport(instance)
-    if not embedded and presented_session_claims(request) is not None:
+    if not embedded and not node_relay and presented_session_claims(request) is not None:
         # Never forward a session credential to another node: it is local, and the
         # remote node could not (and must not) honour it.
         raise HTTPException(
@@ -498,7 +610,12 @@ async def _request_remote(
     # identity, same as today. A non-embedded target is a genuinely remote
     # Guild instance and gets only the bearer token — see
     # niuu.adapters.inbound.remote_urls.forward_identity_headers.
-    headers = _forward_local_headers(request) if embedded else _forward_headers(request)
+    if node_relay:
+        # A session-to-session relay (LEX-1710) carries no caller identity: the
+        # session credential is local, and the sender travels in the body.
+        headers: dict[str, str] = {}
+    else:
+        headers = _forward_local_headers(request) if embedded else _forward_headers(request)
     if extra_headers:
         headers.update(extra_headers)
     request_kwargs: dict[str, Any] = {
@@ -705,6 +822,8 @@ async def _local_session_instance(
     service: InstanceService,
     principal: Principal,
     request: Request,
+    *,
+    honour_selection: bool = True,
 ) -> RegisteredInstance:
     """Resolve this shell's local runtime, never a default/remote guild member.
 
@@ -722,7 +841,7 @@ async def _local_session_instance(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Local sessions require exactly one visible, enabled embedded Forge runtime",
         )
-    selected = request.query_params.get("instance_id")
+    selected = request.query_params.get("instance_id") if honour_selection else None
     if selected and selected != local[0].id:
         raise HTTPException(422, "scope=local cannot select a different guild instance")
     return local[0]
@@ -733,6 +852,21 @@ def _local_session_scope(request: Request) -> bool:
     if scope not in {"guild", "local"}:
         raise HTTPException(422, "Session scope must be local or guild")
     return scope == "local"
+
+
+def _unanswered(
+    instance: RegisteredInstance, result: httpx.Response | httpx.RequestError | HTTPException
+) -> SourceFailure:
+    """A node that did not answer an owner lookup: unreachable, failed, or rejected us."""
+    if isinstance(result, HTTPException):
+        return source_failure(instance_id=instance.id, name=instance.name, error=str(result.detail))
+    rejected = isinstance(result, httpx.Response) and result.status_code < 500
+    return source_failure(
+        instance_id=instance.id,
+        name=instance.name,
+        error=describe_remote_failure(result),
+        status="rejected" if rejected else "unreachable",
+    )
 
 
 async def _find_runtime_owner(
@@ -746,21 +880,38 @@ async def _find_runtime_owner(
     rebase_chat_endpoint: bool = True,
     local_scope: bool = False,
     extra_headers: dict[str, str] | None = None,
+    candidates: list[RegisteredInstance] | None = None,
 ) -> tuple[RegisteredInstance, dict[str, Any]]:
-    async def probe(instance: RegisteredInstance) -> tuple[RegisteredInstance, httpx.Response]:
-        response = await _request_remote(
-            instance,
-            request,
-            method="GET",
-            path=path,
-            extra_headers=extra_headers,
-            embedded_app=embedded_app,
-            timeout=5.0,
-        )
+    async def probe(
+        instance: RegisteredInstance,
+    ) -> tuple[RegisteredInstance, httpx.Response | httpx.RequestError | HTTPException]:
+        try:
+            response = await _request_remote(
+                instance,
+                request,
+                method="GET",
+                path=path,
+                extra_headers={**(extra_headers or {}), OWNER_PROBE_HEADER: "1"},
+                embedded_app=embedded_app,
+                timeout=5.0,
+            )
+        except httpx.RequestError as exc:
+            return instance, exc
+        except HTTPException as exc:
+            if exc.status_code < 500:
+                raise  # a policy refusal (a session credential stays on its node)
+            return instance, exc  # the node's transport failed: it did not answer
         return instance, response
 
     selected = request.query_params.get("instance_id")
-    if local_scope:
+    if request.headers.get(OWNER_PROBE_HEADER):
+        # Another facade is asking: answer from this node's own store and never fan
+        # out, so facades that list each other cannot probe each other in a loop. A
+        # client setting it only narrows its own read, like scope=local.
+        instances = [await _local_session_instance(service, principal, request)]
+    elif candidates is not None:
+        instances = candidates  # the caller already knows where to look
+    elif local_scope:
         instances = [await _local_session_instance(service, principal, request)]
     elif selected:
         instances = [await _resolve_target_instance(service, principal, selected)]
@@ -772,33 +923,67 @@ async def _find_runtime_owner(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No enabled Volundr instances are registered for this user",
         )
+    local = [instance for instance in instances if _uses_embedded_transport(instance)]
+    if local and len(instances) > 1:
+        # This node's own store first (LEX-1738): a resource it holds needs no question
+        # to every other node, and a node that lacks it is asked only when needed.
+        # Only "not here" moves on: a local store error must not read as absent.
+        instance, response = await probe(local[0])
+        if not isinstance(response, httpx.Response) or response.status_code >= 500:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                "This node's Forge failed during owner lookup",
+                headers={
+                    SOURCE_FAILURES_HEADER: source_failures_header_value(
+                        [_unanswered(instance, response)]
+                    )
+                },
+            )
+        if response.status_code != status.HTTP_404_NOT_FOUND:
+            _ensure_remote_success(response)
+            payload = response.json()
+            if isinstance(payload, dict):
+                return instance, _with_instance(
+                    payload, instance, rebase_chat_endpoint=rebase_chat_endpoint
+                )
+        instances = [instance for instance in instances if instance is not local[0]]
     tasks = [asyncio.create_task(probe(instance)) for instance in instances]
-    failure: HTTPException | None = None
+    refused: HTTPException | None = None
+    unanswered: list[SourceFailure] = []
     try:
         # Ownership is unknown until a visible instance returns the resource.
         # An unrelated offline instance must not delay a healthy owner's reply.
         for task in asyncio.as_completed(tasks):
             try:
                 instance, response = await task
-            except httpx.RequestError:
-                failure = HTTPException(502, "An instance was unreachable during owner lookup")
-                continue
             except HTTPException as exc:
-                failure = exc
+                refused = exc  # a policy refusal (a session credential stays on its node)
                 continue
-            if response.status_code in {status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND}:
+            if isinstance(response, httpx.Response) and response.status_code in {
+                status.HTTP_403_FORBIDDEN,
+                status.HTTP_404_NOT_FOUND,
+            }:
                 continue
-            if response.is_error:
-                failure = HTTPException(502, "An instance failed during owner lookup")
+            if not isinstance(response, httpx.Response) or response.is_error:
+                unanswered.append(_unanswered(instance, response))
                 continue
             payload = response.json()
             if isinstance(payload, dict):
                 return instance, _with_instance(
                     payload, instance, rebase_chat_endpoint=rebase_chat_endpoint
                 )
-        if failure is not None:
-            # A partial search cannot establish that the resource is absent.
-            raise failure
+        if refused is not None:
+            raise refused
+        if unanswered:
+            # A partial search cannot establish that the resource is absent: a client may
+            # read 404 as "gone", and a sleeping node must never make a live session
+            # vanish. The nodes that did not answer are named.
+            reasons = "; ".join(f"{f['name']}: {f['error']}" for f in unanswered)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"An instance was unreachable during owner lookup ({reasons})",
+                headers={SOURCE_FAILURES_HEADER: source_failures_header_value(unanswered)},
+            )
         raise HTTPException(status_code=404, detail=not_found_detail)
     finally:
         for task in tasks:
@@ -814,6 +999,7 @@ async def _find_session_owner(
     *,
     embedded_app: ASGIApp | None = None,
     extra_headers: dict[str, str] | None = None,
+    candidates: list[RegisteredInstance] | None = None,
 ) -> tuple[RegisteredInstance, dict[str, Any]]:
     return await _find_runtime_owner(
         service,
@@ -824,7 +1010,12 @@ async def _find_session_owner(
         embedded_app=embedded_app,
         local_scope=_local_session_scope(request),
         extra_headers=extra_headers,
+        candidates=candidates,
     )
+
+
+#: The Guild-wide lookup; the router wraps it to name the owning node for a session.
+_find_session_owner_anywhere = _find_session_owner
 
 
 async def _find_resident_owner(
@@ -886,7 +1077,10 @@ async def _resolve_target_instance(
     match: str = "all",
 ) -> RegisteredInstance:
     if instance_id:
-        instance = await service.get_visible(principal, instance_id)
+        try:
+            instance = await service.get_visible(principal, instance_id)
+        except InvalidInstanceIdError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         if instance is None or instance.kind != InstanceKind.VOLUNDR or not instance.enabled:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -944,6 +1138,9 @@ def create_volundr_router(
     forge_stream_keepalive_seconds: float = 15.0,
     forge_stream_queue_maxsize: int = 256,
     guild_membership: GuildMembership | None = None,
+    presented_file_max_bytes: int = PRESENTED_FILE_DEFAULT_MAX_BYTES,
+    feedless_recheck_seconds: float | None = None,
+    session_owner_ttl_seconds: float | None = None,
 ) -> APIRouter:
     """Create a registry-aware Forge runtime router.
 
@@ -1445,6 +1642,16 @@ def create_volundr_router(
             return found[0]
         raise HTTPException(404, "Project not found on any Forge host")
 
+    def _session_cannot_reach_home(project_id: str) -> HTTPException:
+        """A session credential stays on its node, so it cannot copy a project from another."""
+        return HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"Project {project_id} is not homed on this node, and a session credential reads "
+            "only its own node, so it cannot bring the project here. Create the session "
+            "standalone and file it with PUT /sessions/{id}/project, or create it through "
+            "the Guild with your own identity.",
+        )
+
     async def _ensure_project_on_instance(
         request: Request,
         principal: Principal,
@@ -1468,6 +1675,8 @@ def create_volundr_router(
             home_id = copy.get("home_instance_id") if isinstance(copy, dict) else None
             if not home_id or home_id == target.id:
                 return copy
+            if _is_session_principal(principal):
+                raise _session_cannot_reach_home(project_id)
             try:
                 home, source = await _locate_project(
                     request, principal, project_id, home_id, target
@@ -1492,6 +1701,8 @@ def create_volundr_router(
             return refreshed.json() if refreshed.status_code == 200 else copy
         if local.status_code != 404:
             _ensure_remote_success(local)
+        if _is_session_principal(principal):
+            raise _session_cannot_reach_home(project_id)
         holder, project = await _locate_project(request, principal, project_id, hint, target)
         if not isinstance(project, dict) or str(project.get("id")) != str(project_id):
             raise HTTPException(502, "Project host returned a different project")
@@ -1697,8 +1908,12 @@ def create_volundr_router(
         scope: Literal["guild", "local"] = Query(
             default="guild", description="Guild aggregation, or only this server's embedded runtime"
         ),
+        limit: int | None = Query(
+            default=None, ge=1, description="Only the N sessions with the newest activity."
+        ),
         principal: Principal = Depends(extract_principal),
     ) -> list[dict[str, Any]]:
+        started = time.perf_counter()
         if scope == "local":
             instance = await _local_session_instance(service, principal, request)
             result = await _request_remote(
@@ -1719,6 +1934,7 @@ def create_volundr_router(
             if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
                 raise HTTPException(502, "Unexpected local Forge sessions response")
             response.headers["X-Forge-Session-Scope"] = "local"
+            response.headers[FORGE_READ_MS_HEADER] = _read_ms(started)
             return [_with_instance(item, instance) for item in payload]
         selected = request.query_params.get("instance_id")
         instances = (
@@ -1776,15 +1992,49 @@ def create_volundr_router(
                     continue
                 merged[f"{instance.id}:{item.get('id') or ''}"] = _with_instance(item, instance)
 
+        guild_failures: list[SourceFailure] = []
+        if _is_session_principal(principal) and not selected:
+            seen = {item.get("id") for item in merged.values()}
+            others, guild_failures = await _guild_session_listing(
+                request, principal, instances, params
+            )
+            for item in others:
+                if item.get("id") and item["id"] not in seen:
+                    seen.add(item["id"])
+                    merged[f"{item.get('instance_id')}:{item['id']}"] = item
         sessions = [item for item in merged.values() if item.get("id")]
+        if session_owners is not None and not selected:
+            # Only a whole-Guild listing shows every holder of an id. An id two nodes
+            # list is ambiguous: forgotten, and left to the full search.
+            seen = Counter(str(item["id"]) for item in sessions)
+            for session_id, count in seen.items():
+                if count > 1:
+                    session_owners.forget(session_id)
+            session_owners.learn(
+                (str(item["id"]), str(item.get("instance_id") or ""))
+                for item in sessions
+                if seen[str(item["id"])] == 1
+            )
         sessions.sort(
             key=lambda item: _normalize_timestamp(
-                item.get("last_active") or item.get("lastActive")
+                item.get("last_active") or item.get("lastActive") or item.get("last_activity_at")
             ),
             reverse=True,
         )
+        if limit is not None:
+            # Each node already returned at most `limit`; keep the newest across nodes.
+            sessions = sessions[:limit]
+        if session_owners is not None:
+            _with_parent_guild_ids(
+                request,
+                instances if not selected else await _visible_instances(service, principal),
+                sessions,
+            )
         if not selected:
-            set_source_health_header(response, instance_source_failures(instances, results))
+            set_source_health_header(
+                response, instance_source_failures(instances, results) + guild_failures
+            )
+        response.headers[FORGE_READ_MS_HEADER] = _read_ms(started)
         return sessions
 
     @router.get("/sessions/stream")
@@ -1834,7 +2084,7 @@ def create_volundr_router(
                     # Notifications are the owner's (or an admin's) only.
                     if not _event_visible(event.type.value, event.data, principal):
                         continue
-                    yield event.type.value, _with_instance(event.data, instance)
+                    yield event.type.value, _tag_event(event.type.value, event.data, instance)
             else:
                 url = build_remote_url(instance.base_url, "/api/v1/forge", "/sessions/stream")
                 # A GuildTransportError here (policy refusal or pin mismatch)
@@ -1852,7 +2102,7 @@ def create_volundr_router(
                     # another owner's notification through the fleet stream.
                     if not _event_visible(name, payload, principal):
                         continue
-                    yield name, _with_instance(payload, instance)
+                    yield name, _tag_event(name, payload, instance)
 
         return StreamingResponse(
             merge_events(
@@ -2241,6 +2491,26 @@ def create_volundr_router(
         """The endpoint is stateless and offers no server stream (MCP JSON mode)."""
         return Response(status_code=status.HTTP_405_METHOD_NOT_ALLOWED, headers={"Allow": "POST"})
 
+    @router.get("/health")
+    async def get_forge_health(
+        request: Request,
+        instance_id: str | None = Query(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """The node's Forge health, including presented-file usage against its quota
+        (LEX-1514), from the local node or the one named by ``instance_id``."""
+        instance = (
+            await _local_session_instance(service, principal, request)
+            if _local_session_scope(request)
+            else await _resolve_target_instance(service, principal, instance_id)
+        )
+        response = await _request_remote(
+            instance, request, method="GET", path="/health", embedded_app=embedded_forge_app
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return _with_instance(payload, instance) if isinstance(payload, dict) else {}
+
     @router.get("/feature-flags")
     async def get_feature_flags(
         request: Request,
@@ -2265,6 +2535,8 @@ def create_volundr_router(
         # Advertise this facade's public surface, not routes that exist only on
         # its embedded service. Clients can avoid expected 404s and keep the
         # existing Bifrost model fallback.
+        node_capabilities = flags.get("capabilities")
+        node_capabilities = node_capabilities if isinstance(node_capabilities, dict) else {}
         flags["capabilities"] = {
             "models": False,
             "chronicles": False,
@@ -2274,6 +2546,9 @@ def create_volundr_router(
             "native_history_import": True,
             "local_session_scope": True,
             "notifications": True,
+            # Forwarded reads: true only when the node behind this facade serves them.
+            "voice_conversation": node_capabilities.get("voice_conversation") is True,
+            "summary_sessions": node_capabilities.get("summary_sessions") is True,
         }
         return flags
 
@@ -2384,7 +2659,7 @@ def create_volundr_router(
             payload = _remote_json(remote)
             if not isinstance(payload, dict):
                 raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Unexpected Forge feed response")
-            payload["items"] = _tag_items(payload.get("items"), instance)
+            payload["items"] = _tag_notifications(payload.get("items"), instance)
             payload["instance_id"] = instance.id
             return payload
 
@@ -2414,30 +2689,43 @@ def create_volundr_router(
                 return [*base, ("after", str(after.get(instance.id) or 0))]
             return base
 
+        # A node without the feed (an older Forge, Spark) is remembered and not asked again
+        # until feedless_recheck_seconds pass; it has no notifications (LEX-1738).
+        asked, feedless, now = _split_feedless("/notifications", instances)
         responses, unavailable = await _fan_out(
-            instances, request, method="GET", path="/notifications", params_for=params_for
+            asked, request, method="GET", path="/notifications", params_for=params_for
         )
         pages: dict[str, InstancePage] = {}
-        for instance in instances:
+        for instance in asked:
             result = responses.get(instance.id)
             if result is None:
                 continue
             if _is_client_error(result):
                 _ensure_remote_success(result)
+            if _route_is_missing(result):
+                feedless.add(instance.id)
+                _remember_feedless("/notifications", instance.id, now)
+                continue
             page = _instance_page(result, instance) if result.status_code < 400 else None
             if page is None:
                 unavailable.add(instance.id)
                 continue
             pages[instance.id] = page
+        if instances and not pages and not unavailable and feedless:
+            raise _no_feed_anywhere(feedless)
         if instances and not pages:
             raise HTTPException(
                 status.HTTP_502_BAD_GATEWAY, "No Forge instance answered the notification feed"
             )
         _set_unavailable(response, unavailable)
+        if feedless:
+            response.headers[FEEDLESS_INSTANCES_HEADER] = ",".join(sorted(feedless))
+        # A feedless node keeps its cursor position, so it is read once it has a feed.
+        kept = unavailable | feedless
         merged = (
-            merge_after(pages, previous=after, unavailable=unavailable)
+            merge_after(pages, previous=after, unavailable=kept)
             if after is not None
-            else merge_newest(pages, previous=before or {}, unavailable=unavailable, limit=limit)
+            else merge_newest(pages, previous=before or {}, unavailable=kept, limit=limit)
         )
         return {
             "items": merged.items,
@@ -2465,8 +2753,10 @@ def create_volundr_router(
             return {**payload, "instance_id": instance.id} if isinstance(payload, dict) else {}
         instances = await _visible_instances(service, principal)
         base = _forward_params(request, drop=_FLEET_SELECTORS)
+        # A node without the feed has no read state either (an older Forge, Spark).
+        asked, feedless, now = _split_feedless("/notifications/read-state", instances)
         responses, unavailable = await _fan_out(
-            instances,
+            asked,
             request,
             method="GET",
             path="/notifications/read-state",
@@ -2474,17 +2764,87 @@ def create_volundr_router(
         )
         states: dict[str, Any] = {}
         for instance_id, result in responses.items():
+            if _is_client_error(result):
+                _ensure_remote_success(result)
+            if _route_is_missing(result):
+                _remember_feedless("/notifications/read-state", instance_id, now)
+                feedless.add(instance_id)
+                continue
             payload = _remote_json(result) if result.status_code < 400 else None
             if not isinstance(payload, dict) or type(payload.get("unread_count")) is not int:
                 unavailable.add(instance_id)
                 continue
             states[instance_id] = payload
+        if instances and not states and not unavailable and feedless:
+            raise _no_feed_anywhere(feedless)
         if instances and not states:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, "No Forge instance answered")
         _set_unavailable(response, unavailable)
+        if feedless:
+            response.headers[FEEDLESS_INSTANCES_HEADER] = ",".join(sorted(feedless))
         return {
             "unread_count": sum(state["unread_count"] for state in states.values()),
             "instances": states,
+        }
+
+    # -- artifact publications (F1/F1n) and host identity (F7): one node at a time --------
+
+    async def _artifact_read(request: Request, principal: Principal, path: str) -> dict[str, Any]:
+        instance = await _notification_target(request, principal)
+        payload = _remote_json(await _proxy_to(instance, request, method="GET", path=path))
+        if not isinstance(payload, dict):
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Unexpected Forge artifact response")
+        return {**payload, "instance_id": instance.id}
+
+    @router.get("/artifact-publications")
+    async def list_artifact_publications(
+        request: Request, principal: Principal = Depends(extract_principal)
+    ) -> dict[str, Any]:
+        """One node's publication feed (``after=<seq>``); ``scope=local`` pins this node."""
+        return await _artifact_read(request, principal, "/artifact-publications")
+
+    @router.get("/artifact-bursts")
+    async def list_artifact_bursts(
+        request: Request, principal: Principal = Depends(extract_principal)
+    ) -> dict[str, Any]:
+        """One node's bursts in change order (``after=<rev>``)."""
+        return await _artifact_read(request, principal, "/artifact-bursts")
+
+    @router.get("/artifact-bursts/{burst_id}")
+    async def get_artifact_burst(
+        request: Request, burst_id: UUID, principal: Principal = Depends(extract_principal)
+    ) -> dict[str, Any]:
+        return await _artifact_read(request, principal, f"/artifact-bursts/{burst_id}")
+
+    @router.post("/artifact-publications/backfill")
+    async def backfill_artifact_publications(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """Replay this node's durable log into publications (silent; admin only)."""
+        instance = await _local_session_instance(service, principal, request)
+        remote = await _proxy_to(
+            instance, request, method="POST", path="/artifact-publications/backfill", body=body
+        )
+        payload = _remote_json(remote)
+        return {**payload, "instance_id": instance.id} if isinstance(payload, dict) else {}
+
+    @router.get("/instance")
+    async def local_instance(
+        request: Request, principal: Principal = Depends(extract_principal)
+    ) -> dict[str, Any]:
+        """This node's self id and slug (F7) with the Forge's host and tailnet names."""
+        instance = await _local_session_instance(service, principal, request)
+        payload = _remote_json(await _proxy_to(instance, request, method="GET", path="/instance"))
+        identity = payload if isinstance(payload, dict) else {}
+        return {
+            "instance_id": instance.id,
+            "slug": instance.slug,
+            "name": instance.name,
+            "host": identity.get("host"),
+            "tailnet_name": identity.get("tailnet_name"),
+            "projects_instance_id": identity.get("instance_id"),
         }
 
     @router.put("/notifications/read-state")
@@ -2593,6 +2953,28 @@ def create_volundr_router(
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Invalid activity read response")
         return {**payload, "instance_id": instance.id}
 
+    @router.put("/notifications/{notification_id}/resolve")
+    async def resolve_notification(
+        request: Request,
+        notification_id: UUID,
+        body: dict[str, Any] | None = Body(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """Resolve one notification on the node that holds it (LEX-1442)."""
+        instance = await _notification_target(request, principal)
+        remote = await _proxy_to(
+            instance,
+            request,
+            method="PUT",
+            path=f"/notifications/{notification_id}/resolve",
+            body=body,
+        )
+        _ensure_remote_success(remote)
+        payload = _remote_json(remote)
+        if not isinstance(payload, dict):
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Invalid notification response")
+        return _tag_notification(payload, instance)
+
     @router.get("/notifications/rules")
     async def list_notification_rules(
         request: Request, principal: Principal = Depends(extract_principal)
@@ -2647,6 +3029,52 @@ def create_volundr_router(
             request, principal, method="GET", path="/notifications/sinks"
         )
 
+    # -- Push gateway -----------------------------------------------------------
+    # The gateway runs on one node (the default node unless ``instance_id`` selects
+    # another); a node without push answers 503.
+
+    @router.get("/push/status")
+    async def push_status(
+        request: Request, principal: Principal = Depends(extract_principal)
+    ) -> Response:
+        """The push gateway's counters, from the node that runs it."""
+        return await _proxy_rule_request(request, principal, method="GET", path="/push/status")
+
+    @router.post("/push/test")
+    async def send_test_push(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Push once to the caller's own registered tokens (the gateway node sends it)."""
+        return await _proxy_rule_request(
+            request, principal, method="POST", path="/push/test", body=body
+        )
+
+    @router.get("/notifications/{notification_id}/image")
+    async def get_notification_image(
+        request: Request,
+        notification_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """The stored image from the node that holds the notification (``instance_id``
+        selects it, as for reads; the default node otherwise). The node applies the
+        notification's own read access."""
+        instance = await _notification_target(request, principal)
+        remote = await _proxy_to(
+            instance, request, method="GET", path=f"/notifications/{notification_id}/image"
+        )
+        headers = {
+            name: value
+            for name in ("cache-control", "x-content-type-options")
+            if (value := remote.headers.get(name))
+        }
+        return Response(
+            content=remote.content,
+            media_type=remote.headers.get("content-type"),
+            headers=headers,
+        )
+
     @router.get("/notifications/{notification_id}/deliveries")
     async def list_notification_deliveries(
         request: Request,
@@ -2683,7 +3111,7 @@ def create_volundr_router(
         remote = await _proxy_to(
             instance, request, method="GET", path=f"/sessions/{session_id}/notifications"
         )
-        return _tag_items(_remote_json(remote), instance)
+        return _tag_notifications(_remote_json(remote), instance)
 
     @router.post("/sessions/{session_id}/notifications", status_code=status.HTTP_201_CREATED)
     async def submit_session_notification(
@@ -2703,7 +3131,7 @@ def create_volundr_router(
             path=f"/sessions/{session_id}/notifications",
             body=body,
         )
-        payload = _with_instance(_remote_json(remote), instance, rebase_chat_endpoint=False)
+        payload = _tag_notification(_remote_json(remote), instance)
         return JSONResponse(payload, status_code=remote.status_code)
 
     # -- Push devices -----------------------------------------------------------
@@ -2719,6 +3147,7 @@ def create_volundr_router(
         method: str,
         path: str,
         body: Any = None,
+        params: list[tuple[str, str]] | None = None,
     ) -> tuple[list[RegisteredInstance], dict[str, httpx.Response], set[str]]:
         instances = await _visible_instances(service, principal)
         if not instances:
@@ -2730,7 +3159,7 @@ def create_volundr_router(
             request,
             method=method,
             path=path,
-            params_for=lambda _instance: [],
+            params_for=lambda _instance: list(params or []),
             json_for=(lambda _instance: body) if body is not None else None,
         )
         return instances, responses, unavailable
@@ -2746,8 +3175,15 @@ def create_volundr_router(
         Idempotent on (owner, token) per node, so a failed registration is simply
         retried. 201 with one node's device record when every node accepted; a node's
         4xx refusal propagates, anything else (unreachable, 5xx) is 502, and the
-        detail names each instance that did not accept.
+        detail names each instance that did not accept. A token of another ``kind``
+        than ``alert`` serves only the push gateway and registers on its node alone.
         """
+        if body.get("kind", ALERT_TOKEN_KIND) != ALERT_TOKEN_KIND:
+            # Live Activity, push-to-start and widget tokens serve only the push
+            # gateway, which runs on one node: they register there alone.
+            return await _proxy_rule_request(
+                request, principal, method="POST", path="/devices", body=body
+            )
         instances, responses, unavailable = await _device_fan_out(
             request, principal, method="POST", path="/devices", body=body
         )
@@ -2766,7 +3202,7 @@ def create_volundr_router(
     async def list_devices(
         request: Request, principal: Principal = Depends(extract_principal)
     ) -> list[dict[str, Any]]:
-        """The caller's push devices across every visible node, one row per token.
+        """The caller's push devices across every visible node, one row per token and kind.
 
         Nodes may share a device store, so a token can come back from several;
         the first node's row wins. An unreachable or refusing node fails the call
@@ -2796,25 +3232,33 @@ def create_volundr_router(
                         status.HTTP_502_BAD_GATEWAY,
                         f"Unexpected device row from Forge instance {instance.id}",
                     )
-                devices.setdefault(device["token"], device)
+                devices.setdefault(
+                    f"{device['token']}\0{device.get('kind', ALERT_TOKEN_KIND)}", device
+                )
         return list(devices.values())
 
     @router.delete("/devices/{token}", status_code=status.HTTP_204_NO_CONTENT)
     async def unregister_device(
         request: Request,
         token: str = Path(description="The push token to unregister"),
+        kind: str | None = Query(default=None, description="Remove only this token kind"),
         principal: Principal = Depends(extract_principal),
     ) -> Response:
         """Unregister a push device on every visible Forge node.
 
         A node that no longer knows the token (404) counts as done. Any other
-        failure is reported with the instances that did not remove it.
+        failure is reported with the instances that did not remove it. ``kind``
+        removes one kind only; a gateway-only kind is removed on the gateway node.
         """
+        path = f"/devices/{quote(token, safe='')}"
+        if kind is not None and kind != ALERT_TOKEN_KIND:
+            return await _proxy_rule_request(request, principal, method="DELETE", path=path)
         instances, responses, unavailable = await _device_fan_out(
             request,
             principal,
             method="DELETE",
-            path=f"/devices/{quote(token, safe='')}",
+            path=path,
+            params=[("kind", kind)] if kind is not None else [],
         )
         _raise_device_failures(
             "unregistration",
@@ -3164,6 +3608,28 @@ def create_volundr_router(
         payload = response.json()
         return _with_instance(payload, instance) if isinstance(payload, dict) else {}
 
+    @router.get("/sessions/{session_id}/status")
+    async def get_session_status(
+        request: Request,
+        session_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/status",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = _remote_json(response)
+        if not isinstance(payload, dict):
+            raise HTTPException(502, "Unexpected Forge status response")
+        return {**payload, "host": instance.id}
+
     @router.get("/sessions/{session_id}/runtime-version")
     async def get_session_runtime_version(
         request: Request,
@@ -3350,6 +3816,76 @@ def create_volundr_router(
         _ensure_remote_success(response)
         return _with_instance(response.json(), owner)
 
+    @router.put("/sessions/{session_id}/description")
+    async def update_session_description(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """Set or clear the agent-maintained descriptions on the owning host.
+
+        The body passes through untouched: an explicit ``null`` (clear) must stay
+        distinguishable from an omitted key (unchanged).
+        """
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="PUT",
+            path=f"/sessions/{session_id}/description",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        if _route_missing(response):
+            raise HTTPException(501, "Update this session's Forge host to enable descriptions")
+        _ensure_remote_success(response)
+        payload = response.json()
+        return _with_instance(payload, instance) if isinstance(payload, dict) else {}
+
+    async def _forward_forge_mcp(
+        request: Request, principal: Principal, session_id: str, method: str, body=None
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method=method,
+            path=f"/sessions/{session_id}/forge-mcp",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        if _route_missing(response):
+            raise HTTPException(501, "Update this session's Forge host to manage Forge MCP grants")
+        _ensure_remote_success(response)
+        return _with_instance(response.json(), instance)
+
+    @router.get("/sessions/{session_id}/forge-mcp")
+    async def get_session_forge_mcp(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """A session's Forge MCP grants by source, from its owning host."""
+        return await _forward_forge_mcp(request, principal, session_id, "GET")
+
+    @router.put("/sessions/{session_id}/forge-mcp")
+    async def set_session_forge_mcp(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        body: dict[str, Any] = Body(...),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """Replace a session's Forge MCP grants on its owning host.
+
+        Operators only: the owning Forge refuses scoped credentials and audits changes.
+        """
+        return await _forward_forge_mcp(request, principal, session_id, "PUT", body)
+
     @router.put("/sessions/{session_id}")
     async def update_session(
         request: Request,
@@ -3406,6 +3942,7 @@ def create_volundr_router(
     @router.get("/sessions/{session_id}/conversation")
     async def get_conversation(
         request: Request,
+        response_out: Response,
         session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
@@ -3432,6 +3969,10 @@ def create_volundr_router(
         t_remote = time.perf_counter()
         _ensure_history_success(response)
         payload = response.json()
+        response_out.headers[FORGE_READ_MS_HEADER] = _read_ms(t0)
+        if isinstance(payload, dict) and payload.get("detail") == "voice":
+            # A voice page stays text-only: no aggregate timings in the body.
+            return payload
         if isinstance(payload, dict) and payload.get("history_protocol") == 2:
             # The owner fitted the WHOLE page envelope to the requested byte
             # limit. Adding aggregate timings afterwards can exceed that limit.
@@ -3447,6 +3988,32 @@ def create_volundr_router(
             prep["server_total_ms"] = round((t_json - t0) * 1000, 1)
             payload["_prep"] = prep
         return payload if isinstance(payload, dict) else {"turns": []}
+
+    @router.get("/sessions/{session_id}/attachments")
+    async def get_session_attachments(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """Proxy the owner's attachments index (LEX-1259), resolved like the conversation."""
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/attachments",
+            params=_query_params(request),
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
 
     @router.get("/sessions/{session_id}/conversation/turns/{turn_id}")
     async def get_conversation_item(
@@ -3529,7 +4096,7 @@ def create_volundr_router(
         _ensure_remote_success(response)
         headers = {
             name: value
-            for name in ("cache-control", "etag")
+            for name in ("cache-control", "etag", "x-preview-max-edge", "x-preview-edge")
             if (value := response.headers.get(name))
         }
         return Response(
@@ -3676,6 +4243,475 @@ def create_volundr_router(
             content=payload if isinstance(payload, dict) else {}, status_code=response.status_code
         )
 
+    session_owners = (
+        SessionOwners(session_owner_ttl_seconds) if session_owner_ttl_seconds is not None else None
+    )
+    #: Each node's projects-domain id ("thor", "mini-m6"), which session coordination stores
+    #: for a parent: Guild id -> (projects id, or None for an older Forge without
+    #: /instance; monotonic expiry). Refreshed in the background, never on a read.
+    projects_ids: dict[str, tuple[str | None, float]] = {}
+    projects_id_refreshing: set[str] = set()
+    projects_id_failing: set[str] = set()
+
+    async def _refresh_projects_id(request: Request, instance: RegisteredInstance) -> None:
+        embedded = _uses_embedded_transport(instance)
+        try:
+            response = await _request_remote(
+                instance,
+                request,
+                method="GET",
+                path="/instance",
+                embedded_app=embedded_forge_app,
+                node_relay=not embedded,
+                timeout=OWNER_HINT_TIMEOUT_SECONDS,
+            )
+            if response.status_code == status.HTTP_404_NOT_FOUND:
+                value = None  # an older Forge without /instance: nothing to map
+            else:
+                _ensure_remote_success(response)
+                payload = response.json()
+                raw = payload.get("instance_id") if isinstance(payload, dict) else None
+                value = raw if isinstance(raw, str) and raw else None
+        except (httpx.RequestError, HTTPException, ValueError) as exc:
+            # Not cached: the next read schedules another try. Said once per outage.
+            if instance.id not in projects_id_failing:
+                projects_id_failing.add(instance.id)
+                logger.warning(
+                    "Cannot read Forge instance %s's projects id; its sessions' parents "
+                    "carry no guild_instance_id until it answers: %s",
+                    instance.id,
+                    describe_remote_failure(exc),
+                )
+            return
+        finally:
+            projects_id_refreshing.discard(instance.id)
+        projects_id_failing.discard(instance.id)
+        projects_ids[instance.id] = (value, time.monotonic() + session_owner_ttl_seconds)
+
+    def _projects_id_map(request: Request, instances: list[RegisteredInstance]) -> dict[str, str]:
+        """Projects-domain id -> Guild id for the caller's nodes, from what is known now.
+
+        Unknown or stale nodes are refreshed in the background (one try at a time per
+        node), so a read never waits on another node's identity.
+        """
+        if session_owner_ttl_seconds is None:
+            return {}
+        now = time.monotonic()
+        mapping: dict[str, str] = {}
+        for instance in instances:
+            projects_id, expires = projects_ids.get(instance.id, (None, 0.0))
+            if expires <= now and instance.id not in projects_id_refreshing:
+                projects_id_refreshing.add(instance.id)
+                background_tasks.add(
+                    task := asyncio.create_task(_refresh_projects_id(request, instance))
+                )
+                task.add_done_callback(_refresh_done)
+            if projects_id is not None:
+                mapping[projects_id] = instance.id
+        return mapping
+
+    def _with_parent_guild_ids(
+        request: Request, instances: list[RegisteredInstance], items: list[dict[str, Any]]
+    ) -> None:
+        """Add ``guild_instance_id`` to each item's parent; the stored id stays as it is.
+
+        Absent means not known (yet): an id this caller's nodes do not name.
+        """
+        parents = [
+            parent
+            for item in items
+            if isinstance(item.get("coordination"), dict)
+            and isinstance(parent := item["coordination"].get("parent"), dict)
+            and isinstance(parent.get("instance_id"), str)
+            and "guild_instance_id" not in parent
+        ]
+        if not parents:
+            return
+        guild_ids = {instance.id for instance in instances}
+        mapping = _projects_id_map(request, instances)
+        for parent in parents:
+            stored = parent["instance_id"]
+            guild_id = stored if stored in guild_ids else mapping.get(stored)
+            if guild_id is not None:
+                parent["guild_instance_id"] = guild_id
+
+    background_tasks: set[asyncio.Task[None]] = set()
+
+    def _refresh_done(task: asyncio.Task[None]) -> None:
+        """A background refresh never fails unseen: anything unexpected is an error."""
+        background_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "Reading a Forge instance's projects id failed unexpectedly",
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
+    #: Nodes known to lack a notification route: (route, instance id) -> monotonic recheck
+    #: time. Per route, so one route missing never hides another the node does serve.
+    feedless_until: dict[tuple[str, str], float] = {}
+
+    def _split_feedless(
+        path: str, instances: list[RegisteredInstance]
+    ) -> tuple[list[RegisteredInstance], set[str], float]:
+        """The nodes to ask for ``path``, those remembered without it, and now."""
+        now = time.monotonic()
+        known = {i.id for i in instances if feedless_until.get((path, i.id), 0.0) > now}
+        return [i for i in instances if i.id not in known], known, now
+
+    def _remember_feedless(path: str, instance_id: str, now: float) -> None:
+        if feedless_recheck_seconds is None:
+            return
+        feedless_until[(path, instance_id)] = now + feedless_recheck_seconds
+        logger.info(
+            "Forge instance %s has no %s route; asked again in %ss",
+            instance_id,
+            path,
+            feedless_recheck_seconds,
+        )
+
+    def _no_feed_anywhere(feedless: set[str]) -> HTTPException:
+        """Every node asked lacks the route: not an outage, so say so (404)."""
+        return HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "No notifications feed on Forge instance(s) "
+            f"{', '.join(sorted(feedless))} (an older Forge without the feed)",
+            headers={FEEDLESS_INSTANCES_HEADER: ",".join(sorted(feedless))},
+        )
+
+    async def _guild_owner_of(session_id: str) -> str | None:
+        """Which node of this host's Guild owns a session, for a clear refusal; None if unknown."""
+        if guild_membership is None:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=OWNER_HINT_TIMEOUT_SECONDS) as client:
+                response = await client.get(
+                    build_remote_url(
+                        guild_membership.guild_url, "/api/v1/forge", f"/sessions/{session_id}"
+                    ),
+                    headers={OWNER_PROBE_HEADER: "1"},
+                )
+        except httpx.RequestError:
+            return None
+        if response.status_code != status.HTTP_200_OK:
+            return None  # Refused or not found: no claim about where it is.
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        if not isinstance(payload, dict) or not payload.get("instance_id"):
+            return None
+        name, instance_id = payload.get("instance_name"), payload["instance_id"]
+        return f"owned by {name or instance_id} ({instance_id}) in this Guild"
+
+    async def _find_session_owner(  # the node-aware lookup for this router's routes
+        service: InstanceService,
+        principal: Principal,
+        request: Request,
+        session_id: str,
+        **kwargs: Any,
+    ) -> tuple[RegisteredInstance, dict[str, Any]]:
+        remembered = await _remembered_owner(service, principal, request, session_id)
+        if remembered is None:
+            return await _search_session_owner(principal, request, session_id, **kwargs)
+        owner, visible = remembered
+        try:
+            instance, payload = await _find_session_owner_anywhere(
+                service, principal, request, session_id, candidates=[owner], **kwargs
+            )
+        except HTTPException as exc:
+            session_owners.forget(session_id, owner.id)
+            others = [instance for instance in visible if instance is not owner]
+            if not others:  # a lone node: the usual search asks it, with the owner hint
+                return await _search_session_owner(principal, request, session_id, **kwargs)
+            # The others decide; when none has it, the remembered node's answer stands
+            # (its own 404, or the failure that keeps "not found" from being claimed).
+            try:
+                return await _search_session_owner(
+                    principal, request, session_id, candidates=others, **kwargs
+                )
+            except HTTPException as elsewhere:
+                if elsewhere.status_code != status.HTTP_404_NOT_FOUND:
+                    raise
+                if exc.status_code == status.HTTP_404_NOT_FOUND:
+                    raise elsewhere from exc  # not here, not there: with the owner hint
+                raise exc from elsewhere
+        session_owners.learn([(session_id, instance.id)])
+        _with_parent_guild_ids(request, visible, [payload])
+        return instance, payload
+
+    async def _search_session_owner(
+        principal: Principal, request: Request, session_id: str, **kwargs: Any
+    ) -> tuple[RegisteredInstance, dict[str, Any]]:
+        """Ask every node (or ``candidates``); a 404 names the owner when the Guild knows it.
+
+        Not learned from: the first node to answer may not be the only one holding the id.
+        """
+        try:
+            instance, payload = await _find_session_owner_anywhere(
+                service, principal, request, session_id, **kwargs
+            )
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_404_NOT_FOUND:
+                raise
+            if request.headers.get(OWNER_PROBE_HEADER):
+                raise  # another facade is asking: report this node's answer, never ask back
+            owner = await _guild_owner_of(session_id)
+            if owner is None:
+                raise
+            how = (
+                "A session credential reads only its own node: message it with send_message "
+                "(relayed through the Guild), or read it through the Guild with your own identity."
+                if _is_session_principal(principal)
+                else f"Read it through the Guild ({guild_membership.guild_url})."
+            )
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"Session {session_id} is not on this node; it is {owner}. {how}",
+                headers=exc.headers,
+            ) from exc
+        if session_owners is not None:
+            _with_parent_guild_ids(request, await _visible_instances(service, principal), [payload])
+        return instance, payload
+
+    async def _remembered_owner(
+        service: InstanceService, principal: Principal, request: Request, session_id: str
+    ) -> tuple[RegisteredInstance, list[RegisteredInstance]] | None:
+        """The node remembered owning a session, if the caller may reach it, with the
+        nodes the caller sees."""
+        if session_owners is None or "instance_id" in request.query_params:
+            return None
+        if _local_session_scope(request):
+            return None
+        owner = session_owners.owner_of(session_id)
+        if owner is None:
+            return None
+        visible = await _visible_instances(service, principal)
+        found = next((instance for instance in visible if instance.id == owner), None)
+        return (found, visible) if found is not None else None
+
+    async def _guild_session_listing(
+        request: Request,
+        principal: Principal,
+        listed: list[RegisteredInstance],
+        params: list[tuple[str, str]],
+    ) -> tuple[list[dict[str, Any]], list[SourceFailure]]:
+        """The other nodes' sessions for a session's Guild-scope listing (LEX-1738).
+
+        A session credential stays on its own node, so the other nodes are read without
+        it, exactly as an anonymous caller would read them: the members of this host's
+        registry, and the Guild this host belongs to, all at once. A node that refuses
+        or does not answer is reported as a source failure; the session's own node
+        already answered.
+        """
+        registry = await service.list_visible(
+            principal, kind=InstanceKind.VOLUNDR, enabled_only=True
+        )
+        listed_ids = {instance.id for instance in listed}
+        others = [
+            instance
+            for instance in registry
+            if instance.id not in listed_ids and not _uses_embedded_transport(instance)
+        ]
+
+        async def read_node(instance: RegisteredInstance) -> list[dict[str, Any]]:
+            response = await _request_remote(
+                instance,
+                request,
+                method="GET",
+                path="/sessions",
+                params=params,
+                node_relay=True,
+                timeout=OWNER_HINT_TIMEOUT_SECONDS,
+            )
+            return [_with_instance(item, instance) for item in _session_list_payload(response)]
+
+        async def read_guild(guild_url: str) -> list[dict[str, Any]]:
+            async with httpx.AsyncClient(timeout=OWNER_HINT_TIMEOUT_SECONDS) as client:
+                response = await client.get(
+                    build_remote_url(guild_url, "/api/v1/forge", "/sessions"), params=params
+                )
+            return _session_list_payload(response)
+
+        sources: list[tuple[str, str]] = [(instance.id, instance.name) for instance in others]
+        reads = [read_node(instance) for instance in others]
+        if guild_membership is not None:
+            sources.append(("guild", guild_membership.guild_url))
+            reads.append(read_guild(guild_membership.guild_url))
+        results = await asyncio.gather(*reads, return_exceptions=True)
+        items: list[dict[str, Any]] = []
+        failures: list[SourceFailure] = []
+        for (source_id, name), result in zip(sources, results, strict=True):
+            if isinstance(result, httpx.RequestError | HTTPException | ValueError):
+                failures.append(
+                    source_failure(
+                        instance_id=source_id, name=name, error=describe_remote_failure(result)
+                    )
+                )
+                continue
+            if isinstance(result, BaseException):
+                raise result
+            items += result
+        return items, failures
+
+    async def _sender_attestation(request: Request, principal: Principal) -> dict[str, Any]:
+        """Who a session principal is, from its own (local) node, for a relay."""
+        local = await _local_session_instance(service, principal, request, honour_selection=False)
+        response = await _request_remote(
+            local,
+            request,
+            method="GET",
+            path=f"/sessions/{principal.bound_session_id}",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        sender = response.json()
+        coordination = sender.get("coordination") or {}
+        parent = coordination.get("parent") or {}
+        return {
+            "session_id": principal.bound_session_id,
+            "session_name": sender.get("name") or "",
+            "instance_name": local.name,
+            "project_id": coordination.get("project_id"),
+            "parent_session_id": parent.get("session_id"),
+        }
+
+    def _relay_answer(response: httpx.Response, session_id: str) -> JSONResponse:
+        """The owning node's answer to a relay, with the reason when it refuses."""
+        if response.status_code in {status.HTTP_401_UNAUTHORIZED}:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                RELAY_LOGIN_REQUIRED_DETAIL.format(session_id=session_id),
+            )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return JSONResponse(
+            content=payload if isinstance(payload, dict) else {},
+            status_code=response.status_code,
+        )
+
+    async def _relay_session_message(
+        request: Request, principal: Principal, session_id: str, body: dict[str, Any]
+    ) -> JSONResponse:
+        """A session's message to a session on another node (LEX-1710).
+
+        This node verified the session credential; the message goes to the owning
+        node's relay route without it, with the sender attested in the body. That node
+        allows it only for the sender's parent or project. A target no node of this
+        Guild knows goes to the Guild this host belongs to (``guild.url``).
+        """
+        relay_body = {
+            "content": body.get("content", ""),
+            "sender": await _sender_attestation(request, principal),
+        }
+        if body.get("request_id"):
+            relay_body["request_id"] = body["request_id"]
+        path = f"/sessions/{session_id}/messages/relayed"
+        # ``instance_id`` names the target's node here, not this one.
+        local = await _local_session_instance(service, principal, request, honour_selection=False)
+        # The owner's registry, not the session's local-only view: the relay carries
+        # no session credential to these nodes, only the attested sender.
+        registry = await service.list_visible(
+            principal, kind=InstanceKind.VOLUNDR, enabled_only=True
+        )
+        remotes = [
+            instance
+            for instance in registry
+            if instance.id != local.id and not _uses_embedded_transport(instance)
+        ]
+        selected = request.query_params.get("instance_id")
+        if selected:
+            # The caller named the owning node: ask it alone. A node this registry does not
+            # list goes to the Guild this host belongs to; without one, say so.
+            remotes = [instance for instance in remotes if instance.id == selected]
+            if not remotes and guild_membership is None:
+                raise HTTPException(
+                    status.HTTP_404_NOT_FOUND,
+                    f"Instance {selected} is not a node of this Guild (instance_id names the "
+                    "node that owns the session, from list_sessions)",
+                )
+        for instance in remotes:
+            probe = await _request_remote(
+                instance,
+                request,
+                method="GET",
+                path=f"/sessions/{session_id}",
+                node_relay=True,
+                timeout=5.0,
+            )
+            if probe.status_code == status.HTTP_401_UNAUTHORIZED:
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    RELAY_LOGIN_REQUIRED_DETAIL.format(session_id=session_id),
+                )
+            if probe.status_code != status.HTTP_200_OK:
+                continue
+            response = await _request_remote(
+                instance,
+                request,
+                method="POST",
+                path=path,
+                json_body=relay_body,
+                node_relay=True,
+                timeout=RELAY_TIMEOUT_SECONDS,
+            )
+            return _relay_answer(response, session_id)
+        if guild_membership is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"Session not found: {session_id} (not on this node, and this host belongs "
+                "to no Guild: set guild.url to reach sessions on other nodes)",
+            )
+        try:
+            async with httpx.AsyncClient(timeout=RELAY_TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    build_remote_url(guild_membership.guild_url, "/api/v1/forge", path),
+                    json=relay_body,
+                    # The Guild knows every node: it routes to the named one, or says it is
+                    # not a node of the Guild.
+                    params={"instance_id": selected} if selected else None,
+                )
+        except httpx.RequestError as exc:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"The Guild at {guild_membership.guild_url} could not be reached: "
+                f"{type(exc).__name__}",
+            ) from exc
+        return _relay_answer(response, session_id)
+
+    @router.post("/sessions/{session_id}/messages/relayed")
+    async def relay_message(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """A relayed session message from a member node: to the node owning the session.
+
+        The owning node checks the parent / project relation and delivers (LEX-1710).
+        """
+        if _is_session_principal(principal):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "A session sends through POST /sessions/{id}/messages on its own node",
+            )
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/messages/relayed",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+            node_relay=not _uses_embedded_transport(instance),
+            timeout=RELAY_TIMEOUT_SECONDS,
+        )
+        return _relay_answer(response, session_id)
+
     @router.post("/sessions/{session_id}/messages")
     async def send_message(
         request: Request,
@@ -3683,6 +4719,31 @@ def create_volundr_router(
         body: dict[str, Any] = Body(default_factory=dict),
         principal: Principal = Depends(extract_principal),
     ) -> Response:
+        if _is_session_principal(principal) and not request.query_params.get("instance_id"):
+            local = await _local_session_instance(service, principal, request)
+            probe = await _request_remote(
+                local,
+                request,
+                method="GET",
+                path=f"/sessions/{session_id}",
+                embedded_app=embedded_forge_app,
+                timeout=5.0,
+            )
+            if probe.status_code == status.HTTP_404_NOT_FOUND:
+                return await _relay_session_message(request, principal, session_id, body)
+        elif _is_session_principal(principal):
+            try:
+                selected = await _resolve_target_instance(
+                    service, principal, request.query_params["instance_id"]
+                )
+            except HTTPException as exc:
+                # A node this host's registry does not list (the hub, seen from a member):
+                # the Guild this host belongs to knows it (LEX-1738).
+                if exc.status_code != status.HTTP_404_NOT_FOUND or guild_membership is None:
+                    raise
+                return await _relay_session_message(request, principal, session_id, body)
+            if not _uses_embedded_transport(selected):
+                return await _relay_session_message(request, principal, session_id, body)
         instance, _ = await _find_session_owner(
             service,
             principal,
@@ -3923,7 +4984,17 @@ def create_volundr_router(
             path=f"/sessions/{session_id}/files/presented/{file_id}",
         )
         _ensure_remote_success(response)
-        headers: dict[str, str] = {}
+        # Agent-supplied content (judge R16-1): the safety policy is enforced here too, whatever
+        # the node sent, and the node's cache policy is kept (never cached when it sent none).
+        cache = response.headers.get("cache-control")
+        media_type = response.headers.get("content-type", "application/octet-stream")
+        headers: dict[str, str] = {
+            # Only the two known policies pass; anything else (an old or wrong node) isn't cached.
+            "cache-control": (
+                cache if cache in PRESENTED_FILE_CACHE_POLICIES else PRESENTED_FILE_LIVE_CACHE
+            ),
+            **presented_file_safety_headers(media_type),
+        }
         disposition = response.headers.get("content-disposition")
         if disposition:
             headers["content-disposition"] = disposition
@@ -3931,6 +5002,54 @@ def create_volundr_router(
             content=response.content,
             media_type=response.headers.get("content-type", "application/octet-stream"),
             headers=headers,
+        )
+
+    @router.put("/sessions/{session_id}/files/presented/{file_id}")
+    async def store_presented_file(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        file_id: str = Path(pattern=PRESENTED_FILE_ID_PATTERN, description="present-file id"),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """The broker's durable copy of a presented file (control-plane F2), on the owning node.
+
+        The bytes, their content type and the file-name header pass through unchanged, and
+        Forge's answer comes back as is (404, 409 and 413 included), so the broker can tell
+        a final refusal from a retryable one. The session credential stays local
+        (``_request_remote`` refuses to forward it to another node).
+        """
+        # Bounded before it is buffered: Forge's own cap, refused at the edge.
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > presented_file_max_bytes:
+            raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "file exceeds max_bytes")
+        chunks: list[bytes] = []
+        received = 0
+        async for chunk in request.stream():
+            received += len(chunk)
+            if received > presented_file_max_bytes:
+                raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "file exceeds max_bytes")
+            chunks.append(chunk)
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        passthrough = {
+            name: value
+            for name in ("content-type", PRESENTED_FILE_NAME_HEADER, "retry-after")
+            if (value := request.headers.get(name)) is not None
+        }
+        upstream = await _request_remote(
+            instance,
+            request,
+            method="PUT",
+            path=f"/sessions/{session_id}/files/presented/{file_id}",
+            content_body=b"".join(chunks),
+            extra_headers=passthrough,
+            embedded_app=embedded_forge_app,
+        )
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
         )
 
     @router.post("/sessions/{session_id}/files/upload")

@@ -71,11 +71,24 @@
   color: var(--color-text-primary);
 }
 
-[data-theme='xteo'] .ting-work-sidebar {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .ting-work-sidebar {
   background: var(--color-panel-quiet);
 }
 
-[data-theme='xteo'] .ting-work-sidebar button[aria-current='page'] {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .ting-work-sidebar
+  button[aria-current='page'] {
   background: var(--color-selection-surface);
   box-shadow: inset 3px 0 var(--color-selection-edge);
 }

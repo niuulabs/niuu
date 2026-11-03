@@ -36,6 +36,7 @@ from niuu.forge_mcp.models import ForgeApiError, ForgeMcpGrant, ForgeMcpLimits, 
 from niuu.forge_mcp.ports import ForgeClient, ForgeMcpHost
 from niuu.forge_mcp.rest_client import FORGE_API_PREFIX, RestForgeClient
 from niuu.forge_mcp.tools import ForgeMcpToolbox
+from niuu.question_standard import QUESTION_STANDARD
 from volundr.adapters.inbound.auth import extract_principal
 from volundr.adapters.inbound.forge_session_auth import session_token_in
 from volundr.config import ForgeMcpHttpConfig
@@ -59,7 +60,11 @@ INSTRUCTIONS = (
     "transcripts and notifications, and `notify` a session owner through the "
     "Notifications feed (feed-only; always pass an idempotency_key). Tools that steer "
     "or start/stop other sessions need the caller's permission; with a Forge session "
-    "credential they also need the session's operator grant."
+    "credential they also need the session's operator grant. A session credential "
+    "keeps its own session's `short_description` current with `describe_session`: set "
+    "it when you start, whenever the phase changes, when blocked ('Blocked on …') and "
+    "when done ('Done: …'); use `description` for the fuller status. Questions follow "
+    "this standard: " + QUESTION_STANDARD
 )
 
 

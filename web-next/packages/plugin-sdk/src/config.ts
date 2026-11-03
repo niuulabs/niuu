@@ -53,7 +53,19 @@ export const authConfigSchema = z.object({
 export const niuuConfigSchema = z
   .object({
     demoMode: z.boolean().default(false),
-    theme: z.enum(['niuu', 'ice', 'amber', 'spring', 'xteo', 'light']).default('niuu'),
+    theme: z
+      .enum([
+        'niuu',
+        'ice',
+        'amber',
+        'spring',
+        'xteo',
+        'midnight-blue',
+        'deep-blue',
+        'dark-blue',
+        'light',
+      ])
+      .default('niuu'),
     plugins: z.record(z.string(), pluginConfigSchema).default({}),
     services: z.record(z.string(), serviceConfigSchema).default({}),
     auth: authConfigSchema.optional(),

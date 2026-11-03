@@ -284,11 +284,14 @@ def create_app(
                             loaded_settings.forge_stream_remote_connect_timeout_seconds
                         ),
                         forge_stream_retry_seconds=loaded_settings.forge_stream_retry_seconds,
+                        feedless_recheck_seconds=loaded_settings.guild_feedless_recheck_seconds,
+                        session_owner_ttl_seconds=(loaded_settings.guild_session_owner_ttl_seconds),
                         forge_stream_keepalive_seconds=(
                             loaded_settings.forge_stream_keepalive_seconds
                         ),
                         forge_stream_queue_maxsize=loaded_settings.forge_stream_queue_maxsize,
                         guild_membership=loaded_settings.guild.membership(),
+                        presented_file_max_bytes=loaded_settings.presented_files.max_bytes,
                     )
                 )
                 app.include_router(

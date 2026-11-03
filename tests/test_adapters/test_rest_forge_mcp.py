@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from niuu.domain.notifications import NotificationDraft
 from niuu.forge_mcp import TOOL_NAMES, ForgeApiError
 from niuu.forge_mcp.http import LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS
+from niuu.forge_mcp.tools import TRANSCRIPT_ONLY_TOOLS
 from tests.support.forge_session import OWNER, PREFIX, TENANT, bearer, build_forge_app
 from volundr.adapters.inbound.rest_forge_mcp import CallerForgeMcpHost
 from volundr.config import ForgeMcpHttpConfig
@@ -82,7 +83,10 @@ class TestProtocol:
 
     def test_tools_list(self, forge) -> None:
         tools = rpc(forge.client, "tools/list").json()["result"]["tools"]
-        assert [tool["name"] for tool in tools] == list(TOOL_NAMES)
+        # Forge's own HTTP MCP is feed mode: tools that write a session's transcript
+        # (report_artifact) belong to that session's broker only.
+        expected = [name for name in TOOL_NAMES if name not in TRANSCRIPT_ONLY_TOOLS]
+        assert [tool["name"] for tool in tools] == expected
         notify = next(tool for tool in tools if tool["name"] == "notify")
         assert "idempotency_key" in notify["inputSchema"]["required"]
 

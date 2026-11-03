@@ -152,6 +152,9 @@ def build_forge_app(
     *,
     tokens: ForgeSessionTokenService | None = None,
     mcp_config: ForgeMcpHttpConfig | None = None,
+    presented_file_store: Any = None,
+    presented_file_quota: Any = None,
+    projects: bool = False,
     **service_kwargs: Any,
 ):
     """The Forge app slice. ``tokens=None`` builds one; pass ``False`` for none."""
@@ -163,6 +166,7 @@ def build_forge_app(
         pod_manager,
         provisioning_initial_delay=0,
         forge_session_tokens=minted,
+        presented_file_store=presented_file_store,
         **service_kwargs,
     )
     store = InMemoryNotificationStore()
@@ -170,6 +174,8 @@ def build_forge_app(
         store.feed,
         store.rule_repo,
         store.outbox,
+        image_repository=store.images,
+        image_scheduler=store.image_scheduler,
         reply_ready_enabled=True,
         reply_title_chars=80,
         reply_body_chars=100,
@@ -182,16 +188,48 @@ def build_forge_app(
     app.state.session_service = session_service
     app.state.forge_session_tokens = minted
     app.state.settings = SimpleNamespace(local_mounts=SimpleNamespace())
+    project_service = None
+    if projects:
+        from unittest.mock import AsyncMock
+
+        from tests.test_projects.conftest import MemoryProjects
+        from volundr.domain.project_ports import ProjectWorkspace
+        from volundr.domain.services.projects import ProjectService
+
+        project_service = ProjectService(
+            MemoryProjects(), AsyncMock(spec=ProjectWorkspace), session_service, instance_id="thor"
+        )
     app.include_router(
         create_router(
             session_service,
             prefix=PREFIX,
             session_participant_service=make_session_participant_service(session_service),
+            presented_file_store=presented_file_store,
+            project_service=project_service,
         )
     )
+    if presented_file_store is not None:
+        from volundr.adapters.inbound.rest_presented_files import create_presented_files_router
+        from volundr.domain.presented_files import PresentedFileQuota
+
+        app.include_router(
+            create_presented_files_router(
+                presented_file_store,
+                session_service,
+                public_base_url="http://thor.tail737f2a.ts.net:8380",
+                max_bytes=1 << 20,
+                quota=presented_file_quota or PresentedFileQuota(1 << 40),
+                prefix=PREFIX,
+            )
+        )
     app.include_router(
         create_notifications_router(
-            notifications, session_service, prefix=PREFIX, default_page_size=20, max_page_size=50
+            notifications,
+            session_service,
+            prefix=PREFIX,
+            default_page_size=20,
+            max_page_size=50,
+            image_cache_max_age_seconds=3600,
         )
     )
     app.include_router(

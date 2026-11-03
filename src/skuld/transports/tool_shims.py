@@ -109,9 +109,115 @@ main()
 
 def _install_present_file_shim(bin_dir: Path) -> None:
     """Write the engine-agnostic ``present-file`` PATH shim into ``bin_dir``."""
-    target = bin_dir / "present-file"
-    target.write_text(_PRESENT_FILE_SHIM, encoding="utf-8")
+    _install_executable(bin_dir, "present-file", _PRESENT_FILE_SHIM)
+
+
+# The `forge-describe` command — engine-agnostic like present-file. It sets the session's
+# agent-maintained descriptions through the broker's loopback Forge MCP route (URL from
+# FORGE_DESCRIBE_URL, exported only when the broker serves the Forge MCP), so the broker's
+# session token — never anything the agent holds — authorizes the Forge write.
+_FORGE_DESCRIBE_SHIM = '''#!/usr/bin/env python3
+"""forge-describe --short "..." [--long "..." | --long-file <path>] — say what this session does."""
+import json, os, sys, urllib.request, urllib.error
+
+USAGE = 'usage: forge-describe [--short "..."] [--long "..." | --long-file <path|->]'
+
+
+def _value(args, i, flag):
+    if i + 1 >= len(args):
+        print("forge-describe: " + flag + " needs a value\\n" + USAGE, file=sys.stderr)
+        sys.exit(2)
+    return args[i + 1]
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    payload = {}
+    long_file = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-h", "--help"):
+            print(USAGE + "\\nAn empty value clears that description.")
+            return
+        if a == "--short":
+            payload["short_description"] = _value(args, i, a); i += 2
+        elif a == "--long":
+            payload["description"] = _value(args, i, a); i += 2
+        elif a == "--long-file":
+            long_file = _value(args, i, a); i += 2
+        elif a.startswith("--short="):
+            payload["short_description"] = a.split("=", 1)[1]; i += 1
+        elif a.startswith("--long="):
+            payload["description"] = a.split("=", 1)[1]; i += 1
+        elif a.startswith("--long-file="):
+            long_file = a.split("=", 1)[1]; i += 1
+        else:
+            print("forge-describe: unexpected argument " + repr(a) + "\\n" + USAGE, file=sys.stderr)
+            sys.exit(2)
+    if long_file is not None:
+        if "description" in payload:
+            print("forge-describe: pass --long or --long-file, not both", file=sys.stderr)
+            sys.exit(2)
+        try:
+            if long_file == "-":
+                payload["description"] = sys.stdin.read()
+            else:
+                with open(os.path.expanduser(long_file), encoding="utf-8") as handle:
+                    payload["description"] = handle.read()
+        except OSError as e:
+            print("forge-describe: cannot read", long_file + ":", e, file=sys.stderr)
+            sys.exit(2)
+    if not payload:
+        print(USAGE, file=sys.stderr)
+        sys.exit(2)
+    url = os.environ.get("FORGE_DESCRIBE_URL")
+    if not url:
+        print("forge-describe: not available in this session", file=sys.stderr)
+        sys.exit(3)
+    headers = {"content-type": "application/json"}
+    token_file = os.environ.get("FORGE_BROKER_TOKEN_FILE")
+    if token_file:
+        # The broker's per-start loopback secret; read from the 0600 file, never from argv/env.
+        try:
+            with open(token_file, encoding="utf-8") as handle:
+                headers["authorization"] = "Bearer " + handle.read().strip()
+        except OSError as e:
+            print("forge-describe: cannot read the broker token:", e, file=sys.stderr)
+            sys.exit(3)
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(), headers=headers, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            result = json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        sys.stderr.write(e.read().decode()); sys.stderr.write("\\n"); sys.exit(1)
+    except Exception as e:  # noqa: BLE001 - surface any transport error to the agent
+        print("forge-describe:", e, file=sys.stderr); sys.exit(1)
+    text = "".join(
+        part.get("text", "") for part in result.get("content") or [] if isinstance(part, dict)
+    )
+    if result.get("isError"):
+        print("forge-describe:", text, file=sys.stderr); sys.exit(1)
+    stored = result.get("structuredContent")
+    sys.stdout.write(json.dumps(stored, indent=2) if stored is not None else text)
+    sys.stdout.write("\\n")
+
+
+main()
+'''
+
+
+def _install_executable(bin_dir: Path, name: str, script: str) -> None:
+    target = bin_dir / name
+    target.write_text(script, encoding="utf-8")
     target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _install_forge_describe_shim(bin_dir: Path) -> None:
+    """Write the engine-agnostic ``forge-describe`` PATH shim into ``bin_dir``."""
+    _install_executable(bin_dir, "forge-describe", _FORGE_DESCRIBE_SHIM)
 
 
 def ensure_codex_tool_shims(
@@ -136,8 +242,9 @@ def ensure_codex_tool_shims(
     source_root = Path(__file__).resolve().parents[2]
     ravn_config = os.environ.get("RAVN_CONFIG", "").strip()
     mimir_configured = mount is not None or _ravn_config_has_mimir(ravn_config)
-    # Engine-agnostic present-file command (available to claude AND codex tmux sessions).
+    # Engine-agnostic present-file / forge-describe commands (claude AND codex sessions).
     _install_present_file_shim(bin_dir)
+    _install_forge_describe_shim(bin_dir)
 
     commands: dict[str, tuple[str, str, str]] = {
         "tracker_issue": ("ravn.cli.tracker_bridge", "", "Search, read and update tracker issues."),

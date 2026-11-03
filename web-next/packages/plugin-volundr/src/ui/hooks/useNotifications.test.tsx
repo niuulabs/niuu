@@ -56,6 +56,7 @@ function row(overrides: Partial<SessionNotification> = {}): SessionNotification 
     engine: null,
     model: null,
     correlationId: null,
+    speak: null,
     createdAt: new Date(Date.UTC(2026, 8, 23, 10, 0, seq)).toISOString(),
     read: false,
     ...overrides,

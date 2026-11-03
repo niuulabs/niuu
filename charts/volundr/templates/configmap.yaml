@@ -40,10 +40,17 @@ data:
     server_port: {{ .Values.service.targetPort | default 8080 }}
     projects:
       {{- .Values.config.projects | toYaml | nindent 6 }}
+    session_usage:
+      {{- .Values.sessionUsage | toYaml | nindent 6 }}
     conversation_recent_max_turns: {{ .Values.config.conversationRecentMaxTurns | default 15 }}
     conversation_recent_max_bytes: {{ .Values.config.conversationRecentMaxBytes | default 262144 }}
+    conversation_tail_initial_frames: {{ .Values.config.conversationTailInitialFrames | default 2000 }}
+    conversation_tail_growth: {{ .Values.config.conversationTailGrowth | default 2 }}
     runtime_health_timeout_seconds: {{ .Values.config.runtimeHealthTimeoutSeconds | default 3.0 }}
     preview_cache_dir: {{ .Values.previewCache.mountPath | default "/volundr/preview-cache" | quote }}
+    {{- with .Values.previewCache.edges }}
+    tool_result_preview: {{ toJson . }}
+    {{- end }}
     openshell_internal_gateway_url: {{ .Values.config.openshellInternalGatewayUrl | default "http://openshell.openshell.svc.cluster.local:8080" | quote }}
 
     cors:
@@ -83,9 +90,11 @@ data:
     push.enabled delivers the needs-input push through the notification outbox: it
     needs a notifications sink named push.attentionSink. Unless notifications.sinks
     already has one by that name, the chart adds the PushNotificationSink for it.
+    The push gateway alerts for that moment itself, so it gets no such sink.
     */}}
     {{- $notifications := deepCopy (.Values.notifications | default dict) }}
-    {{- if .Values.push.enabled }}
+    {{- $gatewayEnabled := get (.Values.push.gateway | default dict) "enabled" | default false }}
+    {{- if and .Values.push.enabled (not $gatewayEnabled) }}
     {{- $sinks := get $notifications "sinks" | default list }}
     {{- $attentionSink := .Values.push.attentionSink | default "push" }}
     {{- $hasSink := false }}
@@ -103,6 +112,18 @@ data:
 
     notifications: {{ toJson . }}
     {{- end }}
+    {{- with .Values.artifacts }}
+
+    artifacts: {{ toJson . }}
+    {{- end }}
+    {{- with .Values.presentedFiles }}
+
+    presented_files: {{ toJson . }}
+    {{- end }}
+    {{- with .Values.hostIdentity }}
+
+    host_identity: {{ toJson . }}
+    {{- end }}
 
     push:
       enabled: {{ .Values.push.enabled }}
@@ -110,6 +131,8 @@ data:
       adapter: {{ .Values.push.adapter | quote }}
       kwargs: {{ .Values.push.kwargs | default dict | toJson }}
       device_registry: {{ .Values.push.deviceRegistry | default "auto" | quote }}
+      apns: {{ .Values.push.apns | default dict | toJson }}
+      gateway: {{ .Values.push.gateway | default dict | toJson }}
       {{- if .Values.push.secretKwargs }}
       secret_kwargs_env:
         {{- range .Values.push.secretKwargs }}

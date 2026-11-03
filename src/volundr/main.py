@@ -50,6 +50,11 @@ from volundr.adapters.inbound.auth import extract_principal
 from volundr.adapters.inbound.forge_session_auth import ForgeSessionAuthMiddleware
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.inbound.rest_admin_settings import create_admin_settings_router
+from volundr.adapters.inbound.rest_artifacts import (
+    InstanceIdentity,
+    create_artifacts_router,
+    create_instance_router,
+)
 from volundr.adapters.inbound.rest_audit import (
     create_audit_router,
     create_canonical_audit_router,
@@ -68,7 +73,9 @@ from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router
 from volundr.adapters.inbound.rest_openshell_credentials import (
     create_openshell_credentials_router,
 )
+from volundr.adapters.inbound.rest_presented_files import create_presented_files_router
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
+from volundr.adapters.inbound.rest_push import create_push_router
 from volundr.adapters.inbound.rest_resident_a2a import create_resident_a2a_router
 from volundr.adapters.inbound.rest_resident_runtimes import create_resident_runtimes_router
 from volundr.adapters.inbound.rest_resources import create_resources_router
@@ -89,6 +96,7 @@ from volundr.adapters.outbound.config_resident_profiles import (
 from volundr.adapters.outbound.git_registry import create_git_registry
 from volundr.adapters.outbound.linear import LinearAdapter
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
+from volundr.adapters.outbound.notification_image_fetcher import SessionLookup
 from volundr.adapters.outbound.odin_review_notification_relay import OdinReviewNotificationRelay
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.pg_message_delivery import PostgresMessageDelivery
@@ -111,6 +119,7 @@ from volundr.adapters.outbound.postgres_launch_specs import PostgresLaunchSpecRe
 from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
 from volundr.adapters.outbound.postgres_notifications import (
     PostgresNotificationDeliveryRepository,
+    PostgresNotificationImageRepository,
     PostgresNotificationRepository,
     PostgresNotificationRuleRepository,
 )
@@ -138,6 +147,14 @@ from volundr.adapters.outbound.resident_notification_relay import (
 )
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
 from volundr.app_shell import build_app_shell
+from volundr.artifact_runtime import (
+    ArtifactHold,
+    configured_host,
+    create_artifact_service,
+    resolve_host,
+    resolve_tailnet_name,
+    startup_backfill,
+)
 from volundr.catalog import build_catalog
 from volundr.composition_builders import (  # noqa: F401
     _create_archive_store,
@@ -165,6 +182,7 @@ from volundr.config import Settings
 from volundr.domain.models import SessionStatus
 from volundr.domain.notifications import NotificationSinkInfo
 from volundr.domain.ports import OpenShellCredentialGrantPort
+from volundr.domain.presented_files import PresentedFileQuota
 from volundr.domain.services import (
     ChronicleService,
     ExternalSessionService,
@@ -182,6 +200,7 @@ from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.credential_enrollment import CredentialEnrollmentService
 from volundr.domain.services.event_ingestion import EventIngestionService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
+from volundr.domain.services.notification_images import NotificationImageWorker
 from volundr.domain.services.notifications import NotificationService, engine_resolver_for
 from volundr.domain.services.resident_runtime import (
     ResidentRuntimeNotFoundError,
@@ -199,8 +218,10 @@ from volundr.integration_definitions import load_integration_definition_configs
 from volundr.notification_composition import (
     NotificationDelivery,
     create_notification_delivery,
+    create_notification_image_worker,
     create_push_channel,
 )
+from volundr.push_composition import create_push_gateway
 
 # Interval for periodic stats and heartbeat broadcasts (seconds)
 BROADCAST_INTERVAL = 30
@@ -332,9 +353,11 @@ def _create_notification_service(
     *,
     broadcaster: InMemoryEventBroadcaster,
     integration_repository: PostgresIntegrationRepository,
+    session_lookup: SessionLookup,
     guild_instance: GuildInstance | None = None,
-) -> NotificationService | None:
-    """Compose the notification feed, rules and outbox (``notifications.enabled``)."""
+) -> tuple[NotificationService, NotificationImageWorker] | None:
+    """Compose the notification feed, rules, outbox and image worker
+    (``notifications.enabled``)."""
     config = settings.notifications
     if not config.enabled:
         logger.info("Forge notifications disabled (notifications.enabled=false)")
@@ -343,16 +366,31 @@ def _create_notification_service(
         name: (definition.defaults.get("broker") or {}).get("cliType")
         for name, definition in settings.session_definitions.items()
     }
-    return NotificationService(
-        PostgresNotificationRepository(pool),
+    repository = PostgresNotificationRepository(pool)
+    images = PostgresNotificationImageRepository(
+        pool, max_error_chars=config.images.max_error_chars
+    )
+    image_worker = create_notification_image_worker(
+        settings,
+        notifications=repository,
+        images=images,
+        session_lookup=session_lookup,
+        broadcaster=broadcaster,
+        guild_instance=guild_instance,
+    )
+    service = NotificationService(
+        repository,
         PostgresNotificationRuleRepository(pool),
         PostgresNotificationDeliveryRepository(
             pool, max_error_chars=config.dispatcher.max_error_chars
         ),
+        image_repository=images,
+        image_scheduler=image_worker,
         broadcaster=broadcaster,
         reply_ready_enabled=config.reply_ready.enabled,
         reply_title_chars=config.reply_ready.title_chars,
         reply_body_chars=config.reply_ready.body_chars,
+        stale_after_seconds=config.stale_after_seconds,
         sinks=[
             NotificationSinkInfo(
                 name=sink["name"],
@@ -365,6 +403,7 @@ def _create_notification_service(
         integration_repository=integration_repository,
         guild_instance=guild_instance,
     )
+    return service, image_worker
 
 
 def _create_notification_delivery(
@@ -1161,13 +1200,15 @@ def create_app(
             # A node whose instance is not recorded yet keeps running: only
             # GET /guild reports it (503), and its items carry null instance fields.
             guild_membership = settings.guild.membership()
-            notification_service = _create_notification_service(
+            notification_feed = _create_notification_service(
                 settings,
                 pool,
                 broadcaster=broadcaster,
                 integration_repository=integration_repo,
                 guild_instance=guild_membership.instance if guild_membership else None,
+                session_lookup=repository.get,
             )
+            notification_service, notification_image_worker = notification_feed or (None, None)
             app.state.notification_service = notification_service
             resident_notification_relay = _create_resident_notification_relay(
                 settings,
@@ -1178,6 +1219,7 @@ def create_app(
             app.state.resident_notification_relay = resident_notification_relay
             odin_review_relay = _create_odin_review_relay(settings, pool, notification_service)
             app.state.odin_review_relay = odin_review_relay
+            app.state.notification_image_worker = notification_image_worker
             notification_delivery = _create_notification_delivery(
                 settings,
                 pool,
@@ -1186,10 +1228,19 @@ def create_app(
                 credential_store=credential_store,
                 device_repository=device_repository,
             )
-            # push.enabled: an owner registering a device gets the "Needs-input
-            # pushes" rule, so the outbox pushes each session that needs them.
+            # The Guild push gateway (push.gateway.enabled): this node pushes for
+            # every Guild node's notifications. Configured-but-impossible (an
+            # unreadable APNs key, no HTTP/2, a registry without token kinds) raises
+            # here and stops the start.
+            push_gateway = create_push_gateway(
+                settings.push, pool, device_repository, local_events=broadcaster
+            )
+            app.state.push_gateway = push_gateway
+            # push.enabled without the gateway: an owner registering a device gets the
+            # "Needs-input pushes" rule, so the outbox pushes each session that needs
+            # them. The gateway alerts for that moment from its `attention` notification.
             on_device_registered = None
-            if settings.push.enabled:
+            if settings.push.enabled and push_gateway is None:
                 on_device_registered = partial(
                     notification_service.ensure_attention_push_rule,
                     sink=settings.push.attention_sink,
@@ -1269,6 +1320,17 @@ def create_app(
                 execution_credential_service=execution_credential_service,
             )
 
+            # Durable presented files (F2): Forge's own copy of every present-file.
+            presented_file_store = None
+            if settings.presented_files.enabled:
+                store_config = dict(settings.presented_files.store)
+                store_cls = import_class(store_config.pop("adapter"))
+                presented_file_store = store_cls(**store_config)
+                app.state.presented_file_store = presented_file_store
+                app.state.presented_file_quota = PresentedFileQuota(
+                    settings.presented_files.max_total_bytes
+                )
+
             session_service = SessionService(
                 repository,
                 pod_manager,
@@ -1292,6 +1354,9 @@ def create_app(
                 notification_recorder=notification_service,
                 forge_session_tokens=forge_session_tokens,
                 forge_mcp_default_grants=settings.forge_mcp.default_grants,
+                forge_mcp_role_grants=settings.forge_mcp.role_grants,
+                audit_repository=PostgresAuditRepository(pool),
+                presented_file_store=presented_file_store,
             )
             # Local-process brokers notify the session service when they exit so
             # the DB row is reconciled promptly (pod-status authoritative) rather
@@ -1484,7 +1549,9 @@ def create_app(
 
             chronicle_repository = PostgresChronicleRepository(pool)
             timeline_repository = PostgresTimelineRepository(pool)
-            session_event_log = PostgresSessionEventLog(pool)
+            session_event_log = PostgresSessionEventLog(
+                pool, usage_model_windows=settings.session_usage.model_windows
+            )
             chronicle_service = ChronicleService(
                 chronicle_repository,
                 session_service,
@@ -1519,6 +1586,8 @@ def create_app(
                 archive_store,
                 chronicle_service=chronicle_service,
                 event_log_repository=session_event_log,
+                tail_initial_frames=settings.conversation_tail_initial_frames,
+                tail_growth=settings.conversation_tail_growth,
             )
             app.state.archive_service = archive_service
             app.state.session_event_log = session_event_log
@@ -1596,10 +1665,17 @@ def create_app(
                 external_session_service=external_session_service,
                 device_repository=device_repository,
                 on_device_registered=on_device_registered,
+                on_environment_assumed=(
+                    push_gateway.note_environment_assumed if push_gateway is not None else None
+                ),
                 prefix="/api/v1/forge",
                 server_public_host=settings.server_public_host,
+                session_status_host=configured_host(settings),
                 openshell_internal_gateway_url=settings.openshell_internal_gateway_url,
                 preview_cache_dir=preview_cache_root,
+                preview_default_edge=settings.tool_result_preview.default_edge,
+                preview_min_edge=settings.tool_result_preview.min_edge,
+                preview_edge_limit=settings.tool_result_preview.max_edge,
                 project_service=project_service,
                 runtime_build=build_identity()
                 if pod_manager.runtime_backend == "process"
@@ -1608,6 +1684,7 @@ def create_app(
                 history_max_turns=settings.conversation_recent_max_turns,
                 history_max_bytes=settings.conversation_recent_max_bytes,
                 session_participant_service=session_participant_service,
+                presented_file_store=presented_file_store,
             )
             app.include_router(forge_router)
             app.include_router(
@@ -1624,6 +1701,17 @@ def create_app(
                     reply_timeout_seconds=settings.resident_runtimes.a2a_reply_timeout_seconds,
                 )
             )
+            if presented_file_store is not None:
+                app.include_router(
+                    create_presented_files_router(
+                        presented_file_store,
+                        session_service,
+                        public_base_url=settings.presented_files.public_base_url,
+                        max_bytes=settings.presented_files.max_bytes,
+                        quota=app.state.presented_file_quota,
+                        prefix="/api/v1/forge",
+                    )
+                )
             app.state.resident_runtime_service = resident_runtime_service
             app.include_router(create_codex_credentials_router(codex_credential_broker))
             credential_grant_brokers = {
@@ -1883,6 +1971,13 @@ def create_app(
             )
             app.include_router(events_router)
 
+            artifact_service = create_artifact_service(
+                settings,
+                pool,
+                notification_service=notification_service,
+                session_service=session_service,
+            )
+            app.state.artifact_service = artifact_service
             # Durable full-fidelity transcript log: ingest (skuld) + cursor replay
             session_log_router = create_session_log_router(
                 session_event_log,
@@ -1891,9 +1986,28 @@ def create_app(
                 default_show_internal=settings.replay.default_show_internal,
                 notification_service=notification_service,
                 resident_runtime_service=resident_runtime_service,
+                artifact_service=artifact_service,
             )
             app.include_router(session_log_router)
             app.include_router(create_guild_router(guild_membership, prefix="/api/v1/forge"))
+            if artifact_service is not None:
+                app.include_router(
+                    create_artifacts_router(
+                        artifact_service,
+                        prefix="/api/v1/forge",
+                        default_page_size=settings.artifacts.default_page_size,
+                        max_page_size=settings.artifacts.max_page_size,
+                    )
+                )
+            app.include_router(
+                create_instance_router(
+                    InstanceIdentity(
+                        host=resolve_host(settings),
+                        tailnet_name=resolve_tailnet_name(settings),
+                        instance_id=settings.projects.instance_id,
+                    )
+                )
+            )
             if notification_service is not None:
                 app.include_router(
                     create_notifications_router(
@@ -1902,11 +2016,16 @@ def create_app(
                         prefix="/api/v1/forge",
                         default_page_size=settings.notifications.default_page_size,
                         max_page_size=settings.notifications.max_page_size,
+                        image_cache_max_age_seconds=(
+                            settings.notifications.images.cache_max_age_seconds
+                        ),
                     )
                 )
             app.include_router(
                 create_message_delivery_router(PostgresMessageDelivery(pool), session_service)
             )
+            if push_gateway is not None:
+                app.include_router(create_push_router(push_gateway, prefix="/api/v1/forge"))
             if settings.forge_mcp.http.enabled:
                 app.include_router(create_forge_mcp_router(settings.forge_mcp.http))
             app.state.forge_mcp_http = settings.forge_mcp.http.enabled
@@ -2018,6 +2137,18 @@ def create_app(
                 await notification_delivery.start()
             if odin_review_relay is not None:
                 await odin_review_relay.start()
+            if notification_image_worker is not None:
+                await notification_image_worker.start()
+            artifact_hold: ArtifactHold | None = None
+            if artifact_service is not None:
+                artifact_hold = ArtifactHold(
+                    artifact_service,
+                    interval_seconds=settings.artifacts.tick_interval_seconds,
+                    before_first_tick=lambda: startup_backfill(artifact_service, settings),
+                )
+                artifact_hold.start()
+            if push_gateway is not None:
+                await push_gateway.start()
             if settings.telegram_ingress.enabled:
                 await telegram_ingress.start()
             else:
@@ -2057,6 +2188,12 @@ def create_app(
                     await odin_review_relay.stop()
                 if notification_delivery is not None:
                     await notification_delivery.stop()
+                if notification_image_worker is not None:
+                    await notification_image_worker.stop()
+                if artifact_hold is not None:
+                    await artifact_hold.stop()
+                if push_gateway is not None:
+                    await push_gateway.stop()
                 background_task.cancel()
                 try:
                     await background_task
@@ -2118,8 +2255,13 @@ def create_app(
 
     @app.get("/health", tags=["Health"])
     @app.get("/api/v1/forge/health", include_in_schema=False)
-    async def health_check() -> dict[str, str]:
-        """Health check endpoint."""
-        return {"status": "healthy"}
+    async def health_check() -> dict[str, Any]:
+        """Health check endpoint, with presented-file usage when the store is on."""
+        health: dict[str, Any] = {"status": "healthy"}
+        quota = getattr(app.state, "presented_file_quota", None)
+        store = getattr(app.state, "presented_file_store", None)
+        if quota is not None and store is not None:
+            health["presented_files"] = await quota.usage(store)
+        return health
 
     return app

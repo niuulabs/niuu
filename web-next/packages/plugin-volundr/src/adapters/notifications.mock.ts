@@ -85,6 +85,7 @@ function seedNotification(
     engine: 'claude',
     model: 'claude-opus-5-5',
     correlationId: null,
+    speak: null,
     createdAt: minutesAgo(overrides.seq),
     read: false,
     ...overrides,
@@ -125,6 +126,7 @@ export const MOCK_NOTIFICATIONS: SessionNotification[] = [
     severity: 'success',
     title: 'Migration 000069 applied',
     body: 'All **four** notification tables created; tests pass.',
+    speak: { text: 'The notification migration is applied and the tests pass.', priority: 'now' },
     links: [
       {
         label: 'PR #412',

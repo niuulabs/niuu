@@ -218,13 +218,37 @@
   }
 }
 
-[data-theme='xteo'] .forge-resource-toolbar,
-[data-theme='xteo'] .forge-resource-document {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .forge-resource-toolbar,
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .forge-resource-document {
   background: var(--color-panel-quiet);
   border-color: var(--color-border-quiet);
   box-shadow: none;
 }
-[data-theme='xteo'] .forge-resource-footer,
-[data-theme='xteo'] .forge-resource-modes {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .forge-resource-footer,
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .forge-resource-modes {
   border-color: var(--color-border-quiet);
 }

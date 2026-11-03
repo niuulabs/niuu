@@ -578,6 +578,27 @@ describe('Shell', () => {
     });
   });
 
+  it.each([
+    ['Midnight Blue', 'midnight-blue'],
+    ['Deep Blue', 'deep-blue'],
+    ['Dark Blue', 'dark-blue'],
+    ['Light', 'light'],
+  ])('offers %s in the theme picker and persists it', async (label, value) => {
+    localStorage.setItem('niuu.theme', 'amber');
+    wrap(<Shell plugins={[pluginA]} _testHistory={memHistory('/alpha')} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('alpha-content')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Color theme' }));
+    fireEvent.click(screen.getByRole('button', { name: label, exact: true }));
+
+    await waitFor(() => {
+      expect(document.querySelector('.niuu-shell')).toHaveAttribute('data-theme', value);
+    });
+    expect(localStorage.getItem('niuu.theme')).toBe(value);
+  });
+
   it('switches plugins from the command palette', async () => {
     wrap(<Shell plugins={[pluginA, pluginB]} _testHistory={memHistory('/alpha')} />);
     await waitFor(() => {

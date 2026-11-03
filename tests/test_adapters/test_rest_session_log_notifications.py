@@ -41,6 +41,8 @@ def _app(*, reply_ready: bool = True, with_notifications: bool = True):
         store.feed,
         store.rule_repo,
         store.outbox,
+        image_repository=store.images,
+        image_scheduler=store.image_scheduler,
         broadcaster=broadcaster,
         reply_ready_enabled=reply_ready,
         reply_title_chars=80,

@@ -792,7 +792,9 @@ describe('LiveSessionDetailPage', () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Teal' }));
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
-    expect(respondToInput).toHaveBeenCalledWith('tty-1-6f17f32f', ['Teal']);
+    expect(respondToInput).toHaveBeenCalledWith('tty-1-6f17f32f', [
+      { question: 'Which accent colour do you prefer?', answer: 'Teal', option_indexes: [1] },
+    ]);
   });
 
   it('surfaces mesh-driven workflow gates and sends change requests through chat', async () => {

@@ -29,6 +29,10 @@ export const FORGE_NOTIFICATION_LINK_KINDS = ['url', 'file', 'pr', 'session', 'a
 export type ForgeNotificationLinkKind = (typeof FORGE_NOTIFICATION_LINK_KINDS)[number];
 
 /** Tool part name of the notification turn the broker appends to the session log. */
+/** How soon a speak intent should be said (backend `SpeakPriority`). */
+export const FORGE_NOTIFICATION_SPEAK_PRIORITIES = ['now', 'next_window'] as const;
+export type ForgeNotificationSpeakPriority = (typeof FORGE_NOTIFICATION_SPEAK_PRIORITIES)[number];
+
 export const FORGE_NOTIFICATION_TOOL_NAME = 'forge_notification';
 
 export interface ForgeNotificationLink {
@@ -36,6 +40,15 @@ export interface ForgeNotificationLink {
   url: string | null;
   kind: ForgeNotificationLinkKind;
   fileId: string | null;
+}
+
+/**
+ * What a voice client may say aloud for a notification, and how soon. Forge only
+ * stores it; the phone decides whether and when to speak.
+ */
+export interface ForgeNotificationSpeak {
+  text: string;
+  priority: ForgeNotificationSpeakPriority;
 }
 
 /** The `tool_use` input of a `forge_notification` part (contract §1). */
@@ -77,6 +90,15 @@ export function isForgeNotificationSource(value: unknown): value is ForgeNotific
 export function severityRank(severity: string | null | undefined): number {
   const index = (FORGE_NOTIFICATION_SEVERITIES as readonly string[]).indexOf(severity ?? '');
   return index < 0 ? 0 : index;
+}
+
+/** A notification's speak intent, or `null` when it has none (or it is malformed). */
+export function parseForgeNotificationSpeak(value: unknown): ForgeNotificationSpeak | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const text = typeof raw.text === 'string' ? raw.text.trim() : '';
+  if (!text) return null;
+  return { text, priority: oneOf(FORGE_NOTIFICATION_SPEAK_PRIORITIES, raw.priority, 'now') };
 }
 
 export function parseForgeNotificationLinks(value: unknown): ForgeNotificationLink[] {

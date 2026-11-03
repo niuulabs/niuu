@@ -317,6 +317,9 @@ export function ShellLayout() {
                 {(
                   [
                     ['niuu', 'NIUU'],
+                    ['midnight-blue', 'Midnight Blue'],
+                    ['deep-blue', 'Deep Blue'],
+                    ['dark-blue', 'Dark Blue'],
                     ['xteo', 'blue'],
                     ['ice', 'Native dark'],
                     ['amber', 'Amber'],

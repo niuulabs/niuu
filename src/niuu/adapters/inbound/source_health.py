@@ -93,4 +93,20 @@ def set_source_health_header(response: Response, failures: list[SourceFailure]) 
     """
     if not failures:
         return
-    response.headers[SOURCE_FAILURES_HEADER] = json.dumps(failures[:_MAX_ENTRIES])
+    response.headers[SOURCE_FAILURES_HEADER] = source_failures_header_value(failures)
+
+
+def source_failures_header_value(failures: list[SourceFailure]) -> str:
+    """The header value: at most ``_MAX_ENTRIES`` entries, the cut said in a last one."""
+    if len(failures) <= _MAX_ENTRIES:
+        return json.dumps(failures)
+    kept = failures[: _MAX_ENTRIES - 1]
+    more = len(failures) - len(kept)
+    return json.dumps(
+        [
+            *kept,
+            source_failure(
+                instance_id="", name="", error=f"{more} more sources failed", status="truncated"
+            ),
+        ]
+    )

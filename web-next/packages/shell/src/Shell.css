@@ -7,7 +7,8 @@
     'rail subnav content'
     'rail footer footer';
   height: 100vh;
-  width: 100vw;
+  height: 100dvh;
+  width: 100%;
   background: var(--color-bg-primary);
   color: var(--color-text-primary);
   overflow: hidden;
@@ -412,7 +413,13 @@
   background: var(--color-bg-elevated);
   color: var(--color-brand);
 }
-[data-theme='xteo'] .niuu-shell__topbar {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .niuu-shell__topbar {
   box-shadow: var(--shadow-sm);
 }
 @media (max-width: 650px) {
@@ -426,11 +433,24 @@
 }
 
 @media (min-width: 761px) {
-  :is([data-theme='xteo'], [data-theme='light']).niuu-shell {
+  :is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue'],
+    [data-theme='light']
+  ).niuu-shell {
     grid-template-columns: 56px auto minmax(0, 1fr);
     grid-template-rows: 52px minmax(0, 1fr) 30px;
   }
-  :is([data-theme='xteo'], [data-theme='light']) .niuu-shell__rail-item {
+  :is(
+      [data-theme='xteo'],
+      [data-theme='midnight-blue'],
+      [data-theme='deep-blue'],
+      [data-theme='dark-blue'],
+      [data-theme='light']
+    )
+    .niuu-shell__rail-item {
     width: 56px;
   }
 }

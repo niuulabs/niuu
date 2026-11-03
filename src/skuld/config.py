@@ -569,6 +569,41 @@ class ActivityHeartbeatConfig(BaseModel):
             "below Volundr's session liveness stale_after_seconds (default 600)."
         ),
     )
+    stale_output_seconds: float = Field(
+        default=600.0,
+        gt=0,
+        description=(
+            "A busy state is re-reported only while the transport produced a row "
+            "(terminal frames included) within this window. Past it the broker "
+            "reconciles with the transport's turn flag: idle when no turn is in "
+            "flight, otherwise no heartbeat (G10, F12c)."
+        ),
+    )
+
+
+class PresentedDurableConfig(BaseModel):
+    """Uploading present-file copies to Forge's durable store (control-plane F2)."""
+
+    inline_upload_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Time present-file waits for the first upload before answering; a slower "
+            "upload continues as a background retry."
+        ),
+    )
+    upload_timeout_seconds: float = Field(
+        default=60.0, gt=0, description="Time allowed for one background durable upload."
+    )
+    retry_attempts: int = Field(
+        default=6, ge=0, description="Background retries after a failed upload."
+    )
+    retry_backoff_seconds: float = Field(
+        default=2.0, gt=0, description="First retry delay; doubles per attempt."
+    )
+    retry_backoff_max_seconds: float = Field(
+        default=120.0, gt=0, description="Upper bound on the retry delay."
+    )
 
 
 class DeliveryConfig(BaseModel):
@@ -1029,6 +1064,7 @@ class SkuldSettings(BaseSettings):
         ),
     )
     activity_heartbeat: ActivityHeartbeatConfig = Field(default_factory=ActivityHeartbeatConfig)
+    presented_durable: PresentedDurableConfig = Field(default_factory=PresentedDurableConfig)
     delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
     ws_auth: WsAuthConfig = Field(default_factory=WsAuthConfig)
     observation_relay: ObservationRelayConfig = Field(default_factory=ObservationRelayConfig)
@@ -1191,6 +1227,16 @@ class SkuldSettings(BaseSettings):
     # Default ``False`` (internal tool_use/tool_result HIDDEN), matching ReplayConfig.
     default_show_internal: bool = Field(default=False)
     max_upload_size_bytes: int = Field(default=104_857_600)  # 100 MB
+    exit_when_transport_stops: bool = Field(
+        default=True,
+        description=(
+            "When the agent's transport dies (Claude's pane exited, its tmux session is "
+            "gone), report activity 'stopped' and exit, so the pod manager reconciles the "
+            "session as stopped: Forge then refuses messages instead of queueing them for "
+            "a corpse, and start launches a fresh agent (LEX-1699). false keeps the broker "
+            "up, serving history only."
+        ),
+    )
     max_presented_file_bytes: int = Field(
         default=52_428_800,
         gt=0,
@@ -1202,7 +1248,9 @@ class SkuldSettings(BaseSettings):
         description="Maximum size of a file staged by the present-file endpoint.",
     )
     effort_control_timeout_s: float = Field(
-        default=15.0, gt=0, description="Time allowed for native effort-change acknowledgement."
+        default=15.0,
+        gt=0,
+        description="Time allowed for a native effort or model change to be acknowledged.",
     )
     acp_prompt_timeout_s: float = Field(default=300.0)  # ACP/MSP (Grok Build, Muse) turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)

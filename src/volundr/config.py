@@ -16,7 +16,7 @@ All configuration MUST flow through the Settings class.
 import os
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
@@ -47,11 +47,19 @@ from niuu.config_models import (
     default_session_definitions,
 )
 from niuu.domain.delivery import AcceptancePolicy
-from niuu.domain.notifications import MAX_BODY_CHARS, MAX_TITLE_CHARS
+from niuu.domain.notifications import (
+    MAX_BODY_CHARS,
+    MAX_TITLE_CHARS,
+    NotificationKind,
+    NotificationSeverity,
+    NotificationSource,
+)
 from niuu.domain.observability import ObservabilityConfig
+from niuu.domain.presented_files import PRESENTED_FILE_DEFAULT_MAX_BYTES
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.forge_mcp.models import ForgeMcpGrant
 from ravn.config import LLMConfig, PersonaSourceConfig
+from skuld.tool_result_preview import PREVIEW_EDGE_LIMIT, PREVIEW_MAX_EDGE, PREVIEW_MIN_EDGE
 from volundr.compute.config import ComputeConfig
 from volundr.domain.mcp_hosts import normalize_internal_host_pattern
 from volundr.domain.model_gateway import MODEL_GATEWAY_TOKEN_ENV
@@ -66,8 +74,10 @@ from volundr.domain.notifications import (
     INTEGRATION_SINK,
     MAX_SINK_NAME_CHARS,
     SINK_NAME_PATTERN,
+    NotificationQuietHours,
     NotificationRateLimit,
 )
+from volundr.domain.presented_files import validate_public_base_url
 
 __all__ = ["GitHubInstance", "GitLabInstance"]
 
@@ -833,18 +843,355 @@ class SleipnirConfig(BaseModel):
     secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
 
 
+DEFAULT_PUSH_ADAPTER = "volundr.adapters.outbound.push_channels.LoggingNotificationChannel"
+
+
+class ApnsConfig(BaseModel):
+    """Apple Push Notification service credentials (token-based auth).
+
+    ``private_key_path`` is the ``AuthKey_<KEYID>.p8`` file from the Apple Developer
+    portal. It is read once at startup; a missing or wrong key stops the start.
+    One key serves the sandbox and the production host.
+    """
+
+    team_id: str = Field(default="", description="Apple Developer team id (the JWT issuer).")
+    key_id: str = Field(default="", description="Id of the APNs auth key (the JWT kid).")
+    bundle_id: str = Field(
+        default="",
+        description="The app's bundle id: the APNs topic for a token registered without one.",
+    )
+    private_key_path: str = Field(
+        default="", description="Path of the .p8 signing key file (never its contents)."
+    )
+    token_ttl_seconds: int = Field(
+        default=3000,
+        ge=1200,
+        le=3540,
+        description=(
+            "How long one provider JWT is reused. APNs refuses a JWT older than an "
+            "hour and throttles a provider that signs more often than every 20 minutes."
+        ),
+    )
+    request_timeout_seconds: float = Field(
+        default=10.0, gt=0, description="Timeout for one request to APNs."
+    )
+    production_url: str = Field(
+        default="https://api.push.apple.com",
+        description="APNs host for tokens of TestFlight and App Store installs.",
+    )
+    sandbox_url: str = Field(
+        default="https://api.sandbox.push.apple.com",
+        description="APNs host for tokens of development installs.",
+    )
+
+
+class PushAlertsConfig(BaseModel):
+    """Which Guild notifications alert the owner's devices, and how.
+
+    This is the gateway's one alert rule, applied per owner. Its rate limit and
+    quiet hours mean what they mean on a delivery rule (``notifications`` rules).
+    """
+
+    enabled: bool = Field(default=True, description="Send alert pushes.")
+    kinds: list[NotificationKind] = Field(
+        default_factory=lambda: [
+            NotificationKind.MILESTONE,
+            NotificationKind.DECISION,
+            NotificationKind.ATTENTION,
+            NotificationKind.ERROR,
+        ],
+        description="Notification kinds that alert. Others still reach the Live Activity.",
+    )
+    min_severity: NotificationSeverity = Field(
+        default=NotificationSeverity.INFO, description="Lowest severity that alerts."
+    )
+    sources: list[NotificationSource] = Field(
+        default_factory=list, description="Sources that alert; empty means any."
+    )
+    attention_kinds: list[NotificationKind] = Field(
+        default_factory=lambda: [
+            NotificationKind.ATTENTION,
+            NotificationKind.DECISION,
+            NotificationKind.ERROR,
+        ],
+        description=(
+            "Kinds that need the user (a failure that stops work breaks through like a "
+            "question). Only they are time-sensitive (others are active), and "
+            "only they carry mutable-content, the attention marker and the agent identity, so "
+            "the app's notification service extension runs on them (LEX-1186)."
+        ),
+    )
+    low_priority_kinds: list[NotificationKind] = Field(
+        default_factory=list,
+        description="Kinds APNs may deliver when power allows (apns-priority 5).",
+    )
+    body_chars: int = Field(default=280, ge=1, description="Longest alert body.")
+    expiration_seconds: int = Field(
+        default=3600, ge=0, description="How long APNs keeps trying a device that is offline."
+    )
+    max_age_seconds: float = Field(
+        default=900.0,
+        gt=0,
+        description=(
+            "A notification older than this when the gateway reads it is not alerted "
+            "(after the gateway or a node was unreachable)."
+        ),
+    )
+    rate_limit: NotificationRateLimit | None = Field(
+        default_factory=lambda: NotificationRateLimit(max_count=30, window_seconds=3600),
+        description="At most max_count alerts per owner in any window_seconds; null disables.",
+    )
+    quiet_hours: NotificationQuietHours | None = Field(
+        default=None,
+        description=(
+            "A daily window (start, end, timezone) in which only notifications at or "
+            "above allow_min_severity alert."
+        ),
+    )
+    category: str = Field(
+        default="FORGE_ACTIVITY", description="The alert's category (aps.category)."
+    )
+    sound: str = Field(default="default", description="The alert's sound; empty is silent.")
+    deep_link_base: str = Field(
+        default="lexichat://activity",
+        min_length=1,
+        description="The app link a tap opens; the notification id and its session are appended.",
+    )
+    session_subtitle: bool = Field(
+        default=True,
+        description="Show the session name as the alert's subtitle when the title lacks it.",
+    )
+    batch_size: int = Field(default=20, ge=1, description="Alerts claimed per round.")
+    lease_seconds: float = Field(
+        default=60.0, gt=0, description="How long a claimed alert is leased to one worker."
+    )
+    max_attempts: int = Field(
+        default=5, ge=1, description="Attempts before an alert APNs cannot take is given up."
+    )
+    backoff_base_seconds: float = Field(
+        default=15.0, gt=0, description="First retry delay; doubles per attempt."
+    )
+    backoff_max_seconds: float = Field(default=600.0, gt=0, description="Longest retry delay.")
+
+    @model_validator(mode="after")
+    def _ordered_backoff(self) -> "PushAlertsConfig":
+        if self.backoff_base_seconds > self.backoff_max_seconds:
+            raise ValueError("alerts.backoff_base_seconds must not exceed backoff_max_seconds")
+        return self
+
+
+class PushLiveActivityStartConfig(BaseModel):
+    """Starting the Notifications Live Activity by push when none is running."""
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Start the Live Activity on a new notification when the owner has a "
+            "push-to-start token and no running activity."
+        ),
+    )
+    min_interval_seconds: float = Field(
+        default=3600.0, gt=0, description="At most one start per token in this interval."
+    )
+
+
+class PushLiveActivityConfig(BaseModel):
+    """Live Activity pushes: the newest Guild notifications on the Lock Screen."""
+
+    enabled: bool = Field(default=True, description="Send Live Activity pushes.")
+    priority: int = Field(
+        default=10, ge=1, le=10, description="apns-priority of a Live Activity push (5 or 10)."
+    )
+    stale_seconds: int = Field(
+        default=28800, ge=1, description="How long after a push iOS shows the content as current."
+    )
+    relevance_score: float = Field(
+        default=10,
+        ge=0,
+        description=(
+            "aps.relevance-score on every Live Activity push (start and update): which of "
+            "the app's own activities iOS shows in the Dynamic Island. The app's scale "
+            "(LEX-1324/LEX-1353): a live call 100, notifications 10, so a call always wins."
+        ),
+    )
+    start: PushLiveActivityStartConfig = Field(default_factory=PushLiveActivityStartConfig)
+
+
+class PushWidgetsConfig(BaseModel):
+    """WidgetKit reload pushes. iOS budgets them, so they are spaced per token."""
+
+    enabled: bool = Field(default=True, description="Send widget reload pushes.")
+    min_interval_seconds: float = Field(
+        default=120.0,
+        gt=0,
+        description=(
+            "At most one reload per widget token in this interval; a reload held "
+            "back is sent when the interval ends, so the last change is never dropped."
+        ),
+    )
+    priority: int = Field(
+        default=10, ge=1, le=10, description="apns-priority of a widget reload (5 or 10)."
+    )
+
+
+class PushBackgroundConfig(BaseModel):
+    """Silent background pushes to the app's alert token.
+
+    They let iOS wake the app, which then reads every server it knows (a server
+    only knows its own Guild). iOS delivers only a few per hour, so they are spaced
+    per token.
+    """
+
+    enabled: bool = Field(default=True, description="Send background pushes.")
+    min_interval_seconds: float = Field(
+        default=900.0,
+        gt=0,
+        description=(
+            "At most one background push per alert token in this interval; one held "
+            "back is sent when the interval ends."
+        ),
+    )
+    priority: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="apns-priority of a background push. APNs refuses 10 for this type.",
+    )
+
+
+class PushGatewayConfig(BaseModel):
+    """The push gateway: Apple pushes for every notification of this server's Guild.
+
+    Any Forge server turns it on with configuration. A phone that uses several
+    servers registers with each; each pushes for its own Guild.
+
+    One node holds the APNs key (``push.apns``) and the registered devices. It
+    reads every node's notification feed through the Guild API at ``guild_url`` and
+    sends the alert, Live Activity and widget pushes for all of them, so no other
+    node needs a key.
+    """
+
+    enabled: bool = Field(default=False, description="Run the push gateway on this node.")
+    guild_url: str = Field(
+        default="",
+        description=(
+            "Origin of the Guild API (its registry and its notification feed), "
+            "e.g. http://127.0.0.1:8080."
+        ),
+    )
+    reader_token_path: str = Field(
+        default="",
+        description=(
+            "File holding the bearer token the gateway reads the Guild with. Empty "
+            "sends no credential (a Guild with the AllowAll identity)."
+        ),
+    )
+    request_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Timeout for one read of one Guild node. A node that does not answer in "
+            "time fails only its own read."
+        ),
+    )
+    feedless_recheck_seconds: float = Field(
+        default=3600.0,
+        gt=0,
+        description=(
+            "How long a Guild node without a notifications feed (an older Forge answering "
+            "404) is left alone before it is asked again; it is skipped quietly meanwhile."
+        ),
+    )
+    node_retry_seconds: float = Field(
+        default=30.0,
+        ge=0,
+        description="How long a node that did not answer is left alone before the next try.",
+    )
+    poll_interval_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "How often the gateway reads the Guild feed. This node's own notifications "
+            "wake it at once; another node's are pushed within this interval."
+        ),
+    )
+    stream_enabled: bool = Field(
+        default=False,
+        description=(
+            "Also listen to the Guild's live event stream, so another node's notification "
+            "is pushed at once. It holds one streaming connection to guild_url: leave it "
+            "off when the Guild runs in this same process, where an open stream delays a "
+            "graceful shutdown."
+        ),
+    )
+    stream_retry_seconds: float = Field(
+        default=5.0, gt=0, description="Wait before reconnecting a lost event stream."
+    )
+    page_size: int = Field(default=50, ge=1, description="Notifications read per node per request.")
+    feed_page_size: int = Field(
+        default=20,
+        ge=3,
+        description="Newest notifications read per node to build the Live Activity content.",
+    )
+    catch_up_items: int = Field(
+        default=10,
+        ge=0,
+        description="How many of a newly found node's latest notifications are read back.",
+    )
+    discovery_interval_seconds: float = Field(
+        default=300.0, gt=0, description="How often the gateway looks for new Guild nodes."
+    )
+    retention_seconds: float = Field(
+        default=604800.0, gt=0, description="How long settled alert rows are kept."
+    )
+    max_detail_chars: int = Field(
+        default=500, ge=1, description="Longest delivery detail kept on an alert row."
+    )
+    public_api_url: str = Field(
+        default="",
+        description=(
+            "Origin a phone reaches this Guild at, for image URLs in alerts. Empty "
+            "leaves the image out of the alert."
+        ),
+    )
+    origin_label: str = Field(
+        default="",
+        description="This server's display name, shown on a Live Activity it pushed.",
+    )
+    alerts: PushAlertsConfig = Field(default_factory=PushAlertsConfig)
+    live_activity: PushLiveActivityConfig = Field(default_factory=PushLiveActivityConfig)
+    widgets: PushWidgetsConfig = Field(default_factory=PushWidgetsConfig)
+    background: PushBackgroundConfig = Field(default_factory=PushBackgroundConfig)
+
+    @model_validator(mode="after")
+    def _needs_guild(self) -> "PushGatewayConfig":
+        if self.enabled and not self.guild_url.strip():
+            raise ValueError(
+                "push.gateway.enabled needs push.gateway.guild_url (the Guild API origin)"
+            )
+        return self
+
+
 class PushNotificationConfig(BaseModel):
-    """The push channel, and the needs-input push (optional).
+    """Apple push: the Guild push gateway, or the per-node push channel (optional).
 
-    ``adapter`` + ``kwargs`` build the NotificationChannel that push sinks deliver
-    through (the default adapter only logs). With ``enabled``, every owner who
-    registers a device gets a "Needs-input pushes" delivery rule targeting
-    ``attention_sink``, so each session entering ``awaiting_input`` is pushed
-    through the notification outbox (retried, recorded, quiet hours honoured).
-    That needs ``notifications.enabled`` and a ``notifications.sinks`` entry
-    named ``attention_sink``.
+    Two modes, both behind ``enabled``:
 
-    Example YAML::
+    * **Gateway** (``gateway.enabled``): this node pushes for every Guild node's
+      notifications through APNs (``apns``): alerts, Live Activity, widgets and
+      background pushes. The needs-input moment is alerted from its ``attention``
+      notification, so no "Needs-input pushes" rule is given and the per-node
+      channel below must be left at its default. It needs the ``device_tokens``
+      table (``device_registry`` postgres, or auto in mini mode).
+    * **Per-node channel** (``adapter`` + ``kwargs``): the NotificationChannel
+      that push sinks deliver through (the default adapter only logs). Every owner
+      who registers a device gets a "Needs-input pushes" delivery rule targeting
+      ``attention_sink``, so each session entering ``awaiting_input`` is pushed
+      through the notification outbox (retried, recorded, quiet hours honoured).
+      That needs ``notifications.enabled`` and a ``notifications.sinks`` entry
+      named ``attention_sink``.
+
+    Per-node channel YAML::
 
         push:
           enabled: true
@@ -861,22 +1208,40 @@ class PushNotificationConfig(BaseModel):
     Secret, e.g. from an ExternalSecret), not a credential-store record. Registered
     devices are per user: outside mini mode they are the owners' push-device
     integrations (``device_registry``), their tokens in the credential store.
+
+    Gateway YAML::
+
+        push:
+          enabled: true
+          device_registry: postgres
+          apns:
+            team_id: "ABCDE12345"
+            key_id: "KEY1234567"
+            bundle_id: "com.example.app"
+            private_key_path: "/etc/volundr/secrets/AuthKey_KEY1234567.p8"
+          gateway:
+            enabled: true
+            guild_url: "http://127.0.0.1:8080"
     """
 
     enabled: bool = Field(
         default=False,
         description=(
-            "Push every session that needs its owner: give each owner who registers a "
-            "device a delivery rule for it (needs notifications.enabled)."
+            "Enable push: the gateway when gateway.enabled; else every owner who registers "
+            "a device gets a delivery rule for sessions that need them (needs "
+            "notifications.enabled)."
         ),
     )
     attention_sink: str = Field(
         default="push",
-        description="The notifications.sinks entry the needs-input push rule delivers through.",
+        description=(
+            "The notifications.sinks entry the needs-input push rule delivers through "
+            "(per-node mode; the gateway gives no such rule)."
+        ),
     )
     adapter: str = Field(
-        default="volundr.adapters.outbound.push_channels.LoggingNotificationChannel",
-        description="Fully-qualified NotificationChannel class path.",
+        default=DEFAULT_PUSH_ADAPTER,
+        description="Fully-qualified NotificationChannel class path (per-node mode).",
     )
     kwargs: dict[str, Any] = Field(default_factory=dict)
     secret_kwargs_env: dict[str, str] = Field(
@@ -891,6 +1256,35 @@ class PushNotificationConfig(BaseModel):
             "'postgres': the device_tokens table. 'auto': postgres in mini mode, else integrations."
         ),
     )
+    apns: ApnsConfig = Field(default_factory=ApnsConfig)
+    gateway: PushGatewayConfig = Field(default_factory=PushGatewayConfig)
+
+    @model_validator(mode="after")
+    def _one_mode(self) -> "PushNotificationConfig":
+        if not self.gateway.enabled:
+            return self
+        if not self.enabled:
+            raise ValueError(
+                "push.gateway.enabled needs push.enabled: true (or disable the gateway)"
+            )
+        missing = [
+            name
+            for name in ("team_id", "key_id", "bundle_id", "private_key_path")
+            if not getattr(self.apns, name).strip()
+        ]
+        if missing:
+            raise ValueError("push.gateway.enabled needs push.apns." + ", push.apns.".join(missing))
+        if self.adapter != DEFAULT_PUSH_ADAPTER or self.kwargs or self.secret_kwargs_env:
+            raise ValueError(
+                "push.adapter / push.kwargs configure the per-node needs-input push, which "
+                "the gateway replaces: remove them, or disable push.gateway"
+            )
+        if self.device_registry == "integrations":
+            raise ValueError(
+                "push.gateway.enabled needs the device_tokens table (token kinds and push "
+                "throttles); set push.device_registry to postgres, or disable push.gateway"
+            )
+        return self
 
     def uses_integration_devices(self, *, mini_mode: bool) -> bool:
         """Whether push devices are stored as integrations (see ``device_registry``)."""
@@ -1072,6 +1466,140 @@ class OdinReviewRelayConfig(BaseModel):
         return self
 
 
+class NotificationImagesConfig(BaseModel):
+    """Copying images attached to notifications (``image`` on notify / submit).
+
+    Forge copies each attached image once, in the background, and serves its own
+    copy. A ``file_id`` image is read through the session's broker; a ``url`` image
+    is fetched over https from a public host (see ``allow_private_networks``).
+    """
+
+    poll_interval_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Pause between polls for pending copies (e.g. left by a restart). A new "
+            "image wakes the worker at once."
+        ),
+    )
+    batch_size: int = Field(default=8, ge=1, description="Pending copies claimed per poll.")
+    lease_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        description="How long a claimed copy is held before another worker may re-claim it.",
+    )
+    fetch_timeout_seconds: float = Field(
+        default=20.0,
+        gt=0,
+        description="Upper bound for fetching one image. Must be shorter than lease_seconds.",
+    )
+    max_concurrent_fetches: int = Field(
+        default=4, ge=1, description="Image fetches in flight at once."
+    )
+    max_redirects: int = Field(
+        default=3, ge=0, description="Redirects followed for a url image (each hop is checked)."
+    )
+    allow_private_networks: bool = Field(
+        default=False,
+        description=(
+            "Let url images resolve to private, loopback, link-local or shared "
+            "(e.g. tailnet 100.64.0.0/10) addresses. Off: only public hosts are fetched."
+        ),
+    )
+    thumbnail_max_side: int = Field(
+        default=320, ge=1, description="Longest side of a stored thumbnail, in pixels."
+    )
+    thumbnail_jpeg_quality: int = Field(
+        default=85, ge=1, le=95, description="JPEG quality for opaque thumbnails."
+    )
+    cache_max_age_seconds: int = Field(
+        default=31_536_000,
+        ge=0,
+        description="Cache-Control max-age for served images; stored bytes never change.",
+    )
+    max_error_chars: int = Field(
+        default=300, ge=1, description="Longest image failure reason kept and shown."
+    )
+
+    @model_validator(mode="after")
+    def _ordered_timing(self) -> "NotificationImagesConfig":
+        if self.fetch_timeout_seconds >= self.lease_seconds:
+            raise ValueError("images.fetch_timeout_seconds must be shorter than lease_seconds")
+        return self
+
+
+class PresentedFilesConfig(BaseModel):
+    """Durable presented files (control-plane F2).
+
+    Forge keeps its own copy of every file a session presents, so the file still opens
+    after the session stops, and links it by an absolute URL on the host's tailnet name.
+
+    Example YAML::
+
+        presented_files:
+          enabled: true
+          public_base_url: "http://thor.tail737f2a.ts.net:8380"
+          max_bytes: 52428800
+          max_total_bytes: 5368709120   # required when enabled (LEX-1514)
+          store:
+            adapter: "volundr.adapters.outbound.local_presented_files.LocalPresentedFileStore"
+            root: "~/.niuu/presented-files"
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Accept and serve durable copies. Off by default: the local store needs a "
+            "persistent, single-writer directory (a mini/local Forge, or a PVC)."
+        ),
+    )
+    public_base_url: str = Field(
+        default="",
+        description=(
+            "Absolute http(s) base URL clients reach this Forge at, on the host's tailnet "
+            "(a *.ts.net MagicDNS name or a Tailscale address; anything else, public or "
+            "*.xteo.mesh, is refused at start). Empty: presented files keep their "
+            "relative route."
+        ),
+    )
+    max_bytes: int = Field(
+        default=PRESENTED_FILE_DEFAULT_MAX_BYTES,
+        gt=0,
+        description="Largest durable copy accepted (matches Skuld's max_presented_file_bytes).",
+    )
+    max_total_bytes: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Total bytes of durable copies this host keeps (LEX-1514). Required when "
+            "enabled: it is bounded by the host's free disk, which only the operator "
+            "knows. A copy that would pass it is refused (HTTP 507, present-file fails "
+            "with the remedy) and counted; nothing is evicted."
+        ),
+    )
+    store: dict[str, Any] = Field(
+        default_factory=lambda: {
+            "adapter": "volundr.adapters.outbound.local_presented_files.LocalPresentedFileStore",
+            "root": "~/.niuu/presented-files",
+        },
+        description="Dynamic adapter for the store: 'adapter' class path plus its kwargs.",
+    )
+
+    @field_validator("public_base_url")
+    @classmethod
+    def _tailnet_url(cls, value: str) -> str:
+        return validate_public_base_url(value)
+
+    @model_validator(mode="after")
+    def _quota_when_enabled(self) -> "PresentedFilesConfig":
+        if self.enabled and self.max_total_bytes is None:
+            raise ValueError(
+                "presented_files.enabled needs presented_files.max_total_bytes: the total "
+                "bytes of copies this host may keep (for example 5368709120 for 5 GiB)"
+            )
+        return self
+
+
 class NotificationsConfig(BaseModel):
     """Forge session notifications: the feed, the projection and external delivery.
 
@@ -1087,6 +1615,9 @@ class NotificationsConfig(BaseModel):
             title_chars: 120
             body_chars: 280
           public_web_url: "https://forge.example.com"
+          images:
+            fetch_timeout_seconds: 20
+            thumbnail_max_side: 320
           sinks:
             - name: ops-webhook
               label: Ops webhook
@@ -1104,7 +1635,18 @@ class NotificationsConfig(BaseModel):
     odin_review_relay: OdinReviewRelayConfig = Field(default_factory=OdinReviewRelayConfig)
     default_page_size: int = Field(default=50, ge=1, description="Feed page size default.")
     max_page_size: int = Field(default=200, ge=1, description="Largest feed page allowed.")
+    stale_after_seconds: int = Field(
+        default=4 * 3600,
+        gt=0,
+        description=(
+            "An unresolved attention, error or critical notification older than this whose "
+            "session has posted a newer milestone is served as stale: the session moved "
+            "on, so the alarm is probably over even though nothing resolved it (LEX-1442). "
+            "It is display only: nothing is resolved or hidden."
+        ),
+    )
     dispatcher: NotificationDispatcherConfig = Field(default_factory=NotificationDispatcherConfig)
+    images: NotificationImagesConfig = Field(default_factory=NotificationImagesConfig)
     sinks: list[dict[str, Any]] = Field(
         default_factory=list,
         description=(
@@ -1290,6 +1832,44 @@ class ForgeMcpHttpConfig(BaseModel):
         return self
 
 
+class ToolResultPreviewConfig(BaseModel):
+    """Sizes of tool-result image previews (``GET …/tool-result/{id}/preview``).
+
+    Example YAML::
+
+        tool_result_preview:
+          default_edge: 400   # served when the client sends no ?max_edge=
+          min_edge: 320
+          max_edge: 1600
+    """
+
+    default_edge: int = Field(
+        default=PREVIEW_MAX_EDGE,
+        gt=0,
+        description="Longest edge (px) served without ?max_edge=; existing clients get this.",
+    )
+    min_edge: int = Field(
+        default=PREVIEW_MIN_EDGE,
+        gt=0,
+        description="Smallest ?max_edge= accepted; smaller requests get 422.",
+    )
+    max_edge: int = Field(
+        default=PREVIEW_EDGE_LIMIT,
+        gt=0,
+        description="Largest ?max_edge= accepted (bounds Pillow work and cache bytes per "
+        "preview); larger requests get 422 and should fetch the full image instead.",
+    )
+
+    @model_validator(mode="after")
+    def _ordered(self) -> "ToolResultPreviewConfig":
+        if not self.min_edge <= self.default_edge <= self.max_edge:
+            raise ValueError(
+                "tool_result_preview needs min_edge <= default_edge <= max_edge "
+                f"(got {self.min_edge}, {self.default_edge}, {self.max_edge})"
+            )
+        return self
+
+
 class ForgeMcpConfig(BaseModel):
     """Forge MCP credentials and grants.
 
@@ -1297,6 +1877,8 @@ class ForgeMcpConfig(BaseModel):
 
         forge_mcp:
           default_grants: []          # message, lifecycle: added to every session
+          role_grants:                # by project role (coordination.role)
+            coordinator: [lifecycle, message]
           session_tokens:
             enabled: true
             ttl_seconds: 2592000
@@ -1310,6 +1892,14 @@ class ForgeMcpConfig(BaseModel):
         default_factory=list,
         description="Grants every session's credential carries (on top of the launch "
         "spec's and the session-create request's).",
+    )
+    role_grants: dict[str, list[ForgeMcpGrant]] = Field(
+        default_factory=lambda: {
+            "coordinator": [ForgeMcpGrant.LIFECYCLE, ForgeMcpGrant.MESSAGE],
+        },
+        description="Grants a session's credential carries by its project role "
+        "(coordination.role), applied at every mint. A role not listed gets none; "
+        "set {} to grant nothing by role.",
     )
     session_tokens: ForgeMcpSessionTokenConfig = Field(default_factory=ForgeMcpSessionTokenConfig)
     http: ForgeMcpHttpConfig = Field(default_factory=ForgeMcpHttpConfig)
@@ -2644,6 +3234,98 @@ class ObservatoryConfig(BaseModel):
     )
 
 
+class SessionUsageConfig(BaseModel):
+    """Model metadata for status when the native stream omits its raw window.
+
+    Explicit runtime windows take precedence. Unknown models remain unknown;
+    these defaults are the LEX-1421 model contract, not a token heuristic.
+    """
+
+    model_windows: dict[str, Annotated[int, Field(strict=True, gt=0, le=2**53 - 1)]] = Field(
+        default_factory=lambda: {
+            "claude-opus-5-5": 1_000_000,
+            "claude-fable-5-1": 1_000_000,
+            "claude-sonnet-5-5": 1_000_000,
+        },
+        description="Positive context windows representable exactly by JSON number consumers",
+    )
+
+
+class HostIdentityConfig(BaseModel):
+    """How this Forge names itself to the control plane (F7, ``GET /instance``).
+
+    ``host`` is the control plane's host-map key (``thor``, ``mini-m6``, ``thor-exp``);
+    empty falls back to ``projects.instance_id``, then ``local``. ``tailnet_name`` is
+    the phone-reachable name (``thor.tail737f2a.ts.net``); empty falls back to
+    ``server_public_host``.
+    """
+
+    host: str = Field(default="", max_length=100, pattern=r"^[a-zA-Z0-9_.-]*$")
+    tailnet_name: str = Field(default="", max_length=253)
+
+
+def _default_artifact_type_urls() -> dict[str, str]:
+    # The claude.ai Artifact types seen in the capture corpus (F1t); a new type also
+    # classifies by its instructions' front-matter name (``artifacts.type_names``).
+    return {
+        "https://claude.ai/artifact/8jTsAFQMFDb2oA8MsPJ2eL": "deck",
+        "https://claude.ai/artifact/QKN21svewxgyPb6SYRqWnd": "design",
+        "https://claude.ai/artifact/Rp9naXUCj2xozpUkyQy19W": "doc",
+        "https://claude.ai/artifact/5M7UeXXcx16TP3vzVFNDzd": "design_system",
+    }
+
+
+def _default_artifact_type_names() -> dict[str, str]:
+    return {
+        "slides": "deck",
+        "design": "design",
+        "pages": "doc",
+        "docs": "doc",
+        "design-system": "design_system",
+        "design_system": "design_system",
+    }
+
+
+class ArtifactsConfig(BaseModel):
+    """Artifact publications (F1) and their burst notices (F1n): model/bursts.md."""
+
+    enabled: bool = Field(default=True, description="Record publications and serve their read.")
+    notices_enabled: bool = Field(
+        default=True,
+        description="Announce each live burst with one notice after the hold (F1n).",
+    )
+    burst_window_seconds: float = Field(
+        default=1800.0, gt=0, description="A burst's sliding window on each side."
+    )
+    hold_seconds: float = Field(
+        default=120.0, ge=0, description="Durable hold before a live burst's notice."
+    )
+    live_lag_seconds: float = Field(
+        default=600.0,
+        ge=0,
+        description="A row ingested within this lag of its timestamp is live; else backfill.",
+    )
+    tick_interval_seconds: float = Field(
+        default=5.0, gt=0, description="How often the hold looks for due bursts."
+    )
+    emit_batch_size: int = Field(default=100, ge=1)
+    max_emit_failures: int = Field(
+        default=5, ge=1, description="Failed emissions before a burst is settled silently."
+    )
+    backfill_page_size: int = Field(default=500, ge=1)
+    default_page_size: int = Field(default=200, ge=1)
+    max_page_size: int = Field(default=1000, ge=1)
+    backfill_on_start: bool = Field(
+        default=False,
+        description="Replay the durable log into publications at start (always silent).",
+    )
+    backfill_since_days: float | None = Field(
+        default=None, gt=0, description="Bound the start-up backfill to recent rows."
+    )
+    type_urls: dict[str, str] = Field(default_factory=_default_artifact_type_urls)
+    type_names: dict[str, str] = Field(default_factory=_default_artifact_type_names)
+
+
 class ProjectsConfig(BaseModel):
     """Storage adapters and bounded checkpoint limits; workflows live in agent skills."""
 
@@ -2701,6 +3383,23 @@ class Settings(BaseSettings):
         default=5.0,
         gt=0,
         description="Delay before retrying a disconnected host in the merged session stream.",
+    )
+    guild_session_owner_ttl_seconds: float = Field(
+        default=3600.0,
+        gt=0,
+        description=(
+            "How long the Guild facade remembers which node owns a session (learned from "
+            "Guild listings and owner lookups) and reads it there alone. A stale entry costs "
+            "one 404 from the old owner, then a full search; it never hides a session."
+        ),
+    )
+    guild_feedless_recheck_seconds: float = Field(
+        default=3600.0,
+        gt=0,
+        description=(
+            "How long the Guild's merged notification feed leaves out a node without a feed "
+            "(an older Forge answering 404) before asking it again (LEX-1738)."
+        ),
     )
     forge_stream_keepalive_seconds: float = Field(
         default=15.0,
@@ -2762,6 +3461,19 @@ class Settings(BaseSettings):
     )
     conversation_recent_max_turns: int = Field(default=15, gt=0)
     conversation_recent_max_bytes: int = Field(default=256 * 1024, ge=4096)
+    conversation_tail_initial_frames: int = Field(
+        default=2000,
+        gt=0,
+        description=(
+            "First durable event-log window, in frames, read for a `?tail=N` conversation "
+            "of a session without a live broker. Widened until it holds more than N turns."
+        ),
+    )
+    conversation_tail_growth: int = Field(
+        default=2,
+        ge=2,
+        description="Factor by which a `?tail=N` event-log window widens per step.",
+    )
     server_host: str = Field(
         default="127.0.0.1",
         validation_alias=AliasChoices("server_host", "NIUU_SERVER_HOST"),
@@ -2782,6 +3494,10 @@ class Settings(BaseSettings):
         le=65535,
         validation_alias=AliasChoices("server_port", "NIUU_SERVER_PORT"),
         description="Port of the shared Niuu host used by local session brokers.",
+    )
+    tool_result_preview: ToolResultPreviewConfig = Field(
+        default_factory=ToolResultPreviewConfig,
+        description="Tool-result image preview sizes (?max_edge= bounds and default).",
     )
     preview_cache_dir: str = Field(
         default="~/.niuu/preview-cache",
@@ -2857,6 +3573,10 @@ class Settings(BaseSettings):
     sleipnir: SleipnirConfig = Field(default_factory=SleipnirConfig)
     push: PushNotificationConfig = Field(default_factory=PushNotificationConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
+    session_usage: SessionUsageConfig = Field(default_factory=SessionUsageConfig)
+    presented_files: PresentedFilesConfig = Field(default_factory=PresentedFilesConfig)
+    artifacts: ArtifactsConfig = Field(default_factory=ArtifactsConfig)
+    host_identity: HostIdentityConfig = Field(default_factory=HostIdentityConfig)
     forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
@@ -2990,8 +3710,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _needs_input_push_has_its_sink(self) -> "Settings":
-        """``push.enabled`` delivers through the outbox; refuse it without one."""
-        if not self.push.enabled:
+        """``push.enabled`` delivers through the outbox; refuse it without one.
+
+        The push gateway alerts for the needs-input moment itself, so it needs no sink.
+        """
+        if not self.push.enabled or self.push.gateway.enabled:
             return self
         if not self.notifications.enabled:
             raise ValueError(

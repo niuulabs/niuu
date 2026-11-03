@@ -12,6 +12,7 @@ import {
   isForgeNotificationSeverity,
   isForgeNotificationSource,
   parseForgeNotificationLinks,
+  parseForgeNotificationSpeak,
   type ForgeNotificationSeverity,
 } from '@niuulabs/domain';
 import {
@@ -92,6 +93,8 @@ export interface NotificationWire {
   engine?: string | null;
   model?: string | null;
   correlation_id?: string | null;
+  /** `{text, priority}` when the notice carries a speak intent (LEX-1536). */
+  speak?: { text: string; priority: string } | null;
   created_at: string;
   read?: boolean;
   /** Added by the Guild facade. */
@@ -208,6 +211,7 @@ export function normalizeNotification(wire: NotificationWire): SessionNotificati
     engine: text(wire.engine),
     model: text(wire.model),
     correlationId: text(wire.correlation_id),
+    speak: parseForgeNotificationSpeak(wire.speak),
     createdAt: typeof wire.created_at === 'string' ? wire.created_at : '',
     read: wire.read === true,
   };

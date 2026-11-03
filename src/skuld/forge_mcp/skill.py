@@ -16,7 +16,10 @@ from pathlib import Path
 
 from niuu.forge_mcp.guidance import (
     COMPACT_NOTIFICATION_GUIDANCE,
+    NOTIFICATION_IMAGE_GUIDANCE,
     NOTIFICATION_TRIGGER_GUIDANCE,
+    QUESTION_GUIDANCE,
+    QUESTION_STANDARD,
 )
 from skuld.session_runtime import write_private_file
 
@@ -44,12 +47,19 @@ rules — on their phone or chat. It is how a long-running session gets the user
 
 {trigger_guidance}
 
+## Asking the user questions or actions
+
+**The standard.** {question_standard}
+
+{question_guidance}
+
 ## How to write one
 
 {compact_guidance}
 
 - **Links**: attach the artifact — a PR or CI URL (`kind: pr` / `url`), a file you handed over
   with `present-file` (`kind: file`, `file_id` from its output), another session (`kind: session`).
+- **Image**: {image_guidance}
 - **correlation_id**: reuse one id (e.g. the PR number) for follow-ups about the same thing.
 
 ## Do not
@@ -61,6 +71,14 @@ rules — on their phone or chat. It is how a long-running session gets the user
 
 `list_notifications` shows what was already reported (avoid duplicates); `environment` tells you
 which session, host, project and model you are running as.
+
+## Keep the session description current (not a notification)
+
+`describe_session` (or the `forge-describe` command) sets what this session is doing, shown in
+every session list without interrupting anyone. Set `short_description` — one plain line, the
+current step and the goal — when you start, whenever the phase changes, when blocked
+("Blocked on …") and when done ("Done: …"). Put the fuller status someone opening the session
+would want in `description` (markdown). Send only what changed; `null` clears a field.
 """
 
 
@@ -70,6 +88,9 @@ def forge_notify_skill_markdown(server_name: str) -> str:
         server=server_name,
         trigger_guidance=NOTIFICATION_TRIGGER_GUIDANCE,
         compact_guidance=COMPACT_NOTIFICATION_GUIDANCE,
+        image_guidance=NOTIFICATION_IMAGE_GUIDANCE,
+        question_guidance=QUESTION_GUIDANCE,
+        question_standard=QUESTION_STANDARD,
     )
 
 

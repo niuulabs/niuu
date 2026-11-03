@@ -172,6 +172,9 @@ VOLUNDR_SESSION_STOPPED: str = "volundr.session.stopped"
 #: A session failed (pod error or infrastructure failure).
 VOLUNDR_SESSION_FAILED: str = "volundr.session.failed"
 
+#: An operator changed a session's Forge MCP grants (audit record).
+VOLUNDR_SESSION_FORGE_MCP_GRANTS_CHANGED: str = "volundr.session.forge_mcp_grants_changed"
+
 #: Token usage was recorded for a session.
 VOLUNDR_TOKEN_USAGE: str = "volundr.token.usage"
 

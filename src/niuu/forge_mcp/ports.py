@@ -5,7 +5,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from niuu.domain.artifact_reports import ArtifactReport
 from niuu.domain.notifications import NotificationDraft
+from niuu.forge_mcp.models import ForgeApiError
 
 
 class ForgeClient(ABC):
@@ -70,6 +72,12 @@ class ForgeClient(ABC):
     ) -> dict[str, Any]:
         """``POST /sessions/{id}/notifications``: a feed-only direct submit."""
 
+    @abstractmethod
+    async def update_description(
+        self, session_id: str, changes: dict[str, str | None]
+    ) -> dict[str, Any]:
+        """``PUT /sessions/{id}/description``: sent keys replace, ``None`` clears."""
+
 
 class ForgeMcpHost(ABC):
     """The caller's own context: who is asking, and how its notifications are recorded."""
@@ -86,6 +94,15 @@ class ForgeMcpHost(ABC):
     @abstractmethod
     async def notify(self, draft: NotificationDraft) -> dict[str, Any]:
         """Record a notification; return ``{notification_id, turn_id, session_seq, state}``."""
+
+    async def report_artifact(self, report: ArtifactReport) -> dict[str, Any]:
+        """Record an explicit artifact report in the caller's durable log.
+
+        Only a session's own broker can; other hosts refuse."""
+        raise ForgeApiError(
+            "report_artifact needs a Forge session's own MCP (it writes that session's log)",
+            status=501,
+        )
 
 
 class ForgeMcpFlock(ABC):

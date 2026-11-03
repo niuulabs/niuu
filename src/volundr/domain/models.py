@@ -29,6 +29,7 @@ from niuu.domain import models as shared_models
 from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from tracker.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue  # noqa: F401
 from volundr.domain.projects import SessionCoordination
+from volundr.domain.push import PushEnvironment, PushTokenKind
 from volundr.domain.session_read_state import SessionReadState
 
 CIStatus = shared_models.CIStatus
@@ -240,7 +241,9 @@ class DeviceToken(BaseModel):
     """A user's registered device for push notifications.
 
     Stored per-owner so a session that needs attention can fan a push out to
-    every device the owner has registered (the iOS app/widget, etc.).
+    every device the owner has registered (the iOS app/widget, etc.). One row per
+    ``(token, kind)``: an app install registers its alert token, the token of each
+    running Live Activity, its push-to-start token and its widget token.
     """
 
     id: UUID = Field(default_factory=uuid4)
@@ -255,9 +258,25 @@ class DeviceToken(BaseModel):
         default=None,
         description="APNs topic (bundle id) to target; falls back to the channel default",
     )
-    environment: str | None = Field(
+    kind: PushTokenKind = Field(
+        default=PushTokenKind.ALERT,
+        description="What the token receives: alerts, Live Activity pushes or widget reloads",
+    )
+    environment: PushEnvironment | None = Field(
         default=None,
-        description="APNs environment of the token: 'sandbox' (development builds) or 'production'",
+        description=(
+            "The APNs host that issued the token (development installs: sandbox); "
+            "omitted uses the registry's default (device_tokens: production)"
+        ),
+    )
+    activity_id: str | None = Field(
+        default=None,
+        max_length=200,
+        description="The Live Activity a live_activity token updates",
+    )
+    last_push_at: datetime | None = Field(
+        default=None,
+        description="When a throttled push (widget reload, push-to-start) was last sent",
     )
     created_at: datetime = Field(default_factory=_utc_now)
     updated_at: datetime = Field(default_factory=_utc_now)
@@ -394,12 +413,51 @@ SessionSource = Annotated[
 ]
 
 
+class SessionContext(BaseModel):
+    """Last measured context occupancy; unknown is distinct from measured zero."""
+
+    tokens: int | None = Field(default=None, ge=0, strict=True)
+    window: int | None = Field(default=None, gt=0, strict=True)
+    share: float | None = Field(default=None, ge=0, strict=True, allow_inf_nan=False)
+
+
+class UsageTokenCounts(BaseModel):
+    """Measured token components, never inferred from the legacy lifetime sum."""
+
+    input: int | None = Field(default=None, ge=0, strict=True)
+    cache_read: int | None = Field(default=None, ge=0, strict=True)
+    cache_write: int | None = Field(default=None, ge=0, strict=True)
+    output: int | None = Field(default=None, ge=0, strict=True)
+
+
 class Session(BaseModel):
     """A Claude Code coding session."""
 
     coordination: SessionCoordination | None = None
     coordination_revision: int = Field(default=0, ge=0)
     read_state: SessionReadState | None = None
+    session_usage: dict | None = Field(
+        default=None,
+        exclude=True,
+        description="Private durable usage projection, including internal reducer state",
+    )
+
+    @property
+    def context(self) -> SessionContext:
+        """Public context for both REST and SSE; private reducer state never escapes."""
+        context = (self.session_usage or {}).get("context") or {}
+        return SessionContext.model_validate(
+            {name: context.get(name) for name in ("tokens", "window", "share")}
+        )
+
+    @property
+    def effective_model(self) -> str:
+        """The model the runtime last reported in effect, else the launch model.
+
+        ``model`` stays the launch record (restart and launch config read it);
+        readers that show who is talking use this.
+        """
+        return (self.session_usage or {}).get("model") or self.model
 
     id: UUID = Field(
         default_factory=uuid4,
@@ -567,7 +625,61 @@ class Session(BaseModel):
         ),
     )
 
+    short_description: str | None = Field(
+        default=None,
+        description=(
+            "Agent-maintained one-line summary of what the session is doing now and its "
+            "goal. Written only by the targeted description update."
+        ),
+    )
+    description: str | None = Field(
+        default=None,
+        description="Agent-maintained fuller status (markdown allowed).",
+    )
+    short_description_updated_at: datetime | None = Field(
+        default=None,
+        description="When short_description last changed value.",
+    )
+    description_updated_at: datetime | None = Field(
+        default=None,
+        description="When description last changed value.",
+    )
+
+    last_work_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Newest source time of a work row in the session's log (G10, F12d). Kept at "
+            "log ingest; never a heartbeat, a reconnect handshake or a terminal frame."
+        ),
+    )
+    open_tool_count: int = Field(
+        default=0,
+        ge=0,
+        description="PreToolUse hooks without their PostToolUse (reset by result/Stop).",
+    )
+
     model_config = {"frozen": False}
+
+    @property
+    def tool_open(self) -> bool:
+        """True while a tool call is open (F12d)."""
+        return self.open_tool_count > 0
+
+    @property
+    def open_controls(self) -> list[dict] | None:
+        """The broker's open human gates ``[{request_id, kind, opened_at}]`` (F12d).
+
+        ``None`` means unknown (an older broker, or none reported yet): a reader must
+        never take it as "no control open".
+        """
+        controls = (self.activity_metadata or {}).get("open_controls")
+        if not isinstance(controls, list):
+            return None
+        return [
+            {key: str(c[key]) for key in ("request_id", "kind", "opened_at") if c.get(key)}
+            for c in controls
+            if isinstance(c, dict) and c.get("request_id")
+        ]
 
     @property
     def needs_attention(self) -> bool:

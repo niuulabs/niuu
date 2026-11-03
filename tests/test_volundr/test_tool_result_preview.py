@@ -703,3 +703,156 @@ async def test_router_builds_cache_from_preview_cache_dir_when_not_injected(
 
     assert resp.status_code == 200
     assert list(cache_dir.rglob("*.jpg")), "preview was not written under preview_cache_dir"
+
+
+# --- LEX-1655: ?max_edge= size hint ---------------------------------------------
+
+
+def _edge(resp) -> tuple[int, int]:
+    with Image.open(io.BytesIO(resp.content)) as img:
+        return img.size
+
+
+@pytest.mark.asyncio
+async def test_preview_default_edge_is_400_and_named_in_headers(tmp_path) -> None:
+    event_log = _CountingEventLog()
+    client, repository, _, _ = _build(tmp_path, event_log)
+    session = await _stopped_session(repository)
+    await event_log.append(_frames(session.id, {"tu-img": _image_envelope(2000, 1000)}))
+
+    resp = client.get(_PREVIEW_PATH.format(sid=session.id, tuid="tu-img"))
+
+    assert resp.status_code == 200
+    assert _edge(resp) == (400, 200)
+    assert resp.headers["x-preview-max-edge"] == "400"
+    assert resp.headers["x-preview-edge"] == "400"
+    assert "immutable" in resp.headers["cache-control"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_edge", [320, 1200, 1600])
+async def test_preview_max_edge_within_bounds_is_served(tmp_path, max_edge: int) -> None:
+    event_log = _CountingEventLog()
+    client, repository, _, _ = _build(tmp_path, event_log)
+    session = await _stopped_session(repository)
+    await event_log.append(_frames(session.id, {"tu-img": _image_envelope(2000, 1000)}))
+
+    resp = client.get(
+        _PREVIEW_PATH.format(sid=session.id, tuid="tu-img"), params={"max_edge": max_edge}
+    )
+
+    assert resp.status_code == 200
+    assert _edge(resp) == (max_edge, max_edge // 2)
+    assert resp.headers["x-preview-max-edge"] == str(max_edge)
+    assert resp.headers["x-preview-edge"] == str(max_edge)
+    assert "immutable" in resp.headers["cache-control"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_edge", [0, 319, 1601, 4000])
+async def test_preview_max_edge_out_of_bounds_is_422(tmp_path, max_edge: int) -> None:
+    event_log = _CountingEventLog()
+    client, repository, cache, _ = _build(tmp_path, event_log)
+    session = await _stopped_session(repository)
+    await event_log.append(_frames(session.id, {"tu-img": _image_envelope(2000, 1000)}))
+
+    resp = client.get(
+        _PREVIEW_PATH.format(sid=session.id, tuid="tu-img"), params={"max_edge": max_edge}
+    )
+
+    assert resp.status_code == 422
+    assert "between 320 and 1600" in resp.json()["detail"]
+    assert event_log.read_after_calls == 0  # refused before any fetch
+    assert not list((tmp_path / "preview-cache").glob("*/*.jpg"))
+    assert (
+        client.get(
+            _PREVIEW_PATH.format(sid=session.id, tuid="tu-img"), params={"max_edge": "big"}
+        ).status_code
+        == 422
+    )
+
+
+@pytest.mark.asyncio
+async def test_preview_small_source_names_its_real_edge(tmp_path) -> None:
+    event_log = _CountingEventLog()
+    client, repository, _, _ = _build(tmp_path, event_log)
+    session = await _stopped_session(repository)
+    await event_log.append(_frames(session.id, {"tu-img": _image_envelope(500, 250)}))
+
+    resp = client.get(
+        _PREVIEW_PATH.format(sid=session.id, tuid="tu-img"), params={"max_edge": 1600}
+    )
+
+    assert _edge(resp) == (500, 250)  # never upscaled
+    assert resp.headers["x-preview-max-edge"] == "1600"
+    assert resp.headers["x-preview-edge"] == "500"
+
+
+@pytest.mark.asyncio
+async def test_preview_each_edge_is_cached_separately(tmp_path) -> None:
+    event_log = _CountingEventLog()
+    client, repository, cache, _ = _build(tmp_path, event_log)
+    session = await _stopped_session(repository)
+    await event_log.append(_frames(session.id, {"tu-img": _image_envelope(2000, 1000)}))
+    path = _PREVIEW_PATH.format(sid=session.id, tuid="tu-img")
+
+    small = client.get(path)
+    large = client.get(path, params={"max_edge": 1200})
+    reads = event_log.read_after_calls
+    again_small = client.get(path, params={"max_edge": 400})
+    again_large = client.get(path, params={"max_edge": 1200})
+
+    assert _edge(small) == (400, 200) and _edge(large) == (1200, 600)
+    assert again_small.content == small.content and again_large.content == large.content
+    assert event_log.read_after_calls == reads  # both served from disk
+    assert cache.get(str(session.id), "tu-img", 1200) == large.content
+    assert len(list((tmp_path / "preview-cache").glob("*/*.jpg"))) == 2
+
+
+@pytest.mark.asyncio
+async def test_preview_large_edge_after_warm_pass_is_generated(tmp_path) -> None:
+    """The durable rebuild warms the default edge; a larger first request still gets
+    its own edge from the same rebuild, not the warmed 400px entry."""
+    event_log = _CountingEventLog()
+    client, repository, cache, _ = _build(tmp_path, event_log)
+    session = await _stopped_session(repository)
+    await event_log.append(
+        _frames(
+            session.id,
+            {"tu-one": _image_envelope(2000, 1000), "tu-two": _image_envelope(1000, 2000)},
+        )
+    )
+
+    resp = client.get(
+        _PREVIEW_PATH.format(sid=session.id, tuid="tu-one"), params={"max_edge": 1000}
+    )
+
+    assert _edge(resp) == (1000, 500)
+    assert event_log.read_after_calls == 1
+    assert cache.has(str(session.id), "tu-two")  # default edge warmed for the session
+
+
+def test_router_refuses_a_default_edge_outside_its_bounds(tmp_path) -> None:
+    session_service = SessionService(
+        repository=InMemorySessionRepository(),
+        pod_manager=_RUNNING_POD_MANAGER,
+        validate_repos=False,
+    )
+    with pytest.raises(ValueError, match="default_edge 2000"):
+        create_router(
+            session_service,
+            preview_cache_dir=tmp_path,
+            preview_default_edge=2000,
+            session_participant_service=make_session_participant_service(session_service),
+        )
+
+
+def test_tool_result_preview_config_bounds() -> None:
+    from volundr.config import ToolResultPreviewConfig
+
+    config = ToolResultPreviewConfig()
+    assert (config.min_edge, config.default_edge, config.max_edge) == (320, 400, 1600)
+    with pytest.raises(ValueError, match="min_edge <= default_edge <= max_edge"):
+        ToolResultPreviewConfig(default_edge=200)
+    with pytest.raises(ValueError):
+        ToolResultPreviewConfig(min_edge=0)

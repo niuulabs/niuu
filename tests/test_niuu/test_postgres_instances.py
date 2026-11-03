@@ -14,6 +14,7 @@ from niuu.domain.models import (
     InstanceVisibility,
     RegisteredInstance,
 )
+from niuu.ports.instances import InvalidInstanceIdError
 
 
 class FakePool:
@@ -109,15 +110,30 @@ async def test_get_instance_returns_none_or_mapped_instance() -> None:
     pool = FakePool()
     repo = PostgresInstanceRepository(pool)
 
-    assert await repo.get_instance("missing") is None
+    missing, present = str(uuid4()), str(uuid4())
+    assert await repo.get_instance(missing) is None
 
-    pool.fetchrow_result = _row("instance-1", config='{"region":"eu-west-1"}')
-    instance = await repo.get_instance("instance-1")
+    pool.fetchrow_result = _row(present, config='{"region":"eu-west-1"}')
+    instance = await repo.get_instance(present)
 
     assert instance is not None
-    assert instance.id == "instance-1"
+    assert instance.id == present
     assert instance.config == {"region": "eu-west-1"}
-    assert pool.fetchrow_calls[-1][1] == ("instance-1",)
+    assert pool.fetchrow_calls[-1][1] == (present,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["c3d1d72f-mini-m6", "local", ""])
+async def test_a_malformed_instance_id_is_refused_before_any_query(bad) -> None:
+    pool = FakePool()
+    repo = PostgresInstanceRepository(pool)
+
+    with pytest.raises(InvalidInstanceIdError, match="Guild instance ids are UUIDs"):
+        await repo.get_instance(bad)
+    with pytest.raises(InvalidInstanceIdError):
+        await repo.delete_instance(bad)
+
+    assert pool.fetchrow_calls == []
 
 
 @pytest.mark.asyncio

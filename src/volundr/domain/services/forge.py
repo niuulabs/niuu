@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from niuu.domain.session_description import DESCRIPTION_FIELDS, SessionDescriptionPatch
 from niuu.forge_mcp.credentials import normalize_grants
 from volundr.domain.services.forge_session_launch import FORGE_MCP_KEY, GRANTS_KEY
+from volundr.domain.session_broker import broker_base_url
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -133,7 +135,16 @@ class ForgeService:
         *,
         principal: Principal | None = None,
     ) -> Session:
-        if getattr(data, "coordination", None) is not None:
+        # Refuse an escalating create before a dispatch claim or session row exists.
+        coordination = getattr(data, "coordination", None)
+        forge_mcp = getattr(data, "forge_mcp", None)
+        self._session_service.check_forge_mcp_grants(
+            principal,
+            tuple(forge_mcp.grants) if forge_mcp is not None else (),
+            launch_spec=data.launch_spec,
+            role=coordination.role if coordination is not None else None,
+        )
+        if coordination is not None:
             if self._project_service is None:
                 raise ValueError("Projects are not enabled on this Forge host")
             async with self._project_service.dispatch(data, principal) as (existing, options):
@@ -148,10 +159,6 @@ class ForgeService:
         resolved_definition = self._resolve_session_definition(data.model, data.definition)
         forge_mcp = getattr(data, "forge_mcp", None)
         requested_grants = tuple(forge_mcp.grants) if forge_mcp is not None else ()
-        # Refuse an escalating create before a session row exists.
-        self._session_service.check_forge_mcp_grants(
-            principal, requested_grants, launch_spec=data.launch_spec
-        )
         # No slot, no record: a session created only to fail would sit in the
         # list as an error the person did not ask for.
         await self._session_service.ensure_capacity()
@@ -165,6 +172,7 @@ class ForgeService:
             workspace_id=data.workspace_id,
             tracker_issue_id=data.issue_id,
             issue_tracker_url=data.issue_url,
+            description=_seeded_description(data),
             **(project_options or {}),
         )
         workload_config = dict(data.workload_config or {})
@@ -260,6 +268,26 @@ class ForgeService:
             tracker_issue_id=tracker_issue_id,
             principal=principal,
         )
+
+    async def update_description(
+        self,
+        session_id: UUID,
+        patch: SessionDescriptionPatch,
+        *,
+        principal: Principal | None = None,
+    ) -> Session:
+        return await self._session_service.update_description(session_id, patch, principal)
+
+    async def worked_seconds_24h(self, session_ids: list[UUID]) -> dict[UUID, int] | None:
+        return await self._session_service.worked_seconds_24h(session_ids)
+
+    async def get_forge_mcp_grants(self, session_id: UUID, *, principal: Principal | None = None):
+        return await self._session_service.get_forge_mcp_grants(session_id, principal)
+
+    async def set_forge_mcp_grants(
+        self, session_id: UUID, grants, *, principal: Principal | None = None
+    ):
+        return await self._session_service.set_forge_mcp_grants(session_id, grants, principal)
 
     async def delete_session(
         self,
@@ -511,15 +539,22 @@ class ForgeService:
             raise LookupError(f"Session not found: {session_id}")
         if not session.chat_endpoint:
             raise ValueError(f"Session {session_id} has no active endpoint")
-        base_url = session.chat_endpoint.replace("wss://", "https://").replace("ws://", "http://")
-        if base_url.endswith("/session"):
-            base_url = base_url[: -len("/session")]
-        return session, base_url
+        return session, broker_base_url(session.chat_endpoint)
 
-    async def get_transcript(self, session_id: UUID) -> dict:
+    async def get_transcript(self, session_id: UUID, *, tail_turns: int = 0) -> dict:
+        """The persisted transcript; ``tail_turns > 0`` lets the durable rebuild read only
+        the newest turns (LEX-1345)."""
         if self._archive_service is None:
             raise RuntimeError("Session archive service not available")
+        if tail_turns > 0:
+            return await self._archive_service.get_transcript(session_id, tail_turns=tail_turns)
         return await self._archive_service.get_transcript(session_id)
+
+    async def get_attachments(self, session_id: UUID) -> dict:
+        """The session's document/image index (LEX-1259), from the durable rebuild."""
+        if self._archive_service is None:
+            raise RuntimeError("Session archive service not available")
+        return await self._archive_service.get_attachments(session_id)
 
     async def durable_latest_seq(self, session_id: UUID) -> int:
         """Cheap durable-freshness signal (event-log MAX(seq), 0 when unavailable). Lets the read
@@ -587,3 +622,12 @@ class ForgeService:
             message_count=message_count,
             cost=cost,
         )
+
+
+def _seeded_description(data) -> SessionDescriptionPatch | None:
+    """The description keys a create request sent, normalized; None when it sent none."""
+    sent = getattr(data, "model_fields_set", set())
+    values = {name: getattr(data, name) for name in DESCRIPTION_FIELDS if name in sent}
+    if not values:
+        return None
+    return SessionDescriptionPatch.model_validate(values)

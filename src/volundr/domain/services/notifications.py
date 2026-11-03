@@ -3,17 +3,19 @@
 Producers never write the feed directly. A notification is *projected* from a
 durable source (a stored session-log row, a needs-input transition, or a direct
 submit carrying an idempotency key) into ``forge_notifications`` together with
-its scheduled deliveries, in one transaction. Only newly inserted rows are then
-broadcast as ``session_notification``, so producer retries never duplicate a row,
-a delivery or a live event.
+its scheduled deliveries (and a pending image copy when it carries an image), in
+one transaction. Only newly inserted rows are then broadcast as
+``session_notification``, so producer retries never duplicate a row, a delivery or
+a live event. A new row with an image is broadcast by the image worker once its
+image settles (:mod:`volundr.domain.services.notification_images`).
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from niuu.domain.guild_membership import GuildInstance
@@ -32,14 +34,14 @@ from niuu.domain.notifications import (
     turn_dedupe_key,
 )
 from volundr.domain.models import (
-    EventType,
-    RealtimeEvent,
     ResidentRuntime,
     Session,
     SessionLogEntry,
 )
 from volundr.domain.notification_ports import (
     NotificationDeliveryRepository,
+    NotificationImageRepository,
+    NotificationImageScheduler,
     NotificationRecorder,
     NotificationRepository,
     NotificationRuleRepository,
@@ -52,6 +54,9 @@ from volundr.domain.notifications import (
     NotificationCandidate,
     NotificationDelivery,
     NotificationFeed,
+    NotificationImageContent,
+    NotificationImageState,
+    NotificationImageVariant,
     NotificationNotFoundError,
     NotificationQuery,
     NotificationReadState,
@@ -63,6 +68,7 @@ from volundr.domain.notifications import (
     attention_push_rule,
 )
 from volundr.domain.ports import EventBroadcaster, IntegrationRepository
+from volundr.domain.services.notification_images import notification_event
 from volundr.domain.session_read_state import is_final_output
 
 logger = logging.getLogger(__name__)
@@ -177,11 +183,14 @@ class NotificationService(NotificationRecorder):
         rule_repository: NotificationRuleRepository,
         delivery_repository: NotificationDeliveryRepository,
         *,
+        image_repository: NotificationImageRepository,
+        image_scheduler: NotificationImageScheduler,
         broadcaster: EventBroadcaster | None = None,
         reply_ready_enabled: bool,
         reply_title_chars: int,
         reply_body_chars: int,
         sinks: list[NotificationSinkInfo],
+        stale_after_seconds: float | None = None,
         engine_resolver: EngineResolver | None = None,
         integration_repository: IntegrationRepository | None = None,
         attention_retire_page_size: int = 200,
@@ -189,10 +198,17 @@ class NotificationService(NotificationRecorder):
     ) -> None:
         if attention_retire_page_size < 1:
             raise ValueError("attention_retire_page_size must be positive")
+        if stale_after_seconds is not None and stale_after_seconds <= 0:
+            raise ValueError("stale_after_seconds must be positive")
+        self._stale_after = (
+            timedelta(seconds=stale_after_seconds) if stale_after_seconds is not None else None
+        )
         self._attention_retire_page_size = attention_retire_page_size
         self._repository = repository
         self._rules = rule_repository
         self._deliveries = delivery_repository
+        self._images = image_repository
+        self._image_scheduler = image_scheduler
         self._broadcaster = broadcaster
         self._reply_ready_enabled = reply_ready_enabled
         self._reply_title_chars = reply_title_chars
@@ -538,6 +554,32 @@ class NotificationService(NotificationRecorder):
             raise RuntimeError(f"Deduplicated notification {candidate.id} is not readable")
         return existing, False
 
+    def burst_candidate(
+        self,
+        session: Session,
+        *,
+        dedupe_key: str,
+        draft: NotificationDraft,
+        metadata: dict,
+    ) -> NotificationCandidate:
+        """A ``system`` notice about ``session`` that another store commits (F1n).
+
+        The artifact hold inserts it in its own emission transaction, then hands the
+        committed row back to :meth:`broadcast_created`.
+        """
+        return self._candidate(
+            self._context(session),
+            dedupe_key=dedupe_key,
+            draft=draft,
+            source=NotificationSource.SYSTEM,
+            session_seq=None,
+            metadata=metadata,
+        )
+
+    async def broadcast_created(self, notification: Notification) -> None:
+        """Broadcast a notification committed outside :meth:`_record` (post-commit)."""
+        await self._broadcast(notification)
+
     def _context(self, session: Session) -> _SessionContext:
         coordination = session.coordination
         return _SessionContext(
@@ -547,7 +589,7 @@ class NotificationService(NotificationRecorder):
             tenant_id=session.tenant_id,
             project_id=str(coordination.project_id) if coordination else None,
             engine=self._engine_resolver(session) if self._engine_resolver else None,
-            model=session.model or None,
+            model=session.effective_model or None,
         )
 
     @staticmethod
@@ -577,16 +619,104 @@ class NotificationService(NotificationRecorder):
             engine=context.engine,
             model=context.model,
             correlation_id=draft.correlation_id,
-            metadata={**metadata, **context.anchor},
+            metadata={
+                **metadata,
+                **context.anchor,
+                **draft.question_metadata(),
+                **draft.resolution_metadata(),
+            },
+            image=draft.image,
+            speak=draft.speak,
         )
 
     async def _record(self, candidates: list[NotificationCandidate]) -> list[Notification]:
         if not candidates:
             return []
         created = await self._repository.project(candidates)
+        images_pending = False
         for notification in created:
+            if (
+                notification.image is not None
+                and notification.image.state is NotificationImageState.PENDING
+            ):
+                # Announced by the image worker once the image settles, so the live
+                # event carries the stored image (or its failure) like the feed does.
+                images_pending = True
+                continue
             await self._broadcast(notification)
+        if images_pending:
+            self._image_scheduler.wake()
+        for notification in created:
+            await self._apply_resolutions(notification)
         return created
+
+    async def _apply_resolutions(self, notification: Notification) -> None:
+        """Resolve what a new notification closes (LEX-1442).
+
+        * Its ``resolves`` refs: notification ids, or correlation ids standing for
+          every earlier notification of that incident (any kind).
+        * A milestone with a ``correlation_id`` closes that incident's earlier
+          problems: attention and error notifications and anything critical.
+
+        Only the same owner's notifications are touched. Every row resolved is sent
+        again on the live stream, so clients replace it in place.
+        """
+        refs = notification.metadata.get("resolves") or []
+        ids: list[UUID] = []
+        resolved: list[Notification] = []
+        now = datetime.now(UTC)
+        for ref in refs:
+            try:
+                ids.append(UUID(ref))
+            except ValueError:
+                resolved += await self._repository.resolve_correlated(
+                    notification.owner_id,
+                    ref,
+                    before_seq=notification.seq,
+                    problems_only=False,
+                    resolved_at=now,
+                    resolved_by=notification.id,
+                )
+        if ids:
+            resolved += await self._repository.resolve(
+                notification.owner_id,
+                [i for i in ids if i != notification.id],
+                resolved_at=now,
+                resolved_by=notification.id,
+                resolution=None,
+            )
+        if notification.kind is NotificationKind.MILESTONE and notification.correlation_id:
+            resolved += await self._repository.resolve_correlated(
+                notification.owner_id,
+                notification.correlation_id,
+                before_seq=notification.seq,
+                problems_only=True,
+                resolved_at=now,
+                resolved_by=notification.id,
+            )
+        for row in resolved:
+            await self._broadcast(row)
+
+    async def resolve(
+        self, principal: Principal, notification_id: UUID, *, resolution: str | None
+    ) -> Notification:
+        """An operator resolves one notification by hand (idempotent)."""
+        notification = await self._repository.get(notification_id)
+        scope = NotificationScope.for_principal(principal)
+        if notification is None or not scope.allows(notification.owner_id, notification.tenant_id):
+            raise NotificationNotFoundError(f"Notification not found: {notification_id}")
+        if notification.resolved:
+            return notification
+        changed = await self._repository.resolve(
+            notification.owner_id,
+            [notification_id],
+            resolved_at=datetime.now(UTC),
+            resolved_by=None,
+            resolution=resolution,
+        )
+        for row in changed:
+            await self._broadcast(row)
+        return changed[0] if changed else await self._repository.get(notification_id)
 
     @property
     def instance_fields(self) -> dict[str, str]:
@@ -598,13 +728,7 @@ class NotificationService(NotificationRecorder):
     async def _broadcast(self, notification: Notification) -> None:
         if self._broadcaster is None:
             return
-        await self._broadcaster.publish(
-            RealtimeEvent(
-                type=EventType.SESSION_NOTIFICATION,
-                data={**notification.wire(), **self._instance_fields},
-                timestamp=notification.created_at,
-            )
-        )
+        await self._broadcaster.publish(notification_event(notification, self._instance_fields))
 
     # -- Reading -----------------------------------------------------------
 
@@ -614,6 +738,7 @@ class NotificationService(NotificationRecorder):
         page = await self._repository.list_feed(
             scope, query, read_through_seq=watermark.read_through_seq
         )
+        page = replace(page, items=await self._mark_stale(page.items))
         head, unread = await self._repository.feed_counts(
             scope, read_through_seq=watermark.read_through_seq
         )
@@ -636,7 +761,31 @@ class NotificationService(NotificationRecorder):
         """
         watermark = await self._repository.get_watermark(principal.user_id)
         items = await self._repository.list_for_session(session_id, after=after, limit=limit)
-        return items, watermark.read_through_seq
+        return await self._mark_stale(items), watermark.read_through_seq
+
+    async def _mark_stale(self, items: list[Notification]) -> list[Notification]:
+        """Flag alarms whose session has moved on (LEX-1442 item 4); display only."""
+        if self._stale_after is None:
+            return items
+        cutoff = datetime.now(UTC) - self._stale_after
+        candidates = [
+            n
+            for n in items
+            if n.resolved_at is None
+            and n.session_id is not None
+            and n.created_at <= cutoff
+            and (
+                n.kind in (NotificationKind.ATTENTION, NotificationKind.ERROR)
+                or n.severity is NotificationSeverity.CRITICAL
+            )
+        ]
+        if not candidates:
+            return items
+        latest = await self._repository.latest_milestone_seqs(
+            sorted({n.session_id for n in candidates}, key=str)
+        )
+        stale = {n.id for n in candidates if latest.get(n.session_id, 0) > n.seq}
+        return [n.model_copy(update={"stale": True}) if n.id in stale else n for n in items]
 
     async def read_through_seq(self, principal: Principal) -> int:
         watermark = await self._repository.get_watermark(principal.user_id)
@@ -693,6 +842,22 @@ class NotificationService(NotificationRecorder):
             raise NotificationNotFoundError(f"Notification not found: {notification_id}")
         await self._repository.mark_read(principal.user_id, notification_id)
         return await self.get_read_state(principal)
+
+    async def image_content(
+        self,
+        principal: Principal,
+        notification_id: UUID,
+        variant: NotificationImageVariant,
+    ) -> NotificationImageContent:
+        """The stored image bytes, readable by exactly those who may read the item."""
+        notification = await self._repository.get(notification_id)
+        scope = NotificationScope.for_principal(principal)
+        if notification is None or not scope.allows(notification.owner_id, notification.tenant_id):
+            raise NotificationNotFoundError(f"Notification not found: {notification_id}")
+        content = await self._images.get_content(notification_id, variant)
+        if content is None:
+            raise NotificationNotFoundError(f"Notification {notification_id} has no stored image")
+        return content
 
     async def list_deliveries(
         self, principal: Principal, notification_id: UUID

@@ -15,6 +15,7 @@ from skuld.transports.session_env import (
 )
 
 BROKER_SECRETS = {
+    "FORGE_EXP_CAPTURE_SECRET": "test-only-capture-hmac",
     "SKULD__EXTERNAL_API_TOKEN": "svc-token",
     "VOLUNDR_EXTERNAL_API_TOKEN": "legacy-token",
     "SKULD__FORGE_MCP__TOKEN": "mcp-token",
@@ -28,22 +29,33 @@ ENGINE_AUTH = {
     "OPENAI_API_KEY": "sk-oai",
     "XAI_API_KEY": "xai",
     "GITHUB_TOKEN": "gh",
-    "CLAUDE_CODE_OAUTH_TOKEN": "oauth",
+}
+CLAUDE_AUTH = {
+    "CLAUDE_CODE_OAUTH_TOKEN": "test-only-oauth",
+    "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR": "123",
 }
 PLAIN = {"SKULD__SESSION__ID": "s-1", "PATH": "/usr/bin", "HOME": "/home/agent"}
 
 
 @pytest.fixture
 def broker_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key, value in {**BROKER_SECRETS, **ENGINE_AUTH, **PLAIN}.items():
+    for key, value in {**BROKER_SECRETS, **ENGINE_AUTH, **CLAUDE_AUTH, **PLAIN}.items():
         monkeypatch.setenv(key, value)
 
 
-def _assert_scrubbed(env: dict[str, str]) -> None:
+@pytest.fixture
+def non_claude_env(broker_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SKULD__CLAUDE_OAUTH_TOKEN_FILE", "/test-only/unread-oauth-token")
+
+
+def _assert_scrubbed(env: dict[str, str], *, claude: bool = False) -> None:
     leaked = sorted(set(BROKER_SECRETS) & set(env))
     assert not leaked, f"broker credentials leaked into the session env: {leaked}"
     assert env["SKULD__SESSION__ID"] == "s-1"
     assert env["PATH"] == "/usr/bin"
+    assert "SKULD__CLAUDE_OAUTH_TOKEN_FILE" not in env
+    if not claude:
+        assert not set(CLAUDE_AUTH) & set(env)
 
 
 class TestClassifier:
@@ -59,9 +71,18 @@ class TestClassifier:
         assert not is_broker_credential(name)
 
     def test_scrub_is_a_copy(self) -> None:
-        env = {"DATABASE__PASSWORD": "x", "PATH": "/bin"}
-        assert scrub_broker_credentials(env) == {"PATH": "/bin"}
-        assert env == {"DATABASE__PASSWORD": "x", "PATH": "/bin"}
+        env = {
+            "DATABASE__PASSWORD": "x",
+            "FORGE_EXP_CAPTURE_SECRET": "test-only-capture-hmac",
+            "OPENAI_API_KEY": "test-only-engine-auth",
+            "PATH": "/bin",
+        }
+        before = dict(env)
+        assert scrub_broker_credentials(env) == {
+            "OPENAI_API_KEY": "test-only-engine-auth",
+            "PATH": "/bin",
+        }
+        assert env == before
 
     def test_session_process_env_reads_the_live_environment(self, broker_env: None) -> None:
         env = session_process_env()
@@ -73,8 +94,9 @@ class TestClaudeEnv:
     def test_subscription_mode(self, broker_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SKULD__CLAUDE_AUTH", "subscription")
         env = claude_spawn_env()
-        _assert_scrubbed(env)
+        _assert_scrubbed(env, claude=True)
         assert "ANTHROPIC_API_KEY" not in env
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "test-only-oauth"
 
     def test_api_key_mode_keeps_engine_auth(
         self, broker_env: None, monkeypatch: pytest.MonkeyPatch
@@ -111,31 +133,31 @@ async def _spawn_env(module: str, start) -> dict[str, str]:
 
 
 class TestEngines:
-    def test_codex_app_server_env(self, broker_env: None, tmp_path) -> None:
+    def test_codex_app_server_env(self, non_claude_env: None, tmp_path) -> None:
         from skuld.transports.codex_ws import CodexWebSocketTransport
 
         transport = CodexWebSocketTransport(workspace_dir=str(tmp_path))
         _assert_scrubbed(transport._env)
         assert transport._env["OPENAI_API_KEY"] == "sk-oai"
 
-    def test_codex_exec_env(self, broker_env: None, tmp_path) -> None:
+    def test_codex_exec_env(self, non_claude_env: None, tmp_path) -> None:
         from skuld.transports.codex import CodexSubprocessTransport
 
         _assert_scrubbed(CodexSubprocessTransport(str(tmp_path))._env)
 
-    async def test_opencode_env(self, broker_env: None, tmp_path) -> None:
+    async def test_opencode_env(self, non_claude_env: None, tmp_path) -> None:
         from skuld.transports.opencode import OpenCodeHttpTransport
 
         transport = OpenCodeHttpTransport(workspace_dir=str(tmp_path))
         _assert_scrubbed(await _spawn_env("skuld.transports.opencode", transport.start))
 
-    async def test_grok_env(self, broker_env: None, tmp_path) -> None:
+    async def test_grok_env(self, non_claude_env: None, tmp_path) -> None:
         from skuld.transports.grok import GrokACPTransport
 
         transport = GrokACPTransport(workspace_dir=str(tmp_path), grok_bin="grok")
         _assert_scrubbed(await _spawn_env("skuld.transports.grok", transport.start))
 
-    async def test_dsh_env(self, broker_env: None, tmp_path) -> None:
+    async def test_dsh_env(self, non_claude_env: None, tmp_path) -> None:
         from skuld.transports.dsh import DshJsonRpcTransport
 
         transport = DshJsonRpcTransport(workspace_dir=str(tmp_path), dsh_api_key="deepseek")
@@ -147,13 +169,31 @@ class TestEngines:
         _assert_scrubbed(env)
         assert env["DEEPSEEK_API_KEY"] == "deepseek"
 
+    async def test_muse_env(self, non_claude_env: None, tmp_path) -> None:
+        from skuld.transports.muse import MuseMSPTransport
+
+        transport = MuseMSPTransport(workspace_dir=str(tmp_path))
+        with (
+            patch.object(transport, "_resolve_muse_bin", return_value="test-only-muse"),
+            patch.object(transport, "_credentials_present", return_value=True),
+        ):
+            env = await _spawn_env("skuld.transports.muse", transport._start_host)
+        _assert_scrubbed(env)
+
+    async def test_pi_env(self, non_claude_env: None, tmp_path) -> None:
+        from skuld.transports.pi import PiRpcTransport
+
+        transport = PiRpcTransport(workspace_dir=str(tmp_path))
+        _assert_scrubbed(await _spawn_env("skuld.transports.pi", transport.start))
+
     async def test_remote_control_env(self, broker_env: None, tmp_path) -> None:
         from skuld.transports.remote_control import RemoteControlTransport
 
         transport = RemoteControlTransport(workspace_dir=str(tmp_path))
         env = await _spawn_env("skuld.transports.remote_control", transport.start)
-        _assert_scrubbed(env)
+        _assert_scrubbed(env, claude=True)
         assert "ANTHROPIC_API_KEY" not in env
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "test-only-oauth"
 
 
 def test_every_engine_module_builds_env_through_the_scrubber() -> None:

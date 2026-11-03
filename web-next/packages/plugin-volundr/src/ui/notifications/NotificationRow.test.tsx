@@ -28,6 +28,7 @@ const base: SessionNotification = {
   engine: null,
   model: null,
   correlationId: null,
+  speak: null,
   createdAt: '2026-09-23T10:00:00Z',
   read: true,
 };
@@ -107,6 +108,22 @@ describe('NotificationRow', () => {
     expect(screen.getByText('Critical')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Read through here' }));
     expect(props.onMarkReadThrough).toHaveBeenCalledWith(expect.objectContaining({ id: 'n-9' }));
+  });
+
+  it('badges a notification that carries a speak intent', () => {
+    renderRow({
+      notification: { ...base, speak: { text: 'Postgres it is.', priority: 'next_window' } },
+    });
+    const badge = screen.getByTestId('notification-spoken');
+    expect(badge).toHaveTextContent('Spoken');
+    expect(within(badge).getByTitle('To be spoken at the next good moment: Postgres it is.')).toBe(
+      badge.firstElementChild,
+    );
+  });
+
+  it('shows no spoken badge without a speak intent', () => {
+    renderRow();
+    expect(screen.queryByTestId('notification-spoken')).toBeNull();
   });
 
   it('expands to show links safely, an empty body and every delivery outcome', async () => {
