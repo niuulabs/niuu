@@ -19,7 +19,7 @@ import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
 
-from niuu.domain.models import Principal, RegisteredInstance
+from niuu.domain.models import InstanceHealthStatus, Principal, RegisteredInstance
 from niuu.domain.observatory import (
     ObservatoryFragment,
     TopologyEdge,
@@ -69,8 +69,23 @@ class ObservatoryTopologyAggregationService:
         sources: list[TopologySourceHealth] = []
         warnings: list[TopologyWarning] = []
 
-        pulled = await self._pull(instances, headers=headers)
-        for instance, fragment, error in pulled:
+        # A source the health loop has already found unreachable is reported
+        # from that verdict instead of being dialled again: waiting out its
+        # timeout on every poll held the whole snapshot for that long, while
+        # saying nothing the health check had not already said. It is dialled
+        # again as soon as a health check reaches it.
+        dialled = [i for i in instances if i.health is not InstanceHealthStatus.UNREACHABLE]
+        pulled = {
+            instance.id: (fragment, error)
+            for instance, fragment, error in await self._pull(dialled, headers=headers)
+        }
+        for instance in instances:
+            if instance.id not in pulled:
+                self._report_failed(
+                    instance, self._describe_health_verdict(instance), sources, warnings
+                )
+                continue
+            fragment, error = pulled[instance.id]
             if error is not None or fragment is None:
                 # Several httpx transport errors stringify to "", which turned
                 # every unreachable source into "Observatory Ymir: " — a report
@@ -78,24 +93,7 @@ class ObservatoryTopologyAggregationService:
                 # class name is the minimum that distinguishes a DNS failure
                 # from a timeout from a refused connection.
                 message = self._describe(error) if error else "Observatory returned no fragment"
-                sources.append(
-                    TopologySourceHealth(
-                        source_id=instance.id,
-                        source_kind=instance.kind.value,
-                        source_name=instance.name,
-                        transport="pull",
-                        status="failed",
-                        cluster_id=_instance_cluster(instance),
-                        message=message,
-                    )
-                )
-                warnings.append(
-                    TopologyWarning(
-                        source_id=instance.id,
-                        code="source_unreachable",
-                        message=f"{instance.name}: {message}",
-                    )
-                )
+                self._report_failed(instance, message, sources, warnings)
                 continue
 
             fragments.append(fragment)
@@ -145,6 +143,38 @@ class ObservatoryTopologyAggregationService:
     @staticmethod
     def _describe(error: BaseException) -> str:
         return str(error) or type(error).__name__
+
+    @staticmethod
+    def _describe_health_verdict(instance: RegisteredInstance) -> str:
+        checked = f" at {_iso(instance.last_checked_at)}" if instance.last_checked_at else ""
+        reason = instance.last_error or "no reason recorded"
+        return f"not polled: the health check{checked} found it unreachable ({reason})"
+
+    @staticmethod
+    def _report_failed(
+        instance: RegisteredInstance,
+        message: str,
+        sources: list[TopologySourceHealth],
+        warnings: list[TopologyWarning],
+    ) -> None:
+        sources.append(
+            TopologySourceHealth(
+                source_id=instance.id,
+                source_kind=instance.kind.value,
+                source_name=instance.name,
+                transport="pull",
+                status="failed",
+                cluster_id=_instance_cluster(instance),
+                message=message,
+            )
+        )
+        warnings.append(
+            TopologyWarning(
+                source_id=instance.id,
+                code="source_unreachable",
+                message=f"{instance.name}: {message}",
+            )
+        )
 
     async def _pull(
         self,
