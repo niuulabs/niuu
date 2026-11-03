@@ -976,6 +976,7 @@ function buildSplitVolundrService(
     getFeatures: (instanceId) => forge.getFeatures(instanceId),
     getSessions: (options) => forge.getSessions(options),
     getSession: (id, options) => forge.getSession(id, options),
+    getSessionChanges: forge.getSessionChanges?.bind(forge),
     getActiveSessions: () => forge.getActiveSessions(),
     getStats: (options) => forge.getStats(options),
     getRepos: () => forge.getRepos(),
@@ -1047,12 +1048,28 @@ async function listAllVolundrSessions(volundr: IVolundrService): Promise<Session
 }
 
 const DEFAULT_SESSION_LIST_TIMEOUT_MS = 8_000;
+// Only gateway-derived fields (host name, a parent's Guild id) can drift between
+// full reads; every session write reaches the incremental read.
+const DEFAULT_SESSION_LIST_FULL_RESYNC_MS = 10 * 60_000;
 
 function buildVolundrSessionStore(
   volundr: IVolundrService,
   listRequestTimeoutMs: number,
+  fullResyncMs: number,
 ): ISessionStore {
+  const getSessionChanges = volundr.getSessionChanges?.bind(volundr);
   return {
+    sessionChanges: getSessionChanges && {
+      fullResyncMs,
+      async read(cursor, { instanceId, archivedOnly }, signal) {
+        const changes = await getSessionChanges(cursor, {
+          instanceId,
+          archived: archivedOnly,
+          signal,
+        });
+        return { ...changes, sessions: changes.sessions.map(toDomainSession) };
+      },
+    },
     async getSession(id: string, options) {
       const session = await volundr.getSession(id, options);
       if (session) return toDomainSession(session);
@@ -1504,6 +1521,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     ? buildVolundrSessionStore(
         volundr,
         config.services.forge?.sessionListTimeoutMs ?? DEFAULT_SESSION_LIST_TIMEOUT_MS,
+        config.services.forge?.sessionListFullResyncMs ?? DEFAULT_SESSION_LIST_FULL_RESYNC_MS,
       )
     : demoService(config, 'volundr.sessions', createMockSessionStore);
   const clusterAdapter = forgeBase

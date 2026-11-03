@@ -14,7 +14,9 @@ import {
 import type {
   IVolundrService,
   PermissionAutoApprovalDecision,
+  SessionChangesReadOptions,
   VolundrConversationHistory,
+  VolundrSessionChanges,
 } from '../ports/IVolundrService';
 import type { IFileSystemPort, FileTreeNode } from '../ports/IFileSystemPort';
 import type { ForgeEventStreamSource, ForgeStreamListener } from '../ports/IForgeEventStream';
@@ -1395,6 +1397,50 @@ export function buildVolundrHttpAdapter(
     return sessions;
   }
 
+  async function loadSessionChanges(
+    cursor: string,
+    { instanceId, archived, signal }: SessionChangesReadOptions,
+  ): Promise<VolundrSessionChanges> {
+    const query = new URLSearchParams({ changed_since: cursor, instance_id: instanceId });
+    if (archived) query.set('status', 'archived');
+    const endpoint = `/sessions?${query}`;
+    const body = await (signal
+      ? forgeClient.get<VolundrSessionChanges<SessionPayload> | SessionPayload[]>(endpoint, {
+          signal,
+        })
+      : forgeClient.get<VolundrSessionChanges<SessionPayload> | SessionPayload[]>(endpoint));
+    // A gateway from before changed_since answers with the whole inventory: a
+    // complete answer, and cursor "0" asks for everything again next time.
+    const payload = Array.isArray(body)
+      ? { cursor: '0', ids: body.map((session) => session.id), sessions: body }
+      : body;
+    if (
+      typeof payload?.cursor !== 'string' ||
+      !Array.isArray(payload.ids) ||
+      !Array.isArray(payload.sessions)
+    ) {
+      throw new Error(`Invalid session changes from ${instanceId}`);
+    }
+    const listed = new Set(payload.ids);
+    const sessions = payload.sessions.map(normalizeSession);
+    // Mirror loadSessions/listArchivedSessions: this host's cached membership is
+    // exactly what it lists now.
+    if (archived) {
+      for (const [id, owner] of archivedSessionOwners) {
+        if (owner === instanceId && !listed.has(id)) archivedSessionOwners.delete(id);
+      }
+      for (const session of sessions) archivedSessionOwners.set(session.id, instanceId);
+      return { cursor: payload.cursor, ids: payload.ids, sessions };
+    }
+    const live = sessions.map(keepNewerActivity);
+    for (const [id, session] of sessionCache) {
+      if (session.instanceId === instanceId && !listed.has(id)) sessionCache.delete(id);
+    }
+    for (const session of live) sessionCache.set(session.id, session);
+    publishSessions();
+    return { cursor: payload.cursor, ids: payload.ids, sessions: live };
+  }
+
   function sessionPath(sessionId: string, suffix = '', explicitInstanceId?: string): string {
     const instanceId =
       explicitInstanceId ??
@@ -1736,6 +1782,7 @@ export function buildVolundrHttpAdapter(
     },
     getSessions: (options) => loadSessions('/sessions', options),
     getSession: (id, options) => loadSession(id, options),
+    getSessionChanges: loadSessionChanges,
     getRuntimeVersion: (id, instanceId) => {
       const owner = instanceId ?? sessionCache.get(id)?.instanceId ?? archivedSessionOwners.get(id);
       const suffix = owner ? `?instance_id=${encodeURIComponent(owner)}` : '';

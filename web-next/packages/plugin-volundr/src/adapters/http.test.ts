@@ -112,6 +112,94 @@ it('assigns a project from a different host while keeping the session owner sele
   ).rejects.toThrow('Project host unavailable');
 });
 
+describe('getSessionChanges', () => {
+  const tagged = (id: string, instance = 'build') => ({
+    id,
+    name: id,
+    status: 'running',
+    instance_id: instance,
+  });
+
+  it('reads one host since a cursor and keeps its routing to exactly the listed sessions', async () => {
+    const client = makeClient();
+    const service = buildVolundrHttpAdapter(client);
+    client.get.mockResolvedValueOnce({
+      cursor: '10',
+      ids: ['kept', 'gone'],
+      sessions: [tagged('kept'), tagged('gone')],
+    });
+    await service.getSessionChanges!('0', { instanceId: 'build', archived: false });
+    client.get.mockResolvedValueOnce({ cursor: '12', ids: ['kept'], sessions: [] });
+
+    const changes = await service.getSessionChanges!('10', {
+      instanceId: 'build',
+      archived: false,
+    });
+
+    expect(client.get).toHaveBeenLastCalledWith('/sessions?changed_since=10&instance_id=build');
+    expect(changes).toEqual({ cursor: '12', ids: ['kept'], sessions: [] });
+    await service.stopSession('kept');
+    await service.stopSession('gone');
+    expect(client.post).toHaveBeenCalledWith('/sessions/kept/stop?instance_id=build');
+    expect(client.post).toHaveBeenCalledWith('/sessions/gone/stop');
+  });
+
+  it('reads the archive with its signal and routes a restore to the listing host', async () => {
+    const client = makeClient();
+    const service = buildVolundrHttpAdapter(client);
+    const signal = new AbortController().signal;
+    client.get.mockResolvedValueOnce({
+      cursor: '3',
+      ids: ['old'],
+      sessions: [{ ...tagged('old'), status: 'archived' }],
+    });
+
+    const changes = await service.getSessionChanges!('0', {
+      instanceId: 'build',
+      archived: true,
+      signal,
+    });
+
+    expect(client.get).toHaveBeenLastCalledWith(
+      '/sessions?changed_since=0&instance_id=build&status=archived',
+      { signal },
+    );
+    expect(changes.sessions.map((session) => session.id)).toEqual(['old']);
+    await service.restoreSession('old');
+    expect(client.patch).toHaveBeenCalledWith('/sessions/old/restore?instance_id=build', undefined);
+    client.get.mockResolvedValueOnce({ cursor: '4', ids: [], sessions: [] });
+    await service.getSessionChanges!('3', { instanceId: 'build', archived: true });
+    await service.restoreSession('old');
+    expect(client.patch).toHaveBeenLastCalledWith('/sessions/old/restore', undefined);
+  });
+
+  it('takes a whole inventory from an older gateway as a full answer', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce([tagged('a'), tagged('b')]);
+    const changes = await buildVolundrHttpAdapter(client).getSessionChanges!('9', {
+      instanceId: 'build',
+      archived: false,
+    });
+    expect(changes.cursor).toBe('0');
+    expect(changes.ids).toEqual(['a', 'b']);
+    expect(changes.sessions.map((session) => session.id)).toEqual(['a', 'b']);
+  });
+
+  it.each([{}, { cursor: 1, ids: [], sessions: [] }, { cursor: '1', ids: [] }, null])(
+    'refuses a malformed answer %j',
+    async (payload) => {
+      const client = makeClient();
+      client.get.mockResolvedValueOnce(payload);
+      await expect(
+        buildVolundrHttpAdapter(client).getSessionChanges!('0', {
+          instanceId: 'build',
+          archived: false,
+        }),
+      ).rejects.toThrow('Invalid session changes from build');
+    },
+  );
+});
+
 function makeClientWithBase(basePath: string) {
   return {
     ...makeClient(),

@@ -1353,6 +1353,58 @@ describe('buildServices', () => {
     });
     await sessionStore.deleteSession('sess-live');
     expect(liveVolundr.deleteSession).toHaveBeenCalledWith('sess-live', undefined);
+    expect(sessionStore.sessionChanges).toBeUndefined();
+  });
+
+  it('reads one host incrementally when the Forge adapter can, on the configured bound', async () => {
+    const liveVolundr = {
+      kind: 'volundr',
+      getTargets: vi.fn().mockResolvedValue([]),
+      getSessionChanges: vi.fn().mockResolvedValue({
+        cursor: '12',
+        ids: ['sess-live'],
+        sessions: [
+          {
+            id: 'sess-live',
+            name: 'live',
+            source: { type: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
+            status: 'running',
+            model: 'claude-sonnet',
+            lastActive: Date.parse('2026-04-23T12:00:00Z'),
+            messageCount: 1,
+            tokensUsed: 10,
+          },
+        ],
+      }),
+      subscribe: vi.fn(() => () => {}),
+    };
+    volundrMocks.buildVolundrHttpAdapter.mockReturnValue(liveVolundr as any);
+    const services = buildServices({
+      demoMode: true,
+      theme: 'ice',
+      plugins: {},
+      services: {
+        forge: {
+          mode: 'http',
+          baseUrl: 'http://localhost:8080/api/v1/forge',
+          sessionListFullResyncMs: 120_000,
+        },
+      },
+    } as any);
+    const reader = (services.sessionStore as any).sessionChanges;
+    expect(reader.fullResyncMs).toBe(120_000);
+    const signal = new AbortController().signal;
+
+    const changes = await reader.read('10', { instanceId: 'thor', archivedOnly: true }, signal);
+
+    expect(liveVolundr.getSessionChanges).toHaveBeenLastCalledWith('10', {
+      instanceId: 'thor',
+      archived: true,
+      signal,
+    });
+    expect(changes.cursor).toBe('12');
+    expect(changes.ids).toEqual(['sess-live']);
+    expect(changes.sessions).toEqual([expect.objectContaining({ id: 'sess-live' })]);
   });
 
   it('maps an awaiting_input running session to the awaiting_input state', async () => {

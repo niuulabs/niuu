@@ -1,8 +1,8 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { beforeEach, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
-import type { ISessionStore } from '../../ports/ISessionStore';
+import type { ISessionStore, SessionInventoryChanges } from '../../ports/ISessionStore';
 import type { Session } from '../../domain/session';
 import { useSessionDetail, useSessionList } from './useSessionStore';
 
@@ -17,10 +17,10 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
-function mount() {
+function mount(filters?: Parameters<typeof useSessionList>[0]) {
   const cache = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   return {
-    ...renderHook(() => useSessionList(), {
+    ...renderHook(() => useSessionList(filters), {
       wrapper: ({ children }: { children: ReactNode }) => (
         <QueryClientProvider client={cache}>{children}</QueryClientProvider>
       ),
@@ -307,3 +307,75 @@ it.each([
     expect(refetchInterval(query)).toBe(interval);
   },
 );
+
+describe('incremental inventory reads', () => {
+  const changes = (cursor: string, ids: string[], sessions: Session[]) =>
+    ({ cursor, ids, sessions }) satisfies SessionInventoryChanges;
+  let live: SessionInventoryChanges[];
+  let read: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    store.listSources = async () => [{ id: 'thor', name: 'Thor' }];
+    live = [];
+    read = vi.fn(async (cursor: string, source: { archivedOnly: boolean }) =>
+      source.archivedOnly ? changes('1', [], []) : live.shift()!,
+    );
+    store.sessionChanges = { fullResyncMs: 60_000, read };
+  });
+  const liveReads = () =>
+    read.mock.calls.filter(([, source]) => !source.archivedOnly).map(([cursor]) => cursor);
+  const refresh = (cache: QueryClient) =>
+    act(async () => {
+      await cache.invalidateQueries({ queryKey: ['volundr', 'domain-sessions'] });
+    });
+
+  it('reads in full once, then only changes, with membership from the host ids', async () => {
+    live.push(changes('10', ['a', 'b'], [row('a'), row('b')]));
+    live.push(changes('12', ['b', 'c'], [{ ...row('b'), name: 'renamed' }, row('c')]));
+    const { result, cache } = mount();
+    await waitFor(() => expect(result.current.data).toEqual([row('a'), row('b')]));
+
+    await refresh(cache);
+
+    await waitFor(() =>
+      expect(result.current.data).toEqual([{ ...row('b'), name: 'renamed' }, row('c')]),
+    );
+    expect(liveReads()).toEqual(['0', '10']);
+    expect(store.listSessions).not.toHaveBeenCalled();
+  });
+
+  it('reads in full when the host lists a session it did not send', async () => {
+    live.push(changes('10', ['a'], [row('a')]));
+    live.push(changes('11', ['a', 'shared'], []));
+    live.push(changes('11', ['a', 'shared'], [row('a'), row('shared')]));
+    const { result, cache } = mount();
+    await waitFor(() => expect(result.current.data).toEqual([row('a')]));
+
+    await refresh(cache);
+
+    await waitFor(() => expect(result.current.data).toEqual([row('a'), row('shared')]));
+    expect(liveReads()).toEqual(['0', '10', '0']);
+  });
+
+  it('reads in full again once the resync bound has passed', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    live.push(changes('10', ['a'], [row('a')]));
+    live.push(changes('20', ['a'], [{ ...row('a'), name: 'fresh' }]));
+    const { result, cache } = mount();
+    await waitFor(() => expect(result.current.data).toEqual([row('a')]));
+
+    now.mockReturnValue(1_000 + 60_000);
+    await refresh(cache);
+
+    await waitFor(() => expect(result.current.data).toEqual([{ ...row('a'), name: 'fresh' }]));
+    expect(liveReads()).toEqual(['0', '0']);
+    now.mockRestore();
+  });
+
+  it('reads filtered inventories in full, since a filter hides rows the host lists', async () => {
+    store.listSessions = vi.fn(async (filters) => (filters?.archivedOnly ? [] : [row('only')]));
+    const { result } = mount({ state: 'running' });
+    await waitFor(() => expect(result.current.data).toEqual([row('only')]));
+    expect(read).not.toHaveBeenCalled();
+  });
+});

@@ -42,6 +42,12 @@ export const serviceConfigSchema = z
     mode: z.enum(['http', 'mock', 'ws']).default('http'),
     /** Deadline for one Forge's session inventory; other hosts continue independently. */
     sessionListTimeoutMs: z.number().int().positive().optional(),
+    /**
+     * Longest one Forge's session inventory goes on incremental reads before a full
+     * read. Bounds how long fields the gateway derives, not the session row (the
+     * host's name, a parent session's Guild id), can lag a registry change.
+     */
+    sessionListFullResyncMs: z.number().int().positive().optional(),
   })
   .catchall(z.unknown());
 

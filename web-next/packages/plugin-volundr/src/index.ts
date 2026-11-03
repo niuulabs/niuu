@@ -138,9 +138,20 @@ export {
 export type { VolundrHttpAdapter } from './adapters/http';
 
 // Port types
-export type { IVolundrService, SessionReadOptions } from './ports/IVolundrService';
+export type {
+  IVolundrService,
+  SessionChangesReadOptions,
+  SessionReadOptions,
+  VolundrSessionChanges,
+} from './ports/IVolundrService';
 export type { IClusterAdapter } from './ports/IClusterAdapter';
-export type { ISessionStore, SessionFilters, SessionLookupOptions } from './ports/ISessionStore';
+export type {
+  ISessionStore,
+  SessionChangeReader,
+  SessionFilters,
+  SessionInventoryChanges,
+  SessionLookupOptions,
+} from './ports/ISessionStore';
 export type { IPtyStream } from './ports/IPtyStream';
 export type { IMetricsStream, MetricPoint } from './ports/IMetricsStream';
 export type { IFileSystemPort, FileTreeNode } from './ports/IFileSystemPort';

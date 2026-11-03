@@ -121,6 +121,20 @@ export interface SessionReadOptions {
   signal?: AbortSignal;
 }
 
+export interface SessionChangesReadOptions {
+  instanceId: string;
+  archived: boolean;
+  signal?: AbortSignal;
+}
+
+/** One host's sessions written since a cursor, and every id that host lists now. */
+export interface VolundrSessionChanges<T = VolundrSession> {
+  /** Opaque; send it back as the next read's cursor ("0" reads everything). */
+  cursor: string;
+  ids: string[];
+  sessions: T[];
+}
+
 export interface RuntimeVersion {
   state: 'current' | 'different' | 'unknown' | 'unavailable' | 'not_running';
   current: { revision?: string; build?: string; source_sha256?: string; dirty?: boolean } | null;
@@ -137,6 +151,11 @@ export interface IVolundrService {
   // Sessions
   getSessions(options?: SessionReadOptions): Promise<VolundrSession[]>;
   getSession(id: string, options?: SessionReadOptions): Promise<VolundrSession | null>;
+  /** Only adapters that can read one host incrementally implement this. */
+  getSessionChanges?(
+    cursor: string,
+    options: SessionChangesReadOptions,
+  ): Promise<VolundrSessionChanges>;
   getActiveSessions(): Promise<VolundrSession[]>;
   getStats(options?: SessionReadOptions): Promise<VolundrStats>;
   getRepos(): Promise<VolundrRepo[]>;

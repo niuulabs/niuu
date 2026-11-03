@@ -1,13 +1,80 @@
 import { useCallback, useEffect } from 'react';
 import { readForgeSource } from './readForgeSource';
-import { useQueries, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
+import {
+  useQueries,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+  type QueryKey,
+  type UseQueryResult,
+} from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
-import type { ISessionStore, SessionFilters } from '../../ports/ISessionStore';
+import type {
+  ISessionStore,
+  SessionChangeReader,
+  SessionFilters,
+  SessionInventoryChanges,
+} from '../../ports/ISessionStore';
 import type { Session } from '../../domain/session';
 
 const LIVE_REFETCH_MS = 5_000;
 const SOURCE_REFETCH_MS = 30_000;
 const ARCHIVE_REFETCH_MS = 60_000;
+const FULL_READ_CURSOR = '0';
+
+interface InventoryCursor {
+  cursor: string;
+  fullReadAt: number;
+}
+
+/** Per cache, the cursor each source inventory last read up to. */
+const inventoryCursors = new WeakMap<QueryClient, Map<string, InventoryCursor>>();
+
+/** Cached rows, replaced by changed ones, in the host's order; null if an id is unknown. */
+function mergeChanges(rows: Session[], changes: SessionInventoryChanges): Session[] | null {
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  for (const session of changes.sessions) byId.set(session.id, session);
+  const merged: Session[] = [];
+  for (const id of changes.ids) {
+    const row = byId.get(id);
+    // Listed but neither cached nor sent: it became visible without a write.
+    if (!row) return null;
+    merged.push(row);
+  }
+  return merged;
+}
+
+/**
+ * Reads one host's inventory incrementally: after a full read, only sessions written
+ * since the last cursor, merged onto the cached rows. The host's ids decide
+ * membership, so deleted, archived and restored sessions leave or join exactly.
+ */
+async function readInventoryChanges(
+  cache: QueryClient,
+  queryKey: QueryKey,
+  reader: SessionChangeReader,
+  source: { instanceId: string; archivedOnly: boolean },
+  signal: AbortSignal,
+): Promise<Session[]> {
+  let cursors = inventoryCursors.get(cache);
+  if (!cursors) inventoryCursors.set(cache, (cursors = new Map()));
+  const key = JSON.stringify(queryKey);
+  const rows = cache.getQueryData<Session[]>(queryKey);
+  const last = cursors.get(key);
+  const now = Date.now();
+  if (rows && last && now - last.fullReadAt < reader.fullResyncMs) {
+    const changes = await reader.read(last.cursor, source, signal);
+    const merged = mergeChanges(rows, changes);
+    if (merged) {
+      cursors.set(key, { cursor: changes.cursor, fullReadAt: last.fullReadAt });
+      return merged;
+    }
+  }
+  const full = await reader.read(FULL_READ_CURSOR, source, signal);
+  cursors.set(key, { cursor: full.cursor, fullReadAt: now });
+  return full.sessions;
+}
+
 export interface SessionSourceState {
   id: string;
   name: string;
@@ -25,8 +92,9 @@ export function useSessionList(filters?: SessionFilters) {
   useEffect(
     () =>
       store.subscribe((sessions) => {
-        // Patch existing inventories immediately. Discovery/polling still owns membership,
-        // archives and errors, so one host's event cannot clear another host's rows.
+        // Patch existing inventories immediately. Polling (incremental where the store
+        // can) still owns membership, archives and errors, so one host's event cannot
+        // clear another host's rows.
         const updates = new Map(sessions.map((session) => [session.id, session]));
         const changed = (row: Session, update: Session | undefined): update is Session =>
           Boolean(
@@ -102,17 +170,27 @@ export function useSessionList(filters?: SessionFilters) {
     },
     [sources],
   );
+  // Client-side filters would hide rows the host still lists, so they read in full.
+  const changeReader = filters ? undefined : store.sessionChanges;
   const combined = useQueries({
     queries: (sources ?? []).flatMap((source) =>
       [false, true].map((archived) => ({
         queryKey: ['volundr', 'domain-sessions', 'source', source.id, archived, filters ?? null],
-        queryFn: ({ signal }: { signal: AbortSignal }) =>
+        queryFn: ({ signal, queryKey }: { signal: AbortSignal; queryKey: QueryKey }) =>
           readForgeSource(
             (sourceSignal) =>
-              store.listSessions(
-                { ...filters, instanceId: source.id, archivedOnly: archived },
-                sourceSignal,
-              ),
+              changeReader
+                ? readInventoryChanges(
+                    cache,
+                    queryKey,
+                    changeReader,
+                    { instanceId: source.id, archivedOnly: archived },
+                    sourceSignal,
+                  )
+                : store.listSessions(
+                    { ...filters, instanceId: source.id, archivedOnly: archived },
+                    sourceSignal,
+                  ),
             signal,
             store.listRequestTimeoutMs,
           ),
