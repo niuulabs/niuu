@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends patch \
 # Compose's published v5.5.1 binary embeds vulnerable containerd v2.3.4 and
 # golang.org/x/net v0.58.0 (GO-2026-6603/6611/6612); v5.6.0 still pins that x/net.
 # Build the release with the patched modules and Go 1.27.3 until upstream ships them.
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS compose-build
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:8a5046497cda39860b832ffdbe8dd66018a0f05bb01352f533a36e7e2ced66a0 AS compose-build
 ARG TARGETARCH
 WORKDIR /src
 RUN wget -q https://github.com/docker/compose/archive/refs/tags/v5.5.1.tar.gz -O /tmp/compose.tar.gz \
@@ -21,7 +21,7 @@ RUN wget -q https://github.com/docker/compose/archive/refs/tags/v5.5.1.tar.gz -O
 # gh v2.102.0 (the latest release) is built with Go 1.27.1 and golang.org/x/net
 # v0.58.0 (GO-2026-6603/6604/6611/6612). Build the same release with Go 1.27.3 and
 # the patched module; return to GitHub's apt package once a release ships them.
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS gh-build
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:8a5046497cda39860b832ffdbe8dd66018a0f05bb01352f533a36e7e2ced66a0 AS gh-build
 ARG TARGETARCH
 WORKDIR /src
 RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.102.0.tar.gz -O /tmp/gh.tar.gz \
@@ -73,7 +73,7 @@ RUN python build_switchyard.py
 
 # Web UI assets are baked into the platform image so one container serves the
 # API and the SPA on a single port (spark mode). Same build as containers/niuu-web.
-FROM node:24-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS web-build
+FROM node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85 AS web-build
 WORKDIR /app
 RUN corepack enable
 ENV NODE_OPTIONS="--max-old-space-size=4096"
