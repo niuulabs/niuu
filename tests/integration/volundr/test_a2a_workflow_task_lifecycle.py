@@ -410,6 +410,11 @@ plan: Persist the approved plan.
                 f"planning/{completed_task}/approved-plan.md"
             )
             assert "Revision: plan-7" in task["artifacts"][0]["parts"][0]["text"]
+            repeated = await client.post(
+                _A2A_PATH, headers=_headers(), json=_request("GetTask", {"id": completed_task})
+            )
+            assert repeated.status_code == 200, repeated.text
+            assert repeated.json()["result"]["artifacts"] == task["artifacts"]
             denied = await client.post(
                 _A2A_PATH,
                 headers=_headers(user_id="unauthorized-user"),
