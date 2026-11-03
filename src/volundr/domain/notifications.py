@@ -268,11 +268,20 @@ class NotificationCandidate(BaseModel):
 
 @dataclass(frozen=True)
 class NotificationScope:
-    """Which notifications a reader may see: their own, or (admins) their tenant's."""
+    """Which notifications a reader may see: their own, or (admins) their tenant's.
+
+    ``everyone`` is the push gateway's delivery view (a ``forge:notifications:deliver``
+    credential): every owner's notifications in every org, never a person's view.
+    """
 
     user_id: str
     tenant_id: str
     is_admin: bool
+    everyone: bool = False
+
+    @classmethod
+    def for_delivery(cls) -> NotificationScope:
+        return cls(user_id="", tenant_id="", is_admin=False, everyone=True)
 
     @classmethod
     def for_principal(cls, principal: Principal) -> NotificationScope:
@@ -283,6 +292,8 @@ class NotificationScope:
         )
 
     def allows(self, owner_id: str | None, tenant_id: str | None) -> bool:
+        if self.everyone:
+            return True
         roles = [NOTIFICATION_ADMIN_ROLE] if self.is_admin else []
         return notification_visible_to(
             user_id=self.user_id,
@@ -311,6 +322,8 @@ class NotificationQuery:
     project_id: str | None = None
     unread: bool | None = None
     unresolved: bool | None = None
+    #: One owner's notifications only (the push gateway's delivery view).
+    owner_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.limit < 1:
@@ -349,6 +362,22 @@ class NotificationFeed:
     unread_count: int
     revision: int = 0
     read_ids: set[UUID] = field(default_factory=set)
+
+
+@dataclass(frozen=True)
+class NotificationDeliveryFeed:
+    """The push gateway's page: every owner's notifications, each read as its owner sees it.
+
+    ``read_ids`` are the items their own owner has read (watermark or one by one);
+    ``owner_unread_counts`` is each listed owner's unread count of their own
+    notifications on this node.
+    """
+
+    items: list[Notification]
+    next_before: int | None
+    head_seq: int
+    read_ids: set[UUID]
+    owner_unread_counts: dict[str, int]
 
 
 @dataclass(frozen=True)

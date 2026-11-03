@@ -673,8 +673,11 @@ push:
   adapter: volundr.adapters.outbound.push_channels.LoggingNotificationChannel
   # -- Channel constructor kwargs (e.g. bundle_id)
   kwargs: {}
-  # -- Where registered devices live: auto (postgres in mini mode, else integrations),
-  # integrations (messaging connections, tokens in the credential store) or postgres
+  # -- Kept for values that set it; there is one registry. Each app install is the
+  # owner's push-device integration (they see and switch it off there), every token
+  # of it (alert, Live Activity, push-to-start, widget) in the credential store, and
+  # device_tokens keeps only the gateway's state (no token). `postgres` is refused:
+  # Forge moves the tokens device_tokens still holds into the credential store at start.
   deviceRegistry: auto
   # -- Secret kwargs from K8s Secrets, each { kwarg, secretName, secretKey }
   secretKwargs: []
@@ -690,12 +693,25 @@ push:
   #       private_key_path: /etc/volundr/apns/AuthKey_KEY1234567.p8}
   apns: {}
   # -- The Guild push gateway, rendered verbatim as `push.gateway` (snake_case keys; see
-  # PushGatewayConfig). One node of a Guild runs it: it holds the APNs key and the
-  # registered devices and pushes for every node (alerts, Live Activity, widgets,
-  # background). It replaces the per-node adapter and the needs-input rule, and needs
-  # deviceRegistry: postgres. See docs/operator/forge-notifications.md ("Apple push").
-  # e.g. {enabled: true, guild_url: "http://niuu-guild:8080",
-  #       public_api_url: "https://forge.example.com", origin_label: Forge}
+  # PushGatewayConfig). One node of a Guild runs it: it holds the APNs key and pushes
+  # for every node's notifications, every owner and every org (alerts, Live Activity,
+  # widgets, background). It replaces the per-node adapter and the needs-input rule on
+  # every node of the Guild: a node that still pushes its own alerts is reported and
+  # its alerts are left to it. It also needs:
+  #   - the Guild registry entry of this node with `config.push_gateway: true` (and no
+  #     other node's), so the Guild sends Live Activity and widget tokens here;
+  #   - `guild.instanceId` (this node's registry id);
+  #   - on an authenticated Guild, `reader_auth`: a workload credential with the
+  #     forge:notifications:deliver scope, which this node's workload-identity mapping
+  #     must list in `privileged_scopes`. Leave `stream_enabled` off with it: the scope
+  #     admits the feed and the registry only.
+  # See docs/operator/forge-notifications.md ("Apple push"). e.g.
+  #   {enabled: true, guild_url: "https://guild.example.com",
+  #    public_api_url: "https://forge.example.com", origin_label: Forge,
+  #    reader_auth: {adapter: niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter,
+  #                  kwargs: {exchange_url: "https://guild.example.com/api/v1/tokens/workload/exchange",
+  #                           token_file: /var/run/secrets/niuu-workload/token,
+  #                           audiences: [volundr-api], scopes: [forge:notifications:deliver]}}}
   gateway: {}
 
 # Forge MCP session credentials and the Forge-hosted MCP endpoint. Rendered verbatim

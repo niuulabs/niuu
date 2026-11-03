@@ -20,7 +20,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from niuu.domain.notifications import (
@@ -37,6 +37,8 @@ from niuu.domain.services.token_scope import (
     FORGE_NOTIFY_SCOPE,
     FORGE_SESSION_READ_SCOPE,
     FORGE_SESSION_TOKEN_USE,
+    NOTIFICATION_DELIVERY_SCOPE,
+    is_notification_delivery_token,
     require_scope,
 )
 from volundr.adapters.inbound.auth import extract_principal
@@ -248,6 +250,18 @@ class NotificationResponse(BaseModel):
         )
 
 
+class NotificationDeliveryInfo(BaseModel):
+    owner_unread_counts: dict[str, int] = Field(
+        description="Each listed owner's unread count of their own notifications on this node"
+    )
+    node_pushes_alerts: bool = Field(
+        description=(
+            "This node pushes alerts itself (push.enabled without the gateway): a Guild push "
+            "gateway must not alert its notifications too"
+        )
+    )
+
+
 class NotificationFeedResponse(BaseModel):
     revision: int = 0
     items: list[NotificationResponse]
@@ -257,6 +271,35 @@ class NotificationFeedResponse(BaseModel):
     head_seq: int = Field(description="Newest seq in the reader's scope (0 when empty)")
     read_through_seq: int
     unread_count: int
+    delivery: NotificationDeliveryInfo | None = Field(
+        default=None,
+        description=(
+            "Only in the push gateway's delivery view (view=delivery): each item's read "
+            "flag is then its owner's, and this carries what a single reader cannot."
+        ),
+    )
+
+
+class FeedView(StrEnum):
+    READER = "reader"
+    DELIVERY = "delivery"
+
+
+def _identity_allows_all(request: Request) -> bool:
+    """An AllowAll host, where every caller is everyone: the delivery view needs no
+    credential there (the push gateway of a single-person Guild)."""
+    from identity.adapters.identity import (
+        AllowAllHeaderAuthenticationAdapter,
+        AllowAllIdentityAdapter,
+    )
+
+    identity = getattr(request.app.state, "identity", None)
+    return isinstance(identity, AllowAllIdentityAdapter | AllowAllHeaderAuthenticationAdapter)
+
+
+def _bearer(request: Request) -> str:
+    value = request.headers.get("authorization", "")
+    return value[7:] if value.startswith("Bearer ") else ""
 
 
 class NotificationReadStateResponse(BaseModel):
@@ -359,8 +402,13 @@ def create_notifications_router(
     default_page_size: int,
     max_page_size: int,
     image_cache_max_age_seconds: int,
+    node_pushes_alerts: bool = False,
 ) -> APIRouter:
-    """Create the notification feed, read-state, rules, submit and image routes."""
+    """Create the notification feed, read-state, rules, submit and image routes.
+
+    ``node_pushes_alerts``: this node pushes alerts itself (the per-node push channel),
+    reported in the delivery view so a Guild push gateway does not alert them too.
+    """
     image_cache_control = f"private, max-age={image_cache_max_age_seconds}, immutable"
     router = APIRouter(prefix=prefix, tags=["Notifications"])
     # Every served item names this node's Guild instance, like the Guild feed's.
@@ -382,9 +430,12 @@ def create_notifications_router(
     @router.get(
         "/notifications",
         response_model=NotificationFeedResponse,
-        dependencies=[Depends(require_scope(FORGE_SESSION_READ_SCOPE))],
+        dependencies=[
+            Depends(require_scope(FORGE_SESSION_READ_SCOPE, NOTIFICATION_DELIVERY_SCOPE))
+        ],
     )
     async def list_notifications(
+        request: Request,
         limit: int = Query(default=default_page_size, ge=1, le=max_page_size),
         before: int | None = Query(default=None, ge=1, description="Older than this seq"),
         after: int | None = Query(default=None, ge=0, description="Newer than this seq"),
@@ -398,12 +449,35 @@ def create_notifications_router(
             default=None,
             description="true: only notifications not resolved yet; false: only resolved.",
         ),
+        owner_id: str | None = Query(
+            default=None,
+            min_length=1,
+            description="One owner's notifications (delivery view only)",
+        ),
+        view: FeedView = Query(
+            default=FeedView.READER,
+            description=(
+                "delivery: every owner's notifications, each read as its owner reads it "
+                "(the push gateway; needs a forge:notifications:deliver credential)"
+            ),
+        ),
         principal: Principal = Depends(extract_principal),
     ) -> NotificationFeedResponse:
         """The caller's notification feed with its read watermark and unread count."""
         if before is not None and after is not None:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_CONTENT, "Use either before or after, not both"
+            )
+        delivery_reader = is_notification_delivery_token(_bearer(request))
+        if view is FeedView.DELIVERY and not (delivery_reader or _identity_allows_all(request)):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "The delivery view needs a forge:notifications:deliver workload credential",
+            )
+        delivery_view = delivery_reader or view is FeedView.DELIVERY
+        if owner_id is not None and not delivery_view:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "owner_id filters the delivery view only"
             )
         query = NotificationQuery(
             limit=limit,
@@ -416,7 +490,29 @@ def create_notifications_router(
             project_id=project_id,
             unread=unread,
             unresolved=unresolved,
+            owner_id=owner_id,
         )
+        if delivery_view:
+            # The delivery credential reads only this view: it is no person's feed.
+            try:
+                delivery = await notification_service.list_delivery_feed(query)
+            except NotificationValidationError as exc:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc))
+            return NotificationFeedResponse(
+                items=[
+                    NotificationResponse.build(n, 0, delivery.read_ids, instance_fields)
+                    for n in delivery.items
+                ],
+                next_before=delivery.next_before,
+                head_seq=delivery.head_seq,
+                # No single reader: the counts are per owner, under ``delivery``.
+                read_through_seq=0,
+                unread_count=0,
+                delivery=NotificationDeliveryInfo(
+                    owner_unread_counts=delivery.owner_unread_counts,
+                    node_pushes_alerts=node_pushes_alerts,
+                ),
+            )
         feed = await notification_service.list_feed(principal, query)
         return NotificationFeedResponse(
             items=[

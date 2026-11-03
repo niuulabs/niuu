@@ -12,9 +12,13 @@ The gateway reads the facade over HTTP like any client:
   not respond. A node that hangs therefore costs one request's timeout, on its own
   read, and never delays the others.
 
-The gateway reads as one identity (the *reader*): the requests carry
-``reader_token`` as a bearer token when one is configured, and nothing otherwise
-(a Guild with the AllowAll identity). Read state is the reader's.
+The gateway reads the Guild's **delivery view** (``view=delivery``): every owner's
+and every org's notifications, each item read as its own owner reads it, with each
+owner's unread count. On an authenticated Guild only a
+``forge:notifications:deliver`` workload credential may read it; ``auth`` supplies
+it (and an AllowAll Guild needs none). A node that answers without the view's
+``delivery`` block (an older Forge) fails its read: its pushes would otherwise carry
+someone else's read state.
 """
 
 from __future__ import annotations
@@ -33,11 +37,13 @@ from niuu.adapters.inbound.forge_notification_feed import (
 )
 from niuu.adapters.inbound.forge_session_stream import remote_events
 from niuu.adapters.inbound.remote_urls import build_remote_url
+from niuu.ports.http_auth import HttpAuthPort
 from volundr.domain.push import GuildNotification
 from volundr.domain.push_ports import (
     GuildFeed,
     GuildFeedError,
     GuildFeedPage,
+    GuildNode,
     GuildNodeHasNoFeedError,
 )
 
@@ -52,6 +58,9 @@ NOTIFICATION_EVENT = "session_notification"
 #: The registry's kind for a Forge node.
 FORGE_INSTANCE_KIND = "volundr"
 _ALL_INSTANCES = ("all_instances", "true")
+_DELIVERY_VIEW = ("view", "delivery")
+#: The registry ``config`` key that marks the Guild's push gateway node.
+PUSH_GATEWAY_CONFIG_KEY = "push_gateway"
 
 
 class HttpGuildFeed(GuildFeed):
@@ -62,7 +71,7 @@ class HttpGuildFeed(GuildFeed):
         *,
         guild_url: str,
         timeout_seconds: float,
-        reader_token: str = "",
+        auth: HttpAuthPort,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not guild_url:
@@ -72,7 +81,7 @@ class HttpGuildFeed(GuildFeed):
         self._stream_url = (
             build_remote_url(guild_url, FORGE_API_PREFIX, STREAM_PATH) + "?all_instances=true"
         )
-        self._headers = {"authorization": f"Bearer {reader_token}"} if reader_token else {}
+        self._auth = auth
         self._timeout_seconds = timeout_seconds
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
@@ -81,9 +90,16 @@ class HttpGuildFeed(GuildFeed):
         self, url: str, params: list[tuple[str, str]], what: str, *, node_feed: bool = False
     ) -> Any:
         try:
-            response = await self._client.get(url, params=params, headers=self._headers)
+            response = await self._client.get(url, params=params, headers=self._headers())
         except httpx.HTTPError as exc:
             raise GuildFeedError(f"{what} is unreachable: {type(exc).__name__}") from None
+        if response.status_code in (httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN):
+            # A stale exchanged token is refetched on the next read.
+            self._auth.invalidate()
+            raise GuildFeedError(
+                f"{what} refused the gateway's credential (HTTP {response.status_code}): it "
+                "needs a forge:notifications:deliver workload credential (push.gateway.reader_auth)"
+            )
         if node_feed and response.headers.get(FEEDLESS_INSTANCES_HEADER):
             # The Guild says so explicitly; any other 404 is an error like the rest.
             raise GuildNodeHasNoFeedError(
@@ -96,7 +112,13 @@ class HttpGuildFeed(GuildFeed):
         except ValueError:
             raise GuildFeedError(f"{what} answered with invalid JSON") from None
 
-    async def nodes(self) -> list[str]:
+    def _headers(self) -> dict[str, str]:
+        try:
+            return self._auth.headers()
+        except (RuntimeError, httpx.HTTPError) as exc:
+            raise GuildFeedError(f"The gateway's Guild credential is unavailable: {exc}") from None
+
+    async def nodes(self) -> list[GuildNode]:
         payload = await self._get(
             self._instances_url,
             [("kind", FORGE_INSTANCE_KIND), ("enabledOnly", "true")],
@@ -108,18 +130,46 @@ class HttpGuildFeed(GuildFeed):
                 "push.gateway.guild_url must be a Guild API origin"
             )
         return [
-            item["id"]
+            GuildNode(
+                id=item["id"],
+                push_gateway=isinstance(item.get("config"), Mapping)
+                and item["config"].get(PUSH_GATEWAY_CONFIG_KEY) is True,
+            )
             for item in payload
             if isinstance(item, Mapping) and isinstance(item.get("id"), str) and item["id"]
         ]
 
     async def _page(self, node: str, params: list[tuple[str, str]]) -> dict[str, Any]:
         payload = await self._get(
-            self._feed_url, [_ALL_INSTANCES, *params], f"Guild node {node}'s feed", node_feed=True
+            self._feed_url,
+            [_ALL_INSTANCES, _DELIVERY_VIEW, *params],
+            f"Guild node {node}'s feed",
+            node_feed=True,
         )
         if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
             raise GuildFeedError(f"Guild node {node}'s feed answered with an unexpected shape")
         return payload
+
+    @staticmethod
+    def _delivery(node: str, payload: Mapping[str, Any]) -> tuple[dict[str, int], bool]:
+        """The node's per-owner unread counts and whether it pushes alerts itself."""
+        summaries = payload.get("instances")
+        summary = summaries.get(node) if isinstance(summaries, Mapping) else None
+        delivery = summary.get("delivery") if isinstance(summary, Mapping) else None
+        if not isinstance(delivery, Mapping):
+            raise GuildFeedError(
+                f"Guild node {node} answered without the delivery view: it runs a Forge "
+                "older than the push gateway's delivery view, so its notifications are not "
+                "pushed until it is upgraded"
+            )
+        counts = delivery.get("owner_unread_counts")
+        pushes = delivery.get("node_pushes_alerts")
+        if not isinstance(counts, Mapping) or type(pushes) is not bool:
+            raise GuildFeedError(f"Guild node {node}'s delivery view has an unexpected shape")
+        return (
+            {str(owner): n for owner, n in counts.items() if type(n) is int},
+            pushes,
+        )
 
     @staticmethod
     def _items(node: str, payload: Mapping[str, Any]) -> list[GuildNotification]:
@@ -137,20 +187,22 @@ class HttpGuildFeed(GuildFeed):
                 items.append(item)
         return items
 
-    async def newest(self, node: str, *, limit: int) -> GuildFeedPage:
+    async def newest(self, node: str, *, limit: int, owner_id: str | None = None) -> GuildFeedPage:
         # A ``before`` cursor naming only this node, at no position: its newest page.
-        payload = await self._page(
-            node, [("before", encode_cursor({node: None})), ("limit", str(limit))]
-        )
+        params = [("before", encode_cursor({node: None})), ("limit", str(limit))]
+        if owner_id is not None:
+            params.append(("owner_id", owner_id))
+        payload = await self._page(node, params)
         summaries = payload.get("instances")
         summary = summaries.get(node) if isinstance(summaries, Mapping) else None
         if not isinstance(summary, Mapping) or type(summary.get("head_seq")) is not int:
             raise GuildFeedError(f"Guild node {node}'s feed returned no head position")
-        unread = summary.get("unread_count")
+        counts, pushes = self._delivery(node, payload)
         return GuildFeedPage(
             items=self._items(node, payload),
             position=summary["head_seq"],
-            unread_count=unread if type(unread) is int else 0,
+            owner_unread_counts=counts,
+            node_pushes_alerts=pushes,
         )
 
     async def after(self, node: str, position: int, *, limit: int) -> GuildFeedPage:
@@ -166,9 +218,12 @@ class HttpGuildFeed(GuildFeed):
             raise GuildFeedError(
                 f"Guild node {node}'s feed returned an unreadable cursor: {exc}"
             ) from None
+        counts, pushes = self._delivery(node, payload)
         return GuildFeedPage(
             items=self._items(node, payload),
             position=advanced if advanced is not None else position,
+            owner_unread_counts=counts,
+            node_pushes_alerts=pushes,
         )
 
     async def notification_events(self) -> AsyncIterator[str]:
@@ -176,7 +231,7 @@ class HttpGuildFeed(GuildFeed):
             # remote_events closes the client it reads from, so each stream gets its own.
             stream_client = httpx.AsyncClient(timeout=self._timeout_seconds)
             async for name, payload in remote_events(
-                stream_client, self._stream_url, self._headers
+                stream_client, self._stream_url, self._headers()
             ):
                 if name != NOTIFICATION_EVENT:
                     continue

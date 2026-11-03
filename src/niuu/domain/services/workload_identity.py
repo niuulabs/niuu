@@ -22,6 +22,8 @@ from cryptography.hazmat.primitives.serialization import (
 
 from niuu.domain.models import Principal, WorkloadDelegation
 from niuu.domain.services.token_scope import (
+    NOTIFICATION_DELIVERY_SCOPES,
+    NOTIFICATION_DELIVERY_TOKEN_USE,
     VALKYRIE_BUILD_SCOPES,
     VALKYRIE_BUILD_TOKEN_USE,
     bound_workload_scopes,
@@ -196,7 +198,16 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         if not token.strip():
             raise WorkloadIdentityError("Missing workload token")
 
-        build_scopes = bound_workload_scopes(scopes, allowed=VALKYRIE_BUILD_SCOPES)
+        privileged = sorted({s for s in scopes or [] if s in NOTIFICATION_DELIVERY_SCOPES})
+        build_scopes = bound_workload_scopes(
+            [s for s in scopes or [] if s not in NOTIFICATION_DELIVERY_SCOPES],
+            allowed=VALKYRIE_BUILD_SCOPES,
+        )
+        if privileged and build_scopes:
+            raise WorkloadIdentityError(
+                f"Scopes {privileged} cannot share a token with {sorted(build_scopes)}: "
+                "request them in separate exchanges"
+            )
         last_error: Exception | None = None
         # Each verifier checks the proof once; several mappings usually share one.
         verified: dict[str, dict[str, Any] | Exception] = {}
@@ -245,11 +256,19 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
                     "Workload proof matches several equally specific identity mappings: "
                     + ", ".join(tied)
                 )
+            granted = set(getattr(mapping, "privileged_scopes", []) or [])
+            refused = [scope for scope in privileged if scope not in granted]
+            if refused:
+                raise WorkloadIdentityError(
+                    f"Workload identity mapping {getattr(mapping, 'name', '') or '?'!r} does "
+                    f"not grant {refused}: list them in its privileged_scopes"
+                )
             return await self._issue(
                 mapping,
                 claims,
                 audiences=self._resolve_audiences(audiences),
                 build_scopes=build_scopes,
+                privileged_scopes=privileged,
                 delegation=delegation,
             )
 
@@ -411,6 +430,7 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         *,
         audiences: list[str],
         build_scopes: list[str] | None = None,
+        privileged_scopes: list[str] | None = None,
         delegation: WorkloadDelegation | None = None,
     ) -> WorkloadExchangeResult:
         if delegation is not None:
@@ -456,10 +476,17 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
             workload_subject=workload_subject,
             workload_name=workload_name,
             audiences=audiences,
-            token_use=VALKYRIE_BUILD_TOKEN_USE if build_scopes else "",
+            token_use=(
+                NOTIFICATION_DELIVERY_TOKEN_USE
+                if privileged_scopes
+                else VALKYRIE_BUILD_TOKEN_USE
+                if build_scopes
+                else ""
+            ),
             claims={
                 **dict(getattr(mapping, "metadata", {}) or {}),
                 **({"scopes": list(build_scopes)} if build_scopes else {}),
+                **({"scopes": list(privileged_scopes)} if privileged_scopes else {}),
                 "issuer": str(claims.get("iss") or ""),
                 "owner_scoped": owner_scoped,
                 **(

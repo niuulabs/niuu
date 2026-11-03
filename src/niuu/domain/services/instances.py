@@ -144,6 +144,20 @@ class InstanceService:
             ),
         )
 
+    async def list_for_delivery(
+        self, *, kind: InstanceKind | None = None
+    ) -> list[RegisteredInstance]:
+        """Every enabled instance, whoever registered it and whatever its visibility.
+
+        Only for the push gateway's ``forge:notifications:deliver`` credential, which
+        pushes every owner's and every org's notifications; the caller checks it.
+        """
+        instances = await self._repository.list_instances(kind)
+        return sorted(
+            [instance for instance in instances if instance.enabled],
+            key=lambda instance: (instance.name.lower(), instance.created_at),
+        )
+
     async def get_visible(
         self,
         principal: Principal,

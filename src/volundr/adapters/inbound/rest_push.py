@@ -68,9 +68,14 @@ def create_push_router(gateway: PushGateway, *, prefix: str = "/api/v1/forge") -
     router = APIRouter(prefix=prefix, tags=["Push"])
 
     @router.get("/push/status")
-    async def push_status(_principal: Principal = Depends(extract_principal)) -> dict[str, Any]:
-        """Counters since start, the nodes being read and the last error."""
-        return {**gateway.status(), "tokens_by_environment": await gateway.tokens_by_environment()}
+    async def push_status(principal: Principal = Depends(extract_principal)) -> dict[str, Any]:
+        """Counters since start, the nodes being read and the last error, and the
+        caller's own org's alerts per status (never another org's)."""
+        return {
+            **gateway.status(),
+            "tokens_by_environment": await gateway.tokens_by_environment(),
+            "tenant_alerts": await gateway.alerts_for_tenant(principal.tenant_id or None),
+        }
 
     @router.post("/push/test", response_model=PushTestResponse)
     async def send_test_push(

@@ -97,6 +97,15 @@ class NotificationRepository(ABC):
         """Return individual acknowledgements among this bounded page of IDs."""
 
     @abstractmethod
+    async def read_by_owners(self, notifications: list[Notification]) -> set[UUID]:
+        """The notifications of this bounded page their own owner has read (by
+        watermark or one by one): the delivery view's read flags."""
+
+    @abstractmethod
+    async def owner_unread_counts(self, owner_ids: list[str]) -> dict[str, int]:
+        """Each owner's unread count of their own notifications (the delivery view)."""
+
+    @abstractmethod
     async def mark_read(self, user_id: str, notification_id: UUID) -> None:
         """Idempotently acknowledge only this item; increment the reader revision atomically."""
 

@@ -113,7 +113,6 @@ from volundr.adapters.outbound.postgres_communication_routes import (
 from volundr.adapters.outbound.postgres_credential_enrollments import (
     PostgresCredentialEnrollmentRepository,
 )
-from volundr.adapters.outbound.postgres_device_tokens import PostgresDeviceTokenRepository
 from volundr.adapters.outbound.postgres_integrations import PostgresIntegrationRepository
 from volundr.adapters.outbound.postgres_launch_specs import PostgresLaunchSpecRepository
 from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
@@ -853,7 +852,6 @@ def create_app(
             # Create adapters
             repository = PostgresSessionRepository(pool)
             resident_runtime_repository = PostgresResidentRuntimeRepository(pool)
-            device_repository = PostgresDeviceTokenRepository(pool)
             communication_route_repository = PostgresCommunicationRouteRepository(pool)
             communication_cursor_repository = PostgresCommunicationCursorRepository(pool)
             stats_repository = PostgresStatsRepository(pool)
@@ -1188,17 +1186,24 @@ def create_app(
                         integrations=integration_repo,
                         credential_store=credential_store,
                     )
-            # Outside mini mode a push device is an integration: a messaging connection
-            # whose token lives in the credential store with every other integration secret.
-            if settings.push.uses_integration_devices(mini_mode=settings.local_mounts.mini_mode):
-                from volundr.adapters.outbound.integration_device_tokens import (
-                    IntegrationDeviceTokenRepository,
-                )
+            # A push device is the owner's integration connection, every token of it in
+            # the credential store with every other integration secret; device_tokens
+            # keeps only the push gateway's state. Only the gateway node takes the
+            # token kinds the gateway alone uses.
+            from volundr.adapters.outbound.integration_device_tokens import (
+                IntegrationDeviceRegistry,
+            )
+            from volundr.adapters.outbound.push_device_state import PostgresDeviceStateStore
 
-                device_repository = IntegrationDeviceTokenRepository(
-                    integration_repo, credential_store
-                )
-                logger.info("Push devices: integration connections (credential store)")
+            device_repository = IntegrationDeviceRegistry(
+                integration_repo,
+                credential_store,
+                PostgresDeviceStateStore(pool),
+                token_kinds=settings.push.accepted_token_kinds(),
+            )
+            moved = await device_repository.move_stored_tokens()
+            if moved:
+                logger.info("Push devices: moved %d stored tokens into the credential store", moved)
             mapping_repository = PostgresMappingRepository(pool)
             # A node whose instance is not recorded yet keeps running: only
             # GET /guild reports it (503), and its items carry null instance fields.
@@ -1236,7 +1241,13 @@ def create_app(
             # unreadable APNs key, no HTTP/2, a registry without token kinds) raises
             # here and stops the start.
             push_gateway = create_push_gateway(
-                settings.push, pool, device_repository, local_events=broadcaster
+                settings.push,
+                pool,
+                device_repository,
+                instance_id=guild_membership.instance.id
+                if guild_membership is not None and guild_membership.instance is not None
+                else "",
+                local_events=broadcaster,
             )
             app.state.push_gateway = push_gateway
             # push.enabled without the gateway: an owner registering a device gets the
@@ -2024,6 +2035,7 @@ def create_app(
                         image_cache_max_age_seconds=(
                             settings.notifications.images.cache_max_age_seconds
                         ),
+                        node_pushes_alerts=settings.push.pushes_alerts_itself(),
                     )
                 )
             app.include_router(

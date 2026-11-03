@@ -13,6 +13,7 @@ from pathlib import Path
 import asyncpg
 import pytest
 
+from niuu.adapters.memory_credential_store import MemoryCredentialStore
 from tests.integration.pool_wrapper import TransactionalPool
 from tests.support.push_fakes import (
     MINI,
@@ -23,8 +24,13 @@ from tests.support.push_fakes import (
     gateway_settings,
     guild_notification,
 )
-from volundr.adapters.outbound.postgres_device_tokens import PostgresDeviceTokenRepository
+from volundr.adapters.outbound.integration_device_tokens import (
+    IntegrationDeviceRegistry,
+    token_sha256,
+)
+from volundr.adapters.outbound.memory_integrations import InMemoryIntegrationRepository
 from volundr.adapters.outbound.postgres_push_gateway import PostgresPushDeliveryRepository
+from volundr.adapters.outbound.push_device_state import PostgresDeviceStateStore
 from volundr.domain.push import ApnsResult, PushEnvironment, PushTokenKind
 from volundr.domain.push_ports import PushDeliveryStatus
 from volundr.domain.services.push_gateway import BackgroundSettings, PushGateway
@@ -32,13 +38,19 @@ from volundr.domain.services.push_gateway import BackgroundSettings, PushGateway
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 MIGRATIONS = Path(__file__).resolve().parents[3] / "migrations"
-UP = (MIGRATIONS / "000099_push_gateway.up.sql").read_text()
-DOWN = (MIGRATIONS / "000099_push_gateway.down.sql").read_text()
+REGISTRY_UP = (MIGRATIONS / "000101_push_device_registry.up.sql").read_text()
+REGISTRY_DOWN = (MIGRATIONS / "000101_push_device_registry.down.sql").read_text()
 
 
 @pytest.fixture
-def devices(txn_pool: TransactionalPool) -> PostgresDeviceTokenRepository:
-    return PostgresDeviceTokenRepository(txn_pool)  # type: ignore[arg-type]
+def devices(txn_pool: TransactionalPool) -> IntegrationDeviceRegistry:
+    """The registry over in-memory devices and secrets and the real ``device_tokens``."""
+    return IntegrationDeviceRegistry(
+        InMemoryIntegrationRepository(),
+        MemoryCredentialStore(),
+        PostgresDeviceStateStore(txn_pool),  # type: ignore[arg-type]
+        token_kinds=PushTokenKind,
+    )
 
 
 @pytest.fixture
@@ -64,6 +76,11 @@ class TestMigration:
         assert columns["activity_id"][:2] == ("text", "YES")
         assert columns["last_push_at"][:2] == ("timestamp with time zone", "YES")
         assert columns["push_due"] == ("boolean", "NO", "false")
+        # 000101: the row names its credential and device; the token is not kept.
+        assert columns["token"][:2] == ("text", "YES")
+        assert columns["token_sha256"][:2] == ("text", "NO")
+        assert columns["credential_name"][:2] == ("text", "YES")
+        assert columns["connection_id"][:2] == ("text", "YES")
         constraints = await txn_pool.fetch(
             "SELECT conname FROM pg_constraint WHERE conrelid = 'device_tokens'::regclass"
         )
@@ -72,48 +89,57 @@ class TestMigration:
             assert await txn_pool.fetchval("SELECT to_regclass($1)", table) is not None
 
     async def test_up_is_idempotent(self, txn_pool):
-        await txn_pool.execute(UP)
-        await txn_pool.execute(UP)
+        await txn_pool.execute(REGISTRY_UP)
+        await txn_pool.execute(REGISTRY_UP)
 
-    async def test_down_then_up_keeps_alert_tokens_and_merges_a_shared_token(
+    async def test_rows_moved_out_hold_no_token_and_old_ones_are_moved_at_start(
         self, txn_pool, devices
     ):
         await devices.upsert(device("alert-a", owner_id="owner-a"))
-        await devices.upsert(device("widget-a", PushTokenKind.WIDGET, owner_id="owner-a"))
+        assert await txn_pool.fetchval("SELECT token FROM device_tokens") is None
 
-        await txn_pool.execute(DOWN)
+        # Back to tokens in the table: the moved row cannot come back, and an old-style
+        # row (as written before 000101) is stored again.
+        await txn_pool.execute(REGISTRY_DOWN)
+        assert await txn_pool.fetchval("SELECT count(*) FROM device_tokens") == 0
+        await txn_pool.execute(
+            """INSERT INTO device_tokens (id, owner_id, platform, token, kind, environment)
+               VALUES (gen_random_uuid(), 'owner-b', 'ios', 'old-alert', 'alert', 'sandbox')"""
+        )
+        await txn_pool.execute(REGISTRY_UP)
 
-        assert await txn_pool.fetchval("SELECT to_regclass('forge_push_deliveries')") is None
-        assert [
-            row["token"] for row in await txn_pool.fetch("SELECT token FROM device_tokens")
-        ] == ["alert-a"]
-        # The old shape again: one row per (owner, token), so two owners can hold a token.
-        for owner, age in (("owner-a", 2), ("owner-b", 1)):
-            await txn_pool.execute(
-                """INSERT INTO device_tokens (id, owner_id, platform, token, updated_at)
-                   VALUES (gen_random_uuid(), $1, 'ios', 'shared',
-                           now() - make_interval(hours => $2))""",
-                owner,
-                age,
-            )
-        with pytest.raises(asyncpg.UniqueViolationError):
+        row = await txn_pool.fetchrow("SELECT token, token_sha256 FROM device_tokens")
+        assert tuple(row) == ("old-alert", token_sha256("old-alert"))
+        assert await devices.move_stored_tokens() == 1
+        assert (
+            await txn_pool.fetchval("SELECT count(*) FROM device_tokens WHERE token IS NOT NULL")
+            == 0
+        )
+        [alert] = await devices.list_for_owner("owner-b")
+        assert (alert.token, alert.environment) == ("old-alert", PushEnvironment.SANDBOX)
+
+    async def test_up_refuses_while_a_token_of_another_kind_is_stored(self, txn_pool):
+        await txn_pool.execute(REGISTRY_DOWN)
+        await txn_pool.execute(
+            """INSERT INTO device_tokens (id, owner_id, platform, token, kind)
+               VALUES (gen_random_uuid(), 'owner-a', 'ios', 'old-widget', 'widget')"""
+        )
+
+        with pytest.raises(asyncpg.RaiseError, match="name no app install"):
+            async with txn_pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(REGISTRY_UP)
+
+    async def test_a_row_is_either_moved_or_still_holding_its_token(self, txn_pool):
+        with pytest.raises(asyncpg.CheckViolationError):
             async with txn_pool.acquire() as conn:
                 async with conn.transaction():
                     await conn.execute(
-                        """INSERT INTO device_tokens (id, owner_id, platform, token)
-                           VALUES (gen_random_uuid(), 'owner-a', 'ios', 'shared')"""
+                        """INSERT INTO device_tokens
+                               (id, owner_id, platform, token, token_sha256, credential_name,
+                                connection_id)
+                           VALUES (gen_random_uuid(), 'o', 'ios', 'tok', 'sha', 'cred', 'conn')"""
                     )
-
-        await txn_pool.execute(UP)
-
-        rows = await txn_pool.fetch(
-            "SELECT owner_id, token, kind, environment FROM device_tokens ORDER BY token"
-        )
-        assert [tuple(row) for row in rows] == [
-            ("owner-a", "alert-a", "alert", "production"),
-            # The newest registration of the shared token wins.
-            ("owner-b", "shared", "alert", "production"),
-        ]
 
 
 class TestDeviceTokens:
@@ -191,7 +217,8 @@ class TestDeviceTokens:
 
     async def test_push_interval_claim_owed_and_release(self, devices, txn_pool):
         widget = await devices.upsert(device("widget-1", PushTokenKind.WIDGET))
-        other = await devices.upsert(device("widget-2", PushTokenKind.WIDGET))
+        # Another install's widget: an install has one widget token.
+        other = await devices.upsert(device("widget-2", PushTokenKind.WIDGET, install_id="ipad"))
         start = await devices.upsert(device("start-1", PushTokenKind.LIVE_ACTIVITY_START))
 
         # Never pushed: the claim succeeds and records the time.
@@ -436,8 +463,8 @@ class TestGatewayEndToEnd:
 
         await gateway.run_once()
 
-        left = await txn_pool.fetch("SELECT token FROM device_tokens ORDER BY token")
-        assert [row["token"] for row in left] == ["alert-ok"]
+        assert [d.token for d in await devices.list_for_owner("dev-user")] == ["alert-ok"]
+        assert await txn_pool.fetchval("SELECT count(*) FROM device_tokens") == 1
         assert gateway.stats.tokens_pruned == 3
         assert await txn_pool.fetchval("SELECT status FROM forge_push_deliveries") == "sent"
 
@@ -475,5 +502,5 @@ class TestGatewayEndToEnd:
         # Three notifications, one widget reload: the other two are held back and owed.
         assert len(apns.of_type("widgets")) == 1
         assert await txn_pool.fetchval(
-            "SELECT push_due FROM device_tokens WHERE token = 'widget-1'"
+            "SELECT push_due FROM device_tokens WHERE token_sha256 = $1", token_sha256("widget-1")
         )

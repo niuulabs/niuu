@@ -18,6 +18,7 @@ import pytest
 import pytest_asyncio
 
 from cli.resources import ordered_migration_files
+from niuu.adapters.memory_credential_store import MemoryCredentialStore
 from tests.support.push_fakes import (
     MINI,
     THOR,
@@ -27,8 +28,10 @@ from tests.support.push_fakes import (
     gateway_settings,
     guild_notification,
 )
-from volundr.adapters.outbound.postgres_device_tokens import PostgresDeviceTokenRepository
+from volundr.adapters.outbound.integration_device_tokens import IntegrationDeviceRegistry
+from volundr.adapters.outbound.memory_integrations import InMemoryIntegrationRepository
 from volundr.adapters.outbound.postgres_push_gateway import PostgresPushDeliveryRepository
+from volundr.adapters.outbound.push_device_state import PostgresDeviceStateStore
 from volundr.adapters.outbound.startup_schema import apply_startup_migrations
 from volundr.domain.push import ApnsResult, PushTokenKind
 from volundr.domain.push_ports import PushDeliveryStatus
@@ -38,6 +41,17 @@ pytestmark = pytest.mark.integration
 
 MIGRATIONS = Path(__file__).resolve().parents[2] / "migrations"
 MIGRATION = "000099_push_gateway.up.sql"
+REGISTRY_MIGRATION = "000101_push_device_registry.up.sql"
+
+
+def _registry(pool) -> IntegrationDeviceRegistry:
+    """The registry over in-memory devices and secrets and the real ``device_tokens``."""
+    return IntegrationDeviceRegistry(
+        InMemoryIntegrationRepository(),
+        MemoryCredentialStore(),
+        PostgresDeviceStateStore(pool),
+        token_kinds=PushTokenKind,
+    )
 
 
 @pytest_asyncio.fixture
@@ -65,7 +79,7 @@ async def pool():
 
 async def test_the_startup_runner_applies_the_migration_once(pool):
     files = ordered_migration_files(MIGRATIONS)
-    assert MIGRATION in [path.name for path in files]
+    assert {MIGRATION, REGISTRY_MIGRATION} <= {path.name for path in files}
     async with pool.acquire() as conn:
         # A second start verifies the ledger and changes nothing.
         await apply_startup_migrations(conn, files)
@@ -76,7 +90,9 @@ async def test_the_startup_runner_applies_the_migration_once(pool):
             )
         }
     assert {
-        "idx_device_tokens_token_kind",
+        "idx_device_tokens_sha_kind",
+        "idx_device_tokens_credential",
+        "idx_device_tokens_connection",
         "idx_device_tokens_owner_kind",
         "idx_device_tokens_push_due",
         "idx_forge_push_deliveries_due",
@@ -113,7 +129,7 @@ async def test_concurrent_ingest_of_one_page_records_each_notification_once(pool
 
 
 async def test_only_one_of_many_concurrent_claims_wins_a_throttled_push(pool):
-    devices = PostgresDeviceTokenRepository(pool)
+    devices = _registry(pool)
     widget = await devices.upsert(device("widget-1", PushTokenKind.WIDGET))
 
     results = await asyncio.gather(
@@ -129,19 +145,35 @@ async def test_only_one_of_many_concurrent_claims_wins_a_throttled_push(pool):
 
 
 async def test_concurrent_registrations_of_one_token_leave_one_row(pool):
-    devices = PostgresDeviceTokenRepository(pool)
+    devices = _registry(pool)
 
-    stored = await asyncio.gather(
-        *(devices.upsert(device("alert-1", owner_id=f"owner-{index % 2}")) for index in range(8))
-    )
+    stored = await asyncio.gather(*(devices.upsert(device("alert-1")) for _ in range(8)))
 
     assert len({item.id for item in stored}) == 1
     assert await pool.fetchval("SELECT COUNT(*) FROM device_tokens") == 1
 
 
+async def test_two_accounts_racing_for_one_token_leave_one_row_and_fail_loudly(pool):
+    devices = _registry(pool)
+
+    results = await asyncio.gather(
+        *(devices.upsert(device("alert-1", owner_id=f"owner-{index % 2}")) for index in range(8)),
+        return_exceptions=True,
+    )
+
+    # A registration that lost the race raises (the app registers again); none is lost
+    # silently, and the token is held by one row.
+    assert all(
+        not isinstance(result, BaseException) or isinstance(result, asyncpg.UniqueViolationError)
+        for result in results
+    )
+    assert any(not isinstance(result, BaseException) for result in results)
+    assert await pool.fetchval("SELECT COUNT(*) FROM device_tokens") == 1
+
+
 async def test_two_gateways_on_one_database_alert_once(pool):
     """Two processes (or two hosts) sharing the store: every notification alerts once."""
-    devices = PostgresDeviceTokenRepository(pool)
+    devices = _registry(pool)
     deliveries = PostgresPushDeliveryRepository(pool, max_detail_chars=200)
     await devices.upsert(device("alert-1"))
     await devices.upsert(device("widget-1", PushTokenKind.WIDGET))
@@ -168,7 +200,7 @@ async def test_two_gateways_on_one_database_alert_once(pool):
 
 
 async def test_a_dead_token_is_deleted_and_a_retry_is_claimed_when_due(pool):
-    devices = PostgresDeviceTokenRepository(pool)
+    devices = _registry(pool)
     deliveries = PostgresPushDeliveryRepository(pool, max_detail_chars=200)
     await devices.upsert(device("alert-gone"))
     await devices.upsert(device("alert-flaky", owner_id="other"))
@@ -186,9 +218,8 @@ async def test_a_dead_token_is_deleted_and_a_retry_is_claimed_when_due(pool):
 
     await gateway.run_once()
 
-    assert [row["token"] for row in await pool.fetch("SELECT token FROM device_tokens")] == [
-        "alert-flaky"
-    ]
+    assert [d.token for d in await devices.list_for_owner("other")] == ["alert-flaky"]
+    assert await devices.list_for_owner("dev-user") == []
     rows = {
         row["notification_id"]: row
         for row in await pool.fetch("SELECT * FROM forge_push_deliveries")

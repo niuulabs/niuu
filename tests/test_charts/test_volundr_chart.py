@@ -888,6 +888,7 @@ class TestConfigMapTemplate:
     def test_push_gateway_renders_without_the_needs_input_sink(self, tmp_path):
         from tests.helpers.apns_keys import write_p8
         from volundr.config import Settings
+        from volundr.domain.push import PushTokenKind
 
         key = write_p8(tmp_path)
         result = subprocess.run(
@@ -899,8 +900,6 @@ class TestConfigMapTemplate:
                 *BIFROST_URL,
                 "--set",
                 "push.enabled=true",
-                "--set",
-                "push.deviceRegistry=postgres",
                 "--set-json",
                 'push.apns={"team_id":"ABCDE12345","key_id":"KEY1234567",'
                 f'"bundle_id":"com.example.app","private_key_path":"{key}"}}',
@@ -925,7 +924,12 @@ class TestConfigMapTemplate:
         assert "notifications" not in config
         push = Settings(push=config["push"]).push
         assert push.enabled and push.gateway.enabled
-        assert push.device_registry == "postgres"
+        # One registry: every token kind on this (the gateway's) node, tokens in the
+        # credential store.
+        assert push.device_registry == "auto"
+        assert push.accepted_token_kinds() == set(PushTokenKind)
+        # No node pushes the alerts itself, so the gateway alerts for every node.
+        assert not push.pushes_alerts_itself()
         assert push.apns.key_id == "KEY1234567"
         assert push.apns.private_key_path == str(key)
         assert push.gateway.guild_url == "http://niuu-guild:8080"

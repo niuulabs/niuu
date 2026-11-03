@@ -250,6 +250,8 @@ def _candidate_args(candidate: NotificationCandidate) -> tuple:
 
 def scope_clause(scope: NotificationScope, params: list[Any]) -> str:
     """SQL predicate for a reader's scope, mirroring ``notification_visible_to``."""
+    if scope.everyone:
+        return "TRUE"
     params.append(scope.user_id)
     user = f"${len(params)}"
     if not scope.is_admin:
@@ -270,6 +272,8 @@ def feed_sql(
         params.append(value)
         return f"${len(params)}"
 
+    if query.owner_id is not None:
+        conditions.append(f"owner_id = {bind(query.owner_id)}")
     if query.kinds:
         conditions.append(f"kind = ANY({bind([k.value for k in query.kinds])}::text[])")
     if query.severities():
@@ -489,6 +493,38 @@ class PostgresNotificationRepository(NotificationRepository):
             notification_ids,
         )
         return {row["notification_id"] for row in rows}
+
+    async def read_by_owners(self, notifications: list[Notification]) -> set[UUID]:
+        if not notifications:
+            return set()
+        rows = await self._pool.fetch(
+            """SELECT p.id FROM unnest($1::uuid[], $2::text[], $3::bigint[]) AS p(id, owner, seq)
+               LEFT JOIN forge_notification_read_states s ON s.user_id = p.owner
+               WHERE p.seq <= COALESCE(s.read_through_seq, 0)
+                  OR EXISTS (SELECT 1 FROM forge_notification_reads r
+                             WHERE r.notification_id = p.id AND r.user_id = p.owner)""",
+            [n.id for n in notifications],
+            [n.owner_id for n in notifications],
+            [n.seq for n in notifications],
+        )
+        return {row["id"] for row in rows}
+
+    async def owner_unread_counts(self, owner_ids: list[str]) -> dict[str, int]:
+        if not owner_ids:
+            return {}
+        rows = await self._pool.fetch(
+            """SELECT n.owner_id, COUNT(*) AS unread FROM forge_notifications n
+               LEFT JOIN forge_notification_read_states s ON s.user_id = n.owner_id
+               WHERE n.owner_id = ANY($1::text[])
+                 AND n.seq > COALESCE(s.read_through_seq, 0)
+                 AND NOT EXISTS (SELECT 1 FROM forge_notification_reads r
+                                 WHERE r.notification_id = n.id AND r.user_id = n.owner_id)
+               GROUP BY n.owner_id""",
+            owner_ids,
+        )
+        counts = {owner: 0 for owner in owner_ids}
+        counts.update({row["owner_id"]: int(row["unread"]) for row in rows})
+        return counts
 
     async def resolve(
         self,

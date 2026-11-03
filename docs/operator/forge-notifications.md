@@ -632,14 +632,30 @@ In the Volundr Helm chart, set `push.enabled`, `push.adapter`, `push.kwargs` and
 The chart adds the push sink named by `push.attentionSink` to `notifications.sinks`
 unless you already configured one by that name.
 
-**Devices and keys outside mini mode.** Clusters keep integrations and their secrets in
-one place, and push follows that. With `push.device_registry: auto` (the default; chart
-`push.deviceRegistry`), a registered device outside mini mode is the owner's **messaging
-integration** connection (slug `push-device`, listed and disableable with their other
-integrations), and its token is stored in the credential store (OpenBao on the
-clusters). Mini mode keeps the `device_tokens` table. Push devices are never attached to
-sessions and are not built as Ting channels. Set `postgres` or `integrations` to choose
-explicitly.
+**Devices.** Niuu keeps integrations and their secrets in one place, and push follows
+that everywhere (mini mode too):
+
+- An app install is the owner's **messaging integration** connection (slug
+  `push-device`), listed with their other integrations. Disabling it stops every push to
+  that install; removing it removes its tokens.
+- **Every token** of the install (alert, Live Activity, push-to-start, widget) is kept in
+  the credential store, through `credential_store` (OpenBao on the clusters; any
+  `CredentialStorePort`). The alert token sits under the connection's own credential name,
+  the others under names derived from it and their kind (and, for a Live Activity, its
+  activity).
+- The `device_tokens` table keeps only what the push gateway queries and locks: the kind,
+  the environment, the activity, the throttle columns, the connection and the credential
+  name, and the token's SHA-256 (so a token that moves to another account is found). Never
+  the token.
+
+Push devices are never attached to sessions and are not built as Ting channels.
+`push.device_registry` (chart `push.deviceRegistry`) is kept for configurations that name
+it: `auto` and `integrations` mean this registry, and `postgres` is refused at start.
+Migration `000101_push_device_registry` leaves the tokens that `device_tokens` held before
+it in place, and Forge moves each into the credential store (creating the owner's device)
+at its next start, then clears it from the row. The migration refuses to run while the
+table holds a token of another kind than `alert`, which names no install: run
+`DELETE FROM device_tokens WHERE kind <> 'alert'` first (the app registers those again).
 
 The APNs signing key belongs to the app, not to a user or tenant, so it is platform
 configuration like any other app-wide secret: keep it in the cluster's secret source (for
@@ -661,13 +677,16 @@ registers with `environment` (`sandbox` for development builds, `production` for
 TestFlight/App Store) is pushed through that APNs host; otherwise the channel default
 (`use_sandbox`) applies. APNs requires HTTP/2, which the `httpx[http2]` extra provides.
 
-With the push gateway (`push.gateway.enabled`) the gateway owns Apple push: it alerts for
-every notification of the Guild, the needs-input moment included, so no "Needs-input
-pushes" rule is given and `push.adapter` stays at its default. A rule an owner points at a
-push sink would alert a second time for the same notification. The gateway needs
-`push.device_registry: postgres` (or `auto` in mini mode): token kinds and push throttles
-live in the `device_tokens` table, and the push-device integrations keep alert tokens only
-(registering another kind there answers 422).
+With the push gateway (`push.gateway.enabled`) the gateway owns Apple push for the whole
+Guild: it alerts for every notification of every node, the needs-input moment included,
+so no "Needs-input pushes" rule is given and `push.adapter` stays at its default, on the
+gateway node and on every other node. A node that still pushes alerts itself (`push.enabled`
+with a push adapter) says so in its feed, and the gateway then leaves that node's alerts to
+it (each such alert is `suppressed` with the reason, and the node is listed under
+`self_pushing_nodes` in `GET /push/status` and logged at error), so a phone never gets the
+same alert twice. Switch push off on that node to have the gateway alert for it. Only the
+gateway node takes the token kinds besides `alert` (`capabilities.push_installs` in
+`GET /feature-flags`); another node answers 422 for them.
 
 APNs results: delivered if at least one device accepted. It is retryable when every
 device failed transiently (429/5xx, network). It is `dead` when the owner has no iOS
@@ -697,20 +716,28 @@ owner's iPhone while the app is closed, in four ways:
 - a silent **background** push that lets iOS wake the app.
 
 Any Forge server turns this on with configuration: its APNs key, key id, team id and the
-app's bundle id, and the switch. Nothing in it is specific to one server.
+app's bundle id, the switch, and on an authenticated Guild the gateway's delivery
+credential. Nothing in it is specific to one server.
 
 The same gateway alerts for the needs-input moment, from the `attention` notification
 every node records, so the per-node needs-input push (`push.adapter`) is not used with it.
 
 ### One gateway per Guild
 
-One node, the **gateway**, holds the APNs key and every registered device. It reads every
-node's feed through the Guild API on `push.gateway.guild_url` (the node list from the
-registry, `GET /api/v1/niuu/instances`, and each node's notifications from
-`GET /api/v1/forge/notifications`) and sends the pushes for all of them. The other nodes
-need no key, no configuration and no new release: the gateway sees their notifications
-the way the app does, already tagged with the node (`instance_id`) the app uses in its
-links.
+One node, the **gateway**, holds the APNs key and the state of every registered token. It
+reads every node's feed through the Guild API on `push.gateway.guild_url` (the node list
+from the registry, `GET /api/v1/niuu/instances`, and each node's notifications from
+`GET /api/v1/forge/notifications?view=delivery`) and sends the pushes for all of them, for
+every owner and every org. The other nodes need no key and no push configuration (push
+off), and this release for the delivery view: the gateway sees their notifications already
+tagged with the node (`instance_id`) the app uses in its links. A node on an older release
+answers without the view; its reads fail with that reason under `unreachable_nodes` and
+its notifications are pushed once it is upgraded.
+
+The Guild registry marks the gateway: its entry has `config.push_gateway: true`, and no
+other entry does. The Guild sends the token kinds only the gateway uses there, and the
+gateway checks it at every discovery: `GET /push/status` shows `registry_problem` (and the
+log an error) while the registry marks another node, several, or none.
 
 A phone that uses several Forge servers (several Guilds that cannot reach each other)
 registers its tokens with each of them, and each server pushes for its own Guild. The
@@ -764,12 +791,57 @@ A node the gateway has not read before starts `catch_up_items` before its newest
 notification; older history is never replayed, and `alerts.max_age_seconds` keeps a
 stale notification from alerting after an outage.
 
-The gateway reads the Guild as **one identity**. Without `reader_token_path` it sends no
-credential, which suits a Guild running the AllowAll identity (every request is the same
-user). With real authentication, put a personal access token of the user in that file.
-The unread flags and count in the Live Activity are that reader's, so the gateway serves
-the Guild of one user; several human users would each need their own reader, which is
-not built.
+**The delivery view and its credential.** The gateway reads the feed's delivery view:
+every owner's notifications in every org, each item `read` as **its own owner** reads it,
+and each owner's unread count (`delivery.owner_unread_counts`, counting the owner's own
+notifications on that node). A person's feed is owner-scoped (admins see their org), so
+reading it as any one person would push only that person's or that org's notifications.
+Only one credential may read the view:
+
+- `token_use: notification_delivery` with the scope `forge:notifications:deliver`, minted
+  by the workload-identity exchange. It is the only scope that widens what its principal
+  sees, so the exchange grants it only to a mapping that lists it in `privileged_scopes`;
+  such a mapping must name one exact `subject` (no prefix, no delegation), and a request
+  may not mix it with the build scopes. It is admitted on `GET /api/v1/forge/notifications`
+  and `GET /api/v1/niuu/instances` (plus `/api/v1/identity/me`) and denied everywhere else,
+  at the edge and by `require_scope` on those routes. It is never a personal access token
+  or an admin account.
+- With it, the Guild facade reads every enabled Forge node and the registry lists every
+  instance, whoever registered it.
+
+Set it with `push.gateway.reader_auth` (an `HttpAuthPort`, the workload-identity adapter
+on a cluster):
+
+```yaml
+push:
+  gateway:
+    reader_auth:
+      adapter: niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter
+      kwargs:
+        exchange_url: https://guild.example.com/api/v1/tokens/workload/exchange
+        token_file: /var/run/secrets/niuu-workload/token
+        audiences: [volundr-api]
+        scopes: [forge:notifications:deliver]
+workload_identity:
+  mappings:
+    - name: forge
+      subject: system:serviceaccount:volundr:niuu-volundr
+      # ...
+      privileged_scopes: [forge:notifications:deliver]
+```
+
+A Guild running the AllowAll identity (one person) needs no credential: leave
+`reader_auth` and `reader_token_path` empty, and the nodes serve the view to anyone.
+`reader_token_path` names a file holding such a token for hosts without workload identity.
+Leave `stream_enabled` off with the delivery credential: the Guild's event stream is not
+one of its routes.
+
+**Orgs.** Every alert the gateway records carries the notification's org (`tenant_id` on
+`forge_push_deliveries` and in the alert payload). `GET /push/status` reports
+`tenant_alerts`, the caller's own org's alerts per status, never another org's. Devices
+stay per person (an owner id is an identity-provider subject), and the alert rate limit is
+the person's, across orgs. A Live Activity shows the owner's own newest notifications from
+every node; when they come from more than one org, each item names its org (`tenantID`).
 
 `guild_url` must be a Guild API origin. A single Forge node without the Guild facade has
 no registry and is refused with a clear error.
@@ -786,12 +858,20 @@ the gateway node directly, with the caller's normal credentials:
   "kind": "alert | live_activity | live_activity_start | widget",
   "environment": "sandbox | production",
   "app_bundle_id": "com.example.app",
-  "activity_id": "<Live Activity id, for live_activity only>"
+  "activity_id": "<Live Activity id, for live_activity only>",
+  "install_id": "<the app install, stable across launches>"
 }
 ```
 
-- One registration per `(token, kind)`. Registering again refreshes it; a token another
-  user registered before moves to the caller.
+- One registration per `(token, kind)`. Registering again refreshes it (and writes nothing
+  new to the credential store); a token another user registered before moves to the
+  caller, and the other user's device it named ends.
+- `install_id` groups the install's tokens into one device. Every kind but `alert` must
+  send it (422 otherwise). An alert token without it is its own device, which is how
+  devices registered before install ids keep working; once the app sends `install_id` with
+  its alert token, that device becomes the install's, with its switch and history.
+- `kind` other than `alert` is taken only by the gateway node
+  (`capabilities.push_installs`).
 - `kind`: `alert` is the app's device token; `live_activity` is the update token of one
   running Live Activity (`activity_id` names it, and a newer token for the same activity
   replaces the earlier one); `live_activity_start` is the push-to-start token; `widget`
@@ -809,9 +889,29 @@ the gateway node directly, with the caller's normal credentials:
   (`push.enabled` is off), so a client can tell the token is not in use there.
 
 `GET /api/v1/forge/devices` lists the caller's registrations and
-`DELETE /api/v1/forge/devices/{token}` removes them (`?kind=` removes one kind). The Guild
-facade forwards all three to its default node, or to the node `instance_id` selects.
-Session credentials (an agent's own token) cannot use these routes.
+`DELETE /api/v1/forge/devices/{token}` removes them (`?kind=` removes one kind; removing the
+alert token removes the device). On the Guild facade an alert token registers on every
+visible node, and every other kind on the node whose registry entry has
+`config.push_gateway: true` (409 when no entry, or several, has it). Session credentials
+(an agent's own token) cannot use these routes.
+
+**Where tokens live, and the write rate.** Apple issues every token to the app; the server
+mints none (it only signs its APNs provider JWT from the `.p8` key). Each token is one
+credential-store entry, written when the app registers a token the store does not already
+hold, and deleted when APNs reports it dead or the device is removed:
+
+| Token | Issued by | Changes | Writes |
+|---|---|---|---|
+| Alert (device token) | `registerForRemoteNotifications`, per install | On reinstall or restore | ~1 per install, rarely again |
+| Push-to-start | ActivityKit `pushToStartTokenUpdates`, per install | When iOS rotates it (rare) | ~1 per install, then per rotation |
+| Widget | WidgetKit push token, per install | Rarely | ~1 per install |
+| Live Activity update | ActivityKit `pushTokenUpdates`, per running activity | Each new activity (an activity lasts at most 8 h, 12 h on the lock screen) | 1 write per activity, 1 delete when it ends |
+
+That is a handful of writes per install per day, mostly Live Activities. A hundred people
+with two installs each come to roughly a thousand OpenBao operations a day, far below what
+one OpenBao handles in a second. The gateway caches the non-alert tokens it writes, so
+pushes read the store only for alert tokens (one read per device per refresh), which a
+registration on another node may have changed.
 
 A token APNs reports as dead is deleted: HTTP `410`, or the reasons `BadDeviceToken`,
 `Unregistered` and `ExpiredToken`. The app registers again on its next launch.
@@ -834,6 +934,7 @@ notification id, `apns-expiration` = now + `expiration_seconds`):
   "deepLink": "lexichat://activity/<notification id>?inst=<instance id>&session=<session id>&turn=<turn id>",
   "notification_id": "<notification id>",
   "instance_id": "<instance id>",
+  "tenant_id": "<org, when the notification has one>",
   "session_id": "<session id>",
   "kind": "<kind>",
   "image_url": "<absolute URL>",
@@ -892,7 +993,9 @@ priority 10), sent to every `live_activity` token of the owner:
 ```
 
 `content-state` matches the app's `ForgeNotificationsActivityContent`: at most three
-items, newest first, from the Guild's merged feed; absent values are left out. Dates are
+items, newest first, the owner's own from every node; absent values are left out.
+`unreadCount` is the owner's. When the items come from more than one org each carries
+`"tenantID"`, which an app that does not know it ignores. Dates are
 what Swift's `JSONDecoder` reads by default: a number of seconds since
 2001-01-01T00:00:00Z (Unix seconds minus 978307200). `stale-date` is now +
 `stale_seconds`. `origin` is `origin_label`, left out when empty. Titles and session names
@@ -929,7 +1032,8 @@ owner. Nobody creates a delivery rule by hand: a registered alert token is the o
   they have on a delivery rule: inside the window only notifications at or above
   `allow_min_severity` alert.
 - `max_age_seconds`: a notification older than this when the gateway reads it is not
-  alerted. One the reader already read is not alerted either.
+  alerted. One its owner already read is not alerted either.
+- A notification of a node that pushes alerts itself is not alerted (see above).
 
 These alerts do not go through the delivery outbox, so owner rules
 (`/notifications/rules`) and `GET /notifications/{id}/deliveries` do not apply to them.
@@ -941,11 +1045,17 @@ notification of the gateway's own node would then alert twice.
 1. In the Apple Developer portal, create an APNs auth key (`.p8`). Note its key id and
    the team id. Put the file on the gateway node, readable only by the Forge user.
 2. Add the `push:` section (see [Configuration](#configuration)) with `push.enabled`,
-   `push.apns` and `push.gateway`, and restart Forge. Migration `000099_push_gateway`
-   is applied at start.
-3. Start is refused, with the setting to fix, when the key file is missing, unreadable
-   or not an EC P-256 key, when the HTTP/2 library (`h2`) is missing, or when
-   `guild_url` is not an http(s) origin.
+   `push.apns` and `push.gateway`, and set `guild.instance_id` to this node's registry id.
+   Migrations `000099_push_gateway` and `000101_push_device_registry` are applied at
+   start.
+3. In the Guild registry, give this node's entry `config.push_gateway: true`.
+4. On an authenticated Guild, add `privileged_scopes: [forge:notifications:deliver]` to
+   this node's workload-identity mapping and set `push.gateway.reader_auth` (above).
+5. Switch push off (`push.enabled: false`) on every other node of the Guild.
+6. Start is refused, with the setting to fix, when the key file is missing, unreadable
+   or not an EC P-256 key, when the HTTP/2 library (`h2`) is missing, when `guild_url` is
+   not an http(s) origin, when `guild.instance_id` is empty, or when `reader_auth` is not
+   an `HttpAuthPort`.
 
 To check it:
 
@@ -976,7 +1086,11 @@ through the Guild facade.
 | `POST /devices` answers 404 through the Guild | The Guild facade is older than this release. |
 | `POST /devices` answers 503 | `push.enabled` is off on that node. |
 | `status` shows `last_error`: "The Guild feed is unreachable" | `guild_url` is wrong, or the Guild is not up yet (the gateway reads again every `poll_interval_seconds`). One such warning in the log right after a start is normal when the Guild runs in the same process: the gateway starts before the server accepts connections. |
-| `status` shows `last_error`: "… answered HTTP 401/403" | The Guild needs a credential: set `reader_token_path`. |
+| `status` shows `last_error`: "… refused the gateway's credential (HTTP 401/403)" | The Guild needs the delivery credential: set `reader_auth`, and list `forge:notifications:deliver` in the gateway's workload mapping's `privileged_scopes`. An exchange error naming `privileged_scopes` says the mapping lacks it. |
+| `unreachable_nodes`: "answered without the delivery view" | That node runs an older release. Upgrade it; its notifications are caught up then. |
+| `self_pushing_nodes` names a node | It pushes alerts itself (`push.enabled` with a push adapter). Its alerts are left to it; switch push off there. |
+| `registry_problem` is set | The Guild registry does not mark only this node with `config.push_gateway: true`; Live Activity and widget tokens are refused (409) or sent elsewhere. |
+| `POST /devices` with a non-alert kind answers 422 | No `install_id`, or the node is not the gateway. |
 | `unreachable_nodes` names a node | It does not answer its feed read (the reason is given): asleep or restarting. Its notifications are caught up once it answers. |
 | `feedless_nodes` names a node | It runs a release without the notification feed (Spark today). Nothing to push from it; it is asked again every `feedless_recheck_seconds`. |
 | `nodes` lacks a node | It has not answered since the gateway started, or it is not an enabled Forge instance in the Guild registry. A new node is found within `discovery_interval_seconds`. |
@@ -1092,7 +1206,8 @@ push:
   gateway:
     enabled: false           # true on the one node that pushes for the Guild
     guild_url: ""            # Guild API origin, e.g. http://127.0.0.1:8080
-    reader_token_path: ""    # bearer token file; empty for an AllowAll Guild
+    reader_auth: {}          # {adapter, kwargs}: the delivery credential (see above)
+    reader_token_path: ""    # or a bearer token file; both empty for an AllowAll Guild
     public_api_url: ""       # origin a phone reaches, for image URLs; empty = no image
     origin_label: ""         # this server's name on a Live Activity it pushed
     request_timeout_seconds: 5     # one read of one node

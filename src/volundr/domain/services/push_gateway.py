@@ -18,8 +18,9 @@ node:
    for a device, retried with backoff when APNs was unreachable or throttling,
    ``failed`` otherwise.
 3. **Live Activity.** Sends every Live Activity token of the owner an ``update``
-   with the newest notifications of the Guild, or a push-to-start when the owner
-   has no running activity (when enabled, at most once per interval).
+   with the owner's newest notifications across the Guild (labelled by org when
+   they come from several) and the owner's unread count, or a push-to-start when
+   the owner has no running activity (when enabled, at most once per interval).
 4. **Widgets.** Reloads the owner's widgets, at most once per interval per token;
    a reload held back by the interval is sent when the interval ends.
 5. **Background.** Sends the app a silent push through its alert token, with the
@@ -27,6 +28,11 @@ node:
 
 A token APNs reports as dead (410, ``BadDeviceToken``, ``Unregistered``,
 ``ExpiredToken``) is deleted.
+
+The gateway reads the Guild's delivery view: every owner's and every org's
+notifications, each read as its own owner reads it. Every alert it records carries
+its org (``tenant_id``). A node that pushes alerts itself (the per-node channel) is
+reported, and its alerts are held back so a phone never gets the same one twice.
 """
 
 from __future__ import annotations
@@ -76,6 +82,7 @@ from volundr.domain.push_ports import (
     GuildFeed,
     GuildFeedError,
     GuildFeedPage,
+    GuildNode,
     GuildNodeHasNoFeedError,
     PushDelivery,
     PushDeliveryRepository,
@@ -174,6 +181,8 @@ class PushGatewaySettings:
     """Everything the gateway loop needs, from ``push.apns`` and ``push.gateway``."""
 
     bundle_id: str
+    #: This node's id in the Guild registry, which must mark it as the push gateway.
+    instance_id: str
     poll_interval_seconds: float
     stream_enabled: bool
     stream_retry_seconds: float
@@ -194,6 +203,11 @@ class PushGatewaySettings:
     def __post_init__(self) -> None:
         if not self.bundle_id:
             raise ValueError("The push gateway needs the app's bundle id (push.apns.bundle_id)")
+        if not self.instance_id:
+            raise ValueError(
+                "The push gateway needs this node's Guild instance id (guild.instance_id): "
+                "the Guild registry names its push gateway by it"
+            )
         if self.page_size < 1 or self.feed_page_size < LIVE_ACTIVITY_MAX_ITEMS:
             raise ValueError(
                 f"page_size must be >= 1 and feed_page_size >= {LIVE_ACTIVITY_MAX_ITEMS}"
@@ -226,6 +240,8 @@ class PushGatewayStats:
     feedless_rechecks: int = 0
     loop_errors: int = 0
     stream_reconnects: int = 0
+    #: Alerts held back because their node pushes alerts itself.
+    alerts_left_to_node: int = 0
     #: APNs answers per environment of the token: {"production": {"accepted": n, ...}}.
     apns_by_environment: dict[str, dict[str, int]] = field(default_factory=dict)
     #: Registrations stored as production without saying so: no environment, or an
@@ -254,21 +270,19 @@ _TOKEN_SUFFIX_CHARS = 8
 
 @dataclass
 class _Tick:
-    """One tick's lazily read newest page (shared by every owner's Live Activity)."""
+    """One tick's lazily read newest pages, one per owner refreshed."""
 
-    load: Callable[[], Awaitable[GuildFeedPage | None]]
-    page: GuildFeedPage | None = None
-    loaded: bool = False
+    load: Callable[[str], Awaitable[GuildFeedPage | None]]
+    pages: dict[str, GuildFeedPage | None] = field(default_factory=dict)
     retry_owners: set[str] = field(default_factory=set)
     #: Tokens whose throttled push APNs could not take in this tick.
     undelivered: set[UUID] = field(default_factory=set)
 
-    async def newest(self) -> GuildFeedPage | None:
-        """The merged newest page, or ``None`` while no node answers."""
-        if not self.loaded:
-            self.page = await self.load()
-            self.loaded = True
-        return self.page
+    async def newest(self, owner_id: str) -> GuildFeedPage | None:
+        """The owner's merged newest page, or ``None`` while no node answers."""
+        if owner_id not in self.pages:
+            self.pages[owner_id] = await self.load(owner_id)
+        return self.pages[owner_id]
 
 
 class PushGateway:
@@ -296,6 +310,10 @@ class PushGateway:
         self._positions: dict[str, int] | None = None
         #: The Guild's Forge nodes as its registry last listed them.
         self._nodes: list[str] = []
+        #: Why the registry does not name this node as the Guild's push gateway.
+        self._registry_problem = ""
+        #: Nodes that push alerts themselves (their last read said so).
+        self._self_pushing: set[str] = set()
         #: Nodes that did not answer: their last error, and when to try them again.
         self._node_errors: dict[str, str] = {}
         self._feedless: dict[str, str] = {}
@@ -451,8 +469,25 @@ class PushGateway:
             if isinstance(result, BaseException):
                 raise result
             self._node_answered(node)
+            self._note_self_pushing(node, result.node_pushes_alerts)
             pages[node] = result
         return pages
+
+    def _note_self_pushing(self, node: str, pushes: bool) -> None:
+        if not pushes:
+            if node in self._self_pushing:
+                self._self_pushing.discard(node)
+                logger.info("Guild node %s no longer pushes its own alerts", node)
+            return
+        if node in self._self_pushing:
+            return
+        self._self_pushing.add(node)
+        logger.error(
+            "Guild node %s pushes alerts itself (push.enabled with a push adapter there): the "
+            "gateway leaves that node's alerts to it so no phone gets one twice. Switch push "
+            "off on that node (push.enabled: false) to have the gateway alert for it",
+            node,
+        )
 
     def _node_failed(self, node: str, error: GuildFeedError, now: datetime) -> None:
         text = str(error)
@@ -480,8 +515,9 @@ class PushGateway:
         if self._node_errors.pop(node, None) is not None:
             logger.info("Push gateway reads Guild node %s again", node)
 
-    async def _newest_page(self) -> GuildFeedPage | None:
-        """The Guild's newest notifications, merged from every node that answers.
+    async def _newest_page(self, owner_id: str) -> GuildFeedPage | None:
+        """The owner's newest notifications, merged from every node that answers, with
+        the owner's unread count summed over them.
 
         ``None`` while no node answers: there is nothing to show yet.
         """
@@ -490,7 +526,7 @@ class PushGateway:
         nodes = self._readable([node for node in self._nodes if node in positions], now)
         limit = self._settings.feed_page_size
         pages = await self._read_nodes(
-            nodes, lambda node: self._feed.newest(node, limit=limit), now
+            nodes, lambda node: self._feed.newest(node, limit=limit, owner_id=owner_id), now
         )
         if not pages:
             return None
@@ -499,10 +535,8 @@ class PushGateway:
             key=_recorded_order,
             reverse=True,
         )
-        return GuildFeedPage(
-            items=merged[:limit],
-            unread_count=sum(page.unread_count for page in pages.values()),
-        )
+        unread = sum(page.owner_unread_counts.get(owner_id, 0) for page in pages.values())
+        return GuildFeedPage(items=merged[:limit], owner_unread_counts={owner_id: unread})
 
     async def _positions_for_tick(self, now: datetime) -> dict[str, int]:
         if self._positions is None:
@@ -531,7 +565,9 @@ class PushGateway:
         after its database was recreated) is read from its head again. A node that
         does not answer is tried again at the next discovery.
         """
-        self._nodes = await self._feed.nodes()
+        listed = await self._feed.nodes()
+        self._nodes = [node.id for node in listed]
+        self._check_registry(listed)
         heads = await self._read_nodes(
             self._readable(self._nodes, now), lambda node: self._feed.newest(node, limit=1), now
         )
@@ -559,6 +595,26 @@ class PushGateway:
             )
         self._discover = False
         self._last_discovery = now
+
+    def _check_registry(self, nodes: list[GuildNode]) -> None:
+        """The registry must mark this node, and only it, as the Guild's push gateway:
+        the Guild sends Live Activity and widget tokens to the node it marks."""
+        own = self._settings.instance_id
+        marked = sorted(node.id for node in nodes if node.push_gateway)
+        if marked == [own]:
+            if self._registry_problem:
+                logger.info("The Guild registry now marks this node as its push gateway")
+            self._registry_problem = ""
+            return
+        problem = (
+            f"The Guild registry marks {', '.join(marked) or 'no node'} as its push gateway, "
+            f"not only this node ({own}): set config.push_gateway: true on this node's "
+            "registry entry (and on no other), or the Guild cannot route Live Activity and "
+            "widget tokens here"
+        )
+        if problem != self._registry_problem:
+            logger.error("%s", problem)
+        self._registry_problem = problem
 
     async def _ingest(self, positions: dict[str, int], now: datetime) -> list[GuildNotification]:
         fresh: list[GuildNotification] = []
@@ -666,6 +722,12 @@ class PushGateway:
             return f"Below the alert severity {alerts.min_severity.value!r}"
         if alerts.sources and notification.source not in alerts.sources:
             return f"Source {notification.source!r} is not alerted (push.gateway.alerts.sources)"
+        if notification.instance_id in self._self_pushing:
+            self.stats.alerts_left_to_node += 1
+            return (
+                f"Node {notification.instance_id} pushes its own alerts (push.enabled there); "
+                "switch it off there to have the gateway alert"
+            )
         if notification.read:
             return ALREADY_READ
         created_at = notification.created_at
@@ -782,14 +844,14 @@ class PushGateway:
     ) -> bool:
         """Update (or start) the owner's Live Activity; True when a retry is owed."""
         settings = self._settings.live_activity
-        page = await tick.newest()
+        page = await tick.newest(owner_id)
         if page is None:
             return True  # No node answers right now: the update stays owed.
         now = self._clock()
         items = self._owner_items(owner_id, page)
         if not items:
             return False
-        state = self._content_state(items, page, now)
+        state = self._content_state(owner_id, items, page, now)
         retry = False
         running = 0
         for device in live:
@@ -834,11 +896,11 @@ class PushGateway:
         return [item for item in page.items if item.owner_id == owner_id][:LIVE_ACTIVITY_MAX_ITEMS]
 
     def _content_state(
-        self, items: list[GuildNotification], page: GuildFeedPage, now: datetime
+        self, owner_id: str, items: list[GuildNotification], page: GuildFeedPage, now: datetime
     ) -> dict[str, Any]:
         return live_activity_content_state(
             items,
-            unread_count=page.unread_count,
+            unread_count=page.owner_unread_counts.get(owner_id, 0),
             updated_at=now,
             origin=self._settings.origin_label or None,
         )
@@ -1010,10 +1072,10 @@ class PushGateway:
         now = self._clock()
         state: dict[str, Any] = {}
         if kind in (PushTestKind.LIVE_ACTIVITY, PushTestKind.LIVE_ACTIVITY_START):
-            page = await self._newest_page()
+            page = await self._newest_page(owner_id)
             if page is None:
                 raise GuildFeedError("No Guild node answers right now; try again in a moment")
-            state = self._content_state(self._owner_items(owner_id, page), page, now)
+            state = self._content_state(owner_id, self._owner_items(owner_id, page), page, now)
         results: list[PushTestResult] = []
         for device in devices:
             result = await self._send(
@@ -1086,6 +1148,10 @@ class PushGateway:
         """Registered tokens per APNs environment and kind: {"sandbox": {"alert": 1}}."""
         return await self._devices.count_by_environment()
 
+    async def alerts_for_tenant(self, tenant_id: str | None) -> dict[str, int]:
+        """One org's alerts per status (``None``: the untenanted ones)."""
+        return (await self._deliveries.count_by_tenant()).get(tenant_id or "", {})
+
     def status(self) -> dict[str, Any]:
         """What the gateway has done since it started (no tokens, no secrets)."""
         stats = asdict(self.stats)
@@ -1096,6 +1162,8 @@ class PushGateway:
             "nodes": dict(sorted((self._positions or {}).items())),
             "unreachable_nodes": dict(sorted(self._node_errors.items())),
             "feedless_nodes": dict(sorted(self._feedless.items())),
+            "self_pushing_nodes": sorted(self._self_pushing),
+            "registry_problem": self._registry_problem,
             "alerts_enabled": self._settings.alerts.enabled,
             "live_activity_enabled": self._settings.live_activity.enabled,
             "live_activity_start_enabled": self._settings.live_activity.start_enabled,

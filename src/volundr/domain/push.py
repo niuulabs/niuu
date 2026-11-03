@@ -100,7 +100,8 @@ def token_fingerprint(token: str) -> str:
 
 
 class UnsupportedTokenKindError(ValueError):
-    """A device registry cannot hold this token kind (it keeps alert tokens only)."""
+    """This Forge cannot take this registration: a token kind only the push gateway
+    uses, on a node that does not run it, or a token that names no app install."""
 
 
 #: Why a registration's environment was assumed: none was sent, or one we do not know.
@@ -268,6 +269,8 @@ class GuildNotification:
     read: bool = False
     image_url: str | None = None
     image_thumbnail_url: str | None = None
+    #: The org it belongs to (``None``: untenanted). Every push and count of it is that org's.
+    tenant_id: str | None = None
 
     @classmethod
     def from_feed_item(cls, item: Mapping[str, Any]) -> GuildNotification:
@@ -315,6 +318,7 @@ class GuildNotification:
             read=item.get("read") is True,
             image_url=image_url,
             image_thumbnail_url=thumbnail_url,
+            tenant_id=_optional_text(item.get("tenant_id")),
         )
 
     def stored(self) -> dict[str, Any]:
@@ -335,6 +339,7 @@ class GuildNotification:
             "turn_id": self.turn_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "read": self.read,
+            "tenant_id": self.tenant_id,
         }
         if self.image_url:
             data["image"] = {"url": self.image_url, "thumbnail_url": self.image_thumbnail_url}
@@ -437,6 +442,8 @@ def alert_payload(
         payload["session_id"] = notification.session_id
     payload["notification_id"] = notification.id
     payload["instance_id"] = notification.instance_id
+    if notification.tenant_id:
+        payload["tenant_id"] = notification.tenant_id
     payload["kind"] = notification.kind
     if attention:
         aps["mutable-content"] = 1
@@ -457,8 +464,12 @@ def alert_payload(
     return payload
 
 
-def live_activity_item(notification: GuildNotification) -> dict[str, Any]:
-    """One ``ForgeNotificationsActivityContent.Item``; absent values are left out."""
+def live_activity_item(notification: GuildNotification, *, org: bool = False) -> dict[str, Any]:
+    """One ``ForgeNotificationsActivityContent.Item``; absent values are left out.
+
+    ``org`` adds the item's org (``tenantID``), for an owner whose items come from
+    several orgs; an app that does not know the key ignores it.
+    """
     item: dict[str, Any] = {
         "id": notification.id,
         "kind": notification.kind,
@@ -474,6 +485,8 @@ def live_activity_item(notification: GuildNotification) -> dict[str, Any]:
     if notification.created_at is not None:
         item["createdAt"] = swift_reference_seconds(notification.created_at)
     item["unread"] = not notification.read
+    if org and notification.tenant_id:
+        item["tenantID"] = notification.tenant_id
     return item
 
 
@@ -489,8 +502,11 @@ def live_activity_content_state(
     Keys and types match the app's synthesized ``Codable`` exactly; dates are Swift
     reference-date numbers. ``origin`` names the server that pushed the content.
     """
+    shown = notifications[:LIVE_ACTIVITY_MAX_ITEMS]
+    # Label each item by org only when the owner's items come from more than one.
+    several_orgs = len({n.tenant_id for n in shown}) > 1
     state: dict[str, Any] = {
-        "items": [live_activity_item(n) for n in notifications[:LIVE_ACTIVITY_MAX_ITEMS]],
+        "items": [live_activity_item(n, org=several_orgs) for n in shown],
         "unreadCount": max(0, unread_count),
         "updatedAt": swift_reference_seconds(updated_at),
     }

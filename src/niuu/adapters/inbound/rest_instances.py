@@ -14,6 +14,7 @@ from starlette.types import ASGIApp
 
 from identity.adapters.http_auth import authorization_http_errors
 from niuu.adapters.inbound.auth import extract_principal
+from niuu.adapters.inbound.auth_context import extract_bearer_token
 from niuu.adapters.inbound.remote_urls import (
     build_remote_url,
 )
@@ -57,7 +58,12 @@ from niuu.domain.services.observatory_fragments import ObservatoryFragmentInboxS
 from niuu.domain.services.observatory_topology import (
     ObservatoryTopologyAggregationService,
 )
-from niuu.domain.services.token_scope import TOPOLOGY_PUSH_SCOPE, require_scope
+from niuu.domain.services.token_scope import (
+    NOTIFICATION_DELIVERY_SCOPE,
+    TOPOLOGY_PUSH_SCOPE,
+    is_notification_delivery_token,
+    require_scope,
+)
 from niuu.ports.instances import InvalidInstanceIdError
 
 logger = logging.getLogger(__name__)
@@ -340,12 +346,21 @@ def create_instances_router(
     """Create the shared instance registry router."""
     router = APIRouter(prefix="/api/v1/niuu", tags=["Shared"])
 
-    @router.get("/instances", response_model=list[InstanceResponse])
+    @router.get(
+        "/instances",
+        response_model=list[InstanceResponse],
+        dependencies=[Depends(require_scope(NOTIFICATION_DELIVERY_SCOPE))],
+    )
     async def list_instances(
+        request: Request,
         kind: str | None = Query(default=None),
         enabled_only: bool = Query(default=False, alias="enabledOnly"),
         principal: Principal = Depends(extract_principal),
     ) -> list[InstanceResponse]:
+        if is_notification_delivery_token(extract_bearer_token(request) or ""):
+            # The push gateway pushes for every Forge of the Guild, whoever sees it.
+            delivered = await service.list_for_delivery(kind=InstanceKind(kind) if kind else None)
+            return [_to_response(instance) for instance in delivered]
         instances = await service.list_visible(
             principal,
             kind=InstanceKind(kind) if kind else None,

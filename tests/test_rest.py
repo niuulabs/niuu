@@ -310,6 +310,56 @@ class TestDeviceEndpoints:
         resp = client.post("/api/v1/forge/devices", json=alert, headers=self._AUTH)
         assert resp.status_code == 201
 
+    def test_install_id_reaches_the_registry_and_comes_back(self, client, device_repo):
+        body = {
+            "platform": "ios",
+            "token": "w-1",
+            "kind": "widget",
+            "environment": "production",
+            "install_id": "install-a",
+        }
+
+        resp = client.post("/api/v1/forge/devices", json=body, headers=self._AUTH)
+
+        assert resp.status_code == 201
+        assert resp.json()["install_id"] == "install-a"
+        (device,) = device_repo.devices.values()
+        assert device.install_id == "install-a"
+
+    @pytest.mark.parametrize(
+        ("token_kinds", "advertised"),
+        [(frozenset(PushTokenKind), True), (frozenset({PushTokenKind.ALERT}), False)],
+    )
+    def test_only_the_gateway_node_advertises_push_installs(
+        self, repository, pod_manager, stats_repository, pricing_provider, token_kinds, advertised
+    ):
+        from volundr.config import LocalMountsConfig
+
+        class Registry(FakeDeviceRepository):
+            pass
+
+        registry = Registry(Clock())
+        registry.token_kinds = token_kinds
+        app = FastAPI()
+        app.state.identity = _StubIdentity()
+        session_service = SessionService(repository=repository, pod_manager=pod_manager)
+        app.include_router(
+            create_router(
+                session_service=session_service,
+                stats_service=StatsService(stats_repository, session_service),
+                pricing_provider=pricing_provider,
+                device_repository=registry,
+                session_participant_service=make_session_participant_service(session_service),
+            )
+        )
+        app.state.settings = type("S", (), {"local_mounts": LocalMountsConfig()})()
+        app.state.admin_settings = {}
+        app.state.storage = type("St", (), {"supports_home_volumes": False})()
+
+        flags = TestClient(app).get("/api/v1/forge/feature-flags").json()
+
+        assert flags["capabilities"]["push_installs"] is advertised
+
     def test_requires_authentication(self, client):
         # No x-auth-user-id header -> no principal -> 401.
         assert client.get("/api/v1/forge/devices").status_code == 401

@@ -86,6 +86,15 @@ class StubInstanceService:
             and _matches(instance)
         ]
 
+    async def list_for_delivery(
+        self, *, kind: InstanceKind | None = None
+    ) -> list[RegisteredInstance]:
+        return [
+            instance
+            for instance in self.instances
+            if (kind is None or instance.kind == kind) and instance.enabled
+        ]
+
     async def get_visible(
         self,
         principal: Principal,

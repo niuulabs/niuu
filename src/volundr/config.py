@@ -81,6 +81,7 @@ from volundr.domain.notifications import (
     NotificationRateLimit,
 )
 from volundr.domain.presented_files import PresentedFilesAccess, validate_public_base_url
+from volundr.domain.push import PushTokenKind
 
 __all__ = ["GitHubInstance", "GitLabInstance"]
 
@@ -1086,7 +1087,18 @@ class PushGatewayConfig(BaseModel):
         default="",
         description=(
             "File holding the bearer token the gateway reads the Guild with. Empty "
-            "sends no credential (a Guild with the AllowAll identity)."
+            "sends no credential (a Guild with the AllowAll identity). On an "
+            "authenticated Guild use reader_auth instead: the token must be a "
+            "forge:notifications:deliver workload credential, the only one that reads "
+            "every owner's and every org's notifications."
+        ),
+    )
+    reader_auth: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "The HttpAuthPort the gateway reads the Guild with, as {adapter, kwargs} "
+            "(e.g. niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter "
+            "with scopes: [forge:notifications:deliver]). Use this or reader_token_path."
         ),
     )
     request_timeout_seconds: float = Field(
@@ -1172,6 +1184,22 @@ class PushGatewayConfig(BaseModel):
             raise ValueError(
                 "push.gateway.enabled needs push.gateway.guild_url (the Guild API origin)"
             )
+        if self.reader_auth and self.reader_token_path.strip():
+            raise ValueError(
+                "push.gateway.reader_auth and push.gateway.reader_token_path both name the "
+                "gateway's Guild credential: keep one"
+            )
+        if self.reader_auth and not str(self.reader_auth.get("adapter", "")).strip():
+            raise ValueError(
+                "push.gateway.reader_auth needs an adapter (a fully-qualified HttpAuthPort "
+                "class path), with its kwargs"
+            )
+        unknown = set(self.reader_auth) - {"adapter", "kwargs"}
+        if unknown:
+            raise ValueError(
+                "push.gateway.reader_auth takes adapter and kwargs only, not "
+                + ", ".join(sorted(unknown))
+            )
         return self
 
 
@@ -1184,8 +1212,8 @@ class PushNotificationConfig(BaseModel):
       notifications through APNs (``apns``): alerts, Live Activity, widgets and
       background pushes. The needs-input moment is alerted from its ``attention``
       notification, so no "Needs-input pushes" rule is given and the per-node
-      channel below must be left at its default. It needs the ``device_tokens``
-      table (``device_registry`` postgres, or auto in mini mode).
+      channel below must be left at its default, here and on every other node of
+      the Guild (the gateway holds back the alerts of a node that pushes its own).
     * **Per-node channel** (``adapter`` + ``kwargs``): the NotificationChannel
       that push sinks deliver through (the default adapter only logs). Every owner
       who registers a device gets a "Needs-input pushes" delivery rule targeting
@@ -1209,14 +1237,13 @@ class PushNotificationConfig(BaseModel):
 
     The APNs key belongs to the app, so it is platform configuration (a Kubernetes
     Secret, e.g. from an ExternalSecret), not a credential-store record. Registered
-    devices are per user: outside mini mode they are the owners' push-device
-    integrations (``device_registry``), their tokens in the credential store.
+    devices are per user: each app install is the owner's push-device integration,
+    every token of it in the credential store.
 
     Gateway YAML::
 
         push:
           enabled: true
-          device_registry: postgres
           apns:
             team_id: "ABCDE12345"
             key_id: "KEY1234567"
@@ -1254,9 +1281,10 @@ class PushNotificationConfig(BaseModel):
     device_registry: Literal["auto", "postgres", "integrations"] = Field(
         default="auto",
         description=(
-            "Where registered push devices live. 'integrations': each device is the owner's "
-            "messaging integration connection with its token in the credential store. "
-            "'postgres': the device_tokens table. 'auto': postgres in mini mode, else integrations."
+            "Kept for configurations that name it: push devices are always the owners' "
+            "messaging integration connections, every token in the credential store and "
+            "the gateway's state in device_tokens. 'postgres' is refused: that registry "
+            "was merged into this one (its rows are moved at startup)."
         ),
     )
     apns: ApnsConfig = Field(default_factory=ApnsConfig)
@@ -1282,18 +1310,29 @@ class PushNotificationConfig(BaseModel):
                 "push.adapter / push.kwargs configure the per-node needs-input push, which "
                 "the gateway replaces: remove them, or disable push.gateway"
             )
-        if self.device_registry == "integrations":
+        return self
+
+    @model_validator(mode="after")
+    def _one_registry(self) -> "PushNotificationConfig":
+        if self.device_registry == "postgres":
             raise ValueError(
-                "push.gateway.enabled needs the device_tokens table (token kinds and push "
-                "throttles); set push.device_registry to postgres, or disable push.gateway"
+                "push.device_registry: postgres is gone: push devices are integration "
+                "connections with their tokens in the credential store, and Forge moves the "
+                "tokens device_tokens holds there at startup. Remove push.device_registry"
             )
         return self
 
-    def uses_integration_devices(self, *, mini_mode: bool) -> bool:
-        """Whether push devices are stored as integrations (see ``device_registry``)."""
-        if self.device_registry == "auto":
-            return not mini_mode
-        return self.device_registry == "integrations"
+    def pushes_alerts_itself(self) -> bool:
+        """Whether this node pushes alerts through its own channel (per-node mode with a
+        real adapter): a Guild push gateway then leaves this node's alerts to it."""
+        return self.enabled and not self.gateway.enabled and self.adapter != DEFAULT_PUSH_ADAPTER
+
+    def accepted_token_kinds(self) -> frozenset[PushTokenKind]:
+        """The token kinds this node registers: every kind on the push gateway's node,
+        alert tokens elsewhere (no other node pushes the rest)."""
+        if self.enabled and self.gateway.enabled:
+            return frozenset(PushTokenKind)
+        return frozenset({PushTokenKind.ALERT})
 
 
 class NotificationReplyReadyConfig(BaseModel):

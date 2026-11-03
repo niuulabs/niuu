@@ -12,7 +12,8 @@ Damien approved it on 2026-10-31. How the gateway itself works is in
 | Gateway config | Thor, `~/.config/niuu-forge-thor/config.yaml`, section `push:` (file mode 600) |
 | APNs auth key (`.p8`) | Thor, `~/.openclaw/secrets/apns/`: the only `.p8` there, mode 600 |
 | Who else uses the key | lexi-agent-service (VoIP pushes): the same team-scoped "Forge Push" key |
-| Device registry | Thor's Volundr database, table `device_tokens` (`push.device_registry: postgres`) |
+| Devices | Each app install is the owner's `push-device` integration; every token is in Thor's credential store (`credential_store`), and `device_tokens` keeps only the gateway's state |
+| Guild registry | Thor's entry has `config.push_gateway: true`; Thor's `guild.instance_id` names it |
 | Push on mini-m6 | **off** (no `push:` section), so nothing is pushed twice |
 
 The `push:` section:
@@ -20,7 +21,6 @@ The `push:` section:
 ```yaml
 push:
   enabled: true
-  device_registry: postgres
   apns:
     team_id: 828357L924
     key_id: <the key's id: the 10 characters in its file name, AuthKey_<id>.p8>
@@ -42,9 +42,25 @@ push:
 - `stream_enabled` stays off: the Guild runs in the gateway's own process. The gateway
   wakes on Thor's own notifications at once and reads mini-m6 every 5 s.
 
+**Upgrading Thor to the merged registry (migration `000101`).** `push.device_registry:
+postgres` is refused now: remove it from the `push:` section. The migration refuses to run
+while `device_tokens` still holds a Live Activity, push-to-start or widget token (those name
+no app install); delete them first, the app registers them again:
+
+```bash
+docker exec volundr-pg psql -U volundr -d volundr -c "DELETE FROM device_tokens WHERE kind <> 'alert'"
+```
+
+At its next start Forge moves each alert token into the credential store as the owner's
+device, so alerts keep reaching every phone with no new registration. Give Thor's Guild
+registry entry `config.push_gateway: true` and set `guild.instance_id` to Thor's id: the
+gateway reports `registry_problem` in `/push/status` until both are set.
+
 **Devices.** The app registers its tokens through the Guild with
 `POST /api/v1/forge/devices`: alert, push-to-start, widget, and one Live Activity token per
-running activity. Alert tokens reach every node; the other kinds go to the gateway alone.
+running activity, each naming its `install_id`. Alert tokens reach every node; the other
+kinds go to the node the registry marks as the push gateway, which advertises
+`capabilities.push_installs`.
 A `widget_fallback` token (one the app read with `WidgetCenter.currentPushInfo` instead of
 getting it from the widget extension's handler) is stored and counted per environment in
 `/push/status`, and never pushed to: it tells the two sources apart (LEX-1186). Registration
@@ -56,6 +72,8 @@ Check them on Thor:
 docker exec volundr-pg psql -U volundr -d volundr -c \
   "SELECT kind, environment, count(*), max(updated_at) FROM device_tokens GROUP BY 1, 2"
 ```
+
+The rows hold no token, only its SHA-256 and the credential that holds it.
 
 ## Checking it
 

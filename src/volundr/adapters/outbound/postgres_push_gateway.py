@@ -33,8 +33,8 @@ ON CONFLICT (id) DO UPDATE
         updated_at = now()"""
 
 INSERT_DELIVERY_SQL = """INSERT INTO forge_push_deliveries
-    (instance_id, notification_id, owner_id, notified_at, payload)
-VALUES ($1, $2, $3, $4, $5::jsonb)
+    (instance_id, notification_id, owner_id, notified_at, payload, tenant_id)
+VALUES ($1, $2, $3, $4, $5::jsonb, $6)
 ON CONFLICT (instance_id, notification_id) DO NOTHING
 RETURNING notification_id"""
 
@@ -67,6 +67,9 @@ SET next_attempt_at = $4, detail = $5, updated_at = now()
 
 COUNT_SENT_SQL = """SELECT COUNT(*) FROM forge_push_deliveries
 WHERE owner_id = $1 AND status = 'sent' AND settled_at >= $2"""
+
+COUNT_BY_TENANT_SQL = """SELECT COALESCE(tenant_id, '') AS tenant, status, COUNT(*) AS n
+FROM forge_push_deliveries GROUP BY 1, 2"""
 
 PRUNE_SQL = """DELETE FROM forge_push_deliveries
 WHERE status <> 'pending' AND settled_at < $1"""
@@ -114,6 +117,7 @@ class PostgresPushDeliveryRepository(PushDeliveryRepository):
                         notification.owner_id,
                         notification.created_at,
                         dumps_jsonb(notification.stored()),
+                        notification.tenant_id,
                     )
                     if inserted is not None:
                         fresh.append(notification)
@@ -167,6 +171,12 @@ class PostgresPushDeliveryRepository(PushDeliveryRepository):
 
     async def count_sent_since(self, owner_id: str, since: datetime) -> int:
         return int(await self._pool.fetchval(COUNT_SENT_SQL, owner_id, since) or 0)
+
+    async def count_by_tenant(self) -> dict[str, dict[str, int]]:
+        counts: dict[str, dict[str, int]] = {}
+        for row in await self._pool.fetch(COUNT_BY_TENANT_SQL):
+            counts.setdefault(row["tenant"], {})[row["status"]] = int(row["n"])
+        return counts
 
     async def prune_settled(self, before: datetime) -> int:
         result = await self._pool.execute(PRUNE_SQL, before)

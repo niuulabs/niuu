@@ -33,6 +33,12 @@ BODY = {"platform": "ios", "token": "tok-1", "app_bundle_id": "com.niuu.lexi"}
 LOCAL = _instance(
     "local", base_url="embedded://local", is_default=True, config={"transport": "embedded"}
 )
+#: The same node, marked in the registry as the Guild's push gateway.
+GATEWAY = _instance(
+    "local",
+    base_url="embedded://local",
+    config={"transport": "embedded", "push_gateway": True},
+)
 REMOTE_A = _instance("remote-a", base_url="http://remote-a")
 REMOTE_B = _instance("remote-b", base_url="http://remote-b")
 REMOTE = _instance("remote", base_url="http://remote")
@@ -300,9 +306,11 @@ def _push_node(calls: list[dict[str, Any]], *, push: bool = True) -> FastAPI:
     return app
 
 
-def test_a_gateway_only_kind_registers_on_the_default_node_alone():
+def test_a_gateway_only_kind_registers_on_the_push_gateway_node_alone():
     calls: list[dict[str, Any]] = []
-    client = _client([LOCAL, REMOTE], embedded_forge_app=_push_node(calls))
+    # The default node is another one: the registry's mark decides, not the default.
+    remote_default = _instance("remote", base_url="http://remote", is_default=True)
+    client = _client([GATEWAY, remote_default], embedded_forge_app=_push_node(calls))
 
     response = client.post(URL, json=GATEWAY_BODY, headers=_headers())
 
@@ -327,9 +335,9 @@ def test_a_gateway_only_kind_registers_on_the_default_node_alone():
     ]
 
 
-def test_unregister_of_a_gateway_only_kind_stays_on_the_default_node():
+def test_unregister_of_a_gateway_only_kind_stays_on_the_push_gateway_node():
     calls: list[dict[str, Any]] = []
-    client = _client([LOCAL], embedded_forge_app=_push_node(calls))
+    client = _client([GATEWAY], embedded_forge_app=_push_node(calls))
 
     response = client.delete(f"{URL}/0a1b2c3d", params={"kind": "widget"}, headers=_headers())
 
@@ -372,9 +380,31 @@ def test_instance_id_selects_another_node_and_is_not_forwarded():
     assert "x-auth-user-id" not in request.headers
 
 
+def test_no_push_gateway_in_the_registry_is_a_conflict_naming_the_remedy():
+    calls: list[dict[str, Any]] = []
+    client = _client([LOCAL, REMOTE], embedded_forge_app=_push_node(calls))
+
+    response = client.post(URL, json=GATEWAY_BODY, headers=_headers())
+
+    assert response.status_code == 409
+    assert "config.push_gateway: true" in response.json()["detail"]
+    assert "found: none" in response.json()["detail"]
+    assert calls == []
+
+
+def test_two_marked_push_gateways_are_a_conflict():
+    marked = _instance("remote", base_url="http://remote", config={"push_gateway": True})
+    client = _client([GATEWAY, marked], embedded_forge_app=_push_node([]))
+
+    response = client.get("/api/v1/forge/push/status", headers=_headers())
+
+    assert response.status_code == 409
+    assert "found: local, remote" in response.json()["detail"]
+
+
 def test_a_node_without_push_answers_503_through_the_facade():
     calls: list[dict[str, Any]] = []
-    client = _client([LOCAL], embedded_forge_app=_push_node(calls, push=False))
+    client = _client([GATEWAY], embedded_forge_app=_push_node(calls, push=False))
 
     response = client.post(URL, json=GATEWAY_BODY, headers=_headers())
 
@@ -400,7 +430,7 @@ def test_a_session_credential_may_not_use_the_device_or_push_routes(method, path
 
 def test_push_status_and_test_push_reach_the_push_node():
     calls: list[dict[str, Any]] = []
-    client = _client([LOCAL, REMOTE], embedded_forge_app=_push_node(calls))
+    client = _client([GATEWAY, REMOTE], embedded_forge_app=_push_node(calls))
 
     status = client.get("/api/v1/forge/push/status", headers=_headers())
     sent = client.post("/api/v1/forge/push/test", json={"kind": "alert"}, headers=_headers())
