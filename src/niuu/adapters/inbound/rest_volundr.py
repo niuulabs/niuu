@@ -83,6 +83,7 @@ from niuu.domain.presented_files import (
 from niuu.domain.services.forge_session_policy import policy_refusal
 from niuu.domain.services.instances import InstanceService
 from niuu.domain.services.token_scope import (
+    FORGE_PUSH_CALL_SCOPE,
     FORGE_SESSION_READ_SCOPE,
     FORGE_SESSION_TOKEN_USE,
     NOTIFICATION_DELIVERY_SCOPE,
@@ -3175,6 +3176,18 @@ def create_volundr_router(
         """Push once to the caller's own registered tokens (the gateway node sends it)."""
         return await _proxy_to_push_gateway(
             request, principal, method="POST", path="/push/test", body=body
+        )
+
+    @router.post("/push/call", dependencies=[Depends(require_scope(FORGE_PUSH_CALL_SCOPE))])
+    async def ring_owner(
+        request: Request,
+        body: dict[str, Any] = Body(...),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """A resident rings its owner's phone (a VoIP push of its call.request). The
+        gateway node checks the credential, the frame and the per-owner cap itself."""
+        return await _proxy_to_push_gateway(
+            request, principal, method="POST", path="/push/call", body=body
         )
 
     @router.get("/notifications/{notification_id}/image")
