@@ -123,6 +123,12 @@ async def _run_daemon(
     )
 
     resident_notification_outbox = build_resident_notification_outbox(settings)
+    # The call requests notify's speak queues for the voice channel (voice.calls).
+    resident_call_requests = None
+    if resident_notification_outbox is not None:
+        from ravn.cli.voice_wiring import build_resident_call_requests  # noqa: PLC0415
+
+        resident_call_requests = build_resident_call_requests(settings)
     if resident_runtime is not None and resident_notification_outbox is not None:
         resident_runtime.bind_notification_outbox(resident_notification_outbox)
         raised = await resident_runtime.raise_pending_attention()
@@ -344,7 +350,9 @@ async def _run_daemon(
         ):
             from ravn.adapters.tools.notify import ResidentNotifyTool  # noqa: PLC0415
 
-            tools.append(ResidentNotifyTool(resident_notification_outbox))
+            tools.append(
+                ResidentNotifyTool(resident_notification_outbox, calls=resident_call_requests)
+            )
 
         # NIU-571: Apply trust gradient constraints for thread-triggered tasks
         tools = _apply_trust_filter(tools, settings, triggered_by)
@@ -942,6 +950,8 @@ async def _run_daemon(
             # Every task and trigger above has stopped, so nothing writes to the
             # outbox any more; its SQLite connection is released, not leaked.
             resident_notification_outbox.close()
+        if resident_call_requests is not None:
+            resident_call_requests.close()
         if memory is not None:
             # MemoryPort.close() is a no-op for file/sqlite backends and closes
             # the connection pool for postgres. Called unconditionally: the
