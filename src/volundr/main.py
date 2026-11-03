@@ -339,13 +339,16 @@ def _create_odin_review_relay(
     source = import_class(config.source.adapter)(
         **resolve_secret_kwargs(config.source.kwargs, config.source.secret_kwargs_env)
     )
+    # With the Guild push gateway this node has no push sink: the gateway alerts for
+    # each question's notification itself, so no owner needs the sink's rule.
+    pushes_through_sink = settings.push.enabled and not settings.push.gateway.enabled
     return OdinReviewNotificationRelay(
         source,
         PostgresOdinReviewRelayStateStore(pool),
         notification_service,
         owner_ids=config.owner_ids,
         poll_interval_seconds=config.poll_interval_seconds,
-        push_sink=settings.push.attention_sink if settings.push.enabled else None,
+        push_sink=settings.push.attention_sink if pushes_through_sink else None,
     )
 
 
