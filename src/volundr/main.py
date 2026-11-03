@@ -313,6 +313,26 @@ def _create_resident_notification_relay(
     )
 
 
+async def _retire_unserved_push_rules(
+    settings: Settings, notification_service: NotificationService, *, gateway_on: bool
+) -> int:
+    """Drop the needs-input rules of a sink this node no longer pushes through.
+
+    The gateway alerts instead, or push is off: those rules would fail every
+    delivery. A no-op while the sink is still configured. Returns how many went.
+    """
+    sink = settings.push.attention_sink
+    retired = await notification_service.retire_attention_push_rules(sink)
+    if retired:
+        logger.info(
+            "Retired %d needs-input push rule(s) for sink %r: %s",
+            retired,
+            sink,
+            "the push gateway alerts instead" if gateway_on else "push.enabled is false",
+        )
+    return retired
+
+
 def _create_odin_review_relay(
     settings: Settings,
     pool: Any,
@@ -1266,6 +1286,10 @@ def create_app(
                     "Needs-input pushes on: through sink %r (adapter=%s)",
                     settings.push.attention_sink,
                     settings.push.adapter.rsplit(".", 1)[-1],
+                )
+            elif notification_service is not None:
+                await _retire_unserved_push_rules(
+                    settings, notification_service, gateway_on=push_gateway is not None
                 )
             app.state.notification_dispatcher = (
                 notification_delivery.dispatcher if notification_delivery is not None else None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -296,6 +297,34 @@ class TestOdinReviewRelayComposition:
         assert through_gateway._push_sink is None
         await through_sink._source.close()
         await through_gateway._source.close()
+
+    @pytest.mark.parametrize(
+        ("gateway_on", "reason"),
+        [(True, "the push gateway alerts instead"), (False, "push.enabled is false")],
+    )
+    async def test_unserved_push_rules_are_retired_at_start_and_said(
+        self, caplog, gateway_on, reason
+    ):
+        from volundr.main import _retire_unserved_push_rules
+
+        service = MagicMock()
+        service.retire_attention_push_rules = AsyncMock(return_value=2)
+        with caplog.at_level(logging.INFO, logger="volundr.main"):
+            retired = await _retire_unserved_push_rules(Settings(), service, gateway_on=gateway_on)
+
+        assert retired == 2
+        service.retire_attention_push_rules.assert_awaited_once_with("push")
+        assert any("Retired 2 needs-input push rule(s)" in r.message for r in caplog.records)
+        assert any(reason in r.message for r in caplog.records)
+
+    async def test_nothing_retired_is_not_announced(self, caplog):
+        from volundr.main import _retire_unserved_push_rules
+
+        service = MagicMock()
+        service.retire_attention_push_rules = AsyncMock(return_value=0)
+        with caplog.at_level(logging.INFO, logger="volundr.main"):
+            assert await _retire_unserved_push_rules(Settings(), service, gateway_on=True) == 0
+        assert not any("Retired" in r.message for r in caplog.records)
 
     def test_enabled_without_the_notification_service_is_fatal(self):
         from volundr.main import _create_odin_review_relay

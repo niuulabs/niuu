@@ -22,10 +22,12 @@ from volundr.domain.notifications import (
     NotificationNotFoundError,
     NotificationQuery,
     NotificationReadStateConflictError,
+    NotificationRule,
     NotificationRuleMatch,
     NotificationRuleSpec,
     NotificationSinkInfo,
     NotificationValidationError,
+    attention_push_rule,
 )
 from volundr.domain.ports import IntegrationRepository
 from volundr.domain.projects import SessionCoordination
@@ -330,6 +332,44 @@ class TestAttentionPushRule:
         service, _ = _service()
         with pytest.raises(NotificationValidationError, match="'push' is not configured"):
             await service.ensure_attention_push_rule("owner-a", sink="push")
+
+    async def test_retiring_drops_only_forges_own_rules_for_a_sink_it_lost(self):
+        # "push" is not configured on this node (the gateway pushes instead).
+        service, store = _service()
+        now = datetime.now(UTC)
+        given = [attention_push_rule(owner, "push", now) for owner in ("owner-a", "owner-b")]
+        for rule in given:
+            await store.rule_repo.create(rule)
+        written = await store.rule_repo.create(
+            NotificationRule(
+                id=uuid4(),
+                owner_id="owner-a",
+                name="mine",
+                sink="push",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        other_sink = await service.ensure_attention_push_rule("owner-c", sink="ops")
+        session = _session(owner_id="owner-a")
+        await service.record_attention(
+            session, state_since=now, kind="question", prompt="Which DB?", request_id="q1"
+        )
+        assert any(d.rule_id == given[0].id for d in store.deliveries.values())
+
+        assert await service.retire_attention_push_rules("push") == 2
+
+        # An owner's own rule stays (and keeps failing loudly); other sinks are untouched.
+        assert set(store.rules) == {written.id, other_sink.id}
+        assert not any(d.rule_id == given[0].id for d in store.deliveries.values())
+        assert await service.retire_attention_push_rules("push") == 0
+
+    async def test_rules_for_a_sink_this_node_serves_are_never_retired(self):
+        service, store = _service()
+        rule = await service.ensure_attention_push_rule("owner-a", sink="ops")
+
+        assert await service.retire_attention_push_rules("ops") == 0
+        assert list(store.rules) == [rule.id]
 
     async def test_needs_input_is_scheduled_for_delivery_through_the_rule(self):
         service, store = _service()

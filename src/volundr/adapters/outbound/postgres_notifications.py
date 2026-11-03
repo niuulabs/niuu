@@ -663,6 +663,15 @@ class PostgresNotificationRuleRepository(NotificationRuleRepository):
         )
         return [row_to_rule(row) for row in rows]
 
+    async def list_for_sink(self, sink: str) -> list[NotificationRule]:
+        rows = await self._pool.fetch(
+            """SELECT * FROM forge_notification_rules
+               WHERE sink = $1 AND integration_connection_id IS NULL
+               ORDER BY created_at, id""",
+            sink,
+        )
+        return [row_to_rule(row) for row in rows]
+
     async def get(self, owner_id: str, rule_id: UUID) -> NotificationRule | None:
         row = await self._pool.fetchrow(
             "SELECT * FROM forge_notification_rules WHERE id = $1 AND owner_id = $2",
