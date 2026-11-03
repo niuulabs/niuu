@@ -635,9 +635,6 @@ export function SessionsPage() {
       ),
   );
   const allSessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data]);
-  const attentionCount = allSessions.filter((session) =>
-    matchesSessionFilter(session, 'attention'),
-  ).length;
   const stoppedSessionCount = useMemo(
     () => allSessions.filter((session) => session.state === 'terminated').length,
     [allSessions],
@@ -985,49 +982,44 @@ export function SessionsPage() {
                     />
                   </div>
                 </div>
+                <div className="forge-session-states" role="group" aria-label="Session states">
+                  {SESSION_FILTERS.map((value) => {
+                    const count = allSessions.filter((session) =>
+                      matchesSessionFilter(session, value),
+                    ).length;
+                    // An empty state is noise in a narrow list; the chosen one always shows.
+                    if (count === 0 && filter !== value) return null;
+                    return (
+                      <button
+                        key={value}
+                        type="button"
+                        aria-pressed={filter === value}
+                        data-testid={`session-filter-${value}`}
+                        data-filter={value}
+                        onClick={() => setFilter(value)}
+                      >
+                        <span>{FILTER_LABELS[value]}</span>
+                        <span>{count}</span>
+                      </button>
+                    );
+                  })}
+                </div>
                 <div className="forge-session-filters">
-                  <select
-                    className="forge-session-group-select"
-                    aria-label="Show sessions"
-                    title="Show sessions"
-                    data-testid="session-filter"
-                    value={filter}
-                    onChange={(event) => setFilter(event.target.value as SessionFilter)}
-                  >
-                    {SESSION_FILTERS.map((value) => (
-                      <option key={value} value={value} data-testid={`session-filter-${value}`}>
-                        {FILTER_LABELS[value]} ·{' '}
-                        {
-                          allSessions.filter((session) => matchesSessionFilter(session, value))
-                            .length
-                        }
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    className="forge-session-group-select"
-                    aria-label="Group sessions by"
-                    title="Group sessions by"
-                    data-testid="pod-group-mode"
-                    value={sidebarMode}
-                    onChange={(event) => setSidebarMode(event.target.value as SidebarMode)}
-                  >
-                    {SIDEBAR_MODES.map((mode) => (
-                      <option key={mode} value={mode} data-testid={`pod-group-mode-${mode}`}>
-                        By {SIDEBAR_MODE_LABELS[mode].toLowerCase()}
-                      </option>
-                    ))}
-                  </select>
-                  {attentionCount > 0 && filter !== 'attention' ? (
-                    <button
-                      type="button"
-                      className="forge-session-needs-you"
-                      data-testid="session-filter-needs-you"
-                      onClick={() => setFilter('attention')}
+                  <label className="forge-session-group-label">
+                    <span>Group</span>
+                    <select
+                      className="forge-session-group-select"
+                      data-testid="pod-group-mode"
+                      value={sidebarMode}
+                      onChange={(event) => setSidebarMode(event.target.value as SidebarMode)}
                     >
-                      Needs you {attentionCount}
-                    </button>
-                  ) : null}
+                      {SIDEBAR_MODES.map((mode) => (
+                        <option key={mode} value={mode} data-testid={`pod-group-mode-${mode}`}>
+                          {SIDEBAR_MODE_LABELS[mode]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
               </div>
 

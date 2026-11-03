@@ -261,17 +261,13 @@ describe('SessionsPage', () => {
     ).toEqual(['pod-entry-idle-pin', 'pod-entry-active-pin', 'pod-entry-archived-pin']);
     for (const mode of ['state', 'repo', 'forge', 'project']) {
       fireEvent.change(screen.getByTestId('pod-group-mode'), { target: { value: mode } });
-      for (const filter of [
-        'live',
-        'active',
-        'idle',
-        'attention',
-        'stopped',
-        'failed',
-        'all',
-        'archived',
-      ]) {
-        fireEvent.change(screen.getByTestId('session-filter'), { target: { value: filter } });
+      const states = screen.getByRole('group', { name: 'Session states' });
+      // Empty states are hidden; every state shown is one this fixture has sessions in.
+      expect(within(states).queryByTestId('session-filter-attention')).not.toBeInTheDocument();
+      for (const filter of within(states)
+        .getAllByRole('button')
+        .map((button) => button.dataset.filter!)) {
+        fireEvent.click(screen.getByTestId(`session-filter-${filter}`));
         expect(screen.getAllByTestId('pod-entry-active-pin')).toHaveLength(1);
         expect(within(pinned).getByTestId('pod-entry-archived-pin')).toBeInTheDocument();
       }
@@ -731,13 +727,13 @@ describe('Forge session review controls', () => {
   it('defaults to live sessions, counts filters, preserves selection and composes search', async () => {
     wrap(createSessionStoreWithSessions(sessions));
     await screen.findByTestId('pod-entry-working');
-    expect(screen.getByTestId('session-filter-live')).toHaveTextContent('Live · 3');
+    expect(screen.getByTestId('session-filter-live')).toHaveTextContent('Live3');
     expect(screen.queryByTestId('pod-entry-stopped')).not.toBeInTheDocument();
     expect(screen.queryByTestId('pod-entry-archived')).not.toBeInTheDocument();
     expect(screen.getByTestId('pod-entry-working')).not.toHaveTextContent('dev-user');
     expect(screen.getByTestId('pod-entry-working')).toHaveTextContent('Thor');
     expect(screen.getByTestId('pod-entry-working')).toHaveTextContent('~/repos/niuu');
-    fireEvent.change(screen.getByTestId('session-filter'), { target: { value: 'all' } });
+    fireEvent.click(screen.getByTestId('session-filter-all'));
     expect(screen.getByTestId('pod-entry-archived')).toBeInTheDocument();
     fireEvent.change(screen.getByTestId('pod-search'), { target: { value: 'Release review' } });
     expect(screen.getByTestId('pod-entry-working')).toBeInTheDocument();
@@ -817,7 +813,7 @@ describe('Forge session review controls', () => {
     wrap(createSessionStoreWithSessions(sessions), service);
     fireEvent.click(await screen.findByTestId('pod-entry-working-archive'));
     await waitFor(() => expect(calls).toEqual(['stop', 'archive']));
-    fireEvent.change(screen.getByTestId('session-filter'), { target: { value: 'archived' } });
+    fireEvent.click(screen.getByTestId('session-filter-archived'));
     fireEvent.click(screen.getByRole('button', { name: 'Restore Old session' }));
     await waitFor(() => expect(service.restoreSession).toHaveBeenCalledWith('archived'));
   });

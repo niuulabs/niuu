@@ -295,23 +295,65 @@
   gap: 6px;
   padding-top: 6px;
 }
-.forge-session-filters select {
+.forge-session-group-label {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+.forge-session-group-label select {
   min-width: 0;
   flex: 1 1 0;
 }
-.forge-session-needs-you {
-  flex-shrink: 0;
-  border: 0;
+.forge-session-states {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 4px;
+  padding-top: 6px;
+}
+.forge-session-states button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 0;
+  height: 26px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 4px;
   background: transparent;
-  padding: 4px 2px;
-  color: var(--status-amber);
+  padding: 0 6px;
+  color: var(--color-text-secondary);
+  font: inherit;
   font-size: 11px;
   font-weight: 600;
-  white-space: nowrap;
   cursor: pointer;
 }
-.forge-session-needs-you:hover {
-  text-decoration: underline;
+.forge-session-states button span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.forge-session-states button span:last-child {
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.forge-session-states button:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+.forge-session-states button[aria-pressed='true'] {
+  border-color: var(--color-brand);
+  background: color-mix(in srgb, var(--color-brand) 16%, transparent);
+  color: var(--color-text-primary);
+}
+.forge-session-states button[aria-pressed='true'] span:last-child {
+  color: var(--color-brand);
+}
+.forge-session-states button[data-filter='attention'] span:last-child {
+  color: var(--status-amber);
 }
 .forge-session-group-select {
   flex-shrink: 0;
