@@ -60,7 +60,7 @@ export function ResearchCampaignSections({
               <span className="ting-research-detail__row-muted">{source.domain}</span>
               <QualityDots score={source.quality} />
               <span className="ting-research-detail__row-muted">×{source.citedCount}</span>
-              <span className="ting-research-detail__row-open">ᛗ open</span>
+              <span className="ting-research-detail__row-open">Open</span>
             </button>
           ))}
         </div>
@@ -122,7 +122,7 @@ export function ResearchCampaignSections({
                       className="ting-research-detail__lf-action"
                       onClick={() => openDrawer({ tab: 'files', file: learningsArtifact.path })}
                     >
-                      ᛗ open
+                      Open
                     </button>
                   ) : null}
                 </div>
@@ -140,7 +140,7 @@ export function ResearchCampaignSections({
                       className="ting-research-detail__lf-action"
                       onClick={() => openDrawer({ tab: 'files', file: followupsArtifact.path })}
                     >
-                      ᛗ open
+                      Open
                     </button>
                   ) : null}
                 </div>

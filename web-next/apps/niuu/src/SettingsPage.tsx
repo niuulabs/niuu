@@ -810,8 +810,8 @@ function TokensResourceCard({
             onChange={(event) => setScope(event.target.value)}
           >
             <option value="">Choose a permission</option>
-            <option value="forge:session:create">Create Forge sessions</option>
-            <option value="ting:workflow:launch">Launch Ting workflows</option>
+            <option value="forge:session:create">Create sessions</option>
+            <option value="ting:workflow:launch">Launch workflows</option>
             <option value="observatory:topology:push">Publish Observatory topology</option>
           </select>
         </label>
@@ -2702,8 +2702,8 @@ export function SettingsPage() {
 
       return {
         provider,
-        title: schema?.title ?? provider.title,
-        subtitle: schema?.subtitle ?? provider.subtitle,
+        title: provider.title,
+        subtitle: provider.subtitle,
         sections: normalizeSections(schema),
         status,
         scopeLabel: schema?.scope ?? provider.scope,

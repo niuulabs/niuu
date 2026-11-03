@@ -27,6 +27,27 @@ from ting.domain.models import PRStatus
 
 
 @dataclass(frozen=True)
+class ForgeProjectRef:
+    """A Forge project, and the host's own id for links to sessions on that host."""
+
+    id: str
+    name: str
+    instance_id: str
+
+
+@dataclass(frozen=True)
+class SessionMembership:
+    """Where a new session joins a Forge project. A parent needs both of its fields."""
+
+    project_id: str
+    role: str
+    parent_instance_id: str = ""
+    parent_session_id: str = ""
+    objective: str = ""
+    labels: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SpawnRequest:
     """Everything needed to spawn a Volundr session for a run.
 
@@ -70,6 +91,7 @@ class SpawnRequest:
     profile: str | None = None
     integration_ids: list[str] = field(default_factory=list)
     credential_names: list[str] = field(default_factory=list)
+    membership: SessionMembership | None = None
 
 
 @dataclass(frozen=True)
@@ -156,6 +178,11 @@ class PublicSessionLogPage:
 
 
 class VolundrPort(ABC):
+    @property
+    def api_base_url(self) -> str:
+        """The Forge this adapter talks to, for a session it launches to reach back."""
+        raise NotImplementedError(f"{type(self).__name__} does not know its Forge's address")
+
     """Abstract interface for Volundr session management."""
 
     @property
@@ -187,6 +214,59 @@ class VolundrPort(ABC):
         principal: Principal | None = None,
     ) -> VolundrSession:
         raise NotImplementedError
+
+    async def get_project(
+        self,
+        project_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> ForgeProjectRef | None:
+        """The project as this Forge knows it; None when it does not."""
+        raise NotImplementedError(f"{type(self).__name__} does not hold Forge projects")
+
+    async def ensure_project(
+        self,
+        project_id: str,
+        name: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> ForgeProjectRef:
+        """Make this Forge know the project, under the id Work already uses for it."""
+        raise NotImplementedError(f"{type(self).__name__} does not hold Forge projects")
+
+    async def session_project(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> str | None:
+        """The project a session belongs to; None when it belongs to none."""
+        raise NotImplementedError(f"{type(self).__name__} does not hold Forge projects")
+
+    async def join_project(
+        self,
+        session_id: str,
+        project_id: str,
+        *,
+        role: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        """Put a running session in a project, unless it is already there."""
+        raise NotImplementedError(f"{type(self).__name__} does not hold Forge projects")
+
+    async def start_session(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        """Start a stopped session again, keeping its workspace."""
+        raise NotImplementedError("This Volundr adapter does not support restarting sessions")
 
     async def resolve_delivery_ref(
         self,
@@ -291,7 +371,7 @@ class VolundrPort(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_pr_status(self, session_id: str) -> PRStatus:
+    async def get_pr_status(self, session_id: str) -> PRStatus | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -316,6 +396,7 @@ class VolundrPort(ABC):
         target_peer_id: str,
         message: str,
         *,
+        metadata: dict[str, object] | None = None,
         auth_token: str | None = None,
         principal: Principal | None = None,
     ) -> None:
@@ -356,6 +437,32 @@ class VolundrPort(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not expose caller-scoped portable personas"
         )
+
+    async def join_room(
+        self,
+        session_id: str,
+        *,
+        participant_id: str,
+        display_name: str,
+        member_session_id: str,
+        notice_context: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        """Seat an agent from another session in this session's room."""
+        raise NotImplementedError
+
+    async def leave_room(
+        self,
+        session_id: str,
+        participant_id: str,
+        *,
+        reason: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        """End a participant's membership of this session's room."""
+        raise NotImplementedError
 
     async def get_workflow_gates(
         self,
@@ -531,6 +638,17 @@ class VolundrFactory(Protocol):
 
     async def for_principal(self, principal: Principal) -> list[VolundrPort]:
         """Return all visible adapters for a fully scoped principal."""
+        raise NotImplementedError
+
+    async def for_principal_with_unresolved(
+        self, principal: Principal
+    ) -> tuple[list[VolundrPort], int]:
+        """Like ``for_principal``, but also reports how many registered instances
+        could not be resolved into a usable adapter this call.
+
+        Looking for a session across a principal's Forges needs this: a session
+        absent from the Forges that resolved is only gone when none was skipped.
+        """
         raise NotImplementedError
 
     async def primary_for_principal(self, principal: Principal) -> VolundrPort | None:

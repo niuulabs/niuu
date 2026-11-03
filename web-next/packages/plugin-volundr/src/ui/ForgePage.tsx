@@ -578,7 +578,7 @@ export function ForgePage() {
     <>
       <div className="vol-forge" data-testid="forge-page">
         {connectionStates.length > 0 && (
-          <div className="vol-forge__connections" aria-label="Forge connections">
+          <div className="vol-forge__connections" aria-label="Host connections">
             <p>
               {incompleteMetrics
                 ? 'Metrics cover loaded hosts; some data is pending or unavailable.'
@@ -601,12 +601,12 @@ export function ForgePage() {
                 type="button"
                 onClick={() => void Promise.all([overview.refetch(), sessionsQuery.refetch()])}
               >
-                Retry Forge connections
+                Retry host connections
               </button>
             )}
           </div>
         )}
-        <section className="vol-forge__metrics" aria-label="Forge metrics">
+        <section className="vol-forge__metrics" aria-label="Host metrics">
           <MetricTile
             label="ACTIVE PODS"
             value={sessionsQuery.data ? activeSessions.length : '—'}
@@ -693,7 +693,7 @@ export function ForgePage() {
           >
             <header className="vol-forge__panel-head">
               <div className="vol-forge__panel-title">
-                <h2>Forge load</h2>
+                <h2>Host load</h2>
                 <span>{forgeClusters.length} clusters</span>
               </div>
               <button
@@ -806,15 +806,26 @@ export function ForgePage() {
                     <StateDot state="failed" />
                     <div className="vol-forge__error-body">
                       <div className="vol-forge__error-title">
+                        <span>{session.name ?? session.personaName}</span>
                         <span>{session.id}</span>
-                        <span>{session.personaName}</span>
                       </div>
-                      <div className="vol-forge__error-message">
-                        {session.events[session.events.length - 1]?.body ?? 'unknown error'}
+                      <div className="vol-forge__error-message" data-testid="error-reason">
+                        {session.error ??
+                          session.events[session.events.length - 1]?.body ??
+                          'Forge recorded no reason for this failure.'}
                       </div>
                     </div>
-                    <button type="button" className="vol-forge__retry-btn">
-                      retry
+                    <button
+                      type="button"
+                      className="vol-forge__retry-btn"
+                      onClick={() =>
+                        void navigate({
+                          to: '/volundr/sessions/$sessionId',
+                          params: { sessionId: session.id },
+                        })
+                      }
+                    >
+                      open
                     </button>
                   </div>
                 ))}

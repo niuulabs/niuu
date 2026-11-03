@@ -1,4 +1,9 @@
-"""Mutable Kubernetes Secret projection for developer coordinator credentials."""
+"""Mutable Kubernetes Secret projection of a per-session bearer token.
+
+It carries developer coordinator credentials (``workflow_execution_credentials``) and
+the session-bound Forge credential (``forge_mcp.session_tokens``); each use names its
+own ``secret_prefix``, ``volume_prefix``, ``purpose`` and ``mount_path``.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +28,8 @@ class KubernetesExecutionCredentialProjection(ExecutionCredentialProjectionPort)
         namespace: str,
         mount_path: str = DEFAULT_MOUNT_PATH,
         secret_prefix: str = "workflow-execution",
+        volume_prefix: str = "execution-credential",
+        purpose: str = "workflow-execution-credential",
         api: Any | None = None,
         **_extra: object,
     ) -> None:
@@ -31,6 +38,8 @@ class KubernetesExecutionCredentialProjection(ExecutionCredentialProjectionPort)
         self._namespace = namespace
         self._mount_path = mount_path.rstrip("/")
         self._secret_prefix = secret_prefix.rstrip("-")
+        self._volume_prefix = volume_prefix.rstrip("-")
+        self._purpose = purpose
         self._api = api
 
     def supports(self, runtime_backend: str) -> bool:
@@ -78,7 +87,7 @@ class KubernetesExecutionCredentialProjection(ExecutionCredentialProjectionPort)
                 "labels": {
                     "app.kubernetes.io/managed-by": "volundr",
                     "volundr.niuu.io/session-id": str(session_id),
-                    "volundr.niuu.io/purpose": "workflow-execution-credential",
+                    "volundr.niuu.io/purpose": self._purpose,
                 },
             },
             "type": "Opaque",
@@ -102,7 +111,7 @@ class KubernetesExecutionCredentialProjection(ExecutionCredentialProjectionPort)
         else:
             await api.patch_namespaced_secret(name=name, namespace=self._namespace, body=body)
 
-        volume_name = f"execution-credential-{session_id.hex[:12]}"
+        volume_name = f"{self._volume_prefix}-{session_id.hex[:12]}"
         return ExecutionCredentialProjection(
             token_file=f"{self._mount_path}/token",
             pod_spec=PodSpecAdditions(

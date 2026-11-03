@@ -236,11 +236,28 @@ class TestNotify:
         assert flushing._conversation_turns[-1].id == turn_id
         assert flushing.broadcasts[-1]["turn"]["id"] == turn_id
 
-    async def test_pending_while_forge_is_down_then_commits(self, flushing, forge) -> None:
+    async def test_an_image_travels_in_the_durable_turn(self, flushing, forge) -> None:
+        image = {"file_id": "pf_" + "f" * 32, "alt": "The new login screen"}
+        result = await _call(flushing, "notify", {**NOTIFY, "image": image})
+
+        assert result["isError"] is False
+        [entry] = [e for e in forge.logged if e["payload"].get("type") == "conversation.turn"]
+        turn = entry["payload"]["turn"]
+        assert turn["metadata"]["notification"]["image"] == image
+        assert turn["parts"][0]["input"]["image"] == image
+        parsed = draft_from_log_payload(entry["payload"])
+        assert parsed is not None and parsed[1].image.file_id == image["file_id"]
+
+    @pytest.mark.parametrize("structured", [False, True])
+    async def test_pending_while_forge_is_down_then_commits(
+        self, flushing, forge, structured
+    ) -> None:
         forge.log_status = 503
         flushing._settings.forge_mcp.notify_confirm_timeout_s = 0.1
+        ask = {"items": [{"id": "access", "kind": "action", "text": "Grant test access."}]}
+        args = {**NOTIFY, "question": True, "ask": ask} if structured else NOTIFY
 
-        result = await _call(flushing, "notify", NOTIFY)
+        result = await _call(flushing, "notify", args)
 
         assert result["structuredContent"]["state"] == "pending"
         assert forge.logged == []
@@ -250,6 +267,8 @@ class TestNotify:
                 break
             await asyncio.sleep(0.02)
         assert forge.logged[0]["seq"] == result["structuredContent"]["session_seq"]
+        _, draft = draft_from_log_payload(forge.logged[0]["payload"])
+        assert (draft.ask.wire() if draft.ask else None) == (ask if structured else None)
 
     async def test_a_conflicting_seq_is_reported(self, flushing, forge) -> None:
         forge.log_conflicts = [1]
@@ -407,6 +426,7 @@ class TestForgeProxy:
                 ("POST", f"{base}/messages"): record("message", {"status": "delivered"}),
                 ("GET", f"{base}/message-deliveries/r-1"): record("delivery", {"status": "ok"}),
                 ("POST", "/api/v1/forge/sessions"): record("create", {"id": PEER_ID}),
+                ("GET", f"/api/v1/forge/sessions/{SESSION_ID}"): record("own", {"id": SESSION_ID}),
                 ("POST", f"{base}/start"): record("start", {"id": PEER_ID}),
                 ("POST", f"{base}/stop"): record("stop", {"id": PEER_ID}),
             }

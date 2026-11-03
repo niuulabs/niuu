@@ -730,7 +730,13 @@ describe('SessionChat', () => {
     expect(screen.getByLabelText('Which environment should be deployed?')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Production' }));
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
-    expect(onInputRespond).toHaveBeenCalledWith('input-1', ['Production']);
+    expect(onInputRespond).toHaveBeenCalledWith('input-1', [
+      {
+        question: 'Which environment should be deployed?',
+        answer: 'Production',
+        option_indexes: [1],
+      },
+    ]);
   });
 
   it('shows an unanswerable question read-only with a dismiss action', () => {
@@ -782,7 +788,123 @@ describe('SessionChat', () => {
     fireEvent.change(input, { target: { value: '  July release  ' } });
     expect(submit).toBeEnabled();
     fireEvent.submit(input.closest('form')!);
-    expect(onInputRespond).toHaveBeenCalledWith('input-2', ['July release']);
+    expect(onInputRespond).toHaveBeenCalledWith('input-2', [
+      {
+        question: 'Name the release',
+        answer: 'July release',
+        option_indexes: [],
+        free_text: 'July release',
+      },
+    ]);
+  });
+
+  it('answers a multi-select question with every chosen option (LEX-1502)', () => {
+    const onInputRespond = vi.fn();
+    render(
+      <SessionChat
+        {...defaultProps}
+        pendingInputRequests={[
+          {
+            requestId: 'input-3',
+            questions: [
+              {
+                prompt: 'Which platforms?',
+                choices: ['iOS', 'macOS', 'watchOS'],
+                multiSelect: true,
+                id: 'platforms',
+              },
+            ],
+          },
+        ]}
+        onInputRespond={onInputRespond}
+      />,
+    );
+
+    expect(screen.getByText('Select all that apply.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'iOS' }));
+    fireEvent.click(screen.getByRole('button', { name: 'watchOS' }));
+    fireEvent.click(screen.getByRole('button', { name: 'macOS' }));
+    fireEvent.click(screen.getByRole('button', { name: 'macOS' })); // toggles off again
+    expect(screen.getByRole('button', { name: 'iOS' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'macOS' })).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+    expect(onInputRespond).toHaveBeenCalledWith('input-3', [
+      {
+        question: 'Which platforms?',
+        question_id: 'platforms',
+        answer: ['iOS', 'watchOS'],
+        option_indexes: [0, 2],
+      },
+    ]);
+  });
+
+  it('shows option descriptions and ties them to their choice (LEX-1502)', () => {
+    render(
+      <SessionChat
+        {...defaultProps}
+        pendingInputRequests={[
+          {
+            requestId: 'input-4',
+            questions: [
+              {
+                prompt: 'Which database?',
+                choices: ['Postgres', 'SQLite'],
+                descriptions: ['Already deployed', undefined],
+              },
+            ],
+          },
+        ]}
+        onInputRespond={vi.fn()}
+      />,
+    );
+
+    const postgres = screen.getByRole('button', { name: 'Postgres' });
+    expect(postgres).toHaveAccessibleDescription('Already deployed');
+    expect(screen.getByRole('button', { name: 'SQLite' })).not.toHaveAttribute('aria-describedby');
+  });
+
+  it('shows why an answer was refused, and typing replaces a single choice (LEX-1502)', () => {
+    const onInputRespond = vi.fn();
+    render(
+      <SessionChat
+        {...defaultProps}
+        pendingInputRequests={[
+          {
+            requestId: 'input-5',
+            questions: [{ prompt: 'Deliver how?', choices: ['Folio', 'Tar'] }],
+            error: 'The live Claude menu does not match the pending question state',
+          },
+        ]}
+        onInputRespond={onInputRespond}
+      />,
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent('does not match');
+    fireEvent.click(screen.getByRole('button', { name: 'Folio' }));
+    fireEvent.change(screen.getByLabelText('Deliver how?'), { target: { value: 'Zip' } });
+    expect(screen.getByRole('button', { name: 'Folio' })).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    expect(onInputRespond).toHaveBeenCalledWith('input-5', [
+      { question: 'Deliver how?', answer: 'Zip', option_indexes: [], free_text: 'Zip' },
+    ]);
+  });
+
+  it('shows the refusal on a question that must now be answered in the terminal', () => {
+    render(
+      <SessionChat
+        {...defaultProps}
+        pendingInputRequests={[
+          {
+            requestId: 'input-6',
+            questions: [{ prompt: 'Deliver how?', choices: ['Folio'] }],
+            answerable: false,
+            error: 'This pending control survived in history',
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('survived in history');
   });
 
   /* ── Room mode / MeshSidebar ── */

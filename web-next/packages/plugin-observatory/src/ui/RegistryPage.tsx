@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
-import { Rune, StateDot } from '@niuulabs/ui';
+import { StateDot } from '@niuulabs/ui';
 import { useRegistry } from '../application/useRegistry';
 import type { Registry } from '../domain';
 import type { IRegistryRepository } from '../ports';
@@ -21,9 +21,8 @@ export function RegistryPage() {
     <div className="niuu:flex niuu:flex-col niuu:h-full">
       {/* Header — always visible */}
       <div className="niuu:flex niuu:items-center niuu:gap-3 niuu:py-4 niuu:px-6 niuu:border-b niuu:border-border-subtle niuu:shrink-0">
-        <Rune glyph="ᛞ" size={28} />
         <div>
-          <h2 className="niuu:m-0 niuu:text-lg">Registry</h2>
+          <h2 className="niuu:m-0 niuu:text-lg">Component types</h2>
           <p className="niuu:m-0 niuu:text-text-secondary niuu:text-sm">entity type definitions</p>
         </div>
       </div>

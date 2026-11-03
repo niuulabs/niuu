@@ -161,6 +161,7 @@ class RoomClient:
         self._ref = ref
         self._client = client
         self._owns_client = client is None
+        self._seated: set[str] = set()
 
     @property
     def ref(self) -> RoomRef:
@@ -270,6 +271,8 @@ class RoomClient:
                 response.raise_for_status()
         except httpx.HTTPError as exc:
             logger.warning("room %s: post failed (%s)", self._ref.name, exc)
+            # A broker that restarted no longer knows the seat, so take it again next time.
+            self._seated.discard(participant_id)
             return False
         return True
 
@@ -288,6 +291,15 @@ class RoomClient:
             if isinstance(speaker, str) and speaker and speaker != exclude:
                 return speaker
         return None
+
+    async def seat(self, *, participant_id: str) -> bool:
+        """Join once: a seat lasts until its holder leaves, however quiet they go."""
+        if participant_id in self._seated:
+            return True
+        joined = await self.join(participant_id=participant_id)
+        if joined:
+            self._seated.add(participant_id)
+        return joined
 
     async def join(self, *, participant_id: str, role: str = "owner") -> bool:
         """Seat a human in the room, so a phone can speak without a shell.

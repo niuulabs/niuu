@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -14,6 +15,7 @@ from niuu.domain.notifications import (
     NotificationSource,
 )
 from niuu.ports.notifications import NotificationDeliveryError, OutboundNotification
+from tests.support.push_fakes import Clock, FakeDeviceRepository
 from volundr.adapters.outbound.push_channels import (
     ApnsNotificationChannel,
     LoggingNotificationChannel,
@@ -21,7 +23,8 @@ from volundr.adapters.outbound.push_channels import (
 )
 from volundr.adapters.outbound.push_notification_sink import PushNotificationSink
 from volundr.domain.models import DevicePlatform, DeviceToken, PushMessage
-from volundr.domain.ports import DeviceTokenRepository, NotificationChannel
+from volundr.domain.ports import NotificationChannel
+from volundr.domain.push import PushTokenKind
 
 _TEST_P8 = """-----BEGIN PRIVATE KEY-----
 MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg47BWBTYgy58QhfDc
@@ -52,20 +55,17 @@ def ios(token: str = "d1") -> DeviceToken:
     return DeviceToken(owner_id="user-1", platform=DevicePlatform.IOS, token=token)
 
 
-class Devices(DeviceTokenRepository):
+class Devices(FakeDeviceRepository):
     def __init__(self, devices: list[DeviceToken]) -> None:
-        self.devices = devices
+        super().__init__(Clock())
+        self.add(*devices)
         self.asked: list[str] = []
 
-    async def upsert(self, device: DeviceToken) -> DeviceToken:
-        return device
-
-    async def list_for_owner(self, owner_id: str) -> list[DeviceToken]:
+    async def list_for_owner(
+        self, owner_id: str, *, kinds: Sequence[PushTokenKind] | None = None
+    ) -> list[DeviceToken]:
         self.asked.append(owner_id)
-        return self.devices
-
-    async def delete(self, owner_id: str, token: str) -> bool:
-        return False
+        return await super().list_for_owner(owner_id, kinds=kinds)
 
 
 class RecordingChannel(NotificationChannel):
@@ -320,11 +320,20 @@ class TestApnsDeliver:
         with pytest.raises(NotificationDeliveryError, match="no registered iOS devices"):
             await self._channel(_client()).deliver(_message(), [web])
 
-    async def test_bad_key_is_permanent(self):
-        channel = ApnsNotificationChannel(
-            team_id="T", key_id="K", private_key="not a key", bundle_id="b", client=_client()
-        )
-        with pytest.raises(NotificationDeliveryError, match="setup failed") as info:
+    def test_bad_key_is_refused_when_the_channel_is_built(self):
+        with pytest.raises(ValueError, match="not an unencrypted PEM private key"):
+            ApnsNotificationChannel(
+                team_id="T", key_id="K", private_key="not a key", bundle_id="b", client=_client()
+            )
+
+    async def test_a_client_that_cannot_be_built_is_permanent(self, monkeypatch):
+        channel = self._channel(_client())
+
+        async def no_http2() -> None:
+            raise ImportError("h2 is not installed")
+
+        monkeypatch.setattr(channel, "_get_client", no_http2)
+        with pytest.raises(NotificationDeliveryError, match="setup failed: ImportError") as info:
             await channel.deliver(_message(), [ios()])
         assert not info.value.retryable
 
@@ -339,3 +348,22 @@ class TestApnsDeliver:
         web = DeviceToken(owner_id="u", platform=DevicePlatform.WEB, token="w")
         await self._channel(client).send(_message(), [web])
         client.post.assert_not_called()
+
+
+class TestAlertTokensOnly:
+    async def test_live_activity_and_widget_tokens_never_get_the_alert(self):
+        channel = RecordingChannel()
+        alert = ios("alert-1")
+        others = [
+            DeviceToken(owner_id="user-1", platform=DevicePlatform.IOS, token=kind.value, kind=kind)
+            for kind in PushTokenKind
+            if kind is not PushTokenKind.ALERT
+        ]
+        sink = PushNotificationSink(
+            device_repository=Devices([alert, *others]), push_channel=channel
+        )
+
+        await sink.send(outbound())
+
+        ((_, devices),) = channel.delivered
+        assert [device.token for device in devices] == ["alert-1"]

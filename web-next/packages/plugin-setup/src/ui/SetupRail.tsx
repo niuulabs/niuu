@@ -5,7 +5,8 @@ import {
   type SetupState,
   type WizardStepId,
 } from '../domain/setup';
-import { CheckIcon, NiuuMark } from './icons';
+import { NiuuMark, NiuuWordmark } from '@niuulabs/ui';
+import { CheckIcon } from './icons';
 
 export interface SetupRailProps {
   current: WizardStepId;
@@ -20,8 +21,8 @@ export function SetupRail({ current, state, hostname, onSelect }: SetupRailProps
   return (
     <aside className="setup-rail" data-testid="setup-rail">
       <div className="setup-rail__brand">
-        <NiuuMark size={28} />
-        <span>Niuu</span>
+        <NiuuMark size={28} title="NIUU" />
+        <NiuuWordmark height={14} />
       </div>
       <div className="setup-rail__kicker">first launch</div>
       <ol className="setup-rail__steps">

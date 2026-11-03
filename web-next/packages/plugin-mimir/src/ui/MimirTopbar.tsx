@@ -46,7 +46,7 @@ function MimirTopbarStats() {
   const lintCount = lintSummary.error + lintSummary.warn + lintSummary.info;
 
   return (
-    <div className="mm-topbar-stats" aria-label="Mímir stats">
+    <div className="mm-topbar-stats" aria-label="Memory stats">
       <span className="mm-topbar-stat">
         <span className="mm-topbar-stat__k">mount</span>
         <strong className="mm-topbar-stat__v">{mountLabel}</strong>

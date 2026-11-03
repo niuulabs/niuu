@@ -982,7 +982,10 @@ def test_stop_waits_for_authoritative_absence_before_provider_cleanup(tmp_path: 
         ],
         env={**os.environ, "PATH": f"{binary}:{os.environ['PATH']}"},
         capture_output=True,
-        timeout=5,
+        # Only a guard against a hung script: a timed-out mode spends a full 1.0 s
+        # per-command timeout plus several fresh interpreter starts, which a loaded
+        # runner can stretch past a tighter bound.
+        timeout=30,
     )
     if mode == "stuck-inventory":
         assert result.returncode != 0

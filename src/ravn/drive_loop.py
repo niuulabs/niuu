@@ -71,6 +71,7 @@ from ravn.domain.models import (
     TurnResult,
 )
 from ravn.domain.resident_continuation import validate_resident_working_state
+from ravn.domain.surface import strip_surface_marker
 from ravn.domain.valkyrie_contracts import (
     RESIDENT_ESCALATION_GUIDANCE,
     VALKYRIE_CONTINUATION_ORDER,
@@ -87,12 +88,14 @@ from ravn.ports.resident_budget import ResidentBudgetPort
 from ravn.ports.trigger import TriggerPort
 from ravn.prompt_builder import build_initiative_prompt
 from ravn.reflex import ReflexInjector, build_reflex_injector
+from ravn.signal_backlog import fold_signal_backlog, is_per_signal_task
 from ravn.workflow_runtime import _workflow_result_schema_for_event
 from sleipnir.domain.events import SleipnirEvent
 
 if TYPE_CHECKING:
     from ravn.adapters.personas.loader import PersonaConfig
     from ravn.ports.mesh import MeshPort
+    from ravn.resident_first_opinion import ResidentFirstOpinion
 
 try:
     from sleipnir.domain.catalog import (
@@ -969,6 +972,19 @@ class FanInSlot:
     deadline: datetime
 
 
+#: Outcome payload key carrying a person's gate comment on through a run.
+GATE_FEEDBACK_KEY = "gate_feedback"
+_WORKFLOW_GATE_PERSONA = "workflow-gate"
+_GATE_FEEDBACK_HEADING = "Reviewer comment, which this work must address:"
+
+
+def gate_feedback_of(payload: dict) -> str:
+    """A person's gate comment, from the gate's own answer or the work done after it."""
+    if payload.get("persona") == _WORKFLOW_GATE_PERSONA:
+        return str((payload.get("fields") or {}).get("notes") or "").strip()
+    return str(payload.get(GATE_FEEDBACK_KEY) or "").strip()
+
+
 @dataclass
 class _FanInResult:
     """Returned by FanInBuffer when a slot completes."""
@@ -980,6 +996,7 @@ class _FanInResult:
     cycle_correlation_id: str
     triggered_by: str
     passed: bool = True
+    gate_feedback: str = ""
 
 
 class FanInBuffer:
@@ -1045,6 +1062,7 @@ class FanInBuffer:
                 root_correlation_id=root_correlation_id,
                 cycle_correlation_id=cycle_correlation_id or root_correlation_id,
                 triggered_by=f"mesh:outcome:{event_type}",
+                gate_feedback=gate_feedback_of(event_payload),
             )
 
         cycle_id = cycle_correlation_id or root_correlation_id
@@ -1315,6 +1333,10 @@ class FanInBuffer:
 
         if outcome:
             parts.append(f"Outcome: {json.dumps(outcome)}")
+
+        feedback = gate_feedback_of(payload)
+        if feedback:
+            parts.append(f"{_GATE_FEEDBACK_HEADING}\n{feedback}")
         return "\n".join(parts)
 
     @staticmethod
@@ -1357,6 +1379,20 @@ class FanInBuffer:
                 context_parts.append(json.dumps(outcome, indent=2))
             context_parts.append("")
 
+        feedback = next(
+            filter(
+                None,
+                (
+                    gate_feedback_of(payload)
+                    for payload in slot.received.values()
+                    if isinstance(payload, dict)
+                ),
+            ),
+            "",
+        )
+        if feedback:
+            context_parts.append(f"{_GATE_FEEDBACK_HEADING}\n{feedback}")
+
         triggered_by_types = list(slot.required_event_types)
         return _FanInResult(
             consumer_key=slot.group_key.split(":", 2)[1],
@@ -1366,6 +1402,7 @@ class FanInBuffer:
             cycle_correlation_id=slot.cycle_correlation_id,
             triggered_by=f"mesh:fan_in:{'+'.join(sorted(triggered_by_types))}",
             passed=strategy_ok,
+            gate_feedback=feedback,
         )
 
 
@@ -1450,6 +1487,7 @@ class DriveLoop:
         self._telemetry_refreshers: list[Callable[[], None]] = []
         self._reflex_initialised = False
         self._resident_runtime: object | None = None
+        self._first_opinion: ResidentFirstOpinion | None = None
         self._shutting_down = False
         self._current_task_var: contextvars.ContextVar[AgentTask | None] = contextvars.ContextVar(
             "ravn_current_task",
@@ -1472,7 +1510,10 @@ class DriveLoop:
         # into both this loop's observer and the session_join tool's runtime
         # context, so the tool and the drive loop share one membership set
         # without a module global.
-        from ravn.session_join import build_session_join_manager  # noqa: PLC0415
+        from ravn.session_join import (  # noqa: PLC0415
+            build_room_token_provider,
+            build_session_join_manager,
+        )
 
         self._session_join_manager = build_session_join_manager(settings)
 
@@ -1494,6 +1535,7 @@ class DriveLoop:
                 display_name=settings.skuld.display_name or "",
                 reconnect_delay=settings.skuld.reconnect_delay_seconds,
                 max_reconnect_attempts=settings.skuld.max_reconnect_attempts,
+                auth_token_provider=build_room_token_provider(settings),
             )
 
     # ------------------------------------------------------------------
@@ -1933,6 +1975,10 @@ class DriveLoop:
         bind = getattr(runtime, "bind_enqueue", None)
         if bind is not None:
             bind(self.enqueue)
+
+    def set_first_opinion(self, first_opinion: ResidentFirstOpinion | None) -> None:
+        """Attach the observe-only System One first opinion on resident turns."""
+        self._first_opinion = first_opinion
 
     def set_workflow_allowed_outcomes_resolver(
         self,
@@ -2604,7 +2650,9 @@ class DriveLoop:
             triggered_by="skuld:directed_message",
             output_mode=output_mode,
             persona=persona,
-            priority=0,  # user input precedes autonomous continuation work
+            # User input precedes autonomous continuation work, and a request to
+            # start something precedes notices already waiting.
+            priority=-1 if metadata and metadata.get("queue_first") else 0,
             human_initiated=True,
             resident_inbox_refs=[inbox_ref] if inbox_ref else [],
         )
@@ -3291,6 +3339,11 @@ class DriveLoop:
         self._active_agents[task.task_id] = agent
         try:
             try:
+                first_opinion = (
+                    await self._first_opinion.judge(task)
+                    if self._first_opinion is not None and self._first_opinion.applies_to(task)
+                    else None
+                )
                 if isinstance(agent, RavnHarnessPort):
                     await agent.start()
                     harness_result = await agent.run_turn(
@@ -3385,6 +3438,12 @@ class DriveLoop:
                                 "ravn.valkyrie.outcome_valid",
                             )
                         },
+                    )
+                if first_opinion is not None and self._first_opinion is not None:
+                    self._first_opinion.compare(
+                        first_opinion,
+                        structured_outcome if isinstance(structured_outcome, Mapping) else None,
+                        outcome_valid=bool(resident_outcome_valid),
                     )
                 if self._resident_runtime is not None:
                     resident_disposition = await self._resident_runtime.handle_completed_turn(
@@ -4658,10 +4717,12 @@ class DriveLoop:
             base_payload["artifact_publish_error"] = artifact_publish_error
         if task.workflow_parent_event_id:
             base_payload["workflow_parent_event_id"] = task.workflow_parent_event_id
+        if task.gate_feedback:
+            base_payload[GATE_FEEDBACK_KEY] = task.gate_feedback
         if verdict:
             base_payload["verdict"] = verdict
         if summary:
-            base_payload["summary"] = summary
+            base_payload["summary"] = strip_surface_marker(str(summary))
         if isinstance(files_changed, list) and files_changed:
             base_payload["files_changed"] = files_changed
 
@@ -5240,7 +5301,7 @@ class DriveLoop:
         event = RavnEvent(
             type=RavnEventType.RESPONSE,
             source=self._source_id,
-            payload={"text": text, "surface_escalation": True},
+            payload={"text": strip_surface_marker(text), "surface_escalation": True},
             timestamp=datetime.now(UTC),
             urgency=0.7,
             correlation_id=task.task_id,
@@ -5426,6 +5487,7 @@ class DriveLoop:
             "workflow_review_source_node_id": task.workflow_review_source_node_id,
             "workflow_review_source_event_type": task.workflow_review_source_event_type,
             "workflow_allowed_outcome_topics": list(task.workflow_allowed_outcome_topics),
+            "gate_feedback": task.gate_feedback,
             "tool_outcomes": task.tool_outcomes,
             "human_initiated": task.human_initiated,
             "resident_case_id": task.resident_case_id,
@@ -5436,6 +5498,11 @@ class DriveLoop:
             "resident_started_at": task.resident_started_at,
             "resident_parent_turn_ref": task.resident_parent_turn_ref,
             "resident_inbox_refs": task.resident_inbox_refs,
+            # What a queued home turn actually saw of each slot. Without it a
+            # restored turn would acknowledge observations that arrived after
+            # it was rendered, marking them judged when no turn read them.
+            "resident_inbox_expected": task.resident_inbox_expected,
+            "resident_slot_opinions": task.resident_slot_opinions,
             "resident_answer_ref": task.resident_answer_ref,
             "resident_wake_ref": task.resident_wake_ref,
             "resident_help_published": task.resident_help_published,
@@ -5550,6 +5617,7 @@ class DriveLoop:
                     workflow_allowed_outcome_topics=list(
                         rec.get("workflow_allowed_outcome_topics") or []
                     ),
+                    gate_feedback=rec.get("gate_feedback", ""),
                     tool_outcomes=rec.get("tool_outcomes", {}) or {},
                     human_initiated=rec.get("human_initiated", False),
                     resident_case_id=rec.get("resident_case_id", ""),
@@ -5560,6 +5628,8 @@ class DriveLoop:
                     resident_started_at=rec.get("resident_started_at", ""),
                     resident_parent_turn_ref=rec.get("resident_parent_turn_ref", ""),
                     resident_inbox_refs=rec.get("resident_inbox_refs", []) or [],
+                    resident_inbox_expected=dict(rec.get("resident_inbox_expected") or {}),
+                    resident_slot_opinions=dict(rec.get("resident_slot_opinions") or {}),
                     resident_answer_ref=rec.get("resident_answer_ref", ""),
                     resident_wake_ref=rec.get("resident_wake_ref", ""),
                     resident_help_published=rec.get("resident_help_published", False),
@@ -5611,6 +5681,7 @@ class DriveLoop:
                 "the newest cron tick and idle-triage window of each producer is kept",
                 dropped,
             )
+        selected, folded = self._fold_restored_signal_backlog(selected)
 
         for task, was_inflight in selected:
             counter = self._next_counter()
@@ -5632,5 +5703,74 @@ class DriveLoop:
                 "drive_loop: restored %d fan-in slot(s) from journal",
                 self._fan_in.pending_count,
             )
-        if dropped:
+        if dropped or folded:
             self._persist_queue()
+
+    def _fold_restored_signal_backlog(
+        self,
+        restored: list[tuple[AgentTask, bool]],
+    ) -> tuple[list[tuple[AgentTask, bool]], int]:
+        """Replace a restored backlog of per-observation signal tasks with one window.
+
+        Returns the tasks to queue and how many were folded. Only queued tasks
+        fold; one that was running at the restart resumes as restart recovery.
+        The original records are written beside the journal before anything
+        changes, so a failed write leaves the journal exactly as it was.
+        """
+        for task, _was_inflight in restored:
+            if is_per_signal_task(task) and task.resident_inbox_refs:
+                # Such a task names a shared, coalescing slot with no bound on
+                # what it saw; acknowledging it would mark every observation
+                # folded into that slot as judged. The slot stays pending for
+                # a home turn instead.
+                logger.warning(
+                    "drive_loop: restored signal task %s no longer acknowledges inbox slot(s) %s",
+                    task.task_id,
+                    ", ".join(task.resident_inbox_refs),
+                )
+                task.resident_inbox_refs = []
+        backlog = [
+            task for task, was_inflight in restored if not was_inflight and is_per_signal_task(task)
+        ]
+        if len(backlog) < 2:
+            return restored, 0
+        folded_at = datetime.now(UTC)
+        record_path = self._journal_path.with_name(
+            f"{self._journal_path.stem}.folded-{folded_at:%Y%m%dT%H%M%S%fZ}.json"
+        )
+        environment = self._settings.environment
+        window = fold_signal_backlog(
+            backlog,
+            record_ref=str(record_path),
+            sample_groups=environment.idle_triage_sample_signals,
+            max_signal_refs=environment.idle_triage_max_signal_refs,
+        )
+        record = {
+            "folded_at": folded_at.isoformat(),
+            "window_task_id": window.task_id,
+            "tasks": [self._task_journal_record(task) for task in backlog],
+        }
+        try:
+            record_path.write_text(json.dumps(record, indent=2))
+        except OSError as exc:
+            raise RuntimeError(
+                f"queue journal: could not record the {len(backlog)} signal task(s) to fold "
+                f"on restore at {record_path} ({exc}); fix the journal volume. Nothing was "
+                "folded and the journal is unchanged."
+            ) from exc
+        logger.warning(
+            "drive_loop: folded %d restored per-observation signal task(s) into window %s; "
+            "the original records are in %s",
+            len(backlog),
+            window.task_id,
+            record_path,
+        )
+        get_observability().count(
+            "ravn.queue.signal_backlog_folded",
+            len(backlog),
+            attributes={"ravn.environment.id": environment.id},
+            description="Restored per-observation signal tasks folded into one window.",
+        )
+        folded_ids = {task.task_id for task in backlog}
+        kept = [entry for entry in restored if entry[0].task_id not in folded_ids]
+        return [*kept, (window, False)], len(backlog)

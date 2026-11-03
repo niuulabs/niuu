@@ -6,9 +6,11 @@ at-least-once without creating duplicates. Reads are cursor-based (seq) so any
 client can resume a full transcript replay.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Iterable
 from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID
@@ -20,6 +22,15 @@ from niuu.domain.text_projection import (
     apply_repair_markers,
     projection_digest,
 )
+from niuu.domain.work_facts import (
+    HOOK_KIND,
+    TOOL_CLOSE_HOOKS,
+    TOOL_OPEN_HOOK,
+    TURN_END_HOOK,
+    TURN_END_KIND,
+    WORK_HOOKS,
+    WORK_KINDS,
+)
 from volundr.adapters.outbound._jsonb import dumps_jsonb, force_scrub_json, scrub_text
 from volundr.domain.history_import import (
     HistoryImportConflictError,
@@ -28,25 +39,23 @@ from volundr.domain.history_import import (
 )
 from volundr.domain.models import SessionLogEntry
 from volundr.domain.ports import SessionEventLogRepository, _log_entries_conflict
+from volundr.domain.session_usage import fold_usage, observation, parse_json, projection_key
 
 logger = logging.getLogger(__name__)
 
-_INSERT_SQL = """WITH locked_session AS MATERIALIZED (
-           SELECT id FROM sessions WHERE id = $1 FOR UPDATE
-       ), inserted AS (
-           INSERT INTO session_event_log
-           (session_id, seq, kind, role, request_id, payload, ts)
-           SELECT $1, $2, $3, $4, $5, $6, $7
-           FROM (SELECT COUNT(*) FROM locked_session) AS lock_guard
-           ON CONFLICT (session_id, seq) DO NOTHING
-           RETURNING session_id, seq, kind, payload, ts
-       )
-       UPDATE sessions s
-       SET latest_final_seq = i.seq,
-           latest_final_turn_id = i.payload->'turn'->>'id', latest_final_at = i.ts
-       FROM inserted i
-       WHERE s.id = i.session_id AND i.seq > s.latest_final_seq
-           AND i.kind = 'conversation.turn' AND i.payload->>'type' = 'conversation.turn'
+
+def _sql_list(values: Iterable[str]) -> str:
+    """A SQL literal list from fixed module constants (never from input)."""
+    return ", ".join(f"'{value}'" for value in sorted(values))
+
+
+# The final-reply projection (latest_final_*) and the work facts (G10, F12d:
+# last_work_at, open_tool_count) are folded in ONE update per inserted row, so the
+# session row is written at most once per frame, and not at all when the frame
+# changes nothing. Only newly inserted rows fold (ON CONFLICT DO NOTHING), which keeps
+# producer retries idempotent. Which rows count as work is
+# niuu.domain.work_facts, the same predicate Skuld and the control plane use.
+_FINAL_OUTPUT_SQL = """i.kind = 'conversation.turn' AND i.payload->>'type' = 'conversation.turn'
            AND i.payload->'turn'->>'role' = 'assistant'
            AND COALESCE(i.payload->'turn'->>'visibility', 'public') = 'public'
            AND i.payload->'turn'->'metadata'->'final_output' = 'true'::jsonb
@@ -56,6 +65,52 @@ _INSERT_SQL = """WITH locked_session AS MATERIALIZED (
            AND jsonb_typeof(i.payload->'turn'->'content') = 'string'
            AND LENGTH(BTRIM(COALESCE(i.payload->'turn'->>'content', ''))) > 0
            AND LENGTH(COALESCE(i.payload->'turn'->>'id', '')) > 0"""
+
+_INSERT_SQL = f"""WITH locked_session AS MATERIALIZED (
+           SELECT id FROM sessions WHERE id = $1 FOR UPDATE
+       ), inserted AS (
+           INSERT INTO session_event_log
+           (session_id, seq, kind, role, request_id, payload, ts)
+           SELECT $1, $2, $3, $4, $5, $6, $7
+           FROM (SELECT COUNT(*) FROM locked_session) AS lock_guard
+           ON CONFLICT (session_id, seq) DO NOTHING
+           RETURNING session_id, seq, kind, payload, ts
+       ), facts AS (
+           SELECT i.*, ({_FINAL_OUTPUT_SQL}) AS is_final,
+               (i.kind IN ({_sql_list(WORK_KINDS)})
+                OR (i.kind = '{HOOK_KIND}' AND h.hook IN ({_sql_list(WORK_HOOKS)}))) AS is_work,
+               h.hook
+           FROM inserted i
+           CROSS JOIN LATERAL (
+               SELECT COALESCE(i.payload->>'hook_event_name',
+                               i.payload->'payload'->>'hook_event_name', '') AS hook
+           ) h
+       )
+       UPDATE sessions s
+       SET latest_final_seq = CASE WHEN f.is_final AND f.seq > s.latest_final_seq
+               THEN f.seq ELSE s.latest_final_seq END,
+           latest_final_turn_id = CASE WHEN f.is_final AND f.seq > s.latest_final_seq
+               THEN f.payload->'turn'->>'id' ELSE s.latest_final_turn_id END,
+           latest_final_at = CASE WHEN f.is_final AND f.seq > s.latest_final_seq
+               THEN f.ts ELSE s.latest_final_at END,
+           last_work_at = CASE WHEN f.is_work
+               THEN GREATEST(s.last_work_at, f.ts) ELSE s.last_work_at END,
+           open_tool_count = CASE
+               WHEN NOT f.is_work THEN s.open_tool_count
+               WHEN f.hook = '{TOOL_OPEN_HOOK}' THEN s.open_tool_count + 1
+               WHEN f.hook IN ({_sql_list(TOOL_CLOSE_HOOKS)})
+                   THEN GREATEST(s.open_tool_count - 1, 0)
+               WHEN f.kind = '{TURN_END_KIND}' OR f.hook = '{TURN_END_HOOK}' THEN 0
+               ELSE s.open_tool_count END
+       FROM facts f
+       WHERE s.id = f.session_id
+           AND ((f.is_final AND f.seq > s.latest_final_seq)
+                OR (f.is_work AND (
+                    s.last_work_at IS NULL OR f.ts > s.last_work_at
+                    OR f.hook = '{TOOL_OPEN_HOOK}'
+                    OR (s.open_tool_count > 0 AND (
+                        f.hook IN ({_sql_list(TOOL_CLOSE_HOOKS)})
+                        OR f.kind = '{TURN_END_KIND}' OR f.hook = '{TURN_END_HOOK}')))))"""
 
 _IMPORT_INSERT_SQL = """INSERT INTO session_event_log
        (session_id, seq, kind, role, request_id, payload, ts)
@@ -68,8 +123,9 @@ _HISTORY_IMPORT_CHROME_KINDS = ("init", "capabilities", "available_commands")
 class PostgresSessionEventLog(SessionEventLogRepository):
     """PostgreSQL adapter for the full-fidelity session event log."""
 
-    def __init__(self, pool: asyncpg.Pool):
+    def __init__(self, pool: asyncpg.Pool, *, usage_model_windows: dict[str, int] | None = None):
         self._pool = pool
+        self._usage_model_windows = dict(usage_model_windows or {})
 
     async def append_projection_repair(
         self, session_id: UUID, marker: dict, *, expected_head: int
@@ -183,9 +239,11 @@ class PostgresSessionEventLog(SessionEventLogRepository):
         # import_history, held until the batch finishes. Stable session ordering
         # avoids deadlocks between multi-session batches, without a global lock.
         # The COUNT guard preserves orphan-log writes (there is deliberately no FK).
-        args = [self._entry_to_args(e) for e in sorted(entries, key=lambda e: str(e.session_id))]
+        entries = sorted(entries, key=lambda e: (str(e.session_id), e.seq))
+        args = [self._entry_to_args(e) for e in entries]
+        has_usage = any(observation(e.payload, seq=e.seq, at=e.ts) is not None for e in entries)
         try:
-            await self._pool.executemany(_INSERT_SQL, args)
+            await self._append_batch(args, entries, has_usage=has_usage)
         except asyncpg.exceptions.UntranslatableCharacterError:
             # Defensive: a frame still carried a character Postgres can't store
             # past the primary scrub. Force-scrub the serialized payloads and retry
@@ -193,8 +251,79 @@ class PostgresSessionEventLog(SessionEventLogRepository):
             # this idempotent if some rows already landed).
             logger.warning("session_event_log insert hit untranslatable char; retrying scrubbed")
             scrubbed = [self._force_scrub_args(a) for a in args]
-            await self._pool.executemany(_INSERT_SQL, scrubbed)
+            await self._append_batch(scrubbed, entries, has_usage=has_usage)
         return len(entries)
+
+    async def _append_batch(
+        self, args: list[tuple], entries: list[SessionLogEntry], *, has_usage: bool
+    ) -> None:
+        if not has_usage:
+            await self._pool.executemany(_INSERT_SQL, args)
+            return
+        # The same session lock protects the durable insert and numeric summary.
+        # A failed projection rolls the batch back; a retry cannot lose usage or
+        # apply it twice. Ordinary frames retain the existing executemany path.
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.executemany(_INSERT_SQL, args)
+                by_session: dict[UUID, list[int]] = {}
+                for entry in entries:
+                    by_session.setdefault(entry.session_id, []).append(entry.seq)
+                for sid, seqs in by_session.items():
+                    await self._project_usage(conn, sid, seqs)
+
+    async def _project_usage(self, conn: asyncpg.Connection, sid: UUID, seqs: list[int]) -> None:
+        row = await conn.fetchrow("SELECT session_usage FROM sessions WHERE id=$1 FOR UPDATE", sid)
+        if row is None:
+            return  # Existing orphan-log behavior: no session row means no projection.
+        original = parse_json(row["session_usage"])
+        state = original
+        # Always project the STORED frames, never a conflicting retry payload.
+        rows = await conn.fetch(
+            """SELECT seq, payload, ts FROM session_event_log
+               WHERE session_id=$1 AND seq=ANY($2::bigint[]) AND usage IS NULL ORDER BY seq""",
+            sid,
+            seqs,
+        )
+        for entry in rows:
+            event = observation(parse_json(entry["payload"]), seq=entry["seq"], at=entry["ts"])
+            if event is None:
+                continue
+            key = projection_key(event, state)
+            prior = await conn.fetchrow(
+                """SELECT seq, usage FROM session_event_log
+                   WHERE session_id=$1 AND usage_key=$2
+                   ORDER BY seq DESC LIMIT 1""",
+                sid,
+                key,
+            )
+            previous = parse_json(prior["usage"]) if prior else None
+            state, merged = fold_usage(
+                state, event, previous, model_windows=self._usage_model_windows
+            )
+            packed = dumps_jsonb(merged)
+            await conn.execute(
+                "UPDATE session_event_log SET usage_key=$3, usage=$4::jsonb "
+                "WHERE session_id=$1 AND seq=$2",
+                sid,
+                entry["seq"],
+                key,
+                packed,
+            )
+            # Late lower-seq snapshots also update the identity's newest derived
+            # checkpoint. Raw payload/ts/seq are immutable; only projection data
+            # changes. The next lookup sees all maxima already accounted for.
+            if prior and prior["seq"] > entry["seq"]:
+                await conn.execute(
+                    "UPDATE session_event_log SET usage=$3::jsonb WHERE session_id=$1 AND seq=$2",
+                    sid,
+                    prior["seq"],
+                    packed,
+                )
+        if state != original:
+            await conn.execute(
+                "UPDATE sessions SET session_usage=$2::jsonb WHERE id=$1", sid, dumps_jsonb(state)
+            )
 
     async def import_history(
         self, session_id: UUID, source_id: str, entries: list[SessionLogEntry]
@@ -362,6 +491,28 @@ class PostgresSessionEventLog(SessionEventLogRepository):
             limit,
         )
         return [self._row_to_entry(r) for r in rows]
+
+    async def read_after_excluding(
+        self,
+        session_id: UUID,
+        after_seq: int = 0,
+        limit: int = 1000,
+        exclude_kinds: frozenset[str] = frozenset(),
+    ) -> list[SessionLogEntry]:
+        rows = await self._pool.fetch(
+            """SELECT session_id, seq, kind, role, request_id, payload, ts
+               FROM session_event_log
+               WHERE session_id = $1 AND seq > $2 AND kind <> ALL($4::text[])
+               ORDER BY seq ASC
+               LIMIT $3""",
+            session_id,
+            after_seq,
+            limit,
+            sorted(exclude_kinds),
+        )
+        # A single turn row can be 100+ MB of JSON (a turn full of images); decode the
+        # page off the event loop so a cold index fold never stalls other requests.
+        return await asyncio.to_thread(lambda: [self._row_to_entry(r) for r in rows])
 
     async def read_seqs(self, session_id: UUID, seqs: list[int]) -> list[SessionLogEntry]:
         if not seqs:

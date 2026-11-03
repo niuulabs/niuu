@@ -2172,6 +2172,7 @@ class TestBroker:
         broker_under_test._room_bridge.participants = {
             "flock-reviewer": MagicMock(persona="reviewer")
         }
+        broker_under_test._room_bridge.tell_joined_sessions = AsyncMock()
         broker_under_test._emit_pipeline_event = AsyncMock()
         broker_under_test._emit_workflow_gate_help_needed_sleipnir_event = AsyncMock()
         broker_under_test._report_activity_state = AsyncMock()
@@ -6805,26 +6806,26 @@ class TestBrokerRoomAdapter:
         assert b._room_bridge is None
 
     @pytest.mark.asyncio
-    async def test_join_heartbeat_leave_human_environment(self, room_settings):
+    async def test_join_heartbeat_leave_environment(self, room_settings):
         bus = InProcessBus()
         captured = EventCapture(bus, ["participant.*"])
         await captured.start()
         b = Broker(settings=room_settings, sleipnir_publisher=bus)
 
-        joined = await b.join_human_environment(
+        joined = await b.join_environment(
             participant_id="human:jozef",
             display_name="Jozef",
             environment_id="cluster-a",
             role="owner",
             room_id="huddle-1",
         )
-        heartbeat = await b.heartbeat_human_environment(
+        heartbeat = await b.heartbeat_environment(
             participant_id="human:jozef",
             status="busy",
             wakefulness="wakeful",
             attention_state="reviewing",
         )
-        await b.leave_human_environment(participant_id="human:jozef", reason="done")
+        await b.leave_environment(participant_id="human:jozef", reason="done")
         await bus.flush()
 
         assert joined["participant_type"] == "human"
@@ -6840,13 +6841,13 @@ class TestBrokerRoomAdapter:
         await captured.stop()
 
     @pytest.mark.asyncio
-    async def test_join_human_environment_binds_capabilities_to_environment_authorities(
+    async def test_join_environment_binds_capabilities_to_environment_authorities(
         self,
         room_settings,
     ):
         b = Broker(settings=room_settings)
 
-        joined = await b.join_human_environment(
+        joined = await b.join_environment(
             participant_id="human:approver",
             display_name="Approver",
             environment_id="cluster-a",
@@ -6864,7 +6865,7 @@ class TestBrokerRoomAdapter:
         b._transport = AsyncMock()
         broadcast = AsyncMock()
         b._channels.broadcast = broadcast
-        await b.join_human_environment(
+        await b.join_environment(
             participant_id="human:teacher",
             display_name="Teacher",
             environment_id="cluster-a",
@@ -6892,7 +6893,7 @@ class TestBrokerRoomAdapter:
     async def test_directed_room_message_preserves_metadata_to_target(self, room_settings):
         b = Broker(settings=room_settings)
         b._transport = AsyncMock()
-        await b.join_human_environment(
+        await b.join_environment(
             participant_id="human:approver",
             display_name="Approver",
             environment_id="cluster-a",
@@ -6925,7 +6926,7 @@ class TestBrokerRoomAdapter:
     @pytest.mark.asyncio
     async def test_room_capability_check_rejects_unauthorized_control(self, room_settings):
         b = Broker(settings=room_settings)
-        await b.join_human_environment(
+        await b.join_environment(
             participant_id="human:observer",
             display_name="Observer",
             environment_id="cluster-a",
@@ -6949,7 +6950,7 @@ class TestBrokerRoomAdapter:
         recorder = EnvironmentFeedbackRecorder(subscriber=bus, publisher=bus, memory=memory)
         await recorder.start()
         b = Broker(settings=room_settings, sleipnir_publisher=bus)
-        await b.join_human_environment(
+        await b.join_environment(
             participant_id="human:owner",
             display_name="Owner",
             environment_id="cluster-a",
@@ -7874,6 +7875,38 @@ class TestPendingHelpRequests:
         assert answered["status"] == "answered"
         assert answered["answer"] == "All namespaces, read-only."
         assert answered["answer_source"] == "a2a"
+
+    @pytest.mark.asyncio
+    async def test_a_peers_question_blocks_the_session_on_a_person_until_answered(
+        self, settings, tmp_path
+    ):
+        broker_under_test = self._broker(settings, tmp_path)
+        reported: list[tuple[str, dict | None]] = []
+
+        async def _report(state, *, extra_metadata=None):
+            broker_under_test._activity_state = state
+            reported.append((state, extra_metadata))
+            return True
+
+        broker_under_test._report_activity_state = _report
+        broker_under_test.handle_directed_room_message = AsyncMock(return_value="msg-1")
+
+        await broker_under_test._observe_room_peer_event(
+            "flock-specification-framer", "help_needed", dict(self._FRAME)
+        )
+        request_id = broker_under_test.list_help_requests()[0]["id"]
+
+        state, metadata = reported[-1]
+        assert state == "awaiting_input"
+        assert metadata["kind"] == "question"
+        assert metadata["request_id"] == request_id
+        assert metadata["help_needed"]["summary"] == (
+            "Which namespaces are in scope for the PVC summary?"
+        )
+
+        await broker_under_test.answer_help_request(request_id, "All namespaces.")
+
+        assert reported[-1] == ("active", None)
 
     @pytest.mark.asyncio
     async def test_answer_marks_requested_item_when_peer_has_multiple_questions(

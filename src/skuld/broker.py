@@ -11,6 +11,8 @@ import asyncio
 import collections
 import json
 import logging
+import os
+import signal
 import socket
 import time
 import uuid
@@ -45,6 +47,7 @@ from niuu.domain.transcript_reducer import (
     steering_target_id,
 )
 from niuu.domain.workflow_evidence import evaluate_workflow_evidence, validate_evidence_gate_nodes
+from niuu.domain.workflow_gate import AGENT_ANSWERABLE_GATE_MODE, WORKFLOW_GATE_FRAME
 from niuu.domain.workflow_kickoff import (
     WORKFLOW_KICKOFF_ID_KEY,
     WORKFLOW_KICKOFF_REDELIVERY_KEY,
@@ -57,7 +60,11 @@ from niuu.observability import get_observability
 from niuu.ports.cli import CLITransport
 from niuu.ports.evidence import ArtifactDigestResolver, EvidenceGateVerifier
 from niuu.utils import import_class, resolve_secret_kwargs
-from skuld.activity_reporting import ActivityReportingMixin
+from skuld.activity_reporting import (
+    ActivityReportingMixin,
+    is_idle_prompt_hook,
+    is_turn_boundary_flush,
+)
 from skuld.channels import (
     ChannelRegistry,
     WebSocketChannel,
@@ -128,6 +135,7 @@ from skuld.websocket_auth import (  # noqa: F401
 )
 from skuld.websocket_lifecycle import WebSocketLifecycleMixin
 from skuld.workflow_runtime import (
+    ROOM_MEMBER_FRAME,
     WorkflowGateNode,
     WorkflowGateState,
     WorkflowTerminalNode,
@@ -543,6 +551,11 @@ def _sanitize_directed_metadata(
     return {k: v for k, v in metadata.items() if k not in _SUB_OWNER_STRIPPED_METADATA_KEYS}
 
 
+def _exit_own_process() -> None:
+    """Graceful SIGTERM to this broker: uvicorn shuts down and flushes the event log."""
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
 class Broker(
     EffortControlMixin,
     ForgeSessionMixin,
@@ -683,6 +696,12 @@ class Broker(
         # states and clears only when the turn becomes idle or stops.
         self._turn_started_at: float | None = None
         self._last_activity_report: float = 0.0
+        # G10 (F12b/F12c): monotonic time of the newest transport frame, and whether
+        # the current prompt has produced any work row yet.
+        self._last_transport_row_at: float = time.monotonic()
+        self._prompt_work_seen: bool = True
+        # request_id -> ISO time each open human gate was first reported (F12d).
+        self._control_opened_at: dict[str, str] = {}
         self._activity_report_lock = asyncio.Lock()
         self._activity_report_pending = False
         # Rich context for the CURRENT activity state (e.g. the pending question's
@@ -819,7 +838,9 @@ class Broker(
                     if self._review_attestation is not None
                     else frozenset()
                 ),
+                deliver_to_session=self._deliver_to_member_session,
             )
+        self._restored_room_members: dict[str, dict[str, Any]] = {}
 
         # Retrieval reflex (NIU-1059) — lazily built from settings.reflex on
         # first forwarded user message; None when disabled.
@@ -1688,6 +1709,10 @@ class Broker(
         except FileNotFoundError:
             # No acknowledgment exists before the first successful kickoff.
             pass
+        if self._workflow_gate_states:
+            # A restored gate proves the run started, even when the marker's workspace is gone.
+            logger.info("Workflow gates restored — skipping restart dispatch")
+            return
         telemetry = get_observability()
         workflow_name = (
             str(getattr(self._settings.workflow, "name", "") or "").strip()
@@ -1788,9 +1813,10 @@ class Broker(
             await self._emit_peer_outcome_pipeline_event(peer_id, frame)
             self._record_last_flock_outcome(peer_label, frame)
         elif event_type == "help_needed":
-            if not self._record_pending_help_request(peer_id, frame):
+            request = self._record_pending_help_request(peer_id, frame)
+            if request is None:
                 return
-            await self._report_peer_help_needed_activity(peer_id, frame)
+            await self._report_peer_help_needed_activity(request, frame)
             await self._emit_peer_help_needed_sleipnir_event(peer_id, frame)
         elif event_type == "error":
             if self._flock_activity is not None and participant is not None:
@@ -1977,6 +2003,7 @@ class Broker(
             "event_type": event_type,
             "verdict": str(data.get("verdict") or "").strip(),
             "persona": persona,
+            "summary": str(data.get("summary") or "").strip(),
         }
 
     async def _emit_peer_outcome_pipeline_event(
@@ -2239,17 +2266,22 @@ class Broker(
         )
         return [asdict(state) for state in states]
 
-    def _record_pending_help_request(self, peer_id: str, frame: dict[str, Any]) -> bool:
-        """Track a peer's help_needed question so a remote caller can answer it."""
+    def _record_pending_help_request(
+        self, peer_id: str, frame: dict[str, Any]
+    ) -> PendingHelpRequest | None:
+        """Track a peer's help_needed question so a remote caller can answer it.
+
+        Returns the new request, or ``None`` for a malformed or repeated frame.
+        """
         payload = self._build_peer_help_needed_payload(peer_id, frame)
         if payload is None:
-            return False
+            return None
         source_event_id = str(payload.get("source_event_id") or "")
         if source_event_id and any(
             request.peer_id == peer_id and request.source_event_id == source_event_id
             for request in self._pending_help_requests.values()
         ):
-            return False
+            return None
         request = PendingHelpRequest(
             id=uuid.uuid4().hex[:12],
             peer_id=peer_id,
@@ -2273,7 +2305,7 @@ class Broker(
             request.persona,
             request.summary[:200],
         )
-        return True
+        return request
 
     def list_help_requests(self) -> list[dict[str, Any]]:
         """Return help requests ordered from newest to oldest."""
@@ -2284,8 +2316,8 @@ class Broker(
         )
         return [asdict(request) for request in ordered]
 
-    @staticmethod
-    def _complete_help_request(
+    async def _complete_help_request(
+        self,
         request: PendingHelpRequest,
         answer: str,
         source: str,
@@ -2294,8 +2326,9 @@ class Broker(
         request.answered_at = datetime.now(UTC).isoformat()
         request.answer = answer
         request.answer_source = source
+        await self._exit_attention(request.id)
 
-    def _mark_pending_help_answered(self, peer_id: str, answer: str, source: str) -> None:
+    async def _mark_pending_help_answered(self, peer_id: str, answer: str, source: str) -> None:
         candidates = [
             request
             for request in self._pending_help_requests.values()
@@ -2304,7 +2337,7 @@ class Broker(
         if not candidates:
             return
         request = max(candidates, key=lambda item: item.requested_at)
-        self._complete_help_request(request, answer, source)
+        await self._complete_help_request(request, answer, source)
 
     async def answer_help_request(
         self,
@@ -2332,7 +2365,7 @@ class Broker(
             source=source,
             metadata={"help_request_id": request.id},
         )
-        self._complete_help_request(request, answer, source)
+        await self._complete_help_request(request, answer, source)
         logger.info(
             "Help request %s answered by %s -> peer=%s message=%s",
             request.id,
@@ -2458,6 +2491,7 @@ class Broker(
         )
         self._workflow_gate_states[gate_id] = state
         self._workflow_gate_state_ids_by_key[key] = gate_id
+        await self._record_workflow_gate(state)
         self._trace_workflow_gate_spans[gate_id] = await self._start_trace_span(
             kind="wait.workflow_gate",
             name=state.label or state.node_id,
@@ -2492,13 +2526,56 @@ class Broker(
         )
         if state.pending_behavior == "help_needed":
             await self._emit_workflow_gate_help_needed_sleipnir_event(state)
-            await self._report_activity_state(
-                "idle",
-                extra_metadata={
-                    "help_needed": self._build_workflow_gate_help_needed_payload(state)
-                },
+            await self._enter_gate_attention(state)
+            await self._tell_joined_sessions(
+                f"Workflow gate opened: {state.label or state.node_id} in session "
+                f"{self.session_id} is waiting for a person's decision. {state.summary}".strip()
             )
         return state
+
+    async def _enter_gate_attention(self, state: WorkflowGateState) -> None:
+        """A gate waiting for a person blocks the session on that person.
+
+        It is ``awaiting_input``, not ``idle``: Forge counts it under "needs
+        you", notifies, and keeps the session alive while it waits.
+        """
+        await self._enter_attention(
+            state.id,
+            "confirmation",
+            prompt=f"{state.label or state.node_id}: {state.summary}".strip(": "),
+            extra_metadata={"help_needed": self._build_workflow_gate_help_needed_payload(state)},
+        )
+
+    async def _reenter_restored_gate_attention(self) -> None:
+        """After a restart, a gate still pending is still waiting on its person."""
+        for state in self._workflow_gate_states.values():
+            if state.status == "pending" and state.pending_behavior == "help_needed":
+                await self._enter_gate_attention(state)
+
+    async def _tell_joined_sessions(self, content: str) -> None:
+        """Tell agents that joined this room from another session what happened."""
+        if self._room_bridge is not None:
+            await self._room_bridge.tell_joined_sessions(content)
+
+    async def _deliver_to_member_session(self, session_id: str, content: str) -> bool:
+        """Hand a room delivery to the session a member joined from, through Forge."""
+        if not self.volundr_api_url:
+            logger.error("Cannot reach session %s: volundr_api_url is not set", session_id)
+            return False
+        client = await self._get_http_client()
+        try:
+            response = await client.post(
+                f"{FORGE_SESSIONS_PATH}/{session_id}/messages", json={"content": content}
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.error("Could not reach session %s through Forge: %s", session_id, exc)
+            return False
+        return True
+
+    async def _record_workflow_gate(self, state: WorkflowGateState) -> None:
+        """Log a gate durably, so a restarted session still holds it."""
+        await self._emit_broker_frame({"type": WORKFLOW_GATE_FRAME, "gate": asdict(state)})
 
     async def resolve_workflow_gate(
         self,
@@ -2507,6 +2584,8 @@ class Broker(
         *,
         notes: str = "",
         source: str = "human",
+        decided_by: str = "",
+        actor: str = "",
     ) -> dict[str, Any]:
         state = self._workflow_gate_states.get(gate_id)
         if state is None:
@@ -2515,11 +2594,33 @@ class Broker(
             raise ValueError(f"Workflow gate {gate_id} is already resolved")
         if state.mode == "evidence":
             raise ValueError("Evidence gates can only be resolved by the configured verifier")
+        if actor and state.mode != AGENT_ANSWERABLE_GATE_MODE:
+            get_observability().count("skuld.workflow.gate_agent_answer_refused")
+            raise PermissionError(
+                f"Workflow gate {gate_id} waits for a person, so {actor} cannot answer it. "
+                f"Ask the operator to decide, or set the gate's mode to "
+                f"{AGENT_ANSWERABLE_GATE_MODE} if an agent may answer it"
+            )
         normalized = decision.strip().upper()
         if normalized not in {"APPROVE", "CHANGES_REQUESTED"}:
             raise ValueError("decision must be APPROVE or CHANGES_REQUESTED")
         if self._mesh_adapter is None:
             raise RuntimeError("Workflow gate cannot resolve because mesh is not active")
+        event_type = (
+            state.approval_event_type
+            if normalized == "APPROVE"
+            else state.changes_requested_event_type
+        )
+        # A session that just restarted may not have its flock back yet, and the
+        # mesh keeps nothing for late subscribers. The gate stays pending until
+        # its answer can be heard.
+        wait_s = self._settings.workflow.gate_consumer_wait_s
+        if not await self._wait_for_event_consumers(event_type, wait_s):
+            get_observability().count("skuld.workflow.gate_consumer_wait.hits")
+            raise RuntimeError(
+                f"Workflow gate cannot resolve: nothing consuming {event_type} connected "
+                f"within workflow.gate_consumer_wait_s={wait_s}; try again once the flock is up"
+            )
 
         human_message = normalized if not notes.strip() else f"{normalized}\n\n{notes.strip()}"
         await self.handle_human_room_message(
@@ -2535,20 +2636,18 @@ class Broker(
 
         now = datetime.now(UTC)
         state.status = "approved" if normalized == "APPROVE" else "changes_requested"
+        await self._exit_attention(state.id)
         state.updated_at = now.isoformat()
         state.decision = normalized
         state.notes = notes.strip()
         state.source = source
-        event_type = (
-            state.approval_event_type
-            if normalized == "APPROVE"
-            else state.changes_requested_event_type
-        )
+        state.decided_by = decided_by
         verdict = "approved" if normalized == "APPROVE" else "changes_requested"
+        reviewer = decided_by or "human reviewer"
         summary = (
-            f"{state.label} approved by human reviewer."
+            f"{state.label} approved by {reviewer}."
             if normalized == "APPROVE"
-            else f"{state.label} sent back with requested changes."
+            else f"{state.label} sent back with requested changes by {reviewer}."
         )
         state.summary = summary
         payload: dict[str, Any] = {
@@ -2569,6 +2668,7 @@ class Broker(
                 "gate_node_id": state.node_id,
                 "gate_label": state.label,
                 "decision_source": source,
+                "decided_by": decided_by,
                 "notes": state.notes,
             },
         }
@@ -2585,6 +2685,7 @@ class Broker(
             root_correlation_id=state.activation_id,
         )
         await self._mesh_adapter.publish(event, event_type)
+        await self._record_workflow_gate(state)
         await self._emit_pipeline_event("outcome", payload)
         gate_span_id = self._trace_workflow_gate_spans.pop(gate_id, None)
         await self._finish_trace_span(
@@ -2593,6 +2694,7 @@ class Broker(
             attributes={
                 "decision": normalized,
                 "source": source,
+                "decided_by": decided_by,
                 "notes": state.notes,
                 "event_type": event_type,
             },
@@ -2601,13 +2703,19 @@ class Broker(
 
     async def _report_peer_help_needed_activity(
         self,
-        peer_id: str,
+        request: PendingHelpRequest,
         frame: dict[str, Any],
     ) -> None:
-        payload = self._build_peer_help_needed_payload(peer_id, frame)
+        """A peer asking a person blocks the session on that person until answered."""
+        payload = self._build_peer_help_needed_payload(request.peer_id, frame)
         if payload is None:
             return
-        await self._report_activity_state("idle", extra_metadata={"help_needed": payload})
+        await self._enter_attention(
+            request.id,
+            "question",
+            prompt=request.summary,
+            extra_metadata={"help_needed": payload},
+        )
 
     async def _maybe_activate_workflow_gate(
         self,
@@ -3539,6 +3647,7 @@ class Broker(
     async def _handle_cli_event(self, data: dict) -> None:
         """Forward a CLI event to all connected channels."""
         event_type = data.get("type", "unknown")
+        self._observe_activity_row(data)
 
         # Use one observation instant for both the durable event row and the
         # live transcript reduction. Replaying the row will then reproduce the
@@ -3592,9 +3701,21 @@ class Broker(
             # terminal ``stopped`` activity_state with a final report so clients
             # stop showing the last live state frozen forever. Synthetic event —
             # nothing downstream consumes it, so return after reporting.
-            await self._report_activity_state(
-                "stopped", extra_metadata={"reason": data.get("reason", "transport_died")}
-            )
+            reason = data.get("reason", "transport_died")
+            extra: dict[str, Any] = {"reason": reason}
+            if data.get("exit_status"):
+                extra["exit_status"] = data["exit_status"]
+            await self._report_activity_state("stopped", extra_metadata=extra)
+            if self._settings.exit_when_transport_stops:
+                # A broker without its agent serves nothing but accepts messages that
+                # would pend forever. Exit (graceful SIGTERM: event logs flush) so the pod
+                # manager marks the session stopped and a start launches a fresh agent.
+                logger.error(
+                    "Agent transport stopped (%s); exiting so the session is reconciled as "
+                    "stopped (set exit_when_transport_stops=false to keep serving history)",
+                    reason,
+                )
+                asyncio.get_running_loop().call_soon(_exit_own_process)
             return
 
         if event_type == "control_request":
@@ -3672,6 +3793,9 @@ class Broker(
             self._stamp_steering_state_from_frame(data)
         elif event_type == "agent_update":
             self._track_agent_update(data)
+        elif is_idle_prompt_hook(data):
+            # Claude is waiting at its prompt: a stale busy state self-heals (F12b).
+            asyncio.create_task(self._heal_on_idle_prompt())
         elif event_type == "terminal_pane_opened":
             self._track_pane_agent(data, opened=True)
         elif event_type == "terminal_pane_closed":
@@ -3688,7 +3812,10 @@ class Broker(
             # while blocked on a human gate: the answer that unblocks the turn also
             # arrives as a prompt-submit, and we must not clobber awaiting_input
             # before _exit_attention runs.
-            if not self._pending_attention:
+            # A turn-boundary flush (G10, F12a) is NOT a turn start: the transport
+            # emits it after the turn ended, only so a silently absorbed steer's
+            # bubble flips. _activate_user_turn below still flips it.
+            if not self._pending_attention and not is_turn_boundary_flush(data):
                 asyncio.create_task(self._report_activity_state("active"))
         elif event_type in ("result", "error") or (
             event_type == "assistant" and self._assistant_has_content(data)
@@ -4781,7 +4908,7 @@ class Broker(
                     source="telegram",
                     metadata=metadata,
                 )
-                self._mark_pending_help_answered(target_peer_id, content, "telegram")
+                await self._mark_pending_help_answered(target_peer_id, content, "telegram")
                 telemetry.count(
                     "skuld.operator.replies",
                     attributes={"source": "telegram", "outcome": "routed"},
@@ -5528,7 +5655,7 @@ class Broker(
             await self._publish_workflow_trigger()
         return message_id
 
-    async def join_human_environment(
+    async def join_environment(
         self,
         *,
         participant_id: str,
@@ -5539,11 +5666,15 @@ class Broker(
         capabilities: list[str] | None = None,
         surfaces: list[str] | None = None,
         environment_action_authorities: list[str] | None = None,
+        participant_type: str = "human",
+        session_id: str = "",
+        subscribes_to: list[str] | None = None,
+        notice_context: str = "",
     ) -> dict[str, Any]:
-        """Join a human participant to the live Environment room state."""
+        """Join a person or an agent from another session to the live room state."""
         if self._room_bridge is None:
             raise RuntimeError("Room mode is not enabled")
-        meta = await self._room_bridge.join_human_environment(
+        meta = await self._room_bridge.join_environment(
             participant_id,
             display_name=display_name,
             environment_id=environment_id,
@@ -5552,10 +5683,32 @@ class Broker(
             capabilities=capabilities,
             surfaces=surfaces,
             environment_action_authorities=environment_action_authorities,
+            participant_type=participant_type,
+            session_id=session_id,
+            subscribes_to=subscribes_to,
+            notice_context=notice_context,
         )
+        if session_id:
+            # This room goes with its session, so the seat is logged to survive a restart.
+            await self._emit_broker_frame(
+                {
+                    "type": ROOM_MEMBER_FRAME,
+                    "joined": True,
+                    "participant_id": participant_id,
+                    "member": {
+                        "display_name": display_name,
+                        "environment_id": environment_id,
+                        "role": role,
+                        "participant_type": participant_type,
+                        "session_id": session_id,
+                        "subscribes_to": subscribes_to or [],
+                        "notice_context": notice_context,
+                    },
+                }
+            )
         return asdict(meta)
 
-    async def heartbeat_human_environment(
+    async def heartbeat_environment(
         self,
         *,
         participant_id: str,
@@ -5563,7 +5716,7 @@ class Broker(
         wakefulness: str | None = None,
         attention_state: str | None = None,
     ) -> dict[str, Any]:
-        """Record heartbeat/state for a human Environment participant."""
+        """Record heartbeat/state for a joined room participant."""
         if self._room_bridge is None:
             raise RuntimeError("Room mode is not enabled")
         meta = await self._room_bridge.heartbeat(
@@ -5576,16 +5729,21 @@ class Broker(
             raise LookupError(f"Unknown room participant: {participant_id}")
         return asdict(meta)
 
-    async def leave_human_environment(
+    async def leave_environment(
         self,
         *,
         participant_id: str,
         reason: str = "left",
     ) -> None:
-        """Leave a human participant from the live Environment room state."""
+        """End a joined participant's membership of the live room state."""
         if self._room_bridge is None:
             raise RuntimeError("Room mode is not enabled")
-        await self._room_bridge.leave_human_environment(participant_id, reason=reason)
+        participant = self._room_bridge.participant(participant_id)
+        await self._room_bridge.leave_environment(participant_id, reason=reason)
+        if participant is not None and participant.session_id:
+            await self._emit_broker_frame(
+                {"type": ROOM_MEMBER_FRAME, "joined": False, "participant_id": participant_id}
+            )
 
     async def close_environment_huddle(
         self,
@@ -5734,6 +5892,8 @@ class Broker(
         self._conversation_turns = hydrated
         self._save_conversation_history()
         logger.info("Hydrated %d conversation turns from durable history", len(hydrated))
+        await self._rejoin_room_members()
+        await self._reenter_restored_gate_attention()
         if self._restored_workflow_terminal_completion is not None:
             peer_id, frame = self._restored_workflow_terminal_completion
             await self._maybe_report_flock_completion(peer_id, frame)
@@ -5766,6 +5926,39 @@ class Broker(
         self._restore_durable_controls(frames)
         self._restore_durable_attested_reviews(frames)
         self._restore_durable_workflow_terminal_completion(frames)
+        self._restore_durable_workflow_gates(frames)
+        self._restore_durable_room_members(frames)
+
+    def _restore_durable_room_members(self, frames: list) -> None:
+        """Work out who holds a seat from another session, by their latest join or leave."""
+        for frame in frames:
+            if getattr(frame, "kind", "") != ROOM_MEMBER_FRAME:
+                continue
+            participant_id = frame.payload["participant_id"]
+            if frame.payload["joined"]:
+                self._restored_room_members[participant_id] = frame.payload["member"]
+            else:
+                self._restored_room_members.pop(participant_id, None)
+
+    async def _rejoin_room_members(self) -> None:
+        """Seat members again: their membership did not end because this session restarted."""
+        if self._room_bridge is None:
+            return
+        for participant_id, member in self._restored_room_members.items():
+            await self._room_bridge.join_environment(participant_id, **member)
+
+    def _restore_durable_workflow_gates(self, frames: list) -> None:
+        """Rebuild workflow gates, each at its latest logged state."""
+        for frame in frames:
+            if getattr(frame, "kind", "") != WORKFLOW_GATE_FRAME:
+                continue
+            state = WorkflowGateState(**frame.payload["gate"])
+            key = (state.node_id, state.activation_id)
+            self._workflow_gate_states[state.id] = state
+            self._workflow_gate_state_ids_by_key[key] = state.id
+            self._workflow_gate_attempts[key] = max(
+                self._workflow_gate_attempts.get(key, 0), state.attempt
+            )
 
     def _restore_durable_workflow_terminal_completion(self, frames: list) -> None:
         """Recover an authenticated workflow-runtime stop outcome for republishing."""
@@ -5881,6 +6074,7 @@ from skuld.broker_api import (  # noqa: E402, F401
     restart_service,
     _presented_staging_dir,
     _rebuild_presented_registry,
+    _resume_presented_uploads,
     present_file,
     _build_present_file_turn,
     download_presented_file,

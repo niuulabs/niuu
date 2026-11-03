@@ -92,6 +92,20 @@ class TestIngressTemplate:
         assert _service_for_path(rendered, "/s") == "niuu-test-volundr"
 
 
+def test_volundr_reads_models_from_this_releases_bifrost_service() -> None:
+    documents = [doc for doc in yaml.safe_load_all(_render_niuu_chart()) if isinstance(doc, dict)]
+    configmap = next(
+        doc
+        for doc in documents
+        if doc["kind"] == "ConfigMap" and doc["metadata"]["name"] == "niuu-test-volundr"
+    )
+    service_names = {doc["metadata"]["name"] for doc in documents if doc["kind"] == "Service"}
+    url = yaml.safe_load(configmap["data"]["config.yaml"])["bifrost"]["url"]
+
+    assert url == "http://niuu-test-bifrost"
+    assert url.removeprefix("http://") in service_names
+
+
 def test_observatory_image_tag_overrides_global_default() -> None:
     rendered = _render_niuu_chart(
         "--set",

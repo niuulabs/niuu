@@ -1,0 +1,268 @@
+{
+  "timestamp": "2026-09-14T20:34:46.336397+00:00",
+  "boundary": "existing own server/tree; read-only RPCs; no thread subscriptions/resume/model calls",
+  "calls": [
+    {
+      "method": "thread/read",
+      "threadId": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+      "result": {
+        "id": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+        "parentThreadId": null,
+        "sessionId": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+        "agentNickname": null,
+        "agentRole": null,
+        "source": "vscode",
+        "status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "canAcceptDirectInput": true,
+        "createdAt": 1789387684,
+        "updatedAt": 1789418086
+      }
+    },
+    {
+      "method": "thread/read",
+      "threadId": "01a09fd1-c5c9-7973-8202-06e43bc1857f",
+      "result": {
+        "id": "01a09fd1-c5c9-7973-8202-06e43bc1857f",
+        "parentThreadId": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+        "sessionId": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+        "agentNickname": "Laplace",
+        "agentRole": null,
+        "source": {
+          "subAgent": {
+            "thread_spawn": {
+              "parent_thread_id": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+              "depth": 1,
+              "agent_path": "/root/app_server_protocol",
+              "agent_nickname": "Laplace",
+              "agent_role": null
+            }
+          }
+        },
+        "status": {
+          "type": "idle"
+        },
+        "canAcceptDirectInput": false,
+        "createdAt": 1789387720,
+        "updatedAt": 1789387985
+      }
+    },
+    {
+      "method": "thread/read",
+      "threadId": "01a09fd1-f13b-73d3-87d8-366f5b4eedf5",
+      "result": {
+        "id": "01a09fd1-f13b-73d3-87d8-366f5b4eedf5",
+        "parentThreadId": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+        "sessionId": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+        "agentNickname": "Gibbs",
+        "agentRole": null,
+        "source": {
+          "subAgent": {
+            "thread_spawn": {
+              "parent_thread_id": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+              "depth": 1,
+              "agent_path": "/root/niuu_projection",
+              "agent_nickname": "Gibbs",
+              "agent_role": null
+            }
+          }
+        },
+        "status": {
+          "type": "idle"
+        },
+        "canAcceptDirectInput": false,
+        "createdAt": 1789387731,
+        "updatedAt": 1789388017
+      }
+    },
+    {
+      "method": "thread/list",
+      "params": {
+        "parentThreadId": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+        "sourceKinds": [
+          "subAgentThreadSpawn"
+        ],
+        "useStateDbOnly": true
+      },
+      "result": {
+        "data": [
+          {
+            "id": "01a09fd1-f13b-73d3-87d8-366f5b4eedf5",
+            "parentThreadId": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+            "sessionId": "01a09fd1-f13b-73d3-87d8-366f5b4eedf5",
+            "agentNickname": "Gibbs",
+            "agentRole": null,
+            "source": {
+              "subAgent": {
+                "thread_spawn": {
+                  "parent_thread_id": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+                  "depth": 1,
+                  "agent_path": "/root/niuu_projection",
+                  "agent_nickname": "Gibbs",
+                  "agent_role": null
+                }
+              }
+            },
+            "status": {
+              "type": "idle"
+            },
+            "canAcceptDirectInput": false,
+            "createdAt": 1789387731,
+            "updatedAt": 1789388017
+          },
+          {
+            "id": "01a09fd1-c5c9-7973-8202-06e43bc1857f",
+            "parentThreadId": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+            "sessionId": "01a09fd1-c5c9-7973-8202-06e43bc1857f",
+            "agentNickname": "Laplace",
+            "agentRole": null,
+            "source": {
+              "subAgent": {
+                "thread_spawn": {
+                  "parent_thread_id": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+                  "depth": 1,
+                  "agent_path": "/root/app_server_protocol",
+                  "agent_nickname": "Laplace",
+                  "agent_role": null
+                }
+              }
+            },
+            "status": {
+              "type": "idle"
+            },
+            "canAcceptDirectInput": false,
+            "createdAt": 1789387720,
+            "updatedAt": 1789387985
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "method": "thread/loaded/list",
+      "result": {
+        "ownTreeLoadedIds": [
+          "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+          "01a09fd1-c5c9-7973-8202-06e43bc1857f",
+          "01a09fd1-f13b-73d3-87d8-366f5b4eedf5"
+        ],
+        "nextCursor": null,
+        "note": "only own tree IDs retained"
+      }
+    },
+    {
+      "method": "thread/turns/list",
+      "threadId": "01a09fd1-c5c9-7973-8202-06e43bc1857f",
+      "result": {
+        "data": [
+          {
+            "id": "01a09fd1-c5e8-71f1-8fc1-ed734845065a",
+            "status": "completed",
+            "itemsView": "summary",
+            "itemTypes": {
+              "agentMessage": 1
+            },
+            "error": null
+          }
+        ],
+        "hasOlderPage": false
+      }
+    },
+    {
+      "method": "thread/turns/list",
+      "threadId": "01a09fd1-f13b-73d3-87d8-366f5b4eedf5",
+      "result": {
+        "data": [
+          {
+            "id": "01a09fd1-f157-7aa0-b011-e0fa53b0c66b",
+            "status": "completed",
+            "itemsView": "summary",
+            "itemTypes": {
+              "agentMessage": 1
+            },
+            "error": null
+          }
+        ],
+        "hasOlderPage": false
+      }
+    },
+    {
+      "method": "thread/items/list",
+      "threadId": "01a09fd1-c5c9-7973-8202-06e43bc1857f",
+      "result": {
+        "itemCount": 5,
+        "entryKeys": [
+          [
+            "turnId",
+            "item"
+          ],
+          [
+            "turnId",
+            "item"
+          ],
+          [
+            "turnId",
+            "item"
+          ],
+          [
+            "turnId",
+            "item"
+          ],
+          [
+            "turnId",
+            "item"
+          ]
+        ],
+        "itemTypes": [
+          "agentMessage",
+          "reasoning",
+          "commandExecution",
+          "reasoning",
+          "subAgentActivity"
+        ],
+        "hasOlderPage": true
+      }
+    },
+    {
+      "method": "collaborationMode/list",
+      "result": {
+        "data": [
+          {
+            "name": "Plan",
+            "mode": "plan",
+            "model": null,
+            "reasoning_effort": "medium"
+          },
+          {
+            "name": "Default",
+            "mode": "default",
+            "model": null,
+            "reasoning_effort": null
+          }
+        ]
+      }
+    },
+    {
+      "method": "thread/queue/list",
+      "threadId": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+      "result": {
+        "count": 0,
+        "hasMore": false
+      }
+    },
+    {
+      "method": "thread/goal/get",
+      "threadId": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+      "result": {
+        "hasGoal": false
+      }
+    }
+  ],
+  "initialize": {
+    "userAgent": "skuld/0.154.0 (Ubuntu 24.4.0; aarch64) unknown (lexi_native_read_audit; 1.0.0)",
+    "platformFamily": "unix",
+    "platformOs": "linux"
+  }
+}

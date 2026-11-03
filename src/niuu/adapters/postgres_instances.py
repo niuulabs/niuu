@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from uuid import UUID
 
 import asyncpg
 
@@ -13,8 +14,19 @@ from niuu.domain.models import (
     InstanceVisibility,
     RegisteredInstance,
 )
-from niuu.ports.instances import InstanceRepository
+from niuu.ports.instances import InstanceRepository, InvalidInstanceIdError
 from niuu.service_databases import GUILD_BOOTSTRAP_SQL
+
+
+def _require_uuid(instance_id: str) -> None:
+    """The registry keys instances by UUID; anything else is a malformed id, not a miss."""
+    try:
+        UUID(instance_id)
+    except (ValueError, TypeError, AttributeError):
+        raise InvalidInstanceIdError(
+            f"Invalid instance id {instance_id!r}: Guild instance ids are UUIDs "
+            "(the `id` from GET /api/v1/niuu/instances)"
+        ) from None
 
 
 class PostgresInstanceRepository(InstanceRepository):
@@ -41,6 +53,7 @@ class PostgresInstanceRepository(InstanceRepository):
         return [self._row_to_instance(row) for row in rows]
 
     async def get_instance(self, instance_id: str) -> RegisteredInstance | None:
+        _require_uuid(instance_id)
         row = await self._pool.fetchrow(
             "SELECT * FROM niuu_instances WHERE id = $1::uuid",
             instance_id,
@@ -116,6 +129,7 @@ class PostgresInstanceRepository(InstanceRepository):
         return instance
 
     async def delete_instance(self, instance_id: str) -> None:
+        _require_uuid(instance_id)
         await self._pool.execute("DELETE FROM niuu_instances WHERE id = $1::uuid", instance_id)
 
     async def record_health(

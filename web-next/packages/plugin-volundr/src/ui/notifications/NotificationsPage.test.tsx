@@ -448,7 +448,7 @@ describe('Delivery rules panel', () => {
     await user.click(within(panel).getByRole('button', { name: 'Delete' }));
     expect(
       await within(panel).findByText(
-        'No delivery rules. Notifications stay in Forge until you add one.',
+        'No delivery rules. Notifications stay in Niuu until you add one.',
       ),
     ).toBeInTheDocument();
   });
@@ -552,7 +552,7 @@ describe('NotificationsPage host names and edge cases', () => {
     ).toEqual(['All hosts', 'horde-one', 'Thor box']);
 
     await user.click(screen.getByRole('button', { name: 'Mark all read' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('The Forge did not answer.');
+    expect(await screen.findByRole('alert')).toHaveTextContent('The host did not answer.');
 
     await user.click(screen.getByRole('button', { name: 'Delivery rules' }));
     const panel = screen.getByRole('complementary', { name: 'Delivery rules' });

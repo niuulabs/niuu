@@ -293,6 +293,92 @@ async def test_decided_event_carries_the_answer_into_the_ledger(tmp_path) -> Non
     assert (stored.status, stored.decision_answer) == ("approved", "Friday")
 
 
+def _withdrawn(item: ReviewItem, *, outcome: str = "withdrawn") -> ReviewItem:
+    """The copy a resident publishes when its question closed without the queue."""
+    resident_copy = ReviewItem.from_payload(item.to_payload())
+    resident_copy.withdraw(outcome=outcome, detail="regin withdrew this question: merged")
+    return resident_copy
+
+
+async def test_a_withdrawn_question_leaves_the_pending_queue(tmp_path) -> None:
+    service, _publisher = _service(tmp_path)
+    item = _question()
+    await service.ingest_event(review_requested_event(item, source="v"))
+    assert [i.item_id for i in await service.list_items(status="pending")] == [item.item_id]
+
+    await service.ingest_event(review_resolved_event(_withdrawn(item), source="v"))
+
+    stored = await service.get(item.item_id)
+    assert stored.status == "withdrawn"
+    assert stored.apply_outcome == "withdrawn"
+    assert stored.apply_detail == "regin withdrew this question: merged"
+    assert stored.evidence == item.evidence
+    assert await service.list_items(status="pending") == []
+    assert (await service.counts()) == {"withdrawn": 1}
+
+
+async def test_a_reannounce_never_revives_a_withdrawn_item(tmp_path) -> None:
+    service, _publisher = _service(tmp_path)
+    item = _question()
+    await service.ingest_event(review_requested_event(item, source="v"))
+    await service.ingest_event(review_resolved_event(_withdrawn(item), source="v"))
+
+    # The resident restarts and re-announces the copy it filed originally.
+    await service.ingest_event(review_requested_event(item, source="v"))
+
+    assert (await service.get(item.item_id)).status == "withdrawn"
+    assert await service.list_items(status="pending") == []
+
+
+async def test_a_withdrawn_item_cannot_be_decided(tmp_path) -> None:
+    service, publisher = _service(tmp_path)
+    item = _question()
+    await service.ingest_event(review_requested_event(item, source="v"))
+    await service.ingest_event(review_resolved_event(_withdrawn(item), source="v"))
+
+    with pytest.raises(ReviewDecisionError) as refused:
+        await service.decide(item.item_id, decision="answered", operator_id="op", answer="Tue")
+
+    assert refused.value.status_code == 409
+    assert "already withdrawn" in str(refused.value)
+    assert publisher.items == []
+
+    response = _client(service).post(
+        f"/api/v1/ravn/odin/reviews/{item.item_id}/decide",
+        json={"decision": "answered", "answer": "Tue", "participantId": "human:jozef"},
+    )
+    assert response.status_code == 409
+
+
+async def test_a_redelivered_decision_never_revives_a_withdrawn_item(tmp_path) -> None:
+    service, publisher = _service(tmp_path)
+    item = _question()
+    await service.ingest_event(review_requested_event(item, source="v"))
+    await service.decide(item.item_id, decision="answered", operator_id="op", answer="Tue")
+    decided = review_decided_event(publisher.items[0], source="odin")
+    # The resident withdrew before it saw the decision: that is what it reports.
+    await service.ingest_event(review_resolved_event(_withdrawn(item), source="v"))
+    await service.ingest_event(decided)
+
+    assert (await service.get(item.item_id)).status == "withdrawn"
+
+
+async def test_a_withdrawal_never_rewrites_an_applied_decision(tmp_path) -> None:
+    service, publisher = _service(tmp_path)
+    item = _question()
+    await service.ingest_event(review_requested_event(item, source="v"))
+    await service.decide(item.item_id, decision="answered", operator_id="op", answer="Tue")
+    applied = publisher.items[0]
+    applied.resolve(outcome="applied", detail="operator answer queued")
+    await service.ingest_event(review_resolved_event(applied, source="v"))
+
+    await service.ingest_event(review_resolved_event(_withdrawn(item), source="v"))
+
+    stored = await service.get(item.item_id)
+    assert stored.status == "applied"
+    assert stored.apply_detail == "operator answer queued"
+
+
 async def test_expiry_sweep_uses_per_kind_ttls(tmp_path) -> None:
     service, _publisher = _service(
         tmp_path,

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
-import { ThemeProvider, useTheme } from './ThemeProvider';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { ThemeProvider, useTheme, type ThemeName } from './ThemeProvider';
 
 function ThemeReader() {
   const { theme } = useTheme();
@@ -10,17 +10,19 @@ function ThemeReader() {
 describe('ThemeProvider', () => {
   afterEach(() => {
     cleanup();
+    localStorage.removeItem('niuu.theme');
+    document.head.querySelector('meta[name="theme-color"]')?.remove();
     delete document.documentElement.dataset.theme;
   });
 
-  it('defaults to ice and sets data-theme on documentElement', () => {
+  it('defaults to niuu and sets data-theme on documentElement', () => {
     render(
       <ThemeProvider>
         <ThemeReader />
       </ThemeProvider>,
     );
-    expect(screen.getByTestId('theme').textContent).toBe('ice');
-    expect(document.documentElement.dataset.theme).toBe('ice');
+    expect(screen.getByTestId('theme').textContent).toBe('niuu');
+    expect(document.documentElement.dataset.theme).toBe('niuu');
   });
 
   it('respects initial theme prop', () => {
@@ -30,6 +32,56 @@ describe('ThemeProvider', () => {
       </ThemeProvider>,
     );
     expect(document.documentElement.dataset.theme).toBe('amber');
+  });
+
+  it.each<ThemeName>(['xteo', 'midnight-blue', 'deep-blue', 'dark-blue', 'light'])(
+    'switches to %s and restores it after remounting',
+    (next) => {
+      function ChooseTheme() {
+        const { setTheme } = useTheme();
+        return <button onClick={() => setTheme(next)}>Choose</button>;
+      }
+      const view = render(
+        <ThemeProvider>
+          <ChooseTheme />
+        </ThemeProvider>,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Choose' }));
+      expect(document.documentElement.dataset.theme).toBe(next);
+      expect(localStorage.getItem('niuu.theme')).toBe(next);
+      view.unmount();
+      render(
+        <ThemeProvider>
+          <ThemeReader />
+        </ThemeProvider>,
+      );
+      expect(screen.getByTestId('theme')).toHaveTextContent(next);
+    },
+  );
+
+  it('ignores a stored theme that no longer exists', () => {
+    localStorage.setItem('niuu.theme', 'ultraviolet');
+    render(
+      <ThemeProvider theme="deep-blue">
+        <ThemeReader />
+      </ThemeProvider>,
+    );
+    expect(screen.getByTestId('theme')).toHaveTextContent('deep-blue');
+  });
+
+  it('paints the browser chrome with the theme surface', () => {
+    const meta = document.createElement('meta');
+    meta.name = 'theme-color';
+    meta.content = '#000000';
+    document.head.append(meta);
+    document.documentElement.style.setProperty('--color-bg-primary', '#101216');
+    render(
+      <ThemeProvider>
+        <ThemeReader />
+      </ThemeProvider>,
+    );
+    document.documentElement.style.removeProperty('--color-bg-primary');
+    expect(meta.content).toBe('#101216');
   });
 
   it('throws when useTheme is used outside the provider', () => {

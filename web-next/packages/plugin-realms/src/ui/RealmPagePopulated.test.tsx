@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { UI_MODE_STORAGE_KEY } from '@niuulabs/shell';
 import { createSeedRealms } from '@niuulabs/plugin-valkyrie';
 import {
   createCallLog,
@@ -80,7 +79,7 @@ describe('RealmPage with a running resident', () => {
     localStorage.clear();
   });
 
-  it('shows sessions, QA findings, the conversation and realm memory', async () => {
+  it('shows sessions, QA findings, the conversation and workspace memory', async () => {
     const user = userEvent.setup();
     const log = createCallLog();
     const { router } = renderRealms('/realms/valhalla', await populated(log), log);
@@ -93,7 +92,7 @@ describe('RealmPage with a running resident', () => {
     );
     await user.click(screen.getByRole('button', { name: 'New conversation' }));
     await screen.findByText(/not used in tests/);
-    await user.click(screen.getByRole('button', { name: /^Queue/ }));
+    await user.click(screen.getByRole('button', { name: /^Board/ }));
     expect(await screen.findByText(/QA findings · 1/)).toBeInTheDocument();
     expect(screen.getAllByText(/LXA-1/).length).toBeGreaterThan(0);
     await user.click(screen.getByRole('button', { name: /^Sessions/ }));
@@ -101,7 +100,9 @@ describe('RealmPage with a running resident', () => {
     expect(screen.getByText('fix flaky test')).toBeInTheDocument();
     expect(screen.queryByText('other')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Memory' }));
-    const exploreLink = await screen.findByRole('link', { name: "Explore this realm's memory" });
+    const exploreLink = await screen.findByRole('link', {
+      name: "Explore this workspace's memory",
+    });
     await user.click(exploreLink);
     await waitFor(() => expect(router.state.location.pathname).toBe('/mimir'));
     expect(router.state.location.search).toEqual({ mount: 'realm-valhalla' });
@@ -128,7 +129,6 @@ describe('RealmPage with a running resident', () => {
 
   it('picks a workflow before launching it into the realm', async () => {
     const user = userEvent.setup();
-    localStorage.setItem(UI_MODE_STORAGE_KEY, 'advanced');
     const log = createCallLog();
     renderRealms('/realms/valhalla', await populated(log), log);
     await screen.findByTestId('realm-page');
@@ -141,12 +141,12 @@ describe('RealmPage with a running resident', () => {
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
   });
 
-  it('pauses and removes the resident from settings', async () => {
+  it('pauses and removes the resident from its tab', async () => {
     const user = userEvent.setup();
     const log = createCallLog();
-    renderRealms('/realms/valhalla/settings', await populated(log), log);
+    renderRealms('/realms/valhalla?tab=resident', await populated(log), log);
     await screen.findByTestId('realm-settings');
-    await user.click(screen.getByRole('button', { name: 'Resident' }));
+    await user.click(screen.getByRole('button', { name: 'Lifecycle' }));
     await screen.findByTestId('resident-controls');
     await user.click(screen.getByRole('button', { name: 'Pause' }));
     await waitFor(() => expect(log.calls).toContain('applyLifecycle:valhalla:suspend'));
@@ -161,9 +161,9 @@ describe('RealmPage with a running resident', () => {
   it('deletes the realm in two clicks and lands on the home page', async () => {
     const user = userEvent.setup();
     const log = createCallLog();
-    const { router } = renderRealms('/realms/valhalla/settings', await populated(log), log);
+    const { router } = renderRealms('/realms/valhalla?tab=resident', await populated(log), log);
     await screen.findByTestId('realm-settings');
-    await user.click(screen.getByRole('button', { name: 'Resident' }));
+    await user.click(screen.getByRole('button', { name: 'Lifecycle' }));
     await screen.findByTestId('realm-teardown');
     await user.click(screen.getByTestId('realm-delete'));
     await user.click(screen.getByTestId('realm-delete-confirm'));

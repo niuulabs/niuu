@@ -84,7 +84,7 @@ class MessageBubble(Widget):
     MessageBubble { height: auto; padding: 0 1; margin: 0 0 1 0; }
     MessageBubble .mb-role { height: 1; }
     MessageBubble .mb-content { height: auto; padding: 0 2; }
-    MessageBubble .mb-thinking { color: #f59e0b; }
+    MessageBubble .mb-thinking { color: #e4bd7e; }
     """
 
     def __init__(self, message: ChatMessage, **kwargs: Any) -> None:
@@ -149,7 +149,7 @@ class ChatPage(Widget):
     DEFAULT_CSS = """
     ChatPage { width: 1fr; height: 1fr; }
     ChatPage #chat-messages { height: 1fr; }
-    ChatPage #chat-model-bar { height: 1; background: #18181b; padding: 0 2; }
+    ChatPage #chat-model-bar { height: 1; background: #10212d; padding: 0 2; }
     ChatPage #chat-input-row { height: auto; padding: 1 0; }
     ChatPage #chat-input { width: 1fr; }
     ChatPage #chat-metrics { height: 1; padding: 0 2; }

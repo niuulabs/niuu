@@ -16,12 +16,16 @@ class RealmRepository(ABC):
     """Port for realm, trust-grant, and capability persistence operations."""
 
     @abstractmethod
-    async def list_realms(self) -> list[Realm]:
-        """List all realms."""
+    async def list_realms(self, tenant_id: str) -> list[Realm]:
+        """List the tenant's realms."""
 
     @abstractmethod
-    async def get_realm(self, realm_ref: UUID | str) -> Realm | None:
-        """Retrieve a realm by id (UUID) or slug (str)."""
+    async def get_realm(self, realm_id: UUID) -> Realm | None:
+        """Retrieve a realm by id in any tenant, for trusted internal callers."""
+
+    @abstractmethod
+    async def get_tenant_realm(self, realm_ref: UUID | str, tenant_id: str) -> Realm | None:
+        """Retrieve the tenant's realm by id (UUID) or slug (str)."""
 
     @abstractmethod
     async def save_realm(self, realm: Realm) -> Realm:

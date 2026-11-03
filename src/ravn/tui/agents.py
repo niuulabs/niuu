@@ -36,11 +36,11 @@ class AgentRow(Widget):
     AgentRow {
         height: auto;
         padding: 1 2;
-        border-bottom: solid #27272a;
-        background: #18181b;
+        border-bottom: solid #182b38;
+        background: #10212d;
     }
     AgentRow:hover {
-        background: #27272a;
+        background: #182b38;
     }
     """
 

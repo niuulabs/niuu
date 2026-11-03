@@ -1,4 +1,4 @@
-import { Settings } from 'lucide-react';
+import { SettingsIcon } from '@niuulabs/ui';
 import { createElement, useEffect } from 'react';
 import { createRoute } from '@tanstack/react-router';
 import { useAuth } from '@niuulabs/auth';
@@ -20,7 +20,7 @@ function LogoutRoute() {
 const settingsPlugin = definePlugin({
   id: 'settings',
   rune: '\u2699',
-  icon: createElement(Settings, { size: 24, strokeWidth: 1.8 }),
+  icon: createElement(SettingsIcon),
   title: 'Settings',
   subtitle: 'configuration',
   position: 'bottom',

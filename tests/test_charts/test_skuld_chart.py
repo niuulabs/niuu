@@ -297,6 +297,13 @@ class TestDeploymentTemplate:
         """Test sessions volume is mounted by multiple containers."""
         assert deployment_yaml.count("name: sessions") >= 2
 
+    def test_volume_ownership_is_not_rewalked_on_every_start(self, tmp_path):
+        """A full walk of a user home delays each session by minutes."""
+        rendered = _render_skuld_chart(tmp_path, {"session": {"id": "abc"}})
+        pod_spec = _deployment_from_rendered(rendered)["spec"]["template"]["spec"]
+
+        assert pod_spec["securityContext"]["fsGroupChangePolicy"] == "OnRootMismatch"
+
     @pytest.mark.parametrize("repo_url", ["", "https://github.com/org/repo"])
     def test_services_setup_precreates_dynamic_nginx_include(self, tmp_path, repo_url):
         """nginx must not wait on devrunner for the include it loads at startup."""
@@ -1880,3 +1887,45 @@ class TestResidentOpenClawSessions:
             "name": "resident-abc-openclaw",
             "key": "token",
         }
+
+
+def _broker_config(rendered: str) -> dict:
+    return next(
+        yaml.safe_load(doc["data"]["config.yaml"])
+        for doc in yaml.safe_load_all(rendered)
+        if isinstance(doc, dict)
+        and doc.get("kind") == "ConfigMap"
+        and "transport_adapter" in doc.get("data", {}).get("config.yaml", "")
+    )
+
+
+class TestForgeSessionCredentialFile:
+    """Forge mounts a session pod's Forge credential from a Secret; the values carry
+    only the file it is read from, and the broker mounts what Forge contributes."""
+
+    def test_no_credential_file_by_default(self, tmp_path):
+        rendered = _render_skuld_chart(tmp_path, {"session": {"id": "abc"}})
+        assert "forge_mcp" not in _broker_config(rendered)
+
+    def test_the_broker_reads_the_mounted_credential(self, tmp_path):
+        from skuld.config import ForgeMcpConfig
+
+        mount = "/var/run/secrets/niuu-forge-session"
+        values = {
+            "session": {"id": "abc"},
+            "forgeMcp": {"tokenFile": f"{mount}/token", "grants": ["message"]},
+            "extraVolumes": [{"name": "forge-session-x", "secret": {"secretName": "fs-x"}}],
+            "extraVolumeMounts": [{"name": "forge-session-x", "mountPath": mount}],
+        }
+        rendered = _render_skuld_chart(tmp_path, values)
+        forge_mcp = _broker_config(rendered)["forge_mcp"]
+        assert forge_mcp == {"token_file": f"{mount}/token", "grants": ["message"]}
+        (tmp_path / "token").write_text("t")
+        parsed = ForgeMcpConfig.model_validate({**forge_mcp, "token_file": str(tmp_path / "token")})
+        assert parsed.token == "t"
+        broker = next(
+            c
+            for c in _deployment_from_rendered(rendered)["spec"]["template"]["spec"]["containers"]
+            if c["name"] == "skuld"
+        )
+        assert {"name": "forge-session-x", "mountPath": mount} in broker["volumeMounts"]

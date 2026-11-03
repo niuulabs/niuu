@@ -132,7 +132,7 @@ export function ToolBuilderGrantCard({ realm }: { realm: RealmRef }) {
       ) : (
         <p className={`niuu:text-xs ${MUTED}`}>
           Grant <span className="niuu:text-text-secondary">build</span> trust to let this
-          realm&apos;s Valkyrie commission new tools.
+          workspace&apos;s resident commission new tools.
         </p>
       )}
       <label className={`niuu:flex niuu:items-center niuu:gap-2 niuu:text-xs ${MUTED}`}>

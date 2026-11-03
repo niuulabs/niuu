@@ -214,6 +214,37 @@ there is no backlog to drain and no archive-versus-drain decision to make.
   escalates once.
 - Archive remains greppable after migration.
 
+### 4.9 Environment signals from polling sources
+
+`resident_inbox.environment_signals_enabled: true` makes the inbox the only
+route from *any* signal source to a turn, not just from acking sources such as
+JetStream. Before, a polling source like `KubernetesSignalAdapter` still queued
+one full turn per event at `signal_task_severities` — Sigrun, Eir and Gondul
+sat at 900–1,050 queued tasks, mostly the same pods repeating. That also
+carried a silent defect: such a task referenced the shared shape slot, and
+acknowledging it marked every observation folded into that slot as judged.
+
+- Repeats fold into one slot per shape while the resident has not looked;
+  the home turn shows the count, observed span, archive range and the
+  categorical values (pod names, reasons, severities) of what it judges.
+- `signal_task_severities` no longer applies. A `critical` observation (which
+  events carry it is the adapter's `critical_reasons`) wakes the home turn
+  instead of waiting for `home_wake_interval_seconds`; if a home turn is
+  already queued or running, the wake fires as soon as that turn's case is
+  released. Home turns already run at priority 1, ahead of all signal work.
+- On restart, per-observation signal tasks left in the queue journal fold into
+  one `signal:restored_backlog` window, grouped by object with counts and
+  queue times, at the most urgent priority among them. The original records
+  are written to `queue.folded-<timestamp>.json` beside the journal first; if
+  that write fails the restart stops and the journal is left as it was.
+
+A System One pre-attentive gate (`docs/design/system-one-decision-models.md`
+§3.1, §6) sits at the same place a stage-3 pattern does: per slot, in
+`ResidentRuntime.next_home_task`, over the slot aggregate. Skipped slots stay
+pending and reach the next turn as receipts, as in §5.1. It is built and off
+until `ravn resident attention-calibrate` has fitted a threshold.
+`decision.resident_first_opinion` records per-slot agreement data today.
+
 ## 5. Stage 3 — learned attention, with receipts
 
 Only after stage 2, and only if telemetry shows the resident repeatedly reaching

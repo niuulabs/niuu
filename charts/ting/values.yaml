@@ -211,6 +211,11 @@ planner:
   # -- Prompt injected when the user clicks "Finalize Plan". Leave empty for built-in default.
   finalizePrompt: ""
 
+# Review widgets from external module packages. Mount each package with
+# extraVolumes and extraVolumeMounts, then list its niuu-module.yaml here.
+reviewWidgets:
+  moduleManifestFiles: []
+
 # A2A protocol surface (agent card + task endpoint)
 a2a:
   # -- Agent name advertised on the A2A agent card. Leave empty for built-in default.
@@ -219,7 +224,7 @@ a2a:
   agentDescription: ""
   # -- Cache-Control max-age for the served agent card. Leave empty for built-in default.
   cardMaxAgeSeconds: ""
-  # -- Lease duration for idempotent A2A workflow launch reservations.
+  # -- Lease duration for idempotent A2A workflow launch reservations. Keep it above the longest launch: past it a run with no session fails as launch_abandoned.
   launchLeaseSeconds: 60
   # -- Artifacts at or under this size (chars) inline on A2A tasks. Leave empty for built-in default.
   inlineArtifactMaxChars: ""

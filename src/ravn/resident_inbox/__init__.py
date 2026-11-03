@@ -21,9 +21,17 @@ from .serialization import (
     signal_from_directed_message,
     signal_from_event,
 )
-from .shape import ShapeAggregate, aggregate_summary_lines, field_paths, shape_key
+from .shape import (
+    RESIDENT_ORIGIN_KEY,
+    ShapeAggregate,
+    aggregate_summary_lines,
+    field_paths,
+    observed_payload,
+    shape_key,
+)
 
 __all__ = [
+    "RESIDENT_ORIGIN_KEY",
     "MimirResidentInbox",
     "LocalResidentInbox",
     "RawSignalArchive",
@@ -31,6 +39,7 @@ __all__ = [
     "aggregate_summary_lines",
     "archive_ref_sort_key",
     "field_paths",
+    "observed_payload",
     "shape_key",
     "ResidentInboxBackend",
     "ResidentInboxClassification",

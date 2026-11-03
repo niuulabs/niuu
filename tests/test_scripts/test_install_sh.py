@@ -321,7 +321,8 @@ class TestDockerMode:
         tools.mkdir()
         for directory in ("/usr/bin", "/bin"):
             for entry in Path(directory).iterdir():
-                if entry.name == "docker" or (tools / entry.name).exists():
+                # is_symlink, not exists: a runner's dangling link would be linked twice.
+                if entry.name == "docker" or (tools / entry.name).is_symlink():
                     continue
                 (tools / entry.name).symlink_to(entry)
         result = subprocess.run(

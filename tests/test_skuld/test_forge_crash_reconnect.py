@@ -215,7 +215,7 @@ async def test_d3_agent_crash_mid_turn_rebuilds_interrupted_transcript() -> None
     stable across two rebuilds."""
     _require_tmux()
 
-    from volundr.domain.services.transcript_rebuild import rebuild_turns
+    from niuu.domain.transcript_rebuild import rebuild_turns
 
     async with BrokerHarness(hooks=True, idle_timeout_s=0.3) as h:
         client = await h.connect()
@@ -348,8 +348,10 @@ async def test_d7_reconnect_conversation_history_carries_head_seq_cursor() -> No
         assert "head_seq" in history, f"reconnect frame missing head_seq cursor: {history}"
         head_seq = history["head_seq"]
         assert isinstance(head_seq, int) and head_seq >= 1
-        # The cursor equals the broker's durable-log head at reconnect time.
-        assert head_seq == h.broker._event_log_seq
+        # The cursor is the durable-log head when the frame was sent; the broker may
+        # log more (an idle transition, a late event) before this line reads it,
+        # so it can only lag the live head. The no-gap check below covers the rest.
+        assert head_seq <= h.broker._event_log_seq
 
         # Drive a SECOND turn so the log grows past the captured head. Gate on the
         # durable-log head itself advancing past the captured head_seq — not merely
@@ -400,7 +402,7 @@ def test_d4_authoritative_turns_win_no_double_count_of_raw_frames() -> None:
     """D4 (default tier, pure reducer): when a conversation.turn row AND overlapping
     raw frames share the same request_id, the authoritative row wins and the raw
     frames are NOT double-counted into a second assistant turn."""
-    from volundr.domain.services.transcript_rebuild import rebuild_turns
+    from niuu.domain.transcript_rebuild import rebuild_turns
 
     rows = [
         # Authoritative SDK rows.
@@ -496,3 +498,42 @@ def test_d6_conversation_endpoint_fallback_to_rebuilt_log() -> None:
     mod = importlib.import_module("tests.test_adapters.test_rest_conversation_fallback")
     assert hasattr(mod, "test_dead_session_conversation_falls_back_to_rebuilt_log")
     assert hasattr(mod, "test_dead_session_conversation_uses_shared_reducer_output")
+
+
+# --------------------------------------------------------------------------- D7
+
+
+@pytest.mark.integration
+@pytest.mark.tmux
+@pytest.mark.asyncio
+async def test_d7_agent_exit_stops_the_broker_instead_of_serving_a_corpse() -> None:
+    """D7 (LEX-1699): when Claude's pane dies, the broker reports activity 'stopped'
+    with the reason and exits, so Forge reconciles the session as stopped rather than
+    reporting a dead pane as 'running' and queueing messages for it."""
+    _require_tmux()
+    from unittest.mock import patch
+
+    with patch("skuld.broker._exit_own_process") as kill:
+        async with BrokerHarness(
+            hooks=True, idle_timeout_s=0.3, exit_when_transport_stops=True
+        ) as h:
+            client = await h.connect()
+            client.send({"type": "message", "content": "work:5"})
+            await client.wait_for(
+                lambda frames: any(_frame_shows(f, "working") for f in frames),
+                timeout=8.0,
+            )
+            h.crash_agent()
+
+            for _ in range(100):
+                if kill.called:
+                    break
+                await asyncio.sleep(0.1)
+            stopped = [
+                e.payload
+                for e in h.event_log_entries()
+                if getattr(e, "kind", None) == "transport_stopped"
+            ]
+
+    kill.assert_called_once_with()
+    assert stopped and stopped[-1]["reason"] == "claude_exited"

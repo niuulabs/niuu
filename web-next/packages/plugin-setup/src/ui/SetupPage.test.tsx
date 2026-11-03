@@ -43,6 +43,20 @@ describe('initialStep', () => {
 });
 
 describe('SetupPage', () => {
+  it('opens on the continuity field and leaves it for the wizard steps', async () => {
+    renderWithSetup(<SetupPage onNavigate={vi.fn()} />, {
+      service: createMockSetupService({ latencyMs: 0 }),
+    });
+
+    await waitFor(() => expect(screen.getByTestId('setup-welcome')).toBeInTheDocument());
+    expect(screen.getByTestId('continuity-field')).toBeInTheDocument();
+    expect(screen.getByText('niuu · first launch')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('setup-begin'));
+    await waitFor(() => expect(screen.getByTestId('setup-system')).toBeInTheDocument());
+    expect(screen.queryByTestId('continuity-field')).not.toBeInTheDocument();
+  });
+
   it('walks from welcome to finish and completes', async () => {
     const service = createMockSetupService({ latencyMs: 0 });
     const onNavigate = vi.fn();
@@ -327,5 +341,12 @@ describe('ReadyPage', () => {
     );
     expect(screen.getByText(/Forge → New session/)).toBeInTheDocument();
     expect(screen.getByTestId('ready-dashboard')).toHaveAttribute('href', '/');
+  });
+
+  it('sits on the continuity field', async () => {
+    renderWithSetup(<ReadyPage />, { service: createMockSetupService({ latencyMs: 0 }) });
+    await waitFor(() => expect(screen.getByTestId('ready-page')).toBeInTheDocument());
+    expect(screen.getByTestId('continuity-field')).toBeInTheDocument();
+    expect(screen.getByText('niuu · ready')).toBeInTheDocument();
   });
 });

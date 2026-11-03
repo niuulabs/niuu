@@ -100,7 +100,7 @@ export function WorkflowIssuePicker({ open, onOpenChange, onPick }: WorkflowIssu
           {!projects.isLoading && !projects.isError && (projects.data?.length ?? 0) === 0 ? (
             <EmptyState
               title="No tracker projects"
-              description="Connect a tracker in Ting settings, then try again."
+              description="Connect a tracker in Work settings, then try again."
             />
           ) : null}
         </div>

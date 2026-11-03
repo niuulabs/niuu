@@ -6,13 +6,14 @@ composes the services offered by the host; it does not install missing runtimes.
 
 | Area | Start here for | Inspect next |
 | --- | --- | --- |
-| Völundr / Forge | Launch a session | Runtime state, chat, files, diffs, logs |
-| Ting | Workflows and runs | Active stage, failed attempt, pending gate |
-| Mímir | Sources and knowledge | Mount, page evidence, search result, lint |
-| Ravn | Agent behavior and instances | Persona, runtime configuration, state |
-| Valkyrie | Resident work | Case, requested input, decision, outcome |
-| Bifröst | Models and providers | Catalog, provider health, usage |
-| Guild | Service instances | Service group, endpoint, target metadata |
+| Workspaces | Environments kept by residents | Charter, trust, needs-you items, memory |
+| Forge | Launch a session | Runtime state, chat, files, diffs, logs |
+| Work | Workflows and runs | Active stage, failed attempt, pending gate |
+| Memory | Sources and knowledge | Mount, page evidence, search result, lint |
+| Agents | Agent behavior and instances | Persona, runtime configuration, state |
+| Resident console | Resident work | Case, requested input, decision, outcome |
+| AI models | Models and providers | Catalog, provider health, usage |
+| Platform | Service instances | Service group, endpoint, target metadata |
 | Observatory | Topology | Relationships, ownership, telemetry |
 | Settings | Connections and access | Credential scope and integration configuration |
 
@@ -27,14 +28,14 @@ repositories you can reach) and an issue tracker through the integrations
 catalog, and lets you choose who can
 reach the install. **Apply and open Niuu** on its last step applies the staged
 changes (the platform restarts what changed), marks setup complete and opens
-`/ready`, which walks through the first things to do (a session in Völundr, a
-workflow in Ting, the residents in Ravn). The wizard
+`/ready`, which walks through the first things to do (a session in Forge, a
+workflow in Work, the residents in Agents). The wizard
 stays reachable at `/setup` afterwards. It appears only when the host sets
 `NIUU_SETUP_ENABLED`; see [Single-host Docker mode](../operations/docker-mode.md#the-setup-wizard).
 
 ## Launching work
 
-In Völundr, open **Forge → custom launch…**. The wizard separates **Source**,
+In Forge, open **Overview → custom launch…**. The wizard separates **Source**,
 **Runtime**, and **Confirm**. Start with a blank source to learn the flow; add a
 repository once the runtime works. The [quick start](../get-started/first-local-stack.md)
 explains every required field with screenshots from an actual launch.

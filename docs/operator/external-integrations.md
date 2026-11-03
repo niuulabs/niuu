@@ -83,6 +83,9 @@ components:
 integration_definition_files: []
 ```
 
+Packages can also ship review widgets for workflows to name, with or without
+components. See `docs/site/get-started/build-a-review.md`.
+
 Supported component kinds are `machine_provider` and `vm_runtime`. Unknown
 versions or kinds, incompatible contract versions, duplicate package/component
 names, import failures, abstract classes, and classes implementing the wrong

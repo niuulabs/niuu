@@ -1006,3 +1006,22 @@ describe('createMockVolundrService — full method sweep', () => {
     await svc.revokeToken('tok-1');
   });
 });
+
+describe('mock Forge projects', () => {
+  it('creates and updates projects it then lists', async () => {
+    const service = createMockVolundrService();
+    const project = await service.createProject('Spring catalogue');
+    expect(project.slug).toBe('spring-catalogue');
+    const updated = await service.updateProject(project, { brief: 'Everything for spring' });
+    expect(updated.brief).toBe('Everything for spring');
+    expect(updated.revision).toBe(2);
+    expect((await service.getProjects()).map((entry) => entry.name)).toContain('Spring catalogue');
+  });
+
+  it('refuses to update a project it does not hold', async () => {
+    const service = createMockVolundrService();
+    await expect(
+      service.updateProject({ id: 'nope', name: 'x', slug: 'x', status: 'active' }, {}),
+    ).rejects.toThrow('Project not found');
+  });
+});

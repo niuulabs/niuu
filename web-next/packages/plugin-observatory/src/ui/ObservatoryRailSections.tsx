@@ -127,6 +127,16 @@ export function ObservatoryRailSections({ topology, selectedId, onSelect }: Prop
   const classes = computeClassMap(topology?.nodes ?? []);
   const toneOf = (node: TopologyNode): ComputeClass => classes.get(node.id) ?? 'own';
 
+  // No snapshot yet is not an empty estate: four "nothing discovered" lines
+  // while the first read is in flight say the opposite of what is true.
+  if (topology === null) {
+    return (
+      <p className="obs-rail__empty" data-testid="rail-loading" role="status">
+        Reading the estate…
+      </p>
+    );
+  }
+
   return (
     <>
       <CollapsibleSection title="Meshes" meta={meshes.length} testId="rail-meshes">
@@ -176,9 +186,9 @@ export function ObservatoryRailSections({ topology, selectedId, onSelect }: Prop
         )}
       </CollapsibleSection>
 
-      <CollapsibleSection title="Mímir instances" meta={mimirs.length} testId="rail-mimir">
+      <CollapsibleSection title="Memory instances" meta={mimirs.length} testId="rail-mimir">
         {mimirs.length === 0 ? (
-          <Empty>No Mímir instances discovered.</Empty>
+          <Empty>No memory instances discovered.</Empty>
         ) : (
           mimirs.map((node: TopologyNode) => (
             <RailRow

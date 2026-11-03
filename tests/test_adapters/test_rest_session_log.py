@@ -546,3 +546,123 @@ class TestInboxHints:
             assert response.json()["conflicts"] == [1]
             service.notify_read_state_changed.assert_not_called()
         client.close()
+
+
+def test_resident_runtime_can_use_its_own_event_log() -> None:
+    from unittest.mock import AsyncMock
+
+    from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
+
+    repo = AsyncMock(spec=SessionEventLogRepository)
+    repo.latest_seq.return_value = 3
+    repo.append.return_value = 1
+    repo.detect_conflicts.return_value = []
+    sessions = AsyncMock()
+    sessions.get_session.return_value = None
+    residents = AsyncMock()
+    app = FastAPI()
+    app.state.identity = EnvoyHeaderAuthenticationAdapter()
+    app.include_router(
+        create_session_log_router(
+            repo, session_service=sessions, resident_runtime_service=residents
+        )
+    )
+    headers = {"x-auth-user-id": "alice", "x-auth-tenant": "acme"}
+
+    with TestClient(app) as client:
+        path = f"/api/v1/forge/sessions/{uuid4()}/log"
+        assert client.get(path + "/head", headers=headers).json()["latest_seq"] == 3
+        assert client.post(path, headers=headers, json={"entries": [_frame(1)]}).status_code == 201
+
+    repo.append.assert_awaited_once()
+
+
+def test_unknown_runtime_is_not_found_with_resident_lookup() -> None:
+    from unittest.mock import AsyncMock
+
+    from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
+    from volundr.domain.services.resident_runtime import ResidentRuntimeNotFoundError
+
+    repo = AsyncMock(spec=SessionEventLogRepository)
+    sessions = AsyncMock()
+    sessions.get_session.return_value = None
+    residents = AsyncMock()
+    residents.get.side_effect = ResidentRuntimeNotFoundError("gone")
+    app = FastAPI()
+    app.state.identity = EnvoyHeaderAuthenticationAdapter()
+    app.include_router(
+        create_session_log_router(
+            repo, session_service=sessions, resident_runtime_service=residents
+        )
+    )
+    headers = {"x-auth-user-id": "alice", "x-auth-tenant": "acme"}
+
+    with TestClient(app) as client:
+        path = f"/api/v1/forge/sessions/{uuid4()}/log/head"
+        assert client.get(path, headers=headers).status_code == 404
+
+    repo.latest_seq.assert_not_called()
+
+
+class TestIncludeSeeds:
+    """The rebuild read: seeds a restart folds, never the wire replay's default."""
+
+    @staticmethod
+    def _seeded(client) -> str:
+        sid = str(uuid4())
+        turn = {"id": "reply", "role": "assistant", "content": "done"}
+        client.post(
+            f"/api/v1/forge/sessions/{sid}/log",
+            json={
+                "entries": [
+                    {
+                        "seq": 1,
+                        "kind": "conversation.turn",
+                        "payload": {"type": "conversation.turn", "turn": turn},
+                    },
+                    {"seq": 2, "kind": "history_import", "payload": {"type": "history_import"}},
+                    {"seq": 3, "kind": "capabilities", "payload": {"type": "capabilities"}},
+                    {
+                        "seq": 4,
+                        "kind": "system",
+                        "payload": {"type": "system", "_per_connect_handshake": True},
+                    },
+                    {"seq": 5, "kind": "slash_commands", "payload": {"type": "slash_commands"}},
+                ]
+            },
+        )
+        return sid
+
+    def test_returns_seeds_without_per_connect_handshakes(self):
+        client, _ = _client()
+        sid = self._seeded(client)
+
+        rows = client.get(
+            f"/api/v1/forge/sessions/{sid}/log",
+            params={"show_internal": "true", "include_seeds": "true"},
+        ).json()
+
+        assert [row["kind"] for row in rows] == [
+            "conversation.turn",
+            "history_import",
+            "slash_commands",
+        ]
+
+    def test_default_read_keeps_seeds_off_the_wire(self):
+        client, _ = _client()
+        sid = self._seeded(client)
+
+        rows = client.get(
+            f"/api/v1/forge/sessions/{sid}/log", params={"show_internal": "true"}
+        ).json()
+
+        assert [row["kind"] for row in rows] == ["slash_commands"]
+
+    def test_seeds_are_refused_without_show_internal(self):
+        client, _ = _client()
+        sid = self._seeded(client)
+
+        resp = client.get(f"/api/v1/forge/sessions/{sid}/log", params={"include_seeds": "true"})
+
+        assert resp.status_code == 422
+        assert "show_internal" in resp.json()["detail"]

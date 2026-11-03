@@ -43,7 +43,7 @@ export function WorkflowOverrideModal({
       open={open}
       onOpenChange={onOpenChange}
       title="Apply workflow override"
-      description={`Override the workflow for ${selectedCount} selected run${selectedCount !== 1 ? 's' : ''}. The saga's original workflow is preserved; this applies only to this dispatch.`}
+      description={`Override the workflow for ${selectedCount} selected run${selectedCount !== 1 ? 's' : ''}. The project's original workflow is preserved; this applies only to this dispatch.`}
       actions={[{ label: 'Cancel', variant: 'secondary' }]}
     >
       {isLoading && (

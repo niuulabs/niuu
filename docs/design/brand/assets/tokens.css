@@ -1,0 +1,19 @@
+/* NIUU identity v0.4 — source tokens */
+:root{
+  --niuu-ink: #071019;
+  --niuu-midnight: #0B1722;
+  --niuu-panel: #10212D;
+  --niuu-raised: #182B38;
+  --niuu-divider: #2B4351;
+  --niuu-mist: #EDF4F7;
+  --niuu-secondary: #A5B7C1;
+  --niuu-muted: #78909D;
+  --niuu-signal: #86D0E8;
+  --niuu-signalStrong: #A8E7F4;
+  --niuu-signalDark: #0B2937;
+  --niuu-success: #76BFA7;
+  --niuu-warning: #E4BD7E;
+  --niuu-danger: #E78D94;
+  --niuu-control-radius:6px;
+  --niuu-panel-radius:9px;
+}

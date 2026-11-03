@@ -20,6 +20,10 @@ async def _run_daemon(
     from ravn.adapters.channels.gateway import RavnGateway
     from ravn.adapters.channels.gateway_http import HttpGateway
     from ravn.adapters.channels.gateway_telegram import TelegramGateway
+    from ravn.adapters.executors.cli_threads import (  # noqa: PLC0415
+        CliThreadStore,
+        workflow_thread_key,
+    )
     from ravn.cli.runtime_builders import (  # noqa: PLC0415
         _selected_executor_uses_cli_transport,
         emit_harness_selection,
@@ -73,7 +77,7 @@ async def _run_daemon(
     # Native agents need an LLM while CLI-backed ones must not construct one;
     # retain resources by the resolved selection so tasks sharing a harness also
     # share its safe-to-share LLM and learning services.
-    task_resources: dict[object, tuple[Any | None, Any | None, Any | None]] = {}
+    task_resources: dict[object, tuple[Any | None, Any | None, Any | None, Any | None]] = {}
     task_compactions: dict[tuple[object, str], tuple[Any | None, Any | None]] = {}
 
     def _resource_key(resolved_executor: Any) -> object:
@@ -82,7 +86,7 @@ async def _run_daemon(
 
     def _resources_for_executor(
         resolved_executor: Any,
-    ) -> tuple[Any | None, Any | None, Any | None]:
+    ) -> tuple[Any | None, Any | None, Any | None, Any | None]:
         key = _resource_key(resolved_executor)
         cached = task_resources.get(key)
         if cached is not None:
@@ -97,6 +101,7 @@ async def _run_daemon(
             task_llm,
             consolidation,
             _build_capability_matcher(settings, consolidation),
+            _build_peer_capability_matcher(settings, consolidation),
         )
         task_resources[key] = resources
         return resources
@@ -113,7 +118,7 @@ async def _run_daemon(
             task_compactions[key] = cached
         return cached
 
-    llm, learning_consolidation, capability_matcher = _resources_for_executor(executor)
+    llm, learning_consolidation, capability_matcher, _ = _resources_for_executor(executor)
     # Validate the base persona's compaction configuration at startup. Task
     # personas validate their own model binding when their factory is invoked.
     _compaction_for_executor(executor, llm, base_model)
@@ -218,6 +223,14 @@ async def _run_daemon(
         resident_runtime.bind_review_requester(resident_learning_runtime.review_requester)
         resident_learning_runtime.bind_operator_answerer(resident_runtime.submit_operator_answer)
 
+    # Only a workflow session: its state dir is on that session's own workspace and it
+    # runs one workflow. A long-lived process would carry threads from run to run.
+    workflow_thread_store = (
+        CliThreadStore(_resident_ravn_state_dir(workspace, settings) / "cli_threads.json")
+        if settings.workflow.graph
+        else None
+    )
+
     def _agent_factory(
         channel: ChannelPort,
         task_id: str | None = None,
@@ -244,9 +257,12 @@ async def _run_daemon(
 
         executor = _build_executor(resolved_persona)
         cli_transport_executor = _selected_executor_uses_cli_transport(executor)
-        task_llm, task_learning_consolidation, task_capability_matcher = _resources_for_executor(
-            executor
-        )
+        (
+            task_llm,
+            task_learning_consolidation,
+            task_capability_matcher,
+            task_peer_capability_matcher,
+        ) = _resources_for_executor(executor)
         compressor, native_compaction = _compaction_for_executor(executor, task_llm, resolved_model)
 
         session = Session()
@@ -449,6 +465,11 @@ async def _run_daemon(
             session_join_manager=(
                 drive_loop._session_join_manager if drive_loop is not None else None
             ),
+            workflow_thread_store=workflow_thread_store,
+            # Resolved when the turn starts: the task is not active while its agent is built.
+            workflow_thread_key=lambda: workflow_thread_key(
+                drive_loop.resolve_task_context(task_id) if drive_loop is not None else None
+            ),
         )
         # Reviews and flock proposals must cross the mesh, not stay on the
         # daemon's in-process reflection bus — same precedence as the drive
@@ -474,6 +495,8 @@ async def _run_daemon(
             skill_manager=(
                 resident_learning_runtime.skills if resident_learning_runtime is not None else None
             ),
+            peer_tools=resident_learning_runtime,
+            peer_capability_matcher=task_peer_capability_matcher,
         )
 
     tasks: list[asyncio.Task] = []
@@ -487,6 +510,7 @@ async def _run_daemon(
     # Gateway channels (human-initiated turns)
     gw_tasks: list[str] = []
     http_gateway: Any | None = None
+    gw: RavnGateway | None = None
     channels_cfg = settings.gateway.channels
     _any_channel = (
         channels_cfg.telegram.enabled
@@ -602,6 +626,20 @@ async def _run_daemon(
         )
         if hasattr(drive_loop, "set_persona_config"):
             drive_loop.set_persona_config(persona_config)
+        from ravn.cli.runtime_builders import (  # noqa: PLC0415
+            build_resident_first_opinion,
+            build_resident_slot_attention,
+        )
+
+        first_opinion = build_resident_first_opinion(
+            settings, has_resident_runtime=resident_runtime is not None
+        )
+        if first_opinion is not None:
+            drive_loop.set_first_opinion(first_opinion)
+            # build_resident_first_opinion refuses to build without a resident runtime.
+            resident_runtime.bind_slot_attention(
+                build_resident_slot_attention(settings, first_opinion)
+            )
         if hasattr(drive_loop, "register_telemetry_refresh"):
             # The inventory is published once while the resolver is built, so
             # the gauge ages out and the fleet reads zero installed tools while
@@ -669,6 +707,7 @@ async def _run_daemon(
                 llm=llm,
                 interaction_tracker=interaction_tracker,
                 agent_factory=_agent_factory,
+                gateway=gw,
             )
 
         # Wire task dispatch subscription when requested (--listen / --daemon)
@@ -828,6 +867,7 @@ async def _run_daemon(
         resident_learning_runtime=resident_learning_runtime,
         resident_wakefulness=resident_wakefulness,
         resident_inbox=resident_inbox,
+        resident_runtime=resident_runtime,
         owns_publisher=not environment_signal_publisher_started,
     )
     if environment_signal_runtime is not None:

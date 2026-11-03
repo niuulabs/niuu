@@ -75,7 +75,7 @@ export const DEFAULT_PERSONAS: PersonaEntry[] = [
     id: 'mimir-memory-curator',
     label: 'mimir-memory-curator',
     role: 'memory',
-    summary: 'Curates ingested memory into canonical Mimir wiki pages.',
+    summary: 'Curates ingested memory into canonical wiki pages.',
     consumes: ['mimir.source.ingested'],
     produces: ['mimir.curated'],
   },

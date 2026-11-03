@@ -39,7 +39,7 @@ const node: InstanceRecord = {
   config: {
     transport: 'remote',
     defaultFolder: '/home/build',
-    credentialBinding: { scope: 'tenant', name: 'forge' },
+    credentialBinding: { scope: 'tenant', name: 'host' },
     capabilities: ['sessions'],
   },
   createdAt: '2026-09-18T10:00:00Z',
@@ -378,7 +378,7 @@ it('registers a new node carrying the plaintext opt-in and TLS fingerprint into 
   fireEvent(window, new CustomEvent('guild:open-register'));
   const dialog = screen.getByRole('dialog');
   fireEvent.click(within(dialog).getByRole('button', { name: 'next' }));
-  fireEvent.change(within(dialog).getByPlaceholderText('volundr • prod'), {
+  fireEvent.change(within(dialog).getByPlaceholderText('sessions • prod'), {
     target: { value: 'edge node' },
   });
   fireEvent.change(within(dialog).getByPlaceholderText('https://...'), {
@@ -405,7 +405,7 @@ it('blocks advancing the register wizard on a malformed TLS fingerprint', async 
   fireEvent(window, new CustomEvent('guild:open-register'));
   const dialog = screen.getByRole('dialog');
   fireEvent.click(within(dialog).getByRole('button', { name: 'next' }));
-  fireEvent.change(within(dialog).getByPlaceholderText('volundr • prod'), {
+  fireEvent.change(within(dialog).getByPlaceholderText('sessions • prod'), {
     target: { value: 'edge node' },
   });
   fireEvent.change(within(dialog).getByPlaceholderText('https://...'), {

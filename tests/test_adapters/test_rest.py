@@ -1498,6 +1498,101 @@ class TestSessionLogAggregationProxy:
         assert response.json()["detail"] == "Session archive service not available"
 
 
+class TestSessionRoomProxy:
+    """Services reach a session's room through Forge, not the session's own origin."""
+
+    PRINCIPAL = Principal(
+        user_id="dev-user", email="dev@example.com", tenant_id="default", roles=[]
+    )
+
+    def _session(
+        self, repository: InMemorySessionRepository, owner_id: str = "dev-user"
+    ) -> Session:
+        session = Session(
+            id=uuid4(),
+            name="room-session",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint="ws://localhost:8080/s/room-session/session",
+            owner_id=owner_id,
+        )
+        asyncio.run(repository.create(session))
+        return session
+
+    def test_the_owner_reaches_the_broker_with_the_owner_room_role(
+        self, client: TestClient, repository: InMemorySessionRepository
+    ) -> None:
+        session = self._session(repository)
+        upstream = MagicMock(spec=httpx.Response)
+        upstream.content = b'{"status": "sent"}'
+        upstream.status_code = 200
+        upstream.headers = {"content-type": "application/json"}
+
+        with (
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(return_value=self.PRINCIPAL),
+            ),
+            patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.request.return_value = upstream
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/room/direct",
+                json={"target_peer_id": "flock-coordinator", "content": "start"},
+            )
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "sent"}
+        args, kwargs = mock_client.request.await_args
+        assert args[1].endswith("/s/room-session/api/room/direct")
+        assert kwargs["headers"]["x-niuu-room-role"] == "owner"
+
+    def test_someone_else_cannot_reach_the_room(
+        self, client: TestClient, repository: InMemorySessionRepository
+    ) -> None:
+        session = self._session(repository, owner_id="someone-else")
+
+        with patch(
+            "volundr.adapters.inbound.rest.extract_principal",
+            new=AsyncMock(return_value=self.PRINCIPAL),
+        ):
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/room/direct", json={"content": "start"}
+            )
+
+        assert response.status_code == 403
+
+    def test_an_unknown_room_operation_is_refused(
+        self, client: TestClient, repository: InMemorySessionRepository
+    ) -> None:
+        session = self._session(repository)
+
+        with patch(
+            "volundr.adapters.inbound.rest.extract_principal",
+            new=AsyncMock(return_value=self.PRINCIPAL),
+        ):
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/room/huddle", json={"content": "start"}
+            )
+
+        assert response.status_code == 422
+
+    def test_a_missing_session_has_no_room(self, client: TestClient) -> None:
+        with patch(
+            "volundr.adapters.inbound.rest.extract_principal",
+            new=AsyncMock(return_value=self.PRINCIPAL),
+        ):
+            response = client.post(
+                f"/api/v1/forge/sessions/{uuid4()}/room/direct", json={"content": "start"}
+            )
+
+        assert response.status_code == 404
+
+
 class TestWorkflowGateProxy:
     """Tests for native workflow gate proxy endpoints."""
 
@@ -1596,6 +1691,61 @@ class TestWorkflowGateProxy:
         assert "not resolved" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
+    async def test_resolve_workflow_gate_names_the_signed_in_person_whatever_the_body_says(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            f"file:///tmp/{session.id}",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+        request = httpx.Request(
+            "POST", f"http://localhost:8080/s/{session.id}/api/workflow/gates/g1/resolve"
+        )
+
+        with (
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user",
+                        email="dev@example.com",
+                        tenant_id="default",
+                        roles=[],
+                    )
+                ),
+            ),
+            patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.return_value = httpx.Response(
+                200, json={"status": "resolved"}, request=request
+            )
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/workflow/gates/g1/resolve",
+                json={
+                    "decision": "APPROVE",
+                    "notes": "",
+                    "source": "ting.board",
+                    "decided_by": "someone-else",
+                },
+            )
+
+        assert response.status_code == 200
+        sent = mock_client.post.await_args.kwargs["json"]
+        assert sent["decided_by"] == "dev@example.com"
+        assert sent["source"] == "ting.board"
+
+    @pytest.mark.asyncio
     async def test_resolve_workflow_gate_quotes_gate_id(
         self,
         client: TestClient,
@@ -1647,7 +1797,13 @@ class TestWorkflowGateProxy:
                 # succeeded — see ROOM_ROLE_HEADER in rest.py.
                 "x-niuu-room-role": "approver",
             },
-            json={"decision": "approved", "notes": "looks good", "source": "human"},
+            json={
+                "decision": "approved",
+                "notes": "looks good",
+                "source": "human",
+                "actor": "",
+                "decided_by": "dev@example.com",
+            },
         )
 
     @pytest.mark.asyncio
@@ -2148,3 +2304,110 @@ class TestListRepos:
             response = client.get("/api/v1/niuu/repos")
         assert response.status_code == 200
         assert response.json() == {}
+
+
+class TestRelayedSessionMessages:
+    """LEX-1710: a session on another Guild node may message its parent or project."""
+
+    PROJECT = uuid4()
+
+    def _target(self, repository, *, project=None) -> Session:
+        from volundr.domain.projects import SessionCoordination
+
+        session = Session(
+            id=uuid4(),
+            name="ios-coordinator",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint="ws://localhost:8080/s/ios-coordinator/session",
+            coordination=SessionCoordination(project_id=project, role="coordinator")
+            if project
+            else None,
+        )
+        asyncio.run(repository.create(session))
+        return session
+
+    @staticmethod
+    def _sender(**fields) -> dict:
+        base = {"session_id": str(uuid4()), "session_name": "voice", "instance_name": "mini-m6"}
+        return base | fields
+
+    def _relay(self, client, target_id, sender, *, principal=None, fake_connect=None):
+        fake_connect = fake_connect or TestSessionMessages._ack_connect(
+            {"type": "user_delivered", "status": "delivered"}
+        )
+        principal = principal or Principal(
+            user_id="dev-user", email="dev@example.com", tenant_id="default", roles=[]
+        )
+        with (
+            patch("websockets.asyncio.client.connect", new=fake_connect),
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(return_value=principal),
+            ),
+        ):
+            response = client.post(
+                f"/api/v1/forge/sessions/{target_id}/messages/relayed",
+                json={"content": "hotfix landed", "sender": sender},
+            )
+        return response, fake_connect
+
+    def test_a_session_of_the_same_project_is_delivered_with_its_sender(self, client, repository):
+        target = self._target(repository, project=self.PROJECT)
+        response, fake = self._relay(client, target.id, self._sender(project_id=str(self.PROJECT)))
+
+        assert response.status_code == 200
+        assert response.json()["delivery"] == "delivered"
+        sent = json.loads(fake.ws.sent[0])["content"]
+        assert sent.startswith("[Message from session voice (")
+        assert "on mini-m6, relayed through the Guild]" in sent
+        assert sent.endswith("hotfix landed")
+
+    def test_the_parent_is_reachable_from_another_project(self, client, repository):
+        target = self._target(repository, project=uuid4())
+        sender = self._sender(project_id=str(uuid4()), parent_session_id=str(target.id))
+
+        response, _ = self._relay(client, target.id, sender)
+
+        assert response.status_code == 200
+
+    def test_another_project_is_refused_with_the_reason(self, client, repository):
+        target = self._target(repository, project=uuid4())
+        response, fake = self._relay(client, target.id, self._sender(project_id=str(self.PROJECT)))
+
+        assert response.status_code == 403
+        assert "is not in the sender's project" in response.json()["detail"]
+        assert fake.ws.sent == []
+
+    def test_a_sender_without_a_project_reaches_only_its_parent(self, client, repository):
+        target = self._target(repository, project=self.PROJECT)
+        response, _ = self._relay(client, target.id, self._sender())
+
+        assert response.status_code == 403
+        assert "belongs to no project" in response.json()["detail"]
+
+    def test_a_session_credential_cannot_relay(self, client, repository):
+        target = self._target(repository, project=self.PROJECT)
+        session_principal = Principal(
+            user_id="dev-user",
+            email="dev@example.com",
+            tenant_id="default",
+            roles=[],
+            token_use="forge_session",
+            bound_session_id=str(uuid4()),
+        )
+        response, fake = self._relay(
+            client,
+            target.id,
+            self._sender(project_id=str(self.PROJECT)),
+            principal=session_principal,
+        )
+
+        assert response.status_code == 403
+        assert fake.ws.sent == []
+
+    def test_an_unknown_session_is_not_found(self, client, repository):
+        response, _ = self._relay(client, uuid4(), self._sender(project_id=str(self.PROJECT)))
+
+        assert response.status_code == 404

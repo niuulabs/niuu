@@ -166,7 +166,7 @@ async def test_e2e_message_broadcasts_and_rebuilds_from_log() -> None:
     """E2E: a browser message round-trips, broadcasts, logs, and rebuilds."""
     _require_tmux()
 
-    from volundr.domain.services.transcript_rebuild import rebuild_turns
+    from niuu.domain.transcript_rebuild import rebuild_turns
 
     async with BrokerHarness(hooks=True, idle_timeout_s=0.3) as h:
         client = await h.connect()

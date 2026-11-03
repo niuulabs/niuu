@@ -16,17 +16,17 @@ from ravn.tui.utils import iter_bar
 
 # Status dot markup per ravn state
 _STATE_DOT: dict[str, str] = {
-    "running": "[bold #f59e0b]●[/]",
+    "running": "[bold #86d0e8]●[/]",
     "thinking": "[bold #06b6d4]●[/]",
-    "idle": "[#3f3f46]●[/]",
-    "error": "[bold #ef4444]●[/]",
-    "connecting": "[#f59e0b]◌[/]",
-    "disconnected": "[#3f3f46]○[/]",
+    "idle": "[#2b4351]●[/]",
+    "error": "[bold #e78d94]●[/]",
+    "connecting": "[#86d0e8]◌[/]",
+    "disconnected": "[#2b4351]○[/]",
 }
 
 # Iter bar color per state
 _ITER_COLOR: dict[str, str] = {
-    "running": "#f59e0b",
+    "running": "#86d0e8",
     "thinking": "#06b6d4",
 }
 
@@ -56,18 +56,18 @@ class FlokkView(Widget):
     FlokkView {
         height: 1fr;
         width: 1fr;
-        background: #09090b;
+        background: #071019;
     }
     FlokkView VerticalScroll {
-        background: #09090b;
+        background: #071019;
         scrollbar-size: 1 1;
-        scrollbar-color: #27272a;
-        scrollbar-color-hover: #3f3f46;
+        scrollbar-color: #182b38;
+        scrollbar-color-hover: #2b4351;
     }
     FlokkView .fv-section {
         height: 1;
         padding: 0 1;
-        color: #52525b;
+        color: #648090;
         text-style: bold;
     }
     FlokkView ._ravn-row {
@@ -83,7 +83,7 @@ class FlokkView(Widget):
     FlokkView .fv-empty {
         height: 1;
         padding: 0 2;
-        color: #3f3f46;
+        color: #2b4351;
     }
     """
 
@@ -104,7 +104,7 @@ class FlokkView(Widget):
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="fv-scroll"):
-            yield Static("[#3f3f46]  loading…[/]", classes="fv-empty")
+            yield Static("[#2b4351]  loading…[/]", classes="fv-empty")
 
     def on_mount(self) -> None:
         self.set_interval(2.0, self._rebuild)
@@ -140,15 +140,15 @@ class FlokkView(Widget):
         else:
             widgets.append(
                 Static(
-                    "  [#3f3f46]no ravens connected[/]\n"
+                    "  [#2b4351]no ravens connected[/]\n"
                     "\n"
-                    "  [#52525b]connect a ravn:[/]\n"
-                    "  [#3f3f46]:[/][#71717a]connect host:7477[/]\n"
+                    "  [#648090]connect a ravn:[/]\n"
+                    "  [#2b4351]:[/][#78909d]connect host:7477[/]\n"
                     "\n"
-                    "  [#3f3f46]j/k[/] [#52525b]navigate[/]  "
-                    "[#3f3f46]↵[/] [#52525b]open chat[/]\n"
-                    "  [#3f3f46]^w v[/] [#52525b]vsplit[/]  "
-                    "[#3f3f46]^w s[/] [#52525b]hsplit[/]",
+                    "  [#2b4351]j/k[/] [#648090]navigate[/]  "
+                    "[#2b4351]↵[/] [#648090]open chat[/]\n"
+                    "  [#2b4351]^w v[/] [#648090]vsplit[/]  "
+                    "[#2b4351]^w s[/] [#648090]hsplit[/]",
                     classes="fv-empty",
                 )
             )
@@ -240,11 +240,11 @@ def _build_ravn_markup(conn: Any, selected: bool) -> str:
     info: dict[str, Any] = conn.ravn_info or {}
     state = _resolve_state(conn, info)
 
-    dot = _STATE_DOT.get(state, "[#3f3f46]●[/]")
-    ghost_mark = " [#52525b]⊙[/]" if getattr(conn, "ghost", False) else ""
+    dot = _STATE_DOT.get(state, "[#2b4351]●[/]")
+    ghost_mark = " [#648090]⊙[/]" if getattr(conn, "ghost", False) else ""
 
     # Amber left-accent for selected row, plain space otherwise
-    accent = "[bold #f59e0b]▌[/]" if selected else " "
+    accent = "[bold #86d0e8]▌[/]" if selected else " "
 
     # Profile identity — use rune/name/location from profile when available.
     profile: dict[str, Any] = info.get("profile") or {}
@@ -253,11 +253,11 @@ def _build_ravn_markup(conn: Any, selected: bool) -> str:
     location: str = profile.get("location") or ""
     specialisations: list[str] = list(profile.get("specialisations") or [])
 
-    location_mark = f" [#52525b]{location}[/]" if location else ""
+    location_mark = f" [#648090]{location}[/]" if location else ""
 
     # Line 1 — rune · dot · name · location
     name_line = (
-        f"{accent}[bold]{rune}[/] {dot} [#fafafa]{display_name}{ghost_mark}[/]{location_mark}"
+        f"{accent}[bold]{rune}[/] {dot} [#edf4f7]{display_name}{ghost_mark}[/]{location_mark}"
     )
 
     # Line 2 — iter progress bar or idle/uptime
@@ -267,23 +267,23 @@ def _build_ravn_markup(conn: Any, selected: bool) -> str:
 
     if cur is not None and mx is not None:
         bar = iter_bar(cur, mx)
-        color = _ITER_COLOR.get(state, "#f59e0b")
+        color = _ITER_COLOR.get(state, "#86d0e8")
         state_line = f"  [{color}]{bar}[/]"
     else:
         idle_text = f"idle · {uptime}" if uptime else "idle"
-        state_line = f"  [#3f3f46]{idle_text}[/]"
+        state_line = f"  [#2b4351]{idle_text}[/]"
 
     # Line 3 — specialisations > capabilities > persona (first available wins)
     caps: list[str] = list(info.get("capabilities", []) or [])
     persona: str = info.get("persona", "")
     if specialisations:
         detail = " · ".join(str(s) for s in specialisations[:4])
-        return f"{name_line}\n{state_line}\n  [#52525b]{detail}[/]"
+        return f"{name_line}\n{state_line}\n  [#648090]{detail}[/]"
     if caps:
         detail = " · ".join(str(c) for c in caps[:4])
-        return f"{name_line}\n{state_line}\n  [#52525b]{detail}[/]"
+        return f"{name_line}\n{state_line}\n  [#648090]{detail}[/]"
     if persona:
-        return f"{name_line}\n{state_line}\n  [#52525b]{persona}[/]"
+        return f"{name_line}\n{state_line}\n  [#648090]{persona}[/]"
     return f"{name_line}\n{state_line}"
 
 

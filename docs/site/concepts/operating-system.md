@@ -52,10 +52,9 @@ an agent can identify a gap, commission work to close it, verify the result,
 and adopt a new tool. Other agents can reuse the result through configured
 sharing and access mechanisms.
 
-The cluster-resident demonstration described in the
-[introduction](../get-started/introduction.md#from-work-to-new-capability)
-shows that cycle: one resident's diagnostic need led to a tool that reached
-residents in other clusters.
+The [resident capability cycle](agents-and-personas.md#from-a-capability-gap-to-a-reusable-tool)
+describes that path: a diagnostic need can lead to a tool that a peer adopts
+once it passes verification there.
 
 The broader OS direction includes common evaluation and lineage: which change
 was attempted, what evidence supports it, who adopted it, and how to revise or

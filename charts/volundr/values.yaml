@@ -35,6 +35,13 @@ global:
 nameOverride: ""
 # -- Override the full name of the chart
 fullnameOverride: ""
+
+# Raw model windows when the native usage stream omits one; unknown models stay unknown.
+sessionUsage:
+  model_windows:
+    claude-opus-5-5: 1000000
+    claude-fable-5-1: 1000000
+    claude-sonnet-5-5: 1000000
 # -- Base domain for auto-generated hostnames (overridden by global.domain)
 domain: ""
 
@@ -194,6 +201,10 @@ previewCache:
   mountPath: /volundr/preview-cache
   # -- Size limit for the preview cache emptyDir volume (leave empty/"" for no limit)
   sizeLimit: 1Gi
+  # -- Preview sizes, rendered as config.yaml's tool_result_preview (snake_case keys).
+  # Empty keeps the defaults: default_edge 400 (no ?max_edge=), min_edge 320,
+  # max_edge 1600. Example: {default_edge: 400, min_edge: 320, max_edge: 2048}
+  edges: {}
 
 scratch:
   # -- Size limit for the /tmp emptyDir (the root filesystem is read-only). It holds
@@ -322,8 +333,8 @@ provisioning:
 realmDetailStreamIntervalSeconds: 15.0
 
 bifrost:
-  # -- Base URL for the co-hosted Bifrost API Volundr reads models from
-  url: "http://127.0.0.1:8080"
+  # -- Required. Base URL of the Bifrost service Volundr reads models from; rendered with tpl
+  url: ""
   # -- HTTP timeout for catalog fetches
   timeoutSeconds: 10.0
   # -- Interval between successful model catalog refreshes
@@ -531,6 +542,7 @@ sleipnir:
 #     dispatcher:
 #       max_attempts: 8
 #       default_rate_limit: {max_count: 60, window_seconds: 3600}
+#     images: {allow_private_networks: false, thumbnail_max_side: 320}
 #     sinks:
 #       - name: ops-webhook
 #         label: Ops webhook
@@ -567,6 +579,78 @@ sleipnir:
 #             audiences: [niuu-ravn]
 notifications: {}
 
+# Artifact publications (F1) and their burst notices (F1n): every claude.ai Artifact
+# publish, present-file, notify artifact link and report_artifact is recorded at log
+# ingest and served at /api/v1/forge/artifact-publications and /artifact-bursts.
+# Rendered verbatim as config.yaml's `artifacts:` section (snake_case keys; see
+# ArtifactsConfig). Empty keeps the defaults: on, one notice per live burst after a
+# 120 s hold (needs notifications), 30 min burst window, no start-up backfill. Example:
+#   artifacts:
+#     hold_seconds: 120
+#     burst_window_seconds: 1800
+#     backfill_on_start: false
+artifacts: {}
+
+# Durable presented files (F2): Forge keeps its own copy of every file a session
+# presents, so it still opens after the session stops and after Forge restarts.
+# Rendered as `presented_files:` with the Postgres store: the bytes go on the volume
+# below, which every Forge replica mounts; the record of each copy and the quota live
+# in Forge's database, so any number of replicas (and a rolling update's two pods)
+# share one quota. Session brokers upload with their session credential, so enabling
+# this also needs session credentials delivered to session pods
+# (`sessionCredentialProjection`, and forgeMcp session_tokens on: the default when
+# workloadIdentity signs with signingKey.existingSecret). The chart refuses to render
+# without them. See docs/operator/artifact-publications.md ("Presented files on a
+# cluster").
+presentedFiles:
+  # -- Keep Forge's own copy of every presented file
+  enabled: false
+  # -- Total bytes of copies Forge keeps (required when enabled). Bounded by the
+  # volume: Forge refuses to start when the volume's free space cannot hold it. A copy
+  # that would pass it is refused (HTTP 507) and counted; nothing is evicted.
+  maxTotalBytes: null
+  # -- Largest single copy (keep equal to the Skuld chart's broker.maxPresentedFileBytes)
+  maxBytes: 52428800
+  # -- Absolute origin presented-file links name, e.g. https://forge.example.com. Empty
+  # keeps the relative route (/api/v1/forge/sessions/<id>/files/presented/<file>),
+  # which clients open on the origin they already talk to.
+  publicBaseUrl: ""
+  # -- What controls access to publicBaseUrl: authenticated (an https origin behind
+  # Envoy's OIDC check; Forge refuses it with the allow-all identity adapter) or
+  # tailnet (a *.ts.net name or Tailscale address)
+  publicAccess: authenticated
+  # -- Where the volume is mounted in the Forge container
+  mountPath: /volundr/presented-files
+  persistence:
+    # -- Use this existing PVC instead of creating one
+    existingClaim: ""
+    # -- Storage class of the created PVC (empty: the cluster default)
+    storageClass: ""
+    # -- ReadWriteMany, or ReadWriteOnce only with rollout.colocate (every Forge pod on one node)
+    accessMode: ReadWriteMany
+    # -- Size of the created PVC; maxTotalBytes must fit in it
+    size: 10Gi
+
+# Delivers each session's scoped Forge credential (forge_session) into its pod: Forge
+# writes one Secret per session in `namespace` and mounts it read-only into the
+# session pod, and the broker reads it at start. Only the file path enters the
+# HelmRelease values; the token never does. Renders
+# forge_mcp.session_tokens.projection_adapter (KubernetesExecutionCredentialProjection)
+# and a Role granting Forge Secret get/create/patch/delete in that namespace only.
+sessionCredentialProjection:
+  # -- Mount each session's Forge credential into its pod (needed by presentedFiles)
+  enabled: false
+  # -- Namespace of the session pods (empty: podManager.kwargs.namespace)
+  namespace: ""
+  # -- Where the credential directory is mounted in the session pod
+  mountPath: /var/run/secrets/niuu-forge-session
+
+# How this Forge names itself (GET /api/v1/forge/instance, the host of its artifact
+# publications and of the session status card). Empty: projects.instance_id names it.
+# Rendered as `host_identity:` (see HostIdentityConfig). Example:
+#   hostIdentity: {host: thor, tailnet_name: thor.tailnet-name.ts.net}
+hostIdentity: {}
+
 # Push to the devices owners register (POST /api/v1/forge/devices), and the
 # needs-input push. `adapter` + `kwargs` build the channel push sinks deliver through
 # (the default only logs). With `enabled`, every session that needs its owner is
@@ -600,6 +684,19 @@ push:
     label: Forge app push
     # -- Longest push body (APNs caps the whole payload at 4 KB)
     maxBodyChars: 280
+  # -- APNs key for the push gateway, rendered verbatim as `push.apns` (snake_case keys;
+  # see ApnsConfig). The .p8 key is a file: mount it from a Secret and name its path.
+  # e.g. {team_id: ABCDE12345, key_id: KEY1234567, bundle_id: com.example.app,
+  #       private_key_path: /etc/volundr/apns/AuthKey_KEY1234567.p8}
+  apns: {}
+  # -- The Guild push gateway, rendered verbatim as `push.gateway` (snake_case keys; see
+  # PushGatewayConfig). One node of a Guild runs it: it holds the APNs key and the
+  # registered devices and pushes for every node (alerts, Live Activity, widgets,
+  # background). It replaces the per-node adapter and the needs-input rule, and needs
+  # deviceRegistry: postgres. See docs/operator/forge-notifications.md ("Apple push").
+  # e.g. {enabled: true, guild_url: "http://niuu-guild:8080",
+  #       public_api_url: "https://forge.example.com", origin_label: Forge}
+  gateway: {}
 
 # Forge MCP session credentials and the Forge-hosted MCP endpoint. Rendered verbatim
 # as config.yaml's `forge_mcp:` section (snake_case keys; see ForgeMcpConfig). Empty
@@ -607,10 +704,12 @@ push:
 # except session_tokens.enabled: unless set here it is true only when
 # workloadIdentity is enabled with signingKey.existingSecret, because the read-only
 # root filesystem rules out the local key file and Volundr refuses to start with
-# session credentials enabled but no usable key. Session credentials are delivered
-# only by the local process pod manager today. See docs/operator/forge-mcp.md. Example:
+# session credentials enabled but no usable key. The local process pod manager
+# delivers session credentials itself; Flux and Kubernetes session pods get them
+# through `sessionCredentialProjection`. See docs/operator/forge-mcp.md. Example:
 #   forgeMcp:
 #     default_grants: []
+#     role_grants: {coordinator: [lifecycle, message]}   # the default; {} for none
 #     session_tokens: {ttl_seconds: 604800}
 #     http: {allowed_origins: ["https://forge.example.com"]}
 forgeMcp: {}
@@ -1352,6 +1451,10 @@ config:
     dispatch_poll_seconds: 0.05
   conversationRecentMaxTurns: 15
   conversationRecentMaxBytes: 262144
+  # -- First durable event-log window (frames) for a `?tail=N` conversation read
+  conversationTailInitialFrames: 2000
+  # -- Factor by which that window widens until it holds more than N turns
+  conversationTailGrowth: 2
   # -- Timeout (seconds) for the runtime-version health probe against a session's runtime
   runtimeHealthTimeoutSeconds: 3.0
   # -- Log level (debug, info, warning, error)
@@ -2074,7 +2177,7 @@ webNext:
     publicOrigin: "https://niuu.example.com"
     # -- Public session gateway origin used for /s/{sessionId}/... traffic
     sessionOrigin: ""
-    theme: "ice"
+    theme: "niuu"
     plugins:
       login:
         enabled: true

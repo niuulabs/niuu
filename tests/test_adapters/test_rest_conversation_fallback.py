@@ -188,7 +188,7 @@ async def test_dead_session_conversation_falls_back_to_rebuilt_log():
 @pytest.mark.asyncio
 async def test_dead_session_conversation_uses_shared_reducer_output():
     """INV-4 at the endpoint: the HTTP turns == rebuild_turns(read_after(0))."""
-    from volundr.domain.services.transcript_rebuild import rebuild_turns
+    from niuu.domain.transcript_rebuild import rebuild_turns
 
     session = Session(
         name="reducer-parity",

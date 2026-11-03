@@ -61,9 +61,9 @@ export function RecipeChecklist({ progress }: { progress: RecipeProgress }) {
           </span>
           <span className="niuu:text-text-secondary">{progress.error}</span>
           <span className="niuu:text-text-muted">
-            Nothing was undone. What was created so far is visible in{' '}
-            <Link to={progress.failedStep.advancedPath as never} className="niuu:text-brand-300">
-              Advanced mode
+            Nothing was undone. See what was created so far on{' '}
+            <Link to={progress.failedStep.detailPath as never} className="niuu:text-brand-300">
+              its page
             </Link>
             .
           </span>

@@ -36,7 +36,7 @@ describe('NewRealmPage', () => {
     expect(screen.getByTestId('realm-slug')).toHaveValue('lexi-api');
     await user.click(screen.getByTestId('realm-continue'));
     await screen.findByTestId('wizard-step-launch');
-    expect(screen.getByText('Realm draft')).toBeInTheDocument();
+    expect(screen.getByText('Workspace draft')).toBeInTheDocument();
   });
 
   it('opens on the launch step with the inferred rows when given a sentence', async () => {
@@ -102,7 +102,7 @@ describe('NewRealmPage', () => {
     await user.click(screen.getByTestId('realm-go'));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('test connections');
-    expect(within(alert).getByRole('link', { name: 'Advanced mode' })).toBeInTheDocument();
+    expect(within(alert).getByRole('link', { name: 'its page' })).toBeInTheDocument();
     expect(screen.getByTestId('recipe-step-realm')).toHaveAttribute('data-state', 'todo');
   });
 });

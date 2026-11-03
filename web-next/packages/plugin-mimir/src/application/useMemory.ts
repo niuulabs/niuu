@@ -1,5 +1,5 @@
 /**
- * Query hooks for the Simple-mode memory screens.
+ * Query hooks for the memory screens.
  *
  * Evidence and related pages are read per page path. Neither backend route
  * takes a mount, so both are keyed on the path alone — an adapter answers with
@@ -59,7 +59,7 @@ export function useEvidenceForPaths(paths: string[]): {
 }
 
 /**
- * Search from the URL's question. Hybrid is the only mode Simple mode offers —
+ * Search from the URL's question. Hybrid is the only mode these screens offer —
  * the backend runs keyword and meaning together regardless of what is asked.
  * The key matches the workbench's so both share one cache entry.
  */

@@ -9,6 +9,7 @@ import signal
 import socket
 import subprocess
 import sys
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -175,6 +176,39 @@ class TestInit:
 
 
 class TestSkuldEnv:
+    @pytest.mark.parametrize("builder", ["_build_env", "_session_env"])
+    @pytest.mark.parametrize("overlay", ["none", "env", "envVars"])
+    def test_capture_secret_never_enters_session_environment(
+        self, builder: str, overlay: str
+    ) -> None:
+        parent = {
+            "FORGE_EXP_CAPTURE_SECRET": "test-only-parent-capture-secret",
+            "PARENT_SETTING": "retained",
+        }
+        values = {
+            "env": {"SESSION_SETTING": "retained", "OPENAI_API_KEY": "test-only-engine-auth"},
+        }
+        if overlay == "env":
+            values["env"]["FORGE_EXP_CAPTURE_SECRET"] = "test-only-spec-capture-secret"
+        if overlay == "envVars":
+            values["envVars"] = [
+                {
+                    "name": "FORGE_EXP_CAPTURE_SECRET",
+                    "value": "test-only-contributor-capture-secret",
+                }
+            ]
+        before = deepcopy(values)
+        spec = SessionSpec(values=values, pod_spec=PodSpecAdditions())
+        with patch.dict(os.environ, parent, clear=True):
+            env = getattr(LocalProcessPodManager, builder)(spec, Path("/tmp/ws"))
+            assert "FORGE_EXP_CAPTURE_SECRET" not in env
+            assert env["SESSION_SETTING"] == "retained"
+            assert env["OPENAI_API_KEY"] == "test-only-engine-auth"
+            if builder == "_build_env":
+                assert env["PARENT_SETTING"] == "retained"
+            assert dict(os.environ) == parent
+        assert spec.values == before
+
     def test_build_env_does_not_inherit_parent_permission_overrides(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

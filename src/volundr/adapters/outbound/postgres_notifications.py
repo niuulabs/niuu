@@ -1,8 +1,10 @@
-"""PostgreSQL adapters for Forge notifications: the feed, rules and the delivery outbox.
+"""PostgreSQL adapters for Forge notifications: the feed, rules, the delivery outbox
+and durable image copies.
 
-Raw asyncpg SQL. The three repositories live together because the projection writes
-across all three tables in one transaction: a notification is committed only with
-its scheduled deliveries (committed ⇒ scheduled).
+Raw asyncpg SQL. The repositories live together because the projection writes
+across these tables in one transaction: a notification is committed only with its
+scheduled deliveries and, when it carries an image, its pending image copy
+(committed ⇒ scheduled).
 """
 
 from __future__ import annotations
@@ -14,9 +16,15 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
+from niuu.domain.notifications import (
+    NotificationImageRef,
+    NotificationImageSourceKind,
+    NotificationSpeak,
+)
 from volundr.adapters.outbound._jsonb import dumps_jsonb, scrub_text
 from volundr.domain.notification_ports import (
     NotificationDeliveryRepository,
+    NotificationImageRepository,
     NotificationRepository,
     NotificationRuleRepository,
 )
@@ -26,6 +34,10 @@ from volundr.domain.notifications import (
     Notification,
     NotificationCandidate,
     NotificationDelivery,
+    NotificationImage,
+    NotificationImageContent,
+    NotificationImageState,
+    NotificationImageVariant,
     NotificationNotFoundError,
     NotificationPage,
     NotificationQuery,
@@ -34,6 +46,8 @@ from volundr.domain.notifications import (
     NotificationRuleMatch,
     NotificationScope,
     NotificationStoreUnavailableError,
+    PendingNotificationImage,
+    ProcessedNotificationImage,
     ReadWatermark,
     rules_matching,
 )
@@ -56,9 +70,9 @@ FEED_ORDER_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('forge_notification
 INSERT_NOTIFICATION_SQL = """INSERT INTO forge_notifications
     (id, dedupe_key, session_id, session_seq, session_name, owner_id, tenant_id,
      project_id, kind, severity, source, title, body, links, engine, model,
-     correlation_id, metadata, created_at)
+     correlation_id, metadata, speak_text, speak_priority, created_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15, $16,
-        $17, $18::jsonb, clock_timestamp())
+        $17, $18::jsonb, $19, $20, clock_timestamp())
 ON CONFLICT (dedupe_key) DO NOTHING
 RETURNING *"""
 
@@ -66,6 +80,16 @@ SELECT_RULES_FOR_OWNERS_SQL = """SELECT * FROM forge_notification_rules
 WHERE owner_id = ANY($1::text[]) AND enabled
 ORDER BY created_at, id
 FOR SHARE"""
+
+INSERT_IMAGE_SQL = """INSERT INTO forge_notification_images
+    (notification_id, source_kind, source_ref, alt)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (notification_id) DO NOTHING"""
+
+# Image state for a page of notifications; never the bytes.
+SELECT_IMAGE_STATES_SQL = """SELECT notification_id, state, alt, mime, width, height, error
+FROM forge_notification_images
+WHERE notification_id = ANY($1::uuid[])"""
 
 INSERT_DELIVERY_SQL = """INSERT INTO forge_notification_deliveries
     (id, notification_id, rule_id, sink)
@@ -122,7 +146,47 @@ def row_to_notification(row: asyncpg.Record | dict) -> Notification:
         correlation_id=row["correlation_id"],
         metadata=_json(row["metadata"], {}),
         created_at=row["created_at"],
+        speak=_speak(row),
+        # .get: rows from the migrated table always carry these (000098).
+        resolved_at=row.get("resolved_at"),
+        resolved_by_notification_id=row.get("resolved_by_notification_id"),
+        resolution=row.get("resolution"),
     )
+
+
+def _speak(row: asyncpg.Record | dict) -> NotificationSpeak | None:
+    if row["speak_text"] is None:
+        return None
+    return NotificationSpeak(text=row["speak_text"], priority=row["speak_priority"])
+
+
+def row_to_image(row: asyncpg.Record | dict) -> NotificationImage:
+    return NotificationImage(
+        state=NotificationImageState(row["state"]),
+        alt=row["alt"],
+        mime=row["mime"],
+        width=row["width"],
+        height=row["height"],
+        error=row["error"],
+    )
+
+
+async def attach_images(
+    executor: asyncpg.Pool | asyncpg.Connection, notifications: list[Notification]
+) -> list[Notification]:
+    """Return ``notifications`` with their image state (one query for the whole page)."""
+    if not notifications:
+        return notifications
+    rows = await executor.fetch(
+        SELECT_IMAGE_STATES_SQL, [notification.id for notification in notifications]
+    )
+    images = {row["notification_id"]: row_to_image(row) for row in rows}
+    return [
+        notification.model_copy(update={"image": images[notification.id]})
+        if notification.id in images
+        else notification
+        for notification in notifications
+    ]
 
 
 def row_to_rule(row: asyncpg.Record | dict) -> NotificationRule:
@@ -179,6 +243,8 @@ def _candidate_args(candidate: NotificationCandidate) -> tuple:
         scrub_text(candidate.model),
         scrub_text(candidate.correlation_id),
         dumps_jsonb(candidate.metadata),
+        scrub_text(candidate.speak.text) if candidate.speak is not None else None,
+        candidate.speak.priority.value if candidate.speak is not None else None,
     )
 
 
@@ -226,6 +292,8 @@ def feed_sql(
             conditions.append(f"(seq > {through} AND NOT {acknowledged})")
         else:
             conditions.append(f"(seq <= {through} OR {acknowledged})")
+    if query.unresolved is not None:
+        conditions.append("resolved_at IS NULL" if query.unresolved else "resolved_at IS NOT NULL")
     if query.before is not None:
         conditions.append(f"seq < {bind(query.before)}")
     if query.after is not None:
@@ -261,11 +329,32 @@ class PostgresNotificationRepository(NotificationRepository):
                 await conn.execute(FEED_ORDER_LOCK_SQL)
                 for candidate in candidates:
                     row = await conn.fetchrow(INSERT_NOTIFICATION_SQL, *_candidate_args(candidate))
-                    if row is not None:
-                        created.append(row_to_notification(row))
+                    if row is None:
+                        continue
+                    notification = row_to_notification(row)
+                    if candidate.image is not None:
+                        notification = await self._schedule_image(
+                            conn, notification, candidate.image
+                        )
+                    created.append(notification)
                 if created:
                     await self._schedule_deliveries(conn, created)
         return sorted(created, key=lambda notification: notification.seq)
+
+    @staticmethod
+    async def _schedule_image(
+        conn: asyncpg.Connection, notification: Notification, image: NotificationImageRef
+    ) -> Notification:
+        """Record the image copy still to make, in the notification's own transaction."""
+        await conn.execute(
+            INSERT_IMAGE_SQL,
+            notification.id,
+            image.source_kind.value,
+            scrub_text(image.source_ref),
+            scrub_text(image.alt),
+        )
+        pending = NotificationImage(state=NotificationImageState.PENDING, alt=image.alt)
+        return notification.model_copy(update={"image": pending})
 
     @staticmethod
     async def _schedule_deliveries(
@@ -288,7 +377,8 @@ class PostgresNotificationRepository(NotificationRepository):
         )
         if row is None:
             return None
-        return row_to_notification(row)
+        [notification] = await attach_images(self._pool, [row_to_notification(row)])
+        return notification
 
     async def list_feed(
         self,
@@ -299,7 +389,9 @@ class PostgresNotificationRepository(NotificationRepository):
     ) -> NotificationPage:
         sql, params = feed_sql(scope, query, read_through_seq=read_through_seq)
         rows = await self._pool.fetch(sql, *params)
-        items = [row_to_notification(row) for row in rows[: query.limit]]
+        items = await attach_images(
+            self._pool, [row_to_notification(row) for row in rows[: query.limit]]
+        )
         more = len(rows) > query.limit
         next_before = items[-1].seq if more and not query.ascending else None
         return NotificationPage(items=items, next_before=next_before)
@@ -315,7 +407,7 @@ class PostgresNotificationRepository(NotificationRepository):
             after,
             limit,
         )
-        return [row_to_notification(row) for row in rows]
+        return await attach_images(self._pool, [row_to_notification(row) for row in rows])
 
     async def feed_counts(
         self, scope: NotificationScope, *, read_through_seq: int
@@ -397,6 +489,73 @@ class PostgresNotificationRepository(NotificationRepository):
             notification_ids,
         )
         return {row["notification_id"] for row in rows}
+
+    async def resolve(
+        self,
+        owner_id: str,
+        notification_ids: list[UUID],
+        *,
+        resolved_at: datetime,
+        resolved_by: UUID | None,
+        resolution: str | None,
+    ) -> list[Notification]:
+        if not notification_ids:
+            return []
+        rows = await self._pool.fetch(
+            "UPDATE forge_notifications SET resolved_at = $3, "
+            "resolved_by_notification_id = $4, resolution = $5 "
+            "WHERE owner_id = $1 AND id = ANY($2::uuid[]) AND resolved_at IS NULL "
+            "RETURNING id",
+            owner_id,
+            notification_ids,
+            resolved_at,
+            resolved_by,
+            scrub_text(resolution) if resolution is not None else None,
+        )
+        return await self._reread([row["id"] for row in rows])
+
+    async def resolve_correlated(
+        self,
+        owner_id: str,
+        correlation_id: str,
+        *,
+        before_seq: int,
+        problems_only: bool,
+        resolved_at: datetime,
+        resolved_by: UUID | None,
+    ) -> list[Notification]:
+        problems = (
+            " AND (kind IN ('attention', 'error') OR severity = 'critical')"
+            if problems_only
+            else ""
+        )
+        rows = await self._pool.fetch(
+            "UPDATE forge_notifications SET resolved_at = $4, "
+            "resolved_by_notification_id = $5 "
+            "WHERE owner_id = $1 AND correlation_id = $2 AND seq < $3 "
+            "AND resolved_at IS NULL" + problems + " RETURNING id",
+            owner_id,
+            correlation_id,
+            before_seq,
+            resolved_at,
+            resolved_by,
+        )
+        return await self._reread([row["id"] for row in rows])
+
+    async def latest_milestone_seqs(self, session_ids: list[UUID]) -> dict[UUID, int]:
+        if not session_ids:
+            return {}
+        rows = await self._pool.fetch(
+            "SELECT session_id, max(seq) AS seq FROM forge_notifications "
+            "WHERE kind = 'milestone' AND session_id = ANY($1::uuid[]) GROUP BY session_id",
+            session_ids,
+        )
+        return {row["session_id"]: row["seq"] for row in rows}
+
+    async def _reread(self, notification_ids: list[UUID]) -> list[Notification]:
+        """The rows again with their image state, in feed order."""
+        found = [await self.get(notification_id) for notification_id in notification_ids]
+        return sorted((n for n in found if n is not None), key=lambda n: n.seq)
 
     async def mark_read(self, user_id: str, notification_id: UUID) -> None:
         async with self._pool.acquire() as conn:
@@ -630,3 +789,105 @@ class PostgresNotificationDeliveryRepository(NotificationDeliveryRepository):
             since,
         )
         return int(count or 0)
+
+
+CLAIM_PENDING_IMAGES_SQL = """WITH due AS (
+    SELECT notification_id FROM forge_notification_images
+    WHERE state = 'pending' AND (lease_until IS NULL OR lease_until <= now())
+    ORDER BY created_at
+    FOR UPDATE SKIP LOCKED
+    LIMIT $1
+)
+UPDATE forge_notification_images i
+SET attempts = i.attempts + 1,
+    lease_until = now() + make_interval(secs => $2::double precision),
+    updated_at = now()
+FROM due, forge_notifications n
+WHERE i.notification_id = due.notification_id AND n.id = i.notification_id
+RETURNING i.notification_id, i.source_kind, i.source_ref, i.alt, i.attempts, n.session_id"""
+
+MARK_IMAGE_READY_SQL = """UPDATE forge_notification_images
+SET state = 'ready', mime = $3, width = $4, height = $5, content = $6,
+    thumbnail_mime = $7, thumbnail_width = $8, thumbnail_height = $9, thumbnail = $10,
+    error = NULL, lease_until = NULL, updated_at = now()
+WHERE notification_id = $1 AND attempts = $2 AND state = 'pending'"""
+
+MARK_IMAGE_FAILED_SQL = """UPDATE forge_notification_images
+SET state = 'failed', error = $3, lease_until = NULL, updated_at = now()
+WHERE notification_id = $1 AND attempts = $2 AND state = 'pending'"""
+
+_IMAGE_CONTENT_SQL = {
+    NotificationImageVariant.ORIGINAL: (
+        "SELECT mime, content FROM forge_notification_images "
+        "WHERE notification_id = $1 AND state = 'ready'"
+    ),
+    NotificationImageVariant.THUMB: (
+        "SELECT thumbnail_mime AS mime, thumbnail AS content FROM forge_notification_images "
+        "WHERE notification_id = $1 AND state = 'ready'"
+    ),
+}
+
+
+def row_to_pending_image(row: asyncpg.Record | dict) -> PendingNotificationImage:
+    kind = NotificationImageSourceKind(row["source_kind"])
+    return PendingNotificationImage(
+        notification_id=row["notification_id"],
+        session_id=row["session_id"],
+        ref=NotificationImageRef.model_validate({kind.value: row["source_ref"], "alt": row["alt"]}),
+        attempts=row["attempts"],
+    )
+
+
+class PostgresNotificationImageRepository(NotificationImageRepository):
+    """Durable image copies: lease-based claims, fenced settles and the stored bytes."""
+
+    def __init__(self, pool: asyncpg.Pool, *, max_error_chars: int, **_extra: object) -> None:
+        if max_error_chars < 1:
+            raise ValueError("max_error_chars must be at least 1")
+        self._pool = pool
+        self._max_error_chars = max_error_chars
+
+    async def claim_pending(
+        self, *, limit: int, lease_seconds: float
+    ) -> list[PendingNotificationImage]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        rows = await self._pool.fetch(CLAIM_PENDING_IMAGES_SQL, limit, float(lease_seconds))
+        return [row_to_pending_image(row) for row in rows]
+
+    async def mark_ready(
+        self, pending: PendingNotificationImage, image: ProcessedNotificationImage
+    ) -> bool:
+        result = await self._pool.execute(
+            MARK_IMAGE_READY_SQL,
+            pending.notification_id,
+            pending.attempts,
+            image.mime,
+            image.width,
+            image.height,
+            image.content,
+            image.thumbnail_mime,
+            image.thumbnail_width,
+            image.thumbnail_height,
+            image.thumbnail,
+        )
+        return result == "UPDATE 1"
+
+    async def mark_failed(self, pending: PendingNotificationImage, *, error: str) -> bool:
+        result = await self._pool.execute(
+            MARK_IMAGE_FAILED_SQL,
+            pending.notification_id,
+            pending.attempts,
+            scrub_text(error[: self._max_error_chars]),
+        )
+        return result == "UPDATE 1"
+
+    async def get_content(
+        self, notification_id: UUID, variant: NotificationImageVariant
+    ) -> NotificationImageContent | None:
+        row = await self._pool.fetchrow(_IMAGE_CONTENT_SQL[variant], notification_id)
+        if row is None:
+            return None
+        return NotificationImageContent(mime=row["mime"], content=bytes(row["content"]))

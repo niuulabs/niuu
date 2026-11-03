@@ -6,13 +6,15 @@ Covers:
 - Silence above threshold → LLM called, threads created in Mímir
 - Cooldown respected → second call within cooldown is no-op
 - LLM returns empty array → no threads created
-- LLM returns malformed JSON → logged, no crash
+- LLM returns malformed JSON → raises, the cooldown is not taken
 - max_intents_per_reflection cap respected
 - Deep reflection fires after longer silence
 - Deep reflection cooldown respected
 - State persisted and restored across restarts
 - Intent without title is skipped
-- create_thread failure is logged, not raised
+- create_thread failure raises, the cooldown is not taken
+- The conversation transcript reaches the reflection prompt, bounded by config
+- No conversation since the previous reflection → no LLM call, no timestamp
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from ravn.adapters.triggers.wakefulness import WakefulnessTrigger
+from ravn.adapters.triggers.wakefulness import TranscriptSource, WakefulnessTrigger
 from ravn.config import WakefulnessConfig
 from ravn.domain.exceptions import OutputTruncatedError
 from ravn.domain.interaction_tracker import LastInteractionTracker
@@ -46,6 +48,7 @@ def _config(
     max_intents_per_reflection: int = 5,
     initial_thread_weight: float = 5.0,
     poll_interval_seconds: int = 60,
+    max_transcript_chars: int = 12000,
 ) -> WakefulnessConfig:
     return WakefulnessConfig(
         enabled=enabled,
@@ -56,7 +59,12 @@ def _config(
         max_intents_per_reflection=max_intents_per_reflection,
         initial_thread_weight=initial_thread_weight,
         poll_interval_seconds=poll_interval_seconds,
+        max_transcript_chars=max_transcript_chars,
     )
+
+
+def _transcript(since: datetime | None, max_chars: int) -> str:
+    return "operator: please finish the API design doc"
 
 
 def _llm_response(intents: list[dict] | str) -> LLMResponse:
@@ -91,12 +99,14 @@ def _make_trigger(
     mimir: AsyncMock | None = None,
     llm: AsyncMock | None = None,
     state_dir: Path | None = None,
+    transcript: TranscriptSource = _transcript,
 ) -> WakefulnessTrigger:
     return WakefulnessTrigger(
         tracker=tracker or LastInteractionTracker(),
         mimir=mimir or AsyncMock(),
         llm=llm or AsyncMock(),
         config=config or _config(),
+        transcript=transcript,
         state_dir=state_dir,
     )
 
@@ -750,3 +760,124 @@ class TestNoAnswerCap:
             r.levelno == logging.ERROR and "reflection pass failed" in r.getMessage()
             for r in caplog.records
         )
+
+
+class TestConversation:
+    """The reflection is about a real conversation, and only when there is one."""
+
+    @pytest.mark.asyncio
+    async def test_transcript_reaches_the_prompt(self) -> None:
+        llm = AsyncMock()
+        llm.generate = AsyncMock(return_value=_llm_response([]))
+        trigger = _make_trigger(
+            config=_config(max_intents_per_reflection=3),
+            llm=llm,
+            transcript=lambda since, max_chars: "operator: ship {the} release notes",
+        )
+
+        assert await trigger._reflect(deep=False, since=None) is True
+
+        prompt = llm.generate.call_args.kwargs["messages"][0]["content"]
+        assert "operator: ship {the} release notes" in prompt
+        assert "0–3 intent objects" in prompt
+
+    @pytest.mark.asyncio
+    async def test_deep_prompt_carries_the_transcript(self) -> None:
+        llm = AsyncMock()
+        llm.generate = AsyncMock(return_value=_llm_response([]))
+        trigger = _make_trigger(llm=llm)
+
+        await trigger._reflect(deep=True, since=None)
+
+        prompt = llm.generate.call_args.kwargs["messages"][0]["content"]
+        assert "operator: please finish the API design doc" in prompt
+        assert "deep reflection" in prompt
+
+    @pytest.mark.asyncio
+    async def test_source_is_asked_for_the_configured_bound_and_since(self) -> None:
+        calls: list[tuple[datetime | None, int]] = []
+
+        def source(since: datetime | None, max_chars: int) -> str:
+            calls.append((since, max_chars))
+            return "operator: hi"
+
+        llm = AsyncMock()
+        llm.generate = AsyncMock(return_value=_llm_response([]))
+        trigger = _make_trigger(
+            config=_config(max_transcript_chars=321), llm=llm, transcript=source
+        )
+        since = datetime(2024, 6, 1, 11, 0, 0, tzinfo=UTC)
+
+        await trigger._reflect(deep=False, since=since)
+
+        assert calls == [(since, 321)]
+
+    @pytest.mark.asyncio
+    async def test_no_conversation_makes_no_llm_call(self) -> None:
+        llm = AsyncMock()
+        mimir = AsyncMock()
+        trigger = _make_trigger(llm=llm, mimir=mimir, transcript=lambda since, max_chars: "")
+
+        assert await trigger._reflect(deep=False, since=None) is False
+
+        llm.generate.assert_not_awaited()
+        mimir.create_thread.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_poll_without_conversation_takes_no_cooldown(self, tmp_path: Path) -> None:
+        tracker = LastInteractionTracker()
+        llm = AsyncMock()
+        trigger = _make_trigger(
+            config=_config(silence_threshold_seconds=100),
+            tracker=tracker,
+            llm=llm,
+            state_dir=tmp_path,
+            transcript=lambda since, max_chars: "",
+        )
+
+        now = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
+        with patch("ravn.adapters.triggers.wakefulness.datetime") as mock_dt:
+            mock_dt.now.return_value = now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            tracker._last_interaction = now - timedelta(seconds=200)
+
+            await trigger._poll_once()
+
+        llm.generate.assert_not_awaited()
+        assert trigger._last_reflection_at is None
+        assert not (tmp_path / "wakefulness_state.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_shallow_pass_reflects_only_on_what_followed_the_last_reflection(
+        self,
+    ) -> None:
+        """A deep pass covers the conversation, so the shallow pass asks for what came after it."""
+        sinces: list[datetime | None] = []
+
+        def source(since: datetime | None, max_chars: int) -> str:
+            sinces.append(since)
+            return "operator: hi"
+
+        tracker = LastInteractionTracker()
+        llm = AsyncMock()
+        llm.generate = AsyncMock(return_value=_llm_response([]))
+        trigger = _make_trigger(
+            config=_config(silence_threshold_seconds=100, deep_reflection_threshold_seconds=99999),
+            tracker=tracker,
+            llm=llm,
+            transcript=source,
+        )
+        earlier = datetime(2024, 6, 1, 10, 0, 0, tzinfo=UTC)
+        later = datetime(2024, 6, 1, 11, 0, 0, tzinfo=UTC)
+        trigger._last_reflection_at = earlier
+        trigger._last_deep_reflection_at = later
+
+        now = datetime(2024, 6, 1, 18, 0, 0, tzinfo=UTC)
+        with patch("ravn.adapters.triggers.wakefulness.datetime") as mock_dt:
+            mock_dt.now.return_value = now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            tracker._last_interaction = now - timedelta(seconds=200)
+
+            await trigger._poll_once()
+
+        assert sinces == [later]

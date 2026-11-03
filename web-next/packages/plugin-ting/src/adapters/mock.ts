@@ -45,7 +45,15 @@ import type { DispatcherState } from '../domain/dispatcher';
 import type { SessionInfo } from '../domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from '../domain/tracker';
 import type { Workflow } from '../domain/workflow';
-import type { WorkCollection, WorkDetail, WorkSummary } from '../domain/work';
+import type {
+  BoardPlacement,
+  WorkBoardLayout,
+  WorkCollection,
+  WorkDetail,
+  WorkSummary,
+  WorkTask,
+} from '../domain/work';
+import type { ReviewList, ReviewWidget, RunReviews, TicketReviews } from '../domain/review';
 import { serializePortableWorkflow } from '../domain/workflowPortable';
 
 // ---------------------------------------------------------------------------
@@ -1199,6 +1207,14 @@ export function createMockTingService(): ITingService {
                   estimateHours: 8,
                   confidence: 78,
                 },
+                {
+                  name: 'Improve error handling',
+                  description: '',
+                  acceptanceCriteria: [],
+                  declaredFiles: [],
+                  estimateHours: 2,
+                  confidence: 40,
+                },
               ],
             },
           ],
@@ -1220,6 +1236,20 @@ export function createMockTingService(): ITingService {
       };
       sagas.set(sagaId, updated);
       return updated;
+    },
+
+    async setBoardWorkflows(sagaId: string, workflowIds: string[]) {
+      const saga = sagas.get(sagaId);
+      if (!saga) {
+        throw new Error(`Saga not found: ${sagaId}`);
+      }
+
+      const boardWorkflows = workflowIds.map((id) => {
+        const workflow = SEED_WORKFLOWS.find((entry) => entry.id === id);
+        return { id, name: workflow?.name ?? id };
+      });
+      sagas.set(sagaId, { ...saga, boardWorkflows });
+      return boardWorkflows;
     },
 
     async assignTarget(sagaId: string, target) {
@@ -2047,15 +2077,399 @@ const MOCK_WORK: WorkSummary[] = [
     links: { self: '/ting/work/campaign:demo-research', specialist: '/ting/research' },
     actions: [],
   },
+  {
+    id: 'campaign:demo-spec',
+    kind: 'specification',
+    title: 'Usage-based billing',
+    campaignSlug: 'usage-based-billing',
+    condition: 'needsAttention',
+    rawState: { source: 'campaign', status: 'blocked' },
+    currentStep: 'Review acceptance criteria',
+    attention: { kind: 'decision', message: 'Review the proposed acceptance criteria.' },
+    createdAt: '2026-01-05T08:00:00Z',
+    updatedAt: '2026-01-06T15:10:00Z',
+    source: null,
+    workflow: null,
+    session: null,
+    links: { self: '/ting/work/campaign:demo-spec', specialist: '/ting/specs' },
+    actions: ['open', 'review'],
+  },
+  {
+    id: 'execution:demo-delivery',
+    kind: 'workflowExecution',
+    title: 'Ship workspace invitations',
+    condition: 'completed',
+    rawState: { source: 'execution', status: 'completed' },
+    currentStep: null,
+    attention: null,
+    createdAt: '2026-01-03T09:00:00Z',
+    updatedAt: '2026-01-04T17:45:00Z',
+    source: null,
+    workflow: null,
+    session: null,
+    links: { self: '/ting/work/execution:demo-delivery', specialist: '/ting/workflows/runs' },
+    actions: ['open'],
+  },
 ];
 
+function mockWorkTask(
+  number: number,
+  title: string,
+  status: string,
+  statusType: string,
+  overrides: Partial<Pick<WorkTask, 'operationalRun' | 'dispatch' | 'board'>> = {},
+): WorkTask {
+  return {
+    source: {
+      connectionId: 'demo-tracker',
+      provider: 'Linear',
+      projectId: 'demo-platform',
+      url: `https://linear.app/demo/issue/PLT-${number}`,
+      status,
+      issueId: `demo-issue-${number}`,
+      identifier: `PLT-${number}`,
+      statusType,
+    },
+    title,
+    operationalRun: null,
+    dispatch: null,
+    actions: [],
+    ...overrides,
+  };
+}
+
+const MOCK_PLANNING_WORKFLOW = {
+  workflowId: 'demo-ticket-planning',
+  workflowName: 'Ticket Planning Flow',
+};
+const MOCK_DELIVERY_WORKFLOW = {
+  workflowId: 'demo-reviewed-delivery',
+  workflowName: 'Reviewed Delivery Flow',
+};
+
+const MOCK_WORK_BOARD: WorkBoardLayout = {
+  columns: [
+    {
+      id: 'backlog',
+      title: 'Backlog',
+      kind: 'tracker',
+      review: null,
+      approveColumnId: null,
+      changesColumnId: null,
+    },
+    {
+      id: 'planning',
+      title: 'Planning',
+      kind: 'work',
+      review: null,
+      approveColumnId: null,
+      changesColumnId: null,
+      ...MOCK_PLANNING_WORKFLOW,
+    },
+    {
+      id: 'plan-review',
+      title: 'Plan review',
+      kind: 'gate',
+      review: 'plan',
+      approveColumnId: 'plan-record',
+      changesColumnId: 'planning',
+      ...MOCK_PLANNING_WORKFLOW,
+    },
+    {
+      id: 'plan-record',
+      title: 'Recording plan',
+      kind: 'work',
+      review: null,
+      approveColumnId: null,
+      changesColumnId: null,
+      ...MOCK_PLANNING_WORKFLOW,
+    },
+    {
+      id: 'building',
+      title: 'Building',
+      kind: 'work',
+      review: null,
+      approveColumnId: null,
+      changesColumnId: null,
+      ...MOCK_DELIVERY_WORKFLOW,
+    },
+    {
+      id: 'code-review',
+      title: 'Code review',
+      kind: 'gate',
+      review: 'code',
+      approveColumnId: 'merging',
+      changesColumnId: 'building',
+      ...MOCK_DELIVERY_WORKFLOW,
+    },
+    {
+      id: 'merging',
+      title: 'Merging',
+      kind: 'work',
+      review: null,
+      approveColumnId: null,
+      changesColumnId: null,
+      ...MOCK_DELIVERY_WORKFLOW,
+    },
+    {
+      id: 'done',
+      title: 'Done',
+      kind: 'tracker',
+      review: null,
+      approveColumnId: null,
+      changesColumnId: null,
+    },
+  ],
+};
+
+const MOCK_CODE_GATE: NonNullable<BoardPlacement['gate']> = {
+  id: 'demo-gate-207',
+  activationId: 'demo-activation-207',
+  nodeId: 'delivery-code-gate',
+  label: 'Code review',
+  condition: 'Merging lands the change on the target branch and closes the ticket.',
+  instructions: 'Read the pull request against the ticket.',
+  summary: '',
+  requestedAt: '2026-01-06T14:30:00Z',
+  attempt: 1,
+};
+
+const MOCK_WORK_TASKS: WorkTask[] = [
+  mockWorkTask(214, 'Add retry budget metrics to the dashboard', 'Backlog', 'backlog', {
+    board: { columnId: 'backlog', state: 'notStarted', gate: null },
+  }),
+  mockWorkTask(209, 'Cap dispatcher retries per run', 'Todo', 'unstarted', {
+    dispatch: {
+      sagaId: 'demo-platform',
+      issueId: 'demo-issue-209',
+      repo: 'niuulabs/niuu',
+      connectionId: null,
+      workflowId: null,
+    },
+    board: { columnId: 'backlog', state: 'notStarted', gate: null },
+  }),
+  mockWorkTask(207, 'Implement retry budget', 'In Review', 'started', {
+    operationalRun: {
+      id: 'demo-run-207',
+      status: 'review',
+      sessionId: 'demo-session-207',
+      reviewerSessionId: null,
+      branch: 'feat/retry-budget',
+      prUrl: 'https://github.com/niuulabs/niuu/pull/1042',
+      updatedAt: '2026-01-06T14:30:00Z',
+    },
+    board: {
+      columnId: 'code-review',
+      state: 'needsDecision',
+      gate: MOCK_CODE_GATE,
+      passedWorkflowIds: ['demo-ticket-planning'],
+    },
+  }),
+  mockWorkTask(212, 'Trace dispatcher queue depth', 'In Progress', 'started', {
+    board: {
+      columnId: 'building',
+      state: 'ready',
+      gate: null,
+      passedWorkflowIds: ['demo-ticket-planning'],
+    },
+  }),
+  mockWorkTask(201, 'Trace queue wait time', 'Done', 'completed', {
+    board: { columnId: 'done', state: 'done', gate: null },
+  }),
+];
+
+const MOCK_PLAN_DECIDED = {
+  gateId: 'demo-plan-gate-1',
+  activationId: 'demo-plan-activation-1',
+  requestedAt: '2026-01-06T10:02:00Z',
+  summary: 'Bounded, and the files look right.',
+  decidedBy: 'you',
+  decidedAt: '2026-01-06T10:21:00Z',
+};
+
+const MOCK_PLAN_R1 = [
+  '## Approach',
+  'Count attempts per run and stop at a fixed limit of 3.',
+  '',
+  '## Steps',
+  '1. Add the limit to the dispatcher.',
+  '2. Escalate when it is reached.',
+  '',
+  '## Done when',
+  '- A run stops retrying after its limit.',
+].join('\n');
+
+const MOCK_PLAN_R2 = [
+  '## Changes since your note',
+  'The limit now lives on the saga, as you asked.',
+  '',
+  '## Approach',
+  'Give each saga a retry budget and stop a run when it is spent.',
+  '',
+  '## Steps',
+  '1. Add the budget to the saga model.',
+  '2. Check it in the dispatcher before each retry.',
+  '3. Escalate when it is spent.',
+  '',
+  '## Done when',
+  '- A run stops retrying after its limit.',
+].join('\n');
+
+function mockTicketReviews(task: WorkTask | undefined): TicketReviews {
+  const gate = task?.board?.gate;
+  if (!gate) return { reviews: [], unreadableRuns: [] };
+  return {
+    reviews: [
+      {
+        columnId: 'plan-review',
+        title: 'Plan review',
+        review: 'plan',
+        workflowName: 'Ticket Planning Flow',
+        taskId: `demo-plan-${task.source.issueId}`,
+        sessionId: `demo-plan-session-${task.source.issueId}`,
+        panels: [{ widget: 'document', title: 'Plan', source: { kind: 'outcome', value: 'plan' } }],
+        revisions: [
+          {
+            ...MOCK_PLAN_DECIDED,
+            number: 1,
+            status: 'changes_requested',
+            notes: '> fixed limit of 3\n\nThis belongs on the saga.',
+            fields: { plan: MOCK_PLAN_R1 },
+          },
+          {
+            ...MOCK_PLAN_DECIDED,
+            number: 2,
+            gateId: 'demo-plan-gate-2',
+            activationId: 'demo-plan-activation-2',
+            status: 'approved',
+            notes: '',
+            fields: { plan: MOCK_PLAN_R2 },
+          },
+        ],
+      },
+      {
+        columnId: task.board?.columnId ?? 'code-review',
+        title: gate.label,
+        review: 'code',
+        workflowName: 'Reviewed Delivery Flow',
+        taskId: `demo-run-${task.source.issueId}`,
+        sessionId: `demo-session-${task.source.issueId}`,
+        panels: [
+          { widget: 'diff', title: 'Changes' },
+          { widget: 'files', title: 'Files' },
+          { widget: 'pullRequest', title: 'Pull request' },
+        ],
+        revisions: [
+          {
+            number: 1,
+            gateId: gate.id,
+            activationId: gate.activationId,
+            requestedAt: gate.requestedAt,
+            status: 'pending',
+            summary: gate.summary,
+            decidedBy: '',
+            notes: '',
+            decidedAt: '',
+            fields: {},
+          },
+        ],
+      },
+    ],
+    unreadableRuns: [],
+  };
+}
+
+const MOCK_RUN_SLUG = 'demo-resident-run';
+const MOCK_RUN_PROMPT = 'Upgrade the ingress chart on every cluster.';
+
+function mockRunReviews(status: string): RunReviews {
+  return {
+    run: {
+      slug: MOCK_RUN_SLUG,
+      title: MOCK_RUN_PROMPT,
+      workflowName: 'Infra Change Flow',
+      prompt: MOCK_RUN_PROMPT,
+      sessionId: 'demo-resident-session',
+      repo: 'https://github.com/example/infrastructure',
+      branch: 'ingress-upgrade',
+      startedBy: 'regin',
+    },
+    reviews: [
+      {
+        columnId: 'infra-change-merge-gate',
+        title: 'Approve the merge',
+        review: null,
+        workflowName: 'Infra Change Flow',
+        taskId: MOCK_RUN_SLUG,
+        sessionId: 'demo-resident-session',
+        panels: [{ widget: 'summary', title: 'Summary' }],
+        revisions: [
+          {
+            number: 1,
+            gateId: 'demo-run-gate-1',
+            activationId: 'demo-run-activation-1',
+            requestedAt: '2026-01-06T10:02:00Z',
+            status,
+            summary: 'The chart moves one minor version and touches two clusters.',
+            decidedBy: status === 'pending' ? '' : 'you',
+            notes: '',
+            decidedAt: '',
+            fields: {},
+          },
+        ],
+      },
+    ],
+    unreadableRuns: [],
+  };
+}
+
+function mockReviewList(tasks: readonly WorkTask[], runWaiting: boolean): ReviewList {
+  return {
+    items: [
+      ...tasks
+        .filter((task) => task.board?.gate)
+        .map((task) => ({
+          taskId: `demo-run-${task.source.issueId}`,
+          kind: 'ticket' as const,
+          title: task.title,
+          workflowName: 'Reviewed Delivery Flow',
+          state: 'waiting' as const,
+          gateLabel: task.board?.gate?.label ?? '',
+          updatedAt: task.board?.gate?.requestedAt ?? '',
+          projectId: 'demo-platform',
+          projectName: 'Platform reliability',
+          issueId: task.source.issueId,
+          identifier: task.source.identifier,
+        })),
+      ...(runWaiting
+        ? [
+            {
+              taskId: MOCK_RUN_SLUG,
+              kind: 'run' as const,
+              title: MOCK_RUN_PROMPT,
+              workflowName: 'Infra Change Flow',
+              state: 'waiting' as const,
+              gateLabel: 'Approve the merge',
+              updatedAt: '2026-01-06T10:02:00Z',
+              startedBy: 'regin',
+            },
+          ]
+        : []),
+    ],
+  };
+}
+
 export function createMockWorkService(): IWorkService {
+  const tasks = MOCK_WORK_TASKS.map((task) => ({ ...task }));
+  let runGateStatus = 'pending';
   return {
     async list(): Promise<WorkCollection> {
       return {
         projects: MOCK_WORK.filter((item) => item.kind === 'project'),
-        campaigns: MOCK_WORK.filter((item) => item.kind !== 'project'),
-        executions: [],
+        campaigns: MOCK_WORK.filter(
+          (item) => item.kind !== 'project' && item.kind !== 'workflowExecution',
+        ),
+        executions: MOCK_WORK.filter((item) => item.kind === 'workflowExecution'),
         executionNextCursor: null,
         coverage: [],
       };
@@ -2063,7 +2477,63 @@ export function createMockWorkService(): IWorkService {
     async get(kind, id): Promise<WorkDetail> {
       const item = MOCK_WORK.find((entry) => entry.id === `${kind}:${id}`);
       if (!item) throw new Error(`Work ${kind}:${id} not found`);
-      return { item, tasks: [], coverage: [] };
+      return {
+        item,
+        tasks: item.kind === 'project' ? tasks.map((task) => ({ ...task })) : [],
+        coverage: [
+          { source: 'operationalRuns', connectionId: null, status: 'complete', error: null },
+          { source: 'tracker', connectionId: 'demo-tracker', status: 'complete', error: null },
+        ],
+        board: item.kind === 'project' ? MOCK_WORK_BOARD : null,
+      };
+    },
+    async decideGate(_projectId, issueId, decision) {
+      const task = tasks.find((entry) => entry.source.issueId === issueId);
+      const gate = task?.board?.gate;
+      if (!task || gate?.id !== decision.gateId || gate.activationId !== decision.activationId) {
+        throw new Error('This gate changed after you opened it. Review it again.');
+      }
+      task.board = {
+        columnId: decision.decision === 'approve' ? 'merging' : 'building',
+        state: 'running',
+        gate: null,
+      };
+    },
+    async reviews() {
+      return mockReviewList(tasks, runGateStatus === 'pending');
+    },
+    async runReviews(slug) {
+      if (slug !== MOCK_RUN_SLUG) throw new Error(`Run not found: ${slug}`);
+      return mockRunReviews(runGateStatus);
+    },
+    async decideRunGate(slug, decision) {
+      if (slug !== MOCK_RUN_SLUG || runGateStatus !== 'pending') {
+        throw new Error('This gate changed after you opened it. Review it again.');
+      }
+      runGateStatus = decision.decision === 'approve' ? 'approved' : 'changes_requested';
+    },
+    async reviewWidget(module, name): Promise<ReviewWidget> {
+      throw new Error(`Review widget ${module}/${name} is not installed on this deployment`);
+    },
+    async ticketReviews(_projectId, issueId) {
+      return mockTicketReviews(tasks.find((entry) => entry.source.issueId === issueId));
+    },
+    async startTicket(_projectId, issueId, columnId) {
+      const task = tasks.find((entry) => entry.source.issueId === issueId);
+      if (!task) throw new Error(`Ticket ${issueId} not found`);
+      const ready = task.board?.state === 'ready' ? task.board.columnId : null;
+      task.dispatch = null;
+      task.coordinator = {
+        sessionId: `demo-coordinator-${issueId}`,
+        status: 'active',
+        connectionId: null,
+        chatEndpoint: null,
+      };
+      task.board = {
+        columnId: columnId ?? ready ?? 'planning',
+        state: 'starting',
+        gate: null,
+      };
     },
   };
 }

@@ -304,7 +304,7 @@ const GROUP_SPECS: readonly GroupSpec[] = [
   {
     key: 'anthropic',
     title: 'Anthropic · Claude',
-    description: 'Claude Code sessions, Ravn judgment',
+    description: 'Claude Code sessions, agent judgment',
     keySlug: 'anthropic',
     signInSlug: 'claude-code',
     signInLabel: 'Sign in with your Claude subscription',

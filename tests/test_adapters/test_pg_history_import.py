@@ -13,6 +13,7 @@ import pytest
 import pytest_asyncio
 
 from niuu.domain.text_projection import repair_legacy_turn, repair_marker
+from niuu.domain.transcript_rebuild import rebuild_turns
 from tests.test_domain.test_text_projection_repair import captured
 from volundr.adapters.outbound.pg_session_event_log import _INSERT_SQL, PostgresSessionEventLog
 from volundr.domain.history_import import (
@@ -21,7 +22,6 @@ from volundr.domain.history_import import (
     HistoryImportValidationError,
 )
 from volundr.domain.models import SessionLogEntry
-from volundr.domain.services.transcript_rebuild import rebuild_turns
 
 _NATIVE_TS = datetime(2026, 9, 8, 7, 43, 4, tzinfo=UTC)
 _SOURCE = "codex-native:original-thread"
@@ -248,7 +248,9 @@ async def test_append_uses_same_session_lock_in_stable_session_order():
 
     sql, args = pool.executemany.call_args.args
     assert "SELECT id FROM sessions WHERE id = $1 FOR UPDATE" in sql
-    assert [(arg[0], arg[1]) for arg in args] == [(lower, 2), (lower, 1), (higher, 1)]
+    # Sessions in stable order (deadlock avoidance); within a session in seq order, so
+    # order-sensitive folds (open tool count, usage checkpoints) never see a reordered batch.
+    assert [(arg[0], arg[1]) for arg in args] == [(lower, 1), (lower, 2), (higher, 1)]
 
 
 @pytest_asyncio.fixture
@@ -269,13 +271,16 @@ async def real_history_pool():
             """CREATE TABLE sessions (
                 id uuid PRIMARY KEY, status text NOT NULL,
                 latest_final_seq bigint NOT NULL DEFAULT 0,
-                latest_final_turn_id text, latest_final_at timestamptz
+                latest_final_turn_id text, latest_final_at timestamptz,
+                last_work_at timestamptz, open_tool_count integer NOT NULL DEFAULT 0,
+                session_usage jsonb
             )"""
         )
         await pool.execute(
             """CREATE TABLE session_event_log (
                 session_id uuid NOT NULL, seq bigint NOT NULL, kind text NOT NULL,
                 role text, request_id text, payload jsonb NOT NULL, ts timestamptz NOT NULL,
+                usage_key text, usage jsonb,
                 PRIMARY KEY (session_id, seq)
             )"""
         )

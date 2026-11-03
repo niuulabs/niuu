@@ -182,6 +182,7 @@ from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _build_executor,
     _build_friction_ledger,
     _build_capability_matcher,
+    _build_peer_capability_matcher,
     _build_learning_consolidation,
     _build_learning_curator,
     _build_self_improvement,
@@ -1012,7 +1013,10 @@ def tool_mcp(
                     settings, _build_learning_consolidation(settings, _build_llm(settings))
                 )
                 if build_tool_enabled
-                and settings.effective_post_session_reflection_config().matching.mode == "semantic"
+                and (
+                    settings.effective_post_session_reflection_config().matching.mode == "semantic"
+                    or settings.decision.capability_matching.enabled
+                )
                 else None
             ),
         )

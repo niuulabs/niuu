@@ -101,6 +101,8 @@ def _service(store: InMemoryNotificationStore) -> NotificationService:
         store.feed,
         store.rule_repo,
         store.outbox,
+        image_repository=store.images,
+        image_scheduler=store.image_scheduler,
         reply_ready_enabled=False,
         reply_title_chars=40,
         reply_body_chars=60,

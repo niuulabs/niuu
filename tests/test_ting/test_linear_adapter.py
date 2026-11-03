@@ -849,6 +849,8 @@ class TestUpdateRunProgress:
         sql = pool.execute.call_args[0][0]
         assert "INSERT INTO run_progress" in sql
         assert "chronicle_summary" in sql
+        # tenant_id is NOT NULL, and callers such as the activity subscriber omit it.
+        assert "COALESCE($9, '')" in sql
         assert result.tracker_id == "t-1"
 
     async def test_authorized_run_read_scopes_owner_tenant_and_connection(self):

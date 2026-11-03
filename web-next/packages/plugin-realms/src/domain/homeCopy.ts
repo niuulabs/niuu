@@ -23,7 +23,8 @@ export interface HomeState {
 /** One sentence of where things stand, above the three ways to start. */
 export function stateSentence({ realms, running, needsYou }: HomeState): string {
   const parts: string[] = [];
-  if (realms > 0) parts.push(`${countWords(realms).toLowerCase()} realm${realms === 1 ? '' : 's'}`);
+  if (realms > 0)
+    parts.push(`${countWords(realms).toLowerCase()} workspace${realms === 1 ? '' : 's'}`);
   if (running > 0) {
     parts.push(`${countWords(running).toLowerCase()} session${running === 1 ? '' : 's'} running`);
   }

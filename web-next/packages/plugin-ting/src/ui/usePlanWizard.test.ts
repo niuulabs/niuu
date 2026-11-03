@@ -37,7 +37,7 @@ const MOCK_PHASES: Phase[] = [
 const MOCK_STRUCTURE: ExtractedStructure = {
   found: true,
   structure: {
-    name: 'Test Saga',
+    name: 'Test Project',
     phases: [
       {
         name: 'Phase 1',
@@ -61,7 +61,7 @@ const MOCK_SAGA: Saga = {
   trackerId: 'NIU-999',
   trackerType: 'linear',
   slug: 'test-saga',
-  name: 'Test Saga',
+  name: 'Test Project',
   repos: ['niuulabs/volundr'],
   featureBranch: 'feat/test-saga',
   status: 'active',
@@ -410,7 +410,7 @@ describe('usePlanWizard — submitAnswers', () => {
     await waitFor(() => expect(result.current.state.step).toBe('draft'));
     expect(getPlanDraft).toHaveBeenCalledWith('plan-auth');
     expect(decompose).not.toHaveBeenCalled();
-    expect(result.current.state.structure?.structure?.name).toBe('Test Saga');
+    expect(result.current.state.structure?.structure?.name).toBe('Test Project');
   });
 
   it('waits for workflow draft when it is not ready', async () => {
@@ -488,7 +488,7 @@ describe('usePlanWizard — approveDraft', () => {
       await result.current.approveDraft();
     });
 
-    expect(sendPlanFeedback).toHaveBeenCalledWith('plan-auth', 'Approved in Ting Plan.', 'approve');
+    expect(sendPlanFeedback).toHaveBeenCalledWith('plan-auth', 'Approved in Plan.', 'approve');
     expect(commitSaga).toHaveBeenCalled();
     expect(result.current.state.step).toBe('approved');
   });
@@ -511,7 +511,7 @@ describe('usePlanWizard — approveDraft', () => {
       await result.current.approveDraft();
     });
 
-    expect(sendPlanFeedback).toHaveBeenCalledWith('plan-auth', 'Approved in Ting Plan.', 'approve');
+    expect(sendPlanFeedback).toHaveBeenCalledWith('plan-auth', 'Approved in Plan.', 'approve');
     expect(commitSaga).toHaveBeenCalled();
     expect(result.current.state.step).toBe('approved');
     expect(result.current.state.error).toBeNull();

@@ -29,12 +29,12 @@ export function SessionRuntimeVersion({
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="forge-environment-popover">
-        <strong>Skuld runtime</strong>
+        <strong>Session runtime</strong>
         <p role="status">
           {query.isPending
             ? 'Checking runtime version…'
             : query.isError
-              ? 'This Forge could not report its runtime version.'
+              ? 'This host could not report its runtime version.'
               : version?.state === 'current'
                 ? 'This session is using the available build.'
                 : version?.state === 'different'
@@ -46,7 +46,7 @@ export function SessionRuntimeVersion({
         <dl>
           <dt>Running</dt>
           <dd>{version?.current?.revision?.slice(0, 8) ?? 'Unknown'}</dd>
-          <dt>Available on this Forge</dt>
+          <dt>Available on this host</dt>
           <dd>{version?.available?.revision?.slice(0, 8) ?? 'Unknown'}</dd>
         </dl>
         <p>

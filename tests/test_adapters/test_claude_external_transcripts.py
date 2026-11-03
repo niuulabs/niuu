@@ -7,8 +7,8 @@ from uuid import UUID
 
 import pytest
 
+from niuu.domain.transcript_rebuild import rebuild_turns
 from volundr.adapters.outbound.external_sessions.claude_code import ClaudeCodeSessionProvider
-from volundr.domain.services.transcript_rebuild import rebuild_turns
 
 NATIVE_ID = "2e877b9f-4b8a-4d46-8f00-03f6163addd5"
 FORGE_ID = UUID("10000000-0000-4000-8000-000000000001")

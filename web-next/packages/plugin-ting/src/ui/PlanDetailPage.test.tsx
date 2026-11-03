@@ -12,6 +12,15 @@ let mockSlug = 'plan-niu-1104-define-ravnclaw-as-niuu-s-advanced';
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
   useParams: () => ({ slug: mockSlug }),
+  Link: ({ children, to }: { children: React.ReactNode; to: string }) => (
+    <a href={to}>{children}</a>
+  ),
+}));
+
+vi.mock('./PlanWizard', () => ({
+  PlanWizard: ({ resumeSlug }: { resumeSlug?: string }) => (
+    <div data-testid="plan-wizard">{resumeSlug}</div>
+  ),
 }));
 
 const plan: PlanSession = {
@@ -126,6 +135,40 @@ describe('PlanDetailPage', () => {
     expect(screen.getByText('Plan not found.')).toBeInTheDocument();
   });
 
+  it('links each ticket the plan became to its review', async () => {
+    const svc = {
+      getPlanSession: vi.fn().mockResolvedValue({
+        ...plan,
+        sagaId: 'saga-1',
+        tickets: [
+          { name: 'Trace ticks', issueId: 'issue-1', identifier: 'PLT-212' },
+          { name: 'Record retries', issueId: 'issue-2' },
+        ],
+      }),
+      getPlanDraft: vi.fn().mockResolvedValue(draft),
+    };
+    render(<PlanDetailPage />, { wrapper: wrap(svc) });
+
+    expect(await screen.findByRole('link', { name: 'PLT-212' })).toHaveAttribute(
+      'href',
+      '/ting/review/saga-1/issue-1',
+    );
+    expect(screen.getByRole('link', { name: 'Record retries' })).toHaveAttribute(
+      'href',
+      '/ting/review/saga-1/issue-2',
+    );
+  });
+
+  it('opens a plan still being planned on its own review step', async () => {
+    const svc = {
+      getPlanSession: vi.fn().mockResolvedValue({ ...plan, status: 'blocked' }),
+      getPlanDraft: vi.fn().mockResolvedValue(draft),
+    };
+    render(<PlanDetailPage />, { wrapper: wrap(svc) });
+
+    expect(await screen.findByTestId('plan-wizard')).toHaveTextContent(mockSlug);
+  });
+
   it('goes back to the plan list', async () => {
     const svc = {
       getPlanSession: vi.fn().mockResolvedValue(plan),
@@ -133,8 +176,10 @@ describe('PlanDetailPage', () => {
     };
     render(<PlanDetailPage />, { wrapper: wrap(svc) });
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /Plans/ })).toBeInTheDocument());
-    screen.getByRole('button', { name: /Plans/ }).click();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Reviews/ })).toBeInTheDocument(),
+    );
+    screen.getByRole('button', { name: /Reviews/ }).click();
     expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/plan' });
   });
 });

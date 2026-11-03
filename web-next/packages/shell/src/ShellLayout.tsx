@@ -16,13 +16,6 @@ import {
 } from '@niuulabs/ui';
 import { useTheme, type ThemeName } from '@niuulabs/design-tokens';
 import { useShellContext } from './ShellContext';
-import {
-  isVisibleInMode,
-  pluginFace,
-  tabsForMode,
-  useUiMode,
-  useUiModePreferenceSync,
-} from './uiMode';
 import './Shell.css';
 
 function pathMatches(pathname: string, basePath: string): boolean {
@@ -107,22 +100,10 @@ export function ShellLayout() {
   const pathname = location.pathname;
   const { setOpen } = useCommandPalette();
   const { register, unregister } = useCommandPaletteRegistry();
-  const modePreferenceError = useUiModePreferenceSync();
 
   // System plugins (e.g. login) register routes but stay out of the nav rail.
-  const allNavPlugins = useMemo(() => enabled.filter((p) => !p.system), [enabled]);
-  const storedMode = useUiMode();
-  // Simple mode only exists when at least one plugin opted into it; a host whose
-  // plugins declare nothing gets the whole shell and no switch.
-  const simpleAvailable = useMemo(() => allNavPlugins.some((p) => p.simple), [allNavPlugins]);
-  const mode = simpleAvailable ? storedMode : 'advanced';
-  const activeId = activePluginId(pathname, allNavPlugins);
-  // Simple mode hides plugins from the rail, never from the router: a plugin reached by
-  // deep link keeps its rail item while it is the active one.
-  const navPlugins = useMemo(
-    () => allNavPlugins.filter((p) => isVisibleInMode(p, mode) || p.id === activeId),
-    [activeId, allNavPlugins, mode],
-  );
+  const navPlugins = useMemo(() => enabled.filter((p) => !p.system), [enabled]);
+  const activeId = activePluginId(pathname, navPlugins);
   const topPlugins = useMemo(() => navPlugins.filter((p) => p.position !== 'bottom'), [navPlugins]);
   const bottomPlugins = useMemo(
     () => navPlugins.filter((p) => p.position === 'bottom'),
@@ -130,8 +111,7 @@ export function ShellLayout() {
   );
 
   const active = navPlugins.find((p) => p.id === activeId) ?? navPlugins[0] ?? null;
-  const activeTabs = active ? tabsForMode(active, mode) : undefined;
-  const face = (plugin: PluginDescriptor) => pluginFace(plugin, mode);
+  const activeTabs = active?.tabs;
   const subnavCollapsed = active ? Boolean(ctx.tweaks[`${active.id}.subnavCollapsed`]) : false;
 
   // localStorage follows the router — not the other way around
@@ -152,11 +132,10 @@ export function ShellLayout() {
   // Register "switch plugin" default commands for all nav plugins
   useEffect(() => {
     for (const plugin of navPlugins) {
-      const label = pluginFace(plugin, mode);
       register({
         id: `switch:${plugin.id}`,
-        title: label.title,
-        subtitle: label.subtitle,
+        title: plugin.title,
+        subtitle: plugin.subtitle,
         keywords: ['switch', 'navigate', 'go', 'plugin', plugin.id],
         execute: () => handleSelect(plugin.id),
       });
@@ -166,7 +145,7 @@ export function ShellLayout() {
         unregister(`switch:${plugin.id}`);
       }
     };
-  }, [navPlugins, mode, register, unregister, handleSelect]);
+  }, [navPlugins, register, unregister, handleSelect]);
 
   return (
     <TooltipProvider>
@@ -180,7 +159,7 @@ export function ShellLayout() {
               key={p.id}
               side="right"
               delayMs={0}
-              content={<RailTooltipContent title={face(p).title} subtitle={face(p).subtitle} />}
+              content={<RailTooltipContent title={p.title} subtitle={p.subtitle} />}
             >
               <button
                 type="button"
@@ -189,12 +168,12 @@ export function ShellLayout() {
                   p.icon && 'niuu-shell__rail-item--icon',
                   active?.id === p.id && 'niuu-shell__rail-item--active',
                 )}
-                title={[face(p).title, face(p).subtitle].filter(Boolean).join(' · ')}
-                aria-label={face(p).title}
+                title={[p.title, p.subtitle].filter(Boolean).join(' · ')}
+                aria-label={p.title}
                 data-testid={`rail-item-${p.id}`}
                 onClick={() => handleSelect(p.id)}
               >
-                {face(p).glyph}
+                {p.icon ?? p.rune}
               </button>
             </Tooltip>
           ))}
@@ -204,7 +183,7 @@ export function ShellLayout() {
               key={p.id}
               side="right"
               delayMs={0}
-              content={<RailTooltipContent title={face(p).title} subtitle={face(p).subtitle} />}
+              content={<RailTooltipContent title={p.title} subtitle={p.subtitle} />}
             >
               <button
                 type="button"
@@ -213,12 +192,12 @@ export function ShellLayout() {
                   p.icon && 'niuu-shell__rail-item--icon',
                   active?.id === p.id && 'niuu-shell__rail-item--active',
                 )}
-                title={[face(p).title, face(p).subtitle].filter(Boolean).join(' · ')}
-                aria-label={face(p).title}
+                title={[p.title, p.subtitle].filter(Boolean).join(' · ')}
+                aria-label={p.title}
                 data-testid={`rail-item-${p.id}`}
                 onClick={() => handleSelect(p.id)}
               >
-                {face(p).glyph}
+                {p.icon ?? p.rune}
               </button>
             </Tooltip>
           ))}
@@ -229,8 +208,8 @@ export function ShellLayout() {
           <div className="niuu-shell__topbar-title">
             {active && (
               <>
-                <span className="niuu-shell__rune-mark">{face(active).glyph}</span>
-                <h1>{face(active).title}</h1>
+                <span className="niuu-shell__rune-mark">{active.icon ?? active.rune}</span>
+                <h1>{active.title}</h1>
               </>
             )}
           </div>
@@ -316,6 +295,10 @@ export function ShellLayout() {
               <PopoverContent align="end" className="niuu-shell__theme-options">
                 {(
                   [
+                    ['niuu', 'NIUU'],
+                    ['midnight-blue', 'Midnight Blue'],
+                    ['deep-blue', 'Deep Blue'],
+                    ['dark-blue', 'Dark Blue'],
                     ['xteo', 'blue'],
                     ['ice', 'Native dark'],
                     ['amber', 'Amber'],
@@ -365,19 +348,12 @@ export function ShellLayout() {
 
         <footer className="niuu-shell__footer">
           <div className="niuu-shell__footer-left">
-            {active && <code>plugin:{active.id}</code>}
-            <span className="niuu-shell__footer-sep">·</span>
             <span>niuu.world</span>
           </div>
           <div className="niuu-shell__footer-center" data-testid="footer-status">
             <PluginSlot render={active?.footer ?? null} ctx={ctx} />
           </div>
           <div className="niuu-shell__footer-right">
-            {modePreferenceError ? (
-              <span className="niuu-shell__mode-error" role="alert" title={modePreferenceError}>
-                interface preference unavailable
-              </span>
-            ) : null}
             <span>{enabled.length} plugins loaded</span>
           </div>
         </footer>

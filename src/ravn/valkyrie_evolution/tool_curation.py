@@ -22,6 +22,8 @@ This module repairs those paths instead of adding new stores:
   :func:`restore_learned_tool` reverses it.
 * :func:`retire_superseded_predecessor` retires the tool a newly installed
   version supersedes.
+* :func:`find_peer_capability` asks the same question of the tools flock peers
+  run, for a request nothing here serves.
 * :class:`LearnedToolCurator` (the consolidation-dream pass) backfills each
   artifact's capability id through the same matching, then retires superseded,
   unrunnable, debug-leftover and never-used tools, reading usage from the
@@ -49,6 +51,7 @@ from typing import Any, Protocol
 
 from niuu.observability import get_observability
 from ravn.ports.capability_matching import CapabilityDescriptor, CapabilityMatcherPort
+from ravn.ports.peer_tools import PeerTool
 from ravn.skills.management import SkillLifecycle
 from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
@@ -60,6 +63,7 @@ from ravn.valkyrie_evolution.learned_tools import (
     write_learned_tool,
 )
 from ravn.valkyrie_evolution.models import LearnedToolArtifact
+from ravn.valkyrie_evolution.peer_tools import distinct_peer_tools
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +73,11 @@ RETIRED_SUPERSEDED = "superseded"
 RETIRED_DEBUG_LEFTOVER = "debug_leftover"
 RETIRED_UNRUNNABLE = "unrunnable"
 RETIRED_UNUSED = "unused"
+#: Why ``learned_tool_run`` archived a tool that kept failing. Not a
+#: retirement: the tool stays installed, its archive detail holds the failure
+#: that crossed the threshold, and a rebuild or an identical reinstall
+#: restores it.
+ROLLED_BACK = "rolled_back"
 RETIREMENT_REASONS = (
     RETIRED_SUPERSEDED,
     RETIRED_DEBUG_LEFTOVER,
@@ -365,6 +374,31 @@ async def restore_learned_tool(
     return retired
 
 
+async def reactivate_rolled_back_tool(*, skills: Any, name: str, why: str) -> SkillLifecycle | None:
+    """Put a rolled-back, still-installed tool back into use.
+
+    Returns its record as it was while rolled back, or ``None`` when *name*
+    was not rolled back. A rebuild that produced the installed code again
+    used to report "already installed" while the tool stayed archived and
+    unrunnable, so a resident could only get it back by commissioning a
+    cosmetically different version.
+    """
+    metadata = skills.lifecycle_metadata(name)
+    if not metadata or metadata.get("status") != "archived":
+        return None
+    if metadata.get("archived_reason") in RETIREMENT_REASONS:
+        return None
+    rolled_back = _lifecycle_from(metadata)
+    await skills.restore(name)
+    get_observability().event(
+        "ravn.learned_tool.lifecycle.reactivated",
+        attributes={"ravn.learned_tool.name": name},
+        content={"why": why, "rolled_back_detail": rolled_back.archived_detail},
+    )
+    logger.info("Reactivated rolled-back learned tool %s: %s", name, why)
+    return rolled_back
+
+
 async def retire_superseded_predecessor(
     *,
     tools_dir: str | Path,
@@ -447,7 +481,11 @@ async def find_installed_capability(
         )
         same = sorted(
             (verdict for verdict in verdicts if verdict.same),
-            key=lambda verdict: (_preference(keyed[verdict.candidate_key]), verdict.similarity),
+            key=lambda verdict: (
+                _preference(keyed[verdict.candidate_key]),
+                verdict.probability or 0.0,
+                verdict.similarity,
+            ),
             reverse=True,
         )
         if same:
@@ -472,6 +510,128 @@ async def find_installed_capability(
                 ),
             )
     return match
+
+
+@dataclass(frozen=True)
+class PeerMatch:
+    """A peer's tool a build request relates to."""
+
+    tool: PeerTool
+    #: ``capability_id``, ``name``, ``spelling`` or ``semantic``.
+    matched_by: str
+    reason: str
+    probability: float | None = None
+
+
+@dataclass(frozen=True)
+class PeerCapabilities:
+    """What the flock already has for a build request."""
+
+    #: The same capability, best first: worth installing instead of building.
+    same: tuple[PeerMatch, ...] = ()
+    #: Close enough to be worth a builder's reading, but not called the same.
+    near: tuple[PeerMatch, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.same or self.near)
+
+    @property
+    def best(self) -> PeerMatch:
+        """The strongest match; only meaningful when there is one."""
+        return self.same[0] if self.same else self.near[0]
+
+
+async def find_peer_capability(
+    *,
+    tools_dir: str | Path,
+    artifacts_dir: str | Path,
+    skills: LifecycleView | None,
+    peer_tools: Sequence[PeerTool],
+    capability_id: str,
+    name: str,
+    description: str = "",
+    inputs: Sequence[str] = (),
+    matcher: CapabilityMatcherPort | None = None,
+    near_probability: float | None = None,
+) -> PeerCapabilities:
+    """Return the peers' tools that relate to this request.
+
+    Call this when :func:`find_installed_capability` found nothing here. Tools
+    this resident holds under the same name were already judged locally, so
+    only what it lacks is asked about, in the same order of certainty and with
+    the same "next version" question. *near_probability* needs a matcher that
+    gives probabilities; without one nothing is ever near.
+    """
+    local = tool_inventory(
+        tools_dir=tools_dir, artifacts_dir=artifacts_dir, skills=skills, include_retired=True
+    )
+    candidates = distinct_peer_tools(peer_tools, exclude=[entry.name for entry in local])
+    if not candidates:
+        return PeerCapabilities()
+    exact = _exact_peer_lineage(candidates, capability_id=capability_id.strip(), name=name.strip())
+    if exact is not None:
+        return PeerCapabilities(same=(exact,))
+    if matcher is None:
+        return PeerCapabilities()
+    keyed = {tool.descriptor().key: tool for tool in candidates}
+    verdicts = await matcher.same_capability(
+        CapabilityDescriptor(
+            key=f"request:{name}", name=name, description=description, inputs=tuple(inputs)
+        ),
+        [tool.descriptor() for tool in candidates],
+        as_revision=True,
+    )
+    ranked = sorted(
+        verdicts,
+        key=lambda verdict: (
+            verdict.probability or 0.0,
+            keyed[verdict.candidate_key].successes,
+            verdict.similarity,
+        ),
+        reverse=True,
+    )
+    matches = {
+        verdict.candidate_key: PeerMatch(
+            tool=keyed[verdict.candidate_key],
+            matched_by="semantic",
+            reason=verdict.reason,
+            probability=verdict.probability,
+        )
+        for verdict in ranked
+    }
+    return PeerCapabilities(
+        same=tuple(matches[verdict.candidate_key] for verdict in ranked if verdict.same),
+        near=tuple(
+            matches[verdict.candidate_key]
+            for verdict in ranked
+            if not verdict.same
+            and near_probability is not None
+            and verdict.probability is not None
+            and verdict.probability >= near_probability
+        ),
+    )
+
+
+def _exact_peer_lineage(
+    tools: Sequence[PeerTool],
+    *,
+    capability_id: str,
+    name: str,
+) -> PeerMatch | None:
+    if capability_id:
+        for tool in tools:
+            if tool.capability_id.strip() == capability_id:
+                return PeerMatch(tool, "capability_id", f"declares capability {capability_id!r}")
+    wanted = capability_key(capability_id or name)
+    if not wanted:
+        return None
+    for tool in tools:
+        if tool.name == name:
+            return PeerMatch(tool, "name", f"is named {name!r}")
+    for tool in tools:
+        if wanted in {capability_key(tool.capability_id), capability_key(tool.name)}:
+            return PeerMatch(tool, "spelling", f"is {capability_id or name!r} spelled differently")
+    return None
 
 
 def _by_key(entries: Sequence[ToolEntry]) -> dict[str, ToolEntry]:
@@ -532,10 +692,23 @@ def lineage_problems(entry: ToolEntry, *, load_refusal: str | None = None) -> li
         problems.append("its last verification failed, so it can never run")
     lifecycle = entry.lifecycle
     if lifecycle is not None and lifecycle.status == "archived" and not entry.retired:
-        problems.append("it was rolled back after repeated failures")
+        problems.append(rolled_back_reason(lifecycle))
     if lifecycle is not None and lifecycle.consecutive_failures:
         problems.append(f"its last {lifecycle.consecutive_failures} run(s) failed")
     return problems
+
+
+def rolled_back_reason(lifecycle: SkillLifecycle) -> str:
+    """Why a rolled-back tool stopped running, with the failure that did it.
+
+    A rollback that only said "repeated failures" sent residents into
+    rebuilding tools whose code was fine: the failure was a sandbox timeout
+    or a 403, which no new version can fix, and nothing said so.
+    """
+    detail = lifecycle.archived_detail.strip() if lifecycle.archived_reason == ROLLED_BACK else ""
+    if not detail:
+        return "it was rolled back after repeated failures"
+    return f"it was rolled back after repeated failures; the last one was: {detail}"
 
 
 def capability_matched_marker(*, by: str, same_as: str = "", reason: str = "") -> dict[str, str]:
@@ -673,13 +846,17 @@ class LearnedToolCurator:
         self._load_refusal = load_refusal
         self._refusals: dict[str, str] = {}
 
-    async def plan(self) -> CurationPlan:
-        everything = tool_inventory(
+    def inventory(self) -> list[ToolEntry]:
+        """Every learned tool this resident holds, retired ones included."""
+        return tool_inventory(
             tools_dir=self._tools_dir,
             artifacts_dir=self._artifacts_dir,
             skills=self._skills,
             include_retired=True,
         )
+
+    async def plan(self) -> CurationPlan:
+        everything = self.inventory()
         installed = [entry for entry in everything if not entry.retired]
         plan = CurationPlan(installed=len(installed), window=first_use_window(everything))
         installed = await self._backfill_capabilities(installed, plan)
@@ -950,7 +1127,7 @@ class LearnedToolCurator:
         if not entry.verified:
             return "has no passing verification, so learned_tool_run refuses it"
         if entry.lifecycle is not None and entry.lifecycle.status == "archived":
-            return "rolled back after repeated failures"
+            return rolled_back_reason(entry.lifecycle)
         refusal = self._refusals.get(entry.name)
         if refusal is not None:
             return (

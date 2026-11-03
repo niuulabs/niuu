@@ -86,3 +86,27 @@ def test_unknown_history_error_retains_existing_status_failure():
     )
     response = client.get("/api/v1/forge/sessions/s2/conversation", headers=_headers())
     assert response.status_code == 502
+
+
+@respx.mock
+def test_attachments_index_routes_to_the_owner_with_its_kind_filter():
+    client = owner()
+    payload = {"session_id": "s2", "revision": "42", "complete": True, "items": []}
+    route = respx.get("http://beta/api/v1/forge/sessions/s2/attachments").mock(
+        return_value=Response(200, json=payload)
+    )
+    response = client.get(
+        "/api/v1/forge/sessions/s2/attachments", headers=_headers(), params={"kind": "image"}
+    )
+    assert response.status_code == 200 and response.json() == payload
+    assert route.calls.last.request.url.params["kind"] == "image"
+
+
+@respx.mock
+def test_attachments_index_passes_owner_errors_through():
+    client = owner()
+    respx.get("http://beta/api/v1/forge/sessions/s2/attachments").mock(
+        return_value=Response(404, json={"detail": "Session not found: s2"})
+    )
+    response = client.get("/api/v1/forge/sessions/s2/attachments", headers=_headers())
+    assert response.status_code == 404

@@ -17,8 +17,8 @@ class NiuuTabs(Widget):
     DEFAULT_CSS = """
     NiuuTabs {
         height: 1;
-        background: #18181b;
-        border-bottom: solid #27272a;
+        background: #10212d;
+        border-bottom: solid #182b38;
     }
     NiuuTabs #tabs-bar {
         width: 1fr;

@@ -409,13 +409,27 @@ class SleipnirEnvelope:
 #: Trigger of the resident home turn, the one task that reads the durable inbox
 #: (operator directed messages, A2A updates, coalesced observations).
 RESIDENT_HOME_TRIGGER = "resident:home"
+#: Case id prefix of a home turn. The case outlives the turn: a home case that sleeps is
+#: resumed by its scheduled wake under another trigger, still carrying the home turn's
+#: mandate with every observation it judged.
+RESIDENT_HOME_CASE_PREFIX = "resident-home-"
 #: A home turn runs ahead of signal work, level with an operator answer
 #: resuming its case. Only one home turn is ever queued or running, so this
 #: cannot crowd the queue; at the default priority it waited behind every
 #: signal task, and an operator's message sat unread for 16 hours.
 RESIDENT_HOME_PRIORITY = 1
+#: Prefix shared by every task an Environment signal produced.
+SIGNAL_TRIGGER_PREFIX = "signal:"
 #: Trigger of a periodic idle-triage window over below-threshold signals.
 IDLE_TRIAGE_TRIGGER = "signal:idle_triage"
+#: Trigger of one window over a batch from a durable (acking) signal source.
+DURABLE_SIGNAL_WINDOW_TRIGGER = "signal:durable_window"
+#: Trigger of the one window a restart folds a per-observation backlog into.
+SIGNAL_BACKLOG_TRIGGER = "signal:restored_backlog"
+#: Triggers of signal tasks that already cover many observations.
+SIGNAL_WINDOW_TRIGGERS = frozenset(
+    {IDLE_TRIAGE_TRIGGER, DURABLE_SIGNAL_WINDOW_TRIGGER, SIGNAL_BACKLOG_TRIGGER}
+)
 
 
 @dataclass
@@ -440,6 +454,7 @@ class AgentTask:
     root_correlation_id: str = ""  # Propagated from triggering event for fan-in chain tracking
     workflow_parent_event_id: str = ""  # Direct upstream event ID for per-cycle joins
     workflow_node_id: str = ""  # Active workflow graph node for node-scoped contracts
+    gate_feedback: str = ""  # A person's gate comment, carried on through the run's next steps
     # A strict review join resolves one immutable upstream workflow cycle.  Keep
     # that causal identity separate from the last reviewer event so the runtime
     # can reject an outcome if a newer artifact supersedes it while queued or
@@ -456,7 +471,8 @@ class AgentTask:
     #: thing that was actually asked. A room message arrives wrapped in framing plus up to 4,000
     #: characters of prior room context, and recalling on all of that embeds an average of the
     #: room's recent chatter instead of the question — against documents averaging 158 characters.
-    #: Empty means the context IS the query, which is true for every non-room trigger.
+    #: A resident home turn is the same case: its context is every observation's payload,
+    #: so it recalls on their summaries. Empty means the context IS the query.
     recall_query: str = ""
     # Durable resident continuation metadata.  These fields are transport
     # state, not a semantic task taxonomy: the model still selects the action
@@ -473,6 +489,9 @@ class AgentTask:
     #: inbox acknowledges against it so observations that arrive mid-turn stay
     #: pending instead of being acknowledged unseen.
     resident_inbox_expected: dict[str, str] = field(default_factory=dict)
+    #: System One opinion per inbox slot, taken when the home turn selected it
+    #: (``ravn.resident_attention``). Compared with the turn's outcome afterwards.
+    resident_slot_opinions: dict[str, dict[str, Any]] = field(default_factory=dict)
     resident_answer_ref: str = ""
     resident_wake_ref: str = ""
     resident_help_published: bool = False

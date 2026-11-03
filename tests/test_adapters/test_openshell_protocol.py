@@ -88,14 +88,16 @@ class _UnaryStub:
 
     def __init__(self, responses=None):
         self.calls: list[tuple[str, object]] = []
+        self.deadlines: list[tuple[str, float | None]] = []
         self.responses = dict(responses or {})
 
     def __getattr__(self, method):
         from openshell._proto import openshell_pb2 as p
 
-        def call(request, **_kwargs):
+        def call(request, **kwargs):
             request = _wire(request)
             self.calls.append((method, request))
+            self.deadlines.append((method, kwargs.get("timeout")))
             if method in PLATFORM_PROFILE_RPCS:
                 # Völundr's provider profiles are platform-scoped (the provider's
                 # profile_workspace is empty), so these carry no workspace.
@@ -282,16 +284,19 @@ def check_deletion_outcomes() -> None:
         )
         client = _client(stub)
         try:
-            assert client.delete_sandbox("sandbox") is expected
+            assert client.delete_sandbox("sandbox", timeout=90.0) is expected
             (request,) = stub.requests("DeleteSandbox")
             assert request.name == "sandbox"
             assert request.allow_missing is True
+            # The gateway answers once the pod is gone, so the call gets the
+            # caller's delete budget, not the client's default RPC timeout.
+            assert stub.deadlines == [("DeleteSandbox", 90.0)]
         finally:
             client.close()
 
     client = _client(_UnaryStub({"DeleteSandbox": lambda _request: p.DeleteSandboxResponse()}))
     try:
-        client.delete_sandbox("sandbox")
+        client.delete_sandbox("sandbox", timeout=90.0)
     except RuntimeError as exc:
         assert "no deletion outcome" in str(exc)
     else:

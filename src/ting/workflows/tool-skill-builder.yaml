@@ -3,7 +3,7 @@ id: 3c217e0a-1ff0-56d6-ba27-54cd43bff8e6
 name: Tool & Skill Builder
 description: Resident capability workflow that designs, implements, reviews, canaries, and publishes a
   missing Valkyrie/Ravn tool or skill.
-version: 1.0.6
+version: 1.0.8
 persona_dependencies:
   capability-publisher:
     id: capability-publisher
@@ -99,7 +99,10 @@ graph:
       systemPromptExtra: This capability workflow may intentionally run without a source repository. When
         no real repository and remote were supplied, do not initialize Git or invent a local remote. Build
         and test the canonical learned_tool.json in the workspace; the publisher stage owns durable publication.
-        If a real repository was supplied, retain the normal commit and push discipline.
+        If a real repository was supplied, retain the normal commit and push discipline. The commissioning
+        resident installs the published artifact itself after this workflow completes; you cannot reach
+        the resident or its tool catalog, so never block because the tool is missing from a live catalog
+        or because you cannot install, register or adopt it there.
     position:
       x: 704
       y: 280

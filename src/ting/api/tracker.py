@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from niuu.domain.models import Principal
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
-from ting.adapters.inbound.auth import extract_principal
+from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.domain.models import (
     Saga,
     SagaStatus,
@@ -32,9 +32,11 @@ from ting.domain.tracker_routing import (
     select_tracker_for_saga,
 )
 from ting.domain.utils import _slugify
+from ting.domain.workflow_board import repository_gap
 from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_name_from_snapshot
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.tracker import TrackerPort
+from ting.ports.volundr import ForgeProjectRef, VolundrPort
 from ting.ports.workflow_repository import WorkflowRepository
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,47 @@ _TERMINAL_PROJECT_STATUSES = {
     "archived",
     "merged",
 }
+
+
+async def _forge_project_to_attach(
+    request: Request,
+    principal: Principal,
+    forge_project_id: str,
+    instance_id: str | None,
+) -> tuple[ForgeProjectRef, VolundrPort]:
+    """The Forge project a tracker attaches to, and the Forge that holds it."""
+    try:
+        project_id = str(UUID(forge_project_id))
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Invalid forge_project_id: {forge_project_id!r}",
+        )
+    factory = getattr(request.app.state, "volundr_factory", None)
+    if factory is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No Forge connection is available",
+        )
+    auth_token = extract_bearer_token(request)
+    for forge in await factory.for_principal(principal):
+        if instance_id and forge.target_id != instance_id:
+            continue
+        project = await forge.get_project(project_id, auth_token=auth_token, principal=principal)
+        if project is not None:
+            return project, forge
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Forge project not found: {project_id}",
+    )
+
+
+def _registered_instance_id(forge: VolundrPort) -> str | None:
+    """The registry id to pin a project to. A local Forge has none, and is the only one."""
+    try:
+        return str(UUID(forge.target_id))
+    except ValueError:
+        return None
 
 
 def _is_terminal_project_status(status: str) -> bool:
@@ -139,8 +182,13 @@ class ImportRequest(BaseModel):
         default=None,
         description="Integration connection that owns the external project",
     )
-    repos: list[str] = Field(description="Repositories (org/repo)")
-    base_branch: str = Field(description="Branch to create feature branch from")
+    forge_project_id: str | None = Field(
+        default=None,
+        description="Existing Forge project this tracker joins. A project can hold several "
+        "trackers, and their tickets run on the Forge that holds the project",
+    )
+    repos: list[str] = Field(default_factory=list, description="Repositories (org/repo), if any")
+    base_branch: str = Field(default="", description="Branch to create feature branch from")
     repo_refs: list[dict[str, str]] = Field(
         default_factory=list,
         description="Per-repository branch bindings: [{repo, branch}]",
@@ -178,6 +226,7 @@ class SagaResponse(BaseModel):
     """Response for a created saga."""
 
     id: str
+    project_id: str = ""
     tracker_id: str
     tracker_connection_id: str = ""
     tracker_type: str = ""
@@ -470,11 +519,26 @@ def _build_tracker_router(
         }
         repos = list(repo_branches) if repo_branches else body.repos
         base_branch = next(iter(repo_branches.values()), body.base_branch)
+        if repos and not base_branch:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Choose the branch to work from, or import without a repository",
+            )
         target_tags = [tag.strip() for tag in body.target_tags if tag.strip()]
         target_match = body.target_match if body.target_match in {"all", "any"} else "all"
 
+        forge_project: ForgeProjectRef | None = None
+        instance_id = body.instance_id
         instance_name: str | None = None
-        if body.instance_id and not target_tags:
+        if body.forge_project_id:
+            forge_project, forge = await _forge_project_to_attach(
+                request, principal, body.forge_project_id, body.instance_id
+            )
+            # Its sessions stay beside it, so they see its brief and its other members.
+            instance_id = _registered_instance_id(forge)
+            instance_name = forge.name
+            target_tags = []
+        elif body.instance_id and not target_tags:
             instance_registry = getattr(request.app.state, "instance_registry", None)
             if instance_registry is None:
                 raise HTTPException(
@@ -527,6 +591,15 @@ def _build_tracker_router(
             (saga for saga in owner_sagas if _belongs_to_selected_connection(saga)),
             None,
         )
+        if (
+            forge_project is not None
+            and existing is not None
+            and str(existing.forge_project_id) != forge_project.id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"{project.name} already belongs to another project",
+            )
         conflicting_slug = next((saga for saga in owner_sagas if saga.slug == slug), None)
         if conflicting_slug is not None and (
             existing is None or conflicting_slug.id != existing.id
@@ -545,9 +618,13 @@ def _build_tracker_router(
                 suffix = adapter.connection_id[:8] or "tracker"
                 slug = f"{slug}-{suffix}"
 
+        project_id = UUID(forge_project.id) if forge_project is not None else None
+        if project_id is None and existing is not None:
+            project_id = existing.project_id
         saga = Saga(
             tenant_id=existing.tenant_id if existing is not None else principal.tenant_id,
             id=existing.id if existing is not None else uuid4(),
+            project_id=project_id,
             tracker_id=project.id,
             tracker_type=_provider(adapter),
             tracker_connection_id=adapter.connection_id,
@@ -563,10 +640,13 @@ def _build_tracker_router(
             workflow_id=workflow_id,
             workflow_version=workflow_version,
             workflow_snapshot=workflow_snapshot,
-            instance_id=None if target_tags else body.instance_id,
+            instance_id=None if target_tags else instance_id,
             target_tags=target_tags,
             target_match=target_match,
         )
+        gap = repository_gap(saga)
+        if gap is not None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=gap)
 
         await saga_repo.save_saga(saga)
 
@@ -604,6 +684,7 @@ def _build_tracker_router(
 
         return SagaResponse(
             id=str(saga.id),
+            project_id=str(saga.forge_project_id),
             tracker_id=saga.tracker_id,
             tracker_connection_id=saga.tracker_connection_id,
             tracker_type=saga.tracker_type,

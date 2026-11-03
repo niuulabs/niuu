@@ -12,7 +12,6 @@ import {
 } from '@niuulabs/plugin-sdk';
 import { Shell } from './Shell';
 import { PluginSlot } from './ShellLayout';
-import { UI_MODE_STORAGE_KEY } from './uiMode';
 
 // Plugins that use render() (no routes) — cover the render-fallback path.
 const pluginA = definePlugin({
@@ -31,13 +30,12 @@ const pluginB = definePlugin({
   render: () => <div data-testid="beta-content">beta-rendered</div>,
 });
 
-const pluginWithSimpleMode = definePlugin({
-  id: 'simple-capable',
+const pluginWithSubtitle = definePlugin({
+  id: 'subtitled',
   rune: 'S',
-  title: 'Simple capable',
+  title: 'Subtitled',
   subtitle: 'secondary description',
-  simple: {},
-  render: () => <div data-testid="simple-capable-content">simple-capable</div>,
+  render: () => <div data-testid="subtitled-content">subtitled</div>,
 });
 
 // Plugin with tabs (including count badges), subnav, and footer
@@ -295,15 +293,14 @@ describe('Shell', () => {
   it('keeps essential application controls directly available in the header', async () => {
     wrap(
       <Shell
-        plugins={[pluginWithSimpleMode]}
+        plugins={[pluginWithSubtitle]}
         topbarContent={<button type="button">Disconnect</button>}
-        _testHistory={memHistory('/simple-capable')}
+        _testHistory={memHistory('/subtitled')}
       />,
     );
-    await screen.findByTestId('simple-capable-content');
+    await screen.findByTestId('subtitled-content');
 
     expect(screen.queryByText('secondary description')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('ui-mode-switch')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Color theme' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Open command palette' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Disconnect' })).toBeVisible();
@@ -551,18 +548,6 @@ describe('Shell', () => {
     expect(localStorage.getItem('niuu.active')).toBeNull();
   });
 
-  it('keeps a plugin visible when its route is active even though simple mode hides it', async () => {
-    localStorage.setItem(UI_MODE_STORAGE_KEY, 'simple');
-    wrap(<Shell plugins={[pluginWithSimpleMode, pluginA]} _testHistory={memHistory('/alpha')} />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('alpha-content')).toBeInTheDocument();
-    });
-    // Alpha declares no `simple` config, so simple mode would normally hide it —
-    // but it stays in the rail because it is the plugin the current route is on.
-    expect(screen.getByTestId('rail-item-alpha')).toBeInTheDocument();
-  });
-
   it('switches the color theme from the topbar button', async () => {
     wrap(<Shell plugins={[pluginA]} _testHistory={memHistory('/alpha')} />);
     await waitFor(() => {
@@ -576,6 +561,27 @@ describe('Shell', () => {
     await waitFor(() => {
       expect(document.querySelector('.niuu-shell')).toHaveAttribute('data-theme', 'amber');
     });
+  });
+
+  it.each([
+    ['Midnight Blue', 'midnight-blue'],
+    ['Deep Blue', 'deep-blue'],
+    ['Dark Blue', 'dark-blue'],
+    ['Light', 'light'],
+  ])('offers %s in the theme picker and persists it', async (label, value) => {
+    localStorage.setItem('niuu.theme', 'amber');
+    wrap(<Shell plugins={[pluginA]} _testHistory={memHistory('/alpha')} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('alpha-content')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Color theme' }));
+    fireEvent.click(screen.getByRole('button', { name: label, exact: true }));
+
+    await waitFor(() => {
+      expect(document.querySelector('.niuu-shell')).toHaveAttribute('data-theme', value);
+    });
+    expect(localStorage.getItem('niuu.theme')).toBe(value);
   });
 
   it('switches plugins from the command palette', async () => {
@@ -642,30 +648,5 @@ describe('Shell', () => {
     expect(screen.getByTestId('nest-tab-under').className).toContain('niuu-shell__tab--active');
     expect(screen.getByTestId('nest-tab-over').className).not.toContain('niuu-shell__tab--active');
     expect(screen.getByTestId('nest-tab-over')).toHaveTextContent('ᚾ');
-  });
-
-  it('surfaces a mode-preference sync error in the footer', async () => {
-    const features: IFeatureCatalogService = {
-      getFeatureModules: vi.fn().mockResolvedValue([]),
-      getUserFeaturePreferences: vi.fn().mockRejectedValue(new Error('preferences unreachable')),
-      updateUserFeaturePreferences: vi.fn(),
-      toggleFeature: vi.fn(),
-    };
-    render(
-      <ConfigProvider value={{ demoMode: false, theme: 'ice', plugins: {}, services: {} }}>
-        <ServicesProvider services={{ features }}>
-          <FeatureCatalogProvider>
-            <Shell plugins={[pluginA]} _testHistory={memHistory('/alpha')} />
-          </FeatureCatalogProvider>
-        </ServicesProvider>
-      </ConfigProvider>,
-    );
-    await waitFor(() => {
-      expect(screen.getByTestId('alpha-content')).toBeInTheDocument();
-    });
-
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent('interface preference unavailable');
-    expect(alert).toHaveAttribute('title', 'preferences unreachable');
   });
 });

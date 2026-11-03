@@ -1,8 +1,8 @@
 /**
  * WorkflowLaunchForm — the fields a workflow launch needs, plus their draft state.
  *
- * Two surfaces launch a workflow: the builder's launch modal and the Simple-mode
- * workflows page. Both collect the same four values, so the fields and the draft
+ * Two surfaces launch a workflow: the builder's launch modal and the workflow
+ * catalog. Both collect the same four values, so the fields and the draft
  * live here and each surface supplies its own frame (modal chrome vs. card) and
  * submit button.
  *

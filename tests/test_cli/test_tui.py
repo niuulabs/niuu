@@ -517,12 +517,12 @@ class TestStatusBadge:
         rendered = badge._render_badge()
         assert "●" in rendered
         assert "running" in rendered
-        assert "#10b981" in rendered
+        assert "#76bfa7" in rendered
 
     def test_render_error(self) -> None:
         badge = StatusBadge("error")
         rendered = badge._render_badge()
-        assert "#ef4444" in rendered
+        assert "#e78d94" in rendered
 
     def test_render_default(self) -> None:
         badge = StatusBadge("unknown")
@@ -545,7 +545,7 @@ class TestMetricCard:
         assert card.value == "99"
 
     def test_card_default_color(self) -> None:
-        assert DEFAULT_METRIC_COLOR == "#06b6d4"
+        assert DEFAULT_METRIC_COLOR == "#86d0e8"
 
     def test_card_custom_color(self) -> None:
         card = MetricCard(label="X", value="1", color="#ff0000")
@@ -928,19 +928,19 @@ class TestThemeConstants:
             TEXT_SECONDARY,
         )
 
-        assert BG_PRIMARY == "#09090b"
-        assert BG_SECONDARY == "#18181b"
-        assert BG_TERTIARY == "#27272a"
-        assert BG_ELEVATED == "#3f3f46"
-        assert TEXT_PRIMARY == "#fafafa"
-        assert TEXT_SECONDARY == "#a1a1aa"
-        assert TEXT_MUTED == "#71717a"
-        assert BORDER == "#3f3f46"
-        assert BORDER_SUBTLE == "#27272a"
-        assert ACCENT_AMBER == "#f59e0b"
-        assert ACCENT_CYAN == "#06b6d4"
-        assert ACCENT_EMERALD == "#10b981"
+        assert BG_PRIMARY == "#071019"
+        assert BG_SECONDARY == "#10212d"
+        assert BG_TERTIARY == "#182b38"
+        assert BG_ELEVATED == "#2b4351"
+        assert TEXT_PRIMARY == "#edf4f7"
+        assert TEXT_SECONDARY == "#a5b7c1"
+        assert TEXT_MUTED == "#78909d"
+        assert BORDER == "#2b4351"
+        assert BORDER_SUBTLE == "#182b38"
+        assert ACCENT_AMBER == "#e4bd7e"
+        assert ACCENT_CYAN == "#86d0e8"
+        assert ACCENT_EMERALD == "#76bfa7"
         assert ACCENT_PURPLE == "#a855f7"
-        assert ACCENT_RED == "#ef4444"
+        assert ACCENT_RED == "#e78d94"
         assert ACCENT_INDIGO == "#6366f1"
         assert ACCENT_ORANGE == "#f97316"

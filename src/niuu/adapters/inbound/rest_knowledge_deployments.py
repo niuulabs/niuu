@@ -20,6 +20,7 @@ from niuu.adapters.outbound.guild_transport import (
 )
 from niuu.domain.models import InstanceKind, Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
+from niuu.ports.instances import InvalidInstanceIdError
 
 
 class _Target(BaseModel):
@@ -87,7 +88,10 @@ def create_knowledge_deployments_router(
         source_id, separator, local_target = target.partition(":")
         if not source_id or not separator:
             raise HTTPException(422, "Select a deployment target from Guild")
-        instance = await service.get_visible(principal, source_id)
+        try:
+            instance = await service.get_visible(principal, source_id)
+        except InvalidInstanceIdError as exc:
+            raise HTTPException(400, str(exc)) from exc
         if instance is None or not instance.enabled or instance.kind != InstanceKind.MIMIR:
             raise HTTPException(404, "Deployment service is not available in your Guild")
         return instance, local_target

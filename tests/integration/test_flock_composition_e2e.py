@@ -371,6 +371,7 @@ class TestMountedVolumeScenario:
 
         chart_path = str(Path(__file__).resolve().parent.parent.parent / "charts" / "volundr")
         values = {
+            "bifrost": {"url": "http://bifrost.test"},
             "personaSource": {
                 "mode": "mountedVolume",
                 "mountedVolume": {
@@ -520,6 +521,7 @@ class TestHTTPScenario:
 
         chart_path = str(Path(__file__).resolve().parent.parent.parent / "charts" / "volundr")
         values = {
+            "bifrost": {"url": "http://bifrost.test"},
             "personaSource": {
                 "mode": "http",
                 "http": {

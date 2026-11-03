@@ -5,8 +5,8 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+from niuu.domain.transcript_rebuild import rebuild_turns
 from volundr.domain.models import SessionLogEntry
-from volundr.domain.services.transcript_rebuild import rebuild_turns
 
 SID = uuid.UUID("0bc95c96-3bb0-4096-beaa-536267b67e6f")
 

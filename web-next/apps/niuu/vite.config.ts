@@ -1,6 +1,8 @@
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { REMOTE_DEV_PORT, remoteDev } from './src/remoteDev';
 
 const fromHere = (relativePath: string) => fileURLToPath(new URL(relativePath, import.meta.url));
 const apiProxyTarget = process.env.NIUU_API_PROXY_TARGET ?? 'http://127.0.0.1:8080';
@@ -169,25 +171,39 @@ const workspaceAlias = [
   },
 ] as const;
 
-export default defineConfig({
-  plugins: [react()],
-  resolve: {
-    alias: workspaceAlias,
-  },
-  server: {
-    port: 5173,
-    strictPort: true,
-    // Opt into remote development explicitly; Vite keeps its hostname checks.
-    host: process.env.NIUU_DEV_HOST ?? 'localhost',
-    proxy: {
-      '/s/': { target: apiProxyTarget, changeOrigin: true, ws: true, headers: apiProxyHeaders },
-      '/health': { target: apiProxyTarget, changeOrigin: true },
-      '/mcp': { target: apiProxyTarget, changeOrigin: true, headers: apiProxyHeaders },
-      '/api': {
-        target: apiProxyTarget,
-        changeOrigin: true,
-        headers: apiProxyHeaders,
+/**
+ * Plugin styles are prebuilt, so a new class does nothing until its package is
+ * rebuilt. Compiling them from source here gives styles the same hot reload as code.
+ */
+const stylesFromSource = workspaceAlias.map((alias) => {
+  const source = alias.replacement.replace(/\/dist\/(?:index|styles)\.css$/, '/src/styles.css');
+  return existsSync(source) ? { ...alias, replacement: source } : alias;
+});
+
+export default defineConfig(async () => {
+  const remote = process.env.NIUU_REMOTE ? await remoteDev(process.env.NIUU_REMOTE) : null;
+  const target = remote?.origin ?? apiProxyTarget;
+  return {
+    plugins: remote ? [react(), remote.plugin] : [react()],
+    resolve: {
+      alias: remote ? stylesFromSource : workspaceAlias,
+    },
+    server: {
+      port: remote ? REMOTE_DEV_PORT : 5173,
+      strictPort: true,
+      // Opt into remote development explicitly; Vite keeps its hostname checks.
+      host: process.env.NIUU_DEV_HOST ?? 'localhost',
+      proxy: {
+        ...remote?.proxy,
+        '/s/': { target, changeOrigin: true, ws: true, headers: apiProxyHeaders },
+        '/health': { target, changeOrigin: true },
+        '/mcp': { target, changeOrigin: true, headers: apiProxyHeaders },
+        '/api': {
+          target,
+          changeOrigin: true,
+          headers: apiProxyHeaders,
+        },
       },
     },
-  },
+  };
 });

@@ -29,13 +29,13 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from niuu.domain.text_projection import projection_revision
+from niuu.domain.transcript_rebuild import rebuild_turns
 from niuu.domain.transcript_reducer import is_read_path_excluded
 from niuu.ports.cli.transport import TransportCapabilities
 from skuld.channels import filter_internal_blocks
 from volundr.domain.models import SessionLogEntry
 from volundr.domain.ports import SessionEventLogRepository
 from volundr.domain.services.session import SessionAccessDeniedError, SessionService
-from volundr.domain.services.transcript_rebuild import rebuild_turns
 from volundr.replay.fixtures import resolve_fixture
 from volundr.replay.pacing import PacingConfig, drive_replay, encode_frame
 from volundr.replay.source import (

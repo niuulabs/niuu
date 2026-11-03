@@ -24,7 +24,7 @@ describe('realm templates', () => {
     expect(prompt).toContain('Tracker board: LXA');
   });
 
-  it('keeps every persona seed writing to realm memory', () => {
+  it('keeps every persona seed writing to workspace memory', () => {
     for (const template of REALM_TEMPLATES) {
       expect(template.persona.mimirWriteRouting).toBe('domain');
       expect(template.persona.role).toBe('build');
@@ -32,6 +32,6 @@ describe('realm templates', () => {
   });
 
   it('fails loudly on an unknown template', () => {
-    expect(() => templateById('nope')).toThrow(/Unknown realm template/);
+    expect(() => templateById('nope')).toThrow(/Unknown workspace template/);
   });
 });

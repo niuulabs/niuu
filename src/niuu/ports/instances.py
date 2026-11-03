@@ -8,6 +8,10 @@ from datetime import datetime
 from niuu.domain.models import InstanceHealthStatus, InstanceKind, RegisteredInstance
 
 
+class InvalidInstanceIdError(ValueError):
+    """An instance id that is not one at all (e.g. not a UUID where the registry needs one)."""
+
+
 class InstanceRepository(ABC):
     """Persistence port for registered runtime instances."""
 

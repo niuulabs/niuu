@@ -96,5 +96,65 @@
       "filename": "000071_forge_notification_reads.up.sql",
       "sha256": "b52942b02f15d19d300c7d2330a74c43477adedc0c3779a53bd9a0b3904389bf"
     }
+  ],
+  "000092_session_descriptions.up.sql": [
+    {
+      "filename": "000087_session_descriptions.up.sql",
+      "sha256": "3d47e0afee0c560b32bc66ae6d9857cd277806564ae748d55917d77b5ba99b88"
+    },
+    {
+      "filename": "000089_session_descriptions.up.sql",
+      "sha256": "3d47e0afee0c560b32bc66ae6d9857cd277806564ae748d55917d77b5ba99b88"
+    }
+  ],
+  "000093_forge_notification_images.up.sql": [
+    {
+      "filename": "000072_forge_notification_images.up.sql",
+      "sha256": "cd39abfca6355c64df73f10a1b5ae9c0933cc8cfebf43a6962993a2b2e5565e4"
+    },
+    {
+      "filename": "000090_forge_notification_images.up.sql",
+      "sha256": "cd39abfca6355c64df73f10a1b5ae9c0933cc8cfebf43a6962993a2b2e5565e4"
+    }
+  ],
+  "000094_session_work_facts.up.sql": [
+    {
+      "filename": "000091_session_work_facts.up.sql",
+      "sha256": "d501f084ba0022d1224396527d451c66c7cffbbb33257a03ef1101db14d2980e"
+    }
+  ],
+  "000095_session_usage_status.up.sql": [
+    {
+      "filename": "000092_session_usage_status.up.sql",
+      "sha256": "e3d31ef385d5d81a08e5f17bfad78e249cc1f3ee0a7181e17dcef1831abc80d7"
+    }
+  ],
+  "000096_forge_artifact_publications.up.sql": [
+    {
+      "filename": "000093_forge_artifact_publications.up.sql",
+      "sha256": "651dde42b471daa8a90ec2cbffc1812f37e6f3cf49d2917989f1ea8f270fcd34"
+    }
+  ],
+  "000097_forge_notification_speak.up.sql": [
+    {
+      "filename": "000094_forge_notification_speak.up.sql",
+      "sha256": "f29350b3570c90d4d55455951a563f998943ab86b1c7f2ed870dee6c3be4482c"
+    }
+  ],
+  "000098_forge_notification_resolved.up.sql": [
+    {
+      "filename": "000095_forge_notification_resolved.up.sql",
+      "sha256": "4e3a2003250d016bdc6b9a8cfb1ae6c07a176f0b1f145eae3944b25d8912dd0a"
+    }
+  ],
+  "000099_push_gateway.up.sql": [
+    {
+      "filename": "000073_push_gateway.up.sql",
+      "sha256": "2de323206ec4e0f0e17c8c46805a74563cb44897d5342355264c0bae3ab6b6bb"
+    },
+    {
+      "filename": "000096_push_gateway.up.sql",
+      "sha256": "2de323206ec4e0f0e17c8c46805a74563cb44897d5342355264c0bae3ab6b6bb"
+    }
   ]
 }

@@ -45,6 +45,7 @@ from ravn.adapters.personas.loader import (
     _parse_fan_in,
     _parse_produces,
 )
+from ravn.domain.permission_mode import PERSONA_API_PERMISSION_MODES
 from ravn.domain.persona_document import (
     PortablePersonaDefinition,
     parse_portable_persona,
@@ -167,13 +168,14 @@ class HttpPersonaAdapter(PersonaPort):
         adapter — no data loss for personas that declare an outcome schema.
         """
         llm = data.get("llm") or {}
+        permission_mode = str(data.get("permission_mode") or "")
 
         return PersonaConfig(
             name=data["name"],
             system_prompt_template=data.get("system_prompt_template", ""),
             allowed_tools=list(data.get("allowed_tools") or []),
             forbidden_tools=list(data.get("forbidden_tools") or []),
-            permission_mode=data.get("permission_mode", ""),
+            permission_mode=PERSONA_API_PERMISSION_MODES.get(permission_mode, permission_mode),
             iteration_budget=int(data.get("iteration_budget") or 0),
             llm=PersonaLLMConfig(
                 primary_alias=llm.get("primary_alias", ""),

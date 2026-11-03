@@ -40,18 +40,22 @@ from niuu.domain.services.token_scope import (
     FORGE_SESSION_READ_SCOPE,
     require_scope,
 )
-from niuu.domain.transcript_reducer import is_read_path_excluded
+from niuu.domain.transcript_reducer import is_per_connect_ephemeral, is_read_path_excluded
 from skuld.channels import filter_internal_blocks
 from volundr.adapters.inbound.forge_session_auth import require_bound_session
+from volundr.domain.artifact_ports import ArtifactStoreUnavailableError
 from volundr.domain.models import SessionLogEntry
 from volundr.domain.notifications import NotificationStoreUnavailableError
 from volundr.domain.ports import SessionEventLogRepository
 from volundr.domain.services.session import SessionAccessDeniedError, SessionService
 from volundr.domain.session_read_state import is_final_output
+from volundr.domain.session_usage import observation
 
 if TYPE_CHECKING:
     from volundr.domain.models import Session
+    from volundr.domain.services.artifacts import ArtifactService
     from volundr.domain.services.notifications import NotificationService
+    from volundr.domain.services.resident_runtime import ResidentRuntimeService
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +274,46 @@ async def _project_notifications_before_ack(
         ) from exc
 
 
+async def _project_artifacts_before_ack(
+    artifact_service: ArtifactService,
+    log_repository: SessionEventLogRepository,
+    session: Session,
+    entries: list[SessionLogEntry],
+    conflicts: list[int],
+    *,
+    seen_at: datetime,
+) -> None:
+    """Record the batch's artifact publications (F1) from the STORED rows.
+
+    Like notifications, the append is acknowledged only if this succeeds: a store
+    outage answers 503 and any other failure propagates as a 500. The frames are
+    already stored and recording is idempotent, so the producer's retry records them
+    then; a defect holds the session's log back rather than silently dropping its
+    publications.
+    """
+    excluded = set(conflicts)
+    seqs = [
+        entry.seq
+        for entry in entries
+        if entry.seq not in excluded and artifact_service.is_projectable(entry.payload)
+    ]
+    if not seqs:
+        return
+    try:
+        stored = await log_repository.read_seqs(session.id, seqs)
+        await artifact_service.project_log_entries(session, stored, seen_at=seen_at)
+    except ArtifactStoreUnavailableError as exc:
+        logger.warning(
+            "artifact projection unavailable for session %s; asking producer to retry: %s",
+            session.id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Artifact store unavailable; retry the batch",
+        ) from exc
+
+
 def create_session_log_router(
     log_repository: SessionEventLogRepository,
     session_service: SessionService | None = None,
@@ -277,6 +321,8 @@ def create_session_log_router(
     prefix: str = "/api/v1/forge",
     default_show_internal: bool = DEFAULT_SHOW_INTERNAL,
     notification_service: NotificationService | None = None,
+    resident_runtime_service: ResidentRuntimeService | None = None,
+    artifact_service: ArtifactService | None = None,
 ) -> APIRouter:
     """Create the FastAPI router for the durable session event log.
 
@@ -290,15 +336,29 @@ def create_session_log_router(
     """
     router = APIRouter(prefix=prefix)
 
-    async def _check_access(request: Request, session_id: UUID, action: str) -> Session:
+    async def _check_access(request: Request, session_id: UUID, action: str) -> Session | None:
+        """Authorize a session, or the resident runtime whose broker owns this log."""
         if session_service is None:
             raise HTTPException(status_code=503, detail="Session authorization unavailable")
-        from volundr.adapters.inbound.auth import extract_principal
+        from volundr.adapters.inbound.auth import (
+            check_session_or_resident_access,
+            extract_principal,
+        )
 
         principal = await extract_principal(request)
         session = await session_service.get_session(session_id)
         if session is None:
-            raise HTTPException(status_code=404, detail="Session not found")
+            if resident_runtime_service is None:
+                raise HTTPException(status_code=404, detail="Session not found")
+            await check_session_or_resident_access(
+                request,
+                session_id,
+                session_service=None,
+                resident_runtime_service=resident_runtime_service,
+                action=action,
+                resource_name="the event log",
+            )
+            return None
         try:
             await session_service._check_access(session, principal, action)
         except SessionAccessDeniedError:
@@ -355,15 +415,25 @@ def create_session_log_router(
                 log_repository, session_id=session_id, conflicting_seqs=conflicts, ts=now
             )
         # Notifications are projected from the stored rows before the ack.
-        if notification_service is not None:
+        if notification_service is not None and session is not None:
             await _project_notifications_before_ack(
                 notification_service, log_repository, session, entries, conflicts
+            )
+        if artifact_service is not None:
+            await _project_artifacts_before_ack(
+                artifact_service, log_repository, session, entries, conflicts, seen_at=now
             )
         # Projection is committed atomically with the durable insert; this is only a refresh hint.
         if session_service is not None and any(
             entry.seq not in conflicts and is_final_output(entry.payload) for entry in entries
         ):
             await session_service.notify_read_state_changed(session_id)
+        if session_service is not None and any(
+            entry.seq not in conflicts
+            and observation(entry.payload, seq=entry.seq, at=entry.ts) is not None
+            for entry in entries
+        ):
+            await session_service.notify_usage_changed(session_id)
         latest = await log_repository.latest_seq(session_id)
         return LogAppendResponse(submitted=submitted, latest_seq=latest, conflicts=conflicts)
 
@@ -440,10 +510,24 @@ def create_session_log_router(
                 "filter the live and replay paths apply (SRD FR-7 / INV-10)."
             ),
         ),
+        include_seeds: bool = Query(
+            default=False,
+            description=(
+                "Rebuild read, not a wire replay: also return the reducer seeds "
+                "(conversation.turn and friends) that rebuild_turns folds. Room "
+                "participant replies exist only as seeds. Requires show_internal=true."
+            ),
+        ),
     ) -> list[SessionLogEntryResponse]:
         """Replay the session transcript from a cursor (full fidelity), gated by the
         same internal-visibility filter as the live and replay read paths."""
         await _check_access(request, session_id, "read")
+        if include_seeds and not show_internal:
+            # The visibility filter reads wire frames; it cannot gate a turn inside a seed.
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="include_seeds requires show_internal=true",
+            )
         entries = await log_repository.read_after(session_id, after_seq=after, limit=limit)
         # Drop frames that were never on the canonical shared wire from the RAW
         # wire stream ALWAYS — independent of show_internal — so literal
@@ -452,8 +536,9 @@ def create_session_log_router(
         # never broadcast) AND per-connect handshakes (system welcome + capabilities,
         # broadcast to ONE socket only — a connecting client gets its own fresh pair).
         # They remain in the durable log (read_after) and still authoritatively drive
-        # the reduce/rebuild path.
-        streamable = [e for e in entries if not is_read_path_excluded(e.kind, e.payload)]
+        # the reduce/rebuild path, which is the one reader that asks for the seeds.
+        excluded = is_per_connect_ephemeral if include_seeds else is_read_path_excluded
+        streamable = [e for e in entries if not excluded(e.kind, e.payload)]
         gated = _gate_entries(streamable, show_internal=show_internal)
         return [SessionLogEntryResponse.from_entry(e) for e in gated]
 

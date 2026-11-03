@@ -692,6 +692,33 @@ async def test_mimir_write_tool_success(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    ["friction/escalation/x.md", "/friction/x.md", "./friction/x.md", "notes/../friction/x.md"],
+)
+async def test_mimir_write_tool_refuses_a_reserved_page(tmp_path: Path, path: str) -> None:
+    adapter = _make_adapter(tmp_path)
+    tool = MimirWriteTool(adapter, reserved_prefixes=["friction/"])
+
+    result = await tool.execute({"path": path, "content": "# Closed by hand"})
+
+    assert result.is_error
+    assert "friction/ pages are records Ravn keeps itself" in result.content
+    assert not (tmp_path / "mimir" / "wiki" / "friction").exists()
+
+
+@pytest.mark.asyncio
+async def test_mimir_write_tool_writes_beside_a_reserved_prefix(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    tool = MimirWriteTool(adapter, reserved_prefixes=["friction"])
+
+    result = await tool.execute({"path": "friction-notes/x.md", "content": "# Notes"})
+
+    assert not result.is_error
+    assert (tmp_path / "mimir" / "wiki" / "friction-notes" / "x.md").exists()
+
+
+@pytest.mark.asyncio
 async def test_mimir_write_tool_research_page_requires_source_ids(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)
     tool = MimirWriteTool(adapter)

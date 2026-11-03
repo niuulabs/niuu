@@ -100,7 +100,7 @@ async def test_room_records_and_replays_huddle_without_transport_dependencies() 
 
 
 @pytest.mark.asyncio
-async def test_presence_expiry_respects_live_transport_connection() -> None:
+async def test_going_quiet_keeps_membership_and_respects_live_connections() -> None:
     now = 100.0
     connected = {"connected"}
     room = _room(clock=lambda: now, is_connected=lambda peer: peer in connected)
@@ -108,18 +108,20 @@ async def test_presence_expiry_respects_live_transport_connection() -> None:
     await room.register_agent("gone", "Gone", heartbeat_ttl_s=10.0)
 
     now = 111.0
-    expired = await room.sweep_expired_participants()
+    quiet = await room.mark_quiet_participants()
 
-    assert expired == ["gone"]
+    assert quiet == ["gone"]
     assert room.has_participant("connected")
-    assert not room.has_participant("gone")
+    assert room.has_participant("gone")
+    assert room.participants["gone"].attention_state == "away"
+    assert room.participants["connected"].attention_state == "available"
 
 
 @pytest.mark.asyncio
 async def test_human_authority_is_bounded_by_environment_actions() -> None:
     room = _room()
 
-    participant = await room.join_human_environment(
+    participant = await room.join_environment(
         "human:jozef",
         display_name="Jozef",
         environment_id="cluster-a",

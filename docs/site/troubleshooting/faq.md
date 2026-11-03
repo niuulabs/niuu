@@ -44,7 +44,7 @@ own judgment, learning, and resident behavior when you choose to use it.
 
 No. Niuu runs on your infrastructure, but a configured cloud model or external
 tool sends requests to that service. Check the endpoints and credentials used by
-the actual runtime. Bifröst affects clients configured to call it.
+the actual runtime. The model gateway affects clients configured to call it.
 
 ## Is a local workspace a sandbox?
 

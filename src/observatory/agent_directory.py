@@ -20,6 +20,7 @@ from niuu.domain.agent_directory import (
     matches_agent_filters,
 )
 from niuu.domain.models import Principal
+from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.ports.agent_cards import (
     AgentCardResolutionError,
     AgentCardResolverPort,
@@ -80,7 +81,9 @@ class AgentDirectoryService:
         cluster_id: str,
         max_concurrency: int,
         static_cards: list[StaticAgentCard] | None = None,
+        platform_tenant_id: str = DEFAULT_PLATFORM_TENANT_ID,
     ) -> None:
+        self._platform_tenant_id = platform_tenant_id
         self._discovery = discovery
         self._card_resolver = card_resolver
         self._instance_id = instance_id
@@ -244,6 +247,7 @@ class AgentDirectoryService:
             visibility=visibility,
             environment_member_ids=environment_member_ids,
             principal=principal,
+            platform_tenant_id=self._platform_tenant_id,
         ):
             return None, None
 

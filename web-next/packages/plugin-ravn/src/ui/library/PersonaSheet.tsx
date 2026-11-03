@@ -169,7 +169,7 @@ export function PersonaSheet({
           <Field label="Extended thinking">{persona.llm.thinkingEnabled ? 'on' : 'off'}</Field>
           <Field label="Max tokens">{persona.llm.maxTokens || 'model default'}</Field>
           <Field label="Temperature">{persona.llm.temperature ?? 'model default'}</Field>
-          <Field label="Mímir writes go to">{persona.mimirWriteRouting ?? 'not set'}</Field>
+          <Field label="Memory writes go to">{persona.mimirWriteRouting ?? 'not set'}</Field>
         </div>
       </Section>
 
@@ -190,7 +190,7 @@ export function PersonaSheet({
         <Triggers persona={persona} />
       </Section>
 
-      <Section title="Ravens using it" testId="persona-used-by">
+      <Section title="Agents using it" testId="persona-used-by">
         {usedBy.length === 0 ? (
           <p className="rw-muted">
             None yet.{' '}

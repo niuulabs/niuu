@@ -72,7 +72,7 @@ async def test_late_join_replay_orders_human_and_mesh_messages() -> None:
         purpose="Action review",
         root_correlation_id="root-2",
     )
-    human = await bridge.join_human_environment(
+    human = await bridge.join_environment(
         "human:approver",
         display_name="Approver",
         environment_id="cluster-a",

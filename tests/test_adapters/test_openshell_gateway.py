@@ -244,6 +244,7 @@ class _FakeOpenShellGatewayClient:
         self.forwarded: list[dict] = []
         self.closed_forwarders: list[dict] = []
         self.deleted: list[str] = []
+        self.delete_timeouts: list[float] = []
         self.deleted_services: list[dict] = []
         self.provider_grants: list[dict] = []
         self.deleted_grants: list[object] = []
@@ -323,7 +324,8 @@ class _FakeOpenShellGatewayClient:
 
         return _Forwarder()
 
-    def delete_sandbox(self, name: str) -> bool:
+    def delete_sandbox(self, name: str, *, timeout: float) -> bool:
+        self.delete_timeouts.append(timeout)
         self.deleted.append(name)
         self.recreated.discard(name)
         return True
@@ -1903,6 +1905,108 @@ async def test_resident_reconcile_reports_processes_when_they_cannot_be_started(
     assert observation.conditions[1].reason == "Unavailable"
 
 
+def _drain_sandbox(adapter, client) -> None:
+    """Leave the sandbox as a node drain does: stopped until the gateway starts it."""
+    running = client.get_sandbox
+
+    def stopped(name: str):
+        return replace(
+            running(name),
+            phase=adapter.openshell_pb2.SANDBOX_PHASE_STOPPED,
+            ready=False,
+        )
+
+    def start_sandbox(name: str):
+        client.get_sandbox = running
+        return replace(
+            running(name),
+            phase=adapter.openshell_pb2.SANDBOX_PHASE_PROVISIONING,
+            ready=False,
+        )
+
+    client.get_sandbox = stopped
+    client.start_sandbox = Mock(side_effect=start_sandbox)
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_starts_a_sandbox_that_stopped_under_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A drained resident comes back on its own sandbox, then gets its processes."""
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.exec_script = lambda **_kwargs: (1, "")
+    manager = _deployed_resident_manager(adapter, client, runtime)
+    _drain_sandbox(adapter, client)
+    sandbox_name = runtime.backend_ref["name"]
+
+    observation = await manager.reconcile(runtime, _resident_profile())
+
+    client.start_sandbox.assert_called_once_with(sandbox_name)
+    assert client.created is None
+    assert client.deleted == []
+    assert client.execs == []
+    assert observation.observed_state is ResidentObservedState.DEPLOYING
+    assert observation.backend_ref["name"] == sandbox_name
+
+    await manager.reconcile(runtime, _resident_profile())
+
+    client.start_sandbox.assert_called_once()
+    assert [process["pid_path"] for process in client.execs] == [
+        "/sandbox/.volundr/skuld.pid",
+        "/sandbox/.volundr/ravn.pid",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_leaves_a_stopped_sandbox_it_should_not_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime()).model_copy(
+        update={"desired_state": ResidentDesiredState.SUSPENDED}
+    )
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = _deployed_resident_manager(adapter, client, runtime)
+    _drain_sandbox(adapter, client)
+
+    await manager.reconcile(runtime, _resident_profile())
+
+    client.start_sandbox.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_leaves_a_stopped_sandbox_to_a_restart_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = _deployed_resident_manager(adapter, client, runtime)
+    _drain_sandbox(adapter, client)
+
+    async with manager._resident_process_lock(runtime):
+        await manager.reconcile(runtime, _resident_profile())
+
+    client.start_sandbox.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_raises_when_a_stopped_sandbox_will_not_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _deployed_resident(_resident_runtime())
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = _deployed_resident_manager(adapter, client, runtime)
+    _drain_sandbox(adapter, client)
+    client.start_sandbox = Mock(side_effect=adapter.grpc.RpcError())
+
+    with pytest.raises(RuntimeError, match="could not start stopped resident sandbox"):
+        await manager.reconcile(runtime, _resident_profile())
+
+
 @pytest.mark.asyncio
 async def test_hermes_reconcile_recovers_internal_service_endpoint(
     monkeypatch: pytest.MonkeyPatch,
@@ -1992,6 +2096,28 @@ def test_resident_api_urls_include_absolute_codex_broker(monkeypatch, token_path
         {"broker": {"codexAuth": {"kwargs": {"token_path": token_path}}}}
     )
     assert urls == ((token_path,) if token_path.startswith("https://") else ())
+
+
+def test_session_platform_grant_covers_the_flock_platform_origins(monkeypatch):
+    """A Ting launch points flock personas at the launching platform, possibly
+    on another cluster; the mediated token must be injected there too."""
+    adapter = _import_adapter(monkeypatch)
+
+    urls = adapter._resident_api_urls(
+        {
+            "openshell": {
+                "platformApiUrls": [
+                    "https://volundr.valhalla.example.test",
+                    "https://ting.valhalla.example.test",
+                ]
+            }
+        }
+    )
+
+    assert urls == (
+        "https://volundr.valhalla.example.test",
+        "https://ting.valhalla.example.test",
+    )
 
 
 @pytest.mark.asyncio
@@ -2145,6 +2271,48 @@ async def test_sessions_keep_the_short_delete_wait(monkeypatch: pytest.MonkeyPat
 
     with pytest.raises(RuntimeError, match="was not deleted within 0.01s"):
         await manager._cleanup_resources("s-session", ())
+
+
+@pytest.mark.asyncio
+async def test_resident_delete_gives_delete_sandbox_the_resident_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    monkeypatch.setattr(adapter.asyncio, "sleep", AsyncMock())
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client, resident_sandbox_delete_timeout_seconds=180
+    )
+
+    await manager.delete(_resident_runtime())
+
+    assert client.delete_timeouts == [180]
+
+
+@pytest.mark.asyncio
+async def test_a_slow_delete_call_spends_the_same_budget_as_the_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.delete_polls_remaining = 10**9
+    sleep = AsyncMock()
+    monkeypatch.setattr(adapter.asyncio, "sleep", sleep)
+    record_delete = client.delete_sandbox
+
+    def slow_delete(name: str, *, timeout: float) -> bool:
+        time.sleep(0.06)
+        return record_delete(name, timeout=timeout)
+
+    client.delete_sandbox = slow_delete
+    manager = adapter.OpenShellGatewayPodManager(client=client, resource_delete_timeout=0.05)
+
+    # The DeleteSandbox call used the whole budget, so the sandbox that is still
+    # there fails the delete at once instead of getting a second budget.
+    with pytest.raises(RuntimeError, match="was not deleted within 0.05s"):
+        await manager._cleanup_resources("s-session", ())
+
+    sleep.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -2718,6 +2886,28 @@ async def test_destroy_deletes_a_sandbox_whose_storage_stop_retains(
 
 
 @pytest.mark.asyncio
+async def test_destroy_gives_delete_sandbox_the_deletion_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Niuu gateway answers DeleteSandbox only once a flock's peer Pod has
+    terminated (about 60s on Noatun). Under the 30s command deadline the first
+    delete of every flock session came back as a 503."""
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.created = {"providers": ()}
+    client.delete_polls_remaining = 0
+    monkeypatch.setattr(adapter.asyncio, "sleep", AsyncMock())
+
+    await adapter.OpenShellGatewayPodManager(client=client).destroy(_session())
+    await adapter.OpenShellGatewayPodManager(client=client, resource_delete_timeout=45).destroy(
+        _session()
+    )
+
+    assert client.delete_timeouts == [adapter.DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS, 45]
+    assert adapter.DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS > 60
+
+
+@pytest.mark.asyncio
 async def test_destroy_deletes_a_failed_sandbox_without_waiting_for_stopped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2750,7 +2940,7 @@ async def test_destroy_of_an_absent_sandbox_reports_it_was_already_gone(
     session = _session()
     client = _FakeOpenShellGatewayClient(adapter)
     client.sandbox_exists = False
-    client.delete_sandbox = lambda name: client.deleted.append(name) or False
+    client.delete_sandbox = lambda name, timeout: client.deleted.append(name) or False
     manager = adapter.OpenShellGatewayPodManager(client=client)
 
     assert await manager.destroy(session) is False
@@ -2785,7 +2975,7 @@ async def test_destroy_raises_when_the_gateway_refuses_the_delete(
     session = _session()
     client = _FakeOpenShellGatewayClient(adapter)
 
-    def refuse(name: str) -> bool:
+    def refuse(name: str, *, timeout: float) -> bool:
         raise RuntimeError("gateway unavailable")
 
     client.delete_sandbox = refuse
@@ -3871,6 +4061,36 @@ async def test_peer_containers_reject_materialized_credentials_before_create(mon
     assert client.created is None
 
 
+@pytest.mark.asyncio
+async def test_start_refuses_a_flock_whose_otlp_egress_the_policy_does_not_allow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client,
+        sandbox_policy={
+            "version": 1,
+            "network_policies": {
+                "otlp": {"endpoints": [{"host": "mimir.example", "port": 443}]},
+            },
+        },
+    )
+    egress = [
+        {"host": "mimir.example", "port": 443, "purpose": "OTLP metric", "passthrough": False},
+        {"host": "loki.example", "port": 443, "purpose": "OTLP log", "passthrough": False},
+    ]
+
+    # Without the rule the exporter would retry for the sandbox's whole life.
+    with pytest.raises(ValueError, match="does not allow the OTLP log endpoint loki.example:443"):
+        await manager.start(
+            _session(),
+            SessionSpec(values={"openshell": {"egress": egress}}, pod_spec=PodSpecAdditions()),
+        )
+    assert client.created is None
+    assert client.provider_grants == []
+
+
 def test_gateway_waits_for_native_channel_readiness(monkeypatch):
     adapter = _import_adapter(monkeypatch)
     calls = []
@@ -4360,6 +4580,39 @@ async def test_restart_on_the_current_image_restarts_processes_in_place(
         "/sandbox/.volundr/skuld.pid",
         "/sandbox/.volundr/ravn.pid",
     ]
+
+
+@pytest.mark.asyncio
+async def test_restart_brings_back_a_sandbox_that_stopped_under_the_resident(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, runtime, client, manager, _ = await _resident_on_old_image(monkeypatch)
+    client.sandbox_image = _CURRENT_SANDBOX_IMAGE
+    _drain_sandbox(adapter, client)
+
+    await manager.restart(runtime, _resident_profile())
+
+    client.start_sandbox.assert_called_once_with(runtime.backend_ref["name"])
+    assert client.deleted == []
+    assert client.created is None
+    assert [process["pid_path"] for process in client.execs] == [
+        "/sandbox/.volundr/skuld.pid",
+        "/sandbox/.volundr/ravn.pid",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_restart_raises_when_a_stopped_sandbox_will_not_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, runtime, client, manager, _ = await _resident_on_old_image(monkeypatch)
+    _drain_sandbox(adapter, client)
+    client.start_sandbox = Mock(side_effect=adapter.grpc.RpcError())
+
+    with pytest.raises(RuntimeError, match="could not start stopped resident sandbox"):
+        await manager.restart(runtime, _resident_profile())
+
+    assert client.execs == []
 
 
 @pytest.mark.asyncio

@@ -33,6 +33,7 @@ from niuu.config_models import (
     default_session_definitions,
 )
 from niuu.domain.observability import ObservabilityConfig
+from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 
 
 # Config file search paths (in order of priority).
@@ -563,6 +564,13 @@ class AuthConfig(BaseModel):
         default="dev-user",
         description="User ID for anonymous dev mode fallback.",
     )
+    platform_tenant_id: str = Field(
+        default=DEFAULT_PLATFORM_TENANT_ID,
+        description=(
+            "The org that runs this deployment. Only its admins may change flock "
+            "settings and system workflows, which every org on this Ting shares."
+        ),
+    )
     default_tenant_id: str = Field(
         default="",
         description="Tenant for anonymous dev mode; align with the connected Forge identity.",
@@ -1017,7 +1025,13 @@ class A2AConfig(BaseModel):
     launch_lease_seconds: float = Field(
         default=60.0,
         gt=0,
-        description="Lease duration for idempotent A2A workflow launch reservations.",
+        description=(
+            "Lease duration for idempotent A2A workflow launch reservations. Keep it above "
+            "the longest launch: past it a retry may take the launch over, and a run that "
+            "still has no session fails with reason launch_abandoned on the next sweep or "
+            "reconnect. Each such expiry is logged at error and counted on "
+            "ting_a2a_campaigns_expired_total{reason}."
+        ),
     )
     push_encryption_key: SecretStr = Field(
         default=SecretStr(""),
@@ -1118,6 +1132,47 @@ class A2AConfig(BaseModel):
     stale_campaigns: StaleCampaignConfig = Field(
         default_factory=StaleCampaignConfig,
         description="Expiry of campaigns stuck waiting for input or idle.",
+    )
+
+
+class ReviewWidgetsConfig(BaseModel):
+    """Review widgets installed from external module packages."""
+
+    module_manifest_files: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Module manifests whose review_widgets workflows may name. Every widget is "
+            "read at startup, and one that cannot be read stops Ting."
+        ),
+    )
+    max_page_bytes: int = Field(
+        default=2 * 1024 * 1024,
+        ge=1,
+        description="Largest widget page Ting will serve. Large assets go through declared files.",
+    )
+
+
+class TicketCoordinatorConfig(BaseModel):
+    """The persistent session each ticket works through."""
+
+    persona: str = Field(
+        default="ticket-coordinator",
+        description="Ravn persona that coordinates a ticket.",
+    )
+    model: str = Field(
+        default="gpt-5.6-terra",
+        description=(
+            "Model a coordinator runs on. Its session definition and executor are worked "
+            "out as for a workflow stage, so a coordinator authenticates the same way."
+        ),
+    )
+    ravn_config: dict[str, Any] = Field(
+        default_factory=lambda: {"memory": {"reflection_model": "same-as-agent"}},
+        description=(
+            "Merged into the coordinator's Ravn configuration. The default keeps "
+            "episode reflection on the coordinator's own model, because a Forge "
+            "flock may run on an endpoint that serves no other model."
+        ),
     )
 
 
@@ -1366,6 +1421,8 @@ class Settings(BaseSettings):
     event_bus: EventBusConfig = Field(default_factory=EventBusConfig)
     events: EventsConfig = Field(default_factory=EventsConfig)
     a2a: A2AConfig = Field(default_factory=A2AConfig)
+    ticket_coordinator: TicketCoordinatorConfig = Field(default_factory=TicketCoordinatorConfig)
+    review_widgets: ReviewWidgetsConfig = Field(default_factory=ReviewWidgetsConfig)
     workflow_execution: WorkflowExecutionConfig = Field(default_factory=WorkflowExecutionConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)

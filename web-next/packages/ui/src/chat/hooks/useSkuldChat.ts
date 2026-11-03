@@ -10,6 +10,7 @@ import type {
   ChatMessage,
   ChatMessagePart,
   ContentBlock,
+  InputAnswer,
   InputRequest,
   MeshEvent,
   MeshOutcomeEvent,
@@ -241,7 +242,7 @@ interface UseSkuldChatResult {
   publishEvent: (target: AgentEventTarget, text: string) => void;
   sendResendPrompt: () => void;
   respondToPermission: (requestId: string, behavior: PermissionBehavior) => void;
-  respondToInput: (requestId: string, values: string[]) => void;
+  respondToInput: (requestId: string, values: (string | InputAnswer)[]) => void;
   /** Drop a card this client cannot answer (answered elsewhere, e.g. in the terminal). */
   dismissInputRequest: (requestId: string) => void;
   sendInterrupt: () => void;
@@ -1843,8 +1844,11 @@ export function useSkuldChat(
               const answered = answeredInputRequestsRef.current.get(event.request_id);
               if (answered && ANSWER_REJECTION_CODES.has(event.code)) {
                 answeredInputRequestsRef.current.delete(event.request_id);
+                // Show why it was refused on the card that comes back (LEX-1502).
                 const restored =
-                  event.code === RECOVERY_REQUIRED ? { ...answered, answerable: false } : answered;
+                  event.code === RECOVERY_REQUIRED
+                    ? { ...answered, answerable: false, error: errorMessage }
+                    : { ...answered, error: errorMessage };
                 setPendingInputRequests((prev) => [
                   ...prev.filter((request) => request.requestId !== answered.requestId),
                   restored,
@@ -2074,20 +2078,34 @@ export function useSkuldChat(
               if (!question || typeof question !== 'object') return [];
               const prompt = typeof question.question === 'string' ? question.question : '';
               if (!prompt) return [];
-              const options = Array.isArray(question.options) ? question.options : [];
+              const options = (Array.isArray(question.options) ? question.options : []).filter(
+                (option): option is { label: string; description?: unknown } =>
+                  !!option &&
+                  typeof option === 'object' &&
+                  'label' in option &&
+                  typeof option.label === 'string' &&
+                  option.label !== '',
+              );
+              const descriptions = options.map((option) =>
+                typeof option.description === 'string' && option.description
+                  ? option.description
+                  : undefined,
+              );
+              const raw = question as {
+                multiSelect?: unknown;
+                multi_select?: unknown;
+                id?: unknown;
+                header?: unknown;
+              };
+              const multiSelect = raw.multiSelect === true || raw.multi_select === true;
               return [
                 {
                   prompt,
-                  choices: options
-                    .map((option) =>
-                      option &&
-                      typeof option === 'object' &&
-                      'label' in option &&
-                      typeof option.label === 'string'
-                        ? option.label
-                        : '',
-                    )
-                    .filter(Boolean),
+                  choices: options.map((option) => option.label),
+                  ...(descriptions.some(Boolean) ? { descriptions } : {}),
+                  ...(multiSelect ? { multiSelect } : {}),
+                  ...(typeof raw.id === 'string' && raw.id ? { id: raw.id } : {}),
+                  ...(typeof raw.header === 'string' && raw.header ? { header: raw.header } : {}),
                 },
               ];
             });
@@ -2615,16 +2633,18 @@ export function useSkuldChat(
   );
 
   const respondToInput = useCallback(
-    (requestId: string, values: string[]) => {
+    (requestId: string, values: (string | InputAnswer)[]) => {
       const request = pendingInputRequestsRef.current.find(
         (candidate) => candidate.requestId === requestId,
       );
       sendJson({
         type: 'ask_user_answer',
         request_id: requestId,
-        // Text that is not one of the offered choices is a custom ("Type something")
-        // answer; Skuld only accepts it when marked as free text.
+        // A structured answer (the question form) goes as built. For plain text, text
+        // that is not one of the offered choices is a custom ("Type something") answer;
+        // Skuld only accepts it when marked as free text.
         answers: values.map((answer, index) => {
+          if (typeof answer !== 'string') return answer;
           const choices = request?.questions[index]?.choices ?? [];
           return choices.length > 0 && !choices.includes(answer)
             ? { answer, free_text: answer }

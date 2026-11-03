@@ -1,0 +1,193 @@
+schema_version: 1
+id: 3f0e6a14-9b2d-5c47-8e61-4d7a2c91b5e3
+name: Ticket Planning Flow
+description: Plans one tracker ticket, has an agent review the plan, then waits for a person to approve
+  it before recording the approved plan for the work that follows.
+version: 1.2.0
+persona_dependencies:
+  ticket-plan-publisher:
+    id: ticket-plan-publisher
+    revision: content-4bf2c8e41cfc0417
+    digest: sha256:4bf2c8e41cfc04175e588479a4460ed0cd46e485db655fcd5aab0b5bf6d96827
+    path: personas/ticket-plan-publisher.yaml
+  ticket-plan-reviewer:
+    id: ticket-plan-reviewer
+    revision: content-e875ceea656b9df6
+    digest: sha256:e875ceea656b9df6f0ca74c04d70e2ab68440e46308a2fa69567db28c45aa669
+    path: personas/ticket-plan-reviewer.yaml
+  ticket-planner:
+    id: ticket-planner
+    revision: content-fb17a5b3c13eb5e1
+    digest: sha256:fb17a5b3c13eb5e133e056c15a29c80094db86bffad3f9c9c9df45b957b55505
+    path: personas/ticket-planner.yaml
+graph:
+  tags:
+  - planning
+  - tracker
+  board:
+    version: 1
+    columns:
+    - id: planning
+      title: Planning
+      nodes:
+      - plan-draft
+      - plan-check
+    - id: plan-review
+      title: Plan review
+      gate: plan-review-gate
+      review: plan
+    - id: plan-record
+      title: Recording plan
+      nodes:
+      - plan-publish
+  nodes:
+  - id: plan-request
+    kind: trigger
+    label: Start ticket planning
+    source: tracker planning
+    dispatchEvent: plan.requested
+    position:
+      x: 96
+      y: 280
+  - id: plan-memory
+    kind: resource
+    label: Planning Memory
+    resourceType: mimir
+    bindingMode: registry
+    registryEntryId: mimir-yggdrasil
+    url: https://mimir.yggdrasil.niuu.world/api/v1
+    authRef: workload:mimir
+    role: shared
+    categories:
+    - planning
+    - tracker
+    position:
+      x: 352
+      y: 520
+  - id: plan-draft
+    kind: stage
+    label: Draft the plan
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: ticket-planner
+      budget: 18
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - plan.requested
+      - plan.breakdown.changes_requested
+    position:
+      x: 352
+      y: 280
+  - id: plan-check
+    kind: stage
+    label: Review the plan
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: ticket-plan-reviewer
+      budget: 12
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - plan.breakdown.drafted
+    position:
+      x: 704
+      y: 280
+  - id: plan-review-gate
+    kind: gate
+    label: Plan review
+    condition: The approved plan becomes the scope of the work that follows.
+    mode: human_approval
+    pendingBehavior: help_needed
+    approvalEvent: plan.approved
+    changesRequestedEvent: plan.breakdown.changes_requested
+    instructions: Read the plan against the ticket. Approve it if it is bounded and actionable. Otherwise
+      request changes with specifics, and the planner continues in this same run.
+    position:
+      x: 1056
+      y: 480
+  - id: plan-blocked
+    kind: gate
+    label: Plan blocked
+    condition: The planner or its reviewer needs something a plan cannot deliver.
+    mode: human_approval
+    pendingBehavior: help_needed
+    approvalEvent: plan.breakdown.changes_requested
+    changesRequestedEvent: plan.breakdown.changes_requested
+    instructions: Read what is needed. Say how to carry on and the planner continues in this same run,
+      or stop the run if the ticket cannot be planned as written.
+    position:
+      x: 704
+      y: 480
+  - id: plan-publish
+    kind: stage
+    label: Record the approved plan
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: ticket-plan-publisher
+      budget: 8
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - plan.approved
+    position:
+      x: 1056
+      y: 280
+  - id: plan-complete
+    kind: end
+    label: Ticket planning complete
+    joinMode: all
+    completionEvent: plan.completed
+    position:
+      x: 1408
+      y: 280
+  edges:
+  - id: edge-plan-request-to-draft
+    source: plan-request
+    target: plan-draft
+    label: plan.requested -> plan.requested
+  - id: edge-plan-draft-to-check
+    source: plan-draft
+    target: plan-check
+    label: plan.breakdown.drafted -> plan.breakdown.drafted
+  - id: edge-plan-check-to-draft
+    source: plan-check
+    target: plan-draft
+    label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+  - id: edge-plan-check-to-gate
+    source: plan-check
+    target: plan-review-gate
+    label: plan.breakdown.ready_for_gate -> plan.breakdown.ready_for_gate
+  - id: edge-plan-draft-to-blocked
+    source: plan-draft
+    target: plan-blocked
+    label: plan.blocked -> plan.blocked
+  - id: edge-plan-check-to-blocked
+    source: plan-check
+    target: plan-blocked
+    label: plan.blocked -> plan.blocked
+  - id: edge-plan-blocked-to-draft
+    source: plan-blocked
+    target: plan-draft
+    label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+  - id: edge-plan-gate-to-draft
+    source: plan-review-gate
+    target: plan-draft
+    label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+  - id: edge-plan-gate-to-publish
+    source: plan-review-gate
+    target: plan-publish
+    label: plan.approved -> plan.approved
+  - id: edge-plan-publish-to-complete
+    source: plan-publish
+    target: plan-complete
+    label: plan.completed -> plan.completed
+  resourceBindings:
+  - id: binding-plan-memory
+    resourceNodeId: plan-memory
+    targetType: workflow
+    targetId: ticket-planning-flow
+    access: read_write
+    writePrefixes:
+    - planning/
+    readPriority: 1

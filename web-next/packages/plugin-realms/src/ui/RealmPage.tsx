@@ -1,8 +1,7 @@
 import { useState, type ReactNode } from 'react';
-import { Link, useNavigate, useParams } from '@tanstack/react-router';
+import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePluginCtx, useService } from '@niuulabs/plugin-sdk';
-import { useUiMode } from '@niuulabs/shell';
 import {
   MessageRow,
   ResidentLogsView,
@@ -12,9 +11,12 @@ import {
   type Ravn,
 } from '@niuulabs/plugin-ravn';
 import {
+  TrackerBoard,
   WorkflowLaunchModal,
+  useTrackerBoard,
   useWorkflows,
   type IWorkflowService,
+  type ReviewItem as WorkReviewItem,
   type TrackerIssue,
   type Workflow,
   type WorkflowLaunchRequest,
@@ -28,7 +30,7 @@ import {
   type DecisionRecord,
   type ReviewItem,
 } from '@niuulabs/plugin-valkyrie';
-import { LaunchWizard, SectionCard, type VolundrSession } from '@niuulabs/plugin-volundr';
+import { LaunchWizard, SectionCard } from '@niuulabs/plugin-volundr';
 import {
   BudgetBar,
   Chip,
@@ -36,17 +38,24 @@ import {
   ErrorState,
   LoadingState,
   Modal,
+  ProjectIcon,
   SegmentedFilter,
   StateDot,
   Table,
   type DotState,
 } from '@niuulabs/ui';
+import { useForgeProjects } from '../application/useProjects';
 import { useRavens } from '../application/useRealmsHome';
 import { useRealmView } from '../application/useRealmView';
 import { FIRST_REALM_WALKTHROUGH, useWalkthrough } from '../application/useWalkthrough';
 import { decisionLine, decisionTone, trustSentence, type ActivityTone } from '../domain/activity';
-import { ravnForRealm } from '../domain/join';
+import { activeSessionCount, ravnForRealm } from '../domain/join';
 import { ACTION_CLASSES } from '../domain/realm';
+import { sessionsWithDescendants } from '../domain/sessionTree';
+import { ConnectionsPanel } from './ConnectionsPanel';
+import { ResidentPanel } from './ResidentPanel';
+import { SessionsTable } from './SessionsTable';
+import { TicketReviewRow } from './TicketReviewRow';
 import { WalkthroughRail } from './WalkthroughRail';
 
 const BUTTON =
@@ -69,7 +78,8 @@ const TONE_DOT: Record<ActivityTone, DotState> = {
   muted: 'unknown',
 };
 
-type RealmTab = 'overview' | 'queue' | 'sessions' | 'memory' | 'settings';
+const REALM_TABS = ['overview', 'board', 'resident', 'sessions', 'memory', 'connections'] as const;
+type RealmTab = (typeof REALM_TABS)[number];
 
 // ---------------------------------------------------------------------------
 // Overview pieces (artboard E: four compact queues, a timeline, three small cards)
@@ -116,7 +126,15 @@ function CountTile({
  * only part of the overview that asks something of you, so it sits at the top and
  * disappears the moment it is empty.
  */
-function NeedsYouStrip({ reviews }: { reviews: ReviewItem[] }) {
+function NeedsYouStrip({
+  reviews,
+  tickets,
+  workspace,
+}: {
+  reviews: ReviewItem[];
+  tickets: WorkReviewItem[];
+  workspace: string;
+}) {
   const decide = useDecideReview();
   const [decided, setDecided] = useState<string[]>([]);
   const pending = reviews.filter(
@@ -131,15 +149,18 @@ function NeedsYouStrip({ reviews }: { reviews: ReviewItem[] }) {
     );
   }
 
-  if (pending.length === 0) return null;
+  if (pending.length + tickets.length === 0) return null;
   return (
     <section
       className="niuu:flex niuu:flex-col niuu:rounded-xl niuu:border niuu:border-status-amber/40 niuu:bg-status-amber/5 niuu:px-4 niuu:py-3"
       data-testid="realm-needs-you"
     >
       <span className="niuu:pb-1 niuu:text-sm niuu:font-medium niuu:text-text-primary">
-        Needs you · {pending.length}
+        Needs you · {pending.length + tickets.length}
       </span>
+      {tickets.map((item) => (
+        <TicketReviewRow key={item.taskId} item={item} workspace={workspace} />
+      ))}
       {pending.map((item) => (
         <div
           key={item.itemId}
@@ -277,7 +298,7 @@ function TalkToIt({ ravn }: { ravn: Ravn }) {
         </div>
       ) : (
         <span className="niuu:text-xs niuu:text-text-faint">
-          No conversation yet. Ask it anything about the realm.
+          No conversation yet. Ask it anything about the workspace.
         </span>
       )}
       <div className="niuu:flex niuu:items-center niuu:gap-2">
@@ -286,13 +307,13 @@ function TalkToIt({ ravn }: { ravn: Ravn }) {
           className={PRIMARY}
           disabled={create.isPending}
           onClick={() =>
-            create.mutate({ title: `Realm chat ${new Date().toISOString().slice(0, 10)}` })
+            create.mutate({ title: `Workspace chat ${new Date().toISOString().slice(0, 10)}` })
           }
         >
           {latest ? 'New conversation' : 'Start a conversation'}
         </button>
         <Link to={'/ravn/ravens' as never} className={LINK}>
-          Open in Ravn
+          Open in Agents
         </Link>
       </div>
       {create.error ? (
@@ -303,7 +324,7 @@ function TalkToIt({ ravn }: { ravn: Ravn }) {
 }
 
 // ---------------------------------------------------------------------------
-// Queue and Sessions tabs: the same data as full tables
+// Board tab
 // ---------------------------------------------------------------------------
 
 function IssueTable({ issues, emptyText }: { issues: TrackerIssue[]; emptyText: string }) {
@@ -345,48 +366,55 @@ function IssueTable({ issues, emptyText }: { issues: TrackerIssue[]; emptyText: 
   );
 }
 
-function SessionsTable({ sessions }: { sessions: VolundrSession[] }) {
-  if (sessions.length === 0)
+/** The workspace's board, or its tickets until the tracker has a workflow to draw columns. */
+function BoardTab({
+  trackerBoard,
+  bugBoard,
+  intake,
+  findings,
+  error,
+  onConnect,
+}: {
+  trackerBoard: string;
+  bugBoard: string;
+  intake: TrackerIssue[];
+  findings: TrackerIssue[];
+  error: unknown;
+  onConnect: () => void;
+}) {
+  if (!trackerBoard) {
     return (
       <EmptyState
-        title="No sessions yet"
-        description="The resident starts one per ticket it picks up. You can launch one yourself above."
+        title="No tracker connected"
+        description="A workspace works without one. Connect a tracker to give it a board."
+        action={
+          <button type="button" className={PRIMARY} onClick={onConnect}>
+            Connect a tracker
+          </button>
+        }
       />
     );
+  }
   return (
-    <Table<VolundrSession>
-      columns={[
-        {
-          key: 'name',
-          header: 'session',
-          render: (row) => (
-            <Link
-              to={'/volundr/session/$sessionId' as never}
-              params={{ sessionId: row.id } as never}
-              className="niuu:text-text-primary"
-            >
-              {row.name}
-            </Link>
-          ),
-        },
-        {
-          key: 'status',
-          header: 'state',
-          render: (row) => (
-            <Chip tone={row.status === 'running' ? 'brand' : 'muted'}>{row.status}</Chip>
-          ),
-          width: '140px',
-        },
-        {
-          key: 'model',
-          header: 'model',
-          render: (row) => <span className="niuu:font-mono niuu:text-xs">{row.model}</span>,
-          width: '160px',
-        },
-      ]}
-      rows={sessions}
-      aria-label="sessions"
-    />
+    <div className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:flex-col niuu:gap-4">
+      {error ? <ErrorState title="Could not load the tickets" message={String(error)} /> : null}
+      <TrackerBoard
+        trackerId={trackerBoard}
+        fallback={
+          <SectionCard
+            title={`Tickets · ${intake.length}`}
+            description="Choose board workflows under Connections to run them from here."
+          >
+            <IssueTable issues={intake} emptyText="Board is empty" />
+          </SectionCard>
+        }
+      />
+      {bugBoard ? (
+        <SectionCard title={`QA findings · ${findings.length}`}>
+          <IssueTable issues={findings} emptyText="No findings" />
+        </SectionCard>
+      ) : null}
+    </div>
   );
 }
 
@@ -399,11 +427,15 @@ export function RealmPage() {
   const navigate = useNavigate();
   const data = useRealmView(slug);
   const ravens = useRavens();
-  const ravn = ravnForRealm(ravens.data, slug);
+  const ravn = ravnForRealm(ravens.data, slug, data.realm?.id);
+  const projects = useForgeProjects();
+  const board = useTrackerBoard(data.view?.binding?.trackerBoard || null);
   const walkthrough = useWalkthrough(FIRST_REALM_WALKTHROUGH);
   const ctx = usePluginCtx();
-  const mode = useUiMode();
-  const [tab, setTab] = useState<RealmTab>('overview');
+  const search = useSearch({ strict: false }) as { tab?: string };
+  const [tab, setTab] = useState<RealmTab>(
+    REALM_TABS.find((entry) => entry === search.tab) ?? 'overview',
+  );
   const [launchOpen, setLaunchOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [workflowOpen, setWorkflowOpen] = useState(false);
@@ -417,17 +449,17 @@ export function RealmPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['volundr', 'sessions'] }),
   });
 
-  if (data.isLoading) return <LoadingState label="Loading realm…" />;
+  if (data.isLoading) return <LoadingState label="Loading workspace…" />;
   if (data.error)
-    return <ErrorState title="Could not load the realm" message={String(data.error)} />;
+    return <ErrorState title="Could not load the workspace" message={String(data.error)} />;
   if (data.notFound || !data.realm || !data.view) {
     return (
       <ErrorState
-        title="No such realm"
-        message={`There is no realm called ${slug}.`}
+        title="No such workspace"
+        message={`There is no workspace called ${slug}.`}
         action={
           <Link to="/realms" className={BUTTON}>
-            Back to realms
+            Back to workspaces
           </Link>
         }
       />
@@ -446,40 +478,19 @@ export function RealmPage() {
       view.grants.find((grant) => grant.actionClass === actionClass)?.level ?? null,
     ]),
   );
-  const pendingCount = data.realmReviews.filter((item) => item.status === 'pending').length;
-
-  // Simple mode has whole pages for these; Advanced keeps the dialogs it knows.
-  const startSession = () => {
-    if (mode === 'advanced') {
-      setLaunchOpen(true);
-      return;
-    }
-    void navigate({
-      to: '/volundr/sessions/new' as never,
-      search: {
-        repo: view.binding?.repo ?? '',
-        branch: view.binding?.branch ?? '',
-        persona: view.personaName,
-      } as never,
-    });
-  };
-
-  const runWorkflow = () => {
-    if (mode === 'advanced') {
-      setPickerOpen(true);
-      return;
-    }
-    void navigate({
-      to: '/ting/workflows' as never,
-      search: { repo: view.binding?.repo ?? '' } as never,
-    });
-  };
+  const pendingCount =
+    data.realmReviews.filter((item) => item.status === 'pending').length +
+    data.waitingTickets.length;
+  const project = projects.data?.find((entry) => entry.id === data.realm?.project_id) ?? null;
+  // Its own sessions and each ticket's coordinator, with everything they launched.
+  const workspaceSessions = sessionsWithDescendants(data.allSessions, [
+    ...data.realmSessions.map((session) => session.id),
+    ...(board.detail?.tasks ?? []).flatMap((task) =>
+      task.coordinator ? [task.coordinator.sessionId] : [],
+    ),
+  ]);
 
   const switchTab = (next: RealmTab) => {
-    if (next === 'settings') {
-      void navigate({ to: '/realms/$slug/settings', params: { slug } });
-      return;
-    }
     if (next === 'memory' && data.mountName) ctx.setTweak('activeMount', data.mountName);
     setTab(next);
   };
@@ -493,6 +504,17 @@ export function RealmPage() {
               {data.realm.name.charAt(0).toUpperCase()}
             </span>
             <div className="niuu:flex niuu:flex-col">
+              {data.realm.project_id ? (
+                <Link
+                  to={'/realms/projects/$projectId' as never}
+                  params={{ projectId: data.realm.project_id } as never}
+                  className={`${LINK} niuu:inline-flex niuu:items-center niuu:gap-1`}
+                  data-testid="realm-project-link"
+                >
+                  <ProjectIcon size={12} />
+                  {project?.name ?? 'Project'}
+                </Link>
+              ) : null}
               <span className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-[17px] niuu:font-semibold niuu:text-text-primary">
                 {data.realm.name}
                 <Chip tone={view.wakefulness === 'wakeful' ? 'brand' : 'muted'}>
@@ -508,8 +530,10 @@ export function RealmPage() {
                 ) : null}
               </span>
               <span className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
-                {view.binding?.repo ?? 'no repository bound'}
-                {view.binding?.trackerBoard ? ` · board ${view.binding.trackerBoard}` : ''}
+                {view.binding?.repo || 'no repository'}
+                {view.binding?.trackerBoard
+                  ? ` · board ${board.saga?.name ?? view.binding.trackerBoard}`
+                  : ''}
                 {view.confidence !== null ? ` · confidence ${view.confidence.toFixed(2)}` : ''}
               </span>
             </div>
@@ -519,7 +543,7 @@ export function RealmPage() {
             <button
               type="button"
               className={BUTTON}
-              onClick={startSession}
+              onClick={() => setLaunchOpen(true)}
               data-testid="realm-launch-session"
             >
               Session
@@ -527,9 +551,9 @@ export function RealmPage() {
             <button
               type="button"
               className={BUTTON}
-              onClick={runWorkflow}
-              disabled={mode === 'advanced' && !workflows.data}
-              title="Run a workflow in this realm"
+              onClick={() => setPickerOpen(true)}
+              disabled={!workflows.data}
+              title="Run a workflow in this workspace"
               data-testid="realm-run-workflow"
             >
               Workflow
@@ -541,49 +565,51 @@ export function RealmPage() {
             >
               Clone
             </button>
-            <Link to="/realms/$slug/settings" params={{ slug }} className={BUTTON}>
-              Settings
-            </Link>
           </div>
         </header>
 
         <SegmentedFilter<RealmTab>
           options={[
             { value: 'overview', label: 'Overview' },
-            { value: 'queue', label: 'Queue', count: data.intake.length + data.findings.length },
-            { value: 'sessions', label: 'Sessions', count: data.realmSessions.length },
+            { value: 'board', label: 'Board', count: data.intake.length + data.findings.length },
+            { value: 'resident', label: 'Resident' },
+            { value: 'sessions', label: 'Sessions', count: workspaceSessions.length },
             { value: 'memory', label: 'Memory' },
-            { value: 'settings', label: 'Settings' },
+            { value: 'connections', label: 'Connections' },
           ]}
           value={tab}
           onChange={switchTab}
-          aria-label="Realm section"
+          aria-label="Workspace section"
         />
 
         {tab === 'overview' ? (
           <>
-            <NeedsYouStrip reviews={data.realmReviews} />
+            <NeedsYouStrip
+              reviews={data.realmReviews}
+              tickets={data.waitingTickets}
+              workspace={view.name}
+            />
             <div className="niuu:grid niuu:grid-cols-4 niuu:gap-3">
               <CountTile
                 id="intake"
                 label="Intake"
                 count={data.intake.length}
-                hint={view.binding?.trackerBoard ? 'tickets on the board' : 'no board bound'}
-                onOpen={() => switchTab('queue')}
+                hint={view.binding?.trackerBoard ? 'tickets on the board' : 'no tracker'}
+                onOpen={() => switchTab('board')}
               />
               <CountTile
                 id="sessions"
                 label="In sessions"
-                count={view.runningSessions}
-                hint={`${data.realmSessions.length} in all`}
+                count={activeSessionCount(workspaceSessions)}
+                hint={`${workspaceSessions.length} in all`}
                 onOpen={() => switchTab('sessions')}
               />
               <CountTile
                 id="findings"
                 label="QA findings"
                 count={data.findings.length}
-                hint={view.binding?.bugBoard ? 'on the bug board' : 'no bug board bound'}
-                onOpen={() => switchTab('queue')}
+                hint={view.binding?.bugBoard ? 'on the bug board' : 'no bug board'}
+                onOpen={() => switchTab('board')}
               />
               <CountTile
                 id="health"
@@ -595,7 +621,7 @@ export function RealmPage() {
                     : 'no environment yet'
                 }
                 attention
-                onOpen={() => switchTab('queue')}
+                onOpen={() => switchTab('resident')}
               />
             </div>
 
@@ -620,9 +646,9 @@ export function RealmPage() {
                 <SmallCard
                   title="Trust"
                   aside={
-                    <Link to="/realms/$slug/settings" params={{ slug }} className={LINK}>
+                    <button type="button" className={LINK} onClick={() => switchTab('resident')}>
                       adjust
-                    </Link>
+                    </button>
                   }
                 >
                   <div className="niuu:flex niuu:flex-wrap niuu:gap-1">
@@ -678,43 +704,51 @@ export function RealmPage() {
           </>
         ) : null}
 
-        {tab === 'queue' ? (
-          <div className="niuu:grid niuu:grid-cols-2 niuu:gap-4">
-            <SectionCard title={`Intake · ${data.intake.length}`}>
-              <IssueTable
-                issues={data.intake}
-                emptyText={view.binding?.trackerBoard ? 'Board is empty' : 'No board bound'}
-              />
-            </SectionCard>
-            <SectionCard title={`QA findings · ${data.findings.length}`}>
-              <IssueTable
-                issues={data.findings}
-                emptyText={view.binding?.bugBoard ? 'No findings' : 'No bug board bound'}
-              />
-            </SectionCard>
-            <SectionCard title="Health">
-              {data.environment ? (
-                <div className="niuu:flex niuu:flex-col niuu:gap-2 niuu:text-xs">
-                  <Chip tone={health === 'healthy' ? 'brand' : 'critical'}>{health}</Chip>
-                  <span className="niuu:text-text-muted">
-                    {unresolved} unresolved of {data.environment.signalCount} signals · last{' '}
-                    {data.environment.lastSignalAt.slice(0, 16).replace('T', ' ')}
-                  </span>
-                </div>
-              ) : (
-                <EmptyState
-                  title="No environment yet"
-                  description="Appears once the resident is online."
-                />
-              )}
-            </SectionCard>
-          </div>
+        {tab === 'board' ? (
+          <BoardTab
+            trackerBoard={view.binding?.trackerBoard ?? ''}
+            bugBoard={view.binding?.bugBoard ?? ''}
+            intake={data.intake}
+            findings={data.findings}
+            error={data.ticketsError}
+            onConnect={() => switchTab('connections')}
+          />
         ) : null}
+
+        {tab === 'resident' ? (
+          <ResidentPanel
+            slug={slug}
+            realmName={data.realm.name}
+            realmDisplay={{ slug: data.realm.slug, name: data.realm.name }}
+            view={view}
+            ravn={ravn}
+            health={
+              <SectionCard title="Health">
+                {data.environment ? (
+                  <div className="niuu:flex niuu:flex-col niuu:gap-2 niuu:text-xs">
+                    <Chip tone={health === 'healthy' ? 'brand' : 'critical'}>{health}</Chip>
+                    <span className="niuu:text-text-muted">
+                      {unresolved} unresolved of {data.environment.signalCount} signals · last{' '}
+                      {data.environment.lastSignalAt.slice(0, 16).replace('T', ' ')}
+                    </span>
+                  </div>
+                ) : (
+                  <EmptyState
+                    title="No environment yet"
+                    description="Appears once the resident is online."
+                  />
+                )}
+              </SectionCard>
+            }
+          />
+        ) : null}
+
+        {tab === 'connections' ? <ConnectionsPanel realm={data.realm} view={view} /> : null}
 
         {tab === 'sessions' ? (
           <div className="niuu:flex niuu:flex-col niuu:gap-4">
-            <SectionCard title={`Sessions · ${data.realmSessions.length}`}>
-              <SessionsTable sessions={data.realmSessions} />
+            <SectionCard title={`Sessions · ${workspaceSessions.length}`}>
+              <SessionsTable sessions={workspaceSessions} />
             </SectionCard>
             {ravn ? (
               <SectionCard title="Resident logs">
@@ -738,20 +772,31 @@ export function RealmPage() {
             </div>
             {data.mount && data.mountName ? (
               <EmptyState
-                title="Realm memory"
-                description="Explore this realm's pages, links and proof in the Memory scene."
+                title="Workspace memory"
+                description="Explore this workspace's pages, links and proof in the Memory scene."
                 action={
                   <Link to="/mimir" search={{ mount: data.mountName }} className={BUTTON}>
-                    Explore this realm&apos;s memory
+                    Explore this workspace&apos;s memory
                   </Link>
                 }
               />
+            ) : data.mountName ? (
+              <EmptyState
+                title="Workspace memory is still starting"
+                description="The memory instance created with the workspace has not been discovered yet."
+              />
             ) : (
               <EmptyState
-                title="Realm memory is still starting"
-                description="The Mímir instance created with the realm has not been discovered yet."
+                title="No workspace memory"
+                description="This resident keeps its own memory. A workspace made around a running resident does not create another."
               />
             )}
+            {data.mountName ? (
+              <span className="niuu:text-xs niuu:text-text-muted">
+                Writes under <code>realms/{slug}/</code> are routed to this mount; the charter lives
+                at <code>realms/{slug}/charter.md</code>.
+              </span>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -787,16 +832,16 @@ export function RealmPage() {
         open={pickerOpen}
         onOpenChange={setPickerOpen}
         title="Run a workflow here"
-        description={`The workflow starts against ${view.binding?.repo ?? 'this realm'}${view.binding?.branch ? ` on ${view.binding.branch}` : ''}.`}
+        description={`The workflow starts against ${view.binding?.repo ?? 'this workspace'}${view.binding?.branch ? ` on ${view.binding.branch}` : ''}.`}
       >
         <div className="niuu:flex niuu:flex-col niuu:gap-2" data-testid="workflow-picker">
           {(workflows.data ?? []).length === 0 ? (
             <EmptyState
               title="No workflows yet"
-              description="Build one under Ting › Workflows, then run it here."
+              description="Build one under Work › Workflows, then run it here."
               action={
                 <Link to={'/ting/workflows' as never} className={PRIMARY}>
-                  Open Ting › Workflows
+                  Open Work › Workflows
                 </Link>
               }
             />
@@ -822,7 +867,7 @@ export function RealmPage() {
             ))
           )}
           <Link to={'/ting/workflows' as never} className={`${LINK} niuu:self-start`}>
-            Manage workflows in Ting
+            Manage workflows
           </Link>
         </div>
       </Modal>
@@ -836,7 +881,7 @@ export function RealmPage() {
         launching={launchWorkflow.isPending}
         onLaunch={async (request) => {
           const target = workflow ?? workflows.data?.[0];
-          if (!target) throw new Error('No workflow to run. Create one under Ting › Workflows.');
+          if (!target) throw new Error('No workflow to run. Create one under Work › Workflows.');
           await launchWorkflow.mutateAsync({
             id: target.id,
             request: {

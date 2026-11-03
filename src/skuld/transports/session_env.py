@@ -20,7 +20,8 @@ What is removed:
 
 Engine auth variables are not platform-namespaced, so they pass through
 untouched; whether a Claude API key is *used* stays the business of
-``claude_env`` (``SKULD__CLAUDE_AUTH``).
+``claude_env`` (``SKULD__CLAUDE_AUTH``). Claude OAuth credentials additionally
+require an explicit Claude-only opt-in; other engines must not inherit them.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from collections.abc import Mapping
 
 BROKER_CREDENTIAL_VARS: frozenset[str] = frozenset(
     {
+        "FORGE_EXP_CAPTURE_SECRET",
         "SKULD__EXTERNAL_API_TOKEN",
         "VOLUNDR_EXTERNAL_API_TOKEN",
         "SKULD__FORGE_MCP__TOKEN",
@@ -40,6 +42,9 @@ BROKER_CREDENTIAL_VARS: frozenset[str] = frozenset(
 _PLATFORM_PREFIXES = ("SKULD__", "VOLUNDR", "NIUU_")
 _NESTED_SETTINGS_DELIMITER = "__"
 _SECRET_MARKERS = ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "API_KEY", "PRIVATE_KEY", "CREDENTIAL")
+CLAUDE_OAUTH_ENV_VARS = frozenset(
+    {"CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"}
+)
 
 
 def is_broker_credential(name: str) -> bool:
@@ -58,6 +63,10 @@ def scrub_broker_credentials(env: Mapping[str, str]) -> dict[str, str]:
     return {key: value for key, value in env.items() if not is_broker_credential(key)}
 
 
-def session_process_env() -> dict[str, str]:
+def session_process_env(*, claude_oauth: bool = False) -> dict[str, str]:
     """The broker's environment, scrubbed, as the base for a spawned agent process."""
-    return scrub_broker_credentials(os.environ)
+    env = scrub_broker_credentials(os.environ)
+    if not claude_oauth:
+        for name in CLAUDE_OAUTH_ENV_VARS:
+            env.pop(name, None)
+    return env

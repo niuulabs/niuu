@@ -23,6 +23,7 @@ from ting.domain.models import (
     WorkflowDependency,
     WorkflowScope,
 )
+from ting.domain.workflow_board import WorkflowBoardError, parse_workflow_board
 
 WORKFLOW_SCHEMA_VERSION = 2
 SUPPORTED_WORKFLOW_SCHEMA_VERSIONS = frozenset({1, 2})
@@ -227,6 +228,8 @@ def load_workflow_document(text: str) -> WorkflowDocument:
     _validate_disabled_tools(graph)
     _validate_no_stage_placement(graph)
     load_workflow_placement(graph, schema_version=schema_version)
+    if not graph_has_include_nodes(graph):
+        _validate_workflow_board(graph)
 
     dependencies_raw = raw["persona_dependencies"]
     if not isinstance(dependencies_raw, dict):
@@ -336,6 +339,15 @@ def workflow_document_revision(document: WorkflowDocument | WorkflowDefinition) 
         separators=(",", ":"),
     ).encode("utf-8")
     return f"sha256:{sha256(encoded).hexdigest()}"
+
+
+def _validate_workflow_board(graph: dict[str, Any]) -> None:
+    if not isinstance(graph.get("requiresRepository", True), bool):
+        raise WorkflowDocumentError("Workflow requiresRepository must be true or false")
+    try:
+        parse_workflow_board(graph)
+    except WorkflowBoardError as exc:
+        raise WorkflowDocumentError(f"Invalid workflow board: {exc}") from exc
 
 
 def _required_string(value: object, field_name: str) -> str:
@@ -1344,6 +1356,7 @@ def validate_resolved_workflow_graph(
     _validate_wait_nodes(graph, schema_version=schema_version)
     _validate_no_stage_placement(graph)
     load_workflow_placement(graph, schema_version=schema_version)
+    _validate_workflow_board(graph)
     referenced_aliases = referenced_persona_aliases(graph)
     missing_aliases = referenced_aliases - set(persona_dependencies)
     if missing_aliases:

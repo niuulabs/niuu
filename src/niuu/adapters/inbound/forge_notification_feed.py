@@ -19,6 +19,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+#: Nodes the Guild found without a notifications feed (an older Forge): not an outage.
+FEEDLESS_INSTANCES_HEADER = "X-Forge-Feedless-Instances"
+
 
 class CursorError(ValueError):
     """The opaque cursor is not a base64url JSON ``{instance_id: seq}`` object."""

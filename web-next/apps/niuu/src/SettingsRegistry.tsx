@@ -1,5 +1,4 @@
 import { ForgeSessionSettings, UserStorageSettings } from '@niuulabs/plugin-volundr';
-import { UiModeSwitch } from '@niuulabs/shell';
 import { createElement, useMemo } from 'react';
 import {
   useConfig,
@@ -119,37 +118,6 @@ export type MountedSettingsProvider =
 
 const LOCAL_PROVIDERS: MountedSettingsProviderDescriptor[] = [
   {
-    id: 'interface',
-    pluginId: 'settings',
-    title: 'Interface',
-    subtitle: 'appearance and navigation',
-    scope: 'user',
-    defaultSectionId: 'mode',
-    sections: [
-      {
-        id: 'mode',
-        label: 'Display mode',
-        description: 'Choose how much of the navigation and product surface is shown.',
-        render: () => (
-          <section className="settings-interface" aria-labelledby="settings-interface-heading">
-            <p className="settings-shell__kicker">Appearance</p>
-            <h1 className="settings-shell__panel-heading" id="settings-interface-heading">
-              Interface mode
-            </h1>
-            <p className="settings-shell__panel-copy">
-              Simple shows the essential navigation. Advanced shows every available tool and
-              setting.
-            </p>
-            <div className="settings-interface__control">
-              <span>Mode</span>
-              <UiModeSwitch />
-            </div>
-          </section>
-        ),
-      },
-    ],
-  },
-  {
     id: 'storage',
     pluginId: 'volundr',
     title: 'Storage',
@@ -219,23 +187,23 @@ const REMOTE_PROVIDER_DEFS = [
   {
     id: 'volundr',
     pluginId: 'volundr',
-    title: 'Volundr',
-    subtitle: 'forge platform settings',
+    title: 'Forge',
+    subtitle: 'session host settings',
     scope: 'service' as const,
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'volundr'),
   },
   {
     id: 'ting',
     pluginId: 'ting',
-    title: 'Ting',
-    subtitle: 'saga coordinator settings',
+    title: 'Work',
+    subtitle: 'project coordinator settings',
     scope: 'service' as const,
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'ting'),
   },
   {
     id: 'mimir',
     pluginId: 'mimir',
-    title: 'Mimir',
+    title: 'Memory',
     subtitle: 'knowledge system settings',
     scope: 'service' as const,
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'mimir'),
@@ -243,7 +211,7 @@ const REMOTE_PROVIDER_DEFS = [
   {
     id: 'bifrost',
     pluginId: 'bifrost',
-    title: 'Bifrost',
+    title: 'AI models',
     subtitle: 'model catalog and routing settings',
     scope: 'service' as const,
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'bifrost'),
@@ -251,7 +219,7 @@ const REMOTE_PROVIDER_DEFS = [
   {
     id: 'ravn',
     pluginId: 'ravn',
-    title: 'Ravn',
+    title: 'Agents',
     subtitle: 'runtime and agent settings',
     scope: 'service' as const,
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'ravn'),
@@ -260,7 +228,7 @@ const REMOTE_PROVIDER_DEFS = [
     id: 'observatory',
     pluginId: 'observatory',
     title: 'Observatory',
-    subtitle: 'topology and event settings',
+    subtitle: 'live map and event settings',
     scope: 'service' as const,
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'observatory'),
   },

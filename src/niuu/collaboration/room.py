@@ -22,11 +22,11 @@ ConnectionCheck = Callable[[str], bool]
 Clock = Callable[[], float]
 RecordedAt = Callable[[], datetime]
 
-HUMAN_ENVIRONMENT_ROLES: frozenset[str] = frozenset(
+ENVIRONMENT_ROLES: frozenset[str] = frozenset(
     {"observer", "teacher", "approver", "debugger", "owner"}
 )
 
-HUMAN_ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
+ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
     "observer": ("view", "reply"),
     "teacher": ("view", "reply", "teach", "correct"),
     "approver": ("view", "reply", "approve", "authorize_action"),
@@ -42,6 +42,9 @@ HUMAN_ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "authorize_action",
     ),
 }
+
+ATTENTION_AVAILABLE = "available"
+ATTENTION_AWAY = "away"
 
 _APPROVAL_CAPABILITIES = frozenset({"approve", "authorize_action"})
 _REVIEWABLE_AUTHORITIES = frozenset({"court_required", "human_review_required"})
@@ -68,17 +71,24 @@ def matches_subscription(event_type: str, subscriptions: Iterable[str]) -> bool:
     return False
 
 
-def effective_human_capabilities(
+def effective_role_capabilities(
     role: str,
     environment_action_authorities: Iterable[str] | None,
 ) -> tuple[str, ...]:
-    """Intersect a human role with actions the environment can review."""
-    grants = HUMAN_ROLE_CAPABILITIES[role]
+    """Intersect a participant's role with actions the environment can review."""
+    grants = ROLE_CAPABILITIES[role]
     if environment_action_authorities is None:
         return grants
     if _REVIEWABLE_AUTHORITIES & set(environment_action_authorities):
         return grants
     return tuple(grant for grant in grants if grant not in _APPROVAL_CAPABILITIES)
+
+
+def _back_from_quiet(participant: Participant) -> str:
+    """A participant heard from again is available, unless it said otherwise."""
+    if participant.attention_state == ATTENTION_AWAY:
+        return ATTENTION_AVAILABLE
+    return participant.attention_state
 
 
 async def _discard_event(_event: dict[str, Any]) -> None:
@@ -133,7 +143,7 @@ class CollaborationRoom:
         self._presence_sweep_task: asyncio.Task[None] | None = None
 
     def start_presence_sweep(self) -> None:
-        """Start periodic eviction when configured."""
+        """Start the periodic presence check when configured."""
         if self._presence_sweep_interval_s <= 0 or self._presence_sweep_task is not None:
             return
         self._presence_sweep_task = asyncio.create_task(
@@ -141,7 +151,7 @@ class CollaborationRoom:
         )
 
     async def stop_presence_sweep(self) -> None:
-        """Stop periodic presence eviction."""
+        """Stop the periodic presence check."""
         if self._presence_sweep_task is None:
             return
         self._presence_sweep_task.cancel()
@@ -152,32 +162,41 @@ class CollaborationRoom:
         while True:
             await asyncio.sleep(self._presence_sweep_interval_s)
             try:
-                await self.sweep_expired_participants()
+                await self.mark_quiet_participants()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("collaboration presence sweep failed")
 
-    async def sweep_expired_participants(self) -> list[str]:
-        """Remove heartbeat-expired participants without a live connection."""
+    async def mark_quiet_participants(self) -> list[str]:
+        """Show heartbeat-expired participants without a live connection as away.
+
+        Going quiet only changes presence. Membership ends with an explicit leave,
+        so a quiet participant keeps its seat, its rooms and any reply it is owed.
+        """
         now = self._clock()
-        expired = [
+        quiet = [
             peer_id
             for peer_id, participant in self._participants.items()
-            if not self._is_connected(peer_id) and self._heartbeat_expired(participant, now)
+            if participant.attention_state != ATTENTION_AWAY
+            and not self._is_connected(peer_id)
+            and self._heartbeat_expired(participant, now)
         ]
-        for peer_id in expired:
-            participant = self._participants.pop(peer_id)
-            self._reply_context.pop(peer_id, None)
-            await self._broadcast(
-                {
-                    "type": "participant_left",
-                    "participantId": peer_id,
-                    "reason": "heartbeat_timeout",
-                }
-            )
-            await self._publish_participant_left(participant, reason="heartbeat_timeout")
-        return expired
+        for peer_id in quiet:
+            participant = replace(self._participants[peer_id], attention_state=ATTENTION_AWAY)
+            self._participants[peer_id] = participant
+            await self._announce_presence(participant)
+        return quiet
+
+    async def _announce_presence(self, participant: Participant) -> None:
+        await self._broadcast(
+            {
+                "type": "participant_heartbeat",
+                "participantId": participant.peer_id,
+                "participant": asdict(participant),
+            }
+        )
+        await self._publish_event("participant.heartbeat", participant, status=participant.status)
 
     @staticmethod
     def _heartbeat_expired(participant: Participant, now: float) -> bool:
@@ -308,7 +327,7 @@ class CollaborationRoom:
         await self._publish_participant_joined(participant)
         return participant
 
-    async def join_human_environment(
+    async def join_environment(
         self,
         participant_id: str,
         *,
@@ -320,18 +339,26 @@ class CollaborationRoom:
         surfaces: Iterable[str] | None = None,
         heartbeat_ttl_s: float = 300.0,
         environment_action_authorities: Iterable[str] | None = None,
+        participant_type: str = "human",
+        session_id: str = "",
+        subscribes_to: Iterable[str] | None = None,
+        notice_context: str = "",
     ) -> Participant:
-        """Register or update a human participant in an environment."""
+        """Register or update a participant that joins an environment by role.
+
+        A person joins this way, and so does an agent from another session, whose
+        ``session_id`` says where it takes delivery.
+        """
         participant_id = participant_id.strip()
         if not participant_id:
             raise ValueError("participant_id is required")
         if not environment_id.strip():
             raise ValueError("environment_id is required")
         normalized_role = role.strip() or "observer"
-        if normalized_role not in HUMAN_ENVIRONMENT_ROLES:
+        if normalized_role not in ENVIRONMENT_ROLES:
             raise PermissionError(f"Unknown Environment role: {normalized_role}")
 
-        grants = effective_human_capabilities(normalized_role, environment_action_authorities)
+        grants = effective_role_capabilities(normalized_role, environment_action_authorities)
         requested = tuple(capabilities or grants)
         disallowed = sorted(set(requested) - set(grants))
         if disallowed:
@@ -347,12 +374,17 @@ class CollaborationRoom:
             peer_id=participant_id,
             persona=display_name or participant_id,
             color=color,
-            participant_type="human",
+            participant_type=participant_type,
             display_name=display_name or participant_id,
-            subscribes_to=("room.message", "room.direct", "participant.*"),
+            subscribes_to=(
+                "room.message",
+                "room.direct",
+                "participant.*",
+                *(subscribes_to or ()),
+            ),
             emits=("room.message", "room.direct", "feedback.recorded"),
             environment_id=environment_id,
-            participant_kind="human",
+            participant_kind=participant_type,
             capabilities=requested,
             surfaces=tuple(surfaces or ("skuld.room",)),
             wakefulness="wakeful",
@@ -361,17 +393,20 @@ class CollaborationRoom:
             last_heartbeat_at=self._clock(),
             authority_role=normalized_role,
             room_ids=tuple(dict.fromkeys([*existing_rooms, *membership])),
+            session_id=session_id,
+            notice_context=notice_context,
         )
         return await self._store_joined(participant)
 
-    async def leave_human_environment(self, participant_id: str, *, reason: str = "left") -> None:
-        """Remove a human participant from an environment."""
+    async def leave_environment(self, participant_id: str, *, reason: str = "left") -> None:
+        """End a joined participant's membership of an environment."""
         participant = self._participants.get(participant_id)
         if participant is None:
             raise LookupError(f"Unknown room participant: {participant_id}")
-        if participant.participant_type != "human":
-            raise PermissionError(f"Participant is not human: {participant_id}")
+        if not participant.session_id and participant.participant_type != "human":
+            raise PermissionError(f"Participant did not join by role: {participant_id}")
         self._participants.pop(participant_id)
+        self._reply_context.pop(participant_id, None)
         await self._broadcast({"type": "participant_left", "participantId": participant_id})
         await self._publish_participant_left(participant, reason=reason)
 
@@ -399,18 +434,11 @@ class CollaborationRoom:
             participant,
             status=status or participant.status,
             wakefulness=wakefulness or participant.wakefulness,
-            attention_state=attention_state or participant.attention_state,
+            attention_state=attention_state or _back_from_quiet(participant),
             last_heartbeat_at=self._clock(),
         )
         self._participants[peer_id] = updated
-        await self._broadcast(
-            {
-                "type": "participant_heartbeat",
-                "participantId": peer_id,
-                "participant": asdict(updated),
-            }
-        )
-        await self._publish_event("participant.heartbeat", updated, status=updated.status)
+        await self._announce_presence(updated)
         return updated
 
     def require_participant_capability(self, participant_id: str, capability: str) -> None:
@@ -426,7 +454,12 @@ class CollaborationRoom:
         participant = self._participants.get(peer_id)
         if participant is None:
             return None
-        updated = replace(participant, status=status, last_heartbeat_at=self._clock())
+        updated = replace(
+            participant,
+            status=status,
+            attention_state=_back_from_quiet(participant),
+            last_heartbeat_at=self._clock(),
+        )
         self._participants[peer_id] = updated
         return updated
 

@@ -130,6 +130,54 @@ const valkyries: ValkyrieResident[] = [
         rewritten: ['lessons/image-pull-backoff.md'],
         auditPath: 'curation/2026-06-03.md',
       },
+      evolution: {
+        headline: 'Simpler now: 2 duplicate tools retired.',
+        windowSeconds: 604800,
+        tools: 19,
+        retired: 31,
+        fromPeers: 10,
+        runs: 34912,
+        successes: 34902,
+        mostUsed: [
+          {
+            tool: 'k8s_pod_logs_since_sa',
+            runs: 27310,
+            successes: 27303,
+            lastUsedAt: '2026-06-03T02:40:00Z',
+          },
+          {
+            tool: 'etcd_apiserver_latency_scan',
+            runs: 5884,
+            successes: 5864,
+            lastUsedAt: '2026-06-03T02:10:00Z',
+          },
+        ],
+        changes: [
+          {
+            kind: 'retired',
+            tool: 'k8s_quantity_parse_v1',
+            at: '2026-06-03T03:00:00Z',
+            runs: 12,
+            successes: 12,
+            peer: '',
+            version: 0,
+            reason: 'superseded',
+            replacedBy: 'k8s_quantity_parse',
+          },
+          {
+            kind: 'picked_up',
+            tool: 'k8s_memory_pressure_probe',
+            at: '2026-06-02T14:00:00Z',
+            runs: 0,
+            successes: 0,
+            peer: 'valkyrie-eitri',
+            version: 0,
+            reason: '',
+            replacedBy: '',
+          },
+        ],
+        attention: [],
+      },
       learnedTools: {
         installedBefore: 19,
         kept: 16,
@@ -1654,6 +1702,7 @@ export function createSeedRealms(): RealmSummary[] {
       owner_id: 'human:operator',
       instance_id: 'instance-valhalla',
       autonomy_profile: 'balanced',
+      project_id: 'project-yggdrasil',
       created_at: '2026-05-01T09:00:00Z',
       updated_at: '2026-06-03T12:00:00Z',
     },
@@ -1676,6 +1725,7 @@ export function createSeedRealms(): RealmSummary[] {
       owner_id: null,
       instance_id: null,
       autonomy_profile: 'guarded',
+      project_id: 'project-yggdrasil',
       created_at: '2026-05-12T09:00:00Z',
       updated_at: '2026-06-01T08:00:00Z',
     },
@@ -1786,11 +1836,17 @@ export function createMockRealmGovernanceService(
         owner_id: request.owner_id ?? null,
         instance_id: request.instance_id ?? null,
         autonomy_profile: request.autonomy_profile ?? 'balanced',
+        project_id: request.project_id ?? null,
         created_at: now,
         updated_at: now,
       };
       realms.push(realm);
       grants.set(realm.slug, []);
+      return { ...realm };
+    },
+    async setRealmProject(slug: string, projectId: string | null) {
+      const realm = requireRealm(slug);
+      realm.project_id = projectId;
       return { ...realm };
     },
     async deleteRealm(slug: string) {

@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import type { IMimirService } from '@niuulabs/plugin-mimir';
 import type { IBudgetStream } from '@niuulabs/plugin-ravn';
-import type { ITrackerBrowserService } from '@niuulabs/plugin-ting';
+import { useReviews, useSagas, type ITrackerBrowserService } from '@niuulabs/plugin-ting';
 import type {
   IRealmGovernanceService,
   IValkyrieService,
@@ -21,6 +21,8 @@ import {
   reviewsForRealm,
   residentForRealm,
   sessionsForRealm,
+  waitingOnBoard,
+  workProjectForBoard,
 } from '../domain/join';
 import { mountNameFor } from '../domain/realm';
 import { useRavens, useVolundrSessions } from './useRealmsHome';
@@ -81,19 +83,25 @@ export function useRealmView(slug: string) {
     refetchInterval: 15_000,
   });
 
+  // With two tracker connections a project id alone is ambiguous, so name the connection.
+  const sagas = useSagas();
+  const connectionFor = (projectId: string) =>
+    sagas.data?.find((saga) => saga.trackerId === projectId)?.trackerConnectionId || undefined;
+
+  const workReviews = useReviews();
   const boardId = view?.binding?.trackerBoard ?? '';
   const intake = useQuery({
     queryKey: ['ting', 'tracker', 'issues', boardId],
-    queryFn: () => tracker.listIssues(boardId),
-    enabled: boardId.length > 0,
+    queryFn: () => tracker.listIssues(boardId, undefined, connectionFor(boardId)),
+    enabled: boardId.length > 0 && !sagas.isLoading,
     refetchInterval: 60_000,
   });
 
   const bugBoardId = view?.binding?.bugBoard ?? '';
   const findings = useQuery({
     queryKey: ['ting', 'tracker', 'issues', bugBoardId],
-    queryFn: () => tracker.listIssues(bugBoardId),
-    enabled: bugBoardId.length > 0,
+    queryFn: () => tracker.listIssues(bugBoardId, undefined, connectionFor(bugBoardId)),
+    enabled: bugBoardId.length > 0 && !sagas.isLoading,
     refetchInterval: 60_000,
   });
 
@@ -116,11 +124,17 @@ export function useRealmView(slug: string) {
     view,
     resident,
     environment: dashboard.data?.environments.find((entry) => entry.id === environmentId) ?? null,
+    allSessions: sessions.data,
     realmSessions: sessionsForRealm(sessions.data, slug),
     realmReviews: reviewsForRealm(reviews.data, resident),
+    waitingTickets: waitingOnBoard(
+      workReviews.data?.items,
+      workProjectForBoard(sagas.data, boardId)?.id,
+    ),
     decisions: decisions.data?.items ?? [],
     intake: intake.data ?? [],
     findings: findings.data ?? [],
+    ticketsError: intake.error ?? findings.error ?? null,
     budget: budgetState.data ?? null,
     mount,
     mountName,

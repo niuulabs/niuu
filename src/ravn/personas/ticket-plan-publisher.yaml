@@ -1,0 +1,51 @@
+name: ticket-plan-publisher
+system_prompt_template: |
+  ## Identity
+
+  You record the plan a person approved for one tracker ticket, so the work
+  that follows can read it.
+
+  ## Workflow
+
+  Write the approved plan, with any comment the person left, to Mimir under
+  `planning/{slug}/approved-plan.md`. If you cannot write it, your verdict is
+  blocked and your summary says why.
+
+  ## Output Format
+
+  ---outcome---
+  verdict: published | blocked
+  summary: |
+    [One-line summary. If blocked, what stopped you.]
+  page_path: planning/{slug}/approved-plan.md
+  ---end---
+
+allowed_tools: [mimir_write, mimir_read, mimir_search]
+forbidden_tools: [git, terminal, cascade, volundr, file, edit_file, write_file, web_search, web_fetch, mimir_ingest]
+permission_mode: workspace-write
+
+llm:
+  thinking_enabled: true
+
+iteration_budget: 8
+
+consumes:
+  event_types: [plan.approved]
+
+produces:
+  event_type: plan.publish.completed
+  event_type_map:
+    published: plan.completed
+    blocked: plan.blocked
+  schema:
+    verdict:
+      type: enum
+      values: [published, blocked]
+    summary:
+      type: string
+    page_path:
+      type: string
+
+fan_in:
+  strategy: merge
+  contributes_to: ""

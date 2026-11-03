@@ -46,7 +46,9 @@ export function getUserManager(config: OidcConfig): UserManager {
     scope: config.scope,
     response_type: 'code',
     automaticSilentRenew: true,
-    userStore: new WebStorageStateStore({ store: window.sessionStorage }),
+    // localStorage, so a new tab or a reopened browser keeps the session for as
+    // long as the identity provider does, instead of starting signed out.
+    userStore: new WebStorageStateStore({ store: window.localStorage }),
   };
 
   userManagerInstance = new UserManager(settings);

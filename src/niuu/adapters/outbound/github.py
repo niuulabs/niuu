@@ -919,7 +919,8 @@ class GitHubProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
     def _to_pull_request(self, data: dict, repo_url: str) -> PullRequest:
         """Map a GitHub PR JSON response to a domain PullRequest."""
         state = data.get("state", "open")
-        if data.get("merged"):
+        # A single pull request carries ``merged``; a listed one carries only ``merged_at``.
+        if data.get("merged") or data.get("merged_at"):
             pr_status = PullRequestStatus.MERGED
         elif state == "closed":
             pr_status = PullRequestStatus.CLOSED

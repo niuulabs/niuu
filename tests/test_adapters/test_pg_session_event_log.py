@@ -179,6 +179,20 @@ class TestReadAfter:
 
         assert entries[0].payload == {"tool_use_id": "abc", "content": "ok"}
 
+    async def test_read_after_excluding_filters_kinds_in_the_query(self):
+        sid = uuid4()
+        pool = AsyncMock()
+        pool.fetch.return_value = []
+        log = PostgresSessionEventLog(pool)
+
+        await log.read_after_excluding(
+            sid, after_seq=7, limit=20, exclude_kinds=frozenset({"terminal_frame", "claude_hook"})
+        )
+
+        sql, *params = pool.fetch.call_args[0]
+        assert "kind <> ALL($4::text[])" in sql and "ORDER BY seq ASC" in sql
+        assert params == [sid, 7, 20, ["claude_hook", "terminal_frame"]]
+
 
 class TestLatestSeq:
     async def test_latest_seq_returns_max(self):

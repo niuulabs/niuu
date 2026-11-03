@@ -15,12 +15,9 @@ const FORGE = '/api/v1/forge';
 
 config.services.setup = { mode: 'http', baseUrl: '/api/v1/niuu/setup' };
 
-// Like forge-stability: these contracts describe an already configured installation
-// in Advanced mode, so first-launch setup must not take over the page.
+// Like forge-stability: these contracts describe an already configured installation,
+// so first-launch setup must not take over the page.
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => {
-    localStorage.setItem('niuu.compactUx.mode', 'advanced');
-  });
   await page.route('**/api/v1/niuu/setup', (route) =>
     route.fulfill({ json: { enabled: false, completed: true, steps: [], completedSteps: [] } }),
   );

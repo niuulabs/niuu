@@ -215,7 +215,7 @@ export function PermissionApprovalPanel({
           auto approvals
         </span>
         <span className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
-          Volundr policy
+          Session policy
         </span>
       </div>
 

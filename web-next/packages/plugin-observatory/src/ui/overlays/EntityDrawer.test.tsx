@@ -338,7 +338,7 @@ describe('EntityDrawer', () => {
   it('shows ting Properties section', () => {
     renderDrawer(TING_NODE);
     expect(screen.getByText('Properties')).toBeInTheDocument();
-    expect(screen.getByText('active sagas')).toBeInTheDocument();
+    expect(screen.getByText('active projects')).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument();
   });
 

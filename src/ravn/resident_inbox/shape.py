@@ -21,6 +21,25 @@ from typing import Any
 #: not a range.
 _NUMERIC_TYPES = (int, float)
 
+#: Key under which an A2A update carries its case's routing state: case id, token
+#: totals and the whole mandate. It says where the update belongs, not what was
+#: observed, and the mandate is a home prompt: rendered into the next home prompt, it
+#: became that case's mandate in turn, nesting (and JSON-escaping) every generation
+#: until one resident's prompt reached 1.7 MB.
+RESIDENT_ORIGIN_KEY = "_resident"
+_RESIDENT_ORIGIN_PREFIX = f"{RESIDENT_ORIGIN_KEY}."
+
+
+def observed_payload(payload: Any) -> Any:
+    """Return *payload* as an observation, without the routing state it may carry."""
+    if isinstance(payload, dict) and RESIDENT_ORIGIN_KEY in payload:
+        return {key: value for key, value in payload.items() if key != RESIDENT_ORIGIN_KEY}
+    return payload
+
+
+def _is_observed_path(path: str) -> bool:
+    return not path.startswith(_RESIDENT_ORIGIN_PREFIX)
+
 
 def _type_name(value: Any) -> str:
     if value is None:
@@ -82,7 +101,7 @@ def shape_key(
     digest.update(kind.encode())
     digest.update(b"\x00")
     digest.update(distinct_id.encode())
-    for path, type_name in field_paths(payload):
+    for path, type_name in field_paths(observed_payload(payload)):
         digest.update(b"\x00")
         digest.update(path.encode())
         digest.update(b"\x1f")
@@ -134,11 +153,17 @@ class ShapeAggregate:
             for key, value in dict(data.get("extreme_refs") or {}).items()
             if str(value or "").strip()
         }
+        # Slots folded before routing state was kept out of the aggregate still hold
+        # it, mandates included; it leaves them here instead of reaching a prompt.
         return cls(
-            numeric=numeric,
-            categorical=categorical,
-            high_cardinality=tuple(str(item) for item in data.get("high_cardinality") or ()),
-            extreme_refs=refs,
+            numeric={path: v for path, v in numeric.items() if _is_observed_path(path)},
+            categorical={path: v for path, v in categorical.items() if _is_observed_path(path)},
+            high_cardinality=tuple(
+                path
+                for path in (str(item) for item in data.get("high_cardinality") or ())
+                if _is_observed_path(path)
+            ),
+            extreme_refs={key: ref for key, ref in refs.items() if _is_observed_path(key)},
         )
 
 
@@ -182,7 +207,7 @@ def numeric_novelty(
     """
     if observation_count < max(1, min_observations):
         return None
-    for path, value in _flatten_values(payload).items():
+    for path, value in _flatten_values(observed_payload(payload)).items():
         if isinstance(value, bool) or value is None or not isinstance(value, _NUMERIC_TYPES):
             continue
         bounds = aggregate.numeric.get(path)
@@ -215,7 +240,7 @@ def fold_aggregate(
     high_cardinality = set(aggregate.high_cardinality)
     extremes = dict(aggregate.extreme_refs)
 
-    for path, value in _flatten_values(payload).items():
+    for path, value in _flatten_values(observed_payload(payload)).items():
         if isinstance(value, bool) or value is None:
             value = str(value)
         if isinstance(value, _NUMERIC_TYPES):

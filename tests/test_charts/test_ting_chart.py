@@ -185,6 +185,16 @@ class TestConfigMapTemplate:
             )
             assert "default" not in line, f"{key} still uses | default: {line!r}"
 
+    def test_review_widget_manifests_are_rendered_from_values(self, tmp_path):
+        manifest = "/opt/niuu-modules/acme-print/niuu-module.yaml"
+        rendered = _render_ting_chart(
+            tmp_path, {"reviewWidgets": {"moduleManifestFiles": [manifest]}}
+        )
+
+        config = _config_from_rendered(rendered)
+
+        assert config["review_widgets"]["module_manifest_files"] == [manifest]
+
     def test_default_values_render_a_config_ting_accepts(self, tmp_path):
         """A default install must start: both packs are off and the config loads."""
         config = _config_from_rendered(_render_ting_chart(tmp_path, {}))

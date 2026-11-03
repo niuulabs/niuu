@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from niuu.domain.models import Principal
-from ting.adapters.inbound.auth import extract_principal
+from ting.adapters.inbound.auth import require_shared_settings_admin
 from ting.domain.flock_flow import FlockFlowConfig, FlockPersonaOverride
 from ting.ports.flock_flow import FlockFlowProvider
 
@@ -122,7 +122,7 @@ def create_flock_flows_router() -> APIRouter:
 
     @router.get("", response_model=list[FlockFlowResponse])
     async def list_flows(
-        _principal: Principal = Depends(extract_principal),
+        _principal: Principal = Depends(require_shared_settings_admin),
         provider: FlockFlowProvider = Depends(resolve_flow_provider),
     ) -> list[FlockFlowResponse]:
         """List all flock flow configurations."""
@@ -131,7 +131,7 @@ def create_flock_flows_router() -> APIRouter:
     @router.get("/{name}", response_model=FlockFlowResponse)
     async def get_flow(
         name: str,
-        _principal: Principal = Depends(extract_principal),
+        _principal: Principal = Depends(require_shared_settings_admin),
         provider: FlockFlowProvider = Depends(resolve_flow_provider),
     ) -> FlockFlowResponse:
         """Get a single flock flow by name."""
@@ -143,7 +143,7 @@ def create_flock_flows_router() -> APIRouter:
     @router.post("", response_model=FlockFlowResponse, status_code=201)
     async def create_flow(
         body: FlockFlowBody,
-        _principal: Principal = Depends(extract_principal),
+        _principal: Principal = Depends(require_shared_settings_admin),
         provider: FlockFlowProvider = Depends(resolve_flow_provider),
         known_personas: set[str] = Depends(resolve_persona_names),
     ) -> FlockFlowResponse:
@@ -162,7 +162,7 @@ def create_flock_flows_router() -> APIRouter:
     async def update_flow(
         name: str,
         body: FlockFlowBody,
-        _principal: Principal = Depends(extract_principal),
+        _principal: Principal = Depends(require_shared_settings_admin),
         provider: FlockFlowProvider = Depends(resolve_flow_provider),
         known_personas: set[str] = Depends(resolve_persona_names),
     ) -> FlockFlowResponse:
@@ -177,7 +177,7 @@ def create_flock_flows_router() -> APIRouter:
     @router.delete("/{name}", status_code=204)
     async def delete_flow(
         name: str,
-        _principal: Principal = Depends(extract_principal),
+        _principal: Principal = Depends(require_shared_settings_admin),
         provider: FlockFlowProvider = Depends(resolve_flow_provider),
     ) -> None:
         """Delete a flock flow configuration."""

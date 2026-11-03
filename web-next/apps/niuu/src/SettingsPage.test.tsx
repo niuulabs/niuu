@@ -198,20 +198,6 @@ describe('SettingsPage', () => {
     installDefaultGetMock();
   });
 
-  it('renders interface mode as a local settings section', () => {
-    routerMocks.params = { providerId: 'interface', sectionId: 'mode' };
-    wrap(<SettingsPage />, false, true);
-
-    expect(screen.getByRole('heading', { name: 'Interface mode' })).toBeInTheDocument();
-    expect(screen.getByRole('group', { name: 'Interface mode' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Simple' })).toHaveAttribute('aria-pressed', 'false');
-    expect(screen.getByRole('button', { name: 'Advanced' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-    expect(apiMocks.get).not.toHaveBeenCalled();
-  });
-
   it('renders local session checkboxes without fetching or saving a remote schema', () => {
     localStorage.clear();
     routerMocks.params = { providerId: 'session-view', sectionId: 'tabs' };
@@ -1132,7 +1118,7 @@ describe('SettingsPage', () => {
       </ConfigProvider>,
     );
 
-    expect(await screen.findByRole('heading', { name: 'Ting Settings' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Work Settings' })).toBeTruthy();
     expect(
       screen.getByText(
         'This service does not have a live settings endpoint configured in the current host profile.',
@@ -1434,7 +1420,7 @@ describe('SettingsPage', () => {
 
     wrap(<SettingsPage />);
 
-    expect(await screen.findByRole('heading', { name: 'Ting Settings' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Work Settings' })).toBeTruthy();
     expect(await screen.findByText(expectedCopy)).toBeTruthy();
     expect(await screen.findByText('Response detail:')).toBeTruthy();
   });

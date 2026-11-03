@@ -230,7 +230,9 @@ line-length = 100
 # scripts/generate_envoy_authz_protos.py), not hand-written; force-exclude so
 # pre-commit's explicit-file invocation honours this even though it bypasses
 # ruff's default directory-discovery exclude behavior.
-extend-exclude = ["vendor/envoy_authz_protos"]
+# tests/fixtures/control_plane/ holds verbatim copies of the control-plane reference
+# (lexi-ios docs); it must stay byte-identical to its source, so it is not reformatted.
+extend-exclude = ["vendor/envoy_authz_protos", "tests/fixtures/control_plane"]
 force-exclude = true
 
 [tool.ruff.lint]

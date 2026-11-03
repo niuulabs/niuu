@@ -58,6 +58,7 @@ from niuu.domain.services.observatory_topology import (
     ObservatoryTopologyAggregationService,
 )
 from niuu.domain.services.token_scope import TOPOLOGY_PUSH_SCOPE, require_scope
+from niuu.ports.instances import InvalidInstanceIdError
 
 logger = logging.getLogger(__name__)
 
@@ -428,7 +429,10 @@ def create_instances_router(
         instance_id: str = Path(description="Registered instance UUID"),
         principal: Principal = Depends(extract_principal),
     ) -> InstanceResponse:
-        before = await service.get_visible(principal, instance_id)
+        try:
+            before = await service.get_visible(principal, instance_id)
+        except InvalidInstanceIdError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         try:
             instance = await service.update_instance(
                 principal,
@@ -489,7 +493,10 @@ def create_instances_router(
         instance_id: str = Path(description="Registered instance UUID"),
         principal: Principal = Depends(extract_principal),
     ) -> InstanceTestResponse:
-        instance = await service.get_visible(principal, instance_id)
+        try:
+            instance = await service.get_visible(principal, instance_id)
+        except InvalidInstanceIdError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         if instance is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=instance_id)
         checked = await health_checker.check_instance(instance)
@@ -506,7 +513,10 @@ def create_instances_router(
         session_status: str | None = Query(default=None, alias="status"),
         principal: Principal = Depends(extract_principal),
     ) -> list[InstanceSessionResponse]:
-        instance = await service.get_visible(principal, instance_id)
+        try:
+            instance = await service.get_visible(principal, instance_id)
+        except InvalidInstanceIdError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         if instance is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=instance_id)
         try:

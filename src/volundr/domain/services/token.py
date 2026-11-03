@@ -148,7 +148,8 @@ class TokenService:
             message_count=session.message_count + message_count,
             tokens=session.tokens_used + tokens,
         )
-        await self._session_repository.update(updated_session)
+        # Publish the stored row: it carries fields this copy may hold stale.
+        updated_session = await self._session_repository.update(updated_session)
 
         if self._broadcaster is not None:
             logger.info(

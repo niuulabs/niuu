@@ -11,9 +11,8 @@ config.services.integrations = { mode: 'http', baseUrl: '/api/v1/integrations' }
 // Use the checked-in mock services so the functional gate needs neither a live
 // platform nor provider credentials. Transport/replay wires have separate tests.
 test.beforeEach(async ({ page }) => {
-  // These contracts describe an already configured installation in Advanced mode.
+  // These contracts describe an already configured installation.
   await page.addInitScript(() => {
-    localStorage.setItem('niuu.compactUx.mode', 'advanced');
     localStorage.setItem('niuu.forge.details', '1');
   });
   await page.route('**/api/v1/niuu/setup', (route) =>

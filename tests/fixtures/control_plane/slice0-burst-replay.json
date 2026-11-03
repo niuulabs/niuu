@@ -1,0 +1,225 @@
+{
+ "window": {
+  "start": "2026-10-07T06:27:46.722672+00:00",
+  "end": "2026-10-21T06:27:46.722672+00:00",
+  "rule": "start <= at < end, by each hook row timestamp"
+ },
+ "quiet_window_min": 30,
+ "thor_publications": 122,
+ "thor_keys": 12,
+ "bursts": 33,
+ "per_burst": [
+  {
+   "key": "JxWet7RhCHXwkKJW6rGK46",
+   "start": "2026-10-17T16:39:21.684279+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": null
+  },
+  {
+   "key": "FL1MjyYEExQnARb7ZvhUQ7",
+   "start": "2026-10-17T17:02:24.224410+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": null
+  },
+  {
+   "key": "P6LLVznppGFNk7HHNpMtXR",
+   "start": "2026-10-19T21:15:40.576584+00:00",
+   "publishes": 4,
+   "human_notice_offset_s": null
+  },
+  {
+   "key": "Rzhy2TjrgnrKwJ9N3NG3io",
+   "start": "2026-10-19T22:37:38.856606+00:00",
+   "publishes": 9,
+   "human_notice_offset_s": 345.805347
+  },
+  {
+   "key": "P6LLVznppGFNk7HHNpMtXR",
+   "start": "2026-10-19T22:43:05.574852+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": 19.087101
+  },
+  {
+   "key": "Rzhy2TjrgnrKwJ9N3NG3io",
+   "start": "2026-10-19T23:25:11.083845+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": null
+  },
+  {
+   "key": "P6LLVznppGFNk7HHNpMtXR",
+   "start": "2026-10-20T00:46:40.829756+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": null
+  },
+  {
+   "key": "Rzhy2TjrgnrKwJ9N3NG3io",
+   "start": "2026-10-20T02:30:45.143849+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": null
+  },
+  {
+   "key": "P6LLVznppGFNk7HHNpMtXR",
+   "start": "2026-10-20T02:54:55.230541+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": 7.295186
+  },
+  {
+   "key": "P6LLVznppGFNk7HHNpMtXR",
+   "start": "2026-10-20T04:37:26.380621+00:00",
+   "publishes": 5,
+   "human_notice_offset_s": 5.032253
+  },
+  {
+   "key": "P6LLVznppGFNk7HHNpMtXR",
+   "start": "2026-10-20T06:16:56.430202+00:00",
+   "publishes": 3,
+   "human_notice_offset_s": 547.939955
+  },
+  {
+   "key": "P6LLVznppGFNk7HHNpMtXR",
+   "start": "2026-10-20T07:44:57.020077+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": 1.691859
+  },
+  {
+   "key": "Rzhy2TjrgnrKwJ9N3NG3io",
+   "start": "2026-10-20T07:45:57.923248+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": null
+  },
+  {
+   "key": "P6LLVznppGFNk7HHNpMtXR",
+   "start": "2026-10-20T09:01:19.562421+00:00",
+   "publishes": 2,
+   "human_notice_offset_s": 107.228602
+  },
+  {
+   "key": "FJxJ8Lw8LxCAMfPcWFT5eY",
+   "start": "2026-10-20T10:20:03.221639+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": null
+  },
+  {
+   "key": "P6LLVznppGFNk7HHNpMtXR",
+   "start": "2026-10-20T10:58:03.912535+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": 0.94562
+  },
+  {
+   "key": "P6LLVznppGFNk7HHNpMtXR",
+   "start": "2026-10-20T11:35:48.118829+00:00",
+   "publishes": 2,
+   "human_notice_offset_s": 1681.344298
+  },
+  {
+   "key": "ENvAkZLb5Nfw5GZowjkDWa",
+   "start": "2026-10-20T12:06:38.627302+00:00",
+   "publishes": 7,
+   "human_notice_offset_s": 659.769512
+  },
+  {
+   "key": "P6LLVznppGFNk7HHNpMtXR",
+   "start": "2026-10-20T13:51:18.179742+00:00",
+   "publishes": 4,
+   "human_notice_offset_s": 1.568125
+  },
+  {
+   "key": "P6LLVznppGFNk7HHNpMtXR",
+   "start": "2026-10-20T15:31:01.421542+00:00",
+   "publishes": 3,
+   "human_notice_offset_s": 1123.873175
+  },
+  {
+   "key": "N3m7zR96Yh9KZW7KGQKhKA",
+   "start": "2026-10-20T15:51:08.179069+00:00",
+   "publishes": 27,
+   "human_notice_offset_s": null
+  },
+  {
+   "key": "7Z61ft6VAwoSkrUjwDqG2c",
+   "start": "2026-10-20T16:01:14.667856+00:00",
+   "publishes": 8,
+   "human_notice_offset_s": 952.906788
+  },
+  {
+   "key": "P6LLVznppGFNk7HHNpMtXR",
+   "start": "2026-10-20T17:07:31.803852+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": 0.702774
+  },
+  {
+   "key": "Dr8cwL9dHDJFZvMa7aQevt",
+   "start": "2026-10-20T17:25:46.480846+00:00",
+   "publishes": 14,
+   "human_notice_offset_s": null
+  },
+  {
+   "key": "FqvX48BoLLVHkRED4iY7UE",
+   "start": "2026-10-20T17:37:33.889240+00:00",
+   "publishes": 2,
+   "human_notice_offset_s": null
+  },
+  {
+   "key": "QVimZJxaHtjyQfT1R497Kw",
+   "start": "2026-10-20T18:11:35.153031+00:00",
+   "publishes": 4,
+   "human_notice_offset_s": null
+  },
+  {
+   "key": "FqvX48BoLLVHkRED4iY7UE",
+   "start": "2026-10-20T23:17:53.435827+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": null
+  },
+  {
+   "key": "Dr8cwL9dHDJFZvMa7aQevt",
+   "start": "2026-10-20T23:18:00.566882+00:00",
+   "publishes": 3,
+   "human_notice_offset_s": 1968.220626
+  },
+  {
+   "key": "N3m7zR96Yh9KZW7KGQKhKA",
+   "start": "2026-10-21T00:54:45.121514+00:00",
+   "publishes": 8,
+   "human_notice_offset_s": 278.853386
+  },
+  {
+   "key": "KSomtjYJCqxyd6ypBcG1gC",
+   "start": "2026-10-21T00:55:20.439315+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": null
+  },
+  {
+   "key": "FqvX48BoLLVHkRED4iY7UE",
+   "start": "2026-10-21T01:01:54.857470+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": null
+  },
+  {
+   "key": "Dr8cwL9dHDJFZvMa7aQevt",
+   "start": "2026-10-21T01:04:09.439978+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": null
+  },
+  {
+   "key": "QVimZJxaHtjyQfT1R497Kw",
+   "start": "2026-10-21T01:04:10.334238+00:00",
+   "publishes": 1,
+   "human_notice_offset_s": null
+  }
+ ],
+ "bursts_with_human_notice": 16,
+ "human_notice_before_first_publish": 0,
+ "human_notice_within_60s_after": 7,
+ "human_notice_within_120s_after": 8,
+ "human_notice_within_300s_after": 9,
+ "human_notice_within_600s_after": 11,
+ "human_notice_within_1800s_after": 15,
+ "human_notice_after_1800s": 1,
+ "bursts_per_utc_day": {
+  "2026-10-17": 2,
+  "2026-10-19": 4,
+  "2026-10-20": 22,
+  "2026-10-21": 5
+ }
+}

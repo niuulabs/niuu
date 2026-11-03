@@ -7,10 +7,14 @@ from uuid import UUID
 import httpx
 import pytest
 
-from niuu.domain.transcript_reducer import is_read_path_excluded, reduce_frames
+from niuu.domain.transcript_rebuild import rebuild_turns
+from niuu.domain.transcript_reducer import (
+    is_per_connect_ephemeral,
+    is_read_path_excluded,
+    reduce_frames,
+)
 from skuld.history_hydration import fetch_durable_history
 from volundr.domain.models import SessionLogEntry
-from volundr.domain.services.transcript_rebuild import rebuild_turns
 
 _SID = UUID("5d87d7a8-5f0f-4cc3-ae03-d5f015a8a15c")
 _TS = datetime(2026, 9, 8, tzinfo=UTC)
@@ -178,6 +182,8 @@ async def test_stopped_database_rebuild_equals_broker_hydration_after_new_live_t
         after = int(request.url.params["after"])
         limit = int(request.url.params["limit"])
         raw_page = [row for row in rows if row.seq > after][:limit]
+        seeds = request.url.params.get("include_seeds") == "true"
+        excluded = is_per_connect_ephemeral if seeds else is_read_path_excluded
         page = [
             {
                 "session_id": str(row.session_id),
@@ -187,7 +193,7 @@ async def test_stopped_database_rebuild_equals_broker_hydration_after_new_live_t
                 "ts": row.ts.isoformat(),
             }
             for row in raw_page
-            if not is_read_path_excluded(row.kind, row.payload)
+            if not excluded(row.kind, row.payload)
         ]
         return httpx.Response(200, json=page)
 

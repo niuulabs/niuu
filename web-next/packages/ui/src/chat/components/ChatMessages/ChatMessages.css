@@ -368,25 +368,67 @@
   }
 }
 
-[data-theme='xteo'] .niuu-chat-assistant-wrapper,
-[data-theme='xteo'] .niuu-chat-streaming-wrapper {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .niuu-chat-assistant-wrapper,
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .niuu-chat-streaming-wrapper {
   gap: 14px;
 }
-[data-theme='xteo'] .niuu-chat-avatar {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .niuu-chat-avatar {
   width: 32px;
   height: 32px;
 }
-[data-theme='xteo'] .niuu-chat-assistant-body {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .niuu-chat-assistant-body {
   gap: 12px;
 }
-[data-theme='xteo'] .niuu-chat-assistant-header {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .niuu-chat-assistant-header {
   min-height: 28px;
 }
-[data-theme='xteo'] .niuu-chat-model-badge {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .niuu-chat-model-badge {
   border-radius: 6px;
   color: var(--color-text-secondary);
 }
-[data-theme='xteo'] .niuu-chat-user-bubble {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .niuu-chat-user-bubble {
   background: var(--color-sent-surface);
   box-shadow: var(--shadow-sm);
 }

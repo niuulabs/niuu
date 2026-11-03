@@ -41,6 +41,7 @@ class FakeForge:
 
     def __init__(self) -> None:
         self.logged: list[dict[str, Any]] = []
+        self.described: list[tuple[str | None, dict[str, Any]]] = []
         self.lock = threading.Lock()
         forge = self
 
@@ -82,6 +83,26 @@ class FakeForge:
                     self._send(201, {"submitted": len(seqs), "latest_seq": max(seqs)})
                     return
                 self._send(200, {})
+
+            def do_PUT(self) -> None:  # noqa: N802
+                length = int(self.headers.get("content-length") or 0)
+                body = json.loads(self.rfile.read(length) or b"{}")
+                if self.path != f"/api/v1/forge/sessions/{SESSION_ID}/description":
+                    self._send(404, {"detail": "not found"})
+                    return
+                with forge.lock:
+                    forge.described.append((self.headers.get("authorization"), body))
+                stamp = "2026-10-16T12:00:00+00:00"
+                self._send(
+                    200,
+                    {
+                        "id": SESSION_ID,
+                        "short_description": body.get("short_description"),
+                        "description": body.get("description"),
+                        "short_description_updated_at": stamp,
+                        "description_updated_at": stamp if "description" in body else None,
+                    },
+                )
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
@@ -179,7 +200,8 @@ def _rpc(process: subprocess.Popen[bytes], request: dict[str, Any]) -> dict[str,
     return json.loads(line)
 
 
-def test_notify_round_trips_through_the_real_broker(broker, forge) -> None:
+@pytest.mark.parametrize("structured", [False, True], ids=["legacy", "structured-question"])
+def test_notify_round_trips_through_the_real_broker(broker, forge, structured) -> None:
     from skuld.forge_mcp.integration import forge_mcp_command
 
     command = [
@@ -193,6 +215,12 @@ def test_notify_round_trips_through_the_real_broker(broker, forge) -> None:
         "--max-concurrency",
         "2",
     ]
+    ask = {
+        "items": [
+            {"id": "choice", "kind": "question", "text": "Proceed?", "options": [{"label": "Yes"}]},
+            {"id": "access", "kind": "action", "text": "Grant the test account access."},
+        ]
+    }
     stdio = subprocess.Popen(
         command,
         stdin=subprocess.PIPE,
@@ -237,7 +265,11 @@ def test_notify_round_trips_through_the_real_broker(broker, forge) -> None:
                 "method": "tools/call",
                 "params": {
                     "name": "notify",
-                    "arguments": {"kind": "milestone", "title": "E2E milestone reached"},
+                    "arguments": {
+                        "kind": "attention" if structured else "milestone",
+                        "title": "E2E milestone reached",
+                        **({"question": True, "ask": ask} if structured else {}),
+                    },
                 },
             },
         )["result"]
@@ -266,6 +298,7 @@ def test_notify_round_trips_through_the_real_broker(broker, forge) -> None:
     assert entry["seq"] == receipt["session_seq"]
     turn_id, draft = draft_from_log_payload(entry["payload"])
     assert turn_id == receipt["turn_id"] and draft.title == "E2E milestone reached"
+    assert (draft.ask.wire() if draft.ask else None) == (ask if structured else None)
 
     # The loopback routes refuse callers without this start's secret.
     import urllib.error
@@ -277,3 +310,91 @@ def test_notify_round_trips_through_the_real_broker(broker, forge) -> None:
     with pytest.raises(urllib.error.HTTPError) as excinfo:
         urllib.request.urlopen(request, timeout=5)
     assert excinfo.value.code == 401
+
+
+def test_forge_describe_shim_and_tool_reach_forge_through_the_real_broker(
+    broker, forge, tmp_path
+) -> None:
+    from skuld.forge_mcp.integration import forge_mcp_command
+    from skuld.forge_mcp.routes import DESCRIBE_TOOL_PATH
+    from skuld.transports.session_tools import BROKER_TOKEN_FILE_ENV, FORGE_DESCRIBE_URL_ENV
+    from skuld.transports.tool_shims import ensure_codex_tool_shims
+
+    bin_dir, env = ensure_codex_tool_shims(
+        str(tmp_path / "agent-ws"),
+        session_env={
+            FORGE_DESCRIBE_URL_ENV: f"http://127.0.0.1:{broker['port']}{DESCRIBE_TOOL_PATH}",
+            BROKER_TOKEN_FILE_ENV: str(broker["token_file"]),
+        },
+    )
+    status = tmp_path / "status.md"
+    status.write_text("## Status\n- shim works\n")
+    shim = subprocess.run(
+        [str(bin_dir / "forge-describe"), "--short", "Phase 2: tests", "--long-file", str(status)],
+        env={"PATH": "/usr/bin:/bin", **env},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert shim.returncode == 0, shim.stderr
+    printed = json.loads(shim.stdout)
+    assert printed["session_id"] == SESSION_ID
+    assert printed["short_description"] == "Phase 2: tests"
+    authorization, body = forge.described[0]
+    assert body == {
+        "short_description": "Phase 2: tests",
+        "description": "## Status\n- shim works\n",
+    }
+    # The broker's own credential authorizes the write, never the loopback secret.
+    loopback_secret = broker["token_file"].read_text().strip()
+    assert authorization and loopback_secret not in authorization
+
+    stdio = subprocess.Popen(
+        [
+            *forge_mcp_command(),
+            "--broker-url",
+            f"http://127.0.0.1:{broker['port']}",
+            "--token-file",
+            str(broker["token_file"]),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_clean_env(),
+    )
+    try:
+        _rpc(
+            stdio,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18", "capabilities": {}},
+            },
+        )
+        cleared = _rpc(
+            stdio,
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "describe_session",
+                    "arguments": {"short_description": "Done: shipped", "description": None},
+                },
+            },
+        )["result"]
+    finally:
+        stdio.terminate()
+        stdio.wait(timeout=30)
+    assert cleared["isError"] is False, cleared
+    assert forge.described[1][1] == {"short_description": "Done: shipped", "description": None}
+
+    unavailable = subprocess.run(
+        [str(bin_dir / "forge-describe"), "--short", "x"],
+        env={"PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert unavailable.returncode == 3 and "not available" in unavailable.stderr

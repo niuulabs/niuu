@@ -27,6 +27,7 @@ from pydantic_settings import (
 )
 
 from niuu.domain.observability import ObservabilityConfig
+from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 
 
 def _config_paths() -> list[_Path]:
@@ -230,6 +231,13 @@ class MimirServiceConfig(BaseSettings):
     categories: list[str] | None = Field(
         default=None,
         description="Category filter for domain-scoped Mímirs. None means all categories.",
+    )
+    platform_tenant_id: str = Field(
+        default=DEFAULT_PLATFORM_TENANT_ID,
+        description=(
+            "The org that runs this deployment. It alone reaches this instance's own "
+            "knowledge and the global mounts; other orgs reach only their own mounts."
+        ),
     )
     tenant_id: str = Field(default="", description="Owning tenant; enforced on instance API calls.")
 

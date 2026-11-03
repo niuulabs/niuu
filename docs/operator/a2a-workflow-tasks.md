@@ -67,9 +67,10 @@ is the reason); `metadata.error` carries the same text.
 
 #### Tasks that stop progressing
 
-Events drive every transition, and nothing emits one for a task nobody answers
-or a session that stops doing anything. A sweep (`a2a.stale_campaigns`) closes
-those, stops their session, and pushes the failure to the caller:
+Events drive every transition, and nothing emits one for a task nobody answers,
+a session that stops doing anything, or a launch that ended before it recorded
+a session. A sweep (`a2a.stale_campaigns`) closes those, stops their session,
+and pushes the failure to the caller:
 
 | Expiry reason | When | Bound |
 |---|---|---|
@@ -77,6 +78,7 @@ those, stops their session, and pushes the failure to the caller:
 | `idle` | session idle (no agent working) | `idle_timeout_seconds` (2 h) |
 | `no_progress` | session reports busy but recorded nothing: no state change, no usage report, only heartbeats | `idle_timeout_seconds` |
 | `session_gone` | the session no longer exists | `idle_timeout_seconds` |
+| `launch_abandoned` | the task has no session and its launch lease has passed, for example because Ting died mid-launch. A session Forge holds for the task is stopped; the owner's next stream reconnect closes these too | `a2a.launch_lease_seconds` (60 s) |
 
 A flock workflow session reports `idle` as soon as no peer has a task in
 flight, and names the last peer outcome; the failure reason repeats it (for

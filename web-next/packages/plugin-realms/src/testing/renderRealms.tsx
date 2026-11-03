@@ -19,7 +19,12 @@ import {
 } from '@niuulabs/plugin-sdk';
 import { ShellContext, type ShellContextValue } from '@niuulabs/shell';
 import { createMockBudgetStream, createMockSessionStream } from '@niuulabs/plugin-ravn';
-import { createMockWorkflowService } from '@niuulabs/plugin-ting';
+import {
+  createMockDispatchBus,
+  createMockTingService,
+  createMockWorkService,
+  createMockWorkflowService,
+} from '@niuulabs/plugin-ting';
 import {
   createMockOdinReviewService,
   createMockValkyrieService,
@@ -54,6 +59,9 @@ export function defaultServices(log: CallLog, overrides: Record<string, unknown>
     'ravn.budget': createMockBudgetStream(),
     'ting.tracker': fakeTracker(log),
     'ting.workflows': createMockWorkflowService(),
+    ting: createMockTingService(),
+    'ting.work': createMockWorkService(),
+    'ting.dispatch': createMockDispatchBus(),
     volundr: fakeVolundr(log),
     'niuu.repos': {
       getRepos: () => fakeVolundr(log).getRepos(),
@@ -93,6 +101,7 @@ export function renderRealms(
   path: string,
   services: Record<string, unknown> = {},
   log: CallLog = createCallLog(),
+  enabled: PluginDescriptor[] = SHELL_PLUGINS,
 ): RenderRealmsResult {
   const rootRoute = createRootRoute({ component: () => <Outlet /> });
   // Stand-ins for the pages other plugins own, so the links on these pages resolve.
@@ -121,7 +130,7 @@ export function renderRealms(
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const all = defaultServices(log, services);
   const shell: ShellContextValue = {
-    enabled: SHELL_PLUGINS,
+    enabled,
     brand: null,
     version: '0.0.0',
     ctx: { tweaks: {}, setTweak: () => {} },
