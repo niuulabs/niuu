@@ -1005,6 +1005,10 @@ envoy:
         path_template: true
         methods: [GET]
         required_scope: "forge:session:room-role"
+      # A resident rings its owner's phone (the Guild push gateway's node; 404 elsewhere).
+      - path: /api/v1/forge/push/call
+        methods: [POST]
+        required_scope: "forge:push:call"
       - path: /api/v1/forge
         prefix: true
         methods: [GET, HEAD, POST, PUT, PATCH, DELETE]

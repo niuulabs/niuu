@@ -9,6 +9,12 @@ notification the Guild records, the push gateway sends:
 - a **widget** reload (``widgets``);
 - a silent **background** push (``background``) that lets iOS wake the app.
 
+Apart from the feed, a resident that wants to speak to its owner asks the gateway to
+ring the phone: a **VoIP** push (``voip``) whose body is the ``call.request`` frame the
+app also takes over its agent-service socket (:func:`validate_call_request`). iOS cuts
+off an app that gets a VoIP push without reporting a call, so nothing else is ever sent
+as one.
+
 The payload shapes below are a wire contract with the app (its Swift
 ``ForgeNotificationsActivityContent`` and its deep-link parser), so the limits and
 key names are constants here, not configuration. Everything in this module is pure.
@@ -51,6 +57,18 @@ BACKGROUND_REASON = "notification"
 #: Topic suffixes APNs requires for the non-alert push types.
 LIVE_ACTIVITY_TOPIC_SUFFIX = ".push-type.liveactivity"
 WIDGETS_TOPIC_SUFFIX = ".push-type.widgets"
+VOIP_TOPIC_SUFFIX = ".voip"
+
+#: The one frame a VoIP push carries: the app's ``AgentServiceInbound`` call request.
+CALL_REQUEST_TYPE = "call.request"
+#: The longest spoken text a call request may carry (``NotificationSpeak.text``).
+CALL_TEXT_MAX_CHARS = 600
+#: The largest ``POST /push/call`` body taken; APNs refuses a larger payload anyway.
+CALL_BODY_MAX_BYTES = APNS_MAX_PAYLOAD_BYTES
+#: ``priority`` values the app knows.
+CALL_PRIORITIES: frozenset[str] = frozenset({"now", "next_window"})
+#: The text of the operator's test ring.
+TEST_CALL_TEXT = "Test call"
 
 #: APNs answers that mean "this token will never work again": the token is deleted.
 APNS_GONE_STATUS = 410
@@ -83,6 +101,9 @@ class PushTokenKind(StrEnum):
     #: extension's handler. Stored and counted per environment so its source can be
     #: told apart; never pushed to (LEX-1186).
     WIDGET_FALLBACK = "widget_fallback"
+    #: The app's PushKit token: only ever a ``call.request`` from a resident (or the
+    #: operator's test ring), which iOS shows as an incoming call.
+    VOIP = "voip"
 
 
 #: Hex digits of a token's SHA-256 shown in logs: enough to tell two tokens apart,
@@ -122,6 +143,7 @@ class ApnsPushType(StrEnum):
     BACKGROUND = "background"
     LIVE_ACTIVITY = "liveactivity"
     WIDGETS = "widgets"
+    VOIP = "voip"
 
 
 class PushTestKind(StrEnum):
@@ -132,6 +154,8 @@ class PushTestKind(StrEnum):
     LIVE_ACTIVITY = "live_activity"
     LIVE_ACTIVITY_START = "live_activity_start"
     WIDGET = "widget"
+    #: A ``call.request`` saying "Test call": the phone rings, and Answer starts a call.
+    VOIP = "voip"
 
     @property
     def token_kind(self) -> PushTokenKind:
@@ -158,6 +182,8 @@ def apns_topic(bundle_id: str, push_type: ApnsPushType) -> str:
         return bundle_id + LIVE_ACTIVITY_TOPIC_SUFFIX
     if push_type is ApnsPushType.WIDGETS:
         return bundle_id + WIDGETS_TOPIC_SUFFIX
+    if push_type is ApnsPushType.VOIP:
+        return bundle_id + VOIP_TOPIC_SUFFIX
     return bundle_id
 
 
@@ -552,3 +578,135 @@ def widget_payload() -> dict[str, Any]:
 def background_payload() -> dict[str, Any]:
     """The silent push that lets iOS wake the app to read every server it knows."""
     return {"aps": {"content-available": 1}, "forge": {"reason": BACKGROUND_REASON}}
+
+
+# -- Calls (VoIP) ---------------------------------------------------------------
+
+
+class CallRequestError(ValueError):
+    """A ring request that is not a call request the app takes: never pushed."""
+
+
+@dataclass(frozen=True)
+class CallRequest:
+    """A validated ``call.request`` frame, ready to be a VoIP push's payload."""
+
+    request_id: str
+    #: The session the phone shows and checks against its allow-list (a resident's id).
+    session_id: str
+    frame: Mapping[str, Any]
+    expires_at: datetime | None = None
+
+
+def _expiry(value: Any) -> datetime | None:
+    """``expiresAt`` as the app reads it: ISO 8601, or epoch milliseconds."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise CallRequestError("payload.expiresAt is not a time")
+    if isinstance(value, int | float):
+        return datetime.fromtimestamp(value / 1000, tz=UTC)
+    parsed = _parse_time(value)
+    if parsed is None:
+        raise CallRequestError("payload.expiresAt is not ISO 8601 or epoch milliseconds")
+    return parsed
+
+
+def validate_call_request(request_id: str, frame: Any, *, now: datetime) -> CallRequest:
+    """Check a ring request against the frame contract, or raise :class:`CallRequestError`.
+
+    The frame is the socket's ``call.request`` (``type``, ``id`` and a ``payload`` with
+    ``id``, ``source``, ``session {host, id, name}``, ``text``, ``notificationId``,
+    ``priority`` and ``expiresAt``). It must name ``request_id``, carry a non-empty text
+    of at most :data:`CALL_TEXT_MAX_CHARS` characters and a session id, and not be
+    expired. Only such a frame is ever sent as a VoIP push.
+    """
+    if not isinstance(frame, Mapping):
+        raise CallRequestError("frame is not an object")
+    if frame.get("type") != CALL_REQUEST_TYPE:
+        raise CallRequestError(f"frame.type must be {CALL_REQUEST_TYPE!r}")
+    frame_id = frame.get("id")
+    if not isinstance(frame_id, str) or not frame_id.strip():
+        raise CallRequestError("frame.id is missing")
+    if frame_id != request_id:
+        raise CallRequestError("frame.id is not the request_id")
+    payload = frame.get("payload")
+    if not isinstance(payload, Mapping):
+        raise CallRequestError("frame.payload is not an object")
+    if payload.get("id", frame_id) != frame_id:
+        raise CallRequestError("payload.id is not the frame's id")
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise CallRequestError("payload.text is missing")
+    if len(text) > CALL_TEXT_MAX_CHARS:
+        raise CallRequestError(f"payload.text is longer than {CALL_TEXT_MAX_CHARS} characters")
+    session = payload.get("session")
+    if not isinstance(session, Mapping):
+        raise CallRequestError("payload.session is not an object")
+    for key in ("id", "host"):
+        value = session.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise CallRequestError(f"payload.session.{key} is missing")
+    session_id = str(session["id"])
+    priority = payload.get("priority")
+    if priority is not None and priority not in CALL_PRIORITIES:
+        raise CallRequestError(f"payload.priority must be one of {sorted(CALL_PRIORITIES)}")
+    expires_at = _expiry(payload.get("expiresAt"))
+    if expires_at is not None and expires_at <= now:
+        raise CallRequestError("the call request has expired")
+    return CallRequest(
+        request_id=frame_id, session_id=session_id, frame=frame, expires_at=expires_at
+    )
+
+
+def call_expiration(expires_at: datetime | None, *, now: datetime, ring_seconds: int) -> int:
+    """``apns-expiration`` of a ring: ``min(expiresAt, now + ring_seconds)``, in Unix
+    seconds. A ring that arrives late is worse than none."""
+    latest = int(now.timestamp()) + ring_seconds
+    if expires_at is None:
+        return latest
+    return min(int(expires_at.timestamp()), latest)
+
+
+def voip_payload(frame: Mapping[str, Any]) -> dict[str, Any]:
+    """A VoIP push's payload: the frame itself, without ``aps`` (the app ignores it)."""
+    return {key: value for key, value in frame.items() if key != "aps"}
+
+
+#: The session a test ring names unless the operator names one.
+TEST_CALL_SESSION_ID = "forge-push-test"
+
+
+def operator_test_call_frame(
+    request_id: str,
+    *,
+    host: str,
+    now: datetime,
+    ring_seconds: int,
+    session_id: str | None = None,
+    session_name: str | None = None,
+) -> dict[str, Any]:
+    """The operator's test ring: a minimal ``call.request`` saying :data:`TEST_CALL_TEXT`.
+
+    The phone rings only for a session on its "May call me" list. Without
+    ``session_id`` the frame names :data:`TEST_CALL_SESSION_ID` on ``host``: the first
+    ring is refused and lists it there, and the next one rings once it is switched on.
+    """
+    expires_at = datetime.fromtimestamp(int(now.timestamp()) + ring_seconds, tz=UTC)
+    session_id = session_id or TEST_CALL_SESSION_ID
+    return {
+        "type": CALL_REQUEST_TYPE,
+        "id": request_id,
+        "payload": {
+            "id": request_id,
+            "source": "forge",
+            "session": {
+                "host": host,
+                "id": session_id,
+                "name": session_name or "Forge push test",
+            },
+            "text": TEST_CALL_TEXT,
+            "priority": "now",
+            "expiresAt": expires_at.isoformat().replace("+00:00", "Z"),
+        },
+    }

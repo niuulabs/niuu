@@ -212,6 +212,33 @@ class TestRegistration:
         assert [d.token for d in widgets] == ["widget-a"]
         assert [d.token for d in alerts] == ["alert-a"]
 
+    async def test_a_voip_token_is_kept_like_the_other_kinds(self, stores):
+        await stores.registry.upsert(_device("alert-a", install_id=INSTALL))
+        voip = await stores.registry.upsert(
+            _device("voip-a", kind=PushTokenKind.VOIP, install_id=INSTALL, environment="sandbox")
+        )
+
+        # One device for the install; the PushKit token in its own credential.
+        [connection] = await stores.connections()
+        row = next(r for r in stores.state.rows.values() if r.kind == "voip")
+        assert row.credential_name == f"{connection.credential_name}-voip"
+        assert await stores.secret(row.credential_name) == {"device_token": "voip-a"}
+        assert row.environment == "sandbox"
+        listed = await stores.registry.list_for_owner("user-1", kinds=[PushTokenKind.VOIP])
+        assert [(d.token, d.environment) for d in listed] == [("voip-a", "sandbox")]
+        assert voip.connection_id == connection.id
+        # A dead PushKit token goes alone; the device and its alert token stay.
+        assert await stores.registry.delete_registration(voip.id)
+        assert [d.kind for d in await stores.registry.list_for_owner("user-1")] == [
+            PushTokenKind.ALERT
+        ]
+
+    async def test_a_voip_token_needs_the_gateway_node(self):
+        stores = Stores(kinds=(PushTokenKind.ALERT,))
+
+        with pytest.raises(UnsupportedTokenKindError, match="does not run the push gateway"):
+            await stores.registry.upsert(_device("v", kind=PushTokenKind.VOIP, install_id=INSTALL))
+
     async def test_a_device_known_by_its_alert_token_becomes_the_install(self, stores):
         legacy = await stores.registry.upsert(_device("alert-a"))
         [connection] = await stores.connections()

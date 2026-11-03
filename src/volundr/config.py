@@ -1063,6 +1063,38 @@ class PushBackgroundConfig(BaseModel):
     )
 
 
+class PushCallsConfig(BaseModel):
+    """Rings: a resident's ``call.request`` sent to its owner's phone as a VoIP push
+    (``POST /api/v1/forge/push/call``, scope ``forge:push:call``).
+
+    iOS cuts off an app that gets VoIP pushes without reporting a call, so only a
+    validated call request is ever sent, and each owner's rings are capped.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Serve POST /push/call on the push gateway's node.",
+    )
+    max_per_hour: int = Field(
+        default=6,
+        ge=1,
+        le=60,
+        description=(
+            "Rings per owner in any rolling hour; more answer 429. A request id rung "
+            "again (an escalation) counts once."
+        ),
+    )
+    ring_seconds: int = Field(
+        default=60,
+        ge=10,
+        le=300,
+        description=(
+            "apns-expiration is at most this far ahead (and never past the request's "
+            "expiresAt): a ring that arrives late is worse than none."
+        ),
+    )
+
+
 class PushGatewayConfig(BaseModel):
     """The push gateway: Apple pushes for every notification of this server's Guild.
 
@@ -1177,6 +1209,7 @@ class PushGatewayConfig(BaseModel):
     live_activity: PushLiveActivityConfig = Field(default_factory=PushLiveActivityConfig)
     widgets: PushWidgetsConfig = Field(default_factory=PushWidgetsConfig)
     background: PushBackgroundConfig = Field(default_factory=PushBackgroundConfig)
+    calls: PushCallsConfig = Field(default_factory=PushCallsConfig)
 
     @model_validator(mode="after")
     def _needs_guild(self) -> "PushGatewayConfig":

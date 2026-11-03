@@ -1880,6 +1880,24 @@ def test_forge_envoy_authorization_route_for_room_role_endpoint_is_valid():
     assert matched.required_scope == "forge:session:room-role"
 
 
+def test_forge_envoy_authorization_admits_a_residents_ring_before_the_forge_prefix():
+    """A resident's forge:push:call credential reaches POST /push/call; the first match
+    wins, so the route precedes the /api/v1/forge prefix (which has no required_scope
+    and would refuse the scoped token)."""
+    from identity.authz_config import AuthorizationGatewayConfig, JWTMetadataProvider
+
+    with open(CHART_DIR / "values.yaml") as fh:
+        values = yaml.safe_load(fh)
+    config = AuthorizationGatewayConfig(
+        routes=values["envoy"]["authorization"]["routes"],
+        providers=[JWTMetadataProvider(issuer="https://issuer.test", audiences=["volundr"])],
+    )
+    matched = next(
+        r for r in config.routes if "POST" in r.methods and r.matches("/api/v1/forge/push/call")
+    )
+    assert matched.required_scope == "forge:push:call"
+
+
 class TestResidentWorkloadIdentityMapping:
     """workloadIdentity.residentMapping — admits resident ServiceAccounts and
     derives ravn_id per-caller from the verified subject, instead of every

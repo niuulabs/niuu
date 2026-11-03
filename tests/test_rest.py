@@ -257,7 +257,7 @@ class TestDeviceEndpoints:
         second = client.get("/api/v1/forge/devices", headers={"x-auth-user-id": "user-2"}).json()
         assert [d["token"] for d in second] == ["tok-1"]
 
-    @pytest.mark.parametrize("field", [{"kind": "voip"}, {"activity_id": "x" * 201}])
+    @pytest.mark.parametrize("field", [{"kind": "fax"}, {"activity_id": "x" * 201}])
     def test_register_rejects_unknown_values(self, client, field):
         resp = client.post(
             "/api/v1/forge/devices",
@@ -359,6 +359,8 @@ class TestDeviceEndpoints:
         flags = TestClient(app).get("/api/v1/forge/feature-flags").json()
 
         assert flags["capabilities"]["push_installs"] is advertised
+        # The app registers its PushKit token only where this says so.
+        assert flags["capabilities"]["push_voip"] is advertised
 
     def test_requires_authentication(self, client):
         # No x-auth-user-id header -> no principal -> 401.
