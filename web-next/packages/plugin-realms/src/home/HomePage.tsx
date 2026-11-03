@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
-import { Link, useNavigate } from '@tanstack/react-router';
+import { Link } from '@tanstack/react-router';
 import { Boxes, MessageCircleQuestion, Terminal, Workflow } from 'lucide-react';
-import { usePluginEnabled, useSetUiMode } from '@niuulabs/shell';
+import { usePluginEnabled } from '@niuulabs/shell';
 import { reviewKindLabel, useDecideReview, type ReviewItem } from '@niuulabs/plugin-valkyrie';
 import type { Session } from '@niuulabs/plugin-volundr';
 import { Chip, EmptyState, ErrorState, LoadingState, StateDot } from '@niuulabs/ui';
@@ -264,7 +264,7 @@ function Panel({
 }
 
 /**
- * The Simple-mode landing page: what do you want to do, what is waiting on you,
+ * The landing page: what do you want to do, what is waiting on you,
  * and what you were in the middle of. Everything here links somewhere that already
  * exists; the page owns no state of its own beyond what it has just decided.
  */
@@ -274,10 +274,7 @@ export function HomePage() {
   const status = useHomeStatus();
   const sessions = useDomainSessions();
   const decide = useDecideReview();
-  const setUiMode = useSetUiMode();
-  const navigate = useNavigate();
   const [decided, setDecided] = useState<string[]>([]);
-  const [switchError, setSwitchError] = useState<string | null>(null);
 
   const pending = home.pendingReviews.filter((item) => !decided.includes(item.itemId));
   const blocked = needsYouSessions(sessions.data);
@@ -300,15 +297,6 @@ export function HomePage() {
       { itemId: item.itemId, decision },
       { onError: () => setDecided((ids) => ids.filter((id) => id !== item.itemId)) },
     );
-  }
-
-  function openDashboard() {
-    setSwitchError(null);
-    setUiMode('advanced')
-      .then(() => navigate({ to: '/volundr/forge' as never }))
-      .catch((cause: unknown) =>
-        setSwitchError(cause instanceof Error ? cause.message : String(cause)),
-      );
   }
 
   return (
@@ -427,22 +415,6 @@ export function HomePage() {
           </Panel>
         </div>
       )}
-
-      <div className="niuu:flex niuu:items-center niuu:gap-3">
-        <button
-          type="button"
-          className={`${LINK} niuu:self-start`}
-          onClick={openDashboard}
-          data-testid="home-open-advanced"
-        >
-          Skip this and open the dashboard (Advanced) ›
-        </button>
-        {switchError ? (
-          <span className="niuu:text-[11px] niuu:text-critical-fg" role="alert">
-            {switchError}
-          </span>
-        ) : null}
-      </div>
     </div>
   );
 }

@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { UI_MODE_STORAGE_KEY } from '@niuulabs/shell';
 import { createSeedRealms } from '@niuulabs/plugin-valkyrie';
 import {
   createCallLog,
@@ -130,7 +129,6 @@ describe('RealmPage with a running resident', () => {
 
   it('picks a workflow before launching it into the realm', async () => {
     const user = userEvent.setup();
-    localStorage.setItem(UI_MODE_STORAGE_KEY, 'advanced');
     const log = createCallLog();
     renderRealms('/realms/valhalla', await populated(log), log);
     await screen.findByTestId('realm-page');

@@ -10,8 +10,8 @@ vi.mock('@tanstack/react-router', () => ({
 
 const mockSearch = vi.hoisted(() => ({ current: {} as { id?: string } }));
 
-vi.mock('./SimpleWorkflowsPage', () => ({
-  SimpleWorkflowsPage: () => <div data-testid="simple-page" />,
+vi.mock('./WorkflowCatalogPage', () => ({
+  WorkflowCatalogPage: () => <div data-testid="catalog-page" />,
 }));
 
 vi.mock('./WorkflowBuilderPage', () => ({
@@ -22,7 +22,7 @@ describe('WorkflowsRoute', () => {
   it('renders the workflow catalog in every interface mode', () => {
     mockSearch.current = {};
     render(<WorkflowsRoute />);
-    expect(screen.getByTestId('simple-page')).toBeInTheDocument();
+    expect(screen.getByTestId('catalog-page')).toBeInTheDocument();
   });
 
   it('preserves historical editor deep links carrying a workflow id', () => {

@@ -2,8 +2,8 @@
  * WorkflowStrip — a horizontal, read-only picture of how a workflow runs.
  *
  * Same derivation as the builder's PipelineView (`topologicalSort` over
- * `structuralWorkflowEdges`), laid out left to right for the Simple-mode
- * workflows page: stages are boxes, gates are diamonds, the end node is
+ * `structuralWorkflowEdges`), laid out left to right for the workflow
+ * catalog: stages are boxes, gates are diamonds, the end node is
  * dashed. Diamonds are where the run stops and waits for a person.
  *
  * Owner: plugin-ting.

@@ -102,7 +102,7 @@ describe('NewRealmPage', () => {
     await user.click(screen.getByTestId('realm-go'));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('test connections');
-    expect(within(alert).getByRole('link', { name: 'Advanced mode' })).toBeInTheDocument();
+    expect(within(alert).getByRole('link', { name: 'its page' })).toBeInTheDocument();
     expect(screen.getByTestId('recipe-step-realm')).toHaveAttribute('data-state', 'todo');
   });
 });

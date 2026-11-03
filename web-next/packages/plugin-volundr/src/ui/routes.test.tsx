@@ -62,12 +62,6 @@ vi.mock('@tanstack/react-router', () => ({
   ),
 }));
 
-const uiModeState = vi.hoisted(() => ({ mode: 'advanced' as 'simple' | 'advanced' }));
-
-vi.mock('@niuulabs/shell', () => ({
-  useUiMode: () => uiModeState.mode,
-}));
-
 // ---------------------------------------------------------------------------
 // Wrapper
 // ---------------------------------------------------------------------------
@@ -115,20 +109,12 @@ beforeEach(() => {
   localStorage.clear();
   routeState.search = {};
   routeState.navigate.mockReset();
-  uiModeState.mode = 'advanced';
 });
 
 describe('VolundrSessionsRoute', () => {
-  it('renders the full forge console in advanced mode', () => {
-    uiModeState.mode = 'advanced';
+  it('renders the full forge console', () => {
     wrap(<VolundrSessionsRoute />);
     expect(screen.getByTestId('sessions-page')).toBeInTheDocument();
-  });
-
-  it('renders the calm simple list in simple mode', () => {
-    uiModeState.mode = 'simple';
-    wrap(<VolundrSessionsRoute />);
-    expect(screen.getByTestId('simple-sessions-page')).toBeInTheDocument();
   });
 });
 

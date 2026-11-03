@@ -33,22 +33,22 @@ export interface RecipeStep {
   id: string;
   label: string;
   /** Where the partial state is visible if this step fails. */
-  advancedPath: string;
+  detailPath: string;
 }
 
 export const RECIPE_STEPS: RecipeStep[] = [
-  { id: 'validate', label: 'check the draft', advancedPath: '/realms' },
-  { id: 'connections', label: 'test connections', advancedPath: '/settings/integrations' },
-  { id: 'project', label: 'set up the project', advancedPath: '/volundr' },
-  { id: 'realm', label: 'create the workspace', advancedPath: '/valkyrie' },
-  { id: 'memory', label: 'create workspace memory', advancedPath: '/mimir/registry' },
-  { id: 'routing', label: 'route memory writes', advancedPath: '/mimir/registry' },
-  { id: 'persona', label: 'write the persona', advancedPath: '/ravn/personas' },
-  { id: 'trust', label: 'grant trust', advancedPath: '/valkyrie' },
-  { id: 'jobs', label: 'schedule standing jobs', advancedPath: '/ravn' },
-  { id: 'board', label: 'import the tracker board', advancedPath: '/ting/sagas' },
-  { id: 'charter', label: 'write the charter to memory', advancedPath: '/mimir' },
-  { id: 'resident', label: 'start the resident', advancedPath: '/ravn/ravens' },
+  { id: 'validate', label: 'check the draft', detailPath: '/realms' },
+  { id: 'connections', label: 'test connections', detailPath: '/settings/integrations' },
+  { id: 'project', label: 'set up the project', detailPath: '/volundr' },
+  { id: 'realm', label: 'create the workspace', detailPath: '/valkyrie' },
+  { id: 'memory', label: 'create workspace memory', detailPath: '/mimir/registry' },
+  { id: 'routing', label: 'route memory writes', detailPath: '/mimir/registry' },
+  { id: 'persona', label: 'write the persona', detailPath: '/ravn/personas' },
+  { id: 'trust', label: 'grant trust', detailPath: '/valkyrie' },
+  { id: 'jobs', label: 'schedule standing jobs', detailPath: '/ravn' },
+  { id: 'board', label: 'import the tracker board', detailPath: '/ting/sagas' },
+  { id: 'charter', label: 'write the charter to memory', detailPath: '/mimir' },
+  { id: 'resident', label: 'start the resident', detailPath: '/ravn/ravens' },
 ];
 
 export type StepState = 'todo' | 'running' | 'done' | 'failed';

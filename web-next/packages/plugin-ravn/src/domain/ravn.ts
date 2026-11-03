@@ -140,7 +140,7 @@ export const ravnSchema = z
     flockMemberId: z.string().uuid().optional(),
     flockRole: z.string().optional(),
     flockPeerId: z.string().optional(),
-    /** The realm this resident is deployed for (Simple mode), by id. */
+    /** The realm this resident is deployed for, by id. */
     realmId: z.string().uuid().optional(),
     desiredState: z.enum(['running', 'suspended', 'deleted']).optional(),
     observedState: z

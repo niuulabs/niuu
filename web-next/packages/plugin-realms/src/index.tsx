@@ -21,9 +21,6 @@ export const realmsPlugin = definePlugin({
   title: 'Workspaces',
   subtitle: 'where work happens',
   tabs: REALMS_TABS.map((tab) => ({ ...tab })),
-  simple: {
-    tabs: REALMS_TABS.map((tab) => tab.id),
-  },
   routes: (rootRoute) => [
     createRoute({ getParentRoute: () => rootRoute, path: '/realms', component: RealmsHomePage }),
     createRoute({

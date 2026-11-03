@@ -64,7 +64,7 @@ export interface QuickLaunchOptions {
 
 /**
  * Starts a session from the small set of choices the quick launch dialog and the
- * Simple-mode launch page both collect, then takes the operator to it.
+ * new session page both collect, then takes the operator to it.
  */
 export function useQuickLaunch() {
   const volundr = useService<IVolundrService>('volundr');

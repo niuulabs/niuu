@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, fireEvent } from '@testing-library/react';
 import type { PersonaSummary } from '@niuulabs/domain';
-import { SimpleLaunchPage } from './SimpleLaunchPage';
+import { NewSessionPage } from './NewSessionPage';
 import { renderWithVolundr } from '../testing/renderWithVolundr';
 import { createMockVolundrService, createMockSessionStore } from '../adapters/mock';
 import type { IVolundrService } from '../ports/IVolundrService';
@@ -64,14 +64,14 @@ function renderPage(
   service: IVolundrService = createMockVolundrService(),
   extraServices?: Record<string, unknown>,
 ) {
-  return renderWithVolundr(<SimpleLaunchPage />, {
+  return renderWithVolundr(<NewSessionPage />, {
     service,
     sessionStore: createMockSessionStore(),
     extraServices,
   });
 }
 
-describe('SimpleLaunchPage', () => {
+describe('NewSessionPage', () => {
   beforeEach(() => {
     navigate.mockClear();
     setSearch({});
@@ -84,7 +84,7 @@ describe('SimpleLaunchPage', () => {
     expect(
       screen.getByText('It asks before anything risky; you answer in the chat.'),
     ).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByTestId('simple-launch-repo')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('new-session-repo')).toBeInTheDocument());
   });
 
   it('fetches branches after repository selection and displays the fetched options', async () => {
@@ -94,7 +94,7 @@ describe('SimpleLaunchPage', () => {
     renderPage(service, {
       'niuu.repos': { getRepos: async () => repos, getBranches },
     });
-    const select = await screen.findByTestId('simple-launch-repo');
+    const select = await screen.findByTestId('new-session-repo');
     expect(getBranches).not.toHaveBeenCalled();
     fireEvent.change(select, { target: { value: repos[0]!.cloneUrl } });
     expect(await screen.findByRole('option', { name: 'release' })).toBeInTheDocument();
@@ -104,7 +104,7 @@ describe('SimpleLaunchPage', () => {
   it('lists what happens next and the most recent sessions', async () => {
     renderPage();
     expect(screen.getByText('What happens next')).toBeInTheDocument();
-    const recent = await screen.findByTestId('simple-launch-recent');
+    const recent = await screen.findByTestId('new-session-recent');
     await waitFor(() => expect(recent.querySelectorAll('a').length).toBeGreaterThan(0));
     expect(recent.querySelectorAll('a').length).toBeLessThanOrEqual(3);
   });
@@ -117,11 +117,11 @@ describe('SimpleLaunchPage', () => {
     });
     renderPage();
 
-    expect(screen.getByTestId('simple-launch-task')).toHaveValue('Fix the failing auth tests');
+    expect(screen.getByTestId('new-session-task')).toHaveValue('Fix the failing auth tests');
     await waitFor(() =>
-      expect(screen.getByTestId('simple-launch-repo')).toHaveValue('github.com/niuulabs/volundr'),
+      expect(screen.getByTestId('new-session-repo')).toHaveValue('github.com/niuulabs/volundr'),
     );
-    expect(screen.getByTestId('simple-launch-branch')).toHaveValue('develop');
+    expect(screen.getByTestId('new-session-branch')).toHaveValue('develop');
   });
 
   it('starts a session with the chosen engine and repository, then opens it', async () => {
@@ -131,13 +131,13 @@ describe('SimpleLaunchPage', () => {
     setSearch({ repo: 'github.com/niuulabs/volundr', branch: 'main' });
     renderPage(service);
 
-    fireEvent.change(screen.getByTestId('simple-launch-task'), {
+    fireEvent.change(screen.getByTestId('new-session-task'), {
       target: { value: 'Fix the failing auth tests' },
     });
-    const codex = await screen.findByTestId('simple-launch-engine-codex');
+    const codex = await screen.findByTestId('new-session-engine-codex');
     fireEvent.click(codex);
-    await waitFor(() => expect(screen.getByTestId('simple-launch-start')).toBeEnabled());
-    fireEvent.click(screen.getByTestId('simple-launch-start'));
+    await waitFor(() => expect(screen.getByTestId('new-session-start')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('new-session-start'));
 
     await waitFor(() => expect(startSession).toHaveBeenCalledTimes(1));
     const request = startSession.mock.calls[0]![0];
@@ -164,9 +164,9 @@ describe('SimpleLaunchPage', () => {
     setSearch({ repo: 'github.com/niuulabs/volundr' });
     renderPage(service);
 
-    const task = screen.getByTestId('simple-launch-task');
+    const task = screen.getByTestId('new-session-task');
     fireEvent.change(task, { target: { value: 'Ship it' } });
-    await waitFor(() => expect(screen.getByTestId('simple-launch-start')).toBeEnabled());
+    await waitFor(() => expect(screen.getByTestId('new-session-start')).toBeEnabled());
     fireEvent.keyDown(task, { key: 'Enter', metaKey: true });
 
     await waitFor(() => expect(startSession).toHaveBeenCalledTimes(1));
@@ -176,25 +176,25 @@ describe('SimpleLaunchPage', () => {
     setSearch({ repo: 'github.com/niuulabs/volundr', back: '/realms/orders' });
     renderPage();
 
-    fireEvent.change(screen.getByTestId('simple-launch-task'), { target: { value: 'Do it' } });
-    await waitFor(() => expect(screen.getByTestId('simple-launch-start')).toBeEnabled());
-    fireEvent.click(screen.getByTestId('simple-launch-start'));
+    fireEvent.change(screen.getByTestId('new-session-task'), { target: { value: 'Do it' } });
+    await waitFor(() => expect(screen.getByTestId('new-session-start')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('new-session-start'));
 
     await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/realms/orders' }));
   });
 
   it('keeps the start button disabled until there is a task and a repository', async () => {
     renderPage();
-    await waitFor(() => expect(screen.getByTestId('simple-launch-repo')).toBeInTheDocument());
-    expect(screen.getByTestId('simple-launch-start')).toBeDisabled();
+    await waitFor(() => expect(screen.getByTestId('new-session-repo')).toBeInTheDocument());
+    expect(screen.getByTestId('new-session-start')).toBeDisabled();
 
-    fireEvent.change(screen.getByTestId('simple-launch-task'), { target: { value: 'Do it' } });
-    expect(screen.getByTestId('simple-launch-start')).toBeDisabled();
+    fireEvent.change(screen.getByTestId('new-session-task'), { target: { value: 'Do it' } });
+    expect(screen.getByTestId('new-session-start')).toBeDisabled();
 
-    fireEvent.change(screen.getByTestId('simple-launch-repo'), {
+    fireEvent.change(screen.getByTestId('new-session-repo'), {
       target: { value: 'github.com/niuulabs/volundr' },
     });
-    await waitFor(() => expect(screen.getByTestId('simple-launch-start')).toBeEnabled());
+    await waitFor(() => expect(screen.getByTestId('new-session-start')).toBeEnabled());
   });
 
   it('surfaces a launch failure instead of navigating', async () => {
@@ -205,12 +205,12 @@ describe('SimpleLaunchPage', () => {
     setSearch({ repo: 'github.com/niuulabs/volundr' });
     renderPage(service);
 
-    fireEvent.change(screen.getByTestId('simple-launch-task'), { target: { value: 'Do it' } });
-    await waitFor(() => expect(screen.getByTestId('simple-launch-start')).toBeEnabled());
-    fireEvent.click(screen.getByTestId('simple-launch-start'));
+    fireEvent.change(screen.getByTestId('new-session-task'), { target: { value: 'Do it' } });
+    await waitFor(() => expect(screen.getByTestId('new-session-start')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('new-session-start'));
 
     await waitFor(() =>
-      expect(screen.getByTestId('simple-launch-error')).toHaveTextContent('forge is full'),
+      expect(screen.getByTestId('new-session-error')).toHaveTextContent('forge is full'),
     );
     expect(navigate).not.toHaveBeenCalled();
   });
@@ -219,9 +219,9 @@ describe('SimpleLaunchPage', () => {
     setSearch({ repo: 'github.com/niuulabs/volundr', branch: 'main' });
     renderPage();
 
-    fireEvent.change(screen.getByTestId('simple-launch-task'), { target: { value: 'Do it' } });
-    fireEvent.click(await screen.findByTestId('simple-launch-engine-codex'));
-    fireEvent.click(screen.getByTestId('simple-launch-more-options'));
+    fireEvent.change(screen.getByTestId('new-session-task'), { target: { value: 'Do it' } });
+    fireEvent.click(await screen.findByTestId('new-session-engine-codex'));
+    fireEvent.click(screen.getByTestId('new-session-more-options'));
 
     const wizard = await screen.findByTestId('launch-wizard');
     const form = JSON.parse(wizard.textContent ?? '{}') as Record<string, string>;
@@ -241,14 +241,14 @@ describe('SimpleLaunchPage', () => {
       'ravn.personas': { listPersonas: async () => [persona('muninn'), persona('regin')] },
     });
 
-    const select = await screen.findByTestId('simple-launch-persona');
+    const select = await screen.findByTestId('new-session-persona');
     expect(select).toHaveValue('muninn');
     expect(screen.getByRole('option', { name: /regin/ })).toBeInTheDocument();
   });
 
   it('leaves the persona field out when no catalog is registered', async () => {
     renderPage();
-    await waitFor(() => expect(screen.getByTestId('simple-launch-repo')).toBeInTheDocument());
-    expect(screen.queryByTestId('simple-launch-persona')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('new-session-repo')).toBeInTheDocument());
+    expect(screen.queryByTestId('new-session-persona')).not.toBeInTheDocument();
   });
 });

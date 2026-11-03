@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { UI_MODE_STORAGE_KEY } from '@niuulabs/shell';
 import { createSeedRealms } from '@niuulabs/plugin-valkyrie';
 import {
   createCallLog,
@@ -54,40 +53,6 @@ describe('RealmPage', () => {
     expect(screen.queryByText(/LXA-1/)).not.toBeInTheDocument();
     await user.click(screen.getByTestId('queue-intake'));
     expect(await screen.findByText(/LXA-1/)).toBeInTheDocument();
-  });
-
-  it('sends you to the whole-page launch and workflow screens in Simple mode', async () => {
-    localStorage.setItem(UI_MODE_STORAGE_KEY, 'simple');
-    const user = userEvent.setup();
-    const log = createCallLog();
-    const { router } = renderRealms(
-      '/realms/valhalla',
-      { 'valkyrie.realms': await realmWithBinding(log) },
-      log,
-    );
-    await screen.findByTestId('realm-page');
-    await user.click(screen.getByTestId('realm-launch-session'));
-    await waitFor(() => expect(router.state.location.pathname).toBe('/volundr/sessions/new'));
-    expect(router.state.location.search).toMatchObject({
-      repo: 'niuulabs/volundr',
-      branch: 'dev',
-      persona: 'realm-valhalla',
-    });
-  });
-
-  it('sends you to the workflows page with the realm repository in Simple mode', async () => {
-    localStorage.setItem(UI_MODE_STORAGE_KEY, 'simple');
-    const user = userEvent.setup();
-    const log = createCallLog();
-    const { router } = renderRealms(
-      '/realms/valhalla',
-      { 'valkyrie.realms': await realmWithBinding(log) },
-      log,
-    );
-    await screen.findByTestId('realm-page');
-    await user.click(screen.getByTestId('realm-run-workflow'));
-    await waitFor(() => expect(router.state.location.pathname).toBe('/ting/workflows'));
-    expect(router.state.location.search).toMatchObject({ repo: 'niuulabs/volundr' });
   });
 
   it('shows a ticket at a gate at the top of the overview', async () => {
@@ -179,9 +144,8 @@ describe('RealmPage', () => {
     await screen.findByText('No such workspace');
   });
 
-  it('opens the launch wizard and the workflow modal from the header in Advanced mode', async () => {
+  it('opens the launch wizard and the workflow modal from the header', async () => {
     const user = userEvent.setup();
-    localStorage.setItem(UI_MODE_STORAGE_KEY, 'advanced');
     const log = createCallLog();
     renderRealms('/realms/valhalla', { 'valkyrie.realms': await realmWithBinding(log) }, log);
     await screen.findByTestId('realm-page');

@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { UI_MODE_STORAGE_KEY, readUiMode } from '@niuulabs/shell';
-import type { UserFeaturePreference } from '@niuulabs/plugin-sdk';
 import {
   createMockOdinReviewService,
   createSeedReviewItems,
@@ -65,26 +63,12 @@ function pendingReview(overrides: Partial<ReviewItem>): ReviewItem {
   return { ...seed!, ...overrides };
 }
 
-function fakeFeatures(update: (rows: UserFeaturePreference[]) => void) {
-  return {
-    getFeatureModules: async () => [],
-    toggleFeature: async () => {
-      throw new Error('not used');
-    },
-    getUserFeaturePreferences: async () => [],
-    updateUserFeaturePreferences: async (rows: UserFeaturePreference[]) => {
-      update(rows);
-      return rows;
-    },
-  };
-}
-
 const withSessions = { sessionStore: fakeSessionStore() };
 
 describe('homePlugin', () => {
-  it('is the Simple-mode landing page and nothing in Advanced', () => {
+  it('is a plain rail plugin with no tabs', () => {
     expect(homePlugin.id).toBe('home');
-    expect(homePlugin.simple).toMatchObject({ only: true, landing: true });
+    expect(homePlugin.system).toBeUndefined();
     expect(homePlugin.tabs).toBeUndefined();
     expect(homePlugin.title).toBe('Home');
   });
@@ -216,35 +200,5 @@ describe('HomePage', () => {
     });
     await screen.findByText('Nothing is waiting on you.');
     expect(await screen.findByTestId('home-continue')).toBeInTheDocument();
-  });
-
-  it('switches to Advanced through the preferences service and opens the dashboard', async () => {
-    const user = userEvent.setup();
-    const rows: UserFeaturePreference[][] = [];
-    const { router } = renderRealms('/home', {
-      ...withSessions,
-      features: fakeFeatures((written) => rows.push(written)),
-    });
-    await screen.findByTestId('home-page');
-    await user.click(screen.getByTestId('home-open-advanced'));
-    await waitFor(() => expect(router.state.location.pathname).toBe('/volundr/forge'));
-    expect(readUiMode()).toBe('advanced');
-    expect(rows[0]!.find((row) => row.featureKey === 'ui.mode')?.visible).toBe(true);
-    expect(rows[0]!.map((row) => row.featureKey)).toContain('home');
-  });
-
-  it('stays put and says why when the mode cannot be stored', async () => {
-    localStorage.setItem(UI_MODE_STORAGE_KEY, 'simple');
-    const user = userEvent.setup();
-    const features = fakeFeatures(() => {});
-    features.updateUserFeaturePreferences = async () => {
-      throw new Error('preferences endpoint is down');
-    };
-    const { router } = renderRealms('/home', { ...withSessions, features });
-    await screen.findByTestId('home-page');
-    await user.click(screen.getByTestId('home-open-advanced'));
-    expect(await screen.findByRole('alert')).toHaveTextContent('preferences endpoint is down');
-    expect(router.state.location.pathname).toBe('/home');
-    expect(readUiMode()).toBe('simple');
   });
 });

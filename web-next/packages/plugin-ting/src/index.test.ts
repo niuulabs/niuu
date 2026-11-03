@@ -12,9 +12,8 @@ function routeFor(path: string) {
 }
 
 describe('tingPlugin descriptor', () => {
-  it('shows Work and Workflows in Simple mode', () => {
+  it('is called Work, with its four tabs', () => {
     expect(tingPlugin).toMatchObject({ title: 'Work', subtitle: 'run and oversee work' });
-    expect(tingPlugin.simple).toMatchObject({ tabs: ['work', 'reviews', 'workflows', 'builder'] });
     expect(tingPlugin.tabs.map((tab) => tab.id)).toEqual([
       'work',
       'reviews',

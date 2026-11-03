@@ -2,10 +2,9 @@ import { createElement } from 'react';
 import { createRoute, redirect } from '@tanstack/react-router';
 import { SessionsIcon } from '@niuulabs/ui';
 import { definePlugin } from '@niuulabs/plugin-sdk';
-import { readUiMode } from '@niuulabs/shell';
 import { ForgePage } from './ui/ForgePage';
 import { VolundrPage } from './ui/VolundrPage';
-import { SimpleLaunchPage } from './ui/SimpleLaunchPage';
+import { NewSessionPage } from './ui/NewSessionPage';
 import { VolundrSessionsRoute, VolundrSessionRoute, VolundrArchivedRoute } from './ui/routes';
 import { LaunchCatalogPage } from './ui/LaunchCatalogPage';
 import { HistoryPage } from './ui/HistoryPage';
@@ -19,9 +18,6 @@ export const volundrPlugin = definePlugin({
   icon: createElement(SessionsIcon),
   title: 'Forge',
   subtitle: 'build and execute',
-  simple: {
-    tabs: ['sessions'],
-  },
   tabs: [
     { id: 'forge', label: 'Overview', path: '/volundr/forge' },
     { id: 'sessions', label: 'Sessions', path: '/volundr/sessions' },
@@ -39,7 +35,7 @@ export const volundrPlugin = definePlugin({
       path: '/volundr',
       beforeLoad: ({ location }) => {
         throw redirect({
-          to: (readUiMode() === 'simple' ? '/volundr/sessions' : '/volundr/forge') as never,
+          to: '/volundr/forge' as never,
           search: location.search as never,
         });
       },
@@ -63,7 +59,7 @@ export const volundrPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/volundr/sessions/new',
-      component: SimpleLaunchPage,
+      component: NewSessionPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -184,8 +180,7 @@ export {
   useNotificationReadState,
   useUnreadNotificationCount,
 } from './ui/hooks/useNotifications';
-export { SimpleSessionsPage } from './ui/SimpleSessionsPage';
-export { SimpleLaunchPage } from './ui/SimpleLaunchPage';
+export { NewSessionPage } from './ui/NewSessionPage';
 export { useSessionList, useSessionDetail } from './ui/hooks/useSessionStore';
 export { sessionActivityTs, compareSessionsByActivity } from './ui/sessions/sessionLabels';
 export {
