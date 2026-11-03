@@ -78,6 +78,7 @@ from volundr.domain.services.forge_session_launch import (
     with_forge_mcp,
     without_forge_mcp,
 )
+from volundr.domain.session_changes import SessionChanges
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjectionPort
 
@@ -417,6 +418,15 @@ class SessionService:
             return sessions
         states = await self._repository.get_read_states([s.id for s in sessions], principal.user_id)
         return [s.model_copy(update={"read_state": states.get(s.id)}) for s in sessions]
+
+    async def changes_since(self, cursor: int, principal: Principal | None) -> SessionChanges:
+        """Sessions written since *cursor*, counting the principal's own read state.
+
+        The ids are not access-checked: callers intersect them with what the
+        principal may list, so they never reveal a session on their own.
+        """
+        reader_id = principal.user_id if principal is not None else None
+        return await self._repository.changes_since(cursor, reader_id)
 
     async def get_read_state(self, session_id: UUID, principal: Principal) -> SessionReadState:
         session = await self._repository.get(session_id)

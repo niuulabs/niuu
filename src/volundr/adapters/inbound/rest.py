@@ -2380,7 +2380,15 @@ def create_router(
             "short_description, project, last_activity_at, unread, node} per session, "
             "newest activity first.",
         ),
-    ) -> list[SessionResponse | SessionRoomSummary] | list[dict]:
+        changed_since: int | None = Query(
+            default=None,
+            ge=0,
+            description="A cursor from a previous changed_since read (0 for the first). "
+            "Returns {cursor, ids, sessions}: ids names every session this listing "
+            "holds now, sessions only those written since the cursor (room summaries "
+            "always), and cursor is the one to send next.",
+        ),
+    ) -> list[SessionResponse | SessionRoomSummary] | list[dict] | dict:
         """List all sessions. Archived sessions are excluded by default.
 
         A session the caller owns (or is tenant-admin/viewer for) renders as
@@ -2393,9 +2401,20 @@ def create_router(
         """
         response.headers["X-Forge-Session-Scope"] = "local"
         started = time.perf_counter()
+        if changed_since is not None and (limit is not None or fields != "full"):
+            raise HTTPException(400, "changed_since lists the whole inventory: drop limit/fields")
         principal = await _optional_principal(request)
         if principal is None and _strict_identity_enabled(request):
+            if changed_since is not None:
+                return {"cursor": str(changed_since), "ids": [], "sessions": []}
             return []
+        # Read before the list, so a write the list sees but this misses is sent again
+        # next time (its transaction id is at or above the returned cursor).
+        changes = (
+            await forge.session_changes_since(changed_since, principal)
+            if changed_since is not None
+            else None
+        )
         sessions = await forge.list_sessions(
             status=status_filter,
             include_archived=include_archived,
@@ -2408,6 +2427,10 @@ def create_router(
             parent_session_id=parent_session_id,
             parent_instance_id=parent_instance_id,
         )
+        listed = [s.id for s in sessions]
+        owned_ids = frozenset(listed)
+        if changes is not None:
+            sessions = [s for s in sessions if s.id in changes.ids]
         sessions = await forge.with_read_states(sessions, principal)
         result: list[SessionResponse | SessionRoomSummary] = [
             _session_response(s) for s in sessions
@@ -2417,7 +2440,7 @@ def create_router(
             status=status_filter,
             include_archived=include_archived,
             principal=principal,
-            exclude_ids=frozenset(s.id for s in sessions),
+            exclude_ids=owned_ids,
         )
         room_sessions = _coordination_filtered(
             [s for s, _grant in room_pairs],
@@ -2443,6 +2466,15 @@ def create_router(
                 for item in result
             ]
         response.headers[FORGE_READ_MS_HEADER] = _read_ms(started)
+        if changes is not None:
+            # Room summaries ride along every time: they are few, and a grant change
+            # is not a session write, so the cursor cannot see it.
+            return {
+                "cursor": str(changes.cursor),
+                "ids": [str(i) for i in listed]
+                + [str(s.id) for s, _grant in room_pairs if s.id in room_session_ids],
+                "sessions": result,
+            }
         if fields == "summary":
             node = project_service.instance_id if project_service is not None else None
             return [_session_summary(item, node) for item in result]

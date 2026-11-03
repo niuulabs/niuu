@@ -98,6 +98,7 @@ from volundr.domain.models import (  # noqa: F401
 )
 from volundr.domain.projects import SessionCoordination
 from volundr.domain.push import PushTokenKind
+from volundr.domain.session_changes import SessionChanges
 from volundr.domain.session_participants import ParticipantRole, SessionParticipant
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 
@@ -200,6 +201,14 @@ class SessionRepository(ABC):
         change: SessionReadStateChange,
     ) -> SessionReadState:
         """Atomically apply a revision-checked read/unread action for this reader only."""
+
+    @abstractmethod
+    async def changes_since(self, cursor: int, reader_id: str | None) -> SessionChanges:
+        """Sessions written at or after *cursor*, counting *reader_id*'s read state.
+
+        ``cursor=0`` names every session. The returned cursor is the one to pass
+        next time; see ``SessionChanges``.
+        """
 
     @abstractmethod
     async def list_stale_running(self, older_than: datetime) -> list[Session]:

@@ -17,6 +17,7 @@ from volundr.domain.models import (
 )
 from volundr.domain.ports import SessionRepository
 from volundr.domain.projects import SessionCoordination
+from volundr.domain.session_changes import SessionChanges
 from volundr.domain.session_read_state import (
     SessionReadState,
     SessionReadStateChange,
@@ -339,6 +340,31 @@ class PostgresSessionRepository(SessionRepository):
             user_id,
         )
         return {row["id"]: SessionReadState.model_validate(dict(row)) for row in rows}
+
+    async def changes_since(self, cursor: int, reader_id: str | None) -> SessionChanges:
+        # One statement, so the cursor and the changed ids come from one snapshot.
+        # change_xid is set by trigger on every write (migration 000102). A cursor
+        # past this snapshot's xmax was issued by another database (one restored
+        # from a logical dump starts its transaction ids over): everything changed.
+        row = await self._pool.fetchrow(
+            """WITH snap AS (SELECT pg_current_snapshot() AS s),
+               since AS (
+                   SELECT CASE WHEN $1::text::xid8 > pg_snapshot_xmax(s)
+                               THEN '0'::xid8 ELSE $1::text::xid8 END AS xid
+                   FROM snap
+               )
+               SELECT pg_snapshot_xmin((SELECT s FROM snap))::text::bigint AS cursor,
+                   ARRAY(
+                       SELECT id FROM sessions
+                       WHERE change_xid >= (SELECT xid FROM since)
+                       UNION
+                       SELECT session_id FROM session_read_states
+                       WHERE user_id = $2 AND change_xid >= (SELECT xid FROM since)
+                   ) AS ids""",
+            str(cursor),
+            reader_id,
+        )
+        return SessionChanges(cursor=row["cursor"], ids=frozenset(row["ids"]))
 
     async def change_read_state(
         self,

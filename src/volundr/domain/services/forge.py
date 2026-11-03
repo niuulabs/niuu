@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from volundr.domain.services.stats import StatsService
     from volundr.domain.services.token import TokenService
     from volundr.domain.services.workspace import WorkspaceService
+    from volundr.domain.session_changes import SessionChanges
     from volundr.domain.session_participants import SessionParticipant
     from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 
@@ -221,6 +222,11 @@ class ForgeService:
         self, sessions: list[Session], principal: Principal | None
     ) -> list[Session]:
         return await self._session_service.with_read_states(sessions, principal)
+
+    async def session_changes_since(
+        self, cursor: int, principal: Principal | None
+    ) -> SessionChanges:
+        return await self._session_service.changes_since(cursor, principal)
 
     async def get_read_state(self, session_id: UUID, principal: Principal) -> SessionReadState:
         return await self._session_service.get_read_state(session_id, principal)

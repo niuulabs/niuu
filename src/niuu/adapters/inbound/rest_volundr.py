@@ -1926,8 +1926,10 @@ def create_volundr_router(
             default=None, ge=1, description="Only the N sessions with the newest activity."
         ),
         principal: Principal = Depends(extract_principal),
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         started = time.perf_counter()
+        if "changed_since" in request.query_params:
+            return await _session_changes(request, response, scope, principal, started)
         if scope == "local":
             instance = await _local_session_instance(service, principal, request)
             result = await _request_remote(
@@ -2050,6 +2052,59 @@ def create_volundr_router(
             )
         response.headers[FORGE_READ_MS_HEADER] = _read_ms(started)
         return sessions
+
+    async def _session_changes(
+        request: Request,
+        response: Response,
+        scope: str,
+        principal: Principal,
+        started: float,
+    ) -> dict[str, Any]:
+        """One host's ``changed_since`` read. A cursor belongs to one Forge's database."""
+        selected = request.query_params.get("instance_id")
+        if scope == "local":
+            instance = await _local_session_instance(service, principal, request)
+        elif selected:
+            instance = await _resolve_target_instance(service, principal, selected)
+        else:
+            raise HTTPException(
+                400, "changed_since reads one Forge: pass instance_id, or scope=local"
+            )
+        result = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path="/sessions",
+            params=_query_params(request),
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(result)
+        payload = _remote_json(result)
+        if isinstance(payload, list):
+            # A Forge from before changed_since answers with its whole inventory. That
+            # is a complete answer; cursor 0 asks it for everything again next time.
+            response.headers["X-Forge-Session-Changes"] = "full"
+            payload = {
+                "cursor": "0",
+                "ids": [item.get("id") for item in payload if isinstance(item, dict)],
+                "sessions": payload,
+            }
+        if (
+            not isinstance(payload, dict)
+            or not isinstance(payload.get("cursor"), str)
+            or not isinstance(payload.get("ids"), list)
+            or not isinstance(payload.get("sessions"), list)
+            or any(not isinstance(item, dict) or not item.get("id") for item in payload["sessions"])
+            or any(not isinstance(item, str) or not item for item in payload["ids"])
+        ):
+            raise HTTPException(502, "Invalid Forge session changes response")
+        sessions = [_with_instance(item, instance) for item in payload["sessions"]]
+        if session_owners is not None:
+            _with_parent_guild_ids(request, await _visible_instances(service, principal), sessions)
+        if scope == "local":
+            response.headers["X-Forge-Session-Scope"] = "local"
+        response.headers[FORGE_READ_MS_HEADER] = _read_ms(started)
+        return {"cursor": payload["cursor"], "ids": payload["ids"], "sessions": sessions}
 
     @router.get("/sessions/stream")
     async def stream_sessions(

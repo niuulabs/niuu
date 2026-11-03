@@ -682,6 +682,25 @@ Recommended timeout strategy:
 - if the stream goes silent beyond your liveness threshold, reconnect
 - after reconnect, refresh all sessions you still care about
 
+### Incremental session inventory (`changed_since`)
+
+Because the stream is not durable, a controller that keeps the whole inventory
+should poll it, but need not download it every time:
+
+```text
+GET /api/v1/forge/sessions?changed_since=0            -> {cursor, ids, sessions}
+GET /api/v1/forge/sessions?changed_since=<cursor>     -> {cursor, ids, sessions}
+```
+
+- `ids` names every session the listing holds now (deleted, archived or
+  restored sessions leave or join it); `sessions` carries only those written
+  since the cursor, plus every room summary. Send the returned `cursor` next time.
+- An id in `ids` you hold no row for became visible without a write (an access
+  change): read again with `changed_since=0`.
+- It combines with `status`/`include_archived` and the coordination filters,
+  not with `limit` or `fields` (400). Through the Guild host, pass `instance_id`
+  (or `scope=local`): a cursor belongs to one Forge's database.
+
 ### Session notifications (feed + `session_notification`)
 
 Forge keeps a durable, cursor-ordered notification feed. Entries come from three places:

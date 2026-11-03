@@ -268,6 +268,16 @@ class InMemorySessionRepository(SessionRepository):
             if s.status == SessionStatus.RUNNING and (s.last_active or s.created_at) <= older_than
         ]
 
+    async def changes_since(self, cursor, reader_id):
+        from volundr.domain.session_changes import SessionChanges
+
+        # Tests set changed_ids/change_cursor; otherwise every session reads as changed.
+        changed = getattr(self, "changed_ids", None)
+        return SessionChanges(
+            cursor=getattr(self, "change_cursor", cursor),
+            ids=frozenset(self._sessions if changed is None else changed),
+        )
+
     async def get_read_states(self, session_ids, user_id):
         from volundr.domain.session_read_state import SessionReadState
 
