@@ -20,7 +20,12 @@ from volundr.artifact_runtime import (
     resolve_tailnet_name,
     startup_backfill,
 )
-from volundr.config import ArtifactsConfig, HostIdentityConfig, ProjectsConfig
+from volundr.config import (
+    ArtifactsConfig,
+    HostIdentityConfig,
+    PresentedFilesConfig,
+    ProjectsConfig,
+)
 
 
 def _settings(
@@ -31,6 +36,7 @@ def _settings(
         projects=ProjectsConfig(instance_id=instance_id),
         server_public_host="100.66.123.128",
         artifacts=ArtifactsConfig(**artifacts),
+        presented_files=PresentedFilesConfig(public_base_url="http://thor.tail737f2a.ts.net"),
     )
 
 
@@ -89,6 +95,8 @@ def test_create_artifact_service_wires_notices_and_host():
     assert service._notices is notifications
     assert service._session_lookup is sessions.get_session
     assert isinstance(service._repository, PostgresArtifactPublicationRepository)
+    # Ingest keeps a transcript URL only when it is this Forge's own presented-file URL.
+    assert service._presented_file_base_url == "http://thor.tail737f2a.ts.net"
 
 
 def test_create_artifact_service_with_notices_off_records_silently(caplog):
