@@ -623,6 +623,8 @@ data:
       url: {{ tpl (required "bifrost.url must be the URL of the Bifrost service; Volundr does not host Bifrost" .Values.bifrost.url) . | quote }}
       timeout_seconds: {{ .Values.bifrost.timeoutSeconds | default 10.0 }}
       catalog_refresh_interval_seconds: {{ .Values.bifrost.catalogRefreshIntervalSeconds | default 60.0 }}
+      catalog_retry_initial_seconds: {{ .Values.bifrost.catalogRetryInitialSeconds | default 0.1 }}
+      catalog_retry_max_seconds: {{ .Values.bifrost.catalogRetryMaxSeconds | default 5.0 }}
       auth:
         adapter: {{ .Values.bifrost.auth.adapter | quote }}
         kwargs: {{ .Values.bifrost.auth.kwargs | toJson }}
