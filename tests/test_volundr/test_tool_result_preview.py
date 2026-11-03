@@ -632,6 +632,18 @@ def test_preview_cache_contains_untrusted_identifiers(tmp_path, session_id, tool
     assert list(tmp_path.iterdir()) == [cache.root]
 
 
+def test_preview_cache_hashes_the_requested_edge_into_the_name(tmp_path):
+    cache = PreviewCache(tmp_path / "cache")
+    cache.put("session-1", "tool-1", b"small", max_edge=320)
+    cache.put("session-1", "tool-1", b"large", max_edge=1600)
+
+    assert cache.get("session-1", "tool-1", max_edge=320) == b"small"
+    assert cache.get("session-1", "tool-1", max_edge=1600) == b"large"
+    names = {path.stem for path in cache.root.glob("*/*.jpg")}
+    assert len(names) == 2
+    assert all(len(name) == 40 and set(name) <= set("0123456789abcdef") for name in names)
+
+
 @pytest.mark.asyncio
 async def test_multiple_images_use_separate_preview_cache_entries(tmp_path) -> None:
     event_log = _CountingEventLog()
