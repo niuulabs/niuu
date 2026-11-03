@@ -7,6 +7,8 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('shiki', () => ({
   codeToHtml: vi.fn().mockRejectedValue(new Error('no highlight in test')),
 }));
+const search: { item?: string } = {};
+vi.mock('@tanstack/react-router', () => ({ useSearch: () => search }));
 import { createMockOdinReviewService, createSeedReviewItems } from '../adapters/mock';
 import { LIST_LIMIT, type ReviewItem } from '../domain';
 import { wrapWithValkyrie } from '../testing/wrapWithValkyrie';
@@ -82,6 +84,25 @@ describe('InboxPage', () => {
     expect(screen.getByTestId('review-detail')).toHaveTextContent('Action draft');
     expect(screen.getByTestId('inbox-pending-count')).toHaveTextContent('3 pending');
     expect(screen.getByText('1 high risk')).toBeInTheDocument();
+  });
+
+  it('opens the review a link names, even when it is not on the loaded page', async () => {
+    const service = createMockOdinReviewService();
+    const linked = (await service.getReview('review:evolution_build:seed01'))!;
+    // The linked review is held back from the list, as a later page would be.
+    const listReviews = service.listReviews.bind(service);
+    service.listReviews = async (filters) =>
+      (await listReviews(filters)).filter((item) => item.itemId !== linked.itemId);
+    search.item = linked.itemId;
+    try {
+      renderInbox({ 'valkyrie.reviews': service });
+      await screen.findAllByTestId('review-card');
+      await waitFor(() =>
+        expect(screen.getByTestId('review-detail')).toHaveTextContent(linked.title),
+      );
+    } finally {
+      delete search.item;
+    }
   });
 
   it('opens the artifact tabs for a held build', async () => {

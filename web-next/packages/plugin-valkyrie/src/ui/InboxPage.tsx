@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useSearch } from '@tanstack/react-router';
 import {
   ChevronLeft,
   ChevronRight,
@@ -20,7 +21,7 @@ import {
   type ReviewKind,
   type ReviewRiskClass,
 } from '../domain';
-import { useReviewList, useReviewSummary } from '../application/useReviews';
+import { useReview, useReviewList, useReviewSummary } from '../application/useReviews';
 import { KIND_LABELS, riskClasses, sortByUrgency, timeAgo } from './reviewFormat';
 import { ReviewDecisionPanel } from './ReviewDecisionPanel';
 
@@ -257,7 +258,10 @@ export function InboxPage() {
   const [queryInput, setQueryInput] = useState('');
   const [query, setQuery] = useState('');
   const [offset, setOffset] = useState(0);
-  const [selectedId, setSelectedId] = useState<string>('');
+  // `?item=` opens one review, as a notification's "Answer it" link asks.
+  const linkedId = String((useSearch({ strict: false }) as { item?: unknown }).item ?? '');
+  const [selectedId, setSelectedId] = useState<string>(linkedId);
+  const linked = useReview(linkedId);
   const hasFilters = Boolean(kindFilter || riskFilter || environmentFilter || query);
   const summaryFilters = useMemo(
     () =>
@@ -282,7 +286,9 @@ export function InboxPage() {
   });
 
   const items = useMemo(() => sortByUrgency((data ?? []).slice(0, LIST_LIMIT)), [data]);
-  const selected = items.find((item) => item.itemId === selectedId) ?? items[0];
+  // The linked review may sit on no loaded page, or be filtered out: show it anyway.
+  const linkedItem = linked.data && linked.data.itemId === selectedId ? linked.data : undefined;
+  const selected = items.find((item) => item.itemId === selectedId) ?? linkedItem ?? items[0];
   const matchingTotal = filteredSummary?.pendingTotal ?? items.length;
   const pendingTotal = globalSummary?.pendingTotal ?? matchingTotal;
   const hasNextPage = (data?.length ?? 0) > LIST_LIMIT;

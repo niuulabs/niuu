@@ -85,6 +85,7 @@ function seedNotification(
     engine: 'claude',
     model: 'claude-opus-5-5',
     correlationId: null,
+    reviewId: null,
     createdAt: minutesAgo(overrides.seq),
     read: false,
     ...overrides,

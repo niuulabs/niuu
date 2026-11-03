@@ -41,6 +41,8 @@ export interface SessionNotification {
   engine: string | null;
   model: string | null;
   correlationId: string | null;
+  /** The review this notification asks the operator to decide, when it asks one. */
+  reviewId: string | null;
   createdAt: string;
   /** Server-computed read flag at fetch time; live rows arrive without it. */
   read: boolean;

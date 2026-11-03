@@ -92,6 +92,7 @@ export interface NotificationWire {
   engine?: string | null;
   model?: string | null;
   correlation_id?: string | null;
+  odin_review_id?: string | null;
   created_at: string;
   read?: boolean;
   /** Added by the Guild facade. */
@@ -208,6 +209,7 @@ export function normalizeNotification(wire: NotificationWire): SessionNotificati
     engine: text(wire.engine),
     model: text(wire.model),
     correlationId: text(wire.correlation_id),
+    reviewId: text(wire.odin_review_id),
     createdAt: typeof wire.created_at === 'string' ? wire.created_at : '',
     read: wire.read === true,
   };
