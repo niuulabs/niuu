@@ -62,8 +62,11 @@ iteration_budget: 40
 stop_on_outcome: false
 
 # Realtime voice calls (gateway.channels.voice): the tracker, Forge sessions,
-# web search, Mimir memory, workflows, git, bash and read_file, plus the
-# handoff tools.
+# web search, Mimir memory, git, bash and read_file, plus the handoff tools.
+# Every name here must build on a resident (tests/test_ravn/
+# test_bundled_persona_voice_tools.py): not the workflow_* tools (Ravn ships no
+# capability_sources adapter) and not session_join (the voice channel builds
+# its tools without the drive loop's session-join manager).
 voice:
   voices:
     grok-voice: ara
@@ -82,13 +85,9 @@ voice:
     - mimir_read
     - mimir_write
     - ravn_memory_search
-    - workflow_list
-    - workflow_status
-    - workflow_launch
     - ting_research
     - ting_plan
     - ting_spec
-    - session_join
     - capability_list
     - a2a_task
     - read_file
