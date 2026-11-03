@@ -1,7 +1,7 @@
 import './Artifacts.css';
 import { useMemo, useState } from 'react';
 import { Link } from '@tanstack/react-router';
-import { ARTIFACT_STATUS_LABEL, type ArtifactStatus } from '../../domain/artifacts';
+import { ARTIFACT_STATUS_LABEL, artifactKind, type ArtifactStatus } from '../../domain/artifacts';
 import { reviewPath, type ReviewItem } from '../../domain/review';
 import { useReviews } from '../useWork';
 import {
@@ -30,16 +30,35 @@ const STATUS_ORDER: readonly ArtifactStatus[] = ['waiting', 'inProgress', 'done'
 function artifactLine(row: ArtifactRow): ListRow {
   const versions = row.versions.length;
   const latest = row.versions[versions - 1];
-  return {
+  const name = latest?.name ?? row.key;
+  const history = versions > 1 ? ` · ${latest?.label} of ${versions} versions` : '';
+  const line = {
     key: row.id,
-    kind: row.title,
-    title: row.run.title,
-    byline: `${latest?.name ?? row.key}${versions > 1 ? ` · ${latest?.label} of ${versions} versions` : ''}`,
+    kind: artifactKind(row),
     status: row.status,
     project: row.project,
     updatedAt: row.updatedAt,
-    href: `/ting/artifacts/${encodeURIComponent(row.run.slug)}`,
-    search: { artifact: row.id },
+  };
+  if (row.run) {
+    return {
+      ...line,
+      title: row.run.title,
+      byline: `${name}${history}`,
+      href: `/ting/artifacts/${encodeURIComponent(row.run.slug)}`,
+      search: { artifact: row.id },
+    };
+  }
+  // A session that is no run is its artifacts' "by" line; its page reads it by id and host.
+  const { session } = row;
+  return {
+    ...line,
+    title: name,
+    byline: `${session.title}${history}`,
+    href: `/ting/artifacts/session/${encodeURIComponent(session.sessionId)}`,
+    search: {
+      artifact: row.id,
+      ...(session.instanceId ? { instance: session.instanceId } : {}),
+    },
   };
 }
 
@@ -115,7 +134,7 @@ export function ArtifactList({ projectId }: { projectId?: string }) {
   const [query, setQuery] = useState('');
 
   const rows = useMemo(() => {
-    const withArtifacts = new Set(artifacts.rows.map((row) => row.run.slug));
+    const withArtifacts = new Set(artifacts.rows.flatMap((row) => (row.run ? [row.run.slug] : [])));
     const waitingItems = (reviews.data?.items ?? []).filter(
       (item) => item.state === 'waiting' && !withArtifacts.has(item.taskId),
     );
@@ -195,14 +214,14 @@ export function ArtifactList({ projectId }: { projectId?: string }) {
       {artifacts.unreadable.length > 0 ? (
         <details role="alert" className="ting-artifacts__alert">
           <summary>
-            The artifacts of {artifacts.unreadable.length} Forge host
-            {artifacts.unreadable.length === 1 ? '' : 's'} could not be read, so the runs there are
-            not listed.
+            {artifacts.unreadable.length} source{artifacts.unreadable.length === 1 ? '' : 's'} of
+            artifacts could not be read, so what{' '}
+            {artifacts.unreadable.length === 1 ? 'it holds is' : 'they hold is'} not listed.
           </summary>
           <ul>
-            {artifacts.unreadable.map(({ host, reason }) => (
-              <li key={host ?? 'default'}>
-                {host ?? 'This host'}: {reason}
+            {artifacts.unreadable.map(({ label, reason }) => (
+              <li key={label}>
+                {label}: {reason}
               </li>
             ))}
           </ul>
@@ -241,7 +260,7 @@ export function ArtifactList({ projectId }: { projectId?: string }) {
       {!artifacts.loading && shown.length === 0 ? (
         <p className="ting-artifacts__empty">
           {rows.length === 0
-            ? 'No run has presented a document yet.'
+            ? 'No session has presented a document yet.'
             : 'Nothing matches these filters.'}
         </p>
       ) : null}

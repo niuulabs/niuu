@@ -1,4 +1,4 @@
-import type { ApiClient } from '@niuulabs/query';
+import { ApiClientError, type ApiClient } from '@niuulabs/query';
 import type { IRunLogService, ProjectSessions } from '../ports';
 import type { Publication } from '../domain/artifacts';
 
@@ -7,6 +7,7 @@ interface PublicationRow {
   session_id: string;
   provider_key: string;
   revision_id: string;
+  tool_use_id: string;
   title: string | null;
   url: string | null;
   at: string;
@@ -19,6 +20,20 @@ interface PublicationPage {
   next_after: number;
   has_more: boolean;
 }
+
+interface ForgeSession {
+  id: string;
+  name: string;
+  status: string;
+}
+
+interface ForgeInstance {
+  id: string;
+}
+
+/** Only a running session takes a message. */
+const RUNNING = 'running';
+const NOT_FOUND = 404;
 
 interface ForgeProject {
   id: string;
@@ -41,6 +56,7 @@ function toPublication(row: PublicationRow): Publication {
     sessionId: row.session_id,
     providerKey: row.provider_key,
     revisionId: row.revision_id,
+    fileId: row.tool_use_id,
     title: row.title,
     url: row.url,
     at: row.at,
@@ -49,9 +65,39 @@ function toPublication(row: PublicationRow): Publication {
   };
 }
 
-/** Reads runs' artifacts through the Forge API: `client` is rooted at `/api/v1/forge`. */
-export function buildRunLogHttpAdapter(client: ApiClient): IRunLogService {
+/**
+ * Reads what sessions presented through the Forge API: `client` is rooted at
+ * `/api/v1/forge`, `registry` (the platform registry, `/api/v1/niuu`) lists the Forge
+ * hosts. Without a registry there is one Forge: the one `client` talks to.
+ */
+export function buildRunLogHttpAdapter(
+  client: ApiClient,
+  registry: ApiClient | null = null,
+): IRunLogService {
   return {
+    async hosts() {
+      if (!registry) return [null];
+      const instances = await registry.get<ForgeInstance[]>(
+        '/instances?kind=volundr&enabledOnly=true',
+      );
+      return instances.map((instance) => instance.id);
+    },
+    async session(sessionId, instanceId) {
+      try {
+        const session = await client.get<ForgeSession>(
+          `/sessions/${encodeURIComponent(sessionId)}${query({ instance_id: instanceId })}`,
+        );
+        return {
+          sessionId: session.id,
+          instanceId,
+          title: session.name,
+          running: session.status === RUNNING,
+        };
+      } catch (error) {
+        if (error instanceof ApiClientError && error.status === NOT_FOUND) return null;
+        throw error;
+      }
+    },
     async publications(instanceId, options = {}) {
       const publications: Publication[] = [];
       let after = 0;

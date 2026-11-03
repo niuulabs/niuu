@@ -29,6 +29,8 @@ const DECIDED_LABEL: Record<string, string> = {
 export interface ReviewSubject {
   /** The ticket's key; a run has none. */
   identifier: string | null;
+  /** What the page is about when it has no key: a run unless said otherwise. */
+  kind?: string;
   title: string;
   /** The gate a person can answer now. */
   gate: { id: string; activationId: string } | null;
@@ -196,7 +198,9 @@ export function ReviewWorkspace({
       <header className="ting-review__head">
         <div className="ting-review__title">
           <div>
-            <span className="ting-work-task__key">{subject.identifier ?? 'Run'}</span>
+            <span className="ting-work-task__key">
+              {subject.identifier ?? subject.kind ?? 'Run'}
+            </span>
             <h1 title={subject.title}>{subject.title}</h1>
           </div>
           <nav className="ting-review__path" aria-label="Workflow">

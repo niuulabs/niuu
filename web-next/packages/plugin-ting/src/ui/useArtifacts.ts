@@ -8,14 +8,16 @@ import {
   newestFirst,
   runRef,
   runWaits,
+  sessionArtifacts,
   type Artifact,
   type ArtifactVersion,
   type Publication,
   type RunRef,
+  type SessionRef,
 } from '../domain/artifacts';
 import { mergeWorkPages, useReviews, useWorkCollection } from './useWork';
 
-/** A running run may present again; what it presented is read again on this cadence. */
+/** A running session may present again; what was presented is read again on this cadence. */
 const LIVE_REFRESH_MS = 15000;
 
 export interface ArtifactProject {
@@ -31,6 +33,10 @@ export interface ArtifactRow extends Artifact {
 export interface WaitingRun {
   run: RunRef;
   project: ArtifactProject | null;
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function runIsSettled(run: RunRef): boolean {
@@ -68,49 +74,97 @@ function projectBySession(projects: readonly ProjectSessions[] | undefined) {
   return map;
 }
 
-/** The hosts runs live on; `null` is the host this UI talks to. */
-function hostsOf(runs: readonly RunRef[]): (string | null)[] {
-  return [...new Set(runs.map((run) => run.instanceId))];
+/** A session that is no workflow run, on the host that holds its files. */
+interface PresentingSession {
+  sessionId: string;
+  host: string | null;
+}
+
+/** How a session Forge no longer has is named: its files outlive it. */
+function goneSession(sessionId: string, host: string | null): SessionRef {
+  return {
+    sessionId,
+    instanceId: host,
+    title: `Session ${sessionId.slice(0, 8)} (gone)`,
+    running: false,
+  };
 }
 
 /**
- * Every artifact across the runs Work knows, newest first, with the hosts that could not
- * be read. Given a project, only the runs whose session is in it are listed.
+ * Every artifact sessions presented, newest first, with what could not be read: the
+ * runs Work knows, and every other session on every Forge host. Given a project, only
+ * its own sessions are listed.
  */
 export function useArtifacts(projectId?: string) {
   const runLog = useService<IRunLogService>('ting.runLog');
   const work = useWorkCollection();
   const waiting = useWaitingSlugs();
   const projects = useProjectSessions();
-  const runs = useMemo(() => {
+  const registry = useQuery({
+    queryKey: ['ting', 'artifacts', 'hosts'],
+    queryFn: () => runLog.hosts(),
+  });
+  const allRuns = useMemo(() => {
     const merged = mergeWorkPages(work.data?.pages);
     if (!merged) return [];
-    if (projectId && !projects.data) return [];
-    const inProject = projectId
-      ? new Set(projects.data?.find((project) => project.projectId === projectId)?.sessionIds)
-      : null;
     return [...merged.campaigns, ...merged.executions]
       .map(runRef)
-      .filter((run): run is RunRef => run !== null)
-      .filter((run) => !inProject || inProject.has(run.sessionId));
-  }, [work.data, projects.data, projectId]);
-  const hosts = useMemo(() => hostsOf(runs), [runs]);
-  const live = runs.some((run) => !runIsSettled(run));
+      .filter((run): run is RunRef => run !== null);
+  }, [work.data]);
+  const inProject = useMemo(() => {
+    if (!projectId) return null;
+    return new Set(
+      projects.data?.find((project) => project.projectId === projectId)?.sessionIds ?? [],
+    );
+  }, [projectId, projects.data]);
+  const ready = !projectId || Boolean(projects.data);
+  const runs = useMemo(
+    () => (ready ? allRuns.filter((run) => !inProject || inProject.has(run.sessionId)) : []),
+    [allRuns, inProject, ready],
+  );
+  const hosts = useMemo(
+    () => [...new Set([...(registry.data ?? []), ...runs.map((run) => run.instanceId)])],
+    [registry.data, runs],
+  );
   const feeds = useQueries({
     queries: hosts.map((host) => ({
       queryKey: ['ting', 'artifacts', 'publications', host],
       queryFn: ({ signal }: { signal: AbortSignal }) => runLog.publications(host, { signal }),
-      refetchInterval: live ? LIVE_REFRESH_MS : (false as const),
+      refetchInterval: LIVE_REFRESH_MS,
+    })),
+  });
+  const byHost = useMemo(() => {
+    const map = new Map<string | null, Publication[]>();
+    hosts.forEach((host, index) => {
+      const data = feeds[index]?.data;
+      if (data) map.set(host, data);
+    });
+    return map;
+  }, [hosts, feeds]);
+
+  // Sessions that presented files and are no run Work lists.
+  const others = useMemo((): PresentingSession[] => {
+    if (!ready) return [];
+    const runSessions = new Set(allRuns.map((run) => run.sessionId));
+    const seen = new Map<string, PresentingSession>();
+    for (const [host, published] of byHost) {
+      for (const publication of published) {
+        const id = publication.sessionId;
+        if (runSessions.has(id) || (inProject && !inProject.has(id))) continue;
+        seen.set(`${host}|${id}`, { sessionId: id, host });
+      }
+    }
+    return [...seen.values()];
+  }, [allRuns, byHost, inProject, ready]);
+  const sessions = useQueries({
+    queries: others.map((item) => ({
+      queryKey: ['ting', 'artifacts', 'session', item.host, item.sessionId],
+      queryFn: () => runLog.session(item.sessionId, item.host),
     })),
   });
   const sessionProjects = useMemo(() => projectBySession(projects.data), [projects.data]);
 
   const rows = useMemo(() => {
-    const byHost = new Map<string | null, Publication[]>();
-    hosts.forEach((host, index) => {
-      const data = feeds[index]?.data;
-      if (data) byHost.set(host, data);
-    });
     const all: ArtifactRow[] = [];
     for (const run of runs) {
       const published = byHost.get(run.instanceId);
@@ -119,42 +173,81 @@ export function useArtifacts(projectId?: string) {
         all.push({ ...artifact, project: sessionProjects.get(run.sessionId) ?? null });
       }
     }
+    others.forEach((item, index) => {
+      const lookup = sessions[index];
+      if (!lookup || lookup.data === undefined) return;
+      const session = lookup.data ?? goneSession(item.sessionId, item.host);
+      for (const artifact of sessionArtifacts(session, byHost.get(item.host) ?? [])) {
+        all.push({ ...artifact, project: sessionProjects.get(item.sessionId) ?? null });
+      }
+    });
     return newestFirst(all);
-  }, [runs, hosts, feeds, waiting, sessionProjects]);
+  }, [runs, byHost, waiting, sessionProjects, others, sessions]);
 
   const waitingRuns = useMemo((): WaitingRun[] => {
-    const presented = new Set(rows.map((row) => row.run.slug));
+    const presented = new Set(rows.flatMap((row) => (row.run ? [row.run.slug] : [])));
     return runs
       .filter((run) => runWaits(run, waiting) && !presented.has(run.slug))
       .map((run) => ({ run, project: sessionProjects.get(run.sessionId) ?? null }));
   }, [runs, rows, waiting, sessionProjects]);
 
-  const unreadable = hosts.flatMap((host, index) => {
-    const error = feeds[index]?.error;
-    if (!error) return [];
-    return [{ host, reason: error instanceof Error ? error.message : String(error) }];
-  });
+  const unreadable = [
+    ...hosts.flatMap((host, index) => {
+      const error = feeds[index]?.error;
+      return error ? [{ label: host ?? 'This host', reason: message(error) }] : [];
+    }),
+    ...others.flatMap((item, index) => {
+      const error = sessions[index]?.error;
+      return error ? [{ label: `Session ${item.sessionId}`, reason: message(error) }] : [];
+    }),
+  ];
   return {
     rows,
     waitingRuns,
     loading:
       work.isPending ||
+      registry.isPending ||
       (Boolean(projectId) && projects.isPending) ||
-      feeds.some((query) => query.isPending),
+      feeds.some((query) => query.isPending) ||
+      sessions.some((query) => query.isPending),
     unreadable,
-    error: work.error ?? projects.error,
+    error: work.error ?? projects.error ?? registry.error,
   };
 }
 
+/** Where a session's files are read from. */
+type SessionAt = Pick<SessionRef, 'sessionId' | 'instanceId'>;
+
 /** What one run presented, for its review page. */
 export function useRunPublications(run: RunRef | null) {
+  return useSessionPublications(run, run !== null && !runIsSettled(run));
+}
+
+/** What one session presented, for its review page; re-read while it may present more. */
+export function useSessionPublications(session: SessionAt | null, live: boolean) {
   const runLog = useService<IRunLogService>('ting.runLog');
   return useQuery({
-    queryKey: ['ting', 'artifacts', 'run-publications', run?.slug ?? null],
+    queryKey: [
+      'ting',
+      'artifacts',
+      'session-publications',
+      session?.instanceId ?? null,
+      session?.sessionId ?? null,
+    ],
     queryFn: ({ signal }) =>
-      runLog.publications(run!.instanceId, { sessionId: run!.sessionId, signal }),
-    enabled: run !== null,
-    refetchInterval: run && !runIsSettled(run) ? LIVE_REFRESH_MS : false,
+      runLog.publications(session!.instanceId, { sessionId: session!.sessionId, signal }),
+    enabled: session !== null,
+    refetchInterval: live ? LIVE_REFRESH_MS : false,
+  });
+}
+
+/** A session that presented files: `null` once Forge no longer has it. */
+export function useArtifactSession(sessionId: string, instanceId: string | null) {
+  const runLog = useService<IRunLogService>('ting.runLog');
+  return useQuery({
+    queryKey: ['ting', 'artifacts', 'session', instanceId, sessionId],
+    queryFn: async () =>
+      (await runLog.session(sessionId, instanceId)) ?? goneSession(sessionId, instanceId),
   });
 }
 
@@ -162,7 +255,7 @@ export function useRunPublications(run: RunRef | null) {
  * The text of every readable version, by revision id. A presented file never changes
  * under its id, so each is read once.
  */
-export function useArtifactTexts(run: RunRef | null, artifacts: readonly Artifact[]) {
+export function useArtifactTexts(run: SessionAt | null, artifacts: readonly Artifact[]) {
   const runLog = useService<IRunLogService>('ting.runLog');
   const versions: ArtifactVersion[] = artifacts
     .flatMap((artifact) => artifact.versions)
@@ -171,7 +264,7 @@ export function useArtifactTexts(run: RunRef | null, artifacts: readonly Artifac
     queries: versions.map((version) => ({
       queryKey: ['ting', 'artifacts', 'text', run?.sessionId ?? null, version.revisionId],
       queryFn: ({ signal }: { signal: AbortSignal }) =>
-        runLog.presentedText(run!.sessionId, run!.instanceId, version.revisionId, signal),
+        runLog.presentedText(run!.sessionId, run!.instanceId, version.fileId, signal),
       enabled: run !== null,
       staleTime: Infinity,
     })),
@@ -207,11 +300,11 @@ export function useWaiting(): ReadonlySet<string> {
   return useWaitingSlugs();
 }
 
-export function useSendToRun(run: RunRef | null) {
+export function useSendToRun(run: SessionAt | null) {
   const runLog = useService<IRunLogService>('ting.runLog');
   return useMutation({
     mutationFn: (content: string) => {
-      if (!run) throw new Error('This run is not loaded.');
+      if (!run) throw new Error('This session is not loaded.');
       return runLog.sendMessage(run.sessionId, run.instanceId, content);
     },
   });

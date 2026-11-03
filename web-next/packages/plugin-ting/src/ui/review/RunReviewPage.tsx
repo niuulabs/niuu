@@ -8,17 +8,21 @@ import {
   artifactsFromPublications,
   gatesWithArtifacts,
   revisionPrompt,
+  sessionArtifacts,
   versionDocument,
   type Artifact,
   type Publication,
   type RunRef,
+  type SessionRef,
 } from '../../domain/artifacts';
 import { useRunGateDecision, useRunReviews } from '../useWork';
 import {
+  useArtifactSession,
   useArtifactTexts,
   useRun,
   useRunPublications,
   useSendToRun,
+  useSessionPublications,
   useStartRevision,
   useWaiting,
 } from '../useArtifacts';
@@ -37,6 +41,20 @@ function runEnded(run: RunRef): boolean {
 function noteForRun(artifact: Artifact, notes: string): string {
   const latest = artifact.versions[artifact.versions.length - 1];
   return `Notes on the ${artifact.title.toLowerCase()} (${latest?.label ?? 'latest version'}, artifact key ${artifact.key}):\n\n${notes}`;
+}
+
+function textFailures(failed: ReturnType<typeof useArtifactTexts>['failed']) {
+  if (failed.length === 0) return null;
+  return (
+    <p className="ting-review__error" role="alert">
+      {failed
+        .map(
+          ({ version, reason }) =>
+            `${version.name} (${version.label}) could not be read: ${reason}`,
+        )
+        .join(' ')}
+    </p>
+  );
 }
 
 function RunWorkspace({
@@ -113,17 +131,7 @@ function RunWorkspace({
     };
   }
 
-  const unread =
-    read.failed.length > 0 ? (
-      <p className="ting-review__error" role="alert">
-        {read.failed
-          .map(
-            ({ version, reason }) =>
-              `${version.name} (${version.label}) could not be read: ${reason}`,
-          )
-          .join(' ')}
-      </p>
-    ) : null;
+  const unread = textFailures(read.failed);
 
   if (reviews.length === 0) {
     return (
@@ -219,6 +227,107 @@ export function RunReviewPage() {
       <RunWorkspace
         record={record.data}
         run={run}
+        publications={publications.data ?? []}
+        initialReview={search.artifact ?? null}
+      />
+    </div>
+  );
+}
+
+function SessionWorkspace({
+  session,
+  publications,
+  initialReview,
+}: {
+  session: SessionRef;
+  publications: readonly Publication[];
+  initialReview: string | null;
+}) {
+  const message = useSendToRun(session);
+  const artifacts = useMemo(() => sessionArtifacts(session, publications), [session, publications]);
+  const read = useArtifactTexts(session, artifacts);
+  const reviews = artifacts.map((artifact) => artifactReview(artifact, [], read.texts));
+
+  // Notes reach a session only as a message while it runs; a session starts no revision run.
+  function send(review: RunReview): ReviewSend | null {
+    const artifact = artifacts.find((item) => item.id === review.columnId);
+    if (!artifact || !session.running) return null;
+    return {
+      title: 'Send back to the session',
+      hint: 'The session is running. Your notes arrive in its chat as your next message.',
+      label: 'Send to the session',
+      busy: message.isPending,
+      failure: message.error,
+      onSend: (notes, onSuccess) => message.mutate(noteForRun(artifact, notes), { onSuccess }),
+    };
+  }
+
+  if (reviews.length === 0) {
+    return (
+      <p className="ting-review__state">
+        {session.title} has presented nothing.{' '}
+        <Link to={'/ting/artifacts' as never}>Back to Artifacts</Link>
+      </p>
+    );
+  }
+  return (
+    <>
+      {textFailures(read.failed)}
+      <ReviewWorkspace
+        subject={{
+          identifier: null,
+          kind: 'Session',
+          title: session.title,
+          gate: null,
+          pullRequestUrl: null,
+          canAsk: false,
+        }}
+        board={null}
+        reviews={reviews}
+        initialReview={initialReview}
+        railLabel="Session"
+        rail={
+          <>
+            <span>{session.running ? 'Running' : 'Not running'}</span>
+            <Link to={`/volundr/sessions/${session.sessionId}` as never}>Open the session</Link>
+          </>
+        }
+        deciding={false}
+        decisionFailure={null}
+        onDecide={() => undefined}
+        send={send}
+      />
+    </>
+  );
+}
+
+/** What one session that is no workflow run presented, on the same review page as a run. */
+export function SessionArtifactsPage() {
+  const { sessionId } = useParams({ strict: false }) as { sessionId: string };
+  const search = useSearch({ strict: false }) as { artifact?: string; instance?: string };
+  const instanceId = search.instance ?? null;
+  const session = useArtifactSession(sessionId, instanceId);
+  const publications = useSessionPublications(
+    { sessionId, instanceId },
+    session.data?.running ?? false,
+  );
+
+  if (session.isLoading || publications.isLoading) {
+    return <p className="ting-review__state">Loading the session…</p>;
+  }
+  const error = session.error ?? publications.error;
+  if (error || !session.data) {
+    return (
+      <p className="ting-review__state" role="alert">
+        What the session presented could not be read:{' '}
+        {error instanceof Error ? error.message : String(error)}
+      </p>
+    );
+  }
+  return (
+    <div className="ting-review-page">
+      <SessionWorkspace
+        session={session.data}
         publications={publications.data ?? []}
         initialReview={search.artifact ?? null}
       />

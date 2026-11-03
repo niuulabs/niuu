@@ -22,12 +22,14 @@ describe('ProjectPage', () => {
     );
   });
 
-  it("lists the project's artifacts, read only from its own runs", async () => {
+  it("lists the project's artifacts, from its own sessions only", async () => {
     const publications = vi.fn().mockResolvedValue([]);
     renderRealms('/realms/projects/project-yggdrasil', {
       'ting.runLog': {
         publications,
         presentedText: vi.fn(),
+        hosts: vi.fn().mockResolvedValue([null]),
+        session: vi.fn(),
         projectSessions: vi
           .fn()
           .mockResolvedValue([
@@ -38,9 +40,10 @@ describe('ProjectPage', () => {
     });
     const page = await screen.findByTestId('project-page');
     expect(
-      await within(page).findByText('No run has presented a document yet.'),
+      await within(page).findByText('No session has presented a document yet.'),
     ).toBeInTheDocument();
-    expect(publications).not.toHaveBeenCalled();
+    // Every host is read: any of the project's sessions may have presented files.
+    expect(publications).toHaveBeenCalledWith(null, expect.anything());
   });
 
   it('saves the brief and the repository on the project', async () => {

@@ -1494,6 +1494,8 @@ export function buildServices(config: NiuuConfig): ServicesMap {
 
   // ── Völundr catalog + Forge runtime ──
   const forgeBase = resolveForgeServiceBase(config);
+  // The registry lists every Forge host whose presented files Work › Artifacts reads.
+  const artifactRegistryBase = resolveNiuuRegistryBase(config);
   const volundrBase = resolveVolundrServiceBase(config);
   const forgeHttp = forgeBase
     ? buildVolundrHttpAdapter(createApiClient(forgeBase), undefined, {
@@ -1654,9 +1656,12 @@ export function buildServices(config: NiuuConfig): ServicesMap {
             'ting.work',
             'Configure a live work backend to view work.',
           ),
-    // Artifacts are read from runs' Forge session logs, so this service talks to the Forge.
+    // Artifacts are Forge's publications on every Forge host the registry lists.
     'ting.runLog': forgeBase
-      ? buildRunLogHttpAdapter(createApiClient(forgeApiBasePath(forgeBase)))
+      ? buildRunLogHttpAdapter(
+          createApiClient(forgeApiBasePath(forgeBase)),
+          artifactRegistryBase ? createApiClient(artifactRegistryBase) : null,
+        )
       : demoService(config, 'ting.runLog', createMockRunLogService),
     'ting.workflowExecutions': tingClient
       ? buildWorkflowExecutionHttpAdapter(tingClient)

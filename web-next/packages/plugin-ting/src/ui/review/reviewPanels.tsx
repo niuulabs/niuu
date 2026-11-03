@@ -3,6 +3,7 @@ import { ExternalLink } from 'lucide-react';
 import {
   ExternalLinkPreview,
   MarkdownContent,
+  PresentedFileCard,
   SandboxedPage,
   SessionDiffs,
   SessionFilePreview,
@@ -12,6 +13,11 @@ import {
   type ReviewControls,
 } from '@niuulabs/ui';
 import { diffLines, moduleWidgetRef, type ReviewRevision } from '../../domain/review';
+import {
+  PRESENTED_FILE_WIDGET,
+  presentedFileMime,
+  presentedFileName,
+} from '../../domain/artifacts';
 import type { ReviewPanel } from '../../domain/work';
 import { useReviewWidget } from '../useWork';
 import { markQuotes } from './markQuotes';
@@ -248,6 +254,26 @@ function PullRequestPanel({ pullRequestUrl, revision }: ReviewPanelProps) {
   );
 }
 
+/** A file a session presented that is not text: it opens in the shared file preview. */
+function PresentedFilePanel({ panel, revision }: ReviewPanelProps) {
+  const field = panel.source?.value ?? '';
+  const fileId = revision.fields[field] ?? '';
+  return (
+    <PresentedFileCard
+      block={{
+        type: 'tool_use',
+        id: fileId,
+        name: 'present_file',
+        input: {
+          file_id: fileId,
+          name: revision.fields[presentedFileName(field)] ?? panel.title,
+          mime: revision.fields[presentedFileMime(field)],
+        },
+      }}
+    />
+  );
+}
+
 function SummaryPanel({ revision }: ReviewPanelProps) {
   return <p>{revision.summary || 'This step left no summary.'}</p>;
 }
@@ -262,6 +288,7 @@ export const REVIEW_WIDGETS: Readonly<Record<string, ComponentType<ReviewPanelPr
   page: PagePanel,
   pullRequest: PullRequestPanel,
   summary: SummaryPanel,
+  [PRESENTED_FILE_WIDGET]: PresentedFilePanel,
 };
 
 export function ReviewPanelSlot(props: ReviewPanelProps) {

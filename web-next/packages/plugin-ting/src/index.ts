@@ -12,7 +12,7 @@ import { TingFooter } from './ui/TingFooter';
 import { PlanWizard } from './ui/PlanWizard';
 import { ArtifactsPage } from './ui/artifacts/ArtifactsPage';
 import { PlanDetailPage } from './ui/PlanDetailPage';
-import { RunReviewPage } from './ui/review/RunReviewPage';
+import { RunReviewPage, SessionArtifactsPage } from './ui/review/RunReviewPage';
 import { TicketReviewPage } from './ui/review/TicketReviewPage';
 import { TingSubnav } from './ui/TingSubnav';
 import { ResearchCenterPage } from './ui/ResearchCenterPage';
@@ -102,6 +102,11 @@ export const tingPlugin = definePlugin({
       getParentRoute: () => rootRoute,
       path: '/ting/artifacts',
       component: ArtifactsPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/artifacts/session/$sessionId',
+      component: SessionArtifactsPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,

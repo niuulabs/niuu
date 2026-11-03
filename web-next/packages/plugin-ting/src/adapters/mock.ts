@@ -2463,6 +2463,12 @@ function mockReviewList(tasks: readonly WorkTask[], runWaiting: boolean): Review
 /** Demo runs have no Forge to present files to, so they produce no artifacts. */
 export function createMockRunLogService(): IRunLogService {
   return {
+    async hosts() {
+      return [null];
+    },
+    async session() {
+      return null;
+    },
     async publications() {
       return [];
     },

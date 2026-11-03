@@ -8,7 +8,10 @@ export function ArtifactsPage() {
     <div className="ting-artifacts-page">
       <header className="ting-artifacts-page__head">
         <h1>Artifacts</h1>
-        <p>What agents produced in your runs: plans, specs, reports and the decisions they wait on.</p>
+        <p>
+          What your sessions and runs produced: plans, specs, reports, files and the decisions they
+          wait on.
+        </p>
         <Link to={'/ting/plan/new' as never}>Plan a project</Link>
       </header>
       <ArtifactList />

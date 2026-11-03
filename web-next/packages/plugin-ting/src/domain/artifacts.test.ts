@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   answersPendingGate,
+  artifactKind,
   artifactKeysShown,
   artifactReview,
   artifactsFromPublications,
@@ -10,6 +11,7 @@ import {
   newestFirst,
   revisionPrompt,
   runRef,
+  sessionArtifacts,
   versionDocument,
   type Publication,
   type RunRef,
@@ -38,6 +40,7 @@ function publication(seq: number, overrides: Partial<Publication> = {}): Publica
     sessionId: 'session-1',
     providerKey: 'session-1:plan',
     revisionId: `pf_${seq}`,
+    fileId: `pf_${seq}`,
     title: 'plan.md',
     url: `/api/v1/forge/sessions/session-1/files/presented/pf_${seq}`,
     at: `2026-11-02T23:${String(seq).padStart(2, '0')}:00Z`,
@@ -51,10 +54,11 @@ const PRESENTED: Publication[] = [
   publication(3, { revisionId: 'pf_3', versionLabel: 'v2' }),
   publication(1, { revisionId: 'pf_1', versionLabel: 'v1' }),
   // A republish of v2 is the same version.
-  publication(4, { revisionId: 'pf_3', versionLabel: 'v2' }),
+  publication(4, { revisionId: 'pf_3', fileId: 'pf_3', versionLabel: 'v2' }),
   publication(2, {
+    // An unkeyed file is its own artifact; Forge names its revision by a hash.
     providerKey: 'pf_2',
-    revisionId: 'pf_2',
+    revisionId: 'rev_2',
     title: 'diagram.png',
     mime: 'image/png',
     versionLabel: null,
@@ -104,16 +108,48 @@ const SHOWN_V1 = {
 describe('artifacts from publications', () => {
   it("makes one artifact per key of the run's own session, each file a version", () => {
     const [plan, diagram] = artifactsFromPublications(RUN, PRESENTED, NONE);
-    expect(plan).toMatchObject({ id: 'session-1:plan', key: 'plan', title: 'Plan' });
+    expect(plan).toMatchObject({ id: 'session-1:plan', key: 'plan', keyed: true, title: 'Plan' });
     expect(plan!.versions.map((version) => [version.revisionId, version.label])).toEqual([
       ['pf_1', 'v1'],
       ['pf_3', 'v2'],
     ]);
     expect(plan!.updatedAt).toBe('2026-11-02T23:03:00Z');
     // A file presented without a key stands alone, named after itself.
-    expect(diagram).toMatchObject({ key: 'pf_2', title: 'diagram.png' });
+    expect(diagram).toMatchObject({ key: 'pf_2', keyed: false, title: 'diagram.png' });
     expect(diagram!.versions[0]!.label).toBe('v1');
     expect(artifactsFromPublications(RUN, [], NONE)).toEqual([]);
+  });
+
+  it("lists a session's own files, done once it no longer runs", () => {
+    const session = {
+      sessionId: 'session-1',
+      instanceId: 'valhalla',
+      title: 'Artifact test',
+      running: false,
+    };
+    const [plan, diagram] = sessionArtifacts(session, PRESENTED);
+    expect(plan).toMatchObject({ run: null, status: 'done', session });
+    expect(diagram!.versions).toHaveLength(1);
+    expect(sessionArtifacts({ ...session, running: true }, PRESENTED)[0]!.status).toBe(
+      'inProgress',
+    );
+    const review = artifactReview(plan!, [], new Map());
+    expect(review).toMatchObject({ workflowName: 'Artifact test', taskId: 'session-1' });
+  });
+
+  it('names a keyed artifact by its key, and an unkeyed one by its file type', () => {
+    const [plan, diagram] = artifactsFromPublications(RUN, PRESENTED, NONE);
+    expect(artifactKind(plan!)).toBe('Plan');
+    expect(artifactKind(diagram!)).toBe('Image');
+    const file = (mime: string | null) => ({
+      ...diagram!,
+      versions: [{ ...diagram!.versions[0]!, mime }],
+    });
+    expect(artifactKind(file('application/pdf'))).toBe('PDF');
+    expect(artifactKind(file('text/markdown'))).toBe('Document');
+    expect(artifactKind(file('application/zip'))).toBe('File');
+    expect(artifactKind(file(null))).toBe('File');
+    expect(artifactKind({ ...plan!, versions: [] })).toBe('Plan');
   });
 
   it('reads text documents on the page and links everything else', () => {
@@ -185,6 +221,26 @@ describe('reviewing artifacts', () => {
     expect(second).toMatchObject({ gateId: 'g2', activationId: 'act-2', status: 'pending' });
     expect(answersPendingGate(review)).toBe(true);
     expect(review.panels[0]!.source).toEqual({ kind: 'outcome', value: 'plan' });
+  });
+
+  it('opens a file that is not text in the file preview', () => {
+    const [, diagram] = artifactsFromPublications(RUN, PRESENTED, NONE);
+    const review = artifactReview(diagram!, [], new Map());
+    expect(review.panels[0]).toMatchObject({ widget: 'presentedFile', title: 'diagram.png' });
+    expect(review.revisions[0]!.fields).toEqual({
+      pf_2: 'pf_2',
+      'pf_2.name': 'diagram.png',
+      'pf_2.mime': 'image/png',
+    });
+    // A file with no type is read as text; a typed one names its type for the preview.
+    const typed = (mime: string | null) => ({
+      ...diagram!,
+      versions: [{ ...diagram!.versions[0]!, mime }],
+    });
+    expect(artifactReview(typed(null), [], new Map()).panels[0]!.widget).toBe('document');
+    expect(
+      Object.keys(artifactReview(typed('application/zip'), [], new Map()).revisions[0]!.fields),
+    ).toEqual(['pf_2', 'pf_2.name', 'pf_2.mime']);
   });
 
   it('is only presented when no gate showed it', () => {

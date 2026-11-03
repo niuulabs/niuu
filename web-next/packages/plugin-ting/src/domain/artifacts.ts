@@ -2,12 +2,12 @@ import type { WorkSummary } from './work';
 import { REVISION_PENDING, type ReviewRevision, type RunReview } from './review';
 
 /**
- * Artifacts are the documents agents present in a workflow run (a plan, a spec, a
- * report), as Forge records them: one artifact publication per presented file
- * (`GET /artifact-publications`). Files an agent presents under one artifact key are
- * one artifact, each file a version of it; Ting's gate reviews name the version a
- * person decided on. Outcome fields stay in the run's log as its record and are not
- * listed here.
+ * Artifacts are the documents sessions present (a plan, a spec, a report, an image),
+ * as Forge records them: one artifact publication per presented file
+ * (`GET /artifact-publications`). Files presented under one artifact key are one
+ * artifact, each file a version of it; in a workflow run, Ting's gate reviews name the
+ * version a person decided on. Outcome fields stay in a run's log as its record and are
+ * not listed here.
  */
 
 /** One Forge artifact publication of a presented file. */
@@ -16,6 +16,8 @@ export interface Publication {
   sessionId: string;
   providerKey: string;
   revisionId: string;
+  /** The presented file's own id, which Forge serves it by. */
+  fileId: string;
   title: string | null;
   url: string | null;
   at: string;
@@ -26,6 +28,7 @@ export interface Publication {
 export interface ArtifactVersion {
   number: number;
   revisionId: string;
+  fileId: string;
   label: string;
   at: string;
   name: string;
@@ -48,12 +51,25 @@ export interface RunRef {
   updatedAt: string | null;
 }
 
+/** The Forge session that presented an artifact. */
+export interface SessionRef {
+  sessionId: string;
+  instanceId: string | null;
+  title: string;
+  /** Notes reach it as a chat message only while it runs. */
+  running: boolean;
+}
+
 export interface Artifact {
   /** Forge's `provider_key`: stable across versions. */
   id: string;
   /** The agent's own name for it (`plan`), or the file's id when it was presented once. */
   key: string;
-  run: RunRef;
+  /** Presented under an artifact key, so later files under it are its versions. */
+  keyed: boolean;
+  session: SessionRef;
+  /** The workflow run the session belongs to, when it is one. */
+  run: RunRef | null;
   title: string;
   versions: ArtifactVersion[];
   status: ArtifactStatus;
@@ -106,11 +122,20 @@ export function runRef(item: WorkSummary): RunRef | null {
 }
 
 /** A keyed file's provider key is `<session>:<key>`; an unkeyed one is the file's own id. */
-function artifactKey(publication: Publication): string {
+function artifactKey(publication: Publication): { key: string; keyed: boolean } {
   const prefix = `${publication.sessionId}:`;
   return publication.providerKey.startsWith(prefix)
-    ? publication.providerKey.slice(prefix.length)
-    : publication.providerKey;
+    ? { key: publication.providerKey.slice(prefix.length), keyed: true }
+    : { key: publication.providerKey, keyed: false };
+}
+
+function runSession(run: RunRef): SessionRef {
+  return {
+    sessionId: run.sessionId,
+    instanceId: run.instanceId,
+    title: run.title,
+    running: run.condition !== 'completed' && run.condition !== 'failed',
+  };
 }
 
 /** Every artifact a run's agents presented, versions oldest first. */
@@ -119,20 +144,39 @@ export function artifactsFromPublications(
   publications: readonly Publication[],
   waitingSlugs: ReadonlySet<string>,
 ): Artifact[] {
+  return collect(runSession(run), run, artifactStatus(run, waitingSlugs), publications);
+}
+
+/** Every artifact a session that is no workflow run presented, versions oldest first. */
+export function sessionArtifacts(
+  session: SessionRef,
+  publications: readonly Publication[],
+): Artifact[] {
+  return collect(session, null, session.running ? 'inProgress' : 'done', publications);
+}
+
+function collect(
+  session: SessionRef,
+  run: RunRef | null,
+  status: ArtifactStatus,
+  publications: readonly Publication[],
+): Artifact[] {
   const byKey = new Map<string, Artifact>();
   const ordered = publications
-    .filter((publication) => publication.sessionId === run.sessionId)
+    .filter((publication) => publication.sessionId === session.sessionId)
     .sort((left, right) => left.seq - right.seq);
   for (const publication of ordered) {
-    const key = artifactKey(publication);
+    const { key, keyed } = artifactKey(publication);
     const name = publication.title ?? key;
     const artifact = byKey.get(publication.providerKey) ?? {
       id: publication.providerKey,
       key,
+      keyed,
+      session,
       run,
-      title: key === publication.revisionId ? name : humanize(key),
+      title: keyed ? humanize(key) : name,
       versions: [],
-      status: artifactStatus(run, waitingSlugs),
+      status,
       updatedAt: publication.at,
     };
     // A republish of the same file is the same version.
@@ -143,6 +187,7 @@ export function artifactsFromPublications(
     artifact.versions.push({
       number,
       revisionId: publication.revisionId,
+      fileId: publication.fileId,
       label: publication.versionLabel ?? `v${number}`,
       at: publication.at,
       name,
@@ -155,15 +200,38 @@ export function artifactsFromPublications(
   return [...byKey.values()];
 }
 
+const TEXT_TYPES = /^(text\/|application\/(json|x-yaml|yaml|xml|markdown))/i;
+
+/** What kind of document an artifact is: its key's name, or its file type when unkeyed. */
+export function artifactKind(artifact: Artifact): string {
+  const latest = artifact.versions[artifact.versions.length - 1];
+  if (!latest || artifact.keyed) return artifact.title;
+  const mime = latest.mime ?? '';
+  if (mime.startsWith('image/')) return 'Image';
+  if (mime === 'application/pdf') return 'PDF';
+  if (TEXT_TYPES.test(mime)) return 'Document';
+  return 'File';
+}
+
 export function newestFirst<T extends { updatedAt: string }>(artifacts: readonly T[]): T[] {
   return [...artifacts].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
-const TEXT_TYPES = /^(text\/|application\/(json|x-yaml|yaml|xml|markdown))/i;
-
 /** Whether a version is read on the page; anything else opens as a file. */
 export function isReadable(version: ArtifactVersion): boolean {
   return TEXT_TYPES.test(version.mime ?? 'text/plain');
+}
+
+/** The panel a presented file that is not text is shown in: it opens the file itself. */
+export const PRESENTED_FILE_WIDGET = 'presentedFile';
+
+/** Where a version's file name and type sit beside its file id in a revision's fields. */
+export function presentedFileName(field: string): string {
+  return `${field}.name`;
+}
+
+export function presentedFileMime(field: string): string {
+  return `${field}.mime`;
 }
 
 /** What the review page shows for a version: its text, or a link to open the file. */
@@ -183,7 +251,7 @@ export function revisionPrompt(
   const name = artifact.title.toLowerCase();
   return [
     brief.trim(),
-    `Revise the ${name} below (${version.label} from run ${artifact.run.slug}) to address the reviewer's notes. Keep what the notes do not question. Present the revision under artifact key ${artifact.key}.`,
+    `Revise the ${name} below (${version.label} from run ${artifact.run?.slug ?? artifact.session.title}) to address the reviewer's notes. Keep what the notes do not question. Present the revision under artifact key ${artifact.key}.`,
     `Reviewer's notes:\n${notes.trim()}`,
     `Previous ${name}:\n${document}`,
   ]
@@ -222,23 +290,33 @@ export function artifactReview(
   gates: readonly RunReview[],
   texts: ReadonlyMap<string, string>,
 ): RunReview {
+  const latest = artifact.versions[artifact.versions.length - 1];
+  // A text document is read on the page; any other file opens in the file preview.
+  const readable = latest === undefined || isReadable(latest);
   return {
     columnId: artifact.id,
     title: artifact.title,
     review: null,
-    workflowName: artifact.run.title,
-    taskId: artifact.run.slug,
-    sessionId: artifact.run.sessionId,
+    workflowName: artifact.session.title,
+    taskId: artifact.run?.slug ?? artifact.session.sessionId,
+    sessionId: artifact.session.sessionId,
     panels: [
       {
-        widget: 'document',
+        widget: readable ? 'document' : PRESENTED_FILE_WIDGET,
         title: artifact.title,
         source: { kind: 'outcome', value: artifact.key },
       },
     ],
     revisions: artifact.versions.map((version) => {
       const gate = deciding(artifact, version, gates);
-      const document = versionDocument(version, texts.get(version.revisionId));
+      const fields = readable
+        ? { [artifact.key]: versionDocument(version, texts.get(version.revisionId)) }
+        : {
+            [artifact.key]: version.fileId,
+            [presentedFileName(artifact.key)]: version.name,
+            // Only a typed file is not read as text.
+            [presentedFileMime(artifact.key)]: version.mime ?? '',
+          };
       return {
         number: version.number,
         gateId: gate?.gateId ?? `${artifact.id}#${version.number}`,
@@ -249,7 +327,7 @@ export function artifactReview(
         decidedBy: gate?.decidedBy ?? '',
         notes: gate?.notes ?? '',
         decidedAt: gate?.decidedAt ?? '',
-        fields: { [artifact.key]: document },
+        fields,
       };
     }),
   };

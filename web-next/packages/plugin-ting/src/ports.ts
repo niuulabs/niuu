@@ -14,7 +14,7 @@ import type { TrackerProject, TrackerMilestone, TrackerIssue } from './domain/tr
 import type { Workflow } from './domain/workflow';
 import type { GateDecision, WorkCollection, WorkDetail, WorkResourceKind } from './domain/work';
 import type { ReviewList, ReviewWidget, RunReviews, TicketReviews } from './domain/review';
-import type { Publication } from './domain/artifacts';
+import type { Publication, SessionRef } from './domain/artifacts';
 
 /** The sessions in one Forge project, so runs can be grouped by the project they work in. */
 export interface ProjectSessions {
@@ -30,6 +30,10 @@ export interface IRunLogService {
     instanceId: string | null,
     options?: { sessionId?: string; signal?: AbortSignal },
   ): Promise<Publication[]>;
+  /** Every Forge host that may hold presented files; `null` is the host this UI talks to. */
+  hosts(): Promise<(string | null)[]>;
+  /** The session that presented files, or `null` once Forge no longer has it. */
+  session(sessionId: string, instanceId: string | null): Promise<SessionRef | null>;
   /** The text of one presented file. */
   presentedText(
     sessionId: string,

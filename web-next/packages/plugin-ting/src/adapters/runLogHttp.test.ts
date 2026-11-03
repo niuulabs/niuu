@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ApiClient } from '@niuulabs/query';
+import { ApiClientError, type ApiClient } from '@niuulabs/query';
 import { buildRunLogHttpAdapter } from './runLogHttp';
 
 function client(get: ApiClient['get'], post: ApiClient['post'] = vi.fn()): ApiClient {
@@ -11,6 +11,7 @@ const row = (seq: number, overrides: Record<string, unknown> = {}) => ({
   session_id: 's1',
   provider_key: 's1:plan',
   revision_id: `pf_${seq}`,
+  tool_use_id: `pf_${seq}`,
   title: 'plan.md',
   url: `/api/v1/forge/sessions/s1/files/presented/pf_${seq}`,
   at: `2026-11-02T23:0${seq}:00Z`,
@@ -45,6 +46,7 @@ describe('buildRunLogHttpAdapter', () => {
         sessionId: 's1',
         providerKey: 's1:plan',
         revisionId: 'pf_1',
+        fileId: 'pf_1',
         title: 'plan.md',
         url: '/api/v1/forge/sessions/s1/files/presented/pf_1',
         at: '2026-11-02T23:01:00Z',
@@ -72,6 +74,35 @@ describe('buildRunLogHttpAdapter', () => {
     expect(get).toHaveBeenCalledWith('/sessions/s%201/files/presented/pf_1?instance_id=valhalla', {
       signal: undefined,
     });
+  });
+
+  it('lists the Forge hosts from the registry, or the one Forge without it', async () => {
+    const registryGet = vi.fn().mockResolvedValue([{ id: 'valhalla' }, { id: 'ymir' }]);
+    const adapter = buildRunLogHttpAdapter(client(vi.fn()), client(registryGet));
+    expect(await adapter.hosts()).toEqual(['valhalla', 'ymir']);
+    expect(registryGet).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
+    expect(await buildRunLogHttpAdapter(client(vi.fn())).hosts()).toEqual([null]);
+  });
+
+  it('reads the session that presented files, and knows when Forge no longer has it', async () => {
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce({ id: 's1', name: 'Artifact test', status: 'running' })
+      .mockResolvedValueOnce({ id: 's1', name: 'Artifact test', status: 'stopped' })
+      .mockRejectedValueOnce(new ApiClientError('API request failed: 404', 404))
+      .mockRejectedValueOnce(new ApiClientError('API request failed: 502', 502));
+    const adapter = buildRunLogHttpAdapter(client(get));
+
+    expect(await adapter.session('s1', 'valhalla')).toEqual({
+      sessionId: 's1',
+      instanceId: 'valhalla',
+      title: 'Artifact test',
+      running: true,
+    });
+    expect(get).toHaveBeenCalledWith('/sessions/s1?instance_id=valhalla');
+    expect((await adapter.session('s1', null))?.running).toBe(false);
+    expect(await adapter.session('s1', null)).toBeNull();
+    await expect(adapter.session('s1', null)).rejects.toThrow('502');
   });
 
   it("lists each project's sessions on the host the project lives on", async () => {

@@ -6,13 +6,13 @@ import type { IRunLogService, IWorkService, IWorkflowService } from '../../ports
 import type { ReviewRevision, RunReviews } from '../../domain/review';
 import type { WorkSummary } from '../../domain/work';
 import type { Publication } from '../../domain/artifacts';
-import { RunReviewPage } from './RunReviewPage';
+import { RunReviewPage, SessionArtifactsPage } from './RunReviewPage';
 
 const navigate = vi.hoisted(() => vi.fn());
 const search = vi.hoisted(() => ({ value: {} as Record<string, string> }));
 
 vi.mock('@tanstack/react-router', () => ({
-  useParams: () => ({ slug: 'a2a-9' }),
+  useParams: () => ({ slug: 'a2a-9', sessionId: 'session-b10' }),
   useSearch: () => search.value,
   useNavigate: () => navigate,
   Link: ({ children, to }: { children: React.ReactNode; to: string }) => (
@@ -91,6 +91,7 @@ function presented(seq: number, overrides: Partial<Publication> = {}): Publicati
     sessionId: 'session-9',
     providerKey: 'session-9:plan',
     revisionId: `pf_${seq}`,
+    fileId: `pf_${seq}`,
     title: 'plan.md',
     url: `/api/v1/forge/sessions/session-9/files/presented/pf_${seq}`,
     at: `2026-10-31T09:3${seq}:00Z`,
@@ -421,6 +422,104 @@ describe('RunReviewPage', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Run a2a-9 is not among the runs Work lists',
+    );
+  });
+});
+
+describe('SessionArtifactsPage', () => {
+  beforeEach(() => {
+    search.value = { instance: 'valhalla' };
+  });
+
+  function renderSession(runLog: Partial<IRunLogService>) {
+    render(
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <ServicesProvider services={{ 'ting.runLog': { presentedText, ...runLog } }}>
+          <SessionArtifactsPage />
+        </ServicesProvider>
+      </QueryClientProvider>,
+    );
+  }
+
+  const FILES: Publication[] = [
+    presented(1, { sessionId: 'session-b10', providerKey: 'pf_1', title: 'Implementation Plan' }),
+    presented(2, {
+      sessionId: 'session-b10',
+      providerKey: 'pf_2',
+      title: 'Architecture Diagram',
+      mime: 'image/svg+xml',
+      url: '/api/v1/forge/sessions/session-b10/files/presented/pf_2',
+    }),
+  ];
+
+  it("shows a running session's files and sends notes into it", async () => {
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const publications = vi.fn().mockResolvedValue(FILES);
+    renderSession({
+      session: vi.fn().mockResolvedValue({
+        sessionId: 'session-b10',
+        instanceId: 'valhalla',
+        title: 'Artifact test',
+        running: true,
+      }),
+      publications,
+      sendMessage,
+    });
+
+    // A file the page cannot show as text opens in the file preview.
+    expect(await screen.findByTestId('presented-file-card')).toHaveTextContent(
+      'Architecture Diagram',
+    );
+    expect(screen.getByText('File access is unavailable in this view.')).toBeInTheDocument();
+    expect(screen.getByText('Running')).toBeInTheDocument();
+    expect(publications).toHaveBeenCalledWith(
+      'valhalla',
+      expect.objectContaining({ sessionId: 'session-b10' }),
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Implementation Plan' }));
+    expect(await screen.findByText(/Step one/)).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Shorter, please.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send to the session' }));
+    await waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith(
+        'session-b10',
+        'valhalla',
+        expect.stringContaining('Shorter, please.'),
+      ),
+    );
+  });
+
+  it('takes no notes once the session stopped, and still opens its files', async () => {
+    renderSession({
+      session: vi.fn().mockResolvedValue(null),
+      publications: vi.fn().mockResolvedValue(FILES),
+    });
+
+    expect(await screen.findByText('Not running')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Implementation Plan' }));
+    expect(await screen.findByText(/Step one/)).toBeInTheDocument();
+    expect(screen.getAllByText('Session session- (gone)').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Send to the session' })).not.toBeInTheDocument();
+  });
+
+  it('says when it presented nothing, and when it cannot be read', async () => {
+    renderSession({
+      session: vi.fn().mockResolvedValue(null),
+      publications: vi.fn().mockResolvedValue([]),
+    });
+    expect(await screen.findByText(/has presented nothing/)).toBeInTheDocument();
+  });
+
+  it('says why the session could not be read', async () => {
+    renderSession({
+      session: vi.fn().mockRejectedValue(new Error('Forge unavailable')),
+      publications: vi.fn().mockResolvedValue([]),
+    });
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'What the session presented could not be read: Forge unavailable',
     );
   });
 });
