@@ -16,7 +16,7 @@ describe('tingPlugin descriptor', () => {
     expect(tingPlugin).toMatchObject({ title: 'Work', subtitle: 'run and oversee work' });
     expect(tingPlugin.tabs.map((tab) => tab.id)).toEqual([
       'work',
-      'reviews',
+      'artifacts',
       'workflows',
       'builder',
     ]);

@@ -9,6 +9,7 @@ import {
   useVolundrSessions,
 } from '../application/useRealmsHome';
 import { useForgeProjects, useUpdateProject } from '../application/useProjects';
+import { ArtifactList } from '@niuulabs/plugin-ting';
 import { NeedsYouRow } from './NeedsYouRow';
 import { RealmCard } from './RealmCard';
 import { SessionsTable } from './SessionsTable';
@@ -185,6 +186,9 @@ export function ProjectPage() {
           </SectionCard>
           <SectionCard title={`Sessions · ${projectSessions.length}`}>
             <SessionsTable sessions={projectSessions} />
+          </SectionCard>
+          <SectionCard title="Artifacts">
+            <ArtifactList projectId={projectId} />
           </SectionCard>
         </div>
         {project ? <SharedSettings project={project} /> : null}

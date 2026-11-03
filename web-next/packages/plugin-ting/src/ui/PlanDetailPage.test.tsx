@@ -169,7 +169,7 @@ describe('PlanDetailPage', () => {
     expect(await screen.findByTestId('plan-wizard')).toHaveTextContent(mockSlug);
   });
 
-  it('goes back to the plan list', async () => {
+  it('goes back to Artifacts', async () => {
     const svc = {
       getPlanSession: vi.fn().mockResolvedValue(plan),
       getPlanDraft: vi.fn().mockResolvedValue(draft),
@@ -177,9 +177,9 @@ describe('PlanDetailPage', () => {
     render(<PlanDetailPage />, { wrapper: wrap(svc) });
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /Reviews/ })).toBeInTheDocument(),
+      expect(screen.getByRole('button', { name: /Artifacts/ })).toBeInTheDocument(),
     );
-    screen.getByRole('button', { name: /Reviews/ }).click();
-    expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/plan' });
+    screen.getByRole('button', { name: /Artifacts/ }).click();
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/artifacts' });
   });
 });

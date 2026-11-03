@@ -93,7 +93,7 @@ export function moduleWidgetRef(widget: string): { module: string; name: string 
 
 /** Where a review lives: a ticket's or a run's review page, or its project plan's. */
 export function reviewPath(item: ReviewItem): string {
-  if (item.kind === 'run') return `/ting/review/run/${item.taskId}`;
+  if (item.kind === 'run') return `/ting/artifacts/${item.taskId}`;
   return item.kind === 'ticket' && item.projectId && item.issueId
     ? `/ting/review/${item.projectId}/${item.issueId}`
     : `/ting/plan/${item.taskId}`;

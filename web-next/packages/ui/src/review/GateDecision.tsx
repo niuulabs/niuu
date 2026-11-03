@@ -28,7 +28,8 @@ export interface GateDecisionProps {
   /** Decisions are held, for instance while an older revision is on screen. */
   disabled?: boolean;
   error?: string | null;
-  onApprove: () => void;
+  /** Absent where there is nothing to approve, such as sending notes back to a run. */
+  onApprove?: () => void;
   onRequestChanges: () => void;
 }
 
@@ -114,14 +115,16 @@ export function GateDecision({
         <button type="button" disabled={held} onClick={requestChanges}>
           {changesLabel}
         </button>
-        <button
-          type="button"
-          className="niuu-gate-decision__approve"
-          disabled={held}
-          onClick={onApprove}
-        >
-          {approveLabel}
-        </button>
+        {onApprove ? (
+          <button
+            type="button"
+            className="niuu-gate-decision__approve"
+            disabled={held}
+            onClick={onApprove}
+          >
+            {approveLabel}
+          </button>
+        ) : null}
       </div>
     </section>
   );

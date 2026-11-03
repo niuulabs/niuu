@@ -429,6 +429,8 @@
 @media (max-width: 1100px) {
   .ting-review__columns {
     grid-template-columns: minmax(0, 1fr);
+    /* Stacked, each column is as tall as its content; stretched rows overlapped. */
+    grid-auto-rows: max-content;
     overflow-y: auto;
   }
 
@@ -438,4 +440,13 @@
     overflow: visible;
     border: 0;
   }
+}
+
+.ting-review__brief summary {
+  cursor: pointer;
+  color: var(--color-text-secondary);
+}
+
+.ting-review__brief p {
+  margin-top: var(--space-2);
 }

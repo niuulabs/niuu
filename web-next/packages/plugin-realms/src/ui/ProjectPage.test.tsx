@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createCallLog, fakeVolundr, workspaceWithWaitingTicket } from '../testing/fakes';
@@ -20,6 +20,26 @@ describe('ProjectPage', () => {
     expect(screen.getByRole('textbox', { name: 'Project brief' })).toHaveValue(
       'The residents that keep the clusters.',
     );
+  });
+
+  it("lists the project's artifacts, read only from its own runs", async () => {
+    const outcomes = vi.fn().mockResolvedValue([]);
+    renderRealms('/realms/projects/project-yggdrasil', {
+      'ting.runLog': {
+        outcomes,
+        projectSessions: vi
+          .fn()
+          .mockResolvedValue([
+            { projectId: 'project-yggdrasil', name: 'Yggdrasil', sessionIds: [] },
+          ]),
+        sendMessage: vi.fn(),
+      },
+    });
+    const page = await screen.findByTestId('project-page');
+    expect(
+      await within(page).findByText('No run has produced an artifact yet.'),
+    ).toBeInTheDocument();
+    expect(outcomes).not.toHaveBeenCalled();
   });
 
   it('saves the brief and the repository on the project', async () => {

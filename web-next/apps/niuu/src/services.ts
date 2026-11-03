@@ -23,6 +23,7 @@ import {
   createMockTingSessionService,
   createMockTrackerService,
   createMockWorkService,
+  createMockRunLogService,
   createMockWorkflowService,
   createMockResearchService,
   createMockSpecsService,
@@ -35,6 +36,7 @@ import {
   buildTrackerHttpAdapter,
   buildWorkflowHttpAdapter,
   buildWorkHttpAdapter,
+  buildRunLogHttpAdapter,
   type IWorkService,
   buildWorkflowExecutionHttpAdapter,
   buildDeliveryExecutionHttpAdapter,
@@ -1652,6 +1654,10 @@ export function buildServices(config: NiuuConfig): ServicesMap {
             'ting.work',
             'Configure a live work backend to view work.',
           ),
+    // Artifacts are read from runs' Forge session logs, so this service talks to the Forge.
+    'ting.runLog': forgeBase
+      ? buildRunLogHttpAdapter(createApiClient(forgeApiBasePath(forgeBase)))
+      : demoService(config, 'ting.runLog', createMockRunLogService),
     'ting.workflowExecutions': tingClient
       ? buildWorkflowExecutionHttpAdapter(tingClient)
       : unavailableService<IWorkflowExecutionService>('ting.workflowExecutions'),

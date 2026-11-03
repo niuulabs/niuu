@@ -23,6 +23,7 @@ import {
   createMockDispatchBus,
   createMockTingService,
   createMockWorkService,
+  createMockRunLogService,
   createMockWorkflowService,
 } from '@niuulabs/plugin-ting';
 import {
@@ -61,6 +62,7 @@ export function defaultServices(log: CallLog, overrides: Record<string, unknown>
     'ting.workflows': createMockWorkflowService(),
     ting: createMockTingService(),
     'ting.work': createMockWorkService(),
+    'ting.runLog': createMockRunLogService(),
     'ting.dispatch': createMockDispatchBus(),
     volundr: fakeVolundr(log),
     'niuu.repos': {

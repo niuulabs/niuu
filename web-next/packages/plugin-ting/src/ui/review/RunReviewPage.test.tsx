@@ -1,13 +1,20 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
-import type { IWorkService } from '../../ports';
+import type { IRunLogService, IWorkService, IWorkflowService } from '../../ports';
 import type { ReviewRevision, RunReviews } from '../../domain/review';
+import type { WorkSummary } from '../../domain/work';
+import type { RunOutcome } from '../../domain/artifacts';
 import { RunReviewPage } from './RunReviewPage';
+
+const navigate = vi.hoisted(() => vi.fn());
+const search = vi.hoisted(() => ({ value: {} as Record<string, string> }));
 
 vi.mock('@tanstack/react-router', () => ({
   useParams: () => ({ slug: 'a2a-9' }),
+  useSearch: () => search.value,
+  useNavigate: () => navigate,
   Link: ({ children, to }: { children: React.ReactNode; to: string }) => (
     <a href={to}>{children}</a>
   ),
@@ -58,25 +65,108 @@ function record(overrides: Partial<RunReviews> = {}): RunReviews {
   };
 }
 
-function setup(runReviews: IWorkService['runReviews'], decideRunGate = vi.fn()) {
-  const service = { runReviews, decideRunGate } as unknown as IWorkService;
+function campaign(status: string, condition: WorkSummary['condition']): WorkSummary {
+  return {
+    id: 'campaign:9',
+    kind: 'workflowLaunch',
+    title: 'Infra Change Flow',
+    campaignSlug: 'a2a-9',
+    condition,
+    rawState: { source: 'campaign', status },
+    currentStep: null,
+    attention: null,
+    createdAt: '2026-10-31T09:00:00Z',
+    updatedAt: '2026-10-31T10:00:00Z',
+    source: null,
+    workflow: { id: 'wf-infra', version: '1.2.0', documentRevision: null },
+    session: { id: 'session-9', connectionId: 'valhalla' },
+    links: { self: '', specialist: '' },
+    actions: [],
+  };
+}
+
+function outcome(overrides: Partial<RunOutcome>): RunOutcome {
+  return {
+    seq: 1,
+    at: '2026-10-31T09:30:00Z',
+    eventType: 'plan.revised',
+    participantId: 'flock-planner',
+    participantType: 'ravn',
+    fields: {},
+    ...overrides,
+  };
+}
+
+const PLAN_OUTCOMES: RunOutcome[] = [
+  outcome({
+    seq: 1,
+    participantId: 'skuld-9',
+    participantType: 'skuld',
+    eventType: 'delivery.requested',
+    fields: {
+      prompt: '# Workflow Launch\n\n## Prompt\nPlan the CORS change\n\n## Expectations\nx',
+    },
+  }),
+  outcome({ seq: 2, fields: { plan: 'Step one\nStep two', verdict: 'ready_for_review' } }),
+];
+
+function setup({
+  runReviews = vi.fn().mockResolvedValue(record()),
+  decideRunGate = vi.fn(),
+  status = ['blocked', 'needsAttention'] as [string, WorkSummary['condition']],
+  outcomes = vi.fn().mockResolvedValue([]),
+  sendMessage = vi.fn().mockResolvedValue(undefined),
+  launchWorkflow = vi.fn(),
+}: {
+  runReviews?: IWorkService['runReviews'];
+  decideRunGate?: IWorkService['decideRunGate'];
+  status?: [string, WorkSummary['condition']];
+  outcomes?: IRunLogService['outcomes'];
+  sendMessage?: IRunLogService['sendMessage'];
+  launchWorkflow?: IWorkflowService['launchWorkflow'];
+} = {}) {
+  const work = {
+    runReviews,
+    decideRunGate,
+    reviews: vi.fn().mockResolvedValue({ items: [] }),
+    list: vi.fn().mockResolvedValue({
+      projects: [],
+      campaigns: [campaign(...status)],
+      executions: [],
+      executionNextCursor: null,
+      coverage: [],
+    }),
+  } as unknown as IWorkService;
+  const runLog = {
+    outcomes,
+    projectSessions: vi.fn().mockResolvedValue([]),
+    sendMessage,
+  } as unknown as IRunLogService;
+  const workflows = { launchWorkflow } as unknown as IWorkflowService;
   render(
     <QueryClientProvider
       client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
     >
-      <ServicesProvider services={{ 'ting.work': service }}>
+      <ServicesProvider
+        services={{ 'ting.work': work, 'ting.runLog': runLog, 'ting.workflows': workflows }}
+      >
         <RunReviewPage />
       </ServicesProvider>
     </QueryClientProvider>,
   );
-  return { decideRunGate };
+  return { decideRunGate, sendMessage, launchWorkflow };
 }
 
 describe('RunReviewPage', () => {
-  it('introduces the run and what started it', async () => {
-    setup(vi.fn().mockResolvedValue(record()));
+  beforeEach(() => {
+    navigate.mockReset();
+    search.value = {};
+  });
 
-    expect(await screen.findByRole('heading', { name: 'Plan NIU-1125 only' })).toBeInTheDocument();
+  it('introduces the run and what started it', async () => {
+    setup();
+
+    expect(await screen.findByRole('heading', { name: 'Infra Change Flow' })).toBeInTheDocument();
     expect(screen.getByText('Started by regin')).toBeInTheDocument();
     expect(screen.getByText('On regin')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open the session' })).toHaveAttribute(
@@ -87,10 +177,7 @@ describe('RunReviewPage', () => {
   });
 
   it('answers the pending gate with what the person saw', async () => {
-    const { decideRunGate } = setup(
-      vi.fn().mockResolvedValue(record()),
-      vi.fn().mockResolvedValue(undefined),
-    );
+    const { decideRunGate } = setup({ decideRunGate: vi.fn().mockResolvedValue(undefined) });
 
     fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
 
@@ -105,10 +192,7 @@ describe('RunReviewPage', () => {
   });
 
   it('asks for what should change, and says where it goes', async () => {
-    const { decideRunGate } = setup(
-      vi.fn().mockResolvedValue(record()),
-      vi.fn().mockResolvedValue(undefined),
-    );
+    const { decideRunGate } = setup({ decideRunGate: vi.fn().mockResolvedValue(undefined) });
 
     expect(await screen.findByText(/Changes go back to the agent/)).toBeInTheDocument();
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Pin the version.' } });
@@ -123,10 +207,7 @@ describe('RunReviewPage', () => {
   });
 
   it('says why a decision did not go through', async () => {
-    setup(
-      vi.fn().mockResolvedValue(record()),
-      vi.fn().mockRejectedValue(new Error('Review it again.')),
-    );
+    setup({ decideRunGate: vi.fn().mockRejectedValue(new Error('Review it again.')) });
 
     fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
 
@@ -136,29 +217,147 @@ describe('RunReviewPage', () => {
   it('offers no decision once the gate is answered', async () => {
     const decided = record();
     decided.reviews[0]!.revisions = [revision({ status: 'approved', decidedBy: 'jozef' })];
-    setup(vi.fn().mockResolvedValue(decided));
+    setup({ runReviews: vi.fn().mockResolvedValue(decided), status: ['completed', 'completed'] });
 
     expect(await screen.findByText('by jozef')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
   });
 
-  it('says when the session is gone', async () => {
-    setup(
-      vi.fn().mockResolvedValue(record({ reviews: [], unreadableRuns: ['Infra Change Flow'] })),
-    );
+  it('says when the session is gone and nothing was produced', async () => {
+    setup({
+      runReviews: vi
+        .fn()
+        .mockResolvedValue(record({ reviews: [], unreadableRuns: ['Infra Change Flow'] })),
+    });
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'The session of Infra Change Flow is gone',
     );
-    expect(screen.getByRole('link', { name: 'Back to Reviews' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Back to Artifacts' })).toHaveAttribute(
       'href',
-      '/ting/plan',
+      '/ting/artifacts',
     );
   });
 
   it('says when the run cannot be read', async () => {
-    setup(vi.fn().mockRejectedValue(new Error('Run not found: a2a-9')));
+    setup({ runReviews: vi.fn().mockRejectedValue(new Error('Run not found: a2a-9')) });
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Run not found: a2a-9');
+  });
+
+  it("says when the run's log cannot be read", async () => {
+    setup({ outcomes: vi.fn().mockRejectedValue(new Error('Resident runtime not found')) });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "The run's log could not be read: Resident runtime not found",
+    );
+  });
+
+  it('shows what an agent produced, with each version', async () => {
+    search.value = { artifact: 'a2a-9/flock-planner/plan' };
+    setup({
+      runReviews: vi.fn().mockResolvedValue(record({ reviews: [] })),
+      status: ['running', 'active'],
+      outcomes: vi.fn().mockResolvedValue(PLAN_OUTCOMES),
+    });
+
+    expect(await screen.findByText(/Step one/)).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'r1' })).toBeInTheDocument();
+    expect(screen.getByText('Plan the CORS change')).toBeInTheDocument();
+  });
+
+  it('sends notes on a running artifact to the run', async () => {
+    const { sendMessage } = setup({
+      runReviews: vi.fn().mockResolvedValue(record({ reviews: [] })),
+      status: ['running', 'active'],
+      outcomes: vi.fn().mockResolvedValue(PLAN_OUTCOMES),
+    });
+
+    expect(
+      await screen.findByRole('heading', { name: 'Send back to Planner' }),
+    ).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Name the setting.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send to the run' }));
+
+    await waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith(
+        'session-9',
+        'valhalla',
+        'Notes on the plan (version 1) from Planner:\n\nName the setting.',
+      ),
+    );
+  });
+
+  it('starts a revision of a finished artifact and opens the new run', async () => {
+    const launchWorkflow = vi.fn().mockResolvedValue({ slug: 'a2a-10' });
+    setup({
+      runReviews: vi.fn().mockResolvedValue(record({ reviews: [] })),
+      status: ['completed', 'completed'],
+      outcomes: vi.fn().mockResolvedValue(PLAN_OUTCOMES),
+      launchWorkflow,
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Start a revision' })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Name the setting.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Start a revision' }));
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/ting/artifacts/a2a-10' }));
+    const [workflowId, request] = launchWorkflow.mock.calls[0]!;
+    expect(workflowId).toBe('wf-infra');
+    expect(request).toMatchObject({
+      repo: 'https://github.com/niuulabs/niuu',
+      branch: 'regin',
+      connectionId: 'valhalla',
+      workflowVersion: '1.2.0',
+    });
+    expect(request.prompt).toContain('Plan the CORS change');
+    expect(request.prompt).toContain("Reviewer's notes:\nName the setting.");
+    expect(request.prompt).toContain('Previous plan:\nStep one\nStep two');
+  });
+
+  it('answers a waiting gate from the artifact it is about', async () => {
+    const { decideRunGate } = setup({
+      runReviews: vi.fn().mockResolvedValue(record()),
+      outcomes: vi.fn().mockResolvedValue(PLAN_OUTCOMES),
+      decideRunGate: vi.fn().mockResolvedValue(undefined),
+    });
+    search.value = { artifact: 'a2a-9/flock-planner/plan' };
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Plan' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
+
+    await waitFor(() =>
+      expect(decideRunGate).toHaveBeenCalledWith(
+        'a2a-9',
+        expect.objectContaining({ gateId: 'gate-1', decision: 'approve' }),
+      ),
+    );
+  });
+
+  it('says so when Work does not list the run', async () => {
+    const work = {
+      runReviews: vi.fn().mockResolvedValue(record()),
+      reviews: vi.fn().mockResolvedValue({ items: [] }),
+      list: vi.fn().mockResolvedValue({
+        projects: [],
+        campaigns: [],
+        executions: [],
+        executionNextCursor: null,
+        coverage: [],
+      }),
+    } as unknown as IWorkService;
+    render(
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <ServicesProvider services={{ 'ting.work': work, 'ting.runLog': {} }}>
+          <RunReviewPage />
+        </ServicesProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Run a2a-9 is not among the runs Work lists',
+    );
   });
 });

@@ -36,6 +36,16 @@ export interface ReviewSubject {
   canAsk: boolean;
 }
 
+/** Where notes go when the work on screen waits at no gate: back to the run that made it. */
+export interface ReviewSend {
+  title: string;
+  hint: string;
+  label: string;
+  busy: boolean;
+  failure: unknown;
+  onSend: (notes: string, onSuccess: () => void) => void;
+}
+
 /** What the page's coordinator needs from the review around it. */
 export interface ReviewTalk {
   quote: string | null;
@@ -76,6 +86,8 @@ export function ReviewWorkspace({
   deciding,
   decisionFailure,
   onDecide,
+  send,
+  initialReview,
 }: {
   subject: ReviewSubject;
   board: WorkBoardLayout | null;
@@ -86,8 +98,12 @@ export function ReviewWorkspace({
   deciding: boolean;
   decisionFailure: unknown;
   onDecide: (decision: GateAnswer, onSuccess: () => void) => void;
+  /** For a review with no gate waiting: sends the person's notes back, if anything can take them. */
+  send?: ((review: RunReview) => ReviewSend | null) | undefined;
+  /** The review to open on, by its column id; otherwise the one waiting for a person. */
+  initialReview?: string | null;
 }) {
-  const [chosenColumn, setChosenColumn] = useState<string | null>(null);
+  const [chosenColumn, setChosenColumn] = useState<string | null>(initialReview ?? null);
   const [chosenRevision, setChosenRevision] = useState<number | null>(null);
   const [showChanges, setShowChanges] = useState(false);
   const [chosenPanel, setChosenPanel] = useState(0);
@@ -120,6 +136,8 @@ export function ReviewWorkspace({
 
   const gate = subject.gate;
   const decidable = gate !== null && gate.id === latest.gateId && isPending(latest);
+  const sending = decidable ? null : (send?.(review) ?? null);
+  const takesNotes = decidable || sending !== null;
   const reading = revision.number === latest.number;
   const { canAsk, pullRequestUrl } = subject;
   const column = board?.columns.find((item) => item.id === review.columnId);
@@ -164,11 +182,11 @@ export function ReviewWorkspace({
       chatEndpoint={review.chatEndpoint ?? null}
       sessionId={review.sessionId}
       filesystem={filesystem ?? null}
-      review={decidable ? lineComments : undefined}
+      review={takesNotes ? lineComments : undefined}
       marks={marks}
       onMarkClick={openQuote}
       pageContext={pageContext}
-      onQuote={decidable ? quoteFromPage : undefined}
+      onQuote={takesNotes ? quoteFromPage : undefined}
       onAsk={canAsk ? setAsking : undefined}
     />
   ) : null;
@@ -239,12 +257,12 @@ export function ReviewWorkspace({
         <aside className="ting-review__ticket" aria-label={railLabel}>
           <h2>{railLabel}</h2>
           {rail}
-          <h2>Gate history</h2>
+          <h2>History</h2>
           <GateHistory revisions={review.revisions} />
         </aside>
 
         <main className="ting-review__subject">
-          {selection && (canAsk || decidable) ? (
+          {selection && (canAsk || takesNotes) ? (
             <div className="ting-review__selection" role="group" aria-label="Selected text">
               {canAsk ? (
                 <button
@@ -257,7 +275,7 @@ export function ReviewWorkspace({
                   Ask the coordinator
                 </button>
               ) : null}
-              {decidable ? (
+              {takesNotes ? (
                 <button
                   type="button"
                   onClick={() => {
@@ -317,6 +335,27 @@ export function ReviewWorkspace({
               error={decisionFailure ? decisionError(decisionFailure) : null}
               onApprove={() => submit('approve')}
               onRequestChanges={() => submit('request_changes')}
+            />
+          ) : null}
+          {sending ? (
+            <GateDecision
+              title={sending.title}
+              hint={sending.hint}
+              note={note}
+              onNoteChange={setNote}
+              notePlaceholder="What should change? Select text in the document to quote it."
+              commentCount={lineComments.comments.length}
+              requireNote
+              changesLabel={sending.label}
+              busy={sending.busy}
+              disabled={!reading}
+              error={sending.failure ? decisionError(sending.failure) : null}
+              onRequestChanges={() =>
+                sending.onSend(gateNotes(note, lineComments.comments), () => {
+                  setNote('');
+                  lineComments.clear();
+                })
+              }
             />
           ) : null}
           {renderTalk?.({

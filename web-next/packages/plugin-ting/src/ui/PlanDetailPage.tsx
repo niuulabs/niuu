@@ -63,9 +63,9 @@ export function PlanDetailPage() {
         <button
           type="button"
           className="ting-plan-detail__back"
-          onClick={() => void navigate({ to: '/ting/plan' as never })}
+          onClick={() => void navigate({ to: '/ting/artifacts' as never })}
         >
-          ← Reviews
+          ← Artifacts
         </button>
         <h1>{plan.name || structure?.name || slug}</h1>
         <span className="ting-plan-detail__status">

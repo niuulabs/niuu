@@ -10,7 +10,7 @@ import { DispatchView } from './ui/DispatchView';
 import { TingTopbar } from './ui/TingTopbar';
 import { TingFooter } from './ui/TingFooter';
 import { PlanWizard } from './ui/PlanWizard';
-import { ReviewsPage } from './ui/review/ReviewsPage';
+import { ArtifactsPage } from './ui/artifacts/ArtifactsPage';
 import { PlanDetailPage } from './ui/PlanDetailPage';
 import { RunReviewPage } from './ui/review/RunReviewPage';
 import { TicketReviewPage } from './ui/review/TicketReviewPage';
@@ -28,6 +28,10 @@ export {
   buildDeliveryExecutionHttpAdapter,
 } from './adapters/workflowExecution';
 export { buildWorkHttpAdapter } from './adapters/workHttp';
+export { buildRunLogHttpAdapter } from './adapters/runLogHttp';
+export { ArtifactList } from './ui/artifacts/ArtifactList';
+export type { IRunLogService, ProjectSessions } from './ports';
+export type * from './domain/artifacts';
 export type { IWorkService, IWorkflowExecutionService, IDeliveryExecutionService } from './ports';
 export type * from './domain/work';
 export type * from './domain/review';
@@ -71,7 +75,7 @@ export const tingPlugin = definePlugin({
   subtitle: 'run and oversee work',
   tabs: [
     { id: 'work', label: 'Board', path: '/ting/work' },
-    { id: 'reviews', label: 'Reviews', path: '/ting/plan' },
+    { id: 'artifacts', label: 'Artifacts', path: '/ting/artifacts' },
     { id: 'workflows', label: 'Workflows', path: '/ting/workflows' },
     { id: 'builder', label: 'Builder', path: '/ting/workflows/build' },
   ],
@@ -96,8 +100,21 @@ export const tingPlugin = definePlugin({
     }),
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/ting/review/run/$slug',
+      path: '/ting/artifacts',
+      component: ArtifactsPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/artifacts/$slug',
       component: RunReviewPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/review/run/$slug',
+      beforeLoad: ({ params }) => {
+        throw redirect({ to: `/ting/artifacts/${params.slug}` as never });
+      },
+      component: () => null,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -191,7 +208,10 @@ export const tingPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting/plan',
-      component: ReviewsPage,
+      beforeLoad: () => {
+        throw redirect({ to: '/ting/artifacts' as never });
+      },
+      component: () => null,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -217,6 +237,7 @@ export {
   createMockTrackerService,
   createMockWorkflowService,
   createMockWorkService,
+  createMockRunLogService,
   createMockResearchService,
   createMockSpecsService,
   createMockDispatchBus,

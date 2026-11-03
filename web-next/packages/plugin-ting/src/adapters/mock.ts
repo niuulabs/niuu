@@ -39,6 +39,7 @@ import type {
   CampaignArtifactDetail,
   ImportProjectOptions,
   IWorkService,
+  IRunLogService,
 } from '../ports';
 import type { Saga, Phase, Run } from '../domain/saga';
 import type { DispatcherState } from '../domain/dispatcher';
@@ -2456,6 +2457,19 @@ function mockReviewList(tasks: readonly WorkTask[], runWaiting: boolean): Review
           ]
         : []),
     ],
+  };
+}
+
+/** Demo runs have no Forge session log to read, so they produce no artifacts. */
+export function createMockRunLogService(): IRunLogService {
+  return {
+    async outcomes() {
+      return [];
+    },
+    async projectSessions() {
+      return [];
+    },
+    async sendMessage() {},
   };
 }
 
