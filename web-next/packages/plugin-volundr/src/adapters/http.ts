@@ -527,6 +527,8 @@ function normalizeSession(session: SessionPayload): VolundrSession {
       const identifier = session.trackerIssueId ?? session.tracker_issue_id ?? null;
       const url = session.issueTrackerUrl ?? session.issue_tracker_url ?? '';
       if (!identifier) return undefined;
+      // Ting keys a workflow launch as "workflow:<run>": a run, not a ticket to link.
+      if (identifier.startsWith('workflow:')) return undefined;
       return {
         id: identifier,
         identifier,

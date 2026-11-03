@@ -1128,6 +1128,23 @@ describe('buildVolundrHttpAdapter', () => {
     });
   });
 
+  it('getSession does not present a Ting workflow key as a ticket', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce({
+      id: 's1',
+      name: 'tracker-delivery-flow',
+      source: { type: 'git', repo: 'https://github.com/niuulabs/niuu', branch: 'regin' },
+      status: 'running',
+      model: 'gpt-5.6-terra',
+      tracker_issue_id: 'workflow:a2a-509e14f61f0b48bfa43f05aab3bad1b9',
+      issue_tracker_url: '',
+    });
+
+    const session = await buildVolundrHttpAdapter(client).getSession('s1');
+
+    expect(session.trackerIssue).toBeUndefined();
+  });
+
   it('getActiveSessions calls GET /sessions?active=true', async () => {
     const client = makeClient();
     await buildVolundrHttpAdapter(client).getActiveSessions();
