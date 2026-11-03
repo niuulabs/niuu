@@ -65,7 +65,7 @@ async def pool():
 
 async def test_the_startup_runner_applies_the_migration_once(pool):
     files = ordered_migration_files(MIGRATIONS)
-    assert files[-1].name == MIGRATION
+    assert MIGRATION in [path.name for path in files]
     async with pool.acquire() as conn:
         # A second start verifies the ledger and changes nothing.
         await apply_startup_migrations(conn, files)

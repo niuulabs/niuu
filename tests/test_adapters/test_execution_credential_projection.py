@@ -99,3 +99,33 @@ async def test_kubernetes_projection_creates_patches_mounts_directory_and_cleans
     await adapter.remove(session_id)
     await adapter.remove(session_id)
     assert len(api.deleted) == 1
+
+
+@pytest.mark.asyncio
+async def test_kubernetes_projection_names_its_secret_volume_and_purpose_per_use() -> None:
+    # The session-bound Forge credential and a coordinator credential can be projected
+    # into one pod: their Secrets, volumes and mounts must not collide.
+    api = SecretApi()
+    forge = KubernetesExecutionCredentialProjection(
+        namespace="sessions",
+        api=api,
+        mount_path="/var/run/secrets/niuu-forge-session",
+        secret_prefix="forge-session",
+        volume_prefix="forge-session",
+        purpose="forge-session-credential",
+    )
+    workflow = KubernetesExecutionCredentialProjection(namespace="sessions", api=SecretApi())
+    session_id = uuid4()
+
+    projected = await forge.project(session_id=session_id, token="t", runtime_backend="kubernetes")
+    other = await workflow.project(session_id=session_id, token="u", runtime_backend="kubernetes")
+
+    secret = api.created[0]
+    assert secret["metadata"]["name"] == f"forge-session-{session_id.hex}"
+    assert secret["metadata"]["labels"]["volundr.niuu.io/purpose"] == "forge-session-credential"
+    assert projected.token_file == "/var/run/secrets/niuu-forge-session/token"
+    volume = projected.pod_spec.volumes[0]
+    assert volume["name"] == f"forge-session-{session_id.hex[:12]}"
+    assert volume["secret"]["secretName"] == f"forge-session-{session_id.hex}"
+    assert volume["name"] != other.pod_spec.volumes[0]["name"]
+    assert projected.pod_spec.volume_mounts[0]["readOnly"] is True

@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path as FilePath
 from typing import Any, Literal
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import httpx
@@ -2020,6 +2020,14 @@ class WorkspaceResponse(BaseModel):
         )
 
 
+def _inline_disposition(filename: str) -> str:
+    """``inline`` with the file's name, RFC 6266 style (as Starlette's FileResponse)."""
+    quoted = quote(filename)
+    if quoted != filename:
+        return f"inline; filename*=utf-8''{quoted}"
+    return f'inline; filename="{filename}"'
+
+
 def create_router(
     session_service: SessionService,
     stats_service: StatsService | None = None,
@@ -3875,15 +3883,17 @@ def create_router(
                     await forge.ensure_access(session, principal, "read")
                 except SessionAccessDeniedError as exc:
                     raise HTTPException(403, f"Access denied to session {session_id}") from exc
-                record, path = stored
-                return FileResponse(
-                    path=path,
+                # The store opens the bytes inside its own root; this route never
+                # touches a path.
+                record, chunks = stored
+                return StreamingResponse(
+                    chunks,
                     media_type=record.mime,
-                    filename=record.name,
-                    content_disposition_type="inline",
                     # The file is agent-supplied: render it, never run it on Forge's
                     # origin (HTML or SVG script, sniffed types).
                     headers={
+                        "content-length": str(record.size),
+                        "content-disposition": _inline_disposition(record.name),
                         "cache-control": PRESENTED_FILE_DURABLE_CACHE,
                         **presented_file_safety_headers(record.mime),
                     },

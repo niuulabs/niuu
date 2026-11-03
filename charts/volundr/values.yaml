@@ -592,20 +592,58 @@ notifications: {}
 artifacts: {}
 
 # Durable presented files (F2): Forge keeps its own copy of every file a session
-# presents, so it still opens after the session stops. Off by default: the local store
-# needs a persistent, single-writer directory (mount one, e.g. a PVC, at `store.root`).
-# `public_base_url` must name this Forge on the tailnet (*.ts.net or a Tailscale
-# address); anything else is refused at start. Rendered as `presented_files:`
-# (snake_case keys; see PresentedFilesConfig). Example:
-#   presentedFiles:
-#     enabled: true
-#     public_base_url: http://forge.tailnet-name.ts.net:8080
-#     max_bytes: 52428800
-#     max_total_bytes: 5368709120   # required when enabled: what the volume may hold
-#     store:
-#       adapter: volundr.adapters.outbound.local_presented_files.LocalPresentedFileStore
-#       root: /data/presented-files
-presentedFiles: {}
+# presents, so it still opens after the session stops and after Forge restarts.
+# Rendered as `presented_files:` with the Postgres store: the bytes go on the volume
+# below, which every Forge replica mounts; the record of each copy and the quota live
+# in Forge's database, so any number of replicas (and a rolling update's two pods)
+# share one quota. Session brokers upload with their session credential, so enabling
+# this also needs session credentials delivered to session pods
+# (`sessionCredentialProjection`, and forgeMcp session_tokens on: the default when
+# workloadIdentity signs with signingKey.existingSecret). The chart refuses to render
+# without them. See docs/operator/artifact-publications.md ("Presented files on a
+# cluster").
+presentedFiles:
+  # -- Keep Forge's own copy of every presented file
+  enabled: false
+  # -- Total bytes of copies Forge keeps (required when enabled). Bounded by the
+  # volume: Forge refuses to start when the volume's free space cannot hold it. A copy
+  # that would pass it is refused (HTTP 507) and counted; nothing is evicted.
+  maxTotalBytes: null
+  # -- Largest single copy (keep equal to the Skuld chart's broker.maxPresentedFileBytes)
+  maxBytes: 52428800
+  # -- Absolute origin presented-file links name, e.g. https://forge.example.com. Empty
+  # keeps the relative route (/api/v1/forge/sessions/<id>/files/presented/<file>),
+  # which clients open on the origin they already talk to.
+  publicBaseUrl: ""
+  # -- What controls access to publicBaseUrl: authenticated (an https origin behind
+  # Envoy's OIDC check; Forge refuses it with the allow-all identity adapter) or
+  # tailnet (a *.ts.net name or Tailscale address)
+  publicAccess: authenticated
+  # -- Where the volume is mounted in the Forge container
+  mountPath: /volundr/presented-files
+  persistence:
+    # -- Use this existing PVC instead of creating one
+    existingClaim: ""
+    # -- Storage class of the created PVC (empty: the cluster default)
+    storageClass: ""
+    # -- ReadWriteMany, or ReadWriteOnce only with rollout.colocate (every Forge pod on one node)
+    accessMode: ReadWriteMany
+    # -- Size of the created PVC; maxTotalBytes must fit in it
+    size: 10Gi
+
+# Delivers each session's scoped Forge credential (forge_session) into its pod: Forge
+# writes one Secret per session in `namespace` and mounts it read-only into the
+# session pod, and the broker reads it at start. Only the file path enters the
+# HelmRelease values; the token never does. Renders
+# forge_mcp.session_tokens.projection_adapter (KubernetesExecutionCredentialProjection)
+# and a Role granting Forge Secret get/create/patch/delete in that namespace only.
+sessionCredentialProjection:
+  # -- Mount each session's Forge credential into its pod (needed by presentedFiles)
+  enabled: false
+  # -- Namespace of the session pods (empty: podManager.kwargs.namespace)
+  namespace: ""
+  # -- Where the credential directory is mounted in the session pod
+  mountPath: /var/run/secrets/niuu-forge-session
 
 # How this Forge names itself (GET /api/v1/forge/instance, the host of its artifact
 # publications and of the session status card). Empty: projects.instance_id names it.
@@ -666,8 +704,9 @@ push:
 # except session_tokens.enabled: unless set here it is true only when
 # workloadIdentity is enabled with signingKey.existingSecret, because the read-only
 # root filesystem rules out the local key file and Volundr refuses to start with
-# session credentials enabled but no usable key. Session credentials are delivered
-# only by the local process pod manager today. See docs/operator/forge-mcp.md. Example:
+# session credentials enabled but no usable key. The local process pod manager
+# delivers session credentials itself; Flux and Kubernetes session pods get them
+# through `sessionCredentialProjection`. See docs/operator/forge-mcp.md. Example:
 #   forgeMcp:
 #     default_grants: []
 #     role_grants: {coordinator: [lifecycle, message]}   # the default; {} for none

@@ -3,6 +3,11 @@
 Layout: ``{root}/{session_id}/{file_id}/content`` plus ``meta.json`` beside it. The
 content is written to a temporary file and renamed into place, so a reader never sees
 a partial file. Directories are private to the Forge user.
+
+The store serves **one Forge process**: its :meth:`exclusive` section is an in-process
+lock, so a second process writing the same directory could overrun the quota. A mini
+Forge is one process; a cluster Forge (several replicas, or two pods during a rolling
+update) uses ``postgres_presented_files.PostgresPresentedFileStore``.
 """
 
 from __future__ import annotations
@@ -13,14 +18,19 @@ import json
 import os
 import shutil
 import tempfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import BinaryIO
 from uuid import UUID
 
+from niuu.domain.presented_files import PRESENTED_FILE_DEFAULT_READ_CHUNK_BYTES
 from volundr.domain.presented_files import (
     PresentedFile,
     PresentedFileConflictError,
     PresentedFileStore,
+    PresentedFileStoreUnavailableError,
     is_presented_file_id,
 )
 
@@ -32,8 +42,51 @@ _META = "meta.json"
 class LocalPresentedFileStore(PresentedFileStore):
     """Store presented files under a local directory."""
 
-    def __init__(self, root: str = "~/.niuu/presented-files") -> None:
+    def __init__(
+        self,
+        root: str = "~/.niuu/presented-files",
+        pool: object = None,
+        read_chunk_bytes: int = PRESENTED_FILE_DEFAULT_READ_CHUNK_BYTES,
+    ) -> None:
+        # ``pool``: the composition root hands every store Forge's database pool; a
+        # local directory needs none. ``read_chunk_bytes``: presented_files.read_chunk_bytes.
+        if read_chunk_bytes <= 0:
+            raise ValueError("presented_files.read_chunk_bytes must be positive")
         self._root = Path(root).expanduser()
+        self._lock = asyncio.Lock()
+        self._read_chunk_bytes = read_chunk_bytes
+
+    @asynccontextmanager
+    async def exclusive(self) -> AsyncIterator[None]:
+        async with self._lock:
+            yield
+
+    async def ensure_capacity(self, max_total_bytes: int) -> None:
+        await asyncio.to_thread(self._ensure_capacity, max_total_bytes, None)
+
+    def _ensure_capacity(self, max_total_bytes: int, used: int | None) -> None:
+        """The root must be a writable directory whose free space, plus what copies
+        already use (``used``; ``None`` sums the directory), holds ``max_total_bytes``."""
+        try:
+            self._root.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
+            fd, probe = tempfile.mkstemp(dir=self._root, prefix=".probe-")
+            os.close(fd)
+            os.unlink(probe)
+            free = shutil.disk_usage(self._root).free
+        except OSError as exc:
+            raise PresentedFileStoreUnavailableError(
+                f"presented_files.store.root {str(self._root)!r} is not a writable "
+                f"directory ({exc}); point it at a persistent volume Forge can write"
+            ) from exc
+        if used is None:
+            used = self._total_bytes()
+        if free + used < max_total_bytes:
+            raise PresentedFileStoreUnavailableError(
+                f"presented_files.max_total_bytes={max_total_bytes} does not fit "
+                f"presented_files.store.root {str(self._root)!r}: {free} bytes free plus "
+                f"{used} already stored. Lower max_total_bytes or give the store a "
+                "larger volume."
+            )
 
     def _dir(self, session_id: UUID, file_id: str) -> Path:
         if not is_presented_file_id(file_id):
@@ -49,8 +102,28 @@ class LocalPresentedFileStore(PresentedFileStore):
     ) -> PresentedFile:
         return await asyncio.to_thread(self._put, session_id, file_id, name, mime, data)
 
-    async def get(self, session_id: UUID, file_id: str) -> tuple[PresentedFile, Path] | None:
-        return await asyncio.to_thread(self._get, session_id, file_id)
+    async def get(
+        self, session_id: UUID, file_id: str
+    ) -> tuple[PresentedFile, AsyncIterator[bytes]] | None:
+        record = await asyncio.to_thread(self._get, session_id, file_id)
+        if record is None:
+            return None
+        return record, self._stream(session_id, file_id)
+
+    async def _stream(self, session_id: UUID, file_id: str) -> AsyncIterator[bytes]:
+        """The copy's bytes, opened on first read, inside the root, never via a link."""
+        handle = await asyncio.to_thread(self._open_content, session_id, file_id)
+        try:
+            while chunk := await asyncio.to_thread(handle.read, self._read_chunk_bytes):
+                yield chunk
+        finally:
+            await asyncio.to_thread(handle.close)
+
+    def _open_content(self, session_id: UUID, file_id: str) -> BinaryIO:
+        # The directory is resolved and kept inside the root (``_dir``); the content
+        # itself is opened with O_NOFOLLOW, so a link there is refused, never followed.
+        path = os.path.join(self._dir(session_id, file_id), _CONTENT)
+        return os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb")
 
     async def delete_session(self, session_id: UUID) -> int:
         return await asyncio.to_thread(self._delete_session, session_id)
@@ -94,9 +167,9 @@ class LocalPresentedFileStore(PresentedFileStore):
         digest = hashlib.sha256(data).hexdigest()
         existing = self._get(session_id, file_id)
         if existing is not None:
-            if existing[0].sha256 != digest:
+            if existing.sha256 != digest:
                 raise PresentedFileConflictError(f"{file_id} is already stored with other bytes")
-            return existing[0]
+            return existing
         target = self._dir(session_id, file_id)
         target.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
         record = PresentedFile(
@@ -119,7 +192,7 @@ class LocalPresentedFileStore(PresentedFileStore):
         self._write_atomic(target / _META, json.dumps(meta).encode())
         return record
 
-    def _get(self, session_id: UUID, file_id: str) -> tuple[PresentedFile, Path] | None:
+    def _get(self, session_id: UUID, file_id: str) -> PresentedFile | None:
         try:
             target = self._dir(session_id, file_id)
         except ValueError:
@@ -142,7 +215,7 @@ class LocalPresentedFileStore(PresentedFileStore):
             )
         except (OSError, ValueError, KeyError, TypeError):
             return None
-        return record, content
+        return record
 
     @staticmethod
     def _write_atomic(path: Path, data: bytes) -> None:

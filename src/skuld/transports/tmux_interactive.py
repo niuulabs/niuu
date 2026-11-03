@@ -204,6 +204,15 @@ def _replace_text_atomically(path: Path, text: str) -> None:
         raise
 
 
+async def _reap(process: asyncio.subprocess.Process) -> None:
+    """Kill ``process`` if it still runs and wait for it, shielded from the caller's
+    cancellation, so its transport is closed before the event loop is."""
+    if process.returncode is None:
+        with suppress(ProcessLookupError):
+            process.kill()
+    await asyncio.shield(process.wait())
+
+
 @dataclass
 class _TmuxResult:
     returncode: int
@@ -1055,7 +1064,11 @@ class TmuxInteractiveTransport(CLITransport):
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            returncode = await process.wait()
+            try:
+                returncode = await process.wait()
+            except asyncio.CancelledError:
+                await _reap(process)
+                raise
         except Exception:
             return False
         return returncode == 0
@@ -4526,7 +4539,13 @@ class TmuxInteractiveTransport(CLITransport):
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        stdout_b, stderr_b = await process.communicate()
+        try:
+            stdout_b, stderr_b = await process.communicate()
+        except asyncio.CancelledError:
+            # A caller cancelled mid-command (the transport stopping): reap the child
+            # before re-raising, or its transport outlives the event loop unclosed.
+            await _reap(process)
+            raise
         result = _TmuxResult(
             returncode=process.returncode or 0,
             stdout=stdout_b.decode("utf-8", errors="replace"),

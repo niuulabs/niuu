@@ -55,7 +55,10 @@ from niuu.domain.notifications import (
     NotificationSource,
 )
 from niuu.domain.observability import ObservabilityConfig
-from niuu.domain.presented_files import PRESENTED_FILE_DEFAULT_MAX_BYTES
+from niuu.domain.presented_files import (
+    PRESENTED_FILE_DEFAULT_MAX_BYTES,
+    PRESENTED_FILE_DEFAULT_READ_CHUNK_BYTES,
+)
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.forge_mcp.models import ForgeMcpGrant
 from ravn.config import LLMConfig, PersonaSourceConfig
@@ -77,7 +80,7 @@ from volundr.domain.notifications import (
     NotificationQuietHours,
     NotificationRateLimit,
 )
-from volundr.domain.presented_files import validate_public_base_url
+from volundr.domain.presented_files import PresentedFilesAccess, validate_public_base_url
 
 __all__ = ["GitHubInstance", "GitLabInstance"]
 
@@ -1532,34 +1535,53 @@ class PresentedFilesConfig(BaseModel):
     """Durable presented files (control-plane F2).
 
     Forge keeps its own copy of every file a session presents, so the file still opens
-    after the session stops, and links it by an absolute URL on the host's tailnet name.
+    after the session stops. Each copy may also be linked by an absolute URL on an
+    origin where access is controlled (``public_access``).
 
-    Example YAML::
+    Mini Forge on a tailnet (one Forge process, a local directory)::
 
         presented_files:
           enabled: true
           public_base_url: "http://thor.tail737f2a.ts.net:8380"
-          max_bytes: 52428800
           max_total_bytes: 5368709120   # required when enabled (LEX-1514)
           store:
             adapter: "volundr.adapters.outbound.local_presented_files.LocalPresentedFileStore"
             root: "~/.niuu/presented-files"
+
+    Cluster Forge behind the platform's OIDC (any number of replicas)::
+
+        presented_files:
+          enabled: true
+          public_access: authenticated
+          public_base_url: "https://yggdrasil.niuu.world"
+          max_total_bytes: 5368709120
+          store:
+            adapter: "volundr.adapters.outbound.postgres_presented_files.PostgresPresentedFileStore"
+            root: "/volundr/presented-files"   # a volume every Forge replica mounts
     """
 
     enabled: bool = Field(
         default=False,
         description=(
-            "Accept and serve durable copies. Off by default: the local store needs a "
-            "persistent, single-writer directory (a mini/local Forge, or a PVC)."
+            "Accept and serve durable copies. Off by default: the store needs a "
+            "persistent directory (a local one for a single mini Forge process, or a "
+            "volume every replica mounts with the Postgres store)."
+        ),
+    )
+    public_access: PresentedFilesAccess = Field(
+        default=PresentedFilesAccess.TAILNET,
+        description=(
+            "What controls access to public_base_url. 'tailnet': it must be a *.ts.net "
+            "name or a Tailscale address. 'authenticated': an https origin where every "
+            "request passes the platform's OIDC (Envoy); refused at start when Forge's "
+            "identity adapter is the allow-all default."
         ),
     )
     public_base_url: str = Field(
         default="",
         description=(
-            "Absolute http(s) base URL clients reach this Forge at, on the host's tailnet "
-            "(a *.ts.net MagicDNS name or a Tailscale address; anything else, public or "
-            "*.xteo.mesh, is refused at start). Empty: presented files keep their "
-            "relative route."
+            "Absolute http(s) base URL clients reach this Forge at, checked against "
+            "public_access at start. Empty: presented files keep their relative route."
         ),
     )
     max_bytes: int = Field(
@@ -1567,13 +1589,21 @@ class PresentedFilesConfig(BaseModel):
         gt=0,
         description="Largest durable copy accepted (matches Skuld's max_presented_file_bytes).",
     )
+    read_chunk_bytes: int = Field(
+        default=PRESENTED_FILE_DEFAULT_READ_CHUNK_BYTES,
+        gt=0,
+        description=(
+            "Bytes read per step when Forge streams a durable copy to a client: the "
+            "memory one download holds at a time. Not a cap: every byte is served."
+        ),
+    )
     max_total_bytes: int | None = Field(
         default=None,
         gt=0,
         description=(
-            "Total bytes of durable copies this host keeps (LEX-1514). Required when "
-            "enabled: it is bounded by the host's free disk, which only the operator "
-            "knows. A copy that would pass it is refused (HTTP 507, present-file fails "
+            "Total bytes of durable copies this Forge keeps (LEX-1514). Required when "
+            "enabled: it is bounded by the store's free space, which Forge checks at "
+            "start. A copy that would pass it is refused (HTTP 507, present-file fails "
             "with the remedy) and counted; nothing is evicted."
         ),
     )
@@ -1582,13 +1612,16 @@ class PresentedFilesConfig(BaseModel):
             "adapter": "volundr.adapters.outbound.local_presented_files.LocalPresentedFileStore",
             "root": "~/.niuu/presented-files",
         },
-        description="Dynamic adapter for the store: 'adapter' class path plus its kwargs.",
+        description=(
+            "Dynamic adapter for the store: 'adapter' class path plus its kwargs. The "
+            "local store serves one Forge process; the Postgres store any number."
+        ),
     )
 
-    @field_validator("public_base_url")
-    @classmethod
-    def _tailnet_url(cls, value: str) -> str:
-        return validate_public_base_url(value)
+    @model_validator(mode="after")
+    def _valid_base_url(self) -> "PresentedFilesConfig":
+        self.public_base_url = validate_public_base_url(self.public_base_url, self.public_access)
+        return self
 
     @model_validator(mode="after")
     def _quota_when_enabled(self) -> "PresentedFilesConfig":
@@ -1794,6 +1827,25 @@ class ForgeMcpSessionTokenConfig(BaseModel):
         min_length=1,
         description="Audiences of tokens signed with signing_key_file.",
     )
+    projection_adapter: str = Field(
+        default="",
+        description=(
+            "Delivers the credential to brokers whose pod manager cannot hand it over "
+            "itself (Flux and Kubernetes session pods): an ExecutionCredentialProjectionPort "
+            "class path, e.g. volundr.adapters.outbound.execution_credential_k8s."
+            "KubernetesExecutionCredentialProjection, which writes one Secret per "
+            "session and mounts it into the session pod. Empty: only pod managers that "
+            "deliver it themselves (local processes) give brokers a credential."
+        ),
+    )
+    projection_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs of projection_adapter (namespace, mount_path, ...).",
+    )
+    projection_secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Mapping of projection kwarg names to env vars holding secret values.",
+    )
 
 
 class ForgeMcpHttpConfig(BaseModel):
@@ -1905,6 +1957,14 @@ class ForgeMcpConfig(BaseModel):
     http: ForgeMcpHttpConfig = Field(default_factory=ForgeMcpHttpConfig)
 
 
+#: Forge's default identity: every caller is admitted (mini mode).
+ALLOW_ALL_IDENTITY_ADAPTER = "volundr.adapters.outbound.identity.AllowAllIdentityAdapter"
+#: Every class path of that adapter (``volundr`` re-exports ``identity``'s).
+ALLOW_ALL_IDENTITY_ADAPTERS = frozenset(
+    {ALLOW_ALL_IDENTITY_ADAPTER, "identity.adapters.identity.AllowAllIdentityAdapter"}
+)
+
+
 class IdentityConfig(BaseModel):
     """Dynamic identity adapter configuration.
 
@@ -1921,9 +1981,7 @@ class IdentityConfig(BaseModel):
             email_header: "x-auth-email"
     """
 
-    adapter: str = Field(
-        default="volundr.adapters.outbound.identity.AllowAllIdentityAdapter",
-    )
+    adapter: str = Field(default=ALLOW_ALL_IDENTITY_ADAPTER)
     kwargs: dict[str, Any] = Field(default_factory=dict)
     secret_kwargs_env: dict[str, str] = Field(
         default_factory=dict,
@@ -3728,6 +3786,27 @@ class Settings(BaseSettings):
                 f"{self.push.attention_sink!r} (push.attention_sink), e.g. adapter "
                 "volundr.adapters.outbound.push_notification_sink.PushNotificationSink; "
                 "or set push.enabled: false"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _authenticated_presented_files_need_identity(self) -> "Settings":
+        """``public_access: authenticated`` is a claim that the origin checks every caller.
+
+        A Forge whose own identity adapter admits everyone cannot make it: its durable
+        copies would be open to whoever reaches the URL.
+        """
+        presented = self.presented_files
+        if presented.public_access is not PresentedFilesAccess.AUTHENTICATED:
+            return self
+        if not presented.public_base_url:
+            return self
+        if self.identity.adapter in ALLOW_ALL_IDENTITY_ADAPTERS:
+            raise ValueError(
+                "presented_files.public_access: authenticated needs an identity adapter "
+                f"that authenticates; identity.adapter is {self.identity.adapter}. "
+                "Configure the platform identity (for example EnvoyHeaderIdentityAdapter), "
+                "or use public_access: tailnet, or leave public_base_url empty."
             )
         return self
 

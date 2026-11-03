@@ -1,8 +1,9 @@
 """F2: Forge keeps a durable copy of every presented file and serves it after the session.
 
-The phone opens a presented file by its absolute URL on the host's tailnet name
-(``Artifact.url``: http(s), never ``*.xteo.mesh``); that URL must keep working after
-the session's broker is gone.
+The phone opens a presented file by its absolute URL on an origin where access is
+controlled: the host's tailnet name (``public_access: tailnet``) or a cluster Forge's
+own https origin behind the platform's OIDC (``public_access: authenticated``). That URL
+must keep working after the session's broker is gone.
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ from volundr.domain.models import GitSource, Session, SessionStatus
 from volundr.domain.presented_files import (
     PresentedFileConflictError,
     PresentedFileQuota,
+    PresentedFilesAccess,
+    PresentedFileStoreUnavailableError,
     durable_file_url,
     presented_file_path,
     validate_public_base_url,
@@ -38,6 +41,11 @@ from volundr.domain.services import SessionService
 
 FILE_ID = "pf_" + "a" * 32
 BASE = "http://thor.tail737f2a.ts.net:8380"
+CLUSTER = "https://yggdrasil.niuu.world"
+
+
+async def _read(chunks) -> bytes:
+    return b"".join([chunk async for chunk in chunks])
 
 
 # ------------------------------------------------------------------ URL rules
@@ -96,9 +104,63 @@ def test_base_url_accepts_only_tailnet_hosts(good):
     assert PresentedFilesConfig(public_base_url=good).public_base_url == good
 
 
+@pytest.mark.parametrize("good", [CLUSTER, "https://forge.example.com:8443"])
+def test_an_authenticated_origin_accepts_its_own_https_host(good):
+    authenticated = PresentedFilesAccess.AUTHENTICATED
+    assert validate_public_base_url(good + "/", authenticated) == good
+    config = PresentedFilesConfig(public_access="authenticated", public_base_url=good)
+    assert config.public_base_url == good
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        # Reachable from anywhere: the bytes and the bearer must never travel in clear.
+        "http://yggdrasil.niuu.world",
+        "ftp://yggdrasil.niuu.world",
+        "https://yggdrasil.niuu.world/?x=1",
+        "https://yggdrasil.niuu.world/#f",
+        "yggdrasil.niuu.world",
+    ],
+)
+def test_an_authenticated_origin_refuses_clear_text_and_odd_urls(bad):
+    with pytest.raises(ValueError):
+        PresentedFilesConfig(public_access="authenticated", public_base_url=bad)
+
+
+def test_a_public_host_on_tailnet_access_names_the_cluster_remedy():
+    with pytest.raises(ValueError, match="public_access: authenticated"):
+        PresentedFilesConfig(public_base_url=CLUSTER)
+
+
+def test_authenticated_access_is_refused_with_the_allow_all_identity():
+    from volundr.config import Settings
+
+    presented = {
+        "enabled": True,
+        "max_total_bytes": 10,
+        "public_access": "authenticated",
+        "public_base_url": CLUSTER,
+    }
+    for adapter in (
+        "volundr.adapters.outbound.identity.AllowAllIdentityAdapter",
+        "identity.adapters.identity.AllowAllIdentityAdapter",
+    ):
+        with pytest.raises(ValueError, match="identity adapter that authenticates"):
+            Settings(presented_files=presented, identity={"adapter": adapter})
+    settings = Settings(
+        presented_files=presented,
+        identity={"adapter": "volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter"},
+    )
+    assert settings.presented_files.public_base_url == CLUSTER
+    # No absolute URL makes no claim, so nothing to refuse.
+    Settings(presented_files={**presented, "public_base_url": ""})
+
+
 def test_config_defaults():
     config = PresentedFilesConfig()
     assert config.enabled is False and config.public_base_url == ""
+    assert config.public_access is PresentedFilesAccess.TAILNET
     assert config.store["adapter"].endswith("LocalPresentedFileStore")
     assert PresentedFilesConfig(public_base_url=BASE + "/").public_base_url == BASE
 
@@ -112,15 +174,81 @@ async def test_store_roundtrip_is_idempotent_and_refuses_other_bytes(tmp_path):
     first = await store.put(sid, FILE_ID, name="report.pdf", mime="application/pdf", data=b"%PDF")
     again = await store.put(sid, FILE_ID, name="report.pdf", mime="application/pdf", data=b"%PDF")
     assert first == again and first.size == 4
-    record, path = await store.get(sid, FILE_ID)
-    assert record.name == "report.pdf" and path.read_bytes() == b"%PDF"
-    assert oct(path.parent.stat().st_mode & 0o777) == "0o700"
+    record, chunks = await store.get(sid, FILE_ID)
+    assert record.name == "report.pdf" and await _read(chunks) == b"%PDF"
+    assert oct((tmp_path / str(sid) / FILE_ID).stat().st_mode & 0o777) == "0o700"
     with pytest.raises(PresentedFileConflictError):
         await store.put(sid, FILE_ID, name="x", mime="text/plain", data=b"other")
     assert await store.get(uuid4(), FILE_ID) is None
     assert await store.get(sid, "../../etc/passwd") is None
     with pytest.raises(ValueError):
         await store.put(sid, "pf_bad", name="x", mime="text/plain", data=b"")
+
+
+async def test_store_capacity_is_checked_at_start(tmp_path, monkeypatch):
+    import shutil
+    from collections import namedtuple
+
+    store = LocalPresentedFileStore(root=str(tmp_path / "copies"))
+    await store.ensure_capacity(1)
+    assert (tmp_path / "copies").is_dir()
+    await store.put(uuid4(), FILE_ID, name="a", mime="m", data=b"x" * 40)
+
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(shutil, "disk_usage", lambda _path: usage(1000, 960, 60))
+    # What copies already use counts as room: 60 free + 40 stored.
+    await store.ensure_capacity(100)
+    with pytest.raises(PresentedFileStoreUnavailableError, match="max_total_bytes=101"):
+        await store.ensure_capacity(101)
+
+
+async def test_store_capacity_refuses_an_unwritable_root(tmp_path):
+    blocker = tmp_path / "file"
+    blocker.write_text("not a directory")
+    store = LocalPresentedFileStore(root=str(blocker / "copies"))
+    with pytest.raises(PresentedFileStoreUnavailableError, match="not a writable directory"):
+        await store.ensure_capacity(1)
+
+
+async def test_local_store_serializes_its_exclusive_section(tmp_path):
+    import asyncio
+
+    store = LocalPresentedFileStore(root=str(tmp_path))
+    order: list[str] = []
+
+    async def section(name: str) -> None:
+        async with store.exclusive():
+            order.append(f"{name}-in")
+            await asyncio.sleep(0)
+            order.append(f"{name}-out")
+
+    await asyncio.gather(section("a"), section("b"))
+    assert order == ["a-in", "a-out", "b-in", "b-out"]
+
+
+async def test_store_streams_in_configured_chunks(tmp_path):
+    store = LocalPresentedFileStore(root=str(tmp_path), read_chunk_bytes=3)
+    sid = uuid4()
+    await store.put(sid, FILE_ID, name="a", mime="m", data=b"abcdefg")
+    _, chunks = await store.get(sid, FILE_ID)
+    assert [chunk async for chunk in chunks] == [b"abc", b"def", b"g"]
+    with pytest.raises(ValueError, match="read_chunk_bytes"):
+        LocalPresentedFileStore(root=str(tmp_path), read_chunk_bytes=0)
+
+
+async def test_a_link_swapped_in_after_the_check_is_never_followed(tmp_path):
+    store = LocalPresentedFileStore(root=str(tmp_path / "store"))
+    sid = uuid4()
+    await store.put(sid, FILE_ID, name="a.txt", mime="text/plain", data=b"a")
+    _, chunks = await store.get(sid, FILE_ID)
+    content = tmp_path / "store" / str(sid) / FILE_ID / "content"
+    content.unlink()
+    # Even a link to a file inside the store is refused: only the copy itself is read.
+    neighbour = tmp_path / "store" / str(sid) / "other"
+    neighbour.write_text("no")
+    os.symlink(neighbour, content)
+    with pytest.raises(OSError):
+        await _read(chunks)
 
 
 async def test_store_ignores_symlinked_content(tmp_path):
@@ -194,8 +322,8 @@ async def test_upload_stores_and_answers_the_durable_url(tmp_path):
     assert body["url"] == f"{BASE}/api/v1/forge/sessions/{sid}/files/presented/{FILE_ID}"
     assert body["name"] == "My report.pdf" and body["mime"] == "application/pdf"
     assert body["size"] == 8
-    record, path = await store.get(sid, FILE_ID)
-    assert path.read_bytes() == b"%PDF-1.4"
+    record, chunks = await store.get(sid, FILE_ID)
+    assert await _read(chunks) == b"%PDF-1.4"
     service._check_access.assert_awaited()
     # A retry with the same bytes is fine; other bytes are a conflict.
     url = f"/api/v1/forge/sessions/{sid}/files/presented/{FILE_ID}"
@@ -305,15 +433,31 @@ async def test_durable_copy_serves_after_the_session_stopped(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("url", "recorded"),
+    ("recorded", "base", "kept"),
     [
-        (f"{BASE}/api/v1/forge/sessions/s/files/presented/{FILE_ID}", "durable"),
-        ("http://thor.xteo.mesh:8380/x", "route"),
-        ("javascript:alert(1)", "route"),
-        (None, "route"),
+        # Exactly this Forge's URL for this very file: kept.
+        ("{base}/api/v1/forge/sessions/{sid}/files/presented/{fid}", BASE, True),
+        ("{base}/api/v1/forge/sessions/{sid}/files/presented/{fid}", CLUSTER, True),
+        # Anything the session could write otherwise is dropped for the relative route:
+        # another host, another session, another file, script, or no URL configured.
+        (
+            "http://thor.xteo.mesh:8380/api/v1/forge/sessions/{sid}/files/presented/{fid}",
+            BASE,
+            False,
+        ),
+        (
+            "http://other.tail737f2a.ts.net/api/v1/forge/sessions/{sid}/files/presented/{fid}",
+            BASE,
+            False,
+        ),
+        ("{base}/api/v1/forge/sessions/{other}/files/presented/{fid}", BASE, False),
+        ("{base}/api/v1/forge/sessions/{sid}/files/presented/pf_" + "b" * 32, BASE, False),
+        ("javascript:alert(1)", BASE, False),
+        ("{base}/api/v1/forge/sessions/{sid}/files/presented/{fid}", "", False),
+        (None, BASE, False),
     ],
 )
-def test_publication_records_the_durable_url(url, recorded):
+def test_publication_keeps_only_this_forges_own_url(recorded, base, kept):
     from dataclasses import asdict
     from datetime import UTC, datetime
 
@@ -323,6 +467,9 @@ def test_publication_records_the_durable_url(url, recorded):
     from volundr.domain.models import SessionLogEntry
 
     sid = uuid4()
+    url = None
+    if recorded is not None:
+        url = recorded.format(base=base or BASE, sid=sid, other=uuid4(), fid=FILE_ID)
     turn = asdict(_build_present_file_turn(FILE_ID, "plan.md", "text/markdown", 3, None, url=url))
     entry = SessionLogEntry(
         session_id=sid,
@@ -331,9 +478,9 @@ def test_publication_records_the_durable_url(url, recorded):
         payload={"type": "conversation.turn", "turn": turn},
         ts=datetime(2026, 10, 22, tzinfo=UTC),
     )
-    [pub] = publications_from_entry(entry, CATALOG)
+    [pub] = publications_from_entry(entry, CATALOG, presented_file_base_url=base)
     route = f"/api/v1/forge/sessions/{sid}/files/presented/{FILE_ID}"
-    assert pub.url == (url if recorded == "durable" else route)
+    assert pub.url == (url if kept else route)
 
 
 async def test_upload_landing_after_the_session_was_deleted_leaves_nothing(tmp_path):
@@ -376,3 +523,16 @@ async def test_live_broker_fallback_carries_the_same_safety_policy(tmp_path):
     assert resp.headers["content-security-policy"] == "sandbox"
     assert resp.headers["x-content-type-options"] == "nosniff"
     assert resp.headers["cache-control"] == "private, no-store"
+
+
+@pytest.mark.parametrize(
+    ("name", "header"),
+    [
+        ("report.pdf", 'inline; filename="report.pdf"'),
+        ("plan ü.md", "inline; filename*=utf-8''plan%20%C3%BC.md"),
+    ],
+)
+def test_a_durable_copy_opens_inline_under_its_name(name, header):
+    from volundr.adapters.inbound.rest import _inline_disposition
+
+    assert _inline_disposition(name) == header

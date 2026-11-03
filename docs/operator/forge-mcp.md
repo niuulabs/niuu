@@ -86,10 +86,17 @@ cannot be created there); set `forgeMcp.session_tokens.enabled` to override.
 ### Where the credential is delivered
 
 - **Local process mode (mini mode):** the broker's process environment.
-- **Kubernetes, Flux and OpenShell pod managers:** not delivered yet. Forge does not
-  mint for a pod manager that cannot hand the token over privately, because a plain
-  env value in a Deployment manifest would be readable by anyone who can read
-  Deployments. Those sessions keep their broker credential and have no grants.
+- **Flux and Kubernetes pod managers:** a Secret per session, when
+  `forge_mcp.session_tokens.projection_adapter` is set (the Volundr chart's
+  `sessionCredentialProjection.enabled`). `KubernetesExecutionCredentialProjection`
+  writes `forge-session-<session hex>` in the session namespace and mounts it
+  read-only; the HelmRelease values carry only the file path (Skuld's
+  `forge_mcp.token_file`), never the token, because values are readable by anyone who
+  can read HelmReleases. The Secret is re-written on every start and deleted when the
+  session stops.
+- **OpenShell pod manager, or Flux/Kubernetes without a projection:** not delivered.
+  Forge does not mint for them; those sessions keep their broker credential and have
+  no grants.
 
 ## Grants
 

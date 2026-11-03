@@ -1,4 +1,4 @@
-"""The push gateway migration: the newest, idempotent, and adopted under its branch name."""
+"""The push gateway migration: its own number, idempotent, and adopted under its branch name."""
 
 from __future__ import annotations
 
@@ -11,9 +11,10 @@ ROOT = Path(__file__).resolve().parents[2]
 NAME = "000099_push_gateway"
 
 
-def test_it_is_the_newest_volundr_migration():
+def test_no_other_volundr_migration_shares_its_number():
     names = sorted(path.name for path in (ROOT / "migrations").glob("*.up.sql"))
-    assert names[-1] == f"{NAME}.up.sql"
+    number = NAME.split("_", 1)[0]
+    assert [name for name in names if name.startswith(f"{number}_")] == [f"{NAME}.up.sql"]
 
 
 def test_the_branch_name_of_the_same_sql_is_adopted():

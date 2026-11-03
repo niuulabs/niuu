@@ -261,3 +261,137 @@ class TestLaunchHelpers:
         assert launch_id_of({"forge_mcp": {"launch_id": ""}}) is None
         assert without_forge_mcp(updated) == {"persona": "p"}
         assert without_forge_mcp(None) == {}
+
+
+class RecordingProjection:
+    """An ExecutionCredentialProjectionPort that keeps what it would have published."""
+
+    def __init__(self, *, backend: str = "kubernetes") -> None:
+        self.backend = backend
+        self.tokens: dict = {}
+        self.removed: list = []
+
+    def supports(self, runtime_backend: str) -> bool:
+        return runtime_backend == self.backend
+
+    async def project(self, *, session_id, token, runtime_backend):
+        from volundr.domain.models import PodSpecAdditions
+        from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjection
+
+        self.tokens[session_id] = token
+        return ExecutionCredentialProjection(
+            token_file="/var/run/secrets/niuu-forge-session/token",
+            pod_spec=PodSpecAdditions(
+                volumes=({"name": "forge-session-x", "secret": {"secretName": "forge-session-x"}},),
+                volume_mounts=(
+                    {"name": "forge-session-x", "mountPath": "/var/run/secrets/niuu-forge-session"},
+                ),
+            ),
+        )
+
+    async def remove(self, session_id) -> None:
+        self.removed.append(session_id)
+
+
+class TestProjectedCredential:
+    """Flux and Kubernetes session pods get their credential through a mounted Secret."""
+
+    async def _started(self, projection: RecordingProjection):
+        sessions = InMemorySessionRepository()
+        pods = MockPodManager()
+        tokens = token_service()
+        service = SessionService(
+            sessions,
+            pods,
+            provisioning_initial_delay=0,
+            forge_session_tokens=tokens,
+            forge_session_projection=projection,
+        )
+        session = await sessions.create(Session(name="s", owner_id=OWNER, tenant_id=TENANT))
+        await service.start_session(session.id)
+        await service._provisioning_tasks[session.id]
+        return service, sessions, pods, tokens, session
+
+    async def test_the_credential_is_mounted_and_never_in_values(self) -> None:
+        import json
+
+        projection = RecordingProjection()
+        service, _, pods, tokens, session = await self._started(projection)
+        assert service.delivers_forge_session is True
+        _, spec = pods.start_calls[-1]
+        assert spec.forge_session is None  # nothing for the pod manager to deliver itself
+        token = projection.tokens[session.id]
+        claims = tokens.verify(token)
+        assert claims.session_id == str(session.id) and claims.owner_id == OWNER
+        assert spec.values["forgeMcp"] == {
+            "tokenFile": "/var/run/secrets/niuu-forge-session/token",
+            "grants": [],
+        }
+        assert token not in json.dumps(spec.values)
+        assert {"name": "forge-session-x", "secret": {"secretName": "forge-session-x"}} in (
+            spec.pod_spec.volumes
+        )
+        assert spec.pod_spec.volume_mounts[-1]["mountPath"] == (
+            "/var/run/secrets/niuu-forge-session"
+        )
+
+    async def test_a_restart_projects_the_new_launchs_credential(self) -> None:
+        projection = RecordingProjection()
+        service, sessions, pods, tokens, session = await self._started(projection)
+        first = projection.tokens[session.id]
+        stored = await sessions.get(session.id)
+        await sessions.update(stored.model_copy(update={"status": SessionStatus.STOPPED}))
+        await service.start_session(session.id)
+        await service._provisioning_tasks[session.id]
+        second = projection.tokens[session.id]
+        assert first != second
+        assert tokens.verify(second).launch_id != tokens.verify(first).launch_id
+
+    async def test_cleanup_removes_the_projected_credential(self) -> None:
+        projection = RecordingProjection()
+        service, _, _, _, session = await self._started(projection)
+        await service._run_cleanup(session, None)
+        assert projection.removed == [session.id]
+
+    def test_a_projection_for_another_backend_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="does not support runtime backend 'kubernetes'"):
+            SessionService(
+                InMemorySessionRepository(),
+                MockPodManager(),
+                forge_session_tokens=token_service(),
+                forge_session_projection=RecordingProjection(backend="vm"),
+            )
+
+    def test_no_delivery_without_tokens_or_a_way_to_deliver(self) -> None:
+        assert not SessionService(
+            InMemorySessionRepository(),
+            MockPodManager(),
+            forge_session_projection=RecordingProjection(),
+        ).delivers_forge_session
+        assert not SessionService(
+            InMemorySessionRepository(), MockPodManager(), forge_session_tokens=token_service()
+        ).delivers_forge_session
+
+
+class TestPresentedFileUploadsNeedTheCredential:
+    def _settings(self, identity: str):
+        from volundr.config import Settings
+
+        return Settings(
+            identity={"adapter": identity},
+            presented_files={"enabled": True, "max_total_bytes": 10},
+        )
+
+    def test_an_authenticating_forge_refuses_brokers_without_it(self) -> None:
+        from volundr.composition_builders import require_presented_file_uploads
+
+        settings = self._settings("volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter")
+        with pytest.raises(RuntimeError, match="projection_adapter"):
+            require_presented_file_uploads(settings, delivers_session_credential=False)
+        require_presented_file_uploads(settings, delivers_session_credential=True)
+
+    def test_an_allow_all_forge_admits_the_brokers_own_call(self) -> None:
+        from volundr.composition_builders import require_presented_file_uploads
+
+        settings = self._settings("volundr.adapters.outbound.identity.AllowAllIdentityAdapter")
+        require_presented_file_uploads(settings, delivers_session_credential=False)

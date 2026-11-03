@@ -116,9 +116,17 @@ data:
 
     artifacts: {{ toJson . }}
     {{- end }}
-    {{- with .Values.presentedFiles }}
+    {{- if .Values.presentedFiles.enabled }}
 
-    presented_files: {{ toJson . }}
+    presented_files:
+      enabled: true
+      public_access: {{ .Values.presentedFiles.publicAccess | quote }}
+      public_base_url: {{ .Values.presentedFiles.publicBaseUrl | default "" | quote }}
+      max_bytes: {{ int64 .Values.presentedFiles.maxBytes }}
+      max_total_bytes: {{ int64 .Values.presentedFiles.maxTotalBytes }}
+      store:
+        adapter: "volundr.adapters.outbound.postgres_presented_files.PostgresPresentedFileStore"
+        root: {{ .Values.presentedFiles.mountPath | quote }}
     {{- end }}
     {{- with .Values.hostIdentity }}
 
@@ -156,6 +164,26 @@ data:
     {{- $workloadSigns = true }}
     {{- end }}
     {{- $_ := set $sessionTokens "enabled" $workloadSigns }}
+    {{- end }}
+    {{- if .Values.sessionCredentialProjection.enabled }}
+    {{- if not (get $sessionTokens "projection_adapter") }}
+    {{- $_ := set $sessionTokens "projection_adapter" "volundr.adapters.outbound.execution_credential_k8s.KubernetesExecutionCredentialProjection" }}
+    {{- $_ := set $sessionTokens "projection_kwargs" (dict "namespace" (include "volundr.sessionCredentialNamespace" .) "mount_path" .Values.sessionCredentialProjection.mountPath "secret_prefix" "forge-session" "volume_prefix" "forge-session" "purpose" "forge-session-credential") }}
+    {{- end }}
+    {{- end }}
+    {{- if .Values.presentedFiles.enabled }}
+    {{- if not .Values.presentedFiles.maxTotalBytes }}
+    {{- fail "presentedFiles.enabled needs presentedFiles.maxTotalBytes: the total bytes of copies Forge keeps, which must fit presentedFiles.persistence.size" }}
+    {{- end }}
+    {{- if and (eq .Values.presentedFiles.persistence.accessMode "ReadWriteOnce") (not .Values.rollout.colocate) }}
+    {{- fail "presentedFiles.persistence.accessMode ReadWriteOnce mounts on one node only: keep rollout.colocate true (every Forge pod on one node) or use ReadWriteMany" }}
+    {{- end }}
+    {{- if not $sessionTokens.enabled }}
+    {{- fail "presentedFiles.enabled needs Forge session credentials (brokers upload with them): enable workloadIdentity with signingKey.existingSecret, or set forgeMcp.session_tokens.enabled" }}
+    {{- end }}
+    {{- if not (get $sessionTokens "projection_adapter") }}
+    {{- fail "presentedFiles.enabled needs sessionCredentialProjection.enabled: session pods must hold their Forge credential to upload presented files" }}
+    {{- end }}
     {{- end }}
     {{- $_ := set $forgeMcp "session_tokens" $sessionTokens }}
 

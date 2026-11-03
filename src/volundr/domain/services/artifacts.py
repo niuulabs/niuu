@@ -88,6 +88,7 @@ class ArtifactService:
         emit_batch_size: int,
         backfill_page_size: int,
         max_emit_failures: int = 5,
+        presented_file_base_url: str = "",
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not host:
@@ -103,6 +104,7 @@ class ArtifactService:
         self._emit_batch_size = emit_batch_size
         self._backfill_page_size = backfill_page_size
         self._max_emit_failures = max_emit_failures
+        self._presented_file_base_url = presented_file_base_url
         self._emit_failures: dict[UUID, int] = {}
         self._clock = clock or (lambda: datetime.now(UTC))
 
@@ -122,7 +124,13 @@ class ArtifactService:
     def candidates(self, entries: list[SessionLogEntry]) -> list[PublicationCandidate]:
         found: list[PublicationCandidate] = []
         for entry in sorted(entries, key=lambda item: item.seq):
-            found.extend(publications_from_entry(entry, self._catalog))
+            found.extend(
+                publications_from_entry(
+                    entry,
+                    self._catalog,
+                    presented_file_base_url=self._presented_file_base_url,
+                )
+            )
         return found
 
     async def project_log_entries(

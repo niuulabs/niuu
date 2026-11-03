@@ -76,3 +76,97 @@ artifacts:
   backfill_on_start: false             # replay the log at start (silent)
   backfill_since_days: null
 ```
+
+## Presented files (F2)
+
+`present-file` stages a copy next to the session's broker, which serves it only while
+the session runs. With `presented_files.enabled`, the broker also uploads the bytes to
+Forge (`PUT /api/v1/forge/sessions/{id}/files/presented/{file_id}`), and Forge keeps
+its own copy. `GET` on the same route serves Forge's copy first and the live broker's
+second, so the file still opens after the session stops, after the broker restarts,
+and after Forge restarts. Every route that serves one, the Guild facade included,
+sends `x-content-type-options: nosniff` and `content-security-policy: sandbox` (PDF is
+exempt from the sandbox only).
+
+### Links
+
+A `present_file` publication links the relative route unless
+`presented_files.public_base_url` is set. The URL in the session's transcript is
+written by the session, so Forge never trusts it as a link: a publication keeps it
+only when it is exactly this Forge's own URL for that very file
+(`public_base_url` + the route). Anything else (another host, session or file, or an
+origin this Forge is no longer configured with) becomes the relative route.
+
+`public_access` says what controls access to `public_base_url`:
+
+| `public_access` | `public_base_url` | Who can open it |
+|---|---|---|
+| `tailnet` (default) | `http(s)://` a `*.ts.net` name or a Tailscale address | Devices on the tailnet (a mini Forge such as Thor, with the allow-all identity) |
+| `authenticated` | `https://` the Forge's own origin | Callers with a valid bearer at Envoy (the platform's OIDC). Forge refuses to start with this and the allow-all identity adapter. |
+
+On a cluster the absolute URL needs the caller's bearer (`Authorization` or
+`?token=`), like any Forge route; leaving `public_base_url` empty is equally valid,
+since clients open the relative route on the origin they already talk to.
+
+### The store and the quota
+
+`max_total_bytes` is required when enabled. Forge refuses to start when the store's
+free space plus what copies already use cannot hold it, or when the store root is not
+writable. A copy that would pass it is refused with HTTP 507, `present-file` fails
+with the remedy, and the refusal is counted in `GET /api/v1/forge/health`
+(`presented_files`). Nothing is evicted; copies go with their session's delete.
+
+| Store | Use | Exclusive section (quota admission and write) |
+|---|---|---|
+| `LocalPresentedFileStore` | One Forge process: a mini Forge | An in-process lock |
+| `PostgresPresentedFileStore` | Any number of Forge processes: a cluster | A Postgres advisory lock. Bytes live under `root`, on a volume every replica mounts; the record of each copy is a `forge_presented_files` row (migration `000100`), and the quota is the sum of the rows |
+
+The local store is wrong for a cluster even with `replicaCount: 1`: the chart's
+rolling update starts the new pod before the old one stops, and two processes with
+in-process locks can overrun the quota.
+
+### Uploads authenticate with the session credential
+
+The broker uploads with its session-bound credential (`forge_session`, scope
+`forge:notify`, its own session only). A browser user's login expires and a headless
+session has none, so behind an authenticating identity this credential is the only
+bearer that always reaches Forge. Forge refuses to start with presented files on, an
+authenticating identity, and no way to hand brokers their credential. The local
+process pod manager delivers it in the broker's environment. Flux and Kubernetes
+session pods get it through `forge_mcp.session_tokens.projection_adapter`: one Secret
+per session (`forge-session-<session hex>`), mounted read-only into the session pod,
+read once at broker start (`forge_mcp.token_file`; a missing or empty file is fatal),
+re-written on every start (a restart revokes the previous launch's token) and deleted
+when the session stops. The HelmRelease values carry only the file path. OpenShell
+sessions have no session credential yet.
+
+The broker's `volundr_api_url` (the Skuld chart's `volundr.apiUrl`) must reach the
+Forge that owns the session through Envoy. Without it the broker skips the upload, and
+`present-file` answers `durable: false`.
+
+### Cluster setup (Volundr chart)
+
+```yaml
+presentedFiles:
+  enabled: true
+  maxTotalBytes: 5368709120          # must fit persistence.size
+  publicBaseUrl: ""                  # or https://forge.example.com (publicAccess: authenticated)
+  publicAccess: authenticated
+  persistence:
+    storageClass: ""                 # a class that serves accessMode
+    accessMode: ReadWriteMany        # ReadWriteOnce only with rollout.colocate: true
+    size: 10Gi
+sessionCredentialProjection:
+  enabled: true
+  namespace: ""                      # the session pods' namespace; empty: podManager.kwargs.namespace
+workloadIdentity:
+  enabled: true
+  signingKey:
+    existingSecret: volundr-workload-identity   # turns forgeMcp session_tokens on
+```
+
+The chart renders the Postgres store with `root` at `presentedFiles.mountPath`
+(`/volundr/presented-files`), a PVC kept on uninstall, a Role in the session namespace
+for Secret get/create/patch/delete, and the projection kwargs. It refuses to render
+without `maxTotalBytes`, without session credentials, without the projection, or with
+`ReadWriteOnce` and `rollout.colocate: false`.
