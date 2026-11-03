@@ -238,11 +238,10 @@ def create_push_router(gateway: PushGateway, *, prefix: str = "/api/v1/forge") -
         except CallRequestError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
         if call.session_id.strip().casefold() != resident_id.casefold():
+            # No claim or frame values in the log: the owner is enough to find the caller.
             logger.warning(
-                "Refused a ring for owner %s: resident %s sent a frame for session %s",
+                "Refused a ring for owner %s: its frame names a session other than its resident",
                 principal.user_id,
-                resident_id,
-                call.session_id,
             )
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN, "A resident may only ring as itself (payload.session.id)"
