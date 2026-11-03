@@ -21,7 +21,7 @@ export interface ProjectGroup<T> {
 }
 
 /** Workspaces under the project they serve, the ones with no project last. */
-export function groupByProject<T extends { realm: RealmSummary; pendingReviews: unknown[] }>(
+export function groupByProject<T extends { realm: RealmSummary; pendingReviews: number }>(
   cards: T[],
   projects: ForgeProject[],
 ): ProjectGroup<T>[] {
@@ -39,11 +39,22 @@ export function groupByProject<T extends { realm: RealmSummary; pendingReviews: 
     groups.set(id, group);
   }
   const pending = (group: ProjectGroup<T>) =>
-    group.cards.reduce((sum, card) => sum + card.pendingReviews.length, 0);
+    group.cards.reduce((sum, card) => sum + card.pendingReviews, 0);
   return [...groups.values()].sort((a, b) => {
     if (a.id === null || b.id === null) return a.id === null ? 1 : -1;
     return pending(b) - pending(a) || a.name.localeCompare(b.name);
   });
+}
+
+/** Live projects no workspace serves yet, which no group can show. */
+export function projectsWithoutWorkspaces(
+  cards: { realm: RealmSummary }[],
+  projects: ForgeProject[],
+): ForgeProject[] {
+  const served = new Set(cards.map((card) => card.realm.project_id));
+  return projects
+    .filter((project) => project.status === 'active' && !served.has(project.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Residents already running that no workspace keeps yet, such as the cluster ones. */

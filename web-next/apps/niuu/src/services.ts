@@ -975,6 +975,8 @@ function buildSplitVolundrService(
     getStats: (options) => forge.getStats(options),
     getRepos: () => forge.getRepos(),
     getProjects: (options) => forge.getProjects(options),
+    createProject: (name, options) => forge.createProject(name, options),
+    updateProject: (project, changes) => forge.updateProject(project, changes),
     getSessionProject: (id, options) => forge.getSessionProject(id, options),
     assignSessionProject: (id, assignment, options) =>
       forge.assignSessionProject(id, assignment, options),

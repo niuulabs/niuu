@@ -5,11 +5,11 @@ import { useReviews, useSagas, type ReviewItem as WorkReviewItem } from '@niuula
 import {
   useRealms,
   useReviewList,
+  useReviewSummary,
   useValkyrieDashboard,
   type EnvironmentSummary,
   type IRealmGovernanceService,
   type RealmSummary,
-  type ReviewItem,
   type ValkyrieResident,
 } from '@niuulabs/plugin-valkyrie';
 import type { IVolundrService } from '@niuulabs/plugin-volundr';
@@ -19,7 +19,6 @@ import {
   bindingFromGrants,
   ravnForRealm,
   residentForRealm,
-  reviewsForRealm,
   waitingOnBoard,
   workProjectForBoard,
   workspaceSessions,
@@ -50,7 +49,7 @@ export interface RealmHomeCard {
   environment: EnvironmentSummary | null;
   binding: RealmBinding | null;
   boardName: string | null;
-  pendingReviews: ReviewItem[];
+  pendingReviews: number;
   waitingTickets: WorkReviewItem[];
   runningSessions: number;
   totalSessions: number;
@@ -62,7 +61,7 @@ export interface WaitingTicket {
 }
 
 export function needsYouCount(card: RealmHomeCard): number {
-  return card.pendingReviews.length + card.waitingTickets.length;
+  return card.pendingReviews + card.waitingTickets.length;
 }
 
 export function ticketsOf(cards: RealmHomeCard[]): WaitingTicket[] {
@@ -87,6 +86,9 @@ export function useRealmsHome() {
   const dashboard = useValkyrieDashboard();
   const ravens = useRavens();
   const reviews = useReviewList({ status: 'pending' });
+  // The list is one page of the queue; only the summary counts all of it.
+  const reviewSummary = useReviewSummary();
+  const pendingByEnvironment = reviewSummary.data?.pendingByEnvironment ?? {};
   const sagas = useSagas();
   const workReviews = useReviews();
   const sessions = useVolundrSessions();
@@ -106,7 +108,6 @@ export function useRealmsHome() {
     const binding = bindingFromGrants(grants[index]?.data);
     const workProject = workProjectForBoard(sagas.data, binding?.trackerBoard);
     const realmSessions = workspaceSessions(sessions.data, realm.slug, workProject?.id);
-    const pending = reviewsForRealm(reviews.data, resident);
     return {
       realm,
       resident,
@@ -115,7 +116,7 @@ export function useRealmsHome() {
         dashboard.data?.environments.find((entry) => entry.id === resident?.environmentId) ?? null,
       binding,
       boardName: workProject?.name ?? null,
-      pendingReviews: pending,
+      pendingReviews: resident ? (pendingByEnvironment[resident.environmentId] ?? 0) : 0,
       waitingTickets: waitingOnBoard(workReviews.data?.items, workProject?.id),
       runningSessions: activeSessionCount(realmSessions),
       totalSessions: realmSessions.length,
@@ -130,8 +131,10 @@ export function useRealmsHome() {
   return {
     cards,
     pendingReviews: reviews.data ?? [],
+    pendingTotal: reviewSummary.data?.pendingTotal ?? 0,
+    pendingByEnvironment,
     waitingTickets: ticketsOf(cards),
-    needsYouError: reviews.error ?? workReviews.error ?? sagas.error ?? null,
+    needsYouError: reviews.error ?? reviewSummary.error ?? workReviews.error ?? sagas.error ?? null,
     unclaimedResidents: unclaimedResidents(dashboard.data, realms.data),
     residentsOnline,
     sessionsRunning,

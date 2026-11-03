@@ -34,7 +34,7 @@ function mount(props: Partial<RealmCardProps>) {
         realm={realm}
         resident={null}
         ravn={null}
-        pendingReviews={[]}
+        pendingReviews={0}
         runningSessions={0}
         {...props}
       />
@@ -71,7 +71,7 @@ describe('RealmCard', () => {
     } as ValkyrieResident;
     mount({
       resident,
-      pendingReviews: [{ itemId: 'a' }, { itemId: 'b' }] as never,
+      pendingReviews: 2,
       runningSessions: 3,
     });
     expect(await screen.findByText('Review 2')).toBeInTheDocument();

@@ -29,6 +29,15 @@ export async function resolveProjectChoice(
   return project.id;
 }
 
+export function useCreateProject() {
+  const volundr = useService<IVolundrService>('volundr');
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => volundr.createProject(name.trim()),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: PROJECTS_QUERY_KEY }),
+  });
+}
+
 export function useUpdateProject() {
   const volundr = useService<IVolundrService>('volundr');
   const queryClient = useQueryClient();

@@ -2,16 +2,18 @@ import { useMemo, useState } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { SectionCard } from '@niuulabs/plugin-volundr';
 import { Chip, EmptyState, ErrorState, LoadingState, Modal, ProjectIcon } from '@niuulabs/ui';
+import { useCollapsedProjects } from '../application/useCollapsedProjects';
 import { useForgeProjects } from '../application/useProjects';
 import { orderCards, useRealmsHome } from '../application/useRealmsHome';
 import { FIRST_REALM_WALKTHROUGH, useWalkthrough } from '../application/useWalkthrough';
 import { countWords } from '../domain/homeCopy';
-import { groupByProject } from '../domain/projects';
+import { groupByProject, projectsWithoutWorkspaces } from '../domain/projects';
 import { REALM_TEMPLATES } from '../domain/templates';
 import { AdoptResidents } from './AdoptResidents';
 import { TemplateIcon } from './icons';
 import { NeedsYouRow } from './NeedsYouRow';
-import { RealmCard } from './RealmCard';
+import { NewProjectDialog } from './NewProjectDialog';
+import { ProjectGroupSection } from './ProjectGroupSection';
 import { SentenceComposer } from './SentenceComposer';
 import { NeedsYouError, TicketReviewRow } from './TicketReviewRow';
 
@@ -24,10 +26,9 @@ const BUTTON =
   'niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:font-medium niuu:text-text-primary';
 const PRIMARY =
   'niuu:rounded-md niuu:border niuu:border-brand/50 niuu:bg-brand/10 niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:font-medium niuu:text-brand-300';
+const CREATE =
+  'niuu:rounded-md niuu:border niuu:border-brand/50 niuu:bg-brand/10 niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:font-medium niuu:text-brand-300';
 const LINK = 'niuu:text-[11px] niuu:text-brand-300';
-
-const GROUP_TITLE =
-  'niuu:m-0 niuu:flex niuu:items-center niuu:gap-1.5 niuu:text-sm niuu:font-semibold niuu:text-text-primary';
 
 function TemplatesView() {
   return (
@@ -94,14 +95,20 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
   const home = useRealmsHome();
   const walkthrough = useWalkthrough(FIRST_REALM_WALKTHROUGH);
   const [cloneOpen, setCloneOpen] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const collapsed = useCollapsedProjects();
   const projects = useForgeProjects();
   const groups = useMemo(
     () => groupByProject(orderCards(home.cards), projects.data ?? []),
     [home.cards, projects.data],
   );
+  const emptyProjects = useMemo(
+    () => projectsWithoutWorkspaces(home.cards, projects.data ?? []),
+    [home.cards, projects.data],
+  );
   const cardFor = (environmentId: string) =>
     home.cards.find((card) => card.resident?.environmentId === environmentId) ?? null;
-  const waiting = home.pendingReviews.length + home.waitingTickets.length;
+  const waiting = home.pendingTotal + home.waitingTickets.length;
   const needsYouRows = [
     ...home.waitingTickets.map(({ item, card }) => (
       <TicketReviewRow key={item.taskId} item={item} workspace={card.realm.name} />
@@ -134,12 +141,15 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
             asks you to.
           </p>
         </div>
-        <div className="niuu:flex niuu:gap-2">
+        <div className="niuu:flex niuu:shrink-0 niuu:gap-2">
           <button type="button" className={BUTTON} onClick={() => setCloneOpen(true)}>
             Clone a workspace
           </button>
-          <Link to="/realms/new" className={BUTTON}>
-            Set one up step by step
+          <button type="button" className={BUTTON} onClick={() => setNewProjectOpen(true)}>
+            New project
+          </button>
+          <Link to="/realms/new" className={CREATE}>
+            New workspace
           </Link>
         </div>
       </header>
@@ -163,6 +173,14 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
           ) : (
             needsYouRows
           )}
+          {home.pendingReviews.length < home.pendingTotal ? (
+            <p
+              className="niuu:m-0 niuu:pt-3 niuu:text-xs niuu:text-text-muted"
+              data-testid="needs-you-truncated"
+            >
+              Showing the newest {home.pendingReviews.length} of {home.pendingTotal} open reviews.
+            </p>
+          ) : null}
         </SectionCard>
       ) : (
         <>
@@ -178,63 +196,41 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
             />
           ) : (
             <div className="niuu:flex niuu:flex-col niuu:gap-5" data-testid="realm-cards">
-              {groups.map((group) => {
-                const only = group.cards.length === 1 ? group.cards[0] : null;
-                return (
-                  <section
-                    key={group.id ?? 'none'}
-                    className="niuu:flex niuu:flex-col niuu:gap-2"
-                    aria-label={group.name}
-                    data-testid={`project-group-${group.id ?? 'none'}`}
-                  >
-                    <div className="niuu:flex niuu:items-baseline niuu:justify-between niuu:gap-3">
-                      {group.id === null ? (
-                        <h2 className={GROUP_TITLE}>{group.name}</h2>
-                      ) : (
-                        <h2 className={GROUP_TITLE}>
-                          <ProjectIcon size={14} className="niuu:text-brand-300" />
-                          {only ? (
-                            <Link to="/realms/$slug" params={{ slug: only.realm.slug }}>
-                              {group.name}
-                            </Link>
-                          ) : (
-                            <Link
-                              to={'/realms/projects/$projectId' as never}
-                              params={{ projectId: group.id } as never}
-                            >
-                              {group.name}
-                            </Link>
-                          )}
-                        </h2>
-                      )}
-                      <span className="niuu:text-xs niuu:text-text-muted">
-                        {group.cards.length} workspace{group.cards.length === 1 ? '' : 's'}
-                      </span>
-                    </div>
-                    <div className="niuu:grid niuu:grid-cols-3 niuu:gap-4">
-                      {group.cards.map((card) => (
-                        <RealmCard
-                          key={card.realm.slug}
-                          realm={card.realm}
-                          resident={card.resident}
-                          ravn={card.ravn}
-                          environment={card.environment}
-                          binding={card.binding}
-                          boardName={card.boardName}
-                          pendingReviews={card.pendingReviews}
-                          waitingTickets={card.waitingTickets.length}
-                          runningSessions={card.runningSessions}
-                        />
-                      ))}
-                    </div>
-                  </section>
-                );
-              })}
+              {groups.map((group) => (
+                <ProjectGroupSection
+                  key={group.id ?? 'none'}
+                  group={group}
+                  collapsed={collapsed.isCollapsed(group.id)}
+                  onToggle={() => collapsed.toggle(group.id)}
+                />
+              ))}
             </div>
           )}
+          {emptyProjects.length > 0 ? (
+            <div
+              className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-x-3 niuu:gap-y-1 niuu:text-xs niuu:text-text-muted"
+              data-testid="empty-projects"
+            >
+              <span>No workspaces yet:</span>
+              {emptyProjects.map((project) => (
+                <Link
+                  key={project.id}
+                  to={'/realms/projects/$projectId' as never}
+                  params={{ projectId: project.id } as never}
+                  className="niuu:inline-flex niuu:items-center niuu:gap-1 niuu:text-brand-300"
+                >
+                  <ProjectIcon size={12} />
+                  {project.name}
+                </Link>
+              ))}
+            </div>
+          ) : null}
           <AdoptResidents residents={home.unclaimedResidents} />
-          <div className="niuu:grid niuu:min-h-0 niuu:flex-1 niuu:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] niuu:gap-4">
-            <div className="niuu:flex niuu:min-h-0 niuu:flex-col niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:pb-1.5 niuu:pt-3.5">
+          <div className="niuu:grid niuu:flex-1 niuu:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] niuu:gap-4">
+            <div
+              className="niuu:flex niuu:flex-col niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:pb-1.5 niuu:pt-3.5"
+              data-testid="needs-you-panel"
+            >
               <div className="niuu:flex niuu:items-center niuu:justify-between niuu:pb-1">
                 <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
                   Needs you
@@ -247,17 +243,15 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
                 </span>
               </div>
               <NeedsYouError error={home.needsYouError} />
-              <div className="niuu:min-h-0 niuu:overflow-auto">
-                {waiting === 0 ? (
-                  <span className="niuu:block niuu:py-3 niuu:text-xs niuu:text-text-faint">
-                    Nothing waiting on you.
-                  </span>
-                ) : (
-                  needsYouRows.slice(0, NEEDS_YOU_PREVIEW)
-                )}
-              </div>
+              {waiting === 0 ? (
+                <span className="niuu:block niuu:py-3 niuu:text-xs niuu:text-text-faint">
+                  Nothing waiting on you.
+                </span>
+              ) : (
+                needsYouRows.slice(0, NEEDS_YOU_PREVIEW)
+              )}
             </div>
-            <div className="niuu:flex niuu:min-h-0 niuu:flex-col niuu:gap-4">
+            <div className="niuu:flex niuu:flex-col niuu:gap-4">
               <div className="niuu:flex niuu:flex-col niuu:gap-2.5 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4">
                 <div className="niuu:flex niuu:items-center niuu:justify-between">
                   <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
@@ -272,7 +266,10 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
                   <Figure value={waiting} label="awaiting you" attention={waiting > 0} />
                 </div>
               </div>
-              <div className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:flex-col niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4">
+              <div
+                className="niuu:flex niuu:flex-1 niuu:flex-col niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4"
+                data-testid="walkthroughs-panel"
+              >
                 <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
                   Walkthroughs
                 </span>
@@ -316,6 +313,8 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
           </div>
         </>
       )}
+
+      {newProjectOpen ? <NewProjectDialog onClose={() => setNewProjectOpen(false)} /> : null}
 
       <Modal
         open={cloneOpen}

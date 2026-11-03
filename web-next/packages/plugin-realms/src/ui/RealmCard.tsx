@@ -1,11 +1,6 @@
 import { Link } from '@tanstack/react-router';
 import type { Ravn } from '@niuulabs/plugin-ravn';
-import type {
-  EnvironmentSummary,
-  RealmSummary,
-  ReviewItem,
-  ValkyrieResident,
-} from '@niuulabs/plugin-valkyrie';
+import type { EnvironmentSummary, RealmSummary, ValkyrieResident } from '@niuulabs/plugin-valkyrie';
 import { wakefulnessCopy } from '@niuulabs/plugin-valkyrie';
 import { Chip, StateDot, type DotState } from '@niuulabs/ui';
 import type { RealmBinding } from '../domain/realm';
@@ -18,7 +13,7 @@ export interface RealmCardProps {
   environment?: EnvironmentSummary | null;
   binding?: RealmBinding | null;
   boardName?: string | null;
-  pendingReviews: ReviewItem[];
+  pendingReviews: number;
   waitingTickets?: number;
   runningSessions: number;
 }
@@ -71,7 +66,7 @@ export function RealmCard({
       : 'no resident yet';
   const unresolved = environment?.unresolvedSignalCount ?? 0;
   const acted = agoLabel(resident?.lastActionAt);
-  const needsYou = pendingReviews.length + waitingTickets;
+  const needsYou = pendingReviews + waitingTickets;
 
   return (
     <article
@@ -125,9 +120,7 @@ export function RealmCard({
         <Link
           to="/realms/$slug"
           params={{ slug: realm.slug }}
-          search={
-            (pendingReviews.length === 0 && waitingTickets > 0 ? { tab: 'board' } : {}) as never
-          }
+          search={(pendingReviews === 0 && waitingTickets > 0 ? { tab: 'board' } : {}) as never}
           className={
             needsYou > 0
               ? 'niuu:rounded-md niuu:border niuu:border-brand/50 niuu:bg-brand/10 niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:text-brand-300'

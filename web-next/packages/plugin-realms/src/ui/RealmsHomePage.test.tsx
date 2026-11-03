@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { createSeedRealms } from '@niuulabs/plugin-valkyrie';
+import { createMockOdinReviewService, createSeedRealms } from '@niuulabs/plugin-valkyrie';
 import {
   createCallLog,
   fakeRealmService,
@@ -37,6 +37,121 @@ describe('RealmsHomePage', () => {
     expect(within(standalone).getByText('Not in a project')).toBeInTheDocument();
     const groups = screen.getByTestId('realm-cards').children;
     expect(groups[groups.length - 1]).toBe(standalone);
+  });
+
+  it('folds a project away, keeps what needs you in view and remembers it', async () => {
+    const user = userEvent.setup();
+    const log = createCallLog();
+    const services = await workspaceWithWaitingTicket(log, 'valhalla');
+    const first = renderRealms('/realms', services, log);
+    const group = await screen.findByTestId('project-group-project-yggdrasil');
+    await within(group).findByRole('link', { name: 'Review 1' });
+
+    await user.click(within(group).getByRole('button', { name: /^Collapse / }));
+
+    expect(within(group).queryByTestId('realm-card-valhalla')).not.toBeInTheDocument();
+    expect(within(group).getByRole('button', { name: /^Expand / })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(group).toHaveTextContent('1 needs you');
+    expect(screen.getByTestId('project-group-none')).toContainElement(
+      screen.getByTestId('realm-card-host-jozef'),
+    );
+
+    first.unmount();
+    renderRealms('/realms', services, log);
+    const again = await screen.findByTestId('project-group-project-yggdrasil');
+    expect(within(again).queryByTestId('realm-card-valhalla')).not.toBeInTheDocument();
+
+    await user.click(within(again).getByRole('button', { name: /^Expand / }));
+    expect(within(again).getByTestId('realm-card-valhalla')).toBeInTheDocument();
+    expect(again).not.toHaveTextContent('needs you ');
+  });
+
+  it('folds the workspaces without a project on their own', async () => {
+    const user = userEvent.setup();
+    renderRealms('/realms');
+    const standalone = await screen.findByTestId('project-group-none');
+    await user.click(within(standalone).getByRole('button', { name: 'Collapse Not in a project' }));
+    expect(screen.queryByTestId('realm-card-host-jozef')).not.toBeInTheDocument();
+    expect(screen.getByTestId('realm-card-valhalla')).toBeInTheDocument();
+  });
+
+  it('creates a project and opens it to add workspaces', async () => {
+    const user = userEvent.setup();
+    const log = createCallLog();
+    const { router } = renderRealms('/realms', {}, log);
+    await screen.findByTestId('realm-cards');
+    await user.click(screen.getByRole('button', { name: 'New project' }));
+    const dialog = await screen.findByTestId('new-project-dialog');
+    expect(screen.getByRole('button', { name: 'Create project' })).toBeDisabled();
+
+    await user.type(
+      within(dialog).getByRole('textbox', { name: 'Project name' }),
+      ' Home lab {Enter}',
+    );
+
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe('/realms/projects/project-new'),
+    );
+    expect(log.calls.filter((call) => call.startsWith('createProject'))).toEqual([
+      'createProject:Home lab',
+    ]);
+  });
+
+  it('says why a project could not be created', async () => {
+    const user = userEvent.setup();
+    const log = createCallLog();
+    const volundr = fakeVolundr(log);
+    vi.spyOn(volundr, 'createProject').mockRejectedValue(new Error('forge said no'));
+    const { router } = renderRealms('/realms', { volundr }, log);
+    await screen.findByTestId('realm-cards');
+    await user.click(screen.getByRole('button', { name: 'New project' }));
+    const dialog = await screen.findByTestId('new-project-dialog');
+    await user.type(within(dialog).getByRole('textbox', { name: 'Project name' }), 'Home lab');
+    await user.click(screen.getByRole('button', { name: 'Create project' }));
+    expect(await within(dialog).findByText(/forge said no/)).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe('/realms');
+  });
+
+  it('keeps a project with no workspaces reachable', async () => {
+    const log = createCallLog();
+    const volundr = fakeVolundr(log);
+    const projects = await volundr.getProjects();
+    vi.spyOn(volundr, 'getProjects').mockResolvedValue([
+      ...projects,
+      { id: 'project-spring', name: 'Spring catalogue', slug: 'spring', status: 'active' },
+    ]);
+    renderRealms('/realms', { volundr }, log);
+    const row = await screen.findByTestId('empty-projects');
+    expect(within(row).getByRole('link', { name: 'Spring catalogue' })).toHaveAttribute(
+      'href',
+      '/realms/projects/project-spring',
+    );
+  });
+
+  it('counts the whole review queue, not the page of it that was listed', async () => {
+    const reviews = createMockOdinReviewService();
+    const summary = await reviews.getSummary();
+    const listed = (await reviews.listReviews({ status: 'pending' })).slice(0, 2);
+    vi.spyOn(reviews, 'listReviews').mockResolvedValue(listed);
+    vi.spyOn(reviews, 'getSummary').mockResolvedValue({
+      ...summary,
+      pendingTotal: 340,
+      pendingByEnvironment: { 'env-k8s-valhalla': 330 },
+    });
+    const home = renderRealms('/realms', { 'valkyrie.reviews': reviews });
+    expect(await screen.findByText('340 open ·', { exact: false })).toBeInTheDocument();
+    await within(await screen.findByTestId('realm-card-valhalla')).findByRole('link', {
+      name: 'Review 330',
+    });
+    home.unmount();
+
+    renderRealms('/realms/needs-you', { 'valkyrie.reviews': reviews });
+    expect(await screen.findByTestId('needs-you-truncated')).toHaveTextContent(
+      'Showing the newest 2 of 340 open reviews.',
+    );
   });
 
   it('opens straight into the workspace of a project that has only one', async () => {

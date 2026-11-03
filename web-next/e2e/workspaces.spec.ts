@@ -25,6 +25,37 @@ test('workspaces are grouped under the project they serve', async ({ page }) => 
   await expect(page.getByTestId('project-group-none')).toContainText('Not in a project');
 });
 
+test('the panels below the workspaces keep their height on a short window', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 600 });
+  await page.goto('/realms');
+  await expect(page.getByTestId('realm-cards')).toBeVisible({ timeout: 8_000 });
+
+  const walkthroughs = page.getByTestId('walkthroughs-panel');
+  await walkthroughs.scrollIntoViewIfNeeded();
+  const panel = await walkthroughs.boundingBox();
+  const content = await walkthroughs.getByText('Set up your first workspace').boundingBox();
+  expect(panel!.y + panel!.height).toBeGreaterThanOrEqual(content!.y + content!.height);
+
+  const needsYou = await page.getByTestId('needs-you-panel').boundingBox();
+  expect(needsYou!.height).toBeGreaterThan(60);
+});
+
+test('a project folds away', async ({ page }) => {
+  await page.goto('/realms');
+  const project = page.getByTestId('project-group-project-yggdrasil');
+  await expect(project.getByTestId('realm-card-valhalla')).toBeVisible({ timeout: 8_000 });
+
+  await project.getByRole('button', { name: 'Collapse Yggdrasil' }).click();
+  await expect(project.getByTestId('realm-card-valhalla')).toBeHidden();
+
+  await page.reload();
+  await expect(project.getByRole('button', { name: 'Expand Yggdrasil' })).toBeVisible({
+    timeout: 8_000,
+  });
+  await project.getByRole('button', { name: 'Expand Yggdrasil' }).click();
+  await expect(project.getByTestId('realm-card-valhalla')).toBeVisible();
+});
+
 test('a project shows its workspaces and what they share', async ({ page }) => {
   await page.goto('/realms');
   await page.getByRole('link', { name: 'Yggdrasil' }).click();

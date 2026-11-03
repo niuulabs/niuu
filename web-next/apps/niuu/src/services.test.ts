@@ -491,8 +491,22 @@ describe('resolveForgeServiceBase', () => {
 });
 
 describe('buildServices live base selection', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+  it('sends project writes to the Forge that lists the projects', async () => {
+    const forge = {
+      createProject: vi.fn(async () => ({ id: 'project-1' })),
+      updateProject: vi.fn(async () => ({ id: 'project-1' })),
+    };
+    volundrMocks.createMockVolundrService.mockImplementationOnce(() => forge as never);
+    const volundr = buildServices({ demoMode: true, services: {} } as any).volundr as any;
+
+    await volundr.createProject('Home lab', { instanceId: 'ymir' });
+    await volundr.updateProject({ id: 'project-1' }, { brief: 'The rack in the shed' });
+
+    expect(forge.createProject).toHaveBeenCalledWith('Home lab', { instanceId: 'ymir' });
+    expect(forge.updateProject).toHaveBeenCalledWith(
+      { id: 'project-1' },
+      { brief: 'The rack in the shed' },
+    );
   });
 
   it('serves the observatory agent directory from the mock in demo mode', () => {

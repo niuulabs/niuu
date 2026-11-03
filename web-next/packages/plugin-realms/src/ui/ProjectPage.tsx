@@ -103,7 +103,11 @@ export function ProjectPage() {
   const environments = new Set(cards.map((card) => card.resident?.environmentId));
   const needsYou = home.pendingReviews.filter((item) => environments.has(item.environmentId));
   const tickets = ticketsOf(cards);
-  const waiting = needsYou.length + tickets.length;
+  const pendingTotal = [...environments].reduce(
+    (sum, id) => sum + (id ? (home.pendingByEnvironment[id] ?? 0) : 0),
+    0,
+  );
+  const waiting = pendingTotal + tickets.length;
   const projectSessions = (sessions.data ?? []).filter(
     (session) => session.coordination?.projectId === projectId,
   );

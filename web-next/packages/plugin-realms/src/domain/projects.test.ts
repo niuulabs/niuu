@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { RealmSummary, ValkyrieDashboard } from '@niuulabs/plugin-valkyrie';
 import type { ForgeProject } from '@niuulabs/plugin-volundr';
-import { groupByProject, slugForResident, unclaimedResidents } from './projects';
+import {
+  groupByProject,
+  projectsWithoutWorkspaces,
+  slugForResident,
+  unclaimedResidents,
+} from './projects';
 
 function realm(slug: string, projectId: string | null): RealmSummary {
   return {
@@ -20,7 +25,7 @@ function realm(slug: string, projectId: string | null): RealmSummary {
 
 const card = (slug: string, projectId: string | null, pending = 0) => ({
   realm: realm(slug, projectId),
-  pendingReviews: Array.from({ length: pending }),
+  pendingReviews: pending,
 });
 
 const project = (id: string, name: string): ForgeProject => ({
@@ -54,6 +59,21 @@ describe('groupByProject', () => {
     const [group] = groupByProject([card('a', 'abcdefgh-1234')], []);
     expect(group?.name).toBe('Project abcdefgh');
     expect(group?.project).toBeNull();
+  });
+});
+
+describe('projectsWithoutWorkspaces', () => {
+  it('lists live projects no workspace serves, by name', () => {
+    const empty = projectsWithoutWorkspaces(
+      [card('a', 'p1')],
+      [
+        project('p3', 'Zebra'),
+        project('p1', 'One'),
+        project('p2', 'Alpha'),
+        { ...project('p4', 'Old'), status: 'archived' },
+      ],
+    );
+    expect(empty.map((entry) => entry.name)).toEqual(['Alpha', 'Zebra']);
   });
 });
 
