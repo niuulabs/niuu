@@ -340,36 +340,17 @@ async def test_an_expired_request_is_dropped_unsent(store) -> None:
     assert (expired.state, expired.delivery, expired.reason) == ("expired", "none", "expired")
 
 
-async def test_the_rate_cap_and_the_gap_hold_requests_until_the_window_opens(store) -> None:
+async def test_calls_go_back_to_back_without_a_cap_or_a_gap(store) -> None:
+    """No rate cap or gap between calls (Jozef, 2026-11-03): each request goes at once."""
     clock, registry, phone = Clock(), CallPresenceRegistry(clock=Mono()), Phone()
     standby(registry, phone)
-    calls = requester(
-        store, registry, clock, max_per_hour=2, min_gap_minutes=10, expires_after_seconds=7200
-    )
-    calls_store = ResidentCallRequests(
-        store, resident_id=RESIDENT, expires_after_seconds=7200, clock=clock
-    )
-
-    def ask(key: str, priority: str = "now") -> str:
-        speak = NotificationSpeak(text=f"About {key}.", priority=priority)
-        return calls_store.request(speak=speak, idempotency_key=key, channel=None).request_id
-
-    first = ask("a")
-    await calls.tick()
-    held = ask("b", "next_window")
-    clock.ms += 5 * MINUTE
-    await calls.tick()
-    assert [f["id"] for f in phone.frames] == [first], "inside the gap"
-    clock.ms += 5 * MINUTE
-    await calls.tick()
-    assert [f["id"] for f in phone.frames] == [first, held], "the gap opened"
-    third = ask("c")
-    clock.ms += 30 * MINUTE
-    await calls.tick()
-    assert len(phone.frames) == 2, "two calls in the last hour already"
-    clock.ms += 31 * MINUTE  # the first call is over an hour ago
-    await calls.tick()
-    assert phone.frames[-1]["id"] == third
+    calls = requester(store, registry, clock)
+    ids = []
+    for key in "abcde":
+        ids.append(queue(store, clock, key).request_id)
+        await calls.tick()
+        clock.ms += 1_000
+    assert [f["id"] for f in phone.frames] == ids
 
 
 async def test_a_call_the_phone_turned_down_leaves_the_window_open(store) -> None:

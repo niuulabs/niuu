@@ -7,10 +7,9 @@ It writes the request itself rather than leaving it for a watcher to find in the
 notification outbox: Forge drains and deletes outbox entries as soon as it reads them.
 
 :class:`CallRequester` is the single decider. It runs with the voice gateway, looks
-at queued requests about once a second, applies the ``voice.calls`` guardrails
-(``max_per_hour``, ``min_gap_minutes``; a request expires after
-``expires_after_seconds``), and delivers each request once as a ``call.request``
-frame:
+at queued requests about once a second (a request expires after
+``expires_after_seconds``; there is no rate cap or gap between calls) and delivers
+each request once as a ``call.request`` frame:
 
 * over the phone's socket, when it holds a fresh standby (or in-call) presence;
 * otherwise, or when the phone sends no ``call.result`` within
@@ -19,7 +18,7 @@ frame:
 
 The phone answers ``call.result`` on whichever socket it has then; the gateway
 records it by request id (:meth:`VoiceCallStore.record_call_result`). The phone still
-applies its own allow-list, Focus, quiet hours and rate cap. Logs carry request ids,
+applies its own allow-list, Focus and quiet hours. Logs carry request ids,
 deliveries and outcomes only, never the text.
 """
 
@@ -237,8 +236,6 @@ def call_request_frame(
 
 # -- the decider -------------------------------------------------------------
 
-_HOUR_MS = 3_600_000
-
 
 class CallRequester:
     """Delivers queued call requests to the owner's phone, once each."""
@@ -276,17 +273,6 @@ class CallRequester:
         for request in self._store.call_requests(state="sent"):
             await self._escalate(request)
 
-    def window_opens_at(self, now: int) -> int | None:
-        """When the guardrails let the next call go; ``None`` when they do now."""
-        placed = self._store.placed_calls_since(now - _HOUR_MS)
-        opens = 0
-        limit = self._config.max_per_hour
-        if len(placed) >= limit:
-            opens = placed[-limit] + _HOUR_MS
-        if placed:
-            opens = max(opens, placed[-1] + int(self._config.min_gap_minutes * 60_000))
-        return opens if opens > now else None
-
     def frame(self, request: CallRequest) -> dict[str, Any]:
         return call_request_frame(
             request, host=self._config.host, resident_id=self._config.resident_id, name=self._name
@@ -298,8 +284,6 @@ class CallRequester:
             self._store.expire_call_request(request.request_id)
             logger.info("Call request %s expired undelivered", request.request_id)
             return
-        if self.window_opens_at(now) is not None:
-            return  # held: the rate cap or the gap; it goes when the window opens, or expires
         frame = self.frame(request)
         presence = self._registry.fresh()
         if presence is not None and await presence.send(frame):

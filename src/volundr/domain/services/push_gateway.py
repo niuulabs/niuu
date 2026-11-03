@@ -27,7 +27,7 @@ node:
    same interval rule, so iOS can wake it to read every server it knows.
 
 Apart from the feed, :meth:`PushGateway.ring` sends a resident's ``call.request`` to
-its owner's VoIP tokens (``POST /push/call``), capped per owner.
+its owner's VoIP tokens (``POST /push/call``); there is no rate cap on rings.
 
 A token APNs reports as dead (410, ``BadDeviceToken``, ``Unregistered``,
 ``ExpiredToken``) is deleted.
@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
@@ -190,12 +189,11 @@ class CallSettings:
     """Rings: a resident's call request as a VoIP push (``push.gateway.calls``)."""
 
     enabled: bool = True
-    max_per_hour: int = 6
     ring_seconds: int = 60
 
     def __post_init__(self) -> None:
-        if self.max_per_hour < 1 or self.ring_seconds < 1:
-            raise ValueError("calls max_per_hour and ring_seconds must be >= 1")
+        if self.ring_seconds < 1:
+            raise ValueError("calls ring_seconds must be >= 1")
 
 
 @dataclass(frozen=True)
@@ -256,11 +254,10 @@ class PushGatewayStats:
     live_activity_starts: int = 0
     widget_reloads: int = 0
     background_wakes: int = 0
-    #: Rings APNs accepted for at least one VoIP token, rings it took for none (or
-    #: that found no token), and rings refused by the per-owner cap.
+    #: Rings APNs accepted for at least one VoIP token, and rings it took for none (or
+    #: that found no token).
     calls_rung: int = 0
     calls_undelivered: int = 0
-    calls_rate_limited: int = 0
     tokens_pruned: int = 0
     apns_rejections: int = 0
     stale_settles: int = 0
@@ -294,17 +291,6 @@ class PushTestResult:
 
 #: How much of a token a test result shows, enough to tell two devices apart.
 _TOKEN_SUFFIX_CHARS = 8
-
-#: The window of the per-owner ring cap.
-_RING_WINDOW = timedelta(hours=1)
-
-
-class CallRateLimitedError(Exception):
-    """The owner was rung ``max_per_hour`` times in the last hour."""
-
-    def __init__(self, retry_after_seconds: float) -> None:
-        super().__init__(f"Too many calls; try again in {int(retry_after_seconds) + 1} s")
-        self.retry_after_seconds = retry_after_seconds
 
 
 @dataclass(frozen=True)
@@ -379,8 +365,6 @@ class PushGateway:
         self._last_discovery: datetime | None = None
         self._last_prune: datetime | None = None
         self._retry_owners: set[str] = set()
-        #: Per owner: when each request id was first rung in the last hour.
-        self._rings: dict[str, deque[tuple[datetime, str]]] = {}
         self._wake = asyncio.Event()
         self._stopping = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -1117,13 +1101,12 @@ class PushGateway:
     async def ring(self, owner_id: str, call: CallRequest) -> CallRingResult:
         """Send ``call`` to the owner's VoIP tokens for the app's bundle.
 
-        Raises :class:`CallRateLimitedError` past the owner's hourly cap; ringing the
-        same request id again (an escalation) does not count twice. A token APNs
-        reports as dead is deleted. The frame is checked before it gets here
-        (``validate_call_request``): nothing else is ever sent as a VoIP push.
+        There is no rate cap: only the phone's allow-list, Focus and quiet hours decide
+        (Jozef, 2026-11-03). A token APNs reports as dead is deleted. The frame is checked
+        before it gets here (``validate_call_request``): nothing else is ever sent as a
+        VoIP push.
         """
         now = self._clock()
-        counted = self._admit_ring(owner_id, call.request_id, now)
         bundle = self._settings.bundle_id
         devices = [
             device
@@ -1131,8 +1114,6 @@ class PushGateway:
             if (device.app_bundle_id or bundle) == bundle
         ]
         if not devices:
-            if counted:
-                self._rings[owner_id].pop()
             self.stats.calls_undelivered += 1
             logger.info(
                 "Call request %s for owner %s not rung: no VoIP token", call.request_id, owner_id
@@ -1169,21 +1150,6 @@ class PushGateway:
         )
         return CallRingResult(sent=sent, tokens=len(devices), results=tuple(results))
 
-    def _admit_ring(self, owner_id: str, request_id: str, now: datetime) -> bool:
-        """Count a ring against the owner's cap; ``False`` when the id was already
-        counted this hour. Raises :class:`CallRateLimitedError` when the cap is full."""
-        rings = self._rings.setdefault(owner_id, deque())
-        while rings and now - rings[0][0] >= _RING_WINDOW:
-            rings.popleft()
-        if any(rung == request_id for _, rung in rings):
-            return False
-        if len(rings) >= self._settings.calls.max_per_hour:
-            self.stats.calls_rate_limited += 1
-            retry_after = (rings[0][0] + _RING_WINDOW - now).total_seconds()
-            raise CallRateLimitedError(max(retry_after, 0.0))
-        rings.append((now, request_id))
-        return True
-
     def _voip_push(
         self, device: DeviceToken, frame: Mapping[str, Any], expiration: int
     ) -> ApnsPush:
@@ -1215,7 +1181,7 @@ class PushGateway:
         activity list; the Live Activity pushes carry the owner's real current
         content; the background push and the widget reload are the real ones. The
         VoIP push is a ``call.request`` saying "Test call" for ``call_session_id``
-        (a test session without it); it does not count against the ring cap.
+        (a test session without it).
         """
         devices = [
             device

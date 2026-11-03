@@ -129,8 +129,6 @@ data:
             enabled: true
             resident_id: {{ $.Values.session.id | quote }}
             host: {{ .host | quote }}
-            max_per_hour: {{ .maxPerHour }}
-            min_gap_minutes: {{ .minGapMinutes }}
             expires_after_seconds: {{ .expiresAfterSeconds }}
             {{- with .push }}
             push:

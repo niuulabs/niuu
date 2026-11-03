@@ -156,7 +156,6 @@ def push_gateway_settings(push: PushNotificationConfig, *, instance_id: str) -> 
         ),
         calls=CallSettings(
             enabled=calls.enabled,
-            max_per_hour=calls.max_per_hour,
             ring_seconds=calls.ring_seconds,
         ),
     )

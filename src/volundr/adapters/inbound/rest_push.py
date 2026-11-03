@@ -34,7 +34,7 @@ from volundr.domain.push import (
     validate_call_request,
 )
 from volundr.domain.push_ports import GuildFeedError
-from volundr.domain.services.push_gateway import CallRateLimitedError, PushGateway
+from volundr.domain.services.push_gateway import PushGateway
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +223,7 @@ def create_push_router(gateway: PushGateway, *, prefix: str = "/api/v1/forge") -
         The frame must be a call request for ``request_id`` from the calling resident
         (``payload.session.id``), with a text of at most 600 characters, in a body of
         at most 4096 bytes (422 otherwise). Only the owner's VoIP tokens for the app's
-        bundle are pushed; the owner's rings are capped per hour (429).
+        bundle are pushed.
         """
         if not gateway.calls_enabled:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Rings are off on this Forge")
@@ -246,14 +246,7 @@ def create_push_router(gateway: PushGateway, *, prefix: str = "/api/v1/forge") -
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN, "A resident may only ring as itself (payload.session.id)"
             )
-        try:
-            result = await gateway.ring(principal.user_id, call)
-        except CallRateLimitedError as exc:
-            raise HTTPException(
-                status.HTTP_429_TOO_MANY_REQUESTS,
-                str(exc),
-                headers={"Retry-After": str(int(exc.retry_after_seconds) + 1)},
-            ) from exc
+        result = await gateway.ring(principal.user_id, call)
         return PushCallResponse(
             sent=result.sent,
             tokens=result.tokens,

@@ -693,10 +693,6 @@ resident:
       enabled: false
       # -- The cluster the resident runs in, as the phone shows it (call.request session.host).
       host: ""
-      # -- Most calls in any rolling hour; the rest wait for the window.
-      maxPerHour: 3
-      # -- Least minutes between two calls (the phone's own window).
-      minGapMinutes: 10
       # -- Seconds after which an undelivered request is dropped (its expiresAt).
       expiresAfterSeconds: 300
       # -- The VoIP push when no socket carries a request: {adapter, kwargs}, passed to ravn

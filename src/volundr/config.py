@@ -1068,21 +1068,12 @@ class PushCallsConfig(BaseModel):
     (``POST /api/v1/forge/push/call``, scope ``forge:push:call``).
 
     iOS cuts off an app that gets VoIP pushes without reporting a call, so only a
-    validated call request is ever sent, and each owner's rings are capped.
+    validated call request is ever sent. There is no rate cap on rings.
     """
 
     enabled: bool = Field(
         default=True,
         description="Serve POST /push/call on the push gateway's node.",
-    )
-    max_per_hour: int = Field(
-        default=6,
-        ge=1,
-        le=60,
-        description=(
-            "Rings per owner in any rolling hour; more answer 429. A request id rung "
-            "again (an escalation) counts once."
-        ),
     )
     ring_seconds: int = Field(
         default=60,

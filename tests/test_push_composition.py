@@ -202,7 +202,7 @@ class TestComposition:
                 },
                 widgets={"enabled": False, "min_interval_seconds": 600, "priority": 10},
                 background={"enabled": False, "min_interval_seconds": 1800},
-                calls={"max_per_hour": 3, "ring_seconds": 30},
+                calls={"ring_seconds": 30},
             )
         )
 
@@ -223,7 +223,7 @@ class TestComposition:
             1800,
         )
         assert settings.background.priority == 5
-        assert (settings.calls.enabled, settings.calls.max_per_hour) == (True, 3)
+        assert settings.calls.enabled is True
         assert settings.calls.ring_seconds == 30
         assert settings.poll_interval_seconds == 5.0 and settings.page_size == 50
         assert settings.stream_enabled is False

@@ -1910,8 +1910,9 @@ class VoiceCallsConfig(BaseModel):
     """Calls the resident places itself: ``notify`` with ``speak`` rings the owner's phone.
 
     The gateway decides once per request and sends ``call.request`` over the phone's
-    standby socket; the phone still applies its own allow-list, Focus, quiet hours
-    and rate cap, and answers ``call.result``. These are the server's own guardrails.
+    standby socket; the phone still applies its own allow-list, Focus and quiet hours,
+    and answers ``call.result``. There is no rate cap or gap between calls (Jozef,
+    2026-11-03: Focus and quiet hours only).
     """
 
     enabled: bool = Field(
@@ -1929,14 +1930,6 @@ class VoiceCallsConfig(BaseModel):
     host: str = Field(
         default="",
         description="The cluster the resident runs in, as the phone names it (session.host).",
-    )
-    max_per_hour: int = Field(
-        default=3, ge=1, description="Most calls placed in any rolling hour; the rest wait."
-    )
-    min_gap_minutes: float = Field(
-        default=10.0,
-        ge=0,
-        description="Least time between two calls (the phone's own window); a request waits.",
     )
     expires_after_seconds: int = Field(
         default=300,

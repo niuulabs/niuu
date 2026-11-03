@@ -397,20 +397,6 @@ class VoiceCallStore:
         self._db.commit()
         return bool(cursor.rowcount)
 
-    def placed_calls_since(self, since_ms: int) -> list[int]:
-        """When each request delivered since *since_ms* was sent, that the phone did not turn down.
-
-        A refusal or deferral leaves the window open: only a call that rang, spoke, or is
-        still awaiting the phone's answer counts against the guardrails.
-        """
-        rows = self._db.execute(
-            "SELECT sent_at_ms FROM call_requests WHERE sent_at_ms IS NOT NULL"
-            " AND sent_at_ms >= ? AND (outcome IS NULL OR outcome IN ('spoke', 'aside'))"
-            " ORDER BY sent_at_ms",
-            (since_ms,),
-        ).fetchall()
-        return [int(row["sent_at_ms"]) for row in rows]
-
     # -- projections -----------------------------------------------------
 
     def session_json(self, call: Call) -> dict[str, Any]:

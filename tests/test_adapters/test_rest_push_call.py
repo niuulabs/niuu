@@ -218,18 +218,6 @@ def test_anything_but_a_call_request_is_refused(rig, mutate):
     assert rig.apns.sent == []
 
 
-def test_rings_past_the_cap_answer_429():
-    rig = Rig(CallSettings(max_per_hour=1))
-    rig.devices.add(device("voip-mine", PushTokenKind.VOIP))
-
-    assert rig.ring(rig.body("req-1"), headers=headers()).status_code == 200
-    refused = rig.ring(rig.body("req-2"), headers=headers())
-
-    assert refused.status_code == 429
-    assert int(refused.headers["retry-after"]) > 3500
-    assert len(rig.apns.sent) == 1
-
-
 def test_rings_switched_off_answer_404():
     rig = Rig(CallSettings(enabled=False))
     rig.devices.add(device("voip-mine", PushTokenKind.VOIP))

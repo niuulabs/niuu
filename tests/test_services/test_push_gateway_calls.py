@@ -25,11 +25,7 @@ from volundr.domain.push import (
     token_fingerprint,
     validate_call_request,
 )
-from volundr.domain.services.push_gateway import (
-    CallRateLimitedError,
-    CallSettings,
-    PushGateway,
-)
+from volundr.domain.services.push_gateway import CallSettings, PushGateway
 
 START_UNIX = int(START.timestamp())
 RAVN = "0b7f3f0e-sidekick"
@@ -123,18 +119,6 @@ async def test_only_the_owners_voip_tokens_for_the_bundle(rig):
     assert result.tokens == 2
 
 
-async def test_no_voip_token_sends_nothing_and_costs_no_ring():
-    calls = Rig(CallSettings(max_per_hour=1))
-    calls.devices.add(device("alert-1"))
-
-    result = await calls.ring("req-1")
-
-    assert (result.sent, result.tokens, result.results) == (False, 0, ())
-    assert calls.apns.sent == []
-    calls.devices.add(device("voip-1", PushTokenKind.VOIP))
-    assert (await calls.ring("req-2")).sent
-
-
 async def test_a_dead_token_is_deleted(rig):
     rig.devices.add(device("voip-dead", PushTokenKind.VOIP), device("voip-ok", PushTokenKind.VOIP))
     rig.apns.answer("voip-dead", ApnsResult(410, "Unregistered"))
@@ -158,39 +142,6 @@ async def test_bad_device_token_is_deleted_and_the_ring_not_sent(rig):
     assert rig.gateway.stats.calls_undelivered == 1
 
 
-async def test_rings_are_capped_per_owner_per_hour():
-    rig = Rig(CallSettings(max_per_hour=2))
-    rig.devices.add(
-        device("voip-1", PushTokenKind.VOIP), device("voip-2", PushTokenKind.VOIP, owner_id="b")
-    )
-
-    await rig.ring("req-1")
-    await rig.ring("req-2")
-    with pytest.raises(CallRateLimitedError) as refused:
-        await rig.ring("req-3")
-
-    assert 3590 < refused.value.retry_after_seconds <= 3600
-    assert rig.gateway.stats.calls_rate_limited == 1
-    # Another owner has a cap of their own.
-    assert (await rig.ring("req-1", owner="b")).sent
-    # An hour after the first ring, one more is allowed.
-    rig.clock.advance(3600)
-    assert (await rig.ring("req-3", expires_in=None)).sent
-
-
-async def test_the_same_request_id_rung_again_counts_once():
-    rig = Rig(CallSettings(max_per_hour=1))
-    rig.devices.add(device("voip-1", PushTokenKind.VOIP))
-
-    await rig.ring("req-1")
-    # The socket escalation re-rings the same id: pushed again, not counted again.
-    await rig.ring("req-1")
-
-    assert len(rig.apns.sent) == 2
-    with pytest.raises(CallRateLimitedError):
-        await rig.ring("req-2")
-
-
 async def test_the_test_push_rings_with_a_test_call(rig):
     rig.devices.add(device("voip-1", PushTokenKind.VOIP, environment=PushEnvironment.SANDBOX))
 
@@ -206,7 +157,7 @@ async def test_the_test_push_rings_with_a_test_call(rig):
     # The frame is one the ring route itself would take.
     validate_call_request(payload["id"], payload, now=rig.clock())
     assert (result.kind, result.environment, result.accepted) == ("voip", "sandbox", True)
-    # A test ring is not counted against the owner's cap.
+    # A test ring is not counted as a resident's ring.
     assert rig.gateway.stats.calls_rung == 0
 
 
@@ -230,3 +181,13 @@ async def test_the_test_push_needs_a_voip_token(rig):
 def test_status_says_whether_rings_are_on():
     assert Rig().gateway.status()["calls_enabled"] is True
     assert Rig(CallSettings(enabled=False)).gateway.status()["calls_enabled"] is False
+
+
+async def test_rings_have_no_cap(rig):
+    """No rate cap on rings (Jozef, 2026-11-03): the phone's Focus and quiet hours decide."""
+    rig.devices.add(device("voip-1", PushTokenKind.VOIP))
+
+    for n in range(20):
+        assert (await rig.ring(f"req-{n}")).sent
+
+    assert len(rig.apns.sent) == 20
