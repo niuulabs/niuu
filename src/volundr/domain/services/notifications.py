@@ -1012,6 +1012,28 @@ class NotificationService(NotificationRecorder):
             attention_push_rule(owner_id, sink, datetime.now(UTC))
         )
 
+    async def retire_attention_push_rules(self, sink: str) -> int:
+        """Delete the needs-input push rules Forge gave owners for ``sink``, now gone.
+
+        A node that no longer pushes through ``sink`` (the Guild push gateway alerts
+        instead, or ``push.enabled`` was turned off) still holds the rules
+        :meth:`ensure_attention_push_rule` created, and each would fail every
+        delivery against a sink it does not have. Only those rules go: they are
+        recognised by their derived id, so a rule an owner wrote stays, failing
+        loudly until they change it. Their deliveries go with them (cascade).
+        Nothing is retired while ``sink`` is configured here. Returns how many went.
+        """
+        if sink in {info.name for info in self._sinks}:
+            return 0
+        retired = 0
+        now = datetime.now(UTC)
+        for rule in await self._rules.list_for_sink(sink):
+            if rule.id != attention_push_rule(rule.owner_id, sink, now).id:
+                continue
+            if await self._rules.delete(rule.owner_id, rule.id):
+                retired += 1
+        return retired
+
     async def list_rules(self, principal: Principal) -> list[NotificationRule]:
         return await self._rules.list_for_owner(principal.user_id)
 

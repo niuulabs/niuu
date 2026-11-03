@@ -159,6 +159,10 @@ class NotificationRuleRepository(ABC):
         """Return an owner's enabled rules, oldest first."""
 
     @abstractmethod
+    async def list_for_sink(self, sink: str) -> list[NotificationRule]:
+        """Return every owner's rules that deliver through the named ``sink``."""
+
+    @abstractmethod
     async def get(self, owner_id: str, rule_id: UUID) -> NotificationRule | None:
         """Return one of an owner's rules."""
 

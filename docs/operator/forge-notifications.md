@@ -688,6 +688,13 @@ same alert twice. Switch push off on that node to have the gateway alert for it.
 gateway node takes the token kinds besides `alert` (`capabilities.push_installs` in
 `GET /feature-flags`); another node answers 422 for them.
 
+A node that stops pushing through its own sink (the gateway is switched on, or
+`push.enabled` off) still holds the "Needs-input pushes" rules it gave owners while it did.
+At startup it deletes them, with their delivery history, and logs how many: each would
+otherwise fail every delivery against a sink the node no longer has. Only those rules go,
+recognised by the id Forge derives from the owner; a rule an owner wrote for that sink stays
+and fails loudly until they change it. Nothing is deleted while the sink is configured.
+
 APNs results: delivered if at least one device accepted. It is retryable when every
 device failed transiently (429/5xx, network). It is `dead` when the owner has no iOS
 alert tokens or APNs rejected them all. The channel (`ApnsNotificationChannel`) reads its

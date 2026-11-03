@@ -351,6 +351,16 @@ class TestRules:
         pool.execute.return_value = "DELETE 0"
         assert not await repo.delete("u", rule.id)
 
+    async def test_list_for_sink_reads_every_owner_and_skips_integration_rules(self):
+        pool, _ = _pool()
+        repo = PostgresNotificationRuleRepository(pool)
+        pool.fetch.return_value = [_rule_row(_rule())]
+
+        assert len(await repo.list_for_sink("push")) == 1
+        sql, *params = pool.fetch.await_args.args
+        assert "WHERE sink = $1 AND integration_connection_id IS NULL" in sql
+        assert "owner_id" not in sql and params == ["push"]
+
     async def test_create_if_absent(self):
         pool, _ = _pool()
         repo = PostgresNotificationRuleRepository(pool)

@@ -331,6 +331,13 @@ class InMemoryNotificationRuleRepository(NotificationRuleRepository):
     async def list_for_owner(self, owner_id: str) -> list[NotificationRule]:
         return [rule for rule in self.rules.values() if rule.owner_id == owner_id]
 
+    async def list_for_sink(self, sink: str) -> list[NotificationRule]:
+        return [
+            rule
+            for rule in self.rules.values()
+            if rule.sink == sink and rule.integration_connection_id is None
+        ]
+
     async def get(self, owner_id: str, rule_id: UUID) -> NotificationRule | None:
         rule = self.rules.get(rule_id)
         return rule if rule is not None and rule.owner_id == owner_id else None
