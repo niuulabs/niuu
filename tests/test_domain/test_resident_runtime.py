@@ -113,9 +113,18 @@ class LifecycleResidentRuntimeController:
     def __init__(self) -> None:
         self.actions: list[str] = []
         self.resumed_with = None
+        self.bindings: dict[str, str] = {}
+        self.bind_error: Exception | None = None
+        self.bound_for: list[str] = []
 
     def supports(self, profile) -> bool:
         return profile.backend is self.backend
+
+    async def bind_integrations(self, owner_id, profile):
+        self.bound_for.append(owner_id)
+        if self.bind_error is not None:
+            raise self.bind_error
+        return dict(self.bindings)
 
     @staticmethod
     def _observation(runtime: ResidentRuntime) -> ResidentRuntimeObservation:
@@ -530,6 +539,33 @@ async def test_create_deploys_and_persists_real_observation(runtime_service) -> 
     deployed = repository.items[runtime.id]
     assert deployed.observed_state is ResidentObservedState.ACTIVE
     assert deployed.backend_ref["kind"] == "Sandbox"
+
+
+async def test_create_binds_declared_integrations_in_the_owners_request() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    controller = MemoryResidentRuntimeController()
+    controller.bindings = {"xai": "xai-key"}
+    service = ResidentRuntimeService(repository, _profiles(), [controller])
+
+    runtime = await service.create(_principal(), name="Muninn", profile_id="ravn-openshell")
+    await asyncio.gather(*tuple(service._deployment_tasks.values()))
+
+    assert controller.bound_for == ["user-a"]
+    assert runtime.integration_bindings == {"xai": "xai-key"}
+    assert repository.items[runtime.id].integration_bindings == {"xai": "xai-key"}
+
+
+async def test_create_rejects_an_unbindable_integration_before_recording_anything() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    controller = MemoryResidentRuntimeController()
+    controller.bind_error = ValueError("the owner needs exactly one enabled xai connection")
+    service = ResidentRuntimeService(repository, _profiles(), [controller])
+
+    with pytest.raises(ResidentRuntimeValidationError, match="exactly one enabled xai"):
+        await service.create(_principal(), name="Muninn", profile_id="ravn-openshell")
+
+    assert repository.items == {}
+    assert controller.actions == []
 
 
 async def test_create_retains_failed_record_when_background_deployment_fails() -> None:

@@ -931,6 +931,20 @@ class ResidentRuntimeController(ABC):
     def supports(self, profile: ResidentDeploymentProfile) -> bool:
         """Return whether this controller implements the complete profile."""
 
+    async def bind_integrations(
+        self,
+        owner_id: str,
+        profile: ResidentDeploymentProfile,
+    ) -> dict[str, str]:
+        """Bind each integration the profile's declared credentials name to an owner credential.
+
+        Called at create, inside the owner's request, because reading the owner's
+        connections may need their bearer; the result (``{slug: credential name}``) is
+        persisted on the resident and every later render reuses it. Declared but
+        unbindable raises. A controller that injects no declared credentials binds none.
+        """
+        return {}
+
     @abstractmethod
     async def deploy(
         self,

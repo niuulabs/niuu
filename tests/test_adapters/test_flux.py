@@ -3081,6 +3081,87 @@ class TestResidentCredentials:
             '{"xai": "xai-key"}'
         )
 
+    async def test_bind_integrations_reads_the_owners_connection(
+        self, pod_manager: FluxPodManager
+    ) -> None:
+        self._wire(pod_manager)
+        declared = [
+            *self._DECLARED,
+            {"credential": "my-key", "files": {"/run/secrets/k": "api_key"}},
+        ]
+
+        bound = await pod_manager.bind_integrations("user-a", self._profile(declared))
+
+        assert bound == {"xai": "xai-key"}
+        pod_manager._integrations.list_connections.assert_awaited_once_with("user-a")
+
+    async def test_bind_integrations_without_declared_credentials_binds_none(
+        self, pod_manager: FluxPodManager
+    ) -> None:
+        self._wire(pod_manager)
+
+        assert await pod_manager.bind_integrations("user-a", _resident_profile()) == {}
+        pod_manager._integrations.list_connections.assert_not_awaited()
+
+    @pytest.mark.parametrize(("credentials", "message"), [("xai", "must be a list")])
+    async def test_bind_integrations_rejects_bad_declarations(
+        self, pod_manager: FluxPodManager, credentials: object, message: str
+    ) -> None:
+        self._wire(pod_manager)
+        with pytest.raises(ValueError, match=message):
+            await pod_manager.bind_integrations("user-a", self._profile(credentials))
+
+    async def test_bind_integrations_needs_exactly_one_owner_connection(
+        self, pod_manager: FluxPodManager
+    ) -> None:
+        self._wire(pod_manager, connections=[])
+        with pytest.raises(ValueError, match="exactly one enabled xai connection, and has 0"):
+            await pod_manager.bind_integrations("user-a", self._profile(self._DECLARED))
+
+    async def test_deploy_uses_the_binding_made_at_create_without_the_owners_login(
+        self, pod_manager: FluxPodManager, mock_api
+    ) -> None:
+        # The deploy runs in the background, where there is no caller bearer token.
+        injection = self._wire(pod_manager)
+        pod_manager._integrations.list_connections.side_effect = RuntimeError(
+            "Shared integrations require an authenticated caller bearer token"
+        )
+        runtime = _resident_runtime(integration_bindings={"xai": "xai-key"})
+        with patch.object(pod_manager, "_get_api", return_value=mock_api):
+            await pod_manager.deploy(runtime, self._profile(self._DECLARED))
+
+        body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
+        assert body["metadata"]["annotations"]["niuu.world/resident-integrations"] == (
+            '{"xai": "xai-key"}'
+        )
+        assert injection.workload_pod_spec_additions.await_args.args[1][0].credential_name == (
+            "xai-key"
+        )
+        pod_manager._integrations.list_connections.assert_not_awaited()
+
+    async def test_a_rerender_uses_the_create_binding_when_the_release_recorded_none(
+        self, core_api: AsyncMock
+    ) -> None:
+        pod_manager = _platform_manager()
+        self._wire(pod_manager)
+        pod_manager._integrations.list_connections.side_effect = RuntimeError(
+            "Shared integrations require an authenticated caller bearer token"
+        )
+        runtime = _resident_runtime(integration_bindings={"xai": "xai-key"})
+        _own_claims_exist(core_api, runtime)
+        cluster = _Cluster(_running_release(runtime))
+        profile = _platform_profile()
+        profile.deployment["credentials"] = self._DECLARED
+
+        with _on_cluster(pod_manager, cluster):
+            await pod_manager.restart(runtime, profile)
+
+        [rolled] = cluster.replaces
+        assert rolled["metadata"]["annotations"]["niuu.world/resident-integrations"] == (
+            '{"xai": "xai-key"}'
+        )
+        pod_manager._integrations.list_connections.assert_not_awaited()
+
     @pytest.mark.parametrize("rerender", ["reconcile", "restart"])
     async def test_a_rerender_keeps_the_recorded_credential_without_the_owners_login(
         self, core_api: AsyncMock, rerender: str
