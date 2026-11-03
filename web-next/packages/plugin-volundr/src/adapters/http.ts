@@ -174,6 +174,7 @@ type SessionPayload = {
   turn_started_at?: string | null;
   needsAttention?: boolean;
   needs_attention?: boolean;
+  activity_metadata?: Record<string, unknown> | null;
   ownerId?: string | null;
   owner_id?: string | null;
   tenantId?: string | null;
@@ -522,6 +523,21 @@ function toDate(value?: Date | string | null): Date | undefined {
   return Number.isNaN(parsed) ? undefined : new Date(parsed);
 }
 
+const GATE_PENDING = 'pending';
+
+/**
+ * A human gate the session waits on, as its activity metadata reports it. Brokers that
+ * predate reporting gates as `awaiting_input` stay `idle` at an open gate, but record the
+ * gate under `help_needed` with its status; only a pending one waits on a person.
+ */
+function waitsAtGate(metadata: Record<string, unknown> | null | undefined): boolean {
+  const help = metadata?.help_needed;
+  if (!help || typeof help !== 'object') return false;
+  const context = (help as { context?: unknown }).context;
+  if (!context || typeof context !== 'object') return false;
+  return (context as { gate_status?: unknown }).gate_status === GATE_PENDING;
+}
+
 function normalizeSession(session: SessionPayload): VolundrSession {
   const trackerIssue =
     session.trackerIssue ??
@@ -580,9 +596,9 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     activityStateSince: session.activityStateSince ?? session.activity_state_since ?? null,
     turnStartedAt: session.turnStartedAt ?? session.turn_started_at ?? null,
     needsAttention:
-      session.needsAttention ??
-      session.needs_attention ??
-      (session.activityState ?? session.activity_state) === 'awaiting_input',
+      Boolean(session.needsAttention ?? session.needs_attention) ||
+      (session.activityState ?? session.activity_state) === 'awaiting_input' ||
+      (session.status === 'running' && waitsAtGate(session.activity_metadata)),
     ownerId: session.ownerId ?? session.owner_id ?? undefined,
     tenantId: session.tenantId ?? session.tenant_id ?? undefined,
     instanceId: session.instanceId ?? session.instance_id ?? undefined,

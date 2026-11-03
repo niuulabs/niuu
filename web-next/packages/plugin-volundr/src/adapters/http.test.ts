@@ -1195,6 +1195,55 @@ describe('buildVolundrHttpAdapter', () => {
     expect(client.get).not.toHaveBeenCalledWith('/sessions/shared-id');
   });
 
+  it.each([
+    ['pending', 'running', true],
+    ['approved', 'running', false],
+    ['pending', 'stopped', false],
+  ] as const)(
+    'reads a human gate %s in an %s idle session as waiting on the person: %s',
+    async (gateStatus, status, waits) => {
+      const client = makeClient();
+      client.get.mockResolvedValueOnce({
+        id: 's1',
+        name: 'tracker-delivery-flow',
+        source: { type: 'git', repo: 'https://github.com/niuulabs/niuu', branch: 'regin' },
+        status,
+        model: 'gpt-5.6-terra',
+        activity_state: 'idle',
+        needs_attention: false,
+        activity_metadata: {
+          help_needed: {
+            reason: 'needs_human_approval',
+            context: {
+              mode: 'human_approval',
+              gate_label: 'Delivery blocked',
+              gate_status: gateStatus,
+            },
+          },
+        },
+      });
+
+      const session = await buildVolundrHttpAdapter(client).getSession('s1');
+
+      expect(session.needsAttention).toBe(waits);
+    },
+  );
+
+  it('does not read a question without a gate as a waiting gate', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce({
+      id: 's1',
+      name: 'n',
+      source: { type: 'git', repo: '', branch: '' },
+      status: 'running',
+      model: 'm',
+      activity_state: 'idle',
+      activity_metadata: { help_needed: { reason: 'question' } },
+    });
+
+    expect((await buildVolundrHttpAdapter(client).getSession('s1')).needsAttention).toBe(false);
+  });
+
   it('getSession synthesizes trackerIssue from legacy tracker fields', async () => {
     const client = makeClient();
     client.get.mockResolvedValueOnce({
