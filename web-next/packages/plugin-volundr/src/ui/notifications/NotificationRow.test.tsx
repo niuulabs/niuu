@@ -28,6 +28,7 @@ const base: SessionNotification = {
   engine: null,
   model: null,
   correlationId: null,
+  reviewId: null,
   speak: null,
   createdAt: '2026-09-23T10:00:00Z',
   read: true,
@@ -146,6 +147,25 @@ describe('NotificationRow', () => {
     expect(deliveries[1]).toHaveTextContent('Telegram');
     expect(deliveries[1]).toHaveTextContent('Held (quiet hours or rate limit)');
     expect(deliveries[1]!.querySelector('time')).toBeNull();
+  });
+
+  it('links a resident question to where it is answered', async () => {
+    const user = userEvent.setup();
+    renderRow({
+      notification: { ...base, kind: 'attention', reviewId: 'review:court_escalation:x' },
+    });
+    await user.click(screen.getByRole('button', { name: 'Show details' }));
+    expect(screen.getByTestId('notification-review-link')).toHaveAttribute(
+      'href',
+      '/valkyrie/inbox?item=review%3Acourt_escalation%3Ax',
+    );
+  });
+
+  it('offers no answer link when the notification asks nothing', async () => {
+    const user = userEvent.setup();
+    renderRow();
+    await user.click(screen.getByRole('button', { name: 'Show details' }));
+    expect(screen.queryByTestId('notification-review-link')).toBeNull();
   });
 
   it('never repeats a title that an older reply summary copied into its body', async () => {

@@ -99,6 +99,7 @@ describe('notification wire format', () => {
       engine: 'claude',
       model: 'opus',
       correlationId: null,
+      reviewId: null,
       speak: null,
       createdAt: '2026-09-23T10:00:00Z',
       read: true,
