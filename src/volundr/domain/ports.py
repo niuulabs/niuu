@@ -931,6 +931,15 @@ class ResidentRuntimeController(ABC):
     def supports(self, profile: ResidentDeploymentProfile) -> bool:
         """Return whether this controller implements the complete profile."""
 
+    def planned_backend_ref(self, runtime: ResidentRuntime) -> dict[str, Any]:
+        """The backend reference a deploy will create for ``runtime``, before it exists.
+
+        The deploy runs in the background, so the create response carries this: the
+        platform records the resident's workload delegation from it at create. A
+        controller whose reference is only known once its backend creates it has none.
+        """
+        return {}
+
     async def bind_integrations(
         self,
         owner_id: str,

@@ -116,9 +116,13 @@ class LifecycleResidentRuntimeController:
         self.bindings: dict[str, str] = {}
         self.bind_error: Exception | None = None
         self.bound_for: list[str] = []
+        self.planned_ref: dict = {}
 
     def supports(self, profile) -> bool:
         return profile.backend is self.backend
+
+    def planned_backend_ref(self, runtime):
+        return dict(self.planned_ref)
 
     async def bind_integrations(self, owner_id, profile):
         self.bound_for.append(owner_id)
@@ -553,6 +557,46 @@ async def test_create_binds_declared_integrations_in_the_owners_request() -> Non
     assert controller.bound_for == ["user-a"]
     assert runtime.integration_bindings == {"xai": "xai-key"}
     assert repository.items[runtime.id].integration_bindings == {"xai": "xai-key"}
+
+
+async def test_create_answers_with_the_planned_backend_ref() -> None:
+    # The platform records the resident's workload delegation from the create
+    # response, before the background deploy has made the backend.
+    repository = MemoryResidentRuntimeRepository()
+    controller = MemoryResidentRuntimeController()
+    controller.planned_ref = {"kind": "HelmRelease", "namespace": "skuld", "name": "resident-x"}
+    service = ResidentRuntimeService(repository, _profiles(), [controller])
+
+    runtime = await service.create(_principal(), name="Muninn", profile_id="ravn-openshell")
+
+    assert runtime.observed_state is ResidentObservedState.DEPLOYING
+    assert runtime.backend_ref == controller.planned_ref
+    await asyncio.gather(*tuple(service._deployment_tasks.values()))
+
+
+async def test_reconcile_does_not_deploy_again_while_the_create_deploy_runs() -> None:
+    deployment_started = asyncio.Event()
+    finish_deployment = asyncio.Event()
+
+    class BlockingController(MemoryResidentRuntimeController):
+        async def deploy(self, runtime, profile):
+            self.actions.append("deploy")
+            deployment_started.set()
+            await finish_deployment.wait()
+            return self._observation(runtime)
+
+    repository = MemoryResidentRuntimeRepository()
+    controller = BlockingController()
+    controller.planned_ref = {"kind": "HelmRelease", "namespace": "skuld", "name": "resident-x"}
+    service = ResidentRuntimeService(repository, _profiles(), [controller])
+
+    runtime = await service.create(_principal(), name="Muninn", profile_id="ravn-openshell")
+    await deployment_started.wait()
+    await service.reconcile(runtime.id)
+    finish_deployment.set()
+    await asyncio.gather(*tuple(service._deployment_tasks.values()))
+
+    assert controller.actions == ["deploy"]
 
 
 async def test_create_rejects_an_unbindable_integration_before_recording_anything() -> None:

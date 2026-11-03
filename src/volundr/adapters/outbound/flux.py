@@ -584,6 +584,10 @@ class FluxPodManager(
             return {}
         return {"serviceAccountName": self._resident_release_name(runtime)}
 
+    def planned_backend_ref(self, runtime: ResidentRuntime) -> dict[str, Any]:
+        """The resident's HelmRelease, which names its workload identity, before it exists."""
+        return self._backend_ref(runtime)
+
     def _backend_ref(self, runtime: ResidentRuntime) -> dict[str, Any]:
         release_name = self._resident_release_name(runtime)
         return {

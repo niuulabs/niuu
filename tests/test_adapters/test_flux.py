@@ -2918,6 +2918,36 @@ class TestStatusDetail:
             await pod_manager.status_detail(sample_session)
 
 
+class TestPlannedBackendRef:
+    """The create response names the resident's release before the deploy makes it."""
+
+    async def test_it_is_the_ref_the_deploy_reports(
+        self, pod_manager: FluxPodManager, mock_api
+    ) -> None:
+        runtime = _resident_runtime()
+        planned = pod_manager.planned_backend_ref(runtime)
+        with patch.object(pod_manager, "_get_api", return_value=mock_api):
+            observation = await pod_manager.deploy(runtime, _resident_profile())
+
+        assert {k: v for k, v in observation.backend_ref.items() if k != "platformVersion"} == (
+            planned
+        )
+
+    def test_it_names_the_residents_workload_identity(self, pod_manager: FluxPodManager) -> None:
+        from niuu.adapters.outbound.http_workload_delegations import resident_workload_subject
+
+        runtime = _resident_runtime()
+        pod_manager._resident_platform_base_url = "https://niuu.example.test"
+        resident = {"backend_ref": pod_manager.planned_backend_ref(runtime)}
+
+        assert pod_manager._resident_service_account_values(runtime) == {
+            "serviceAccountName": f"resident-{runtime.id}"
+        }
+        assert resident_workload_subject(resident) == (
+            f"system:serviceaccount:test-ns:resident-{runtime.id}"
+        )
+
+
 class TestResidentCredentials:
     """deployment.credentials: the owner's credentials, injected into the ravn container."""
 

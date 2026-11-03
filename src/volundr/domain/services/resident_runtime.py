@@ -170,6 +170,7 @@ class ResidentRuntimeService:
         deploying = runtime.model_copy(
             update={
                 "observed_state": ResidentObservedState.DEPLOYING,
+                "backend_ref": controller.planned_backend_ref(runtime),
                 "conditions": [
                     ResidentCondition(
                         type="BackendReady",
@@ -190,8 +191,7 @@ class ResidentRuntimeService:
         runtime: ResidentRuntime,
         profile: ResidentDeploymentProfile,
     ) -> None:
-        existing = self._deployment_tasks.get(runtime.id)
-        if existing is not None and not existing.done():
+        if self._deployment_in_flight(runtime.id):
             return
         task = asyncio.create_task(
             self._deploy_background(runtime, profile),
@@ -397,6 +397,10 @@ class ResidentRuntimeService:
         try:
             profile = self._require_profile(runtime.profile_id)
             controller = self._require_controller(profile)
+            if self._deployment_in_flight(runtime.id):
+                # The create carries the planned backend ref, so the record no longer
+                # says "not deployed yet"; reconciling now would deploy it a second time.
+                return runtime
             if self._awaits_deployment(runtime):
                 self._schedule_deployment(runtime, profile)
                 return runtime
@@ -413,6 +417,10 @@ class ResidentRuntimeService:
         if self._awaits_deployment(reconciled):
             self._schedule_deployment(reconciled, profile)
         return reconciled
+
+    def _deployment_in_flight(self, runtime_id: UUID) -> bool:
+        task = self._deployment_tasks.get(runtime_id)
+        return task is not None and not task.done()
 
     @staticmethod
     def _awaits_deployment(runtime: ResidentRuntime) -> bool:
