@@ -426,6 +426,15 @@ none). It is answered where the transcript's card answers it, on the session soc
 the notification; the item is marked read when the session stops waiting. Such an item
 carries no `question`/`ask`.
 
+**Review gates (Forge's system `attention` item).** A workflow gate that waits for a
+person raises the same `attention`/`system` item, projected from its `workflow_gate`
+log frame with dedupe key `workflow-gate:{session}:{gate_id}`. Its `input_request` is
+`{kind: workflow_gate, request_id: <gate id>}`. It is answered on
+`POST /sessions/{session_id}/workflow/gates/{request_id}/resolve` (header
+`x-niuu-workflow-gate-intent: resolve`), not on the session socket, so a client must
+route on `kind`. The gate's decided frame marks the item read and resolves it, wherever
+the decision was made; a session leaving `awaiting_input` does not touch it.
+
 **`notify` schema.** The advertised input schema's root stays a plain object (no
 `allOf`/`if`): Claude Code drops a tool whose root schema has a conditional from its
 catalog while the server stays connected. `ask` → `question: true` is enforced by

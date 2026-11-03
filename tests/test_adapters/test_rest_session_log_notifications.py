@@ -245,3 +245,38 @@ async def test_projection_defect_fails_the_append_and_the_retry_projects():
     assert client.post(url, json=batch, headers=HEADERS).status_code == 201
     [projected] = store.notifications.values()
     assert projected.title == "Bug"
+
+
+async def test_a_workflow_gate_frame_raises_and_settles_through_the_log_append():
+    client, _, store, broadcaster, sessions = _app(reply_ready=False)
+    session = await _session(sessions)
+    url = f"/api/v1/forge/sessions/{session.id}/log"
+    gate = {
+        "id": "review:activation:1",
+        "node_id": "review",
+        "activation_id": "activation",
+        "label": "Review",
+        "status": "pending",
+        "mode": "human_approval",
+        "pending_behavior": "help_needed",
+        "summary": "Ready for review.",
+    }
+
+    def frame(seq: int, **state) -> dict:
+        payload = {"type": "workflow_gate", "gate": {**gate, **state}}
+        return {"seq": seq, "kind": "workflow_gate", "payload": payload}
+
+    opened = {"entries": [frame(1)]}
+    assert client.post(url, json=opened, headers=HEADERS).status_code == 201
+    assert client.post(url, json=opened, headers=HEADERS).status_code == 201  # producer retry
+
+    [item] = store.notifications.values()
+    assert item.input_request == {"kind": "workflow_gate", "request_id": gate["id"]}
+    assert not item.resolved
+
+    decided = {"entries": [frame(2, status="approved", summary="Review approved by Ada.")]}
+    assert client.post(url, json=decided, headers=HEADERS).status_code == 201
+
+    [settled] = store.notifications.values()
+    assert settled.resolved
+    assert [e.data["resolved"] for e in _notification_events(broadcaster)] == [False, True]

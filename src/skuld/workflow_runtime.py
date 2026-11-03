@@ -63,10 +63,6 @@ class WorkflowTerminalNode:
     require_git_push: bool = False
 
 
-#: The one gate mode an agent may answer. Every other mode waits for a person.
-AGENT_ANSWERABLE_GATE_MODE = "automated_approval"
-
-
 @dataclass(frozen=True)
 class WorkflowGateNode:
     node_id: str
@@ -83,8 +79,6 @@ class WorkflowGateNode:
     artifact: dict[str, str] | None = None
 
 
-#: Durable log frame carrying a gate's state, which restores it after a restart.
-WORKFLOW_GATE_FRAME = "workflow_gate"
 #: Durable log frame for an agent from another session joining or leaving the room.
 ROOM_MEMBER_FRAME = "room_member"
 

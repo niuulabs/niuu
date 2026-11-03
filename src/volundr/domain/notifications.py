@@ -198,6 +198,9 @@ class Notification(BaseModel):
         question card answers it (``ask_user_answer`` / the permission response on the
         session socket), never through the notification. ``request_id`` is null when
         the runtime reported none. Agent notices carry ``question``/``ask`` instead.
+
+        ``kind: workflow_gate`` is a review: ``request_id`` is the gate's id, decided
+        on the session's ``workflow/gates/{request_id}/resolve`` route.
         """
         if (
             self.kind is not NotificationKind.ATTENTION

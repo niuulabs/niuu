@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from niuu.domain.transcript_reducer import reduce_frames
+from niuu.domain.workflow_gate import WORKFLOW_GATE_FRAME
 from skuld.history_hydration import _HistoryFrame
-from skuld.workflow_runtime import WORKFLOW_GATE_FRAME, WorkflowGateNode, WorkflowGateState
+from skuld.workflow_runtime import WorkflowGateNode, WorkflowGateState
 from tests.test_skuld.test_broker_review_regressions import _broker
 
 
