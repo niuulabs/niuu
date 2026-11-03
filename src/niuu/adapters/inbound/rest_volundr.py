@@ -2618,6 +2618,10 @@ def create_volundr_router(
             # Forwarded reads: true only when the node behind this facade serves them.
             "voice_conversation": node_capabilities.get("voice_conversation") is True,
             "summary_sessions": node_capabilities.get("summary_sessions") is True,
+            # Typed push registrations (Live Activity, widget, voip): POST /devices sends
+            # them on to the Guild's push gateway node, and only that node says true.
+            "push_installs": node_capabilities.get("push_installs") is True,
+            "push_voip": node_capabilities.get("push_voip") is True,
         }
         return flags
 
