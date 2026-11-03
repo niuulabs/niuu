@@ -3009,6 +3009,32 @@ class TestResidentCredentials:
             "tenant_id": "tenant-a",
         }
 
+    async def test_the_agents_service_account_token_mounts_into_the_ravn_container(
+        self, pod_manager: FluxPodManager, mock_api
+    ) -> None:
+        from volundr.domain.models import PodSpecAdditions
+
+        injection = self._wire(pod_manager)
+        volume = {"name": "openbao-agent-sa-token", "projected": {"sources": []}}
+        mount = {"name": "openbao-agent-sa-token", "mountPath": "/var/run/secrets/x"}
+        injection.workload_pod_spec_additions.return_value = PodSpecAdditions(
+            annotations={"vault.hashicorp.com/role": "r"},
+            volumes=(volume,),
+            volume_mounts=(mount,),
+        )
+        profile = self._profile(self._DECLARED)
+        profile.deployment["values"]["extraVolumes"] = [{"name": "operator", "emptyDir": {}}]
+        with patch.object(pod_manager, "_get_api", return_value=mock_api):
+            await pod_manager.deploy(_resident_runtime(), profile)
+
+        values = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]["spec"]["values"]
+        assert values["extraVolumes"] == [{"name": "operator", "emptyDir": {}}, volume]
+        assert values["resident"]["extraVolumeMounts"] == [mount]
+        assert "extraVolumeMounts" not in values
+        assert profile.deployment["values"]["extraVolumes"] == [
+            {"name": "operator", "emptyDir": {}}
+        ]
+
     async def test_a_named_credential_needs_no_integration(
         self, pod_manager: FluxPodManager, mock_api
     ) -> None:

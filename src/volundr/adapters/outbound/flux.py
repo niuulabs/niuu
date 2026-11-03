@@ -36,6 +36,7 @@ from volundr.domain.models import (
     LABEL_MANAGED_BY,
     LABEL_PVC_TYPE,
     CredentialMapping,
+    PodSpecAdditions,
     ResidentBackend,
     ResidentCondition,
     ResidentConditionStatus,
@@ -807,12 +808,12 @@ class FluxPodManager(
         self._integrations = integrations
         self._credential_store = credential_store
 
-    async def _resident_credential_annotations(
+    async def _resident_credential_additions(
         self,
         runtime: ResidentRuntime,
         profile: ResidentDeploymentProfile,
         bound: Mapping[str, str],
-    ) -> tuple[dict[str, str], dict[str, str]]:
+    ) -> tuple[PodSpecAdditions, dict[str, str]]:
         """Inject the owner's credentials a profile declares, bound to the resident's own SA.
 
         ``deployment.credentials`` lists ``{integration: <slug>}`` (the owner's one enabled
@@ -822,13 +823,14 @@ class FluxPodManager(
 
         An integration already in ``bound`` (bound at create, or recorded by the
         release) keeps that credential; any other is read from the owner's
-        connections, which needs the owner's request bearer. Returns the annotations
-        and every integration's credential, for the release to record
+        connections, which needs the owner's request bearer. Returns the pod
+        additions (annotations, and the ServiceAccount token the agent authenticates
+        with) and every integration's credential, for the release to record
         (``ANNOTATION_RESIDENT_INTEGRATIONS``).
         """
         declared = profile.deployment.get("credentials") or []
         if not declared:
-            return {}, {}
+            return PodSpecAdditions(), {}
         if not isinstance(declared, list):
             raise ValueError(f"Resident profile {profile.id} deployment.credentials must be a list")
         injection = self._secret_injection
@@ -860,7 +862,7 @@ class FluxPodManager(
             inject_containers=RESIDENT_CREDENTIAL_CONTAINERS,
             tenant_id=runtime.tenant_id,
         )
-        return dict(additions.annotations), integrations
+        return additions, integrations
 
     async def _resident_credential_mapping(
         self,
@@ -1363,11 +1365,20 @@ class FluxPodManager(
     ) -> RenderedResident:
         """The resident's values; ``bound_integrations`` are those its release recorded."""
         values = self._resident_values(runtime, profile, await self._resolve_realm_slug(runtime))
-        annotations, integrations = await self._resident_credential_annotations(
+        additions, integrations = await self._resident_credential_additions(
             runtime, profile, bound_integrations or {}
         )
-        if annotations:
-            values.setdefault("podAnnotations", {}).update(annotations)
+        if additions.annotations:
+            values.setdefault("podAnnotations", {}).update(additions.annotations)
+        if additions.volumes:
+            values["extraVolumes"] = [*values.get("extraVolumes", []), *additions.volumes]
+        if additions.volume_mounts:
+            # Into the ravn container, which the credentials are injected into.
+            resident = values.setdefault("resident", {})
+            resident["extraVolumeMounts"] = [
+                *resident.get("extraVolumeMounts", []),
+                *additions.volume_mounts,
+            ]
         return RenderedResident(values=values, integrations=integrations)
 
     def _platform_version(self, values: dict[str, Any]) -> str:

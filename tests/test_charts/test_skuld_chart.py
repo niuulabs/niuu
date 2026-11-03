@@ -1579,6 +1579,64 @@ def test_forge_controls_render_into_valid_skuld_configuration():
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestResidentExtraVolumeMounts:
+    """resident.extraVolumeMounts reach the ravn container only: the OpenBao agent's
+    ServiceAccount token, which a resident's own ServiceAccount does not automount."""
+
+    def _deployment(self, tmp_path: Path) -> dict:
+        values = {
+            "resident": {
+                "enabled": True,
+                "persona": "sidekick",
+                "extraVolumeMounts": [
+                    {
+                        "name": "openbao-agent-sa-token",
+                        "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                        "readOnly": True,
+                    }
+                ],
+            },
+            "serviceAccountName": "resident-abc123",
+            "extraVolumes": [
+                {
+                    "name": "openbao-agent-sa-token",
+                    "projected": {
+                        "sources": [
+                            {
+                                "serviceAccountToken": {
+                                    "path": "token",
+                                    "audience": "https://kubernetes.default.svc.cluster.local",
+                                    "expirationSeconds": 3600,
+                                }
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+        rendered = _render_skuld_chart(tmp_path, values)
+        return next(
+            doc for doc in yaml.safe_load_all(rendered) if doc and doc.get("kind") == "Deployment"
+        )
+
+    def test_the_token_mounts_into_the_ravn_container_only(self, tmp_path):
+        pod = self._deployment(tmp_path)["spec"]["template"]["spec"]
+        mounts = {
+            container["name"]: {mount["mountPath"] for mount in container.get("volumeMounts", [])}
+            for container in pod["containers"]
+        }
+        token_dir = "/var/run/secrets/kubernetes.io/serviceaccount"
+        assert token_dir in mounts["ravn"]
+        assert [name for name, paths in mounts.items() if token_dir in paths] == ["ravn"]
+
+    def test_the_projected_token_volume_renders(self, tmp_path):
+        pod = self._deployment(tmp_path)["spec"]["template"]["spec"]
+        [volume] = [v for v in pod["volumes"] if v["name"] == "openbao-agent-sa-token"]
+        token = volume["projected"]["sources"][0]["serviceAccountToken"]
+        assert token["audience"] == "https://kubernetes.default.svc.cluster.local"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
 class TestResidentServiceAccount:
     """The resident release's own ServiceAccount — gives its projected
     workload-identity token a subject unique to it (system:serviceaccount:

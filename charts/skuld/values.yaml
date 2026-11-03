@@ -781,6 +781,10 @@ resident:
   # -- Ravn wakefulness trigger configuration. Passed through to ravn.yaml.
   wakefulness:
     enabled: false
+  # -- Extra volume mounts added to the ravn container (their volumes go in
+  # extraVolumes). Völundr renders the OpenBao agent's ServiceAccount token here
+  # when the resident's profile declares deployment.credentials.
+  extraVolumeMounts: []
   workloadIdentity:
     # -- Audience for the projected serviceAccountToken
     audience: "volundr-api"
