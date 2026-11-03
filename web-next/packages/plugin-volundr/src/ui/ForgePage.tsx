@@ -8,6 +8,7 @@ import { useSessionList } from './hooks/useSessionStore';
 import { FORGE_STANDARDS, type ForgeStandardId } from './quickLaunchModel';
 import { LaunchWizard } from './LaunchWizard';
 import { money, tokens } from './utils/formatters';
+import { compactSourceParts, looksLikeRepoLabel } from './sessions/sessionLabels';
 import type { Cluster, ClusterKind } from '../domain/cluster';
 import type { Session, SessionState } from '../domain/session';
 
@@ -51,19 +52,6 @@ const FORGE_CLUSTER_DISPLAY: Record<string, { name: string; realm: string; kind?
   'cl-glitnir': { name: 'Glitnir', realm: 'midgard', kind: 'observ' },
   'cl-jarnvidr': { name: 'Járnviðr', realm: 'jotunheim', kind: 'media' },
 };
-
-const SHOWCASE_SESSION_IDS = new Set([
-  'niuu-integration-tests',
-  'laptop-volundr-local',
-  'mimir-bge-reindex',
-  'aider-css-migration',
-  'ravn-triggers-ui',
-  'observatory-canvas-perf',
-  'ds-7',
-  'ds-8',
-  'ds-9',
-  'ds-4',
-]);
 
 type ForgeClusterView = Cluster & {
   displayName: string;
@@ -212,16 +200,18 @@ function sessionDotState(session: Session) {
   return 'processing';
 }
 
-function statusLabel(session: Session) {
-  if (session.state === 'provisioning') return session.preview ?? 'pulling image…';
-  if (session.state === 'requested') return 'requested';
-  return session.preview ?? session.events[session.events.length - 1]?.body ?? 'idle';
+/** A repository preview reads as "niuu · dev", not as the clone URL. */
+function previewLabel(preview: string | undefined) {
+  if (!preview || !looksLikeRepoLabel(preview)) return preview;
+  const { label, branch } = compactSourceParts(preview);
+  return branch ? `${label} · ${branch}` : label;
 }
 
-function average(values: number[], count: number) {
-  if (values.length === 0) return 0;
-  const slice = values.slice(-count);
-  return slice.reduce((sum, value) => sum + value, 0) / slice.length;
+function statusLabel(session: Session) {
+  const preview = previewLabel(session.preview);
+  if (session.state === 'provisioning') return preview ?? 'pulling image…';
+  if (session.state === 'requested') return 'requested';
+  return preview ?? session.events[session.events.length - 1]?.body ?? 'idle';
 }
 
 function clusterAccentClass(kind: ClusterKind) {
@@ -267,7 +257,6 @@ function InflightRow({
     session.resources.memLimitMi > 0
       ? session.resources.memUsedMi / session.resources.memLimitMi
       : 0;
-  const gpuPct = session.resources.gpuCount > 0 ? 0.84 : 0;
   const tokenTotal = (session.tokensIn ?? 0) + (session.tokensOut ?? 0);
 
   return (
@@ -310,10 +299,14 @@ function InflightRow({
           <>
             <MiniBar value={cpuPct} label="cpu" />
             <MiniBar value={memPct} label="mem" />
-            {session.resources.gpuCount > 0 ? <MiniBar value={gpuPct} label="gpu" /> : null}
+            {session.resources.gpuCount > 0 ? (
+              <span className="vol-forge__gpu-count" data-testid="inflight-gpu">
+                {session.resources.gpuCount} gpu
+              </span>
+            ) : null}
           </>
         ) : (
-          <div className="vol-forge__booting-copy">{session.preview ?? 'bootstrapping pod…'}</div>
+          <div className="vol-forge__booting-copy">{previewLabel(session.preview) ?? 'bootstrapping pod…'}</div>
         )}
       </div>
 
@@ -419,8 +412,7 @@ function QuickLaunchCard({
       <div className="vol-forge__launch-name">{spec.name}</div>
       <div className="vol-forge__launch-desc">{spec.harness}</div>
       <div className="vol-forge__launch-foot">
-        <span>Local mount · optional resources</span>
-        <span>{spec.models[0].name}</span>
+        <span>{spec.models.map((model) => model.name).join(' · ')}</span>
       </div>
     </button>
   );
@@ -458,11 +450,7 @@ export function ForgePage() {
   const [launchOpen, setLaunchOpen] = useState(false);
   const [launchSpecRef, setLaunchSpecRef] = useState<ForgeStandardId>('claude');
 
-  const allSessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data]);
-  const dashboardSessions = useMemo(() => {
-    const showcase = allSessions.filter((session) => SHOWCASE_SESSION_IDS.has(session.id));
-    return showcase.length >= 6 ? showcase : allSessions;
-  }, [allSessions]);
+  const dashboardSessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data]);
 
   const activeSessions = useMemo(
     () =>
@@ -549,11 +537,8 @@ export function ForgePage() {
     [dashboardSessions],
   );
 
-  const tokenSparkline = stats?.sparklines?.tokensToday ?? [];
   const activePodSparkline = stats?.sparklines?.activePods ?? [];
   const sessionsTodaySparkline = stats?.sparklines?.sessionsToday ?? [];
-  const tokenRate = tokenSparkline.length > 0 ? Math.round(average(tokenSparkline, 5) / 100) : 0;
-  const projectedCost = stats ? Math.round(stats.costToday * 1.07) : undefined;
   const connectionStates = [
     ...overview.states,
     ...sessionsQuery.sources
@@ -625,14 +610,12 @@ export function ForgePage() {
           <MetricTile
             label="TOKENS TODAY"
             value={stats ? tokens(stats.tokensToday) : '—'}
-            subline={stats ? `${tokenRate}/s · 5m avg` : metricsPlaceholder}
+            subline={stats ? 'since 00:00 UTC' : metricsPlaceholder}
           />
           <MetricTile
             label="COST TODAY"
             value={stats ? `$${stats.costToday.toFixed(2)}` : '—'}
-            subline={
-              projectedCost !== undefined ? `$${projectedCost} projected 24h` : metricsPlaceholder
-            }
+            subline={stats ? 'since 00:00 UTC' : metricsPlaceholder}
           />
           <MetricTile
             label="SESSIONS TODAY"
@@ -745,7 +728,7 @@ export function ForgePage() {
             <header className="vol-forge__panel-head">
               <div className="vol-forge__panel-title">
                 <h2>Recent across fleet</h2>
-                <span>last 30m</span>
+                <span>latest</span>
               </div>
             </header>
 
@@ -778,10 +761,23 @@ export function ForgePage() {
                         <span>{session.personaName}</span>
                       </div>
                       <div className="vol-forge__error-message">
-                        {session.preview ?? 'waiting for your response'}
+                        {previewLabel(session.preview) ?? 'waiting for your response'}
                       </div>
                     </div>
                     <LifecycleBadge state="awaiting_input" />
+                    <button
+                      type="button"
+                      className="vol-forge__retry-btn"
+                      data-testid="attention-open"
+                      onClick={() =>
+                        void navigate({
+                          to: '/volundr/sessions/$sessionId',
+                          params: { sessionId: session.id },
+                        })
+                      }
+                    >
+                      answer
+                    </button>
                   </div>
                 ))}
               </div>

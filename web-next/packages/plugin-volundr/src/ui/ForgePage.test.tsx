@@ -14,8 +14,9 @@ import type { IClusterAdapter } from '../ports/IClusterAdapter';
 import type { Cluster } from '../domain/cluster';
 import type { Session } from '../domain/session';
 
+const navigate = vi.hoisted(() => vi.fn());
 vi.mock('@tanstack/react-router', () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => navigate,
 }));
 
 function wrap(
@@ -295,6 +296,58 @@ describe('ForgePage', () => {
     expect(within(strip).getByText('Needs your input')).toBeInTheDocument();
     expect(within(strip).getByText('Which database should we use?')).toBeInTheDocument();
     expect(within(strip).getByText('needs you')).toBeInTheDocument();
+    fireEvent.click(within(strip).getByTestId('attention-open'));
+    expect(navigate).toHaveBeenCalledWith({
+      to: '/volundr/sessions/$sessionId',
+      params: { sessionId: 'sess-blocked' },
+    });
+  });
+
+  it('shows a repository preview as the repo and branch, and a GPU by count', async () => {
+    const session: Session = {
+      id: 'sess-repo',
+      ravnId: 'r-repo',
+      name: 'tracker-delivery',
+      personaName: 'dev',
+      templateId: 'tpl-default',
+      clusterId: 'cl-valhalla',
+      state: 'running',
+      startedAt: new Date(Date.now() - 3_600_000).toISOString(),
+      lastActivityAt: new Date(Date.now() - 5_000).toISOString(),
+      preview: 'https://github.com/niuulabs/niuu.git#regin',
+      resources: {
+        cpuRequest: 1,
+        cpuLimit: 2,
+        cpuUsed: 0.3,
+        memRequestMi: 512,
+        memLimitMi: 1_024,
+        memUsedMi: 200,
+        gpuCount: 1,
+      },
+      env: {},
+      events: [],
+    };
+    const store = createMockSessionStore();
+    const overriddenStore: ISessionStore = {
+      ...store,
+      listSessions: async () => [session],
+      subscribe: (cb) => {
+        cb([session]);
+        return () => {};
+      },
+    };
+
+    wrap(createMockVolundrService(), createMockClusterAdapter(), overriddenStore);
+    const preview = await screen.findByTestId('inflight-preview');
+    expect(preview).toHaveTextContent('niuu · regin');
+    expect(screen.getByTestId('inflight-gpu')).toHaveTextContent('1 gpu');
+  });
+
+  it('reports token and cost totals for the UTC day without an invented rate', async () => {
+    wrap();
+    await waitFor(() => expect(screen.getAllByText('since 00:00 UTC')).toHaveLength(2));
+    expect(screen.queryByText(/projected/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/5m avg/)).not.toBeInTheDocument();
   });
 
   it('renders token and cost stats on active pod cards', async () => {
