@@ -252,3 +252,25 @@
   .forge-resource-modes {
   border-color: var(--color-border-quiet);
 }
+
+.forge-resource-presented {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.forge-resource-presented p {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
+.forge-resource-presented ul {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}

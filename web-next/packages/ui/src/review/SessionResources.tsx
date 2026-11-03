@@ -15,7 +15,7 @@ import { ResourcePreviewContent, loadPreview, type LoadedPreview } from './Resou
 const NO_PRESENTED: readonly PresentedFileRef[] = [];
 
 export const STOPPED_SESSION_FILES =
-  'This session has stopped, so the files in its workspace and home are gone. Files it presented still open from their cards.';
+  'This session has stopped, so the files in its workspace and home are gone.';
 
 export function SessionResources({
   sessionId,
@@ -158,11 +158,34 @@ export function SessionResources({
           {error && (
             <div className="forge-resource-empty">
               <p role="alert">{error}</p>
-              {error === STOPPED_SESSION_FILES ? null : (
+              {error !== STOPPED_SESSION_FILES ? (
                 <button type="button" onClick={() => selected && open({ ...selected })}>
                   Try again
                 </button>
-              )}
+              ) : presented.length > 0 ? (
+                <div className="forge-resource-presented" aria-label="Files it presented">
+                  <p>Forge kept the files it presented:</p>
+                  <ul>
+                    {presented.map((file) => (
+                      <li key={file.fileId}>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            open({
+                              kind: 'presented',
+                              path: file.fileId,
+                              name: file.name,
+                              ...(file.mime ? { mime: file.mime } : {}),
+                            })
+                          }
+                        >
+                          {file.name}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
             </div>
           )}
           {selected?.kind !== 'external' &&

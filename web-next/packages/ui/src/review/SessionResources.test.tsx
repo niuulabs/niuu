@@ -263,6 +263,25 @@ describe('links to files a stopped or presenting session wrote', () => {
     expect(filesystem.downloadFile).not.toHaveBeenCalled();
   });
 
+  it("offers the stopped session's stored copies when its own file is gone", async () => {
+    const filesystem = render2({
+      markdown: '[plan](plan.md)',
+      filesReadable: false,
+      presented: [{ fileId: 'pf_1', name: 'Implementation Plan', mime: 'text/markdown' }],
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'plan' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Implementation Plan' }));
+
+    await waitFor(() =>
+      expect(filesystem.downloadPresentedFile).toHaveBeenCalledWith(
+        'session-1',
+        'pf_1',
+        expect.any(AbortSignal),
+      ),
+    );
+  });
+
   it('reads a home file from a running session', async () => {
     const filesystem = render2({ markdown: '[report](~/out/report.txt)' });
 
