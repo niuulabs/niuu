@@ -1794,9 +1794,10 @@ class Broker(
             await self._emit_peer_outcome_pipeline_event(peer_id, frame)
             self._record_last_flock_outcome(peer_label, frame)
         elif event_type == "help_needed":
-            if not self._record_pending_help_request(peer_id, frame):
+            request = self._record_pending_help_request(peer_id, frame)
+            if request is None:
                 return
-            await self._report_peer_help_needed_activity(peer_id, frame)
+            await self._report_peer_help_needed_activity(request, frame)
             await self._emit_peer_help_needed_sleipnir_event(peer_id, frame)
         elif event_type == "error":
             if self._flock_activity is not None and participant is not None:
@@ -2246,17 +2247,22 @@ class Broker(
         )
         return [asdict(state) for state in states]
 
-    def _record_pending_help_request(self, peer_id: str, frame: dict[str, Any]) -> bool:
-        """Track a peer's help_needed question so a remote caller can answer it."""
+    def _record_pending_help_request(
+        self, peer_id: str, frame: dict[str, Any]
+    ) -> PendingHelpRequest | None:
+        """Track a peer's help_needed question so a remote caller can answer it.
+
+        Returns the new request, or ``None`` for a malformed or repeated frame.
+        """
         payload = self._build_peer_help_needed_payload(peer_id, frame)
         if payload is None:
-            return False
+            return None
         source_event_id = str(payload.get("source_event_id") or "")
         if source_event_id and any(
             request.peer_id == peer_id and request.source_event_id == source_event_id
             for request in self._pending_help_requests.values()
         ):
-            return False
+            return None
         request = PendingHelpRequest(
             id=uuid.uuid4().hex[:12],
             peer_id=peer_id,
@@ -2280,7 +2286,7 @@ class Broker(
             request.persona,
             request.summary[:200],
         )
-        return True
+        return request
 
     def list_help_requests(self) -> list[dict[str, Any]]:
         """Return help requests ordered from newest to oldest."""
@@ -2291,8 +2297,8 @@ class Broker(
         )
         return [asdict(request) for request in ordered]
 
-    @staticmethod
-    def _complete_help_request(
+    async def _complete_help_request(
+        self,
         request: PendingHelpRequest,
         answer: str,
         source: str,
@@ -2301,8 +2307,9 @@ class Broker(
         request.answered_at = datetime.now(UTC).isoformat()
         request.answer = answer
         request.answer_source = source
+        await self._exit_attention(request.id)
 
-    def _mark_pending_help_answered(self, peer_id: str, answer: str, source: str) -> None:
+    async def _mark_pending_help_answered(self, peer_id: str, answer: str, source: str) -> None:
         candidates = [
             request
             for request in self._pending_help_requests.values()
@@ -2311,7 +2318,7 @@ class Broker(
         if not candidates:
             return
         request = max(candidates, key=lambda item: item.requested_at)
-        self._complete_help_request(request, answer, source)
+        await self._complete_help_request(request, answer, source)
 
     async def answer_help_request(
         self,
@@ -2339,7 +2346,7 @@ class Broker(
             source=source,
             metadata={"help_request_id": request.id},
         )
-        self._complete_help_request(request, answer, source)
+        await self._complete_help_request(request, answer, source)
         logger.info(
             "Help request %s answered by %s -> peer=%s message=%s",
             request.id,
@@ -2497,17 +2504,31 @@ class Broker(
         )
         if state.pending_behavior == "help_needed":
             await self._emit_workflow_gate_help_needed_sleipnir_event(state)
-            await self._report_activity_state(
-                "idle",
-                extra_metadata={
-                    "help_needed": self._build_workflow_gate_help_needed_payload(state)
-                },
-            )
+            await self._enter_gate_attention(state)
             await self._tell_joined_sessions(
                 f"Workflow gate opened: {state.label or state.node_id} in session "
                 f"{self.session_id} is waiting for a person's decision. {state.summary}".strip()
             )
         return state
+
+    async def _enter_gate_attention(self, state: WorkflowGateState) -> None:
+        """A gate waiting for a person blocks the session on that person.
+
+        It is ``awaiting_input``, not ``idle``: Forge counts it under "needs
+        you", notifies, and keeps the session alive while it waits.
+        """
+        await self._enter_attention(
+            state.id,
+            "confirmation",
+            prompt=f"{state.label or state.node_id}: {state.summary}".strip(": "),
+            extra_metadata={"help_needed": self._build_workflow_gate_help_needed_payload(state)},
+        )
+
+    async def _reenter_restored_gate_attention(self) -> None:
+        """After a restart, a gate still pending is still waiting on its person."""
+        for state in self._workflow_gate_states.values():
+            if state.status == "pending" and state.pending_behavior == "help_needed":
+                await self._enter_gate_attention(state)
 
     async def _tell_joined_sessions(self, content: str) -> None:
         """Tell agents that joined this room from another session what happened."""
@@ -2593,6 +2614,7 @@ class Broker(
 
         now = datetime.now(UTC)
         state.status = "approved" if normalized == "APPROVE" else "changes_requested"
+        await self._exit_attention(state.id)
         state.updated_at = now.isoformat()
         state.decision = normalized
         state.notes = notes.strip()
@@ -2659,13 +2681,19 @@ class Broker(
 
     async def _report_peer_help_needed_activity(
         self,
-        peer_id: str,
+        request: PendingHelpRequest,
         frame: dict[str, Any],
     ) -> None:
-        payload = self._build_peer_help_needed_payload(peer_id, frame)
+        """A peer asking a person blocks the session on that person until answered."""
+        payload = self._build_peer_help_needed_payload(request.peer_id, frame)
         if payload is None:
             return
-        await self._report_activity_state("idle", extra_metadata={"help_needed": payload})
+        await self._enter_attention(
+            request.id,
+            "question",
+            prompt=request.summary,
+            extra_metadata={"help_needed": payload},
+        )
 
     async def _maybe_activate_workflow_gate(
         self,
@@ -4810,7 +4838,7 @@ class Broker(
                     source="telegram",
                     metadata=metadata,
                 )
-                self._mark_pending_help_answered(target_peer_id, content, "telegram")
+                await self._mark_pending_help_answered(target_peer_id, content, "telegram")
                 telemetry.count(
                     "skuld.operator.replies",
                     attributes={"source": "telegram", "outcome": "routed"},
@@ -5795,6 +5823,7 @@ class Broker(
         self._save_conversation_history()
         logger.info("Hydrated %d conversation turns from durable history", len(hydrated))
         await self._rejoin_room_members()
+        await self._reenter_restored_gate_attention()
         if self._restored_workflow_terminal_completion is not None:
             peer_id, frame = self._restored_workflow_terminal_completion
             await self._maybe_report_flock_completion(peer_id, frame)

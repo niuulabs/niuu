@@ -7704,6 +7704,38 @@ class TestPendingHelpRequests:
         assert answered["answer_source"] == "a2a"
 
     @pytest.mark.asyncio
+    async def test_a_peers_question_blocks_the_session_on_a_person_until_answered(
+        self, settings, tmp_path
+    ):
+        broker_under_test = self._broker(settings, tmp_path)
+        reported: list[tuple[str, dict | None]] = []
+
+        async def _report(state, *, extra_metadata=None):
+            broker_under_test._activity_state = state
+            reported.append((state, extra_metadata))
+            return True
+
+        broker_under_test._report_activity_state = _report
+        broker_under_test.handle_directed_room_message = AsyncMock(return_value="msg-1")
+
+        await broker_under_test._observe_room_peer_event(
+            "flock-specification-framer", "help_needed", dict(self._FRAME)
+        )
+        request_id = broker_under_test.list_help_requests()[0]["id"]
+
+        state, metadata = reported[-1]
+        assert state == "awaiting_input"
+        assert metadata["kind"] == "question"
+        assert metadata["request_id"] == request_id
+        assert metadata["help_needed"]["summary"] == (
+            "Which namespaces are in scope for the PVC summary?"
+        )
+
+        await broker_under_test.answer_help_request(request_id, "All namespaces.")
+
+        assert reported[-1] == ("active", None)
+
+    @pytest.mark.asyncio
     async def test_answer_marks_requested_item_when_peer_has_multiple_questions(
         self, settings, tmp_path
     ):

@@ -275,16 +275,19 @@ class ActivityReportingMixin:
         *,
         prompt: str = "",
         options: list | None = None,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> None:
         """Mark the session blocked on the user and report awaiting_input.
 
         ``kind`` is one of ``question`` | ``confirmation`` | ``permission``.
         The metadata travels to Volundr, which (re-)emits the high-urgency
         needs-input event a notification / push fan-out reacts to.
+        ``extra_metadata`` rides along for consumers that key on it (Ting reads
+        ``help_needed`` from workflow gates and peers' questions).
         """
         if request_id:
             self._pending_attention[request_id] = kind
-        extra: dict[str, Any] = {"kind": kind, "request_id": request_id}
+        extra: dict[str, Any] = {**(extra_metadata or {}), "kind": kind, "request_id": request_id}
         if prompt:
             extra["prompt"] = prompt
         if options is not None:
