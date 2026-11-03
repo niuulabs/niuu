@@ -2606,6 +2606,9 @@ def create_volundr_router(
         # existing Bifrost model fallback.
         node_capabilities = flags.get("capabilities")
         node_capabilities = node_capabilities if isinstance(node_capabilities, dict) else {}
+        push_capabilities = await _push_gateway_capabilities(
+            request, principal, instance, node_capabilities
+        )
         flags["capabilities"] = {
             "models": False,
             "chronicles": False,
@@ -2619,11 +2622,49 @@ def create_volundr_router(
             "voice_conversation": node_capabilities.get("voice_conversation") is True,
             "summary_sessions": node_capabilities.get("summary_sessions") is True,
             # Typed push registrations (Live Activity, widget, voip): POST /devices sends
-            # them on to the Guild's push gateway node, and only that node says true.
-            "push_installs": node_capabilities.get("push_installs") is True,
-            "push_voip": node_capabilities.get("push_voip") is True,
+            # them on to the Guild's push gateway node, so its flags are the ones that hold.
+            "push_installs": push_capabilities.get("push_installs") is True,
+            "push_voip": push_capabilities.get("push_voip") is True,
         }
         return flags
+
+    async def _push_gateway_capabilities(
+        request: Request,
+        principal: Principal,
+        read: RegisteredInstance,
+        read_capabilities: dict[str, Any],
+    ) -> dict[str, Any]:
+        """The capabilities of the node ``POST /devices`` sends typed tokens to: the one
+        the registry marks as the Guild's push gateway. None (or several): no typed push."""
+        gateways = [
+            instance
+            for instance in await _visible_instances(service, principal)
+            if (instance.config or {}).get(PUSH_GATEWAY_CONFIG_KEY) is True
+        ]
+        if len(gateways) != 1:
+            return {}
+        [gateway] = gateways
+        if gateway.id == read.id:
+            return read_capabilities
+        try:
+            response = await _request_remote(
+                gateway,
+                request,
+                method="GET",
+                path="/feature-flags",
+                embedded_app=embedded_forge_app,
+                timeout=10.0,
+            )
+        except (HTTPException, httpx.HTTPError):
+            return {}
+        if response.status_code >= status.HTTP_400_BAD_REQUEST:
+            return {}
+        try:
+            payload = response.json()
+        except ValueError:
+            return {}
+        capabilities = payload.get("capabilities") if isinstance(payload, dict) else None
+        return capabilities if isinstance(capabilities, dict) else {}
 
     # -- Guild discovery -------------------------------------------------------
 
