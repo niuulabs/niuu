@@ -1,5 +1,6 @@
 """Named knowledge services deployed through the cluster's Flux controller."""
 
+import asyncio
 import base64
 import copy
 import hashlib
@@ -70,16 +71,20 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         # settings, same contract as charts/gbrain/values.yaml's `config`.
         self.gbrain_config = gbrain_config or {}
         self._client = None
+        self._client_lock = asyncio.Lock()
         self._mount_ports = {}
 
     async def _get_api(self):
         from kubernetes_asyncio import client
 
-        if self._client is None:
-            self._client = await create_flux_api_client(
-                in_cluster=self.in_cluster,
-                context=self.context,
-            )
+        # Reads are issued concurrently, so the first of them must not race
+        # another into building (and leaking) a second client.
+        async with self._client_lock:
+            if self._client is None:
+                self._client = await create_flux_api_client(
+                    in_cluster=self.in_cluster,
+                    context=self.context,
+                )
         return client.CustomObjectsApi(self._client)
 
     async def close(self) -> None:
@@ -165,9 +170,14 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         from ravn.adapters.mimir.http import HttpMimirAdapter
         from ravn.domain.mimir import MimirAuth
 
-        status = await self.list_deployments(tenant_id=tenant_id)
-        for name in self.global_instances:
-            obj = await self._get_helmrelease(name)
+        # Runs on every Mímir request, so its Kubernetes reads are issued
+        # together rather than one after another (two per ready instance plus
+        # one per global instance).
+        status, global_objects = await asyncio.gather(
+            self.list_deployments(tenant_id=tenant_id),
+            asyncio.gather(*(self._get_helmrelease(name) for name in self.global_instances)),
+        )
+        for name, obj in zip(self.global_instances, global_objects, strict=True):
             if obj is None:
                 raise ValueError(f"Configured global knowledge instance {name} does not exist")
             annotations = obj.get("metadata", {}).get("annotations", {})
@@ -185,10 +195,8 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
                 )
             status["releases"].append(view)
         core = client.CoreV1Api(self._client)
-        mounts = []
-        for release in status["releases"]:
-            if not release["ready"]:
-                continue
+
+        async def mount_for(release: dict[str, Any]) -> dict[str, Any]:
             name = release["release_name"]
             services = await core.list_namespaced_service(
                 self.namespace, label_selector=f"app.kubernetes.io/instance={name}"
@@ -227,21 +235,24 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
                     base_url=url + "/api/v1",
                     auth=MimirAuth(type="bearer", token=authorization.removeprefix("Bearer ")),
                 )
-            mounts.append(
-                {
-                    "name": release["name"],
-                    "tenant_id": tenant_id,
-                    "access_scope": "global" if name in self.global_instances else "tenant",
-                    "kind": "remote",
-                    "role": "shared",
-                    "categories": None,
-                    "priority": 10,
-                    "port": self._mount_ports[key] if backend == "gbrain" else mimir_port,
-                    "close_after_request": backend == "mimir",
-                    "desc": f"{backend} · {self.cluster} · {self.namespace}",
-                }
+            return {
+                "name": release["name"],
+                "tenant_id": tenant_id,
+                "access_scope": "global" if name in self.global_instances else "tenant",
+                "kind": "remote",
+                "role": "shared",
+                "categories": None,
+                "priority": 10,
+                "port": self._mount_ports[key] if backend == "gbrain" else mimir_port,
+                "close_after_request": backend == "mimir",
+                "desc": f"{backend} · {self.cluster} · {self.namespace}",
+            }
+
+        return list(
+            await asyncio.gather(
+                *(mount_for(release) for release in status["releases"] if release["ready"])
             )
-        return mounts
+        )
 
     async def deploy(self, request: DeploymentRequest) -> dict[str, Any]:
         if not request.tenant_id:

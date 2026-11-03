@@ -398,3 +398,52 @@ async def test_operator_global_mounts_are_shared_but_not_tenant_managed(backend)
         with pytest.raises(ValueError, match="not explicitly global"):
             await adapter.discover_mounts("b", "Bearer caller-token")
     api.patch_namespaced_custom_object.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_discovery_reads_every_ready_instance_concurrently():
+    """Discovery runs on every Mímir request; serial reads cost a round trip each."""
+    import asyncio
+    import base64
+    from types import SimpleNamespace
+
+    adapter = FluxKnowledgeDeploymentAdapter(
+        namespace="knowledge", source_name="niuu", chart_versions={}, images={}
+    )
+    adapter.list_deployments = AsyncMock(
+        return_value={
+            "releases": [
+                {"name": name, "release_name": f"{name}-t", "backend": "gbrain", "ready": True}
+                for name in ("one", "two", "three")
+            ]
+        }
+    )
+    tracker = {"in_flight": 0, "peak": 0}
+
+    async def list_services(namespace, label_selector):  # noqa: ANN001, ANN202
+        tracker["in_flight"] += 1
+        tracker["peak"] = max(tracker["peak"], tracker["in_flight"])
+        await asyncio.sleep(0.01)
+        tracker["in_flight"] -= 1
+        release = label_selector.split("=", 1)[1]
+        return SimpleNamespace(
+            items=[
+                SimpleNamespace(
+                    metadata=SimpleNamespace(
+                        name=f"{release}-gbrain", labels={"app.kubernetes.io/name": "gbrain"}
+                    ),
+                    spec=SimpleNamespace(ports=[SimpleNamespace(port=3131)]),
+                )
+            ]
+        )
+
+    core = AsyncMock()
+    core.list_namespaced_service.side_effect = list_services
+    core.read_namespaced_secret.return_value = SimpleNamespace(
+        data={"token": base64.b64encode(b"native-secret").decode()}
+    )
+    with patch("kubernetes_asyncio.client.CoreV1Api", return_value=core):
+        mounts = await adapter.discover_mounts("a")
+
+    assert [mount["name"] for mount in mounts] == ["one", "two", "three"]
+    assert tracker["peak"] == 3

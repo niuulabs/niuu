@@ -414,4 +414,12 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
             ],
         )
 
+    # Wire compression — see niuu.gzip_sse for SSE safety. The standalone
+    # service had none, so /mimir/graph shipped 1.1 MB and /mimir/pages 880 KB
+    # of repetitive JSON raw to every browser that opened the Mímir page.
+    # Added last, so it is the outermost layer and covers every router above.
+    from niuu.gzip_sse import SSESafeGZipMiddleware
+
+    app.add_middleware(SSESafeGZipMiddleware, minimum_size=4096)
+
     return app
