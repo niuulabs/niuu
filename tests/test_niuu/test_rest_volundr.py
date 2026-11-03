@@ -2439,27 +2439,54 @@ def test_feature_flags_mirror_the_nodes_voice_reads() -> None:
 
 
 @respx.mock
-def test_feature_flags_mirror_the_push_gateway_nodes_push_kinds() -> None:
-    """The phone registers its voip token where the facade says push_voip: the
-    facade sends non-alert registrations on to the push gateway node."""
-    gateway = _client([_instance("ymir", base_url="http://ymir", is_default=True)])
+def test_feature_flags_report_the_push_gateway_nodes_push_kinds() -> None:
+    """The phone registers typed tokens (voip, Live Activity) where the facade says it
+    can: POST /devices sends them to the registry's push gateway node, so its flags
+    count, not those of the node the facade reads by default (ymir's Guild)."""
+    guild_nodes = [
+        _instance("local", base_url="http://local", is_default=True),
+        _instance("ymir", base_url="http://ymir", config={"push_gateway": True}),
+    ]
+    client = _client(guild_nodes)
+    respx.get("http://local/api/v1/forge/feature-flags").mock(
+        return_value=Response(200, json={"capabilities": {"push_installs": False}})
+    )
     respx.get("http://ymir/api/v1/forge/feature-flags").mock(
         return_value=Response(
             200, json={"capabilities": {"push_installs": True, "push_voip": True}}
         )
     )
-    node = _client([_instance("valhalla", base_url="http://valhalla", is_default=True)])
+    no_gateway = _client([_instance("valhalla", base_url="http://valhalla", is_default=True)])
     respx.get("http://valhalla/api/v1/forge/feature-flags").mock(
-        return_value=Response(200, json={"capabilities": {"push_installs": False}})
+        return_value=Response(
+            200, json={"capabilities": {"push_installs": True, "push_voip": True}}
+        )
     )
 
-    gateway_caps = gateway.get("/api/v1/forge/feature-flags", headers=_headers()).json()[
-        "capabilities"
-    ]
-    node_caps = node.get("/api/v1/forge/feature-flags", headers=_headers()).json()["capabilities"]
+    caps = client.get("/api/v1/forge/feature-flags", headers=_headers()).json()["capabilities"]
+    lone = no_gateway.get("/api/v1/forge/feature-flags", headers=_headers()).json()["capabilities"]
 
-    assert gateway_caps["push_installs"] is True and gateway_caps["push_voip"] is True
-    assert node_caps["push_installs"] is False and node_caps["push_voip"] is False
+    assert caps["push_installs"] is True and caps["push_voip"] is True
+    # Without a registered push gateway the facade has nowhere to send typed tokens.
+    assert lone["push_installs"] is False and lone["push_voip"] is False
+
+
+@respx.mock
+def test_feature_flags_without_a_reachable_push_gateway_report_no_typed_push() -> None:
+    client = _client(
+        [
+            _instance("local", base_url="http://local", is_default=True),
+            _instance("ymir", base_url="http://ymir", config={"push_gateway": True}),
+        ]
+    )
+    respx.get("http://local/api/v1/forge/feature-flags").mock(
+        return_value=Response(200, json={"capabilities": {}})
+    )
+    respx.get("http://ymir/api/v1/forge/feature-flags").mock(return_value=Response(503))
+
+    caps = client.get("/api/v1/forge/feature-flags", headers=_headers()).json()["capabilities"]
+
+    assert caps["push_installs"] is False and caps["push_voip"] is False
 
 
 @respx.mock
