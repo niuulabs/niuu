@@ -46,7 +46,7 @@ from ting.config import A2AConfig, AuthConfig, Settings
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.ports.volundr import ActivityEvent
-from ting.system_workflows import load_system_workflows
+from ting.system_workflows import seed_system_workflows
 from volundr.adapters.outbound.postgres import PostgresSessionRepository
 from volundr.domain.models import SessionStatus
 
@@ -234,8 +234,8 @@ async def test_developer_planning_artifact_projection_survives_restart(
     workflow_repo = PostgresWorkflowRepository(txn_pool)
     campaign_repo = PostgresWorkflowCampaignRepository(txn_pool)
     launch_repo = PostgresA2ALaunchReservationRepository(txn_pool)
-    workflow = next(item for item in load_system_workflows() if item.name == "Developer Planning")
-    workflow = await workflow_repo.save_workflow(workflow)
+    workflows = await seed_system_workflows(workflow_repo)
+    workflow = next(item for item in workflows if item.name == "Developer Planning")
     mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
     monkeypatch.setattr(research_api, "_campaign_knowledge", lambda *_args, **_kwargs: mimir)
 
