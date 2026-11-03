@@ -139,6 +139,7 @@ export {
   useSendLearningFeedback,
 } from './application/useLearnings';
 export { useDecideReview, useReviewList, useReviewSummary } from './application/useReviews';
+export { ReviewDecisionPanel, isOperatorQuestion } from './ui/ReviewDecisionPanel';
 export {
   adjacentLearningScopes,
   autonomyModeForLevel,

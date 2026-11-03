@@ -7,12 +7,25 @@ import {
   useMemo,
   type ReactNode,
 } from 'react';
-import type { User } from 'oidc-client-ts';
+import type { User, UserManager } from 'oidc-client-ts';
 import { useConfig } from '@niuulabs/plugin-sdk';
 import { setTokenProvider } from '@niuulabs/query';
 import { getOidcConfig, getUserManager, type OidcConfig } from './oidc';
 import { AuthContext, type AuthContextValue } from './AuthContext';
 import styles from './AuthProvider.module.css';
+
+/**
+ * Renew with the refresh token. A failure means the identity provider ended the
+ * session (idle or max lifetime), so the user has to sign in again; say why.
+ */
+async function renew(mgr: UserManager, purpose: string): Promise<User | null> {
+  try {
+    return await mgr.signinSilent();
+  } catch (err) {
+    console.error(`OIDC: ${purpose} failed; the user must sign in again.`, err);
+    return null;
+  }
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const config = useConfig();
@@ -70,6 +83,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!cancelled && existingUser && !existingUser.expired) {
           setUser(existingUser);
         }
+        // An access token lapses while the tab sleeps or is hidden, but its
+        // refresh token outlives it: renew instead of sending the user to sign in.
+        if (existingUser?.expired && existingUser.refresh_token) {
+          const renewed = await renew(mgr, 'restoring the stored session');
+          if (!cancelled && renewed) setUser(renewed);
+        }
       } catch (err) {
         console.error('OIDC init error:', err);
       }
@@ -78,8 +97,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const handleUserLoaded = (loadedUser: User) => setUser(loadedUser);
     const handleUserUnloaded = () => setUser(null);
-    const handleTokenExpired = () => {
-      mgr.signinSilent().catch(() => setUser(null));
+    const handleTokenExpired = async () => {
+      const renewed = await renew(mgr, 'renewing the expired access token');
+      if (!renewed) setUser(null);
     };
 
     mgr.events.addUserLoaded(handleUserLoaded);

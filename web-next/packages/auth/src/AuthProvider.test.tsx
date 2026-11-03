@@ -179,6 +179,43 @@ describe('AuthProvider', () => {
     expect(screen.getByTestId('authenticated')).toHaveTextContent('false');
   });
 
+  it('renews a stored session whose access token expired', async () => {
+    vi.mocked(getOidcConfig).mockReturnValue(oidcConfig);
+    const mockMgr = createMockManager({
+      getUser: vi
+        .fn()
+        .mockResolvedValue({ expired: true, access_token: 'stale', refresh_token: 'refresh' }),
+      signinSilent: vi.fn().mockResolvedValue({ expired: false, access_token: 'renewed-token' }),
+    });
+    vi.mocked(getUserManager).mockReturnValue(mockMgr as never);
+
+    renderWithConfig();
+
+    expect(await screen.findByTestId('token')).toHaveTextContent('renewed-token');
+    expect(screen.getByTestId('authenticated')).toHaveTextContent('true');
+  });
+
+  it('says why when a stored session cannot be renewed', async () => {
+    vi.mocked(getOidcConfig).mockReturnValue(oidcConfig);
+    const mockMgr = createMockManager({
+      getUser: vi
+        .fn()
+        .mockResolvedValue({ expired: true, access_token: 'stale', refresh_token: 'refresh' }),
+      signinSilent: vi.fn().mockRejectedValue(new Error('Session not active')),
+    });
+    vi.mocked(getUserManager).mockReturnValue(mockMgr as never);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    renderWithConfig();
+
+    expect(await screen.findByTestId('authenticated')).toHaveTextContent('false');
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('restoring the stored session failed'),
+      expect.any(Error),
+    );
+    consoleSpy.mockRestore();
+  });
+
   it('handles OIDC callback with code in URL', async () => {
     Object.defineProperty(window, 'location', {
       value: {
@@ -349,6 +386,7 @@ describe('AuthProvider', () => {
       },
     });
     vi.mocked(getUserManager).mockReturnValue(mockMgr as never);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     renderWithConfig();
 
@@ -360,6 +398,11 @@ describe('AuthProvider', () => {
     });
 
     expect(screen.getByTestId('token')).toHaveTextContent('none');
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('renewing the expired access token failed'),
+      expect.any(Error),
+    );
+    consoleSpy.mockRestore();
   });
 
   it('removes token provider on unmount when auth is enabled', async () => {

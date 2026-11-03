@@ -906,7 +906,11 @@ function toSessionRavnId(session: VolundrSession): string {
 
 function toSessionPreview(session: VolundrSession): string | undefined {
   if (session.source.type === 'git') {
-    return `${session.source.repo}#${session.source.branch}`;
+    // Sessions with no repository still carry an empty git source.
+    if (!session.source.repo) return undefined;
+    return session.source.branch
+      ? `${session.source.repo}#${session.source.branch}`
+      : session.source.repo;
   }
   return session.source.local_path ?? session.source.paths[0]?.mount_path;
 }
@@ -959,6 +963,7 @@ function toDomainSession(session: VolundrSession): Session {
     preview: toSessionPreview(session),
     trackerIssue: session.trackerIssue,
     origin: session.origin,
+    error: session.error,
   };
 }
 

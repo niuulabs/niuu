@@ -806,15 +806,26 @@ export function ForgePage() {
                     <StateDot state="failed" />
                     <div className="vol-forge__error-body">
                       <div className="vol-forge__error-title">
+                        <span>{session.name ?? session.personaName}</span>
                         <span>{session.id}</span>
-                        <span>{session.personaName}</span>
                       </div>
-                      <div className="vol-forge__error-message">
-                        {session.events[session.events.length - 1]?.body ?? 'unknown error'}
+                      <div className="vol-forge__error-message" data-testid="error-reason">
+                        {session.error ??
+                          session.events[session.events.length - 1]?.body ??
+                          'Forge recorded no reason for this failure.'}
                       </div>
                     </div>
-                    <button type="button" className="vol-forge__retry-btn">
-                      retry
+                    <button
+                      type="button"
+                      className="vol-forge__retry-btn"
+                      onClick={() =>
+                        void navigate({
+                          to: '/volundr/sessions/$sessionId',
+                          params: { sessionId: session.id },
+                        })
+                      }
+                    >
+                      open
                     </button>
                   </div>
                 ))}

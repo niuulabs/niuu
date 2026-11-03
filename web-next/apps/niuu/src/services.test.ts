@@ -1391,6 +1391,45 @@ describe('buildServices', () => {
     ]);
   });
 
+  it('gives a session with no repository no preview, not a bare "#"', async () => {
+    const repoless = {
+      id: 'sess-repoless',
+      name: 'tool-build',
+      source: { type: 'git', repo: '', branch: '' },
+      status: 'stopped',
+      model: 'claude-sonnet',
+      lastActive: Date.parse('2026-04-24T12:30:00Z'),
+      messageCount: 1,
+      tokensUsed: 10,
+      activityState: null,
+    };
+    const branchless = {
+      ...repoless,
+      id: 'sess-branchless',
+      source: { type: 'git', repo: 'r', branch: '' },
+    };
+    const liveVolundr = {
+      kind: 'volundr',
+      getSessions: vi.fn().mockResolvedValue([repoless, branchless]),
+      getSession: vi.fn().mockResolvedValue(repoless),
+      listArchivedSessions: vi.fn().mockResolvedValue([]),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+      subscribe: vi.fn(() => () => {}),
+    };
+    volundrMocks.buildVolundrHttpAdapter.mockReturnValue(liveVolundr as any);
+
+    const services = buildServices({
+      demoMode: true,
+      theme: 'ice',
+      plugins: {},
+      services: { forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' } },
+    } as any);
+
+    const [first, second] = await (services.sessionStore as any).listSessions();
+    expect(first.preview).toBeUndefined();
+    expect(second.preview).toBe('r');
+  });
+
   it('prefers an explicit forge service base for the main Volundr http adapter', () => {
     buildServices({
       demoMode: true,

@@ -137,13 +137,27 @@ describe('ForgePage', () => {
     expect(screen.getByTestId('cluster-meter-gpu')).toHaveTextContent('1 / 2');
   });
 
-  it('renders error strip when failed sessions exist', async () => {
-    wrap();
-    await waitFor(() => {
-      const _errorStrip = screen.queryByTestId('error-strip');
-      // May or may not have failed sessions depending on mock data
-      expect(screen.getByTestId('forge-page')).toBeInTheDocument();
+  it('says why a failed session failed, in Forge’s words', async () => {
+    const store = createMockSessionStore();
+    const [base] = await store.listSessions();
+    const failed: Session = {
+      ...base!,
+      id: 'sess-failed',
+      name: 'flock-mismatch-guard',
+      state: 'failed',
+      events: [],
+      error: 'ravn_flock: skuldCodex does not accept provider anthropic',
+    };
+    wrap(createMockVolundrService(), createMockClusterAdapter(), {
+      ...store,
+      listSessions: async () => [failed],
     });
+
+    const strip = await screen.findByTestId('error-strip');
+    expect(within(strip).getByText('flock-mismatch-guard')).toBeInTheDocument();
+    expect(within(strip).getByTestId('error-reason')).toHaveTextContent(
+      'skuldCodex does not accept provider anthropic',
+    );
   });
 
   it('shows loading state initially', () => {
