@@ -104,6 +104,7 @@ class TestKnownWorkloadScopes:
                 "forge:session:message",
                 "forge:session:lifecycle",
                 "forge:notifications:deliver",
+                "forge:push:call",
             }
         )
 
