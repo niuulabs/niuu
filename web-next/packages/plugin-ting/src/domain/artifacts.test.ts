@@ -153,7 +153,7 @@ describe('artifact status', () => {
 });
 
 describe('reviewing artifacts', () => {
-  it("carries the decision of the gate that showed each version", () => {
+  it('carries the decision of the gate that showed each version', () => {
     const [plan] = artifactsFromPublications(RUN, PRESENTED, NONE);
     const gates = [
       planGate([
@@ -218,7 +218,13 @@ describe('reviewing artifacts', () => {
 
   it('asks a new run to revise a version against the notes, under the same key', () => {
     const [plan] = artifactsFromPublications(RUN, PRESENTED, NONE);
-    const prompt = revisionPrompt(plan!, plan!.versions[1]!, '# Plan v2', 'Plan NIU-296', 'Fix P-2');
+    const prompt = revisionPrompt(
+      plan!,
+      plan!.versions[1]!,
+      '# Plan v2',
+      'Plan NIU-296',
+      'Fix P-2',
+    );
     expect(prompt).toContain('Plan NIU-296');
     expect(prompt).toContain('v2 from run a2a-1');
     expect(prompt).toContain('artifact key plan');
@@ -230,10 +236,7 @@ describe('reviewing artifacts', () => {
 describe('helpers', () => {
   it('orders artifacts newest first', () => {
     const [plan, diagram] = artifactsFromPublications(RUN, PRESENTED, NONE);
-    expect(newestFirst([diagram!, plan!]).map((item) => item.id)).toEqual([
-      plan!.id,
-      diagram!.id,
-    ]);
+    expect(newestFirst([diagram!, plan!]).map((item) => item.id)).toEqual([plan!.id, diagram!.id]);
   });
 
   it('turns a Work run into a run reference, or nothing without a session', () => {

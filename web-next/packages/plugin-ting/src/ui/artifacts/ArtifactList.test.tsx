@@ -91,7 +91,10 @@ function setup({
   const work = {
     list: vi.fn().mockResolvedValue({
       projects: [],
-      campaigns: [run('a2a-plan', 'blocked', 'needsAttention'), run('a2a-tool', 'completed', 'completed')],
+      campaigns: [
+        run('a2a-plan', 'blocked', 'needsAttention'),
+        run('a2a-tool', 'completed', 'completed'),
+      ],
       executions: [],
       executionNextCursor: null,
       coverage: [],
@@ -125,7 +128,11 @@ describe('ArtifactList', () => {
     const waiting = await screen.findByRole('region', { name: 'Waiting on you' });
     expect(within(waiting).getByText('Developer Planning')).toBeInTheDocument();
     const group = screen.getByRole('region', { name: 'No project' });
-    expect(within(group).getAllByTestId('artifact-row').map((row) => row.textContent)).toEqual([
+    expect(
+      within(group)
+        .getAllByTestId('artifact-row')
+        .map((row) => row.textContent),
+    ).toEqual([
       expect.stringContaining('Research report'),
       expect.stringContaining('plan.md · v2 of 2 versions'),
     ]);
@@ -175,6 +182,19 @@ describe('ArtifactList', () => {
     expect(gate).toHaveTextContent('Decision');
   });
 
+  it('keeps a run held at a gate that presented nothing and that no review names', async () => {
+    setup({
+      publications: vi.fn(async (host: string | null) =>
+        host === 'valhalla' ? [] : (PUBLICATIONS[host ?? ''] ?? []),
+      ),
+    });
+
+    const waiting = await screen.findByRole('region', { name: 'Waiting on you' });
+    const row = within(waiting).getByText('Developer Planning').closest('a');
+    expect(row).toHaveAttribute('href', '/ting/artifacts/a2a-plan');
+    expect(row).toHaveTextContent('Waiting at a gate · nothing presented yet');
+  });
+
   it('says which hosts could not be read, and why', async () => {
     setup({
       publications: vi.fn(async (host: string | null) => {
@@ -183,9 +203,16 @@ describe('ArtifactList', () => {
       }),
     });
 
-    expect(await screen.findByText(/The artifacts of 1 Forge host could not be read/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/The artifacts of 1 Forge host could not be read/),
+    ).toBeInTheDocument();
     expect(screen.getByText('ymir: Forge unavailable')).toBeInTheDocument();
-    expect(rowTexts()).toEqual([expect.stringContaining('Plan')]);
+    const group = screen.getByRole('region', { name: 'No project' });
+    expect(
+      within(group)
+        .getAllByTestId('artifact-row')
+        .map((row) => row.textContent),
+    ).toEqual([expect.stringContaining('Plan')]);
   });
 
   it('groups by project, and for one project reads only its hosts', async () => {
@@ -208,7 +235,11 @@ describe('ArtifactList', () => {
   });
 
   it('says when no run has presented anything yet', async () => {
-    setup({ publications: vi.fn().mockResolvedValue([]) });
+    setup({
+      publications: vi.fn().mockResolvedValue([]),
+      projectId: 'p1',
+      projects: [{ projectId: 'p1', name: 'Yggdrasil', sessionIds: ['session-a2a-tool'] }],
+    });
 
     expect(await screen.findByText('No run has presented a document yet.')).toBeInTheDocument();
   });

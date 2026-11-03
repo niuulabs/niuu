@@ -4,7 +4,12 @@ import { Link } from '@tanstack/react-router';
 import { ARTIFACT_STATUS_LABEL, type ArtifactStatus } from '../../domain/artifacts';
 import { reviewPath, type ReviewItem } from '../../domain/review';
 import { useReviews } from '../useWork';
-import { useArtifacts, type ArtifactProject, type ArtifactRow } from '../useArtifacts';
+import {
+  useArtifacts,
+  type ArtifactProject,
+  type ArtifactRow,
+  type WaitingRun,
+} from '../useArtifacts';
 
 /** One line of the list: an artifact, or a gate waiting on someone with nothing to read yet. */
 interface ListRow {
@@ -53,7 +58,21 @@ function gateLine(item: ReviewItem): ListRow {
   };
 }
 
+function waitingRunLine({ run, project }: WaitingRun): ListRow {
+  return {
+    key: `run:${run.slug}`,
+    kind: 'Decision',
+    title: run.title,
+    byline: 'Waiting at a gate · nothing presented yet',
+    status: 'waiting',
+    project,
+    updatedAt: run.updatedAt ?? '',
+    href: `/ting/artifacts/${encodeURIComponent(run.slug)}`,
+  };
+}
+
 function age(iso: string): string {
+  if (!iso) return '';
   const minutes = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.round(minutes / 60);
@@ -97,13 +116,18 @@ export function ArtifactList({ projectId }: { projectId?: string }) {
 
   const rows = useMemo(() => {
     const withArtifacts = new Set(artifacts.rows.map((row) => row.run.slug));
-    const waitingGates = (reviews.data?.items ?? [])
-      .filter((item) => item.state === 'waiting' && !withArtifacts.has(item.taskId))
-      .map(gateLine);
-    return [...artifacts.rows.map(artifactLine), ...waitingGates]
+    const waitingItems = (reviews.data?.items ?? []).filter(
+      (item) => item.state === 'waiting' && !withArtifacts.has(item.taskId),
+    );
+    const listed = new Set(waitingItems.map((item) => item.taskId));
+    // A run Ting's review list does not name still waits on someone.
+    const waitingRuns = artifacts.waitingRuns
+      .filter((item) => !listed.has(item.run.slug))
+      .map(waitingRunLine);
+    return [...artifacts.rows.map(artifactLine), ...waitingItems.map(gateLine), ...waitingRuns]
       .filter((row) => !projectId || row.project?.id === projectId)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  }, [artifacts.rows, reviews.data, projectId]);
+  }, [artifacts.rows, artifacts.waitingRuns, reviews.data, projectId]);
 
   const kinds = [...new Set(rows.map((row) => row.kind))].sort();
   const needle = query.trim().toLowerCase();

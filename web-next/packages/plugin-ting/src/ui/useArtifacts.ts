@@ -7,6 +7,7 @@ import {
   isReadable,
   newestFirst,
   runRef,
+  runWaits,
   type Artifact,
   type ArtifactVersion,
   type Publication,
@@ -23,6 +24,12 @@ export interface ArtifactProject {
 }
 
 export interface ArtifactRow extends Artifact {
+  project: ArtifactProject | null;
+}
+
+/** A run held at a gate that has presented nothing yet: someone still has to answer it. */
+export interface WaitingRun {
+  run: RunRef;
   project: ArtifactProject | null;
 }
 
@@ -115,6 +122,13 @@ export function useArtifacts(projectId?: string) {
     return newestFirst(all);
   }, [runs, hosts, feeds, waiting, sessionProjects]);
 
+  const waitingRuns = useMemo((): WaitingRun[] => {
+    const presented = new Set(rows.map((row) => row.run.slug));
+    return runs
+      .filter((run) => runWaits(run, waiting) && !presented.has(run.slug))
+      .map((run) => ({ run, project: sessionProjects.get(run.sessionId) ?? null }));
+  }, [runs, rows, waiting, sessionProjects]);
+
   const unreadable = hosts.flatMap((host, index) => {
     const error = feeds[index]?.error;
     if (!error) return [];
@@ -122,6 +136,7 @@ export function useArtifacts(projectId?: string) {
   });
   return {
     rows,
+    waitingRuns,
     loading:
       work.isPending ||
       (Boolean(projectId) && projects.isPending) ||

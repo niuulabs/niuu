@@ -262,8 +262,11 @@ describe('RunReviewPage', () => {
 
     expect(await screen.findByText(/Step one, better/)).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'r2' })).toBeInTheDocument();
-    expect(publications).toHaveBeenCalledWith('valhalla', expect.objectContaining({ sessionId: 'session-9' }));
-    expect(screen.getByText('Plan NIU-1125 only')).toBeInTheDocument();
+    expect(publications).toHaveBeenCalledWith(
+      'valhalla',
+      expect.objectContaining({ sessionId: 'session-9' }),
+    );
+    expect(screen.getByText(/Read the complete ticket/)).toBeInTheDocument();
   });
 
   it('says which version could not be read', async () => {
@@ -273,7 +276,9 @@ describe('RunReviewPage', () => {
       publications: vi.fn().mockResolvedValue([presented(7)]),
     });
 
-    expect(await screen.findByText(/plan\.md \(v7\) could not be read: No file pf_7/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/plan\.md \(v7\) could not be read: No file pf_7/),
+    ).toBeInTheDocument();
   });
 
   it('sends notes on a running artifact to the run', async () => {

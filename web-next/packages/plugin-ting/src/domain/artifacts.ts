@@ -78,7 +78,7 @@ const BLOCKED = 'blocked';
  * The run is held at a gate a person answers. Only a blocked run waits: finished runs
  * keep their last attention note, so it says nothing about now.
  */
-function runWaits(run: RunRef, waitingSlugs: ReadonlySet<string>): boolean {
+export function runWaits(run: RunRef, waitingSlugs: ReadonlySet<string>): boolean {
   return waitingSlugs.has(run.slug) || run.status === BLOCKED;
 }
 
