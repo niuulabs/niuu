@@ -225,6 +225,7 @@ web-next/
 ```bash
 pnpm install            # install workspace deps (first thing in a fresh clone)
 pnpm dev                # run @niuulabs/niuu at :5173
+pnpm dev:remote         # this UI on yggdrasil's real APIs at :5199; sign in as usual, actions are real
 pnpm test               # vitest run with coverage
 pnpm test:watch         # vitest watch
 pnpm test:e2e           # playwright test

@@ -5,7 +5,6 @@
  */
 
 @import 'tailwindcss' prefix(niuu);
-@config "../tailwind.config.ts";
 
 @import './primitives/Chip/Chip.css';
 @import './primitives/ContinuityField/ContinuityField.css';
@@ -69,3 +68,4 @@
 @import './chat/components/SlashCommandMenu/SlashCommandMenu.css';
 @import './chat/components/ThreadGroup/ThreadGroup.css';
 @import './chat/components/ToolBlock/ToolBlock.css';
+@config "../tailwind.config.ts";

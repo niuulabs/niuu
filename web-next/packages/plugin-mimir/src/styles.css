@@ -5,8 +5,8 @@
  */
 
 @import 'tailwindcss' prefix(niuu);
-@config "../tailwind.config.ts";
 
 @import './ui/MimirSubnav.css';
 @import './ui/MimirTopbar.css';
 @import './ui/mimir-views.css';
+@config "../tailwind.config.ts";
