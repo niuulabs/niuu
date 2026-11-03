@@ -699,6 +699,9 @@ resident:
       minGapMinutes: 10
       # -- Seconds after which an undelivered request is dropped (its expiresAt).
       expiresAfterSeconds: 300
+      # -- The VoIP push when no socket carries a request: {adapter, kwargs}, passed to ravn
+      # unchanged. Empty: nothing is pushed.
+      push: {}
   # -- Seconds between the resident's own stewardship/home-wake passes.
   # Empty uses ravn's own default (resident_state.stewardship_interval_seconds).
   stewardshipIntervalSeconds: ""

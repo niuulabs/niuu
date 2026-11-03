@@ -1755,6 +1755,20 @@ class TestResidentVoice:
         assert calls.enabled and calls.resident_id == "0b6f8c1e-5a2d-4f39-8e7a-3c9d1f2a6b54"
         assert calls.host == "valhalla" and calls.max_per_hour == 2
         assert calls.min_gap_minutes == 10 and calls.expires_after_seconds == 300
+        assert calls.push is None
+
+    def test_calls_pass_the_push_through(self, tmp_path: Path) -> None:
+        from ravn.config import VoiceChannelConfig
+
+        push = {"adapter": "x.Push", "kwargs": {"base_url": "https://push.example"}}
+        values = self._values(calls={"enabled": True, "host": "valhalla", "push": push})
+        values["session"]["id"] = "0b6f8c1e-5a2d-4f39-8e7a-3c9d1f2a6b54"
+        rendered = _render_skuld_chart(tmp_path, values)
+        channel = _ravn_config_from_rendered(rendered)["gateway"]["channels"]["voice"]
+        calls = VoiceChannelConfig(**channel).calls
+
+        assert calls.push.adapter == "x.Push"
+        assert calls.push.kwargs == {"base_url": "https://push.example"}
 
     @pytest.mark.parametrize(
         ("change", "message"),

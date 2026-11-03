@@ -132,6 +132,10 @@ data:
             max_per_hour: {{ .maxPerHour }}
             min_gap_minutes: {{ .minGapMinutes }}
             expires_after_seconds: {{ .expiresAfterSeconds }}
+            {{- with .push }}
+            push:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
           {{- end }}
           {{- end }}
         {{- end }}

@@ -124,7 +124,12 @@ def build_call_push(config: VoiceCallsConfig) -> CallPushPort:
     Nothing until ``voice.calls.push`` names an adapter: the notification's alert is
     the fallback.
     """
-    return NullCallPush()
+    if config.push is None:
+        return NullCallPush()
+    push = import_class(config.push.adapter)(**config.push.kwargs)
+    if not isinstance(push, CallPushPort):
+        raise TypeError(f"Call push {config.push.adapter!r} must implement CallPushPort")
+    return push
 
 
 def build_resident_call_requests(settings: Settings) -> ResidentCallRequests | None:

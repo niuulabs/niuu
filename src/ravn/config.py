@@ -1892,6 +1892,20 @@ class VoiceMinterConfig(BaseModel):
     )
 
 
+class VoiceCallPushConfig(BaseModel):
+    """How the resident rings the phone by VoIP push (dynamic adapter + kwargs)."""
+
+    adapter: str = Field(
+        description=(
+            "Fully-qualified class path implementing CallPushPort, e.g. "
+            "'ravn.adapters.voice.call_push.ForgeCallPushClient'."
+        ),
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict, description="Constructor keyword arguments (base_url, …)."
+    )
+
+
 class VoiceCallsConfig(BaseModel):
     """Calls the resident places itself: ``notify`` with ``speak`` rings the owner's phone.
 
@@ -1937,6 +1951,13 @@ class VoiceCallsConfig(BaseModel):
     poll_interval_seconds: float = Field(
         default=1.0, gt=0, description="How often queued requests are looked at."
     )
+    push: VoiceCallPushConfig | None = Field(
+        default=None,
+        description=(
+            "The VoIP push used when no socket carries a request, or the phone does not "
+            "answer on it in time. Unset: nothing is pushed (the notification's alert stays)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _enabled_needs_an_id(self) -> VoiceCallsConfig:
@@ -1944,6 +1965,11 @@ class VoiceCallsConfig(BaseModel):
             raise ValueError(
                 "gateway.channels.voice.calls.enabled needs resident_id: the phone binds a "
                 "call to the resident it selected by that id"
+            )
+        if self.enabled and not self.host:
+            raise ValueError(
+                "gateway.channels.voice.calls.enabled needs host: the cluster the phone shows "
+                "the call from (call.request session.host)"
             )
         return self
 

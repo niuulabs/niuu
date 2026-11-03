@@ -173,9 +173,30 @@ def test_the_notification_id_is_the_one_forge_derives() -> None:
         assert resident_notification_id(RESIDENT, channel, "k1") == str(expected)
 
 
+class _AdapterPush:
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url
+
+    async def ring(self, *, request_id: str, frame: dict[str, Any]) -> CallPushResult:
+        return CallPushResult(sent=True, tokens=1)
+
+
+def test_the_push_is_built_from_its_adapter_or_is_null() -> None:
+    from ravn.cli.voice_wiring import build_call_push
+
+    assert isinstance(build_call_push(config()), NullCallPush)
+    adapter = f"{__name__}._AdapterPush"
+    push = build_call_push(config(push={"adapter": adapter, "kwargs": {"base_url": "https://x"}}))
+    assert isinstance(push, _AdapterPush) and push.base_url == "https://x"
+    with pytest.raises(TypeError, match="CallPushPort"):
+        build_call_push(config(push={"adapter": "builtins.object"}))
+
+
 def test_calls_need_the_residents_id() -> None:
     with pytest.raises(ValidationError, match="resident_id"):
         VoiceCallsConfig(enabled=True)
+    with pytest.raises(ValidationError, match="needs host"):
+        VoiceCallsConfig(enabled=True, resident_id=RESIDENT)
     assert VoiceCallsConfig().enabled is False
 
 
