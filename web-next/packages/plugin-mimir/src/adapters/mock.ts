@@ -1628,6 +1628,7 @@ export function createMimirMockAdapter(): IMimirService {
         return {
           issues,
           pagesChecked: MOCK_PAGES.length,
+          mounts: [],
           summary: tallySeverity(issues),
         };
       },
@@ -1641,6 +1642,7 @@ export function createMimirMockAdapter(): IMimirService {
         return {
           issues: lintIssues,
           pagesChecked: MOCK_PAGES.length,
+          mounts: [],
           summary: tallySeverity(lintIssues),
         };
       },
@@ -1650,6 +1652,7 @@ export function createMimirMockAdapter(): IMimirService {
         return {
           issues: lintIssues,
           pagesChecked: MOCK_PAGES.length,
+          mounts: [],
           summary: tallySeverity(lintIssues),
         };
       },

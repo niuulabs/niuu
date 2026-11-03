@@ -90,7 +90,12 @@ describe('LintPage', () => {
         ...createMimirMockAdapter().lint,
         runAutoFix: async (ids) => {
           fixedIds = ids;
-          return { issues: [], pagesChecked: 3, summary: { error: 0, warn: 0, info: 0 } };
+          return {
+            issues: [],
+            pagesChecked: 3,
+            summary: { error: 0, warn: 0, info: 0 },
+            mounts: [],
+          };
         },
       },
     };
@@ -109,7 +114,12 @@ describe('LintPage', () => {
         ...createMimirMockAdapter().lint,
         runAutoFix: async (ids) => {
           calledWith = ids;
-          return { issues: [], pagesChecked: 3, summary: { error: 0, warn: 0, info: 0 } };
+          return {
+            issues: [],
+            pagesChecked: 3,
+            summary: { error: 0, warn: 0, info: 0 },
+            mounts: [],
+          };
         },
       },
     };
@@ -142,11 +152,42 @@ describe('LintPage', () => {
           issues: [],
           pagesChecked: 10,
           summary: { error: 0, warn: 0, info: 0 },
+          mounts: [],
         }),
       },
     };
     wrap(<LintPage />, empty);
     await waitFor(() => expect(screen.getByText(/no issues found/i)).toBeInTheDocument());
+    expect(screen.queryByTestId('lint-unsupported-mount')).not.toBeInTheDocument();
+  });
+
+  it('names a mount that could not be linted, and why', async () => {
+    const mixed: IMimirService = {
+      ...createMimirMockAdapter(),
+      lint: {
+        ...createMimirMockAdapter().lint,
+        getLintReport: async () => ({
+          issues: [],
+          pagesChecked: 10,
+          summary: { error: 0, warn: 0, info: 0 },
+          mounts: [
+            { name: 'shared', status: 'linted', pagesChecked: 10, issues: 0, detail: '' },
+            {
+              name: 'gbrain-kanuck',
+              status: 'unsupported',
+              pagesChecked: 0,
+              issues: 0,
+              detail: 'gbrain has no equivalent for lint.',
+            },
+          ],
+        }),
+      },
+    };
+    wrap(<LintPage />, mixed);
+    const row = await screen.findByTestId('lint-unsupported-mount');
+    expect(row).toHaveTextContent('gbrain-kanuck');
+    expect(row).toHaveTextContent('not linted — gbrain has no equivalent for lint.');
+    expect(screen.getAllByTestId('lint-unsupported-mount')).toHaveLength(1);
   });
 
   it('KPI strip shows total issues', async () => {
