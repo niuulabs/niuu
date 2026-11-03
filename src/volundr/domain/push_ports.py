@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
@@ -33,17 +33,29 @@ class GuildNodeHasNoFeedError(GuildFeedError):
 
 
 @dataclass(frozen=True)
+class GuildNode:
+    """A Forge node in the Guild's registry."""
+
+    id: str
+    #: The registry marks it as the Guild's push gateway (``config.push_gateway``):
+    #: the Guild sends it the token kinds only the gateway uses.
+    push_gateway: bool = False
+
+
+@dataclass(frozen=True)
 class GuildFeedPage:
-    """One page of one node's notification feed, as the Guild serves it.
+    """One page of one node's notification feed, in the Guild's delivery view.
 
     ``position`` is where reading continues: the node's head ``seq`` for a newest
-    page, the last ``seq`` returned for a page read after a position.
-    ``unread_count`` is the reader's on that node.
+    page, the last ``seq`` returned for a page read after a position. Each item's
+    ``read`` is its own owner's; ``owner_unread_counts`` is each owner's unread count
+    on that node. ``node_pushes_alerts``: the node pushes alerts itself.
     """
 
     items: list[GuildNotification]
     position: int = 0
-    unread_count: int = 0
+    owner_unread_counts: Mapping[str, int] = field(default_factory=dict)
+    node_pushes_alerts: bool = False
 
 
 class GuildFeed(ABC):
@@ -54,14 +66,14 @@ class GuildFeed(ABC):
     """
 
     @abstractmethod
-    async def nodes(self) -> list[str]:
-        """The Guild's enabled Forge nodes (their ids), from its registry. No node
-        is contacted, so an unreachable node is still listed."""
+    async def nodes(self) -> list[GuildNode]:
+        """The Guild's enabled Forge nodes, from its registry. No node is
+        contacted, so an unreachable node is still listed."""
 
     @abstractmethod
-    async def newest(self, node: str, *, limit: int) -> GuildFeedPage:
-        """``node``'s newest notifications, newest first, with its head position
-        and the reader's unread count there."""
+    async def newest(self, node: str, *, limit: int, owner_id: str | None = None) -> GuildFeedPage:
+        """``node``'s newest notifications (``owner_id``'s only, when given), newest
+        first, with its head position."""
 
     @abstractmethod
     async def after(self, node: str, position: int, *, limit: int) -> GuildFeedPage:
@@ -140,7 +152,13 @@ class PushDeliveryRepository(ABC):
 
     @abstractmethod
     async def count_sent_since(self, owner_id: str, since: datetime) -> int:
-        """How many alerts were sent to ``owner_id`` since ``since`` (rate limit)."""
+        """How many alerts were sent to ``owner_id`` since ``since`` (rate limit).
+
+        The limit is the person's: one phone, whichever org the alerts came from."""
+
+    @abstractmethod
+    async def count_by_tenant(self) -> dict[str, dict[str, int]]:
+        """Alerts per org and status: ``{tenant_id or "": {"sent": n, ...}}``."""
 
     @abstractmethod
     async def prune_settled(self, before: datetime) -> int:

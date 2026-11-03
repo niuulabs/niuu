@@ -7,6 +7,10 @@ import builtins
 import pytest
 from pydantic import ValidationError
 
+from niuu.adapters.outbound.http_auth import (
+    NoAuthHeaderAdapter,
+    WorkloadIdentityBearerTokenAuthAdapter,
+)
 from niuu.domain.notifications import NotificationKind, NotificationSeverity
 from tests.helpers.apns_keys import generate_rsa_pem, write_p8
 from tests.support.push_fakes import Clock, FakeDeviceRepository
@@ -24,11 +28,14 @@ from volundr.domain.services.push_gateway import PushGateway
 from volundr.push_composition import (
     create_apns_client,
     create_push_gateway,
+    create_reader_auth,
     push_gateway_settings,
     read_reader_token,
 )
 
 LOGGING = "volundr.adapters.outbound.push_channels.LoggingNotificationChannel"
+INSTANCE = "inst-thor"
+WORKLOAD_AUTH = "niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter"
 
 
 def push_config(key_path, **gateway) -> dict:
@@ -49,7 +56,10 @@ class TestDefaults:
         push = Settings().push
         assert push.enabled is False and push.gateway.enabled is False
         assert push.adapter == LOGGING
-        assert create_push_gateway(push, object(), FakeDeviceRepository(Clock())) is None
+        assert (
+            create_push_gateway(push, object(), FakeDeviceRepository(Clock()), instance_id=INSTANCE)
+            is None
+        )
 
     def test_gateway_defaults(self):
         gateway = PushGatewayConfig()
@@ -160,12 +170,14 @@ class TestComposition:
                 origin_label=" Thor ",
             )
         )
-        gateway = create_push_gateway(push, object(), FakeDeviceRepository(Clock()))
+        gateway = create_push_gateway(
+            push, object(), FakeDeviceRepository(Clock()), instance_id=INSTANCE
+        )
 
         assert isinstance(gateway, PushGateway)
         assert isinstance(gateway._feed, HttpGuildFeed)
         assert gateway._feed._feed_url == "http://127.0.0.1:8080/api/v1/forge/notifications"
-        assert gateway._feed._headers == {}
+        assert gateway._feed._headers() == {}
         assert isinstance(gateway._apns, ApnsClient)
         assert isinstance(gateway._deliveries, PostgresPushDeliveryRepository)
         settings = gateway._settings
@@ -193,7 +205,7 @@ class TestComposition:
             )
         )
 
-        settings = push_gateway_settings(push)
+        settings = push_gateway_settings(push, instance_id=INSTANCE)
 
         assert settings.alerts.kinds == frozenset({"error"})
         assert settings.alerts.sources == frozenset({"agent"})
@@ -217,14 +229,14 @@ class TestComposition:
     def test_a_missing_key_file_stops_the_start(self, tmp_path):
         push = PushNotificationConfig(**push_config(tmp_path / "AuthKey_MISSING.p8"))
         with pytest.raises(ApnsConfigurationError, match="cannot be read"):
-            create_push_gateway(push, object(), FakeDeviceRepository(Clock()))
+            create_push_gateway(push, object(), FakeDeviceRepository(Clock()), instance_id=INSTANCE)
 
     def test_a_wrong_key_stops_the_start(self, tmp_path):
         path = tmp_path / "key.p8"
         path.write_text(generate_rsa_pem())
         push = PushNotificationConfig(**push_config(path))
         with pytest.raises(ApnsConfigurationError, match="not an EC P-256 key"):
-            create_push_gateway(push, object(), FakeDeviceRepository(Clock()))
+            create_push_gateway(push, object(), FakeDeviceRepository(Clock()), instance_id=INSTANCE)
 
     def test_missing_http2_support_stops_the_start(self, tmp_path, monkeypatch):
         real_import = builtins.__import__
@@ -248,7 +260,7 @@ class TestComposition:
     def test_a_bad_guild_url_stops_the_start(self, tmp_path):
         push = PushNotificationConfig(**push_config(write_p8(tmp_path), guild_url="guild:8080"))
         with pytest.raises(ValueError, match="http or https"):
-            create_push_gateway(push, object(), FakeDeviceRepository(Clock()))
+            create_push_gateway(push, object(), FakeDeviceRepository(Clock()), instance_id=INSTANCE)
 
 
 class TestReaderToken:
@@ -276,6 +288,74 @@ class TestReaderToken:
         push = PushNotificationConfig(
             **push_config(write_p8(tmp_path), reader_token_path=str(token))
         )
-        gateway = create_push_gateway(push, object(), FakeDeviceRepository(Clock()))
-        assert gateway._feed._headers == {"authorization": "Bearer pat-abc123"}
+        gateway = create_push_gateway(
+            push, object(), FakeDeviceRepository(Clock()), instance_id=INSTANCE
+        )
+        assert gateway._feed._headers() == {"Authorization": "Bearer pat-abc123"}
         await gateway.stop()
+
+
+class TestReaderAuth:
+    """On an authenticated Guild the gateway reads with the delivery credential."""
+
+    async def test_the_named_auth_adapter_reads_the_guild(self, tmp_path):
+        push = PushNotificationConfig(
+            **push_config(
+                write_p8(tmp_path),
+                reader_auth={
+                    "adapter": WORKLOAD_AUTH,
+                    "kwargs": {
+                        "exchange_url": "https://guild.example/api/v1/tokens/workload/exchange",
+                        "token_file": str(tmp_path / "proof"),
+                        "audiences": ["volundr-api"],
+                        "scopes": ["forge:notifications:deliver"],
+                    },
+                },
+            )
+        )
+
+        auth = create_reader_auth(push.gateway)
+
+        assert isinstance(auth, WorkloadIdentityBearerTokenAuthAdapter)
+        assert auth._scopes == ["forge:notifications:deliver"]
+
+    def test_no_credential_for_an_allow_all_guild(self, tmp_path):
+        push = PushNotificationConfig(**push_config(write_p8(tmp_path)))
+        assert isinstance(create_reader_auth(push.gateway), NoAuthHeaderAdapter)
+
+    def test_reader_auth_and_a_token_file_are_one_too_many(self, tmp_path):
+        with pytest.raises(ValidationError, match="keep one"):
+            PushGatewayConfig(
+                enabled=True,
+                guild_url="http://g",
+                reader_token_path="/tmp/token",
+                reader_auth={"adapter": WORKLOAD_AUTH},
+            )
+
+    @pytest.mark.parametrize(
+        ("reader_auth", "message"),
+        [
+            ({"kwargs": {}}, "needs an adapter"),
+            ({"adapter": WORKLOAD_AUTH, "scopes": []}, "adapter and kwargs only"),
+        ],
+    )
+    def test_a_malformed_reader_auth_is_refused(self, reader_auth, message):
+        with pytest.raises(ValidationError, match=message):
+            PushGatewayConfig(enabled=True, guild_url="http://g", reader_auth=reader_auth)
+
+    def test_an_adapter_that_is_not_an_http_auth_port_stops_the_start(self, tmp_path):
+        push = PushNotificationConfig(
+            **push_config(write_p8(tmp_path), reader_auth={"adapter": "collections.OrderedDict"})
+        )
+        with pytest.raises(ValueError, match="is not an HttpAuthPort"):
+            create_reader_auth(push.gateway)
+
+    def test_the_gateway_needs_this_nodes_instance_id(self, tmp_path):
+        push = PushNotificationConfig(**push_config(write_p8(tmp_path)))
+        with pytest.raises(ValueError, match="guild.instance_id"):
+            create_push_gateway(push, object(), FakeDeviceRepository(Clock()), instance_id="")
+
+    def test_a_registry_without_every_kind_stops_the_start(self, tmp_path):
+        push = PushNotificationConfig(**push_config(write_p8(tmp_path)))
+        with pytest.raises(ValueError, match="every token kind"):
+            create_push_gateway(push, object(), object(), instance_id=INSTANCE)  # type: ignore[arg-type]

@@ -19,6 +19,13 @@ own *family* of scopes (:data:`SCOPES_BY_TOKEN_USE`):
 - ``token_use == "forge_session"`` — minted by Forge when it launches a
   session, bound to that one session, and held by its broker for the Forge MCP
   (notify, read sessions and, with an operator grant, message or run peers).
+- ``token_use == "notification_delivery"`` — minted by the workload-identity
+  exchange for the one workload whose mapping lists the scope in
+  ``privileged_scopes``: the Forge push gateway. It is the only scope that
+  *widens* what its principal sees (every owner's and every org's
+  notifications, for push delivery), so it is admitted on the notification feed
+  and the instance registry and nowhere else, and never mixed with another
+  family.
 
 Enforcement is **stateless and fail-closed for scoped tokens only**:
 
@@ -75,6 +82,12 @@ FORGE_SESSION_READ_SCOPE = "forge:session:read"
 FORGE_SESSION_MESSAGE_SCOPE = "forge:session:message"
 FORGE_SESSION_LIFECYCLE_SCOPE = "forge:session:lifecycle"
 
+#: The claim value of the push gateway's cross-tenant notification reader.
+NOTIFICATION_DELIVERY_TOKEN_USE = "notification_delivery"
+#: Read every owner's notification feed (with each owner's read state) and every
+#: Forge instance of the Guild, for push delivery. Nothing else.
+NOTIFICATION_DELIVERY_SCOPE = "forge:notifications:deliver"
+
 #: Scopes a ``valkyrie_build`` credential (exchange or pairing code) or a scoped
 #: OAuth PAT may carry.
 VALKYRIE_BUILD_SCOPES: frozenset[str] = frozenset(
@@ -98,14 +111,22 @@ FORGE_SESSION_SCOPES: frozenset[str] = frozenset(
     }
 )
 
+#: Scopes a ``notification_delivery`` credential may carry. Each widens its
+#: principal's authority, so the exchange grants one only to a mapping that lists
+#: it in ``privileged_scopes``.
+NOTIFICATION_DELIVERY_SCOPES: frozenset[str] = frozenset({NOTIFICATION_DELIVERY_SCOPE})
+
 #: Each scoped ``token_use`` and the family of scopes it may carry.
 SCOPES_BY_TOKEN_USE: dict[str, frozenset[str]] = {
     VALKYRIE_BUILD_TOKEN_USE: VALKYRIE_BUILD_SCOPES,
     FORGE_SESSION_TOKEN_USE: FORGE_SESSION_SCOPES,
+    NOTIFICATION_DELIVERY_TOKEN_USE: NOTIFICATION_DELIVERY_SCOPES,
 }
 
 #: Scoped token uses that are denied wherever no scope of their family applies.
-_DENY_BY_DEFAULT_TOKEN_USES: frozenset[str] = frozenset({FORGE_SESSION_TOKEN_USE})
+_DENY_BY_DEFAULT_TOKEN_USES: frozenset[str] = frozenset(
+    {FORGE_SESSION_TOKEN_USE, NOTIFICATION_DELIVERY_TOKEN_USE}
+)
 
 #: The scopes a short-lived workload credential may ever be granted. A caller
 #: cannot self-grant anything outside this allowlist — unknown scopes are
@@ -113,7 +134,15 @@ _DENY_BY_DEFAULT_TOKEN_USES: frozenset[str] = frozenset({FORGE_SESSION_TOKEN_USE
 #: not configuration: whoever could edit the config could mint privilege.
 #:
 #: Every entry must have an enforcement point (see the module docstring).
-KNOWN_WORKLOAD_SCOPES: frozenset[str] = VALKYRIE_BUILD_SCOPES | FORGE_SESSION_SCOPES
+KNOWN_WORKLOAD_SCOPES: frozenset[str] = (
+    VALKYRIE_BUILD_SCOPES | FORGE_SESSION_SCOPES | NOTIFICATION_DELIVERY_SCOPES
+)
+
+#: Where a ``notification_delivery`` credential is admitted, besides identity/me.
+_NOTIFICATION_DELIVERY_ROUTES = (
+    ("GET", r"/api/v1/forge/notifications"),
+    ("GET", r"/api/v1/niuu/instances"),
+)
 
 #: Scoped credentials may always inspect their own current identity.
 _IDENTITY_ME = ("GET", "/api/v1/identity/me")
@@ -285,6 +314,25 @@ def bound_workload_scopes(
     return kept
 
 
+def is_notification_delivery_claims(claims: dict | None) -> bool:
+    """Whether verified claims are the push gateway's cross-tenant reader."""
+    return (
+        claims is not None
+        and claims.get("token_use") == NOTIFICATION_DELIVERY_TOKEN_USE
+        and NOTIFICATION_DELIVERY_SCOPE in credential_scopes(claims)
+    )
+
+
+def is_notification_delivery_token(token: str) -> bool:
+    """Whether ``token`` is a ``forge:notifications:deliver`` credential.
+
+    Read off claims Envoy (or the node's identity adapter) already verified, like
+    the rest of this module. Routes the scope admits call this to widen what they
+    serve to every owner and org; everything else never sees such a credential.
+    """
+    return is_notification_delivery_claims(_decode_claims(token))
+
+
 def _forge_session_allows_route(claims: dict, method: str, path: str) -> bool:
     """Route and scope half of the Forge session allow-list (Forge checks bindings)."""
     # Imported lazily: the policy module builds on this module's scope constants.
@@ -307,6 +355,11 @@ def credential_allows_route(token: str, method: str, path: str) -> bool:
         return _forge_session_allows_route(claims, method, path)
     if (method, path) == _IDENTITY_ME:
         return True
+    if claims.get("token_use") == NOTIFICATION_DELIVERY_TOKEN_USE:
+        return is_notification_delivery_claims(claims) and any(
+            method == verb and re.fullmatch(pattern, path)
+            for verb, pattern in _NOTIFICATION_DELIVERY_ROUTES
+        )
     routes = [
         ("POST", r"/api/v1/forge/sessions", "forge:session:create"),
         (
@@ -404,6 +457,9 @@ __all__ = [
     "FORGE_SESSION_TOKEN_USE",
     "KNOWN_WORKLOAD_SCOPES",
     "NODE_JOIN_SCOPE",
+    "NOTIFICATION_DELIVERY_SCOPE",
+    "NOTIFICATION_DELIVERY_SCOPES",
+    "NOTIFICATION_DELIVERY_TOKEN_USE",
     "OPENSHELL_SESSION_TOKEN_USE",
     "OPENSHELL_RESIDENT_TOKEN_USE",
     "SCOPES_BY_TOKEN_USE",
@@ -414,6 +470,8 @@ __all__ = [
     "claims_have_scope",
     "credential_allows_route",
     "credential_scopes",
+    "is_notification_delivery_claims",
+    "is_notification_delivery_token",
     "require_scope",
     "scoped_credential_claims",
     "token_has_scope",

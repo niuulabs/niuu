@@ -180,7 +180,8 @@ class InMemoryNotificationRepository(NotificationRepository):
         items = [
             n
             for n in items
-            if (not query.kinds or n.kind in query.kinds)
+            if (query.owner_id is None or n.owner_id == query.owner_id)
+            and (not query.kinds or n.kind in query.kinds)
             and (not severities or n.severity in severities)
             and (not query.sources or n.source in query.sources)
             and (query.session_id is None or n.session_id == query.session_id)
@@ -222,6 +223,26 @@ class InMemoryNotificationRepository(NotificationRepository):
 
     async def get_watermark(self, user_id: str) -> ReadWatermark:
         return self.store.watermarks.get(user_id, ReadWatermark())
+
+    def _read_by_owner(self, notification: Notification) -> bool:
+        watermark = self.store.watermarks.get(notification.owner_id, ReadWatermark())
+        return (
+            notification.seq <= watermark.read_through_seq
+            or (notification.owner_id, notification.id) in self.store.reads
+        )
+
+    async def read_by_owners(self, notifications: list[Notification]) -> set[UUID]:
+        return {n.id for n in notifications if self._read_by_owner(n)}
+
+    async def owner_unread_counts(self, owner_ids: list[str]) -> dict[str, int]:
+        return {
+            owner: sum(
+                1
+                for n in self.store.notifications.values()
+                if n.owner_id == owner and not self._read_by_owner(n)
+            )
+            for owner in owner_ids
+        }
 
     async def advance_watermark(
         self, user_id: str, *, read_through_seq: int, expected_revision: int

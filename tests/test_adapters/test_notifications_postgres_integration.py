@@ -242,6 +242,43 @@ async def test_feed_paging_filters_scope_and_counts(pool):
     assert await repo.get(uuid4()) is None
 
 
+async def test_the_delivery_view_reads_every_owner_with_each_owners_read_state(pool):
+    repo = PostgresNotificationRepository(pool)
+    created = await repo.project(
+        [
+            candidate("a1"),
+            candidate("a2"),
+            candidate("b1", owner_id="owner-b", tenant_id="tenant-z"),
+            candidate("c1", owner_id="owner-c", tenant_id=None),
+        ]
+    )
+    by_key = {n.dedupe_key: n for n in created}
+    # owner-a read a1 through the watermark; owner-b read b1 by itself. A third
+    # reader's acknowledgement of a2 is not owner-a's.
+    await repo.advance_watermark("owner-a", read_through_seq=by_key["a1"].seq, expected_revision=0)
+    await repo.mark_read("owner-b", by_key["b1"].id)
+    await repo.mark_read("someone-else", by_key["a2"].id)
+    everyone = NotificationScope.for_delivery()
+
+    page = await repo.list_feed(everyone, NotificationQuery(limit=10), read_through_seq=0)
+    one_owner = await repo.list_feed(
+        everyone, NotificationQuery(limit=10, owner_id="owner-b"), read_through_seq=0
+    )
+
+    assert sorted(n.dedupe_key for n in page.items) == ["a1", "a2", "b1", "c1"]
+    assert [n.dedupe_key for n in one_owner.items] == ["b1"]
+    read = await repo.read_by_owners(page.items)
+    assert {n.dedupe_key for n in page.items if n.id in read} == {"a1", "b1"}
+    assert await repo.read_by_owners([]) == set()
+    assert await repo.owner_unread_counts(["owner-a", "owner-b", "owner-c", "nobody"]) == {
+        "owner-a": 1,
+        "owner-b": 0,
+        "owner-c": 1,
+        "nobody": 0,
+    }
+    assert await repo.owner_unread_counts([]) == {}
+
+
 async def test_watermark_compare_and_swap_moves_forward_only(pool):
     repo = PostgresNotificationRepository(pool)
     assert (await repo.get_watermark("reader")).revision == 0

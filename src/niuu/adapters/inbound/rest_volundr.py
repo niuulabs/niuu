@@ -82,7 +82,13 @@ from niuu.domain.presented_files import (
 )
 from niuu.domain.services.forge_session_policy import policy_refusal
 from niuu.domain.services.instances import InstanceService
-from niuu.domain.services.token_scope import FORGE_SESSION_TOKEN_USE
+from niuu.domain.services.token_scope import (
+    FORGE_SESSION_READ_SCOPE,
+    FORGE_SESSION_TOKEN_USE,
+    NOTIFICATION_DELIVERY_SCOPE,
+    is_notification_delivery_token,
+    require_scope,
+)
 from niuu.domain.session_owners import SessionOwners
 from niuu.forge_mcp.credentials import token_scopes
 from niuu.ports.instances import InvalidInstanceIdError
@@ -92,6 +98,8 @@ logger = logging.getLogger(__name__)
 UNAVAILABLE_INSTANCES_HEADER = "X-Forge-Unavailable-Instances"
 #: The push-token kind every node pushes to; other kinds serve only the push gateway.
 ALERT_TOKEN_KIND = "alert"
+#: The registry ``config`` key that marks the one Forge running the Guild push gateway.
+PUSH_GATEWAY_CONFIG_KEY = "push_gateway"
 #: Marks a facade's owner probe of another node, and its owner-hint question to the
 #: Guild: the facade answering it reports only its own nodes and never asks back,
 #: so two facades cannot ask each other in a loop (LEX-1738).
@@ -167,6 +175,11 @@ def _is_session_principal(principal: Principal) -> bool:
 
 def _local_only(instances: list[RegisteredInstance]) -> list[RegisteredInstance]:
     return [instance for instance in instances if _uses_embedded_transport(instance)]
+
+
+def _bearer_token(request: Request) -> str:
+    value = request.headers.get("authorization", "")
+    return value[7:] if value.startswith("Bearer ") else ""
 
 
 async def _visible_instances(
@@ -486,6 +499,7 @@ def _instance_page(response: httpx.Response, instance: RegisteredInstance) -> In
         read_through_seq=counters[1],
         unread_count=counters[2],
         revision=payload.get("revision") if type(payload.get("revision")) is int else None,
+        delivery=payload.get("delivery") if isinstance(payload.get("delivery"), dict) else None,
     )
 
 
@@ -2645,7 +2659,19 @@ def create_volundr_router(
         _ensure_remote_success(response)
         return response
 
-    @router.get("/notifications")
+    async def _feed_instances(request: Request, principal: Principal) -> list[RegisteredInstance]:
+        """The nodes whose feeds a caller reads: those it sees, or every Forge node for
+        the push gateway's delivery credential (it pushes for every owner and org)."""
+        if is_notification_delivery_token(_bearer_token(request)):
+            return await service.list_for_delivery(kind=InstanceKind.VOLUNDR)
+        return await _visible_instances(service, principal)
+
+    @router.get(
+        "/notifications",
+        dependencies=[
+            Depends(require_scope(FORGE_SESSION_READ_SCOPE, NOTIFICATION_DELIVERY_SCOPE))
+        ],
+    )
     async def list_notifications(
         request: Request,
         response: Response,
@@ -2674,7 +2700,7 @@ def create_volundr_router(
                 status.HTTP_422_UNPROCESSABLE_CONTENT, "Use either before or after, not both"
             )
         limit = _optional_limit(query.get("limit"))
-        visible = await _visible_instances(service, principal)
+        visible = await _feed_instances(request, principal)
         # A cursor names the nodes it continues: a node missing from a before-cursor
         # has no older rows left, and one missing from an after-cursor is not being
         # gap-filled (a client that wants a node from the start sends it with seq 0).
@@ -3030,15 +3056,15 @@ def create_volundr_router(
         )
 
     # -- Push gateway -----------------------------------------------------------
-    # The gateway runs on one node (the default node unless ``instance_id`` selects
-    # another); a node without push answers 503.
+    # The gateway runs on the one node the registry marks (config.push_gateway), unless
+    # ``instance_id`` selects another; a node without push answers 503.
 
     @router.get("/push/status")
     async def push_status(
         request: Request, principal: Principal = Depends(extract_principal)
     ) -> Response:
         """The push gateway's counters, from the node that runs it."""
-        return await _proxy_rule_request(request, principal, method="GET", path="/push/status")
+        return await _proxy_to_push_gateway(request, principal, method="GET", path="/push/status")
 
     @router.post("/push/test")
     async def send_test_push(
@@ -3047,7 +3073,7 @@ def create_volundr_router(
         principal: Principal = Depends(extract_principal),
     ) -> Response:
         """Push once to the caller's own registered tokens (the gateway node sends it)."""
-        return await _proxy_rule_request(
+        return await _proxy_to_push_gateway(
             request, principal, method="POST", path="/push/test", body=body
         )
 
@@ -3164,6 +3190,37 @@ def create_volundr_router(
         )
         return instances, responses, unavailable
 
+    async def _proxy_to_push_gateway(
+        request: Request, principal: Principal, *, method: str, path: str, body: Any = None
+    ) -> Response:
+        """Send a push-gateway call to the node the registry marks as the Guild's push
+        gateway (``config.push_gateway: true``), or to the node ``instance_id`` selects;
+        409 when the registry marks none or several."""
+        if request.query_params.get("instance_id"):
+            gateways = [await _notification_target(request, principal)]
+        else:
+            gateways = [
+                instance
+                for instance in await _visible_instances(service, principal)
+                if (instance.config or {}).get(PUSH_GATEWAY_CONFIG_KEY) is True
+            ]
+        if len(gateways) != 1:
+            found = ", ".join(sorted(instance.id for instance in gateways)) or "none"
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Live Activity, push-to-start and widget tokens go to the Guild's push gateway, "
+                "the one Forge whose registry entry has config.push_gateway: true "
+                f"(found: {found}). Only alert tokens can be registered here until then",
+            )
+        [gateway] = gateways
+        remote = await _proxy_to(gateway, request, method=method, path=path, body=body)
+        if remote.status_code == status.HTTP_204_NO_CONTENT or not remote.content:
+            return Response(status_code=remote.status_code)
+        payload = _remote_json(remote)
+        if isinstance(payload, dict):
+            payload = _with_instance(payload, gateway, rebase_chat_endpoint=False)
+        return JSONResponse(payload, status_code=remote.status_code)
+
     @router.post("/devices", status_code=status.HTTP_201_CREATED)
     async def register_device(
         request: Request,
@@ -3181,7 +3238,7 @@ def create_volundr_router(
         if body.get("kind", ALERT_TOKEN_KIND) != ALERT_TOKEN_KIND:
             # Live Activity, push-to-start and widget tokens serve only the push
             # gateway, which runs on one node: they register there alone.
-            return await _proxy_rule_request(
+            return await _proxy_to_push_gateway(
                 request, principal, method="POST", path="/devices", body=body
             )
         instances, responses, unavailable = await _device_fan_out(
@@ -3252,7 +3309,7 @@ def create_volundr_router(
         """
         path = f"/devices/{quote(token, safe='')}"
         if kind is not None and kind != ALERT_TOKEN_KIND:
-            return await _proxy_rule_request(request, principal, method="DELETE", path=path)
+            return await _proxy_to_push_gateway(request, principal, method="DELETE", path=path)
         instances, responses, unavailable = await _device_fan_out(
             request,
             principal,

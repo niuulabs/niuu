@@ -1080,6 +1080,17 @@ class DeviceRegistration(BaseModel):
         max_length=200,
         description="The Live Activity a live_activity token updates",
     )
+    install_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description=(
+            "The app install the token belongs to (stable per install). Every token of an "
+            "install is one device the owner sees and switches off under their "
+            "integrations. Required for every kind but alert; an alert token without one "
+            "is its own device"
+        ),
+    )
 
 
 #: Environment names a registration may use, with Apple's entitlement word for sandbox.
@@ -1128,6 +1139,8 @@ class DeviceResponse(BaseModel):
     kind: str
     environment: str | None = None
     activity_id: str | None = None
+    install_id: str | None = None
+    device_id: str | None = None
     created_at: str
     updated_at: str
 
@@ -1141,6 +1154,8 @@ class DeviceResponse(BaseModel):
             kind=device.kind.value,
             environment=device.environment.value if device.environment else None,
             activity_id=device.activity_id,
+            install_id=device.install_id,
+            device_id=device.connection_id,
             created_at=device.created_at.isoformat(),
             updated_at=device.updated_at.isoformat(),
         )
@@ -2231,6 +2246,9 @@ def create_router(
                 "voice_conversation": True,
                 # LEX-1677: GET /sessions?fields=summary (and limit)
                 "summary_sessions": True,
+                # POST /devices takes every token kind, each naming its install_id: this
+                # node runs the push gateway. Other nodes take alert tokens only.
+                "push_installs": len(getattr(device_repository, "token_kinds", ())) > 1,
             },
             "notifications_enabled": notifications,
             "projects_enabled": project_service is not None,
@@ -3327,8 +3345,9 @@ def create_router(
         moves to the caller when another user registered it before. With
         ``push.enabled`` (without the gateway) it also gives the owner the
         "Needs-input pushes" rule; when that fails the registration answers 500 so
-        the app registers again. A registry that keeps alert tokens only answers 422
-        for any other kind.
+        the app registers again. Every token kind but alert names its ``install_id``,
+        and only the push gateway's node takes them (``capabilities.push_installs``);
+        anything else answers 422.
         """
         if device_repository is None:
             raise HTTPException(
@@ -3359,6 +3378,7 @@ def create_router(
             ),
             # Only a Live Activity update token belongs to one activity.
             activity_id=data.activity_id if data.kind is PushTokenKind.LIVE_ACTIVITY else None,
+            install_id=data.install_id,
         )
         try:
             stored = await device_repository.upsert(device)

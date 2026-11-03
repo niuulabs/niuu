@@ -577,3 +577,58 @@ def test_feed_propagates_optional_read_revision_and_individual_read_flag():
     assert feed["instances"]["remote"]["revision"] == 7
     assert feed["instances"]["local"].get("revision") is None
     assert feed["items"][0]["read"] is True
+
+
+def _delivery_bearer() -> str:
+    import jwt
+
+    return jwt.encode(
+        {
+            "sub": "forge-gateway",
+            "token_use": "notification_delivery",
+            "scopes": ["forge:notifications:deliver"],
+        },
+        "test-only-signing-key-32-bytes-long!",
+        algorithm="HS256",
+    )
+
+
+@respx.mock
+def test_the_delivery_credential_reads_every_forge_node_and_their_delivery_block():
+    """The push gateway reads every node, whichever tenant registered it."""
+
+    def remote_delivery(request):
+        page = _page(REMOTE_ITEMS, request.url.params)
+        page["delivery"] = {"owner_unread_counts": {"user-a": 3}, "node_pushes_alerts": True}
+        return Response(200, json=page)
+
+    remote = respx.get("http://remote/api/v1/forge/notifications").mock(side_effect=remote_delivery)
+    other_tenant = _instance("remote", base_url="http://remote", tenant_id="tenant-z")
+    client = _client([LOCAL, other_tenant], embedded_forge_app=_embedded())
+
+    page = client.get(
+        URL,
+        params={"all_instances": "true", "view": "delivery", "limit": 5},
+        headers={"authorization": f"Bearer {_delivery_bearer()}"},
+    ).json()
+
+    assert {item["instance_id"] for item in page["items"]} == {"local", "remote"}
+    assert page["instances"]["remote"]["delivery"] == {
+        "owner_unread_counts": {"user-a": 3},
+        "node_pushes_alerts": True,
+    }
+    # The node gets the same credential and the view.
+    request = remote.calls.last.request
+    assert request.url.params["view"] == "delivery"
+    assert request.headers["authorization"] == f"Bearer {_delivery_bearer()}"
+
+
+@respx.mock
+def test_a_person_sees_only_their_tenants_nodes():
+    respx.get("http://remote/api/v1/forge/notifications").mock(side_effect=_remote_feed)
+    other_tenant = _instance("remote", base_url="http://remote", tenant_id="tenant-z")
+    client = _client([LOCAL, other_tenant], embedded_forge_app=_embedded())
+
+    page = _fleet(client, limit=5).json()
+
+    assert {item["instance_id"] for item in page["items"]} == {"local"}

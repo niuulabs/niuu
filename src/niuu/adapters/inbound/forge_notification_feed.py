@@ -77,6 +77,8 @@ class InstancePage:
     read_through_seq: int
     unread_count: int
     revision: int | None = None
+    #: The node's ``delivery`` block, in the push gateway's delivery view only.
+    delivery: dict[str, Any] | None = None
 
 
 @dataclass
@@ -84,16 +86,17 @@ class MergedPage:
     items: list[dict[str, Any]]
     next_before: dict[str, int | None] | None
     next_after: dict[str, int]
-    summaries: dict[str, dict[str, int]] = field(default_factory=dict)
+    summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
-def _summaries(pages: Mapping[str, InstancePage]) -> dict[str, dict[str, int]]:
+def _summaries(pages: Mapping[str, InstancePage]) -> dict[str, dict[str, Any]]:
     return {
         instance_id: {
             "head_seq": page.head_seq,
             "read_through_seq": page.read_through_seq,
             "unread_count": page.unread_count,
             **({"revision": page.revision} if page.revision is not None else {}),
+            **({"delivery": page.delivery} if page.delivery is not None else {}),
         }
         for instance_id, page in pages.items()
     }

@@ -78,6 +78,24 @@ def test_status_reports_the_gateway(rig):
     assert body["registrations_environment_missing"] == 0
 
 
+def test_status_shows_the_callers_own_org_alerts_only(rig):
+    rig.devices.add(device("alert-1"), device("alert-2", owner_id="other"))
+    rig.feed.add(
+        guild_notification("n-1", tenant_id="default"),
+        guild_notification("n-2", seq=2, owner_id="other", tenant_id="acme"),
+    )
+    asyncio.run(rig.gateway.run_once())
+
+    mine = rig.client.get(f"{URL}/status", headers=AUTH).json()
+    theirs = rig.client.get(
+        f"{URL}/status", headers={"x-auth-user-id": "other", "x-auth-tenant": "acme"}
+    ).json()
+
+    assert mine["tenant_alerts"] == {"sent": 1}
+    assert theirs["tenant_alerts"] == {"sent": 1}
+    assert mine["registry_problem"] == "" and mine["self_pushing_nodes"] == []
+
+
 def test_status_needs_a_caller(rig):
     assert rig.client.get(f"{URL}/status").status_code == 401
 

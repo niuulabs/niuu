@@ -1146,3 +1146,89 @@ async def test_exchange_logs_which_workload_it_spoke_for(caplog: pytest.LogCaptu
     assert f"workload={WORKLOAD_SUBJECT}" in line
     assert f"owner={OWNER_ID}" in line
     assert result.token not in line
+
+
+def _granting(service: WorkloadIdentityService, scopes: list[str]) -> WorkloadIdentityService:
+    """The mapping lists ``scopes`` in its privileged_scopes."""
+    service._config.mappings[0].privileged_scopes = scopes
+    return service
+
+
+def _claims(service: WorkloadIdentityService, token: str) -> dict[str, Any]:
+    jwk = PyJWKSet.from_dict(service.jwks()).keys[0]
+    return jwt.decode(
+        token, key=jwk.key, algorithms=["RS256"], audience="volundr-api", issuer=EXCHANGE_ISSUER
+    )
+
+
+class TestNotificationDeliveryScope:
+    """The push gateway's cross-tenant reader: granted only where a mapping lists it."""
+
+    async def test_a_mapping_that_lists_it_mints_a_delivery_token(self) -> None:
+        proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        service = _granting(_service(proof_key), ["forge:notifications:deliver"])
+
+        result = await service.exchange(
+            _workload_token(proof_key), scopes=["forge:notifications:deliver"]
+        )
+
+        claims = _claims(service, result.token)
+        assert claims["token_use"] == "notification_delivery"
+        assert claims["scopes"] == ["forge:notifications:deliver"]
+
+    async def test_a_mapping_that_does_not_list_it_is_refused_loudly(self) -> None:
+        proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        service = _service(proof_key)
+
+        with pytest.raises(WorkloadIdentityError, match="privileged_scopes"):
+            await service.exchange(
+                _workload_token(proof_key), scopes=["forge:notifications:deliver"]
+            )
+
+    async def test_it_never_shares_a_token_with_build_scopes(self) -> None:
+        proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        service = _granting(_service(proof_key), ["forge:notifications:deliver"])
+
+        with pytest.raises(WorkloadIdentityError, match="separate exchanges"):
+            await service.exchange(
+                _workload_token(proof_key),
+                scopes=["forge:notifications:deliver", "forge:session:create"],
+            )
+
+    async def test_listing_it_grants_nothing_unasked(self) -> None:
+        proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        service = _granting(_service(proof_key), ["forge:notifications:deliver"])
+
+        result = await service.exchange(_workload_token(proof_key))
+
+        assert "token_use" not in _claims(service, result.token)
+
+
+class TestPrivilegedScopesConfig:
+    def _mapping(self, **overrides):
+        from niuu.config_models import WorkloadIdentityMappingConfig
+
+        values = {
+            "name": "forge",
+            "subject": "system:serviceaccount:volundr:niuu-volundr",
+            "issuer": WORKLOAD_ISSUER,
+            "owner_id": OWNER_ID,
+            "privileged_scopes": ["forge:notifications:deliver"],
+        }
+        values.update(overrides)
+        return WorkloadIdentityMappingConfig(**values)
+
+    def test_an_exact_subject_may_carry_it(self) -> None:
+        assert self._mapping().privileged_scopes == ["forge:notifications:deliver"]
+
+    def test_a_subject_prefix_may_not(self) -> None:
+        with pytest.raises(ValueError, match="exact subject"):
+            self._mapping(subject="", subject_prefix="system:serviceaccount:volundr:")
+
+    def test_a_delegated_identity_may_not(self) -> None:
+        with pytest.raises(ValueError, match="delegated"):
+            self._mapping(owner_from="delegation")
+
+    def test_only_privileged_scopes_may_be_listed(self) -> None:
+        with pytest.raises(ValueError, match="not privileged scopes"):
+            self._mapping(privileged_scopes=["forge:session:create"])

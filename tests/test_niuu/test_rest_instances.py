@@ -70,6 +70,8 @@ def _instance(
 class StubInstanceService:
     def __init__(self) -> None:
         self.visible_instances: list[RegisteredInstance] = []
+        #: What the push gateway's delivery credential lists: every instance.
+        self.every_instance: list[RegisteredInstance] = []
         self.single_instance: RegisteredInstance | None = None
         self.create_result: RegisteredInstance | Exception | None = None
         self.update_result: RegisteredInstance | Exception | None = None
@@ -95,6 +97,10 @@ class StubInstanceService:
             }
         )
         return list(self.visible_instances)
+
+    async def list_for_delivery(self, *, kind: InstanceKind | None = None):
+        self.list_calls.append({"delivery": True, "kind": kind})
+        return list(self.every_instance)
 
     async def create_instance(self, principal: Principal, **kwargs: Any) -> RegisteredInstance:
         self.create_calls.append({"principal": principal, **kwargs})
@@ -944,3 +950,44 @@ def test_forgetting_an_unknown_source_is_a_404() -> None:
     )
 
     assert response.status_code == 404
+
+
+def _delivery_bearer(scopes: list[str] | None = None) -> str:
+    import jwt
+
+    return jwt.encode(
+        {
+            "sub": "forge-gateway",
+            "token_use": "notification_delivery",
+            "scopes": scopes if scopes is not None else ["forge:notifications:deliver"],
+        },
+        "test-only-signing-key-32-bytes-long!",
+        algorithm="HS256",
+    )
+
+
+def test_the_push_gateways_credential_lists_every_instance() -> None:
+    service = StubInstanceService()
+    service.visible_instances = [_instance("mine")]
+    service.every_instance = [_instance("mine"), _instance("theirs", tenant_id="tenant-z")]
+    client = _client(service)
+
+    response = client.get(
+        "/api/v1/niuu/instances?kind=volundr&enabledOnly=true",
+        headers={"authorization": f"Bearer {_delivery_bearer()}"},
+    )
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == ["mine", "theirs"]
+    assert service.list_calls == [{"delivery": True, "kind": InstanceKind.VOLUNDR}]
+
+
+def test_a_delivery_marker_without_its_scope_is_refused() -> None:
+    client = _client(StubInstanceService())
+
+    response = client.get(
+        "/api/v1/niuu/instances",
+        headers={"authorization": f"Bearer {_delivery_bearer(scopes=[])}"},
+    )
+
+    assert response.status_code == 403

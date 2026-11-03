@@ -484,3 +484,135 @@ class TestIndividualReads:
             == 422
         )
         assert not store.reads
+
+
+def _delivery_headers() -> dict[str, str]:
+    """The push gateway's forge:notifications:deliver credential, for its mapped owner."""
+    import jwt
+
+    token = jwt.encode(
+        {
+            "sub": "forge-gateway",
+            "token_use": "notification_delivery",
+            "scopes": ["forge:notifications:deliver"],
+        },
+        "test-only-signing-key-32-bytes-long!",
+        algorithm="HS256",
+    )
+    return {**headers("forge-gateway"), "authorization": f"Bearer {token}"}
+
+
+class TestDeliveryView:
+    """The push gateway reads every owner's notifications, each read as its owner reads it."""
+
+    async def test_the_delivery_credential_reads_every_owner_and_org(self, env):
+        client, service, _, sessions = env
+        await _seed(service, sessions, owner="owner-a", count=2)
+        await _seed(service, sessions, owner="owner-b", count=1)
+        mine = client.get(f"{PREFIX}/notifications", headers=headers("owner-b")).json()
+        read = mine["items"][0]["id"]
+        client.put(f"{PREFIX}/notifications/{read}/read", headers=headers("owner-b"))
+
+        page = client.get(
+            f"{PREFIX}/notifications", params={"limit": 5}, headers=_delivery_headers()
+        ).json()
+
+        assert sorted((item["owner_id"], item["read"]) for item in page["items"]) == [
+            ("owner-a", False),
+            ("owner-a", False),
+            ("owner-b", True),
+        ]
+        assert page["delivery"] == {
+            "owner_unread_counts": {"owner-a": 2, "owner-b": 0},
+            "node_pushes_alerts": False,
+        }
+        assert all(item["tenant_id"] == "tenant-a" for item in page["items"])
+
+    async def test_one_owners_page(self, env):
+        client, service, _, sessions = env
+        await _seed(service, sessions, owner="owner-a", count=2)
+        await _seed(service, sessions, owner="owner-b", count=1)
+
+        page = client.get(
+            f"{PREFIX}/notifications",
+            params={"owner_id": "owner-b", "view": "delivery"},
+            headers=_delivery_headers(),
+        ).json()
+
+        assert [item["owner_id"] for item in page["items"]] == ["owner-b"]
+        assert page["delivery"]["owner_unread_counts"] == {"owner-b": 1}
+
+    async def test_a_person_cannot_ask_for_the_delivery_view(self, env):
+        client, service, _, sessions = env
+        await _seed(service, sessions, owner="owner-b", count=1)
+
+        refused = client.get(
+            f"{PREFIX}/notifications", params={"view": "delivery"}, headers=headers(admin=True)
+        )
+
+        assert refused.status_code == 403
+        assert "forge:notifications:deliver" in refused.json()["detail"]
+
+    async def test_owner_id_filters_only_the_delivery_view(self, env):
+        client, *_ = env
+
+        refused = client.get(
+            f"{PREFIX}/notifications", params={"owner_id": "owner-b"}, headers=headers()
+        )
+
+        assert refused.status_code == 422
+
+    async def test_the_view_has_no_single_readers_unread_filter(self, env):
+        client, *_ = env
+
+        refused = client.get(
+            f"{PREFIX}/notifications", params={"unread": "true"}, headers=_delivery_headers()
+        )
+
+        assert refused.status_code == 422
+
+    async def test_a_reader_view_is_unchanged_and_carries_no_delivery_block(self, env):
+        client, service, _, sessions = env
+        await _seed(service, sessions, owner="owner-b", count=1)
+
+        page = client.get(f"{PREFIX}/notifications", headers=headers()).json()
+
+        assert page["items"] == [] and page["delivery"] is None
+
+    async def test_an_allow_all_host_serves_it_without_a_credential_and_says_it_pushes(self):
+        from unittest.mock import AsyncMock
+
+        from identity.adapters.identity import AllowAllIdentityAdapter
+
+        store = InMemoryNotificationStore()
+        sessions = InMemorySessionRepository()
+        service = NotificationService(
+            store.feed,
+            store.rule_repo,
+            store.outbox,
+            image_repository=store.images,
+            image_scheduler=store.image_scheduler,
+            reply_ready_enabled=True,
+            reply_title_chars=80,
+            reply_body_chars=100,
+            sinks=[],
+        )
+        app = FastAPI()
+        app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
+        app.include_router(
+            create_notifications_router(
+                service,
+                SessionService(sessions, MockPodManager(), authorization=OwnerOnly()),
+                prefix=PREFIX,
+                default_page_size=2,
+                max_page_size=5,
+                image_cache_max_age_seconds=CACHE_MAX_AGE,
+                node_pushes_alerts=True,
+            )
+        )
+        await _seed(service, sessions, owner="someone", count=1)
+
+        page = TestClient(app).get(f"{PREFIX}/notifications", params={"view": "delivery"}).json()
+
+        assert [item["owner_id"] for item in page["items"]] == ["someone"]
+        assert page["delivery"]["node_pushes_alerts"] is True

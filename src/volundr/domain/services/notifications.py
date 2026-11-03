@@ -54,6 +54,7 @@ from volundr.domain.notifications import (
     Notification,
     NotificationCandidate,
     NotificationDelivery,
+    NotificationDeliveryFeed,
     NotificationFeed,
     NotificationImageContent,
     NotificationImageState,
@@ -843,6 +844,29 @@ class NotificationService(NotificationRecorder):
             unread_count=unread,
             revision=watermark.revision,
             read_ids=await self.read_ids(principal, page.items),
+        )
+
+    async def list_delivery_feed(self, query: NotificationQuery) -> NotificationDeliveryFeed:
+        """Every owner's notifications for the push gateway, each read as its owner reads it.
+
+        Only a ``forge:notifications:deliver`` credential (or an AllowAll host, where
+        every caller is everyone) reaches this; the route checks it.
+        """
+        if query.unread is not None:
+            raise NotificationValidationError(
+                "The delivery view has no single reader: filter by unread per owner instead"
+            )
+        scope = NotificationScope.for_delivery()
+        page = await self._repository.list_feed(scope, query, read_through_seq=0)
+        items = await self._mark_stale(page.items)
+        head, _ = await self._repository.feed_counts(scope, read_through_seq=0)
+        owners = sorted({n.owner_id for n in items})
+        return NotificationDeliveryFeed(
+            items=items,
+            next_before=page.next_before,
+            head_seq=head,
+            read_ids=await self._repository.read_by_owners(items),
+            owner_unread_counts=await self._repository.owner_unread_counts(owners),
         )
 
     async def list_for_session(

@@ -337,6 +337,37 @@ class WorkloadIdentityMappingConfig(BaseModel):
         default_factory=dict,
         description="Non-secret audit metadata embedded as workload_* claims.",
     )
+    privileged_scopes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Scopes that widen authority beyond this mapping's owner, which only this "
+            "workload may request: forge:notifications:deliver lets the Forge push gateway "
+            "read every owner's and every org's notifications. Needs an exact subject."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_privileged_scopes(self) -> WorkloadIdentityMappingConfig:
+        from niuu.domain.services.token_scope import NOTIFICATION_DELIVERY_SCOPES
+
+        unknown = sorted(set(self.privileged_scopes) - NOTIFICATION_DELIVERY_SCOPES)
+        if unknown:
+            raise ValueError(
+                f"Workload identity mapping {self.name!r} privileged_scopes {unknown} are not "
+                f"privileged scopes (known: {sorted(NOTIFICATION_DELIVERY_SCOPES)})"
+            )
+        if self.privileged_scopes and (not self.subject.strip() or self.subject_prefix.strip()):
+            raise ValueError(
+                f"Workload identity mapping {self.name!r} grants privileged_scopes, so it must "
+                "name one exact subject (no subject_prefix): a prefix would grant them to "
+                "every workload it matches"
+            )
+        if self.privileged_scopes and self.owner_from.strip():
+            raise ValueError(
+                f"Workload identity mapping {self.name!r} grants privileged_scopes, which a "
+                "delegated (owner_from) identity cannot carry"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_owner_id_claim_pattern(self) -> WorkloadIdentityMappingConfig:

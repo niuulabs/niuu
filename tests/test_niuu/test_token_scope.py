@@ -103,6 +103,7 @@ class TestKnownWorkloadScopes:
                 "forge:session:read",
                 "forge:session:message",
                 "forge:session:lifecycle",
+                "forge:notifications:deliver",
             }
         )
 
@@ -492,3 +493,82 @@ class TestTrackerIssueRoutes:
     def test_scoped_workload_token_cannot_create_issues(self) -> None:
         token = _build_token(["forge:session:create"])
         assert not credential_allows_route(token, "POST", "/api/v1/tracker/issues")
+
+
+def _delivery_token(scopes: list[str] | None = None) -> str:
+    return _encode(
+        {
+            "token_use": token_scope.NOTIFICATION_DELIVERY_TOKEN_USE,
+            "scopes": scopes if scopes is not None else [token_scope.NOTIFICATION_DELIVERY_SCOPE],
+        }
+    )
+
+
+class TestNotificationDeliveryScope:
+    """The push gateway's cross-tenant reader is admitted on its two reads and nowhere else."""
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("GET", "/api/v1/forge/notifications"),
+            ("GET", "/api/v1/niuu/instances"),
+            ("GET", "/api/v1/identity/me"),
+        ],
+    )
+    def test_admitted_on_its_entry_points(self, method, path) -> None:
+        assert credential_allows_route(_delivery_token(), method, path) is True
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("PUT", "/api/v1/forge/notifications/read-state"),
+            ("GET", "/api/v1/forge/notifications/abc/image"),
+            ("GET", "/api/v1/forge/sessions"),
+            ("GET", "/api/v1/forge/sessions/stream"),
+            ("POST", "/api/v1/forge/devices"),
+            ("GET", "/api/v1/integrations"),
+            ("DELETE", "/api/v1/niuu/instances/x"),
+        ],
+    )
+    def test_denied_everywhere_else(self, method, path) -> None:
+        assert credential_allows_route(_delivery_token(), method, path) is False
+
+    def test_the_marker_without_the_scope_is_admitted_nowhere(self) -> None:
+        token = _delivery_token(scopes=[])
+        assert credential_allows_route(token, "GET", "/api/v1/forge/notifications") is False
+        assert token_scope.is_notification_delivery_token(token) is False
+
+    def test_it_is_recognised(self) -> None:
+        assert token_scope.is_notification_delivery_token(_delivery_token()) is True
+        assert token_scope.is_notification_delivery_token(_build_token(["node_join"])) is False
+        assert token_scope.is_notification_delivery_token("") is False
+
+    def test_a_build_token_cannot_carry_it(self) -> None:
+        token = _build_token([token_scope.NOTIFICATION_DELIVERY_SCOPE])
+        assert token_scope.is_notification_delivery_token(token) is False
+        assert credential_allows_route(token, "GET", "/api/v1/forge/notifications") is False
+
+    def test_a_pat_cannot_carry_it(self) -> None:
+        with pytest.raises(ValueError):
+            token_scope.validate_pat_scopes([token_scope.NOTIFICATION_DELIVERY_SCOPE])
+
+    def test_require_scope_admits_it_only_where_named(self) -> None:
+        feed = require_scope(FORGE_SESSION_READ_SCOPE, token_scope.NOTIFICATION_DELIVERY_SCOPE)
+        app = FastAPI()
+
+        @app.get("/feed")
+        async def read_feed(_: None = Depends(feed)) -> dict:
+            return {"ok": True}
+
+        @app.get("/sessions")
+        async def sessions(_: None = Depends(require_scope(FORGE_SESSION_READ_SCOPE))) -> dict:
+            return {"ok": True}
+
+        client = TestClient(app)
+        headers = {"Authorization": f"Bearer {_delivery_token()}"}
+        assert client.get("/feed", headers=headers).status_code == 200
+        # Deny by default: a check naming no scope of its family refuses it.
+        assert client.get("/sessions", headers=headers).status_code == 403
+        # A session credential still reads the feed with its own scope.
+        session = {"Authorization": f"Bearer {_session_token([FORGE_SESSION_READ_SCOPE])}"}
+        assert client.get("/feed", headers=session).status_code == 200

@@ -918,25 +918,56 @@ class TestLiveActivity:
 
         assert harness.devices.tokens(PushTokenKind.LIVE_ACTIVITY) == []
 
-    async def test_one_newest_page_serves_every_owner(self, harness):
+    async def test_each_owner_reads_their_own_newest_page(self, harness):
         harness.devices.add(
             device("la-a", PushTokenKind.LIVE_ACTIVITY),
             device("la-b", PushTokenKind.LIVE_ACTIVITY, owner_id="other"),
         )
+        # Another owner's notifications fill the Guild's newest page: an owner's own
+        # must still reach their Live Activity, so each owner's page is read for them.
+        harness.feed.add(guild_notification("n-1"))
         harness.feed.add(
-            guild_notification("n-1"), guild_notification("o-1", seq=2, owner_id="other")
+            *(guild_notification(f"o-{seq}", seq=seq, owner_id="other") for seq in range(2, 2 + 30))
         )
         harness.feed.newest_calls.clear()
 
         await harness.gateway.run_once()
 
-        # One read per node for the whole tick, whatever the number of owners.
-        assert sorted(harness.feed.newest_calls) == [(MINI, 20), (THOR, 20)]
+        # One read per node per owner refreshed, whatever the number of owners.
+        assert sorted(harness.feed.newest_calls) == [(MINI, 20)] * 2 + [(THOR, 20)] * 2
         states = {
             push.token: [item["id"] for item in push.payload["aps"]["content-state"]["items"]]
             for push in harness.apns.of_type("liveactivity")
         }
-        assert states == {"la-a": ["n-1"], "la-b": ["o-1"]}
+        assert states == {"la-a": ["n-1"], "la-b": ["o-31", "o-30", "o-29"]}
+
+    async def test_items_from_several_orgs_are_labelled_by_org(self, harness):
+        harness.devices.add(device("la-a", PushTokenKind.LIVE_ACTIVITY))
+        harness.feed.add(
+            guild_notification("n-1", tenant_id="acme"),
+            guild_notification("n-2", seq=2, tenant_id="globex"),
+        )
+
+        await harness.gateway.run_once()
+
+        [push] = harness.apns.of_type("liveactivity")
+        items = push.payload["aps"]["content-state"]["items"]
+        assert [(item["id"], item["tenantID"]) for item in items] == [
+            ("n-2", "globex"),
+            ("n-1", "acme"),
+        ]
+
+    async def test_items_of_one_org_carry_no_org_label(self, harness):
+        harness.devices.add(device("la-a", PushTokenKind.LIVE_ACTIVITY))
+        harness.feed.add(
+            guild_notification("n-1", tenant_id="acme"),
+            guild_notification("n-2", seq=2, tenant_id="acme"),
+        )
+
+        await harness.gateway.run_once()
+
+        [push] = harness.apns.of_type("liveactivity")
+        assert all("tenantID" not in item for item in push.payload["aps"]["content-state"]["items"])
 
     async def test_a_failed_update_is_retried_on_the_next_tick(self, harness):
         harness.devices.add(device("la-1", PushTokenKind.LIVE_ACTIVITY))
@@ -1674,3 +1705,92 @@ class TestEnvironmentCounts:
 def test_the_token_fingerprint_matches_the_apps_recipe():
     assert token_fingerprint("abc") == "ba7816bf8f01"
     assert token_fingerprint("ABC") == token_fingerprint("abc")
+
+
+class TestGuildWide:
+    """One gateway for every owner and org of a Guild, and no alert twice."""
+
+    async def test_an_alert_names_its_org_and_is_counted_for_it(self, harness):
+        harness.devices.add(device("alert-1"))
+        harness.feed.add(guild_notification("n-1", tenant_id="acme"))
+
+        await harness.gateway.run_once()
+
+        [push] = harness.apns.of_type("alert")
+        assert push.payload["tenant_id"] == "acme"
+        assert harness.deliveries.row("n-1").notification.tenant_id == "acme"
+        assert await harness.gateway.alerts_for_tenant("acme") == {"sent": 1}
+        # Another org sees none of it.
+        assert await harness.gateway.alerts_for_tenant("globex") == {}
+
+    async def test_an_untenanted_alert_carries_no_org(self, harness):
+        harness.devices.add(device("alert-1"))
+        harness.feed.add(guild_notification("n-1"))
+
+        await harness.gateway.run_once()
+
+        [push] = harness.apns.of_type("alert")
+        assert "tenant_id" not in push.payload
+        assert await harness.gateway.alerts_for_tenant(None) == {"sent": 1}
+
+    async def test_a_node_that_pushes_its_own_alerts_is_left_to_them(self, harness, caplog):
+        harness.devices.add(device("alert-1"))
+        harness.feed.self_pushing.add(MINI)
+        harness.feed.add(guild_notification("m-1", instance_id=MINI, kind="attention"))
+        harness.feed.add(guild_notification("n-1", kind="attention"))
+
+        await harness.gateway.run_once()
+
+        # Only the gateway's own node's alert goes out: the phone never gets one twice.
+        assert [push.payload["notification_id"] for push in harness.apns.of_type("alert")] == [
+            "n-1"
+        ]
+        row = harness.deliveries.row("m-1", MINI)
+        assert row.status is PushDeliveryStatus.SUPPRESSED
+        assert "pushes its own alerts" in row.detail
+        status = harness.gateway.status()
+        assert status["self_pushing_nodes"] == [MINI]
+        assert status["alerts_left_to_node"] == 1
+        assert any(
+            record.levelname == "ERROR" and MINI in record.getMessage() for record in caplog.records
+        )
+
+    async def test_a_node_that_stops_pushing_itself_is_alerted_again(self, harness):
+        harness.devices.add(device("alert-1"))
+        harness.feed.self_pushing.add(MINI)
+        await harness.gateway.run_once()
+        harness.feed.self_pushing.clear()
+        harness.feed.add(guild_notification("m-1", instance_id=MINI))
+
+        await harness.gateway.run_once()
+
+        assert harness.deliveries.row("m-1", MINI).status is PushDeliveryStatus.SENT
+        assert harness.gateway.status()["self_pushing_nodes"] == []
+
+    async def test_a_registry_marking_another_node_is_reported(self, caplog):
+        h = Harness()
+        h.feed.add_node(THOR)
+        h.feed.gateway_node = MINI
+        h.feed.add_node(MINI)
+
+        await h.gateway.run_once()
+
+        problem = h.gateway.status()["registry_problem"]
+        assert MINI in problem and THOR in problem and "config.push_gateway" in problem
+        assert any(record.levelname == "ERROR" for record in caplog.records)
+
+    async def test_a_registry_marking_no_node_is_reported(self):
+        h = Harness()
+        h.feed.gateway_node = None
+        h.feed.add_node(THOR)
+
+        await h.gateway.run_once()
+
+        assert "no node" in h.gateway.status()["registry_problem"]
+
+    async def test_the_registry_marking_this_node_is_no_problem(self, harness):
+        assert harness.gateway.status()["registry_problem"] == ""
+
+    def test_settings_need_this_nodes_instance_id(self):
+        with pytest.raises(ValueError, match="guild.instance_id"):
+            gateway_settings(instance_id="")

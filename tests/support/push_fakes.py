@@ -23,6 +23,7 @@ from volundr.domain.push_ports import (
     GuildFeed,
     GuildFeedError,
     GuildFeedPage,
+    GuildNode,
     PushDelivery,
     PushDeliveryRepository,
     PushDeliveryStatus,
@@ -72,8 +73,10 @@ def guild_notification(
     read: bool = False,
     image_url: str | None = None,
     image_thumbnail_url: str | None = None,
+    tenant_id: str | None = None,
 ) -> GuildNotification:
     return GuildNotification(
+        tenant_id=tenant_id,
         id=notification_id,
         instance_id=instance_id,
         seq=seq,
@@ -102,7 +105,11 @@ def device(
     platform: DevicePlatform = DevicePlatform.IOS,
     app_bundle_id: str | None = BUNDLE,
     activity_id: str | None = None,
+    install_id: str | None = None,
 ) -> DeviceToken:
+    """A registration; every kind but alert names its install (``install-1``)."""
+    if install_id is None and kind is not PushTokenKind.ALERT:
+        install_id = "install-1"
     return DeviceToken(
         owner_id=owner_id,
         platform=platform,
@@ -111,6 +118,7 @@ def device(
         kind=kind,
         environment=environment,
         activity_id=activity_id,
+        install_id=install_id,
     )
 
 
@@ -119,7 +127,12 @@ class FakeGuildFeed(GuildFeed):
 
     def __init__(self) -> None:
         self.feeds: dict[str, list[GuildNotification]] = {}
+        #: Each owner's unread count on a node (the same for every owner asked).
         self.unread_counts: dict[str, int] = {}
+        #: The node the registry marks as the push gateway.
+        self.gateway_node: str | None = THOR
+        #: Nodes that report pushing alerts themselves.
+        self.self_pushing: set[str] = set()
         #: The Guild itself is unreachable: every call fails.
         self.error: GuildFeedError | None = None
         #: Nodes that do not answer (the registry still lists them).
@@ -143,19 +156,26 @@ class FakeGuildFeed(GuildFeed):
         if node is not None and node in self.down:
             raise self.down[node]
 
-    async def nodes(self) -> list[str]:
+    async def nodes(self) -> list[GuildNode]:
         self._fail()
         self.nodes_calls += 1
-        return list(self.feeds)
+        return [GuildNode(id=node, push_gateway=node == self.gateway_node) for node in self.feeds]
 
-    async def newest(self, node: str, *, limit: int) -> GuildFeedPage:
+    async def newest(self, node: str, *, limit: int, owner_id: str | None = None) -> GuildFeedPage:
         self.newest_calls.append((node, limit))
         self._fail(node)
-        items = sorted(self.feeds.get(node, []), key=lambda item: item.seq, reverse=True)
+        every = self.feeds.get(node, [])
+        items = sorted(
+            (item for item in every if owner_id is None or item.owner_id == owner_id),
+            key=lambda item: item.seq,
+            reverse=True,
+        )
+        owners = {item.owner_id for item in items} | ({owner_id} if owner_id else set())
         return GuildFeedPage(
             items=items[:limit],
-            position=max((item.seq for item in items), default=0),
-            unread_count=self.unread_counts.get(node, 0),
+            position=max((item.seq for item in every), default=0),
+            owner_unread_counts={owner: self.unread_counts.get(node, 0) for owner in owners},
+            node_pushes_alerts=node in self.self_pushing,
         )
 
     async def after(self, node: str, position: int, *, limit: int) -> GuildFeedPage:
@@ -166,7 +186,9 @@ class FakeGuildFeed(GuildFeed):
             key=lambda item: item.seq,
         )[:limit]
         return GuildFeedPage(
-            items=items, position=max((item.seq for item in items), default=position)
+            items=items,
+            position=max((item.seq for item in items), default=position),
+            node_pushes_alerts=node in self.self_pushing,
         )
 
     async def notification_events(self) -> AsyncIterator[str]:
@@ -377,6 +399,13 @@ class FakePushDeliveryRepository(PushDeliveryRepository):
         row.detail, row.next_attempt_at = detail, retry_at
         return True
 
+    async def count_by_tenant(self) -> dict[str, dict[str, int]]:
+        counts: dict[str, dict[str, int]] = {}
+        for row in self.rows.values():
+            tenant = counts.setdefault(row.notification.tenant_id or "", {})
+            tenant[row.status.value] = tenant.get(row.status.value, 0) + 1
+        return counts
+
     async def count_sent_since(self, owner_id: str, since: datetime) -> int:
         return sum(
             1
@@ -461,6 +490,7 @@ def gateway_settings(
 ) -> PushGatewaySettings:
     values = {
         "bundle_id": BUNDLE,
+        "instance_id": THOR,
         "poll_interval_seconds": 30.0,
         "stream_enabled": True,
         "stream_retry_seconds": 5.0,

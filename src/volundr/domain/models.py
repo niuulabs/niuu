@@ -278,6 +278,18 @@ class DeviceToken(BaseModel):
         default=None,
         description="When a throttled push (widget reload, push-to-start) was last sent",
     )
+    install_id: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "The app install the token belongs to: every token of one install is one "
+            "device the owner sees and switches off"
+        ),
+    )
+    connection_id: str | None = Field(
+        default=None,
+        description="The owner's push-device integration connection (the device record)",
+    )
     created_at: datetime = Field(default_factory=_utc_now)
     updated_at: datetime = Field(default_factory=_utc_now)
 

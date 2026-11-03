@@ -21,6 +21,7 @@ from httpx import Response
 from identity.adapters.identity import AllowAllIdentityAdapter
 from niuu.adapters.inbound.rest_instances import create_instances_router
 from niuu.adapters.inbound.rest_volundr import create_volundr_router
+from niuu.adapters.outbound.http_auth import NoAuthHeaderAdapter
 from tests.support.push_fakes import (
     Clock,
     FakeApns,
@@ -51,6 +52,23 @@ REMOTE = _instance("remote", base_url="http://remote", tenant_id="default")
 DISABLED = _instance("off", base_url="http://off", tenant_id="default", enabled=False)
 
 
+def _delivery_page(items: list[dict[str, Any]], params, *, pushes: bool = False) -> dict:
+    """A node's delivery view: every owner's items (or one owner's), with each listed
+    owner's unread count, as Forge serves it to the gateway."""
+    owner = params.get("owner_id")
+    rows = [item for item in items if owner is None or item["owner_id"] == owner]
+    page = _page(rows, params, default_limit=50)
+    owners = {item["owner_id"] for item in rows} | ({owner} if owner else set())
+    page["delivery"] = {
+        "owner_unread_counts": {
+            o: sum(1 for item in items if item["owner_id"] == o and not item["read"])
+            for o in owners
+        },
+        "node_pushes_alerts": pushes,
+    }
+    return page
+
+
 class Guild:
     """The facade over one embedded node and one remote node, both with real feeds."""
 
@@ -63,7 +81,8 @@ class Guild:
 
         @node.get("/api/v1/forge/notifications")
         async def feed(request: Request):
-            return _page(self.local, request.query_params, default_limit=50)
+            assert request.query_params["view"] == "delivery"
+            return _delivery_page(self.local, request.query_params)
 
         registry = StubInstanceService([LOCAL, REMOTE, DISABLED])
         app = FastAPI()
@@ -78,6 +97,7 @@ class Guild:
         self.feed = HttpGuildFeed(
             guild_url="http://guild",
             timeout_seconds=5,
+            auth=NoAuthHeaderAdapter(),
             client=httpx.AsyncClient(transport=httpx.ASGITransport(app=app)),
         )
 
@@ -85,7 +105,7 @@ class Guild:
         self.remote_requests.append(dict(request.url.params))
         if self.remote_error is not None:
             raise self.remote_error
-        return Response(200, json=_page(self.remote, request.url.params, default_limit=50))
+        return Response(200, json=_delivery_page(self.remote, request.url.params))
 
 
 def gateway_for(guild: Guild, clock: Clock) -> tuple[PushGateway, FakeApns, Any]:
@@ -103,14 +123,15 @@ async def test_the_feed_reader_speaks_the_facades_api():
     respx.get(REMOTE_FEED).mock(side_effect=guild.remote_feed)
 
     # The registry lists the enabled Forge nodes without contacting them.
-    assert await guild.feed.nodes() == ["local", "remote"]
+    assert [node.id for node in await guild.feed.nodes()] == ["local", "remote"]
     assert guild.remote_requests == []
 
-    # One node's newest page: only that node is read, with its head and unread count.
+    # One node's newest page: only that node is read, with its head and each owner's
+    # unread count, in the delivery view.
     newest = await guild.feed.newest("remote", limit=1)
     assert [(n.id, n.instance_id, n.seq) for n in newest.items] == [("n11", "remote", 11)]
-    assert (newest.position, newest.unread_count) == (11, 2)
-    assert guild.remote_requests == [{"limit": "1"}]
+    assert (newest.position, newest.owner_unread_counts) == (11, {OWNER: 2})
+    assert guild.remote_requests == [{"limit": "1", "view": "delivery"}]
 
     local = await guild.feed.newest("local", limit=5)
     assert [n.seq for n in local.items] == [2, 1]
@@ -122,7 +143,7 @@ async def test_the_feed_reader_speaks_the_facades_api():
     after = await guild.feed.after("remote", 10, limit=50)
     assert [n.seq for n in after.items] == [11, 12]
     assert after.position == 12
-    assert guild.remote_requests[-1] == {"limit": "50", "after": "10"}
+    assert guild.remote_requests[-1] == {"limit": "50", "view": "delivery", "after": "10"}
     nothing = await guild.feed.after("remote", 12, limit=50)
     assert (nothing.items, nothing.position) == ([], 12)
     await guild.feed.close()

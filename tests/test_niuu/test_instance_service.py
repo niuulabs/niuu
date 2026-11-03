@@ -899,3 +899,25 @@ class TestTransportSecurity:
 
         assert updated.enabled is True
         assert updated.base_url == "https://legacy.example.com"
+
+
+@pytest.mark.asyncio
+async def test_the_delivery_listing_is_every_enabled_instance_whoever_sees_it() -> None:
+    repo = InMemoryInstanceRepository(
+        [
+            _instance("b-tenant", tenant_id="tenant-b"),
+            _instance(
+                "a-user",
+                visibility=InstanceVisibility.USER,
+                owner_id="someone",
+                tenant_id=None,
+            ),
+            _instance("c-off", enabled=False),
+            _instance("d-ting", kind=InstanceKind.TING),
+        ]
+    )
+    service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
+
+    listed = await service.list_for_delivery(kind=InstanceKind.VOLUNDR)
+
+    assert [instance.id for instance in listed] == ["a-user", "b-tenant"]

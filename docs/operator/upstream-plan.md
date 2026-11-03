@@ -276,7 +276,9 @@ iOS) wins the Dynamic Island.
   (`test_rest_volundr_push_gateway.py`), and the Postgres lane.
 - **Configure:** off by default. To run it, set on one node:
   - `push.enabled: true`;
-  - `push.device_registry: postgres` (or `auto` in mini mode);
+  - (since migration `000101` there is one device registry, the owners' push-device
+    integrations with every token in the credential store; `postgres` is refused);
+  - `guild.instance_id`, and `config.push_gateway: true` on its Guild registry entry;
   - `push.apns`: `team_id`, `key_id`, `bundle_id`, and `private_key_path` (the app's
     `.p8`);
   - `push.gateway`: `enabled: true` and `guild_url`.
