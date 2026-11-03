@@ -9,3 +9,4 @@ export * from './SessionResources';
 export * from './SessionFilePreview';
 export * from './SandboxedPage';
 export type { IFileSystemPort, FileTreeNode } from './IFileSystemPort';
+export { presentedFilesIn, type PresentedFileRef } from './resourcePaths';

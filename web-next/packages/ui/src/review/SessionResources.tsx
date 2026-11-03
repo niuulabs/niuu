@@ -8,19 +8,30 @@ import {
 } from '../chat';
 import { Dialog, DialogContent } from '../primitives/Dialog';
 import type { IFileSystemPort } from './IFileSystemPort';
-import { resolveSessionResource } from './resourcePaths';
+import { presentedResource, resolveSessionResource, type PresentedFileRef } from './resourcePaths';
 import './SessionResources.css';
 import { ResourcePreviewContent, loadPreview, type LoadedPreview } from './ResourcePreviewContent';
+
+const NO_PRESENTED: readonly PresentedFileRef[] = [];
+
+export const STOPPED_SESSION_FILES =
+  'This session has stopped, so the files in its workspace and home are gone. Files it presented still open from their cards.';
 
 export function SessionResources({
   sessionId,
   workspace,
   filesystem,
+  presented = NO_PRESENTED,
+  filesReadable = true,
   children,
 }: {
   sessionId: string;
   workspace?: string;
   filesystem: IFileSystemPort;
+  /** Files the session presented; their links open Forge's durable copy. */
+  presented?: readonly PresentedFileRef[];
+  /** False once the session has stopped: its own files can no longer be read. */
+  filesReadable?: boolean;
   children: ReactNode;
 }) {
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -44,11 +55,12 @@ export function SessionResources({
           );
         return filesystem.downloadPresentedFile(sessionId, resource.path, signal);
       }
+      if (!filesReadable) return Promise.reject(new Error(STOPPED_SESSION_FILES));
       if (!filesystem.downloadFile)
         return Promise.reject(new Error('File downloads are unavailable on this backend.'));
       return filesystem.downloadFile(sessionId, resource.path, signal);
     },
-    [filesystem, sessionId],
+    [filesystem, sessionId, filesReadable],
   );
   const open = useCallback((resource: ConversationResource) => {
     if (!isOpen.current) {
@@ -62,11 +74,14 @@ export function SessionResources({
   }, []);
   const port = useMemo(
     () => ({
-      resolve: (href: string) => resolveSessionResource(href, workspace) ?? externalResource(href),
+      resolve: (href: string) => {
+        const inSession = resolveSessionResource(href, workspace);
+        return presentedResource(href, inSession, presented) ?? inSession ?? externalResource(href);
+      },
       load,
       open,
     }),
-    [workspace, load, open],
+    [workspace, presented, load, open],
   );
 
   const previewPort = useMemo(
@@ -143,9 +158,11 @@ export function SessionResources({
           {error && (
             <div className="forge-resource-empty">
               <p role="alert">{error}</p>
-              <button type="button" onClick={() => selected && open({ ...selected })}>
-                Try again
-              </button>
+              {error === STOPPED_SESSION_FILES ? null : (
+                <button type="button" onClick={() => selected && open({ ...selected })}>
+                  Try again
+                </button>
+              )}
             </div>
           )}
           {selected?.kind !== 'external' &&

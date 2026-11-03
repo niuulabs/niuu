@@ -86,6 +86,26 @@ def test_present_file_end_to_end(client, tmp_path):
     assert d.content == payload
 
 
+def test_a_presented_file_records_where_it_was_in_the_session(client, tmp_path, monkeypatch):
+    """Its links in the conversation find the durable copy once the session's files are gone."""
+    from skuld import broker as bmod
+
+    home = tmp_path / "home"
+    (tmp_path / "docs").mkdir()
+    (home / "artifacts").mkdir(parents=True)
+    monkeypatch.setattr(bmod.broker._settings, "home_dir", str(home))
+    (tmp_path / "docs" / "plan.md").write_text("# Plan")
+    (home / "artifacts" / "diagram.svg").write_text("<svg/>")
+
+    client.post("/api/present-file", json={"path": str(tmp_path / "docs" / "plan.md")})
+    client.post(
+        "/api/present-file", json={"path": "~/artifacts/diagram.svg".replace("~", str(home))}
+    )
+
+    paths = [frame["turn"]["parts"][0]["input"]["path"] for frame in client.logged]
+    assert paths == ["/workspace/docs/plan.md", "/home/artifacts/diagram.svg"]
+
+
 def test_title_overrides_name(client, tmp_path):
     src = tmp_path / "raw.bin"
     src.write_bytes(b"x")

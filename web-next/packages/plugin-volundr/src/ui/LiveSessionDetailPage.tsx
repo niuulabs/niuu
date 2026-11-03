@@ -16,6 +16,7 @@ import {
   SessionDiffs,
   SessionFilesWorkspace,
   SessionResources,
+  presentedFilesIn,
   formatReviewMessage,
   gateNotes,
   useReviewComments,
@@ -3204,6 +3205,10 @@ function LiveSessionDetailPageInner({
   ]);
   const transcriptTurns = useMemo(() => transcriptQuery.data?.turns ?? [], [transcriptQuery.data]);
   const replayMessages = useMemo(() => transformTurns(transcriptTurns), [transcriptTurns]);
+  const presentedFiles = useMemo(
+    () => presentedFilesIn([...replayMessages, ...chat.messages]),
+    [replayMessages, chat.messages],
+  );
   const replayParticipants = useMemo(
     () => participantsFromTurns(transcriptTurns),
     [transcriptTurns],
@@ -3534,6 +3539,8 @@ function LiveSessionDetailPageInner({
           : undefined
       }
       filesystem={filesystem}
+      presented={presentedFiles}
+      filesReadable={isRunning}
     >
       <div className="niuu:flex niuu:h-full niuu:flex-col" data-testid="live-session-detail-page">
         <div className="niuu-live-session__chrome">

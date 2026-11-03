@@ -202,3 +202,78 @@ it('uses the same session panel for websites and external images without invokin
   expect(screen.getByRole('button', { name: 'Zoom in' })).toBeInTheDocument();
   expect(filesystem.downloadFile).not.toHaveBeenCalled();
 });
+
+describe('links to files a stopped or presenting session wrote', () => {
+  function render2({
+    markdown,
+    filesReadable = true,
+    presented = [],
+  }: {
+    markdown: string;
+    filesReadable?: boolean;
+    presented?: { fileId: string; name: string; mime?: string; path?: string }[];
+  }) {
+    const filesystem = {
+      ...fileSystemStub(),
+      downloadFile: vi.fn().mockResolvedValue(blob('live')),
+      downloadPresentedFile: vi.fn().mockResolvedValue(blob('# Plan', 'text/markdown')),
+    };
+    render(
+      <SessionResources
+        sessionId="session-1"
+        filesystem={filesystem}
+        presented={presented}
+        filesReadable={filesReadable}
+      >
+        <MarkdownContent content={markdown} />
+      </SessionResources>,
+    );
+    return filesystem;
+  }
+
+  it('opens the durable copy of a presented file from a link to where it was', async () => {
+    const filesystem = render2({
+      markdown: '[the plan](~/artifacts/plan.md) and **plan.md**',
+      filesReadable: false,
+      presented: [
+        { fileId: 'pf_1', name: 'Plan', mime: 'text/markdown', path: '/home/artifacts/plan.md' },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'the plan' }));
+    await waitFor(() =>
+      expect(filesystem.downloadPresentedFile).toHaveBeenCalledWith(
+        'session-1',
+        'pf_1',
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(filesystem.downloadFile).not.toHaveBeenCalled();
+  });
+
+  it("says a stopped session's own files are gone instead of asking for them", async () => {
+    const filesystem = render2({ markdown: '[notes](notes.md)', filesReadable: false });
+
+    fireEvent.click(screen.getByRole('button', { name: 'notes' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This session has stopped, so the files in its workspace and home are gone.',
+    );
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+    expect(filesystem.downloadFile).not.toHaveBeenCalled();
+  });
+
+  it('reads a home file from a running session', async () => {
+    const filesystem = render2({ markdown: '[report](~/out/report.txt)' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'report' }));
+
+    await waitFor(() =>
+      expect(filesystem.downloadFile).toHaveBeenCalledWith(
+        'session-1',
+        '/home/out/report.txt',
+        expect.any(AbortSignal),
+      ),
+    );
+  });
+});

@@ -1214,6 +1214,7 @@ async def present_host_file(
 
     file_id = "pf_" + uuid.uuid4().hex
     name = title or safe_source.name
+    source_path = _session_path(safe_source, workspace_root, home_root)
     mime = mimetypes.guess_type(safe_source.name)[0] or "application/octet-stream"
     version_label: str | None = None
 
@@ -1269,6 +1270,7 @@ async def present_host_file(
         url=url,
         artifact_key=artifact_key,
         version_label=version_label,
+        source_path=source_path,
     )
     broker._append_turn(turn)
     await broker._channels.broadcast({"type": "conversation.turn", "turn": asdict(turn)})
@@ -1291,6 +1293,25 @@ async def present_host_file(
     return result
 
 
+def _session_path(source: Path, workspace_root: str, home_root: str) -> str:
+    """Name a presented file by its place in the session, as the session's files are
+    browsed: ``/workspace/<path>`` or ``/home/<path>``. Clients match the file's links in
+    the conversation to its durable copy by it, after the session's files are gone."""
+    resolved = str(source)
+    # One root may sit inside the other (a project in the home, say): the deeper one names it.
+    roots = sorted(
+        (("/workspace", workspace_root), ("/home", home_root)),
+        key=lambda item: len(item[1]),
+        reverse=True,
+    )
+    for prefix, root in roots:
+        if resolved == root:
+            return prefix
+        if resolved.startswith(root.rstrip(os.sep) + os.sep):
+            return f"{prefix}/{os.path.relpath(resolved, root)}"
+    raise ValueError(f"presented file {resolved!r} is outside the session roots")
+
+
 def _build_present_file_turn(
     file_id: str,
     name: str,
@@ -1301,9 +1322,12 @@ def _build_present_file_turn(
     url: str | None = None,
     artifact_key: str | None = None,
     version_label: str | None = None,
+    source_path: str | None = None,
 ) -> ConversationTurn:
     """Build a turn shared by live memory, durable log, and broadcast paths."""
     tool_input: dict = {"file_id": file_id, "name": name, "mime": mime, "size": size}
+    if source_path:
+        tool_input["path"] = source_path
     if caption:
         tool_input["caption"] = caption
     if url:
