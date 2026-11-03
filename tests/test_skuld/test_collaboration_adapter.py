@@ -520,3 +520,95 @@ async def test_agent_event_frame_carries_the_data_envelope_room_clients_render(
     assert frame["data"] == data
     assert frame["metadata"] == metadata
     assert frame["payload"] == payload
+
+
+def _agent_event(event_type: str, payload: dict) -> dict:
+    return {
+        "kind": "agent_event",
+        "sourceEventType": event_type,
+        "event": {"type": event_type, "payload": payload, "taskId": "", "urgency": 0.5},
+    }
+
+
+@pytest.mark.asyncio
+async def test_peer_working_steps_are_saved_as_one_internal_turn_before_its_reply() -> None:
+    """A session opened later shows the peer's work, not only what it concluded."""
+    append_turn = MagicMock()
+    adapter, _channels = _adapter(append_turn=append_turn)
+    await adapter.register("ravn-1", "Resident", _websocket())
+
+    await adapter.handle_collaboration_frame(
+        "ravn-1",
+        {
+            "events": [
+                _agent_event("thought", {"text": "Check "}),
+                _agent_event("thought", {"text": "the pods"}),
+                _agent_event(
+                    "tool_start",
+                    {"tool_name": "BashTool", "input": {"command": "kubectl get pods"}},
+                ),
+                # Ravn reports every tool result as an idle activity; that must not
+                # split the turn.
+                {"kind": "activity", "activityType": "idle"},
+                _agent_event(
+                    "tool_result",
+                    {"tool_name": "BashTool", "result": "3 pods", "is_error": False},
+                ),
+                {"kind": "message", "content": "Three pods are running"},
+            ]
+        },
+    )
+
+    work, reply = [call.args[0] for call in append_turn.call_args_list]
+    assert work.visibility == "internal"
+    assert work.participant_id == "ravn-1"
+    assert work.participant_meta["persona"] == "Resident"
+    reasoning, tool_use, tool_result = work.parts
+    assert reasoning == {"type": "reasoning", "text": "Check the pods"}
+    assert tool_use["type"] == "tool_use"
+    assert tool_use["name"] == "BashTool"
+    assert tool_use["input"] == {"command": "kubectl get pods"}
+    assert tool_result == {
+        "type": "tool_result",
+        "tool_use_id": tool_use["id"],
+        "content": "3 pods",
+        "is_error": False,
+    }
+    assert reply.content == "Three pods are running"
+
+
+@pytest.mark.asyncio
+async def test_peer_working_steps_are_saved_when_it_reports_an_outcome() -> None:
+    append_turn = MagicMock()
+    adapter, _channels = _adapter(append_turn=append_turn)
+    await adapter.register("ravn-1", "Framer", _websocket())
+
+    await adapter.handle_collaboration_frame(
+        "ravn-1",
+        {
+            "events": [
+                _agent_event("thought", {"text": "Framing the reader"}),
+                {"kind": "outcome", "eventType": "spec.framed", "fields": {"summary": "Framed"}},
+            ]
+        },
+    )
+
+    (work,) = [call.args[0] for call in append_turn.call_args_list]
+    assert work.visibility == "internal"
+    assert work.parts == [{"type": "reasoning", "text": "Framing the reader"}]
+
+
+@pytest.mark.asyncio
+async def test_peer_working_steps_are_saved_when_the_peer_leaves() -> None:
+    append_turn = MagicMock()
+    adapter, _channels = _adapter(append_turn=append_turn)
+    await adapter.register("ravn-1", "Resident", _websocket())
+    await adapter.handle_collaboration_frame(
+        "ravn-1", {"events": [_agent_event("thought", {"text": "Half way"})]}
+    )
+    append_turn.assert_not_called()
+
+    await adapter.unregister("ravn-1")
+
+    (work,) = [call.args[0] for call in append_turn.call_args_list]
+    assert work.parts == [{"type": "reasoning", "text": "Half way"}]

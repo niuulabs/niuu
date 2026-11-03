@@ -41,6 +41,58 @@ def _session_message(payload: dict[str, Any]) -> str:
     return f"{persona} reported {payload.get('eventType')}: {summary}".rstrip(": ")
 
 
+def _add_work_part(parts: list[dict[str, Any]], frame: dict[str, Any]) -> None:
+    """Fold one room agent frame into a participant's working turn.
+
+    Mirrors how room clients build a participant's live stream, so a turn
+    replayed from history reads the same as the one watched live.
+    """
+    frame_type = str(frame.get("type") or "")
+    data = frame.get("data")
+    metadata = frame.get("metadata") or {}
+    text = data if isinstance(data, str) else json.dumps(data, default=str)
+    match frame_type:
+        case "thought" | "response" | "text" | "message":
+            part_type = "reasoning" if frame_type == "thought" else "text"
+            if parts and parts[-1].get("type") == part_type:
+                parts[-1]["text"] = f"{parts[-1].get('text', '')}{text}"
+                return
+            parts.append({"type": part_type, "text": text})
+        case "tool_start":
+            parts.append(
+                {
+                    "type": "tool_use",
+                    "id": f"tool-{uuid.uuid4()}",
+                    "name": text,
+                    "input": metadata.get("input") if isinstance(metadata, dict) else {},
+                }
+            )
+        case "tool_result":
+            open_tool = next(
+                (
+                    part
+                    for part in reversed(parts)
+                    if part.get("type") == "tool_use" and not part.get("_answered")
+                ),
+                None,
+            )
+            tool_use_id = open_tool["id"] if open_tool else f"tool-{uuid.uuid4()}"
+            if open_tool:
+                open_tool["_answered"] = True
+            parts.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": text,
+                    "is_error": bool(metadata.get("is_error"))
+                    if isinstance(metadata, dict)
+                    else False,
+                }
+            )
+        case "error":
+            parts.append({"type": "text", "text": text})
+
+
 def _source_wire_fields(event: dict[str, Any]) -> dict[str, Any]:
     """Keep neutral source identity available to delivery adapters."""
     fields: dict[str, Any] = {}
@@ -242,6 +294,10 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         self._strict_review_event_types = frozenset(attestable_review_event_types)
         self._websockets: dict[str, WebSocket] = {}
         self._reported_usage_ids: set[str] = set()
+        # Each participant's working steps since its last reply, outcome or finished task.
+        # Saved as an internal turn so a session opened later shows the work,
+        # not only its outcomes.
+        self._peer_work: dict[str, list[dict[str, Any]]] = {}
         self._delivered_source_events: OrderedDict[str, None] = OrderedDict()
         self._timeline_started_at = time.monotonic()
         super().__init__(
@@ -276,6 +332,9 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         return await self.register_peer(peer_id, persona, **metadata)
 
     async def unregister(self, peer_id: str, *, reason: str = "left") -> None:
+        participant = self.participant(peer_id)
+        if participant is not None:
+            self._save_peer_work(participant)
         self._websockets.pop(peer_id, None)
         await super().unregister(peer_id, reason=reason)
 
@@ -420,6 +479,7 @@ class SkuldCollaborationAdapter(CollaborationRoom):
             }
         )
 
+        self._save_peer_work(participant)
         if self._append_turn is not None:
             from skuld.conversation_models import ConversationTurn
 
@@ -448,6 +508,25 @@ class SkuldCollaborationAdapter(CollaborationRoom):
                 thread_id=thread_id,
                 metadata=metadata,
             )
+
+    def _save_peer_work(self, participant: Participant) -> None:
+        """Append a participant's collected working steps as one internal turn."""
+        parts = self._peer_work.pop(participant.peer_id, [])
+        if not parts or self._append_turn is None:
+            return
+        from skuld.conversation_models import ConversationTurn
+
+        self._append_turn(
+            ConversationTurn(
+                id=str(uuid.uuid4()),
+                role="assistant",
+                content="",
+                parts=[{k: v for k, v in part.items() if k != "_answered"} for part in parts],
+                participant_id=participant.peer_id,
+                participant_meta=asdict(participant),
+                visibility="internal",
+            )
+        )
 
     async def _handle_activity(self, participant: Participant, event: dict[str, Any]) -> None:
         activity_type = str(event.get("activityType") or "idle")
@@ -522,6 +601,7 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         for key in ("summary", "verdict"):
             if event.get(key):
                 outcome[key] = event[key]
+        self._save_peer_work(participant)
         await self._emit_frame(outcome)
         await self._deliver_outcome_to_subscribers(
             outcome,
@@ -560,11 +640,15 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         )
 
     async def _handle_agent_event(self, participant: Participant, event: dict[str, Any]) -> None:
+        frame = _room_agent_frame(event.get("event"))
+        _add_work_part(self._peer_work.setdefault(participant.peer_id, []), frame)
+        if frame.get("type") == "task_complete":
+            self._save_peer_work(participant)
         await self._channels.broadcast(
             {
                 "type": "room_agent_event",
                 "participantId": participant.peer_id,
-                "frame": _room_agent_frame(event.get("event")),
+                "frame": frame,
                 **_source_wire_fields(event),
             }
         )
