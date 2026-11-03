@@ -344,4 +344,4 @@ async def cancel(task: asyncio.Task[Any] | None) -> None:
         return
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
-        await task
+        _ = await task

@@ -170,7 +170,7 @@ class VoiceGateway:
             if requester is not None:
                 requester.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
-                    await requester
+                    _ = await requester
             await self.aclose()
 
     async def aclose(self) -> None:

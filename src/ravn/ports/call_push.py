@@ -34,7 +34,8 @@ class CallPushResult:
 class CallPushPort(Protocol):
     """Rings the owner's phone with one ``call.request`` frame (the push payload, no ``aps``)."""
 
-    async def ring(self, *, request_id: str, frame: dict[str, Any]) -> CallPushResult: ...
+    async def ring(self, *, request_id: str, frame: dict[str, Any]) -> CallPushResult:
+        """Ring once for ``request_id``; every failure is a result with a reason, never raised."""
 
 
 class NullCallPush:
