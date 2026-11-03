@@ -58,6 +58,7 @@ class TestPolicyTable:
             ("GET", "/sessions", FORGE_SESSION_READ_SCOPE, Binding.NONE),
             ("GET", "/sessions/S", FORGE_SESSION_READ_SCOPE, Binding.OWNED),
             ("GET", "/sessions/S/conversation", FORGE_SESSION_READ_SCOPE, Binding.OWNED),
+            ("GET", "/sessions/S/status", FORGE_SESSION_READ_SCOPE, Binding.OWNED),
             ("GET", "/sessions/S/log", FORGE_SESSION_READ_SCOPE, Binding.OWNED),
             ("GET", "/sessions/S/transcript", FORGE_SESSION_READ_SCOPE, Binding.OWNED),
             (
@@ -66,13 +67,24 @@ class TestPolicyTable:
                 FORGE_SESSION_READ_SCOPE,
                 Binding.OWNED,
             ),
+            ("GET", "/artifact-publications", FORGE_SESSION_READ_SCOPE, Binding.NONE),
+            ("GET", "/artifact-bursts", FORGE_SESSION_READ_SCOPE, Binding.NONE),
+            ("GET", "/artifact-bursts/b-1", FORGE_SESSION_READ_SCOPE, Binding.NONE),
             ("POST", "/sessions/S/messages", FORGE_SESSION_MESSAGE_SCOPE, Binding.PEER),
             ("POST", "/sessions", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.NONE),
+            (
+                "GET",
+                "/projects/0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b",
+                FORGE_SESSION_LIFECYCLE_SCOPE,
+                Binding.NONE,
+            ),
             ("POST", "/sessions/S/start", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.PEER),
             ("POST", "/sessions/S/stop", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.PEER),
             ("POST", "/sessions/S/log", FORGE_NOTIFY_SCOPE, Binding.OWN),
             ("POST", "/sessions/S/activity", FORGE_NOTIFY_SCOPE, Binding.OWN),
             ("POST", "/sessions/S/usage", FORGE_NOTIFY_SCOPE, Binding.OWN),
+            ("PUT", "/sessions/S/description", FORGE_NOTIFY_SCOPE, Binding.OWN),
+            ("PUT", f"/sessions/S/files/presented/pf_{'a' * 32}", FORGE_NOTIFY_SCOPE, Binding.OWN),
             ("POST", "/mcp", None, Binding.NONE),
         ],
     )
@@ -89,6 +101,8 @@ class TestPolicyTable:
             ("DELETE", "/sessions/S"),
             ("PATCH", "/sessions/S/archive"),
             ("PUT", "/sessions/S"),
+            ("PATCH", "/sessions/S/description"),
+            ("POST", "/sessions/S/description"),
             ("GET", "/notifications/rules"),
             ("POST", "/notifications/rules"),
             ("PUT", "/notifications/rules/r"),
@@ -103,6 +117,18 @@ class TestPolicyTable:
             ("POST", "/sessions/import"),
             ("POST", "/sessions/archive-stopped"),
             ("GET", "/sessions/"),
+            ("POST", "/artifact-publications/backfill"),
+            ("GET", "/instance"),
+            ("GET", f"/sessions/S/files/presented/pf_{'a' * 32}"),
+            ("GET", "/projects"),
+            ("POST", "/projects"),
+            ("GET", "/projects/search"),  # a project id is a UUID
+            ("PATCH", "/projects/0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b"),
+            ("DELETE", "/projects/0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b"),
+            ("GET", "/projects/0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b/context"),
+            ("GET", "/projects/0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b/receipts"),
+            ("POST", "/projects/0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b/receipts"),
+            ("GET", "/projects/0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b/export"),
         ],
     )
     def test_everything_else_is_denied(self, method, path) -> None:
@@ -430,6 +456,23 @@ class TestRouteFamilies:
                 f"{PREFIX}{path}", json={"name": "child"}, headers=bearer(token)
             )
             assert response.status_code == 403, path
+
+    async def test_reading_a_project_to_join_it_needs_the_lifecycle_grant(self) -> None:
+        forge = build_forge_app(projects=True)
+        project = f"{PREFIX}/projects/{uuid.uuid4()}"
+        _, _, plain = await self._pair(forge)
+        refused = forge.client.get(project, headers=bearer(plain))
+        assert refused.status_code == 403
+        # The allow-list refuses it for the scope (the route is listed, the grant is not held).
+        assert refused.json()["detail"] == (
+            f"Token is missing the required scope: {FORGE_SESSION_LIFECYCLE_SCOPE}"
+        )
+
+        _, _, granted = await self._pair(forge, "lifecycle")
+        # Admitted, and answered by the projects service itself: there is no such project.
+        answer = forge.client.get(project, headers=bearer(granted))
+        assert answer.status_code == 404
+        assert answer.json()["detail"] != "Not Found"  # the service's answer, not a missing route
 
     async def test_lifecycle_with_the_grant(self, forge) -> None:
         own, peer, token = await self._pair(forge, "lifecycle")

@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type ChangeEvent,
@@ -158,12 +159,25 @@ export function ChatInput({
     const textarea = textareaRef.current;
     if (!textarea) return;
     textarea.style.height = 'auto';
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
+    textarea.style.height = `${textarea.scrollHeight}px`;
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     resetTextareaHeight();
   }, [input, resetTextareaHeight]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    let previousWidth = textarea.getBoundingClientRect().width;
+    const observer = new ResizeObserver(([entry]) => {
+      if (!entry || entry.contentRect.width === previousWidth) return;
+      previousWidth = entry.contentRect.width;
+      resetTextareaHeight();
+    });
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [resetTextareaHeight]);
 
   useEffect(() => {
     if (isLoading || disabled) return;
@@ -425,7 +439,7 @@ export function ChatInput({
         />
       </div>
 
-      <div className="niuu-chat-input-bottom-bar">
+      <div className="niuu-chat-input-actions">
         <div className="niuu-chat-input-left-actions">
           {canBrowseCommands && (
             <button

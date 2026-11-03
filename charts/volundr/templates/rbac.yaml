@@ -293,3 +293,35 @@ subjects:
 {{- end }}
 {{- end }}
 {{- end }}
+{{- if and .Values.rbac.create .Values.sessionCredentialProjection.enabled }}
+---
+# Each session's Forge credential (forge_session) is one Secret Forge writes in the
+# session pods' namespace and deletes when the session stops.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "volundr.fullname" . }}-session-credentials
+  namespace: {{ include "volundr.sessionCredentialNamespace" . }}
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "volundr.fullname" . }}-session-credentials
+  namespace: {{ include "volundr.sessionCredentialNamespace" . }}
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "volundr.fullname" . }}-session-credentials
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "volundr.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

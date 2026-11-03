@@ -1,0 +1,264 @@
+{
+ "suite": "bursts",
+ "spec": "model/bursts.md (agreed shape: platform design §V1, F1n)",
+ "cases": [
+  {
+   "id": "B1",
+   "title": "Two sessions on one host publish the same artifact a minute apart: one burst",
+   "steps": [
+    {
+     "t": "publish",
+     "id": "p1",
+     "host": "thor",
+     "artifact": "A",
+     "at": 720,
+     "ingested_at": 720,
+     "session": "s1"
+    },
+    {
+     "t": "publish",
+     "id": "p2",
+     "host": "thor",
+     "artifact": "A",
+     "at": 721,
+     "ingested_at": 721,
+     "session": "s2"
+    }
+   ],
+   "expect": [
+    {
+     "joined": "burst-1"
+    },
+    {
+     "joined": "burst-1",
+     "bursts": 1,
+     "members": {
+      "burst-1": [
+       "p1",
+       "p2"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "B2",
+   "title": "A live publication ingested out of order (earlier time, lower seq) joins without renaming",
+   "steps": [
+    {
+     "t": "publish",
+     "id": "seq20",
+     "host": "thor",
+     "artifact": "A",
+     "at": 730,
+     "ingested_at": 730
+    },
+    {
+     "t": "publish",
+     "id": "seq10",
+     "host": "thor",
+     "artifact": "A",
+     "at": 720,
+     "ingested_at": 725
+    }
+   ],
+   "expect": [
+    {
+     "joined": "burst-1"
+    },
+    {
+     "joined": "burst-1",
+     "bursts": 1,
+     "members": {
+      "burst-1": [
+       "seq20",
+       "seq10"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "B3",
+   "title": "A backfilled publication never joins or renames a live burst; it forms a silent historical one",
+   "steps": [
+    {
+     "t": "publish",
+     "id": "live",
+     "host": "thor",
+     "artifact": "A",
+     "at": 730,
+     "ingested_at": 730
+    },
+    {
+     "t": "publish",
+     "id": "old",
+     "host": "thor",
+     "artifact": "A",
+     "at": 720,
+     "ingested_at": 1500
+    }
+   ],
+   "expect": [
+    {
+     "joined": "burst-1"
+    },
+    {
+     "joined": "burst-2",
+     "bursts": 2,
+     "members": {
+      "burst-1": [
+       "live"
+      ],
+      "burst-2": [
+       "old"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "B4",
+   "title": "A publication bridging two bursts joins the most recent; the two are never merged",
+   "steps": [
+    {
+     "t": "publish",
+     "id": "a",
+     "host": "thor",
+     "artifact": "A",
+     "at": 600,
+     "ingested_at": 600
+    },
+    {
+     "t": "publish",
+     "id": "b",
+     "host": "thor",
+     "artifact": "A",
+     "at": 660,
+     "ingested_at": 660
+    },
+    {
+     "t": "publish",
+     "id": "c",
+     "host": "thor",
+     "artifact": "A",
+     "at": 632,
+     "ingested_at": 633
+    }
+   ],
+   "expect": [
+    {
+     "joined": "burst-1"
+    },
+    {
+     "joined": "burst-2"
+    },
+    {
+     "joined": "burst-2",
+     "bursts": 2,
+     "members": {
+      "burst-1": [
+       "a"
+      ],
+      "burst-2": [
+       "b",
+       "c"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "B5",
+   "title": "The same artifact on two hosts: two bursts, one artifact row",
+   "steps": [
+    {
+     "t": "publish",
+     "id": "t1",
+     "host": "thor",
+     "artifact": "A",
+     "at": 600,
+     "ingested_at": 600
+    },
+    {
+     "t": "publish",
+     "id": "m1",
+     "host": "mini-m6",
+     "artifact": "A",
+     "at": 601,
+     "ingested_at": 601
+    }
+   ],
+   "expect": [
+    null,
+    {
+     "bursts": 2
+    }
+   ]
+  },
+  {
+   "id": "B6",
+   "title": "Announcement: an agent notice from any session inside the window counts; Slice 0's own and late ones do not",
+   "steps": [
+    {
+     "t": "publish",
+     "id": "p1",
+     "host": "thor",
+     "artifact": "A",
+     "at": 600,
+     "ingested_at": 600
+    },
+    {
+     "t": "notice",
+     "id": "sys",
+     "source": "system",
+     "correlation_id": "art-burst:burst-1",
+     "links": [
+      "A"
+     ],
+     "at": 602
+    },
+    {
+     "t": "notice",
+     "id": "late",
+     "source": "agent",
+     "links": [
+      "A"
+     ],
+     "at": 700
+    },
+    {
+     "t": "notice",
+     "id": "ok",
+     "source": "agent",
+     "links": [
+      "A"
+     ],
+     "at": 625
+    }
+   ],
+   "expect": [
+    {
+     "announced": {
+      "burst-1": null
+     }
+    },
+    {
+     "announced": {
+      "burst-1": null
+     }
+    },
+    {
+     "announced": {
+      "burst-1": null
+     }
+    },
+    {
+     "announced": {
+      "burst-1": "ok"
+     }
+    }
+   ]
+  }
+ ]
+}

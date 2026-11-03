@@ -210,6 +210,10 @@ git:
 #     backoff_base_seconds: 5
 #     backoff_max_seconds: 900
 #     default_rate_limit: {max_count: 60, window_seconds: 3600}
+#   images:                                     # images attached to notifications
+#     fetch_timeout_seconds: 20                 # must be shorter than lease_seconds
+#     allow_private_networks: false             # url images: public hosts only
+#     thumbnail_max_side: 320
 #   sinks:
 #     - name: ops-webhook
 #       label: Ops webhook

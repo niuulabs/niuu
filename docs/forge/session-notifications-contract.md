@@ -22,6 +22,11 @@ using the same append path as present-file.
   `input` = the draft, plus `notification_id`.
 - `turn.metadata` is `{kind: "notification", notification: <same input>}`. It
   never sets `final_output`.
+- The draft may carry one `image` reference (§11). It appears in `input` only when
+  set, so turns without an image keep their earlier shape.
+- The question signals `question`, `about_question` and `ask` (§12) follow the same
+  rule: present in `input` only when set.
+- So does the speak intent `speak` (§13).
 
 Notification id: `notification_id(turn_dedupe_key(session_id, turn.id, kind))`,
 where `session_id` is the Forge session UUID string.
@@ -107,8 +112,17 @@ The notification JSON (`NotificationResponse`):
  "owner_id":"…","tenant_id":"…","project_id":"…|null","kind":"milestone","severity":"info",
  "source":"agent","title":"…","body":"markdown","links":[{"label":"…","url":"…","kind":"url","file_id":null}],
  "engine":"claude|codex|…|null","model":"…|null","correlation_id":null,
+ "image":{"url":"/api/v1/forge/notifications/{id}/image",
+          "thumbnail_url":"/api/v1/forge/notifications/{id}/image?variant=thumb",
+          "mime":"image/png","width":1200,"height":800,"alt":"…|null"}|null,
+ "image_state":"pending|ready|failed|null","image_error":"…|null",
+ "question":true|false|null,"about_question":{"id":"question:<host>:<uuid>","action":"relay"}|null,
+ "ask":{"items":[…]}|null,"input_request":{"kind":"question","request_id":"…|null"}|null,
+ "speak":{"text":"…","priority":"now|next_window"}|null,
  "created_at":"ISO-8601","read":false,"instance_id":"<added by the Guild facade>"}
 ```
+`image` is present only when Forge holds a stored copy (§11); `image_state` is null
+when no image was attached.
 `read` is computed per reader as `seq <= read_through_seq` **or** an individual
 acknowledgement in `forge_notification_reads(user_id, notification_id, read_at)`.
 Opening a card must not advance the host watermark or clear other unopened cards.
@@ -137,6 +151,7 @@ request when the IDs differ. Never guess by text, timestamp or raw log sequence.
 | `GET /notifications/rules`, `POST /notifications/rules`, `PUT /notifications/rules/{id}`, `DELETE /notifications/rules/{id}` | Owner-scoped rule CRUD. |
 | `GET /notifications/{id}/deliveries` | Delivery status rows for one notification. |
 | `GET /notifications/sinks` | Available sink names for the rule UI: `[{name, label, requires_integration}]`. |
+| `GET /notifications/{id}/image[?variant=thumb]` | The stored image bytes (§11), with the same read access as the notification. 404 when there is no stored image. |
 
 `GET /notifications` query parameters:
 - Paging: `limit` (default 50, max 200), `before=<seq>` (newest first), or
@@ -165,7 +180,11 @@ An empty list in `match` means "any".
   without `read`.
 - Only the owner (or an admin) receives it. Filter it in the SSE handler before
   sending; other event types are unchanged.
-- The Guild facade forwards it unchanged, adding `instance_id` as it already does.
+- The Guild facade forwards it unchanged, adding `instance_id` as it already does
+  (and routing the image URLs, §6).
+- A notification with an image is broadcast once, when its image copy settles, so
+  the event carries the same `image` object as the feed. Its event may therefore
+  arrive after a later notification's; `seq` order in the feed is unchanged.
 - Clients recover gaps with `GET /notifications?after=<last seen seq per instance>`.
 - Sleipnir: `volundr.session.notification` is registered and mirrored from the
   broadcaster, like needs_input.
@@ -201,6 +220,11 @@ An empty list in `match` means "any".
   - `GET` returns the union de-duplicated by token (first instance wins), and fails
     naming an unreachable instance instead of setting
     `X-Forge-Unavailable-Instances`, since a partial list reads as "not registered".
+- Images: every notification the facade returns (feed pages, session lists, submits,
+  SSE events) has its `image.url` / `image.thumbnail_url` rewritten to the same path
+  plus `instance_id=<owning host>`. `GET /notifications/{id}/image` goes to the host
+  named by `instance_id` (the default host otherwise), like `PUT …/read`; the host
+  applies the notification's read access. A single Forge node returns the plain URL.
 
 ## 7. Delivery (delivery workstream)
 
@@ -309,3 +333,137 @@ As built (auth workstream). The operator guide is
   - A rules panel manages delivery rules.
 - Port `INotificationFeed`, with http and mock adapters and co-located tests.
   Playwright spec at `e2e/` (happy path, loading, error, keyboard).
+
+## 11. Notification images (shared)
+
+**Input.** `NotificationDraft.image` is an optional `NotificationImageRef`:
+`{"file_id": "pf_<32 hex>"}` (the id `present-file` returned) **or**
+`{"url": "https://…"}` — exactly one — plus optional `alt` (at most
+`MAX_IMAGE_ALT_CHARS` = 300 characters). Strict: extra keys, non-https URLs and URLs
+with credentials are refused. The MCP `notify` tool (transcript and feed modes) and
+`POST /sessions/{id}/notifications` accept it.
+
+**Copy.** Forge records the notification and a `pending` row in
+`forge_notification_images` (migration `000090`) in one transaction, then copies the
+bytes once in the background: `file_id` through the session's broker
+(`GET {broker}/api/files/presented/{file_id}`, resolved like the presented-file proxy),
+`url` by HTTPS GET (each redirect hop must be https and, unless
+`notifications.images.allow_private_networks`, resolve only to public addresses). The
+response must declare and decode as `image/png|jpeg|gif|webp`, within
+`MAX_IMAGE_BYTES` (10 MiB) and `MAX_IMAGE_PIXELS` (40 MP). Forge stores the original
+bytes and a thumbnail (long side `notifications.images.thumbnail_max_side`, 320 by
+default; PNG when transparent, JPEG otherwise).
+
+**State.** `image_state` is `pending` until the copy settles, then `ready` (with
+`image`) or `failed` (with `image_error`). The notification is never withheld or
+rolled back for its image, and a failed copy is final: Forge neither retries it nor substitutes anything.
+Replays never copy twice (the image row is keyed by the deterministic notification id).
+
+**Route.** `GET /api/v1/forge/notifications/{id}/image` serves the original, and
+`?variant=thumb` the thumbnail, with the stored content type,
+`Cache-Control: private, max-age=<notifications.images.cache_max_age_seconds>, immutable`
+and `X-Content-Type-Options: nosniff`. It requires exactly what reading the item
+requires (`forge:session:read` for scoped tokens, then owner or tenant admin); 404
+otherwise and whenever no image is stored.
+
+## 12. Questions, asks and runtime requests (shared)
+
+Two kinds of "needs you" items share the feed. They stay distinct because they are
+answered differently.
+
+**Notice questions (agent `notify`, direct submit, resident notify).** `question: true`
+declares a question the user must answer; a notice that sets `question` (true or false)
+is never inferred to be one. Its reference is `question:<host>:<notification_id>`.
+Later notices refer to it with `about_question: {id, action}`, `action` one of
+`remind|replace|relay|resolved|withdrawn` (only the asking session may do anything but
+`relay`; the control plane enforces that). `ask: {items: [...]}` (only with
+`question: true`) structures it:
+
+| Item field | Rule |
+|---|---|
+| `id` | 1–64 chars, `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`, unique in the ask |
+| `kind` | `question` or `action` (an action asks the user to report done/not done; it never executes anything) |
+| `text` | 1–2000 chars, nonblank |
+| `header` | optional, 1–80 chars |
+| `options` | optional, 1–8 `{label, description?, recommended?}`; labels 1–120 chars, unique per item; descriptions ≤ 500; `recommended: true` on at most one option per item (a label ending in `(Recommended)` counts as one, so older producers keep working) |
+| `multi_select` | optional boolean; omitted means false |
+| `allow_text` | optional boolean; omitted means true; a question with `false` must offer options |
+| `default` | optional `{option, after}`: what happens if the user does not answer. `option` is one of the item's option labels or `none`; `after` is an ISO-8601 timestamp with a timezone, or an ISO-8601 duration counted from the notification (`PT4H`, `P1D`). Forge records it and acts on nothing; the asking session carries it out (LEX-1671) |
+| `deadline` | optional ISO-8601 timestamp with a timezone: when the answer is needed |
+
+At most 8 items and 32768 UTF-8 bytes of compact ask JSON; optional fields are omitted,
+never null; NUL is refused. The fields live in the notification's `metadata` and are
+served on the read wire and the live event exactly as sent. The answer is an ordinary
+message to the asking session: `POST /sessions/{id}/messages` with a stable
+`request_id` (through the Guild facade, `?scope=local` pins the session's node): 200
+delivered, 202 pending, the same id with different content 409 (`request_id_conflict`;
+409 also when the pod is unreachable). Delivery is not resolution: the asking session confirms it later with
+`about_question` (`resolved`).
+
+**The question standard (LEX-1597, LEX-1671).** An agent's `decision` (the user must
+choose) or `attention` (the user must act or unblock) is a question: `question: true`,
+an `ask` with 2–4 options, one `recommended`, and a `default`. The text is
+`niuu.question_standard.QUESTION_STANDARD`; the `notify` tool, the Forge MCP server
+instructions and the session prompt all carry it. The `notify` tool lints before it
+records:
+
+- a `decision`/`attention` with no `ask`, no `?` in its title and no options listed in
+  its body (two or more lines starting `-`, `*`, `•`, `1.`, `a)`…) is recorded as
+  `info`. The tool result adds `kind: "info"`, `requested_kind` and a `warnings` entry
+  quoting the standard;
+- one with an `ask` whose choice has no recommended option, or whose items have no
+  `default`, is recorded as sent, with a `warnings` entry.
+
+Direct REST submits (`POST /sessions/{id}/notifications`) are not linted; they validate
+the fields above.
+
+**Runtime requests (Forge's system `attention` item).** When a session (or resident)
+blocks on AskUserQuestion, a confirmation or a permission, Forge records an
+`attention`/`system` item. `input_request: {kind: question|confirmation|permission,
+request_id}` names the pending request (`request_id` null when the runtime reported
+none). It is answered where the transcript's card answers it, on the session socket
+(`ask_user_answer` with that `request_id`, or the permission response), never through
+the notification; the item is marked read when the session stops waiting. Such an item
+carries no `question`/`ask`.
+
+**Review gates (Forge's system `attention` item).** A workflow gate that waits for a
+person raises the same `attention`/`system` item, projected from its `workflow_gate`
+log frame with dedupe key `workflow-gate:{session}:{gate_id}`. Its `input_request` is
+`{kind: workflow_gate, request_id: <gate id>}`. It is answered on
+`POST /sessions/{session_id}/workflow/gates/{request_id}/resolve` (header
+`x-niuu-workflow-gate-intent: resolve`), not on the session socket, so a client must
+route on `kind`. The gate's decided frame marks the item read and resolves it, wherever
+the decision was made; a session leaving `awaiting_input` does not touch it.
+
+**`notify` schema.** The advertised input schema's root stays a plain object (no
+`allOf`/`if`): Claude Code drops a tool whose root schema has a conditional from its
+catalog while the server stays connected. `ask` → `question: true` is enforced by
+`NotificationDraft` before anything is written.
+
+## 13. Speak intent (shared)
+
+A notification may ask to be spoken aloud to its owner (LEX-1536). Forge carries the
+intent and nothing more: it does not deliver, schedule or speak it. A reader (the
+Lexi agent service) decides whether and when the phone speaks it.
+
+**Input.** `NotificationDraft.speak` is an optional `NotificationSpeak`:
+`{"text": "…", "priority": "now" | "next_window"}`. Strict: extra keys are refused.
+
+| Field | Rule |
+|---|---|
+| `text` | trimmed, then 1–`MAX_SPEAK_TEXT_CHARS` (600) characters; no NUL |
+| `priority` | `now` (default) or `next_window` (the next good moment) |
+
+Only agent kinds (`milestone`, `decision`, `attention`, `error`, `info`) may carry
+it; a draft of kind `reply_ready` with `speak` is refused. The MCP `notify` tool
+(transcript and feed modes) and `POST /sessions/{id}/notifications` accept it; an
+invalid one is an MCP tool error or HTTP 422 and records nothing.
+
+**Storage.** Migration `000097_forge_notification_speak` adds `speak_text` and
+`speak_priority` to `forge_notifications`, set together or both null, with a check
+that repeats the rules above.
+
+**Read.** `speak` is on every `NotificationResponse` (§4): `GET /notifications`,
+`GET /sessions/{id}/notifications`, the submit response, and the
+`session_notification` live event (§5); `null` when the notification has none. The
+MCP `list_notifications` summary includes it when set.

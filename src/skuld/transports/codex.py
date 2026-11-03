@@ -66,6 +66,34 @@ def _map_codex_tool(codex_name: str) -> str:
     return _CODEX_TOOL_MAP.get(codex_name, codex_name)
 
 
+def _codex_usage_components(
+    usage: object, *, snake_case: bool = False, require_complete: bool = False
+) -> dict | None:
+    """Separate cached input already included in Codex's native input counter."""
+    if not isinstance(usage, dict):
+        return None
+    names = (
+        ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens")
+        if snake_case
+        else ("inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens")
+    )
+    if not any(name in usage for name in names):
+        return None
+    if require_complete and any(name not in usage for name in (names[0], names[1], names[3])):
+        return None
+    values = [usage.get(name, 0) for name in names]
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values):
+        return None
+    inp, read, write, output = values
+    if read > inp:
+        return None
+    return {"input": inp - read, "cache_read": read, "cache_write": write, "output": output}
+
+
+def _codex_usage_window(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
 def resolve_codex_cli() -> str:
     """Resolve the Codex CLI executable path.
 
@@ -133,6 +161,8 @@ class CodexSubprocessTransport(CLITransport):
         self._completed_text_items: dict[str, str] = {}
         self._text_item_indexes: dict[str, int] = {}
         self._native_thread_id: str | None = None
+        self._native_turn_id: str | None = None
+        self._native_usage_seen = False
         self._env = session_process_env()
         _ensure_codex_home(self._env)
 
@@ -163,6 +193,9 @@ class CodexSubprocessTransport(CLITransport):
         self._pending_text = []
         self._completed_text_items.clear()
         self._text_item_indexes.clear()
+        self._native_thread_id = None
+        self._native_turn_id = None
+        self._native_usage_seen = False
         codex_cli = resolve_codex_cli()
         cmd = [
             codex_cli,
@@ -260,6 +293,49 @@ class CodexSubprocessTransport(CLITransport):
         if event_type == "thread.started" and isinstance(data.get("thread_id"), str):
             self._native_thread_id = data["thread_id"]
 
+        if event_type == "turn.started" and isinstance(data.get("turn_id"), str):
+            self._native_turn_id = data["turn_id"]
+
+        # Native rollout usage is already a per-thread cumulative snapshot. Keep
+        # it separate from exec's completed-turn aggregate and never sum `last`.
+        if event_type == "session_meta" and isinstance(data.get("payload"), dict):
+            native_id = data["payload"].get("id")
+            if isinstance(native_id, str) and not self._native_thread_id:
+                self._native_thread_id = native_id
+            return
+        if event_type == "turn_context" and isinstance(data.get("payload"), dict):
+            native_turn = data["payload"].get("turn_id")
+            if isinstance(native_turn, str):
+                self._native_turn_id = native_turn
+            return
+        if event_type == "event_msg" and isinstance(data.get("payload"), dict):
+            payload = data["payload"]
+            if payload.get("type") == "token_count":
+                info = payload.get("info")
+                if not isinstance(info, dict) or not self._native_thread_id:
+                    return
+                total = _codex_usage_components(
+                    info.get("total_token_usage"), snake_case=True, require_complete=True
+                )
+                self._native_usage_seen = self._native_usage_seen or total is not None
+                await self._emit(
+                    {
+                        "type": "session_usage",
+                        "engine": "codex",
+                        "thread_id": self._native_thread_id,
+                        "turn_id": payload.get("turn_id") or self._native_turn_id,
+                        "model": self._model,
+                        "last": _codex_usage_components(
+                            info.get("last_token_usage"), snake_case=True, require_complete=True
+                        ),
+                        "total": total,
+                        "window": _codex_usage_window(info.get("model_context_window")),
+                        "metadata": {"source": "codex_token_count"},
+                        **({"timestamp": data["timestamp"]} if "timestamp" in data else {}),
+                    }
+                )
+                return
+
         # --- Current Codex CLI agent message item ---
         if event_type == "item.completed":
             item = data.get("item", {})
@@ -352,16 +428,44 @@ class CodexSubprocessTransport(CLITransport):
         # --- Turn complete ---
         if event_type in ("response.completed", "response.done", "turn.completed", "done"):
             usage = data.get("usage", {})
+            measured = _codex_usage_components(usage, snake_case=True)
+            delta = _codex_usage_components(usage, snake_case=True, require_complete=True)
             model_id = data.get("model", self._model)
+            response_id = data.get("id")
+            turn_id = data.get("turn_id") or self._native_turn_id
+            response_id = response_id if isinstance(response_id, str) and response_id else None
+            turn_id = turn_id if isinstance(turn_id, str) and turn_id else None
+            if (
+                delta is not None
+                and self._native_thread_id
+                and (response_id or turn_id)
+                and not self._native_usage_seen
+            ):
+                await self._emit(
+                    {
+                        "type": "session_usage",
+                        "engine": "codex",
+                        "thread_id": self._native_thread_id,
+                        "turn_id": turn_id,
+                        "response_id": response_id or turn_id,
+                        "model": model_id,
+                        "last": None,
+                        "total": None,
+                        "delta": delta,
+                        "window": None,
+                        "metadata": {"source": "codex_turn"},
+                        **({"timestamp": data["timestamp"]} if "timestamp" in data else {}),
+                    }
+                )
             self._last_result = {
                 "type": "result",
                 "stop_reason": "end_turn",
                 "modelUsage": {
                     model_id: {
-                        "inputTokens": usage.get("input_tokens", 0),
-                        "outputTokens": usage.get("output_tokens", 0),
-                        "cacheReadInputTokens": 0,
-                        "cacheCreationInputTokens": 0,
+                        "inputTokens": measured["input"] if measured else 0,
+                        "outputTokens": measured["output"] if measured else 0,
+                        "cacheReadInputTokens": measured["cache_read"] if measured else 0,
+                        "cacheCreationInputTokens": measured["cache_write"] if measured else 0,
                     }
                 },
             }

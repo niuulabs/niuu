@@ -24,6 +24,7 @@ Directive grammar (one user line may chain several with ``' ;; '``)::
     agent_done:<name>               finish that subagent (PostToolUse)
     subagent:<agent_type>[|id=<id>]    start a subagent via the SubagentStart hook
     subagent_done:<name>            finish it via the SubagentStop hook
+    /model <id>      switch model like Claude Code: ack on screen, local-command transcript row
     screen:<name>
     pick:<name>      render a picker screen, read a digit, echo "selected: <label>"
     pane:<name>      render a pane screen, then echo each input as "steer received: <text>"
@@ -90,6 +91,11 @@ _SCREENS_DIR = Path(__file__).resolve().parent / "screens"
 _PERMISSION_ROWS = ["Allow", "Allow & don't ask again", "Deny"]
 
 _interrupted = False
+
+# The model in effect, set by ``--model`` and ``/model``. With
+# FORGE_FAKEAGENT_TRANSCRIPT_DIR set, every reply is also written to the native
+# transcript ``<dir>/<native session>.jsonl`` naming this model, as Claude does.
+_model = ""
 
 
 def _emit(text: str) -> None:
@@ -200,13 +206,15 @@ class _Hooks:
         )
 
     def stop(self, last_assistant_message: str) -> None:
-        self.post(
-            {
-                "hook_event_name": "Stop",
-                "last_assistant_message": last_assistant_message,
-                "session_id": self._session_id,
-            }
-        )
+        payload = {
+            "hook_event_name": "Stop",
+            "last_assistant_message": last_assistant_message,
+            "session_id": self._session_id,
+        }
+        transcript = _transcript_path()
+        if transcript is not None:
+            payload["transcript_path"] = str(transcript)
+        self.post(payload)
 
     def subagent_start(self, agent_type: str, agent_id: str) -> None:
         # Mirrors the real Claude SubagentStart payload (validated live): the name
@@ -232,6 +240,49 @@ class _Hooks:
 
 
 # ──────────────────────────── argv parsing ────────────────────────────
+
+
+def _parse_model(argv: list[str]) -> str:
+    for index, token in enumerate(argv):
+        if token == "--model" and index + 1 < len(argv):
+            return argv[index + 1]
+    return ""
+
+
+def _transcript_path() -> Path | None:
+    directory = os.environ.get("FORGE_FAKEAGENT_TRANSCRIPT_DIR")
+    return Path(directory) / f"{_session_name()}.jsonl" if directory else None
+
+
+def _append_transcript(row: dict) -> None:
+    path = _transcript_path()
+    if path is None:
+        return
+    row = {
+        "sessionId": _session_name(),
+        "uuid": str(uuid.uuid4()),
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z",
+        **row,
+    }
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(row) + "\n")
+
+
+def _do_model(model: str) -> None:
+    """``/model <id>``: a local command — screen ack and transcript row, no turn."""
+    global _model
+    _model = model
+    ack = f"Set model to {model} and saved as your default for new sessions"
+    _emit(ack)
+    _append_transcript(
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": f"<local-command-stdout>{ack}</local-command-stdout>",
+            },
+        }
+    )
 
 
 def _parse_settings_path(argv: list[str]) -> str | None:
@@ -723,6 +774,23 @@ def _resolve_permission(keystroke: str | None) -> str:
 
 
 def _finish_turn(assistant_text: str, hooks: _Hooks) -> None:
+    if _model:
+        _append_transcript(
+            {
+                "type": "assistant",
+                "message": {
+                    "id": f"msg_{uuid.uuid4().hex[:12]}",
+                    "model": _model,
+                    "content": [{"type": "text", "text": assistant_text}],
+                    "usage": {
+                        "input_tokens": 3,
+                        "cache_read_input_tokens": 100,
+                        "cache_creation_input_tokens": 10,
+                        "output_tokens": max(1, len(assistant_text)),
+                    },
+                },
+            }
+        )
     if hooks.enabled:
         hooks.stop(assistant_text)
 
@@ -753,6 +821,9 @@ def _dispatch(directive: str, hooks: _Hooks, menu_delay: float = 0.0) -> None:
     if directive.startswith("exit:"):
         sys.stdout.flush()
         sys.exit(int(directive[len("exit:") :].strip() or "0"))
+    if directive.startswith("/model "):
+        _do_model(directive[len("/model ") :].strip())
+        return
     if directive.startswith("say:"):
         _do_say(directive[len("say:") :], hooks)
         return
@@ -848,6 +919,8 @@ def run(argv: list[str] | None = None) -> int:
     settings_path = _parse_settings_path(argv)
     hook_url = _hook_url_from_settings(settings_path)
     hooks = _Hooks(hook_url, _session_name())
+    global _model
+    _model = _parse_model(argv)
 
     _install_sigint_handler()
 
@@ -863,7 +936,8 @@ def run(argv: list[str] | None = None) -> int:
         line = sys.stdin.readline()
         if line == "":
             return 0
-        if line.strip():
+        # A local command such as /model is no prompt: Claude fires no hook for it.
+        if line.strip() and not line.startswith("/model "):
             hooks.user_prompt_submit(line.rstrip("\n"))
         handle_line(line.rstrip("\n"), hooks)
 

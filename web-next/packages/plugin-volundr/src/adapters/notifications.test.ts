@@ -99,9 +99,26 @@ describe('notification wire format', () => {
       engine: 'claude',
       model: 'opus',
       correlationId: null,
+      speak: null,
       createdAt: '2026-09-23T10:00:00Z',
       read: true,
     });
+  });
+
+  it('normalizes the speak intent and drops a malformed one', () => {
+    expect(
+      normalizeNotification({
+        ...wireRow,
+        speak: { text: ' Tests pass. ', priority: 'next_window' },
+      }).speak,
+    ).toEqual({ text: 'Tests pass.', priority: 'next_window' });
+    expect(
+      normalizeNotification({ ...wireRow, speak: { text: 'Hi', priority: 'whenever' } }).speak,
+    ).toEqual({ text: 'Hi', priority: 'now' });
+    expect(
+      normalizeNotification({ ...wireRow, speak: { text: '  ', priority: 'now' } }).speak,
+    ).toBeNull();
+    expect(normalizeNotification({ ...wireRow, speak: null }).speak).toBeNull();
   });
 
   it('degrades unknown values from a newer Forge', () => {

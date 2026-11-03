@@ -1,0 +1,88 @@
+[
+  {
+    "observed_rollout_path": "/home/thor/.codex/sessions/2026/09/14/rollout-2026-09-14T12-08-04-01a09fd1-38e6-7b13-84c0-bbf0df249a47.jsonl",
+    "session_meta": [
+      {
+        "id": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+        "source": "vscode",
+        "cli_version": "0.154.0",
+        "originator": "skuld"
+      }
+    ],
+    "latest_effective_context": {
+      "model": "gpt-6-astra",
+      "effort": "xhigh",
+      "cwd": "/home/thor/repos/worktrees/niuu-codex-subagents-20260914"
+    }
+  },
+  {
+    "observed_rollout_path": "/home/thor/.codex/sessions/2026/09/14/rollout-2026-09-14T12-08-40-01a09fd1-c5c9-7973-8202-06e43bc1857f.jsonl",
+    "session_meta": [
+      {
+        "id": "01a09fd1-c5c9-7973-8202-06e43bc1857f",
+        "source": {
+          "subagent": {
+            "thread_spawn": {
+              "parent_thread_id": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+              "depth": 1,
+              "agent_path": "/root/app_server_protocol",
+              "agent_nickname": "Laplace",
+              "agent_role": null
+            }
+          }
+        },
+        "agent_path": "/root/app_server_protocol",
+        "parent_thread_id": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+        "cli_version": "0.154.0",
+        "originator": "skuld",
+        "forked_from_id": "01a09fd1-38e6-7b13-84c0-bbf0df249a47"
+      },
+      {
+        "id": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+        "source": "vscode",
+        "cli_version": "0.154.0",
+        "originator": "skuld"
+      }
+    ],
+    "latest_effective_context": {
+      "model": "gpt-6-astra",
+      "effort": "xhigh",
+      "cwd": "/home/thor/repos/worktrees/niuu-codex-subagents-20260914"
+    }
+  },
+  {
+    "observed_rollout_path": "/home/thor/.codex/sessions/2026/09/14/rollout-2026-09-14T12-08-51-01a09fd1-f13b-73d3-87d8-366f5b4eedf5.jsonl",
+    "session_meta": [
+      {
+        "id": "01a09fd1-f13b-73d3-87d8-366f5b4eedf5",
+        "source": {
+          "subagent": {
+            "thread_spawn": {
+              "parent_thread_id": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+              "depth": 1,
+              "agent_path": "/root/niuu_projection",
+              "agent_nickname": "Gibbs",
+              "agent_role": null
+            }
+          }
+        },
+        "agent_path": "/root/niuu_projection",
+        "parent_thread_id": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+        "cli_version": "0.154.0",
+        "originator": "skuld",
+        "forked_from_id": "01a09fd1-38e6-7b13-84c0-bbf0df249a47"
+      },
+      {
+        "id": "01a09fd1-38e6-7b13-84c0-bbf0df249a47",
+        "source": "vscode",
+        "cli_version": "0.154.0",
+        "originator": "skuld"
+      }
+    ],
+    "latest_effective_context": {
+      "model": "gpt-6-astra",
+      "effort": "xhigh",
+      "cwd": "/home/thor/repos/worktrees/niuu-codex-subagents-20260914"
+    }
+  }
+]

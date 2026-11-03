@@ -1,0 +1,100 @@
+{
+  "status": "research_classification_not_runtime_capability_response",
+  "observed_date": "2026-09-14",
+  "source_base": "21bb0de6ec0ec467865382dd99640cf37b6cffdb",
+  "harnesses": [
+    {
+      "id": "claude",
+      "native_children": "supported",
+      "plan_mode": "supported",
+      "task_objects": "model_config_dependent",
+      "child_steer": "native_model_or_team_control",
+      "future_inputs": "same_turn_queue_not_strict_future_objective",
+      "effective_runtime_verified": false,
+      "skuld_projection": "partial",
+      "sources": [
+        "C1",
+        "C2",
+        "C5",
+        "C6",
+        "C7"
+      ]
+    },
+    {
+      "id": "codex",
+      "native_children": "supported",
+      "plan_mode": "supported",
+      "task_objects": "progress_steps_without_stable_task_ids",
+      "child_steer": "per_target_eligibility_or_parent_mediated",
+      "future_inputs": "experimental_native_thread_queue",
+      "effective_runtime_verified": true,
+      "effective_version": "0.154.0",
+      "skuld_projection": "partial",
+      "sources": [
+        "O1"
+      ]
+    },
+    {
+      "id": "grok",
+      "native_children": "supported",
+      "plan_mode": "supported",
+      "task_objects": "acp_progress_plan",
+      "child_steer": "feature_gated_native_extension",
+      "future_inputs": "operation_specific_queue",
+      "effective_runtime_verified": false,
+      "skuld_projection": "partial",
+      "sources": [
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5"
+      ]
+    },
+    {
+      "id": "muse",
+      "native_children": "supported",
+      "plan_mode": "unverified",
+      "task_objects": "todo_snapshot_without_stable_item_ids",
+      "child_steer": "native_child_controls",
+      "future_inputs": "native_durable_queue_vendor_claim",
+      "effective_runtime_verified": false,
+      "skuld_projection": "partial",
+      "sources": [
+        "M1",
+        "M2"
+      ]
+    },
+    {
+      "id": "pi",
+      "native_children": "extension_only",
+      "plan_mode": "extension_only",
+      "task_objects": "extension_defined",
+      "child_steer": "extension_defined",
+      "future_inputs": "native_follow_up_crash_durability_unverified",
+      "effective_runtime_verified": false,
+      "skuld_projection": "root_controls_only",
+      "sources": [
+        "P1",
+        "P2",
+        "P3",
+        "P4"
+      ]
+    },
+    {
+      "id": "opencode",
+      "supplementary": true,
+      "native_children": "supported",
+      "plan_mode": "supported",
+      "task_objects": "native_session_todos_role_dependent",
+      "child_steer": "unverified_active_turn_semantics",
+      "future_inputs": "durable_reorderable_queue_unverified",
+      "effective_runtime_verified": false,
+      "skuld_projection": "partial",
+      "sources": [
+        "OC1",
+        "OC2"
+      ]
+    }
+  ]
+}

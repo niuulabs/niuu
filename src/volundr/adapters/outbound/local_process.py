@@ -1251,6 +1251,9 @@ class LocalProcessPodManager(PodManager):
         # Last, so neither Forge's own environment nor launch-spec env can supply
         # (or keep) a session credential that this launch did not mint.
         _apply_forge_session_env(env, spec)
+        # Pod-spec contributors run after _build_env; never pass Forge's capture
+        # signing key to a child, even when a contributor supplies it explicitly.
+        env.pop("FORGE_EXP_CAPTURE_SECRET", None)
 
         log_path = workspace / ".skuld.log"
         # Multiple sessions may share a workspace; retain diagnostics from every
@@ -1767,6 +1770,8 @@ class LocalProcessPodManager(PodManager):
         ):
             env.pop(key, None)
         env.update(cls._session_env(spec, workspace))
+        # This signing key belongs only to Forge, never a session broker.
+        env.pop("FORGE_EXP_CAPTURE_SECRET", None)
         return env
 
     @staticmethod
@@ -1904,6 +1909,8 @@ class LocalProcessPodManager(PodManager):
         if mcp_servers:
             env["SKULD__MCP_SERVERS"] = json.dumps(mcp_servers)
 
+        # Container/VM callers also use this spec-only environment builder.
+        env.pop("FORGE_EXP_CAPTURE_SECRET", None)
         return env
 
     async def _monitor_process(self, session_id: str, pid: int) -> None:

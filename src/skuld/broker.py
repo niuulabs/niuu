@@ -11,6 +11,8 @@ import asyncio
 import collections
 import json
 import logging
+import os
+import signal
 import socket
 import time
 import uuid
@@ -44,6 +46,7 @@ from niuu.domain.transcript_reducer import (
     steering_target_id,
 )
 from niuu.domain.workflow_evidence import evaluate_workflow_evidence, validate_evidence_gate_nodes
+from niuu.domain.workflow_gate import AGENT_ANSWERABLE_GATE_MODE, WORKFLOW_GATE_FRAME
 from niuu.domain.workflow_kickoff import (
     WORKFLOW_KICKOFF_ID_KEY,
     WORKFLOW_KICKOFF_REDELIVERY_KEY,
@@ -56,7 +59,11 @@ from niuu.observability import get_observability
 from niuu.ports.cli import CLITransport
 from niuu.ports.evidence import ArtifactDigestResolver, EvidenceGateVerifier
 from niuu.utils import import_class, resolve_secret_kwargs
-from skuld.activity_reporting import ActivityReportingMixin
+from skuld.activity_reporting import (
+    ActivityReportingMixin,
+    is_idle_prompt_hook,
+    is_turn_boundary_flush,
+)
 from skuld.channels import (
     ChannelRegistry,
     WebSocketChannel,
@@ -127,9 +134,7 @@ from skuld.websocket_auth import (  # noqa: F401
 )
 from skuld.websocket_lifecycle import WebSocketLifecycleMixin
 from skuld.workflow_runtime import (
-    AGENT_ANSWERABLE_GATE_MODE,
     ROOM_MEMBER_FRAME,
-    WORKFLOW_GATE_FRAME,
     WorkflowGateNode,
     WorkflowGateState,
     WorkflowTerminalNode,
@@ -543,6 +548,11 @@ def _sanitize_directed_metadata(
     return {k: v for k, v in metadata.items() if k not in _SUB_OWNER_STRIPPED_METADATA_KEYS}
 
 
+def _exit_own_process() -> None:
+    """Graceful SIGTERM to this broker: uvicorn shuts down and flushes the event log."""
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
 class Broker(
     EffortControlMixin,
     ForgeSessionMixin,
@@ -683,6 +693,12 @@ class Broker(
         # states and clears only when the turn becomes idle or stops.
         self._turn_started_at: float | None = None
         self._last_activity_report: float = 0.0
+        # G10 (F12b/F12c): monotonic time of the newest transport frame, and whether
+        # the current prompt has produced any work row yet.
+        self._last_transport_row_at: float = time.monotonic()
+        self._prompt_work_seen: bool = True
+        # request_id -> ISO time each open human gate was first reported (F12d).
+        self._control_opened_at: dict[str, str] = {}
         self._activity_report_lock = asyncio.Lock()
         self._activity_report_pending = False
         # Rich context for the CURRENT activity state (e.g. the pending question's
@@ -3596,6 +3612,7 @@ class Broker(
     async def _handle_cli_event(self, data: dict) -> None:
         """Forward a CLI event to all connected channels."""
         event_type = data.get("type", "unknown")
+        self._observe_activity_row(data)
 
         # Use one observation instant for both the durable event row and the
         # live transcript reduction. Replaying the row will then reproduce the
@@ -3649,9 +3666,21 @@ class Broker(
             # terminal ``stopped`` activity_state with a final report so clients
             # stop showing the last live state frozen forever. Synthetic event —
             # nothing downstream consumes it, so return after reporting.
-            await self._report_activity_state(
-                "stopped", extra_metadata={"reason": data.get("reason", "transport_died")}
-            )
+            reason = data.get("reason", "transport_died")
+            extra: dict[str, Any] = {"reason": reason}
+            if data.get("exit_status"):
+                extra["exit_status"] = data["exit_status"]
+            await self._report_activity_state("stopped", extra_metadata=extra)
+            if self._settings.exit_when_transport_stops:
+                # A broker without its agent serves nothing but accepts messages that
+                # would pend forever. Exit (graceful SIGTERM: event logs flush) so the pod
+                # manager marks the session stopped and a start launches a fresh agent.
+                logger.error(
+                    "Agent transport stopped (%s); exiting so the session is reconciled as "
+                    "stopped (set exit_when_transport_stops=false to keep serving history)",
+                    reason,
+                )
+                asyncio.get_running_loop().call_soon(_exit_own_process)
             return
 
         if event_type == "control_request":
@@ -3729,6 +3758,9 @@ class Broker(
             self._stamp_steering_state_from_frame(data)
         elif event_type == "agent_update":
             self._track_agent_update(data)
+        elif is_idle_prompt_hook(data):
+            # Claude is waiting at its prompt: a stale busy state self-heals (F12b).
+            asyncio.create_task(self._heal_on_idle_prompt())
         elif event_type == "terminal_pane_opened":
             self._track_pane_agent(data, opened=True)
         elif event_type == "terminal_pane_closed":
@@ -3745,7 +3777,10 @@ class Broker(
             # while blocked on a human gate: the answer that unblocks the turn also
             # arrives as a prompt-submit, and we must not clobber awaiting_input
             # before _exit_attention runs.
-            if not self._pending_attention:
+            # A turn-boundary flush (G10, F12a) is NOT a turn start: the transport
+            # emits it after the turn ended, only so a silently absorbed steer's
+            # bubble flips. _activate_user_turn below still flips it.
+            if not self._pending_attention and not is_turn_boundary_flush(data):
                 asyncio.create_task(self._report_activity_state("active"))
         elif event_type in ("result", "error") or (
             event_type == "assistant" and self._assistant_has_content(data)
@@ -6004,6 +6039,7 @@ from skuld.broker_api import (  # noqa: E402, F401
     restart_service,
     _presented_staging_dir,
     _rebuild_presented_registry,
+    _resume_presented_uploads,
     present_file,
     _build_present_file_turn,
     download_presented_file,

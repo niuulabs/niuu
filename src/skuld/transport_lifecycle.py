@@ -11,7 +11,7 @@ from pathlib import Path
 
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class, resolve_secret_kwargs
-from skuld.broker_api import _rebuild_presented_registry
+from skuld.broker_api import _rebuild_presented_registry, _resume_presented_uploads
 from skuld.chronicle_watcher import ChronicleWatcher
 from skuld.codex_auth import CodexAuthProviderPort
 from skuld.conversation_models import ConversationTurn
@@ -236,6 +236,7 @@ class TransportLifecycleMixin:
         logger.info("Broker starting for session %s", self.session_id)
         logger.info("Transport adapter: %s", self._settings.transport_adapter)
         _rebuild_presented_registry()  # recover present-file cards across broker restarts
+        _resume_presented_uploads()  # F2: finish durable uploads cut off by the restart
         await self._ensure_session_trace_started()
 
         if self.volundr_api_url:

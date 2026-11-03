@@ -1001,6 +1001,46 @@ Typical response shape:
 }
 ```
 
+To read only the newest turns ("what is the session doing?"), pass `tail`:
+
+```http
+GET /api/v1/forge/sessions/{session_id}/conversation?tail=3&detail=shallow
+```
+
+The server reads only the end of the source. A live broker builds just its recent
+page (capped at `conversation_recent_max_turns`, default 15), and a stopped
+session's event-log rebuild reads only the newest frames. The response carries the
+newest turns plus `tail` (the requested count). It has no paging cursors or
+`window_offset`, and it has `total_turns` only when the source counted the whole
+transcript. `tail` cannot be combined with `cursor`, `before`, `after`, `after_id`
+or `turn_id`. It overrides `history_protocol` and `limit`, so a client can send
+`?tail=3&history_protocol=2&limit=3&detail=shallow`: a server without `tail` ignores
+it and answers with its protocol-2 recent page, which is also the newest turns.
+Without `tail`, the response is unchanged. Check for `tail` (or
+`history_protocol: 2`) in the response before trusting it as a tail.
+
+### Image tool-result previews
+
+```http
+GET /api/v1/forge/sessions/{session_id}/tool-result/{tool_use_id}/preview
+GET /api/v1/forge/sessions/{session_id}/tool-result/{tool_use_id}/preview?max_edge=1200&image_index=1
+```
+
+The preview is a JPEG of an image tool result, scaled down to a longest edge of
+`max_edge` pixels and never scaled up.
+
+- `max_edge` is optional. Without it you get 400 px, as older clients always have.
+- It must lie within the host's `tool_result_preview.min_edge` and `max_edge`
+  (320–1600 by default). Anything outside those bounds is answered with **422**,
+  never clamped.
+- The response names the size it served:
+  - `X-Preview-Max-Edge` is the bound used for the preview.
+  - `X-Preview-Edge` is the JPEG's real longest edge, which is smaller when the
+    source image is smaller.
+- Each edge is cached separately, with `Cache-Control: immutable`.
+- A 404 means the result is absent or not an image, so fall back to the full
+  tool-result fetch. A 501 means the host has no Pillow.
+
 ### Read persisted transcript directly
 
 ```http

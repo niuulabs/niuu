@@ -53,6 +53,11 @@ describe('niuuConfigSchema', () => {
     expect(() => niuuConfigSchema.parse({ theme: 'ultraviolet' })).toThrow();
   });
 
+  it.each(['xteo', 'midnight-blue', 'deep-blue', 'dark-blue', 'light'])(
+    'accepts %s as the configured theme',
+    (theme) => expect(niuuConfigSchema.parse({ theme }).theme).toBe(theme),
+  );
+
   it('rejects an invalid service URL', () => {
     expect(() =>
       niuuConfigSchema.parse({

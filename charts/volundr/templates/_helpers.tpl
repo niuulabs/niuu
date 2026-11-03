@@ -86,6 +86,20 @@ Sessions PVC name
 {{- end }}
 
 {{/*
+Presented files PVC name (presentedFiles.persistence.existingClaim, else the chart's own)
+*/}}
+{{- define "volundr.presentedFilesPvcName" -}}
+{{- .Values.presentedFiles.persistence.existingClaim | default (printf "%s-presented-files" (include "volundr.fullname" .)) }}
+{{- end }}
+
+{{/*
+Namespace of the session pods that receive their Forge credential from a Secret
+*/}}
+{{- define "volundr.sessionCredentialNamespace" -}}
+{{- .Values.sessionCredentialProjection.namespace | default ((.Values.podManager.kwargs).namespace) | default .Release.Namespace }}
+{{- end }}
+
+{{/*
 Home PVC name
 */}}
 {{- define "volundr.homePvcName" -}}

@@ -334,6 +334,10 @@ spec:
             - name: sessions
               mountPath: {{ .Values.storage.sessions.mountPath | default "/volundr/sessions" }}
             {{- end }}
+            {{- if .Values.presentedFiles.enabled }}
+            - name: presented-files
+              mountPath: {{ .Values.presentedFiles.mountPath }}
+            {{- end }}
             - name: preview-cache
               mountPath: {{ .Values.previewCache.mountPath | default "/volundr/preview-cache" }}
             - name: scratch
@@ -512,6 +516,11 @@ spec:
         - name: sessions
           persistentVolumeClaim:
             claimName: {{ include "volundr.sessionsPvcName" . }}
+        {{- end }}
+        {{- if .Values.presentedFiles.enabled }}
+        - name: presented-files
+          persistentVolumeClaim:
+            claimName: {{ include "volundr.presentedFilesPvcName" . }}
         {{- end }}
         - name: preview-cache
           {{- if .Values.previewCache.sizeLimit }}

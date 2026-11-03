@@ -129,6 +129,16 @@ data:
     {{- end }}
     service_user_id: {{ .Values.volundr.serviceUserId | default "skuld-broker" | quote }}
     service_tenant_id: {{ .Values.volundr.serviceTenantId | default "default" | quote }}
+    {{- if .Values.forgeMcp.tokenFile }}
+
+    # The session-bound Forge credential, mounted by Forge from a per-session Secret
+    # (forge_mcp.session_tokens.projection_adapter). Only the file path is a value.
+    forge_mcp:
+      token_file: {{ .Values.forgeMcp.tokenFile | quote }}
+      {{- if kindIs "slice" .Values.forgeMcp.grants }}
+      grants: {{ .Values.forgeMcp.grants | toJson }}
+      {{- end }}
+    {{- end }}
     {{- if and (include "skuld.residentEnabled" .) .Values.resident.platform.enabled }}
 
     # Workload identity token exchange (config-first; replaces the legacy

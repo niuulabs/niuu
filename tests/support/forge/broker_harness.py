@@ -217,9 +217,14 @@ class BrokerHarness:
         no_output_timeout_s: float = 3.0,
         pane_poll_interval_s: float = 0.2,
         ask_user_question_enabled: bool = False,
+        # The broker runs in-process: a real self-exit (LEX-1699) would end the test run.
+        # Tests of that exit turn this on and patch skuld.broker._exit_own_process.
+        exit_when_transport_stops: bool = False,
         start_transport: bool = False,
         bin_dir: Path | None = None,
         workspace_dir: Path | None = None,
+        model: str = "",
+        transcript: bool = False,
     ) -> None:
         self._boot = boot
         self._hooks = hooks
@@ -228,6 +233,7 @@ class BrokerHarness:
         self._no_output_timeout_s = no_output_timeout_s
         self._pane_poll_interval_s = pane_poll_interval_s
         self._ask_user_question_enabled = ask_user_question_enabled
+        self._exit_when_transport_stops = exit_when_transport_stops
         # When False, the transport is NOT started in __aenter__ — the broker
         # lazy-starts it on the first connect(), so a connected client observes
         # the one-shot system/init + terminal_pane_opened start frames. Tests
@@ -235,6 +241,9 @@ class BrokerHarness:
         self._start_transport = start_transport
         self._bin_dir = bin_dir
         self._workspace_dir = workspace_dir
+        # A launch model, and a native transcript the fake writes and hooks name.
+        self._model = model
+        self._transcript = transcript
 
         # A token unique to this harness — used as both the tmux session id and
         # the fakeagent FORGE_FAKEAGENT_SESSION, so crash_agent() can pkill the
@@ -270,6 +279,11 @@ class BrokerHarness:
         # reuse the token to find + kill its process for crash_agent().
         env_mutations["FORGE_FAKEAGENT_SESSION"] = self._token
         env_mutations["FORGE_FAKEAGENT_NATIVE_SESSION"] = self._native_session_id
+        if self._transcript:
+            self.transcript_path = Path(self._make_tmp("transcript")) / (
+                f"{self._native_session_id}.jsonl"
+            )
+            env_mutations["FORGE_FAKEAGENT_TRANSCRIPT_DIR"] = str(self.transcript_path.parent)
         # Remote Control would try to register with claude.ai — force it off.
         env_mutations["SKULD__TMUX_REMOTE_CONTROL"] = "0"
         self._apply_env(env_mutations)
@@ -284,6 +298,7 @@ class BrokerHarness:
         os.environ.setdefault("SKULD__TMUX_REPL_READY_MARKER", "fakeagent ready")
         self.transport = TmuxInteractiveTransport(
             workspace_dir=str(workspace_dir),
+            model=self._model,
             session_id=self._token,
             # A real resumed native identity also covers questions emitted by
             # the fake's boot directive before a browser submits a new prompt.
@@ -304,6 +319,7 @@ class BrokerHarness:
             event_log_enabled=True,
             skip_permissions=self._skip_permissions,
             ask_user_question_enabled=self._ask_user_question_enabled,
+            exit_when_transport_stops=self._exit_when_transport_stops,
         )
         settings.session.id = self._token
         settings.session.workspace_dir = str(workspace_dir)
