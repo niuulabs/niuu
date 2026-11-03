@@ -306,7 +306,9 @@ function InflightRow({
             ) : null}
           </>
         ) : (
-          <div className="vol-forge__booting-copy">{previewLabel(session.preview) ?? 'bootstrapping pod…'}</div>
+          <div className="vol-forge__booting-copy">
+            {previewLabel(session.preview) ?? 'bootstrapping pod…'}
+          </div>
         )}
       </div>
 
