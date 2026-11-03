@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from niuu.domain.models import Principal
+from niuu.domain.workflow_gate import WORKFLOW_GATE_FRAME
 from ting.domain.models import WorkflowCampaign
 from ting.domain.workflow_board import (
     GATE_STATUS_PENDING,
@@ -28,7 +29,6 @@ from ting.domain.workflow_board import (
 from ting.ports.volundr import PublicSessionLogEntry, VolundrPort
 
 _OUTCOME_FRAME = "room_outcome"
-_GATE_FRAME = "workflow_gate"
 _UNDECLARED_GATE_PANELS = (ReviewPanel(widget=WIDGET_SUMMARY, title="Summary"),)
 
 
@@ -113,7 +113,7 @@ def column_revisions(
                 }
             )
             continue
-        if entry.kind != _GATE_FRAME:
+        if entry.kind != WORKFLOW_GATE_FRAME:
             continue
         gate = entry.payload.get("gate")
         if not isinstance(gate, Mapping) or gate.get("node_id") != column.gate_node_id:
@@ -160,7 +160,7 @@ def _undeclared_gate_columns(
     """Gates the board has no column for: someone still has to see and answer them."""
     node_ids: dict[str, None] = {}
     for entry in sorted(entries, key=lambda item: item.seq):
-        gate = entry.payload.get("gate") if entry.kind == _GATE_FRAME else None
+        gate = entry.payload.get("gate") if entry.kind == WORKFLOW_GATE_FRAME else None
         node_id = gate.get("node_id") if isinstance(gate, Mapping) else None
         if isinstance(node_id, str) and node_id and board.gate_column(node_id) is None:
             node_ids[node_id] = None

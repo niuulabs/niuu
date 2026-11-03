@@ -77,13 +77,14 @@ class NotificationImageResponse(BaseModel):
 class NotificationInputRequestResponse(BaseModel):
     """The pending runtime request a system attention item stands for."""
 
-    kind: str = Field(description="question, confirmation or permission")
+    kind: str = Field(description="question, confirmation, permission or workflow_gate")
     request_id: str | None = Field(
         default=None,
         description=(
             "The pending request's id, as the session's question/permission card carries "
-            "it; answer it there (ask_user_answer / permission response). Null when the "
-            "runtime reported none."
+            "it; answer it there (ask_user_answer / permission response). For "
+            "workflow_gate it is the gate's id: decide it on the session's "
+            "workflow/gates/{request_id}/resolve route. Null when the runtime reported none."
         ),
     )
 
@@ -172,7 +173,8 @@ class NotificationResponse(BaseModel):
         default=None,
         description=(
             "Set on a system attention item: the runtime request (AskUserQuestion, "
-            "confirmation, permission) the session or resident is blocked on; null otherwise."
+            "confirmation, permission) the session or resident is blocked on, or the "
+            "workflow gate waiting for a person's review; null otherwise."
         ),
     )
     created_at: datetime

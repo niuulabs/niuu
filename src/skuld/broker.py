@@ -46,6 +46,7 @@ from niuu.domain.transcript_reducer import (
     steering_target_id,
 )
 from niuu.domain.workflow_evidence import evaluate_workflow_evidence, validate_evidence_gate_nodes
+from niuu.domain.workflow_gate import AGENT_ANSWERABLE_GATE_MODE, WORKFLOW_GATE_FRAME
 from niuu.domain.workflow_kickoff import (
     WORKFLOW_KICKOFF_ID_KEY,
     WORKFLOW_KICKOFF_REDELIVERY_KEY,
@@ -133,9 +134,7 @@ from skuld.websocket_auth import (  # noqa: F401
 )
 from skuld.websocket_lifecycle import WebSocketLifecycleMixin
 from skuld.workflow_runtime import (
-    AGENT_ANSWERABLE_GATE_MODE,
     ROOM_MEMBER_FRAME,
-    WORKFLOW_GATE_FRAME,
     WorkflowGateNode,
     WorkflowGateState,
     WorkflowTerminalNode,
