@@ -137,11 +137,11 @@ def generate_preview_jpeg(raw: bytes, *, max_edge: int = PREVIEW_MAX_EDGE) -> by
 class PreviewCache:
     """Disk cache of generated previews + the async single-flight machinery.
 
-    Layout: ``{root}/{sha256(session_id)}/{sha256(tool_use_id)[:40]}-e{max_edge}.jpg``.
+    Layout: ``{root}/{sha256(session_id)}/{sha256(tool_use_id, max_edge)[:40]}.jpg``.
     ``max_edge`` is the cache's default edge unless a call names another one, so
     each requested size is its own entry.
-    Hash both client-supplied identifiers so filesystem safety does not depend
-    on validation in callers.
+    Hash every client-supplied value (the identifiers and the edge) so filesystem
+    safety does not depend on validation in callers.
     Writes are tmp + ``os.replace`` (atomic, safe across processes). mtime is
     touched on read so pruning evicts least-recently-USED entries when the cache
     exceeds ``max_entries`` / ``max_bytes``. The cache survives platform
@@ -167,10 +167,11 @@ class PreviewCache:
     # -- paths -------------------------------------------------------------
 
     def _path(self, session_id: str, tool_use_id: str, max_edge: int | None = None) -> Path:
-        digest = hashlib.sha256(tool_use_id.encode("utf-8")).hexdigest()[:40]
-        session_digest = hashlib.sha256(str(session_id).encode("utf-8")).hexdigest()
         edge = self.max_edge if max_edge is None else max_edge
-        return self.root / session_digest / f"{digest}-e{edge}.jpg"
+        key = f"{tool_use_id}\0e{edge}"
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:40]
+        session_digest = hashlib.sha256(str(session_id).encode("utf-8")).hexdigest()
+        return self.root / session_digest / f"{digest}.jpg"
 
     # -- disk cache --------------------------------------------------------
 
