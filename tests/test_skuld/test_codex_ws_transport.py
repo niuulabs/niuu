@@ -1108,7 +1108,7 @@ class TestEventNormalization:
         assert t._last_usage is not None
         usage = t._last_usage["o4-mini"]
         # Should prefer "last" over "total"
-        assert usage["inputTokens"] == 400
+        assert usage["inputTokens"] == 350  # Codex's input count already includes cached input.
         assert usage["outputTokens"] == 100
         assert usage["cacheReadInputTokens"] == 50
 
@@ -4034,3 +4034,85 @@ class TestCodexDaemonDir:
         (tmp_path / f"codex-daemon-{os.geteuid()}").write_text("x")
         with pytest.raises(RuntimeError, match="not a directory"):
             prepare_codex_daemon_dir(tmp_path)
+
+
+class _ExitingProcess:
+    """A Codex app-server whose exit the test controls."""
+
+    def __init__(self, status: int = -15) -> None:
+        self.pid = 4242
+        self.returncode: int | None = None
+        self._status = status
+        self._exited = asyncio.Event()
+
+    def exit(self) -> None:
+        self.returncode = self._status
+        self._exited.set()
+
+    async def wait(self) -> int:
+        await self._exited.wait()
+        return self._status
+
+
+class TestAppServerExit:
+    """LEX-1699 for Codex: an app-server that dies while serving is reported, not hidden."""
+
+    @pytest.mark.asyncio
+    async def test_an_exit_while_serving_stops_the_transport(self, tmp_path):
+        t = _make_transport(tmp_path)
+        emits = _collect_emits(t)
+        process = _ExitingProcess(status=-15)
+        t._process = process
+        watch = asyncio.create_task(t._watch_app_server(process))
+
+        process.exit()
+        await watch
+
+        (event,) = _events_of_type(emits, "transport_stopped")
+        assert event == {
+            "type": "transport_stopped",
+            "reason": "codex_exited",
+            "exit_status": "-15",
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_exit_caused_by_stop_is_not_reported(self, tmp_path):
+        t = _make_transport(tmp_path)
+        emits = _collect_emits(t)
+        process = _ExitingProcess()
+        t._process = process
+        watch = asyncio.create_task(t._watch_app_server(process))
+
+        t._stopping = True
+        process.exit()
+        await watch
+
+        assert _events_of_type(emits, "transport_stopped") == []
+
+    @pytest.mark.asyncio
+    async def test_the_exit_of_a_replaced_process_is_not_reported(self, tmp_path):
+        t = _make_transport(tmp_path)
+        emits = _collect_emits(t)
+        old = _ExitingProcess()
+        t._process = _ExitingProcess()  # a restart already spawned a new one
+        watch = asyncio.create_task(t._watch_app_server(old))
+
+        old.exit()
+        await watch
+
+        assert _events_of_type(emits, "transport_stopped") == []
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_the_watch(self, tmp_path):
+        t = _make_transport(tmp_path)
+        emits = _collect_emits(t)
+        process = _ExitingProcess()
+        t._process_watch = asyncio.create_task(t._watch_app_server(process))
+        await asyncio.sleep(0)
+
+        with patch("skuld.transports.codex_ws._stop_process", AsyncMock()):
+            await t.stop()
+
+        assert t._process_watch is None
+        assert not t._stopping
+        assert _events_of_type(emits, "transport_stopped") == []

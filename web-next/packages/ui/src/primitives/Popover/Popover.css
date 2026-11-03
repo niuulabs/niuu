@@ -44,11 +44,23 @@
   fill: var(--color-border);
 }
 
-[data-theme='xteo'] .niuu-popover-content {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .niuu-popover-content {
   background: var(--color-panel-quiet);
   border-color: var(--color-border-quiet);
   box-shadow: var(--shadow-lg);
 }
-[data-theme='xteo'] .niuu-popover-arrow {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .niuu-popover-arrow {
   fill: var(--color-border-quiet);
 }

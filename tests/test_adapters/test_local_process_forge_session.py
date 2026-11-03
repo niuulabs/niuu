@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -62,6 +63,33 @@ async def _spawn(manager, session, spec, tmp_path, monkeypatch) -> tuple[list, d
 class TestBrokerEnv:
     def test_declares_delivery(self, manager) -> None:
         assert manager.delivers_forge_session_token is True
+
+    @pytest.mark.parametrize("cli_type", ["claude", "codex-ws", "grok"])
+    async def test_capture_secret_cannot_be_reintroduced_before_spawn(
+        self, manager, tmp_path, monkeypatch, cli_type
+    ) -> None:
+        session = Session(id=uuid4(), name="capture-exclusion", owner_id="owner-1")
+        spec = _spec(session, broker={"cliType": cli_type})
+        spec.pod_spec = PodSpecAdditions(
+            env=(
+                {"name": "FORGE_EXP_CAPTURE_SECRET", "value": "test-only-pod-capture-secret"},
+                {"name": "SESSION_SETTING", "value": "retained"},
+            )
+        )
+        parent = {
+            "FORGE_EXP_CAPTURE_SECRET": "test-only-parent-capture-secret",
+            "OPENAI_API_KEY": "test-only-engine-auth",
+            "PARENT_SETTING": "retained",
+        }
+        with patch.dict(os.environ, parent, clear=True):
+            _, env = await _spawn(manager, session, spec, tmp_path, monkeypatch)
+            assert "FORGE_EXP_CAPTURE_SECRET" not in env
+            assert env["SESSION_SETTING"] == "retained"
+            assert env["PARENT_SETTING"] == "retained"
+            assert env["OPENAI_API_KEY"] == "test-only-engine-auth"
+            assert env[FORGE_MCP_TOKEN_ENV] == spec.forge_session.token
+            assert dict(os.environ) == parent
+        assert spec.pod_spec.env[0]["value"] == "test-only-pod-capture-secret"
 
     async def test_token_and_grants_reach_the_broker_env_only(
         self, manager, tmp_path, monkeypatch, caplog

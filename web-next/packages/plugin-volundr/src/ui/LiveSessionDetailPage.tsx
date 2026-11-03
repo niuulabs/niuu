@@ -3137,10 +3137,14 @@ function LiveSessionDetailPageInner({
     enabled: Boolean(sessionId) && isRunning,
     refetchInterval: isRunning ? 5_000 : false,
   });
+  // A session that failed before its first message never had a broker, so it
+  // has no transcript to replay; asking for one only earns a misleading error.
+  const failedBeforeStart =
+    (sessionStatus === 'failed' || sessionStatus === 'error') && liveSession?.messageCount === 0;
   const transcriptQuery = useQuery({
     queryKey: ['volundr', 'conversation-history', sessionId, instanceId ?? null],
     queryFn: () => volundr.getConversationHistory(sessionId),
-    enabled: Boolean(sessionId) && canReplayTranscript,
+    enabled: Boolean(sessionId) && canReplayTranscript && !failedBeforeStart,
     staleTime: 5_000,
   });
   const sessionName = liveSession?.name ?? sessionQuery.data?.personaName ?? sessionId;
@@ -3846,13 +3850,23 @@ function LiveSessionDetailPageInner({
                       renderPermissions={permissionRenderer}
                     />
                   </>
+                ) : failedBeforeStart ? (
+                  <div
+                    className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted"
+                    data-testid="failed-before-start"
+                  >
+                    This session failed before it started, so it has no transcript.
+                  </div>
                 ) : canReplayTranscript && transcriptQuery.isLoading ? (
                   <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
                     Loading saved transcript…
                   </div>
                 ) : canReplayTranscript && transcriptQuery.isError ? (
-                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-critical">
-                    Failed to load saved transcript.
+                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:px-6 niuu:text-center niuu:text-sm niuu:text-critical">
+                    Failed to load saved transcript:{' '}
+                    {transcriptQuery.error instanceof Error
+                      ? transcriptQuery.error.message
+                      : String(transcriptQuery.error)}
                   </div>
                 ) : canReplayTranscript && replayMessages.length > 0 ? (
                   <SessionChat

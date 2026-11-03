@@ -792,7 +792,9 @@ describe('LiveSessionDetailPage', () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Teal' }));
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
-    expect(respondToInput).toHaveBeenCalledWith('tty-1-6f17f32f', ['Teal']);
+    expect(respondToInput).toHaveBeenCalledWith('tty-1-6f17f32f', [
+      { question: 'Which accent colour do you prefer?', answer: 'Teal', option_indexes: [1] },
+    ]);
   });
 
   it('surfaces mesh-driven workflow gates and sends change requests through chat', async () => {
@@ -1377,8 +1379,23 @@ describe('LiveSessionDetailPage', () => {
 
       await screen.findByTestId('live-session-detail-page');
       await waitFor(() => {
-        expect(screen.getByText('Failed to load saved transcript.')).toBeInTheDocument();
+        expect(
+          screen.getByText(/Failed to load saved transcript: history failed/),
+        ).toBeInTheDocument();
       });
+    });
+
+    it('does not ask for a transcript a session that failed before starting never had', async () => {
+      const getConversationHistory = vi.fn().mockRejectedValue(new Error('Not authorized'));
+      wrap('test-session-id-1234', {
+        session: { ...STOPPED_SESSION, status: 'failed', messageCount: 0 },
+        volundr: { getConversationHistory },
+      });
+
+      expect(await screen.findByTestId('failed-before-start')).toHaveTextContent(
+        'failed before it started',
+      );
+      expect(getConversationHistory).not.toHaveBeenCalled();
     });
 
     it('shows a transcript loading state for stopped sessions while replay is pending', async () => {

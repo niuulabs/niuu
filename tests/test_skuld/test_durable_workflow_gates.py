@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from niuu.domain.transcript_reducer import reduce_frames
+from niuu.domain.workflow_gate import WORKFLOW_GATE_FRAME
 from skuld.history_hydration import _HistoryFrame
-from skuld.workflow_runtime import WORKFLOW_GATE_FRAME, WorkflowGateNode, WorkflowGateState
+from skuld.workflow_runtime import WorkflowGateNode, WorkflowGateState
 from tests.test_skuld.test_broker_review_regressions import _broker
 
 
@@ -196,3 +197,65 @@ def test_gate_frames_add_nothing_to_the_transcript():
     )
 
     assert reduce_frames([frame]).turns == []
+
+
+def _reporting(broker):
+    """Record reported states and keep the broker's own state in step, as Volundr's ack does."""
+    reported: list[tuple[str, dict | None]] = []
+
+    async def _report(state, *, extra_metadata=None):
+        broker._activity_state = state
+        reported.append((state, extra_metadata))
+        return True
+
+    broker._report_activity_state = _report
+    return reported
+
+
+async def test_a_gate_waiting_for_a_person_says_so_until_it_is_decided(tmp_path):
+    broker = _broker(tmp_path, api_url="")
+    broker._mesh_adapter = SimpleNamespace(publish=AsyncMock())
+    broker.handle_human_room_message = AsyncMock()
+    broker._emit_broker_frame = AsyncMock()
+    broker._emit_pipeline_event = AsyncMock()
+    broker._start_trace_span = AsyncMock(return_value=None)
+    broker._finish_trace_span = AsyncMock()
+    broker._emit_workflow_gate_help_needed_sleipnir_event = AsyncMock()
+    broker._tell_joined_sessions = AsyncMock()
+    reported = _reporting(broker)
+    node = WorkflowGateNode(
+        node_id="review",
+        label="Review",
+        condition="",
+        event_types=("review.done",),
+        approval_event_type="review.approved",
+        changes_requested_event_type="review.changes",
+        mode="human_approval",
+        pending_behavior="help_needed",
+        instructions="",
+        auto_forward_after="",
+    )
+
+    state = await broker._activate_workflow_gate(node, "activation", "review.done")
+
+    waiting, metadata = reported[-1]
+    assert waiting == "awaiting_input"
+    assert metadata["kind"] == "confirmation"
+    assert metadata["request_id"] == state.id
+    assert metadata["help_needed"]["context"]["gate_id"] == state.id
+
+    await broker.resolve_workflow_gate(state.id, "APPROVE")
+
+    assert reported[-1] == ("active", None)
+    assert broker._pending_attention == {}
+
+
+async def test_a_gate_still_pending_after_a_restart_waits_on_its_person_again(tmp_path):
+    broker = _restarted(tmp_path, _state(), _state(id="other:activation:1", status="approved"))
+    reported = _reporting(broker)
+
+    await broker._reenter_restored_gate_attention()
+
+    assert [(state, meta["request_id"]) for state, meta in reported] == [
+        ("awaiting_input", "review:activation:1")
+    ]

@@ -15,6 +15,7 @@ import {
   type ForgeNotificationLink,
   type ForgeNotificationSeverity,
   type ForgeNotificationSource,
+  type ForgeNotificationSpeak,
 } from '@niuulabs/domain';
 
 /** Instance key for rows from a Forge that is not behind the Guild facade. */
@@ -41,6 +42,8 @@ export interface SessionNotification {
   engine: string | null;
   model: string | null;
   correlationId: string | null;
+  /** What the phone may say aloud for it; `null` when the notice asks for no voice. */
+  speak: ForgeNotificationSpeak | null;
   createdAt: string;
   /** Server-computed read flag at fetch time; live rows arrive without it. */
   read: boolean;

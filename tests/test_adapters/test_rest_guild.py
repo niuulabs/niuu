@@ -126,6 +126,8 @@ async def _notification_env(guild_instance: GuildInstance | None):
         store.feed,
         store.rule_repo,
         store.outbox,
+        image_repository=store.images,
+        image_scheduler=store.image_scheduler,
         broadcaster=broadcaster,
         reply_ready_enabled=False,
         reply_title_chars=80,
@@ -137,7 +139,12 @@ async def _notification_env(guild_instance: GuildInstance | None):
     app.state.identity = EnvoyHeaderAuthenticationAdapter()
     app.include_router(
         create_notifications_router(
-            service, session_service, prefix=PREFIX, default_page_size=5, max_page_size=5
+            service,
+            session_service,
+            prefix=PREFIX,
+            default_page_size=5,
+            max_page_size=5,
+            image_cache_max_age_seconds=3600,
         )
     )
     session = Session(name="fix-auth", owner_id="owner-a", tenant_id="tenant-a")

@@ -94,6 +94,16 @@ class VolundrSessionFailedPayload:
 
 
 @dataclass(frozen=True)
+class VolundrSessionForgeMcpGrantsChangedPayload:
+    session_id: str
+    owner_id: str
+    actor_user_id: str
+    actor_token_use: str
+    previous_grants: list[str]
+    grants: list[str]
+
+
+@dataclass(frozen=True)
 class VolundrSessionNeedsInputPayload:
     session_id: str
     session_name: str
@@ -653,6 +663,43 @@ def volundr_session_failed(
         domain="infrastructure",
         timestamp=datetime.now(UTC),
         correlation_id=correlation_id or session_id,
+    )
+
+
+def volundr_session_forge_mcp_grants_changed(
+    *,
+    session_id: str,
+    owner_id: str,
+    actor_user_id: str,
+    actor_token_use: str,
+    previous_grants: list[str],
+    grants: list[str],
+    source: str,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when an operator replaces a session's stored Forge MCP grants."""
+    return SleipnirEvent(
+        event_type=registry.VOLUNDR_SESSION_FORGE_MCP_GRANTS_CHANGED,
+        source=source,
+        payload=dataclasses.asdict(
+            VolundrSessionForgeMcpGrantsChangedPayload(
+                session_id=session_id,
+                owner_id=owner_id,
+                actor_user_id=actor_user_id,
+                actor_token_use=actor_token_use,
+                previous_grants=list(previous_grants),
+                grants=list(grants),
+            )
+        ),
+        summary=(
+            f"Forge MCP grants for session {session_id}: "
+            f"[{', '.join(previous_grants)}] -> [{', '.join(grants)}] by {actor_user_id}"
+        ),
+        urgency=0.5,
+        domain="code",
+        timestamp=datetime.now(UTC),
+        correlation_id=session_id,
+        tenant_id=tenant_id,
     )
 
 

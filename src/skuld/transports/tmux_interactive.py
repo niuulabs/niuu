@@ -11,6 +11,7 @@ Skuld clients.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -31,7 +32,7 @@ from stat import S_ISREG
 from typing import Any
 
 from niuu.build_info import build_info
-from niuu.domain.reasoning import MODEL_EFFORTS, validate_effort
+from niuu.domain.reasoning import MODEL_EFFORTS, preferred_effort, validate_effort
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.agent_usage import AgentUsageTracker
 from skuld.claude_permission import (
@@ -114,6 +115,16 @@ _KEY_ALIASES = {
 # PermissionRequest hook still fires, but only the question menu is on screen.
 _NO_GATE_PERMISSION_MODES = frozenset({"auto", "bypassPermissions"})
 
+#: The env knob (and constructor kwarg ``turn_max_seconds``) bounding how long a turn
+#: may run without a completion signal before Forge stops waiting for it.
+TURN_MAX_SECONDS_ENV = "SKULD__TMUX_TURN_MAX_SECONDS"
+#: ``system`` frame subtype recording that a turn reached that bound.
+TURN_CAP_SUBTYPE = "turn_cap_reached"
+#: tmux session option recording which broker binding (hook URL + secret) its Claude uses.
+HOOK_BINDING_OPTION = "@skuld_hook_binding"
+#: ``system`` frame subtype recording that a stale tmux session was replaced at start.
+STALE_SESSION_REPLACED_SUBTYPE = "stale_tmux_session_replaced"
+
 _CLAUDE_HOOK_EVENTS = [
     "SessionStart",
     "UserPromptSubmit",
@@ -193,11 +204,37 @@ def _replace_text_atomically(path: Path, text: str) -> None:
         raise
 
 
+async def _reap(process: asyncio.subprocess.Process) -> None:
+    """Kill ``process`` if it still runs and wait for it, shielded from the caller's
+    cancellation, so its transport is closed before the event loop is."""
+    if process.returncode is None:
+        with suppress(ProcessLookupError):
+            process.kill()
+    await asyncio.shield(process.wait())
+
+
 @dataclass
 class _TmuxResult:
     returncode: int
     stdout: str = ""
     stderr: str = ""
+
+
+# Claude Code's acknowledgement of /model ("Set model to …", or "Kept model as …").
+_MODEL_ACK = re.compile(r"^.*(?:Set model to|Kept model as) .*$", re.MULTILINE)
+
+
+@dataclass
+class _NativeUsageTail:
+    session_id: str
+    path: Path
+    identity: tuple[int, int] | None = None
+    offset: int = 0
+    partial: bytes = b""
+    discard_line: bool = False
+    latest: dict | None = None
+    caught_up: bool = False
+    requested: int = 0
 
 
 @dataclass
@@ -266,6 +303,7 @@ class TmuxInteractiveTransport(CLITransport):
         self.workspace_dir = workspace_dir
         self._session_tools = session_tools
         self._model = model
+        self._launch_model = model
         self._model_gateway_url = model_gateway_url
         self._model_gateway_token = model_gateway_token
         self._reasoning_effort = (
@@ -324,9 +362,7 @@ class TmuxInteractiveTransport(CLITransport):
         self._turn_no_output_timeout_s = self._float_env(
             "SKULD__TMUX_TURN_NO_OUTPUT_TIMEOUT_SECONDS", turn_no_output_timeout_s, 30.0
         )
-        self._turn_max_seconds = self._float_env(
-            "SKULD__TMUX_TURN_MAX_SECONDS", turn_max_seconds, 3600.0
-        )
+        self._turn_max_seconds = self._float_env(TURN_MAX_SECONDS_ENV, turn_max_seconds, 3600.0)
         self._pane_poll_interval_s = self._float_env(
             "SKULD__TMUX_PANE_POLL_INTERVAL_SECONDS", pane_poll_interval_s, 1.0
         )
@@ -396,6 +432,14 @@ class TmuxInteractiveTransport(CLITransport):
         self._socket_sweep_interval_s = self._float_env(
             "SKULD__TMUX_SOCKET_SWEEP_INTERVAL_SECONDS", None, 3600.0
         )
+        # A socket younger than this is never swept: a sibling broker's tmux server that is
+        # still starting fails has-session for a moment, and every broker sweeps the shared
+        # directory. On 2026-10-30 six lanes started together on the mini and one of them
+        # lost its live socket that way (LEX-1699). A server still unreachable after this
+        # long is dead, and the next sweep removes it.
+        self._socket_sweep_min_age_s = self._float_env(
+            "SKULD__TMUX_SOCKET_SWEEP_MIN_AGE_SECONDS", None, 600.0
+        )
         self._socket_dir = base_socket_dir
         self._runtime_root = Path(self.workspace_dir) / ".skuld" / "tmux-interactive"
         self._sweep_task: asyncio.Task[None] | None = None
@@ -447,6 +491,8 @@ class TmuxInteractiveTransport(CLITransport):
         # Assistant texts already emitted via MessageDisplay this turn (re-display dedup +
         # the Stop-hook final-message twin guard) + per-message flush accumulators.
         self._turn_displayed_texts: list[str] = []
+        #: The pane Claude itself runs in (``main.0``); its death ends the session.
+        self._primary_pane_id: str | None = None
         self._display_msg_buffers: dict[str, str] = {}
         self._text_hook_lock = asyncio.Lock()
         self._displayed_message_ids: set[str] = set()
@@ -479,6 +525,10 @@ class TmuxInteractiveTransport(CLITransport):
         # dict — that dict is emitted verbatim to clients, and the on-disk path is broker-local
         # detail, not wire contract.
         self._agent_usage = AgentUsageTracker()
+        # Main-conversation metrics reuse authenticated hooks and the configured
+        # native transcript byte bound. No terminal scraping or periodic poll.
+        self._native_usage_tail: _NativeUsageTail | None = None
+        self._native_usage_task: asyncio.Task[None] | None = None
         # Ordered stack of in-flight Task-subagent ids (the Task tool_use_id). A Task tool
         # BLOCKS its parent, so every NON-Task tool hook between a Task PreToolUse and that
         # Task's PostToolUse belongs to the subagent on top. Push in
@@ -541,6 +591,9 @@ class TmuxInteractiveTransport(CLITransport):
             terminal_keys=True,
             terminal_resize=True,
             terminal_panes=True,
+            # Behind a model gateway the CLI's models are the gateway's, not this catalog.
+            set_model=not self._model_gateway_url,
+            runtime_options=not self._model_gateway_url,
         )
 
     @property
@@ -746,6 +799,8 @@ class TmuxInteractiveTransport(CLITransport):
             self._pane_log_dir.mkdir(parents=True, exist_ok=True)
             self._socket_path.parent.mkdir(parents=True, exist_ok=True)
 
+            if await self._has_session() and not await self._adoptable_session():
+                await self._replace_stale_session()
             if not await self._has_session():
                 await self._create_session()
                 self._startup_ready = False
@@ -765,9 +820,61 @@ class TmuxInteractiveTransport(CLITransport):
                 )
             await self._emit_system_init()
 
+    def _hook_binding(self) -> str:
+        """Fingerprint of how this broker's Claude reaches it (hook URL + secret)."""
+        hook = ""
+        if self._hook_events_enabled and self._sdk_port:
+            authorization = (
+                self._session_tools.loopback_authorization if self._session_tools else ""
+            )
+            hook = f"http://127.0.0.1:{self._sdk_port}/api/claude/hooks\n{authorization}"
+        return hashlib.sha256(hook.encode("utf-8")).hexdigest()[:32]
+
+    async def _adoptable_session(self) -> bool:
+        """An existing tmux session may be adopted only if its Claude reports to us.
+
+        Claude reads its hook URL and secret once, at launch. A session left by an earlier
+        broker (a stop that did not finish, a broker restart) keeps posting to that broker's
+        port with its secret: every hook is refused or lost, a Stop never ends the turn and
+        the reply never reaches Forge (LEX-1670, ios-fixes 401 on 2026-10-30).
+        """
+        result = await self._run_tmux(
+            "show-options", "-v", "-t", self._session_name, HOOK_BINDING_OPTION, check=False
+        )
+        if result.returncode != 0 or result.stdout.strip() != self._hook_binding():
+            return False
+        # A session whose Claude has exited is a corpse (remain-on-exit), never adoptable.
+        panes = await self._run_tmux(
+            "list-panes", "-t", f"{self._session_name}:main.0", "-F", "#{pane_dead}", check=False
+        )
+        return panes.returncode == 0 and panes.stdout.strip() == "0"
+
+    async def _replace_stale_session(self) -> None:
+        logger.warning(
+            "tmux session %s was started for another broker, or its Claude has exited; "
+            "ending it and starting a fresh Claude that resumes the conversation",
+            self._session_name,
+        )
+        self._primary_pane_id = None
+        await self._graceful_terminate_pane()
+        await self._run_tmux("kill-session", "-t", self._session_name, check=False)
+        await self._emit(
+            {
+                "type": "system",
+                "subtype": STALE_SESSION_REPLACED_SUBTYPE,
+                "session_name": self._session_name,
+                "metadata": {"source": "tmux_interactive"},
+            }
+        )
+
     async def stop(self) -> None:
         async with self._lifecycle_lock:
             self._alive = False
+            if self._native_usage_task is not None:
+                self._native_usage_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._native_usage_task
+                self._native_usage_task = None
             if self._pane_watcher_task is not None:
                 self._pane_watcher_task.cancel()
                 with suppress(asyncio.CancelledError, Exception):
@@ -921,13 +1028,22 @@ class TmuxInteractiveTransport(CLITransport):
         if not socket_dir.is_dir():
             return removed
         live_stems: set[str] = set()
+        now = time.time()
         for sock in sorted(socket_dir.glob("*.sock")):
-            if await self._socket_server_is_live(sock):
+            if sock == self._socket_path:
+                live_stems.add(sock.stem)  # our own server: never ours to sweep
+                continue
+            try:
+                age = now - sock.stat().st_mtime
+            except OSError:
+                continue  # already gone
+            if age < self._socket_sweep_min_age_s or await self._socket_server_is_live(sock):
                 live_stems.add(sock.stem)
                 continue
             with suppress(OSError):
                 sock.unlink(missing_ok=True)
                 removed.append(sock)
+                logger.info("Swept stale tmux socket %s (age %.0f s, no server)", sock, age)
         if runtime_root is None or not Path(runtime_root).is_dir():
             return removed
         for session_dir in sorted(Path(runtime_root).iterdir()):
@@ -948,7 +1064,11 @@ class TmuxInteractiveTransport(CLITransport):
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            returncode = await process.wait()
+            try:
+                returncode = await process.wait()
+            except asyncio.CancelledError:
+                await _reap(process)
+                raise
         except Exception:
             return False
         return returncode == 0
@@ -1141,12 +1261,107 @@ class TmuxInteractiveTransport(CLITransport):
                         return
                     await asyncio.sleep(self._pane_poll_interval_s)
 
+    async def get_runtime_options(self, *, refresh: bool = False) -> dict:
+        """The Claude models the effort vocabulary knows, and the model in effect.
+
+        Claude Code publishes no model catalog, so the choices are the product's
+        Claude entries in ``MODEL_EFFORTS``; ``current.model`` follows the native
+        transcript, so a ``/model`` typed in the terminal shows here too.
+        """
+        if self._model_gateway_url:
+            raise RuntimeError("Runtime options are not offered behind a model gateway")
+        models = []
+        for model, levels in MODEL_EFFORTS.items():
+            if not model.startswith("claude-"):
+                continue
+            models.append(
+                {
+                    "id": model,
+                    "model": model,
+                    "name": model,
+                    "description": "",
+                    "default": model == self._launch_model,
+                    "hidden": False,
+                    "effort_levels": list(levels),
+                    "default_effort": preferred_effort(levels),
+                    "service_tiers": [],
+                    "default_service_tier": None,
+                    "input_modalities": [],
+                }
+            )
+        return {
+            "source": "catalog",
+            "applies_to": "next_turn",
+            "models": models,
+            "current": {
+                "model": self._model,
+                "effort": self._reasoning_effort,
+                "service_tier": None,
+            },
+            "active_turn": {"id": None, "model": self._model} if self._turn_active else None,
+        }
+
+    async def _set_runtime_options(self, options: object) -> None:
+        """Type ``/model`` (and ``/effort``) exactly as the slash passthrough would."""
+        if not isinstance(options, dict) or not options:
+            raise ValueError("Provide at least one runtime option")
+        if options.keys() - {"model", "effort", "service_tier"}:
+            raise ValueError("Unsupported runtime option; only model, effort and service_tier")
+        if options.get("service_tier") is not None:
+            raise ValueError("Claude Code offers no service tiers")
+        model = options.get("model") or self._model
+        if "model" in options:
+            state = await self.get_runtime_options()
+            if not any(entry["model"] == model for entry in state["models"]):
+                raise ValueError("The requested model is not in the Claude model catalog")
+        effort = options.get("effort")
+        if effort is not None:
+            if not isinstance(effort, str):
+                raise ValueError("Effort must be a string")
+            # Effort alone is validated exactly as /effort is, for any launch model.
+            validate_effort(effort, MODEL_EFFORTS.get(model, ()))
+        if model != self._model:
+            await self._set_model(model)
+        if effort is not None:
+            await self._set_effort(effort)
+
+    async def _set_model(self, model: str) -> None:
+        if self._turn_active:
+            raise ValueError("Claude is working. Change /model after this turn finishes.")
+        async with self._send_lock:
+            await self._wait_for_repl_ready()
+            before = _MODEL_ACK.findall(await self._capture_pane_text())
+            await self._send_slash_command("model", arguments=model)
+            try:
+                async with asyncio.timeout(self._effort_control_timeout):
+                    while True:
+                        # The CLI names the model by display name, so the proof is
+                        # a new acknowledgement line, never the echoed command.
+                        after = _MODEL_ACK.findall(await self._capture_pane_text())
+                        if after and after != before:
+                            self._model = model
+                            return
+                        await asyncio.sleep(self._pane_poll_interval_s)
+            except TimeoutError as exc:
+                raise RuntimeError(
+                    "Claude did not acknowledge /model within effort_control_timeout_s; "
+                    "raise it if the CLI is slow to answer"
+                ) from exc
+
     async def send_control(self, subtype: str, **kwargs: object) -> None:
         if not self.is_alive:
             await self.start()
 
         if subtype == "set_effort":
             await self._set_effort(str(kwargs.get("effort") or ""))
+            return
+
+        if subtype == "set_model":
+            await self._set_runtime_options({"model": kwargs.get("model")})
+            return
+
+        if subtype == "set_runtime_options":
+            await self._set_runtime_options(kwargs.get("options"))
             return
 
         if subtype == "interrupt":
@@ -1281,6 +1496,8 @@ class TmuxInteractiveTransport(CLITransport):
                 "metadata": {"source": "claude_hook"},
             }
         )
+        if event_name != "UserPromptSubmit":
+            self._schedule_native_usage(payload)
 
         if event_name == "UserPromptSubmit":
             if not self._is_child_hook(payload):
@@ -1300,6 +1517,7 @@ class TmuxInteractiveTransport(CLITransport):
                 native = payload.get("session_id")
                 if isinstance(native, str) and native.strip():
                     self._claude_native_session_id = native.strip()
+            self._schedule_native_usage(payload)
             event: dict[str, Any] = {
                 "type": "terminal_prompt_submitted",
                 "event_type": "claude.prompt.submitted",
@@ -1370,6 +1588,15 @@ class TmuxInteractiveTransport(CLITransport):
         if event_name == "Stop":
             if self._is_child_hook(payload):
                 return True
+            last = self._last_result or {}
+            if (
+                not self._turn_active
+                and last.get("stop_reason") == "timeout"
+                and self._normalize_prompt(self._coerce_str(payload.get("last_assistant_message")))
+                == self._normalize_prompt(str(last.get("result") or ""))
+            ):
+                # The capped turn already carried this exact text.
+                return True
             if (
                 not self._turn_active
                 and self._idle_completed_prompt
@@ -1398,6 +1625,209 @@ class TmuxInteractiveTransport(CLITransport):
             return True
 
         return True
+
+    def _schedule_native_usage(self, payload: dict[str, Any]) -> None:
+        """Only a correlated main conversation may supply a transcript location."""
+        native = self._coerce_str(payload.get("session_id"))
+        if self._is_child_hook(payload) or not native or native != self._claude_native_session_id:
+            return
+        try:
+            if str(uuid.UUID(native)) != native:
+                return
+        except ValueError:
+            return
+        path = Path(self._coerce_str(payload.get("transcript_path")))
+        if not path.is_absolute() or path.name != f"{native}.jsonl":
+            return
+        state = self._native_usage_tail
+        if state is None or state.session_id != native:
+            if self._native_usage_task is not None:
+                self._native_usage_task.cancel()
+            state = _NativeUsageTail(session_id=native, path=path)
+            self._native_usage_tail = state
+            self._native_usage_task = None
+        if state.path != path:
+            return  # Do not rebind the same native identity to another path.
+        state.requested += 1
+        if self._native_usage_task is None or self._native_usage_task.done():
+            self._native_usage_task = asyncio.create_task(self._drain_native_usage(state))
+
+    def _read_native_usage_chunk(
+        self, state: _NativeUsageTail
+    ) -> tuple[bytes, tuple[int, int], bool]:
+        fd = os.open(state.path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as stream:
+            stat = os.fstat(stream.fileno())
+            if not S_ISREG(stat.st_mode):
+                raise ValueError("not_regular")
+            identity = (stat.st_dev, stat.st_ino)
+            if state.identity is not None and (
+                identity != state.identity or stat.st_size < state.offset
+            ):
+                return b"", identity, True
+            stream.seek(state.offset)
+            return stream.read(self._question_transcript_max_bytes), identity, False
+
+    async def _native_usage_unavailable(self, state: _NativeUsageTail, reason: str) -> None:
+        state.latest = None
+        state.caught_up = False
+        await self._emit(
+            {
+                "type": "system",
+                "subtype": "claude_usage_unavailable",
+                "session_id": state.session_id,
+                "reason": reason,
+                "metadata": {"source": "claude_native_transcript"},
+            }
+        )
+
+    async def _drain_native_usage(self, state: _NativeUsageTail) -> None:
+        """Drain complete JSONL rows cooperatively; every file read is bounded."""
+        while state is self._native_usage_tail:
+            requested = state.requested
+            try:
+                chunk, identity, replaced = await asyncio.to_thread(
+                    self._read_native_usage_chunk, state
+                )
+            except (OSError, ValueError):
+                await self._native_usage_unavailable(state, "transcript_unreadable")
+                return
+            if replaced:
+                state.identity, state.offset, state.partial = identity, 0, b""
+                state.discard_line = False
+                await self._native_usage_unavailable(state, "transcript_replaced")
+                continue
+            state.identity = identity
+            if not chunk:
+                if requested != state.requested:
+                    continue
+                if state.partial or state.discard_line:
+                    await self._native_usage_unavailable(state, "incomplete_record")
+                elif state.latest is not None and not state.caught_up:
+                    await self._emit({**state.latest, "caught_up": True})
+                    state.caught_up = True
+                if requested != state.requested:
+                    continue
+                return
+            checkpoint = (state.partial, state.discard_line, state.latest, state.caught_up)
+            try:
+                await self._consume_native_usage_chunk(state, chunk)
+            except BaseException:
+                # A failed/cancelled broker callback must not consume unseen rows.
+                # Successfully emitted native IDs may replay; the projector dedupes them.
+                state.partial, state.discard_line, state.latest, state.caught_up = checkpoint
+                raise
+            state.offset += len(chunk)
+            await asyncio.sleep(0)
+
+    async def _consume_native_usage_chunk(self, state: _NativeUsageTail, chunk: bytes) -> None:
+        state.caught_up = False
+        data = state.partial + chunk
+        state.partial = b""
+        if state.discard_line:
+            end = data.find(b"\n")
+            if end < 0:
+                return
+            data = data[end + 1 :]
+            state.discard_line = False
+        lines = data.split(b"\n")
+        state.partial = lines.pop()
+        for line in lines:
+            if len(line) > self._question_transcript_max_bytes:
+                await self._native_usage_unavailable(state, "record_too_large")
+                continue
+            await self._emit_native_usage_row(state, line)
+        if len(state.partial) > self._question_transcript_max_bytes:
+            state.partial = b""
+            state.discard_line = True
+            await self._native_usage_unavailable(state, "record_too_large")
+
+    async def _emit_native_usage_row(self, state: _NativeUsageTail, line: bytes) -> None:
+        if not line.strip():
+            return
+        try:
+            row = json.loads(line)
+        except (ValueError, UnicodeDecodeError):
+            await self._native_usage_unavailable(state, "invalid_record")
+            return
+        if not isinstance(row, dict):
+            return
+        if (
+            row.get("sessionId", row.get("session_id")) != state.session_id
+            or row.get("isSidechain")
+            or row.get("is_sidechain")
+            or row.get("agentId")
+            or row.get("agent_id")
+            or row.get("parent_tool_use_id")
+        ):
+            return
+        event: dict[str, Any] = {
+            "type": "system",
+            "session_id": state.session_id,
+            "metadata": {"source": "claude_native_transcript"},
+        }
+        for key in ("uuid", "timestamp"):
+            if isinstance(row.get(key), str):
+                event[key] = row[key]
+        if row.get("type") == "system" and row.get("subtype") == "compact_boundary":
+            event["subtype"] = "compact_boundary"
+            metadata = row.get("compact_metadata", row.get("compactMetadata"))
+            if isinstance(metadata, dict):
+                event["compact_metadata"] = {
+                    key: value
+                    for key, value in metadata.items()
+                    if key in {"trigger", "pre_tokens", "preTokens", "post_tokens", "postTokens"}
+                    and (
+                        type(value) is int
+                        or (
+                            key == "trigger"
+                            and isinstance(value, str)
+                            and value in {"auto", "manual"}
+                        )
+                    )
+                }
+            state.latest = None
+            await self._emit(event)
+            return
+        message = row.get("message")
+        if row.get("type") != "assistant" or not isinstance(message, dict):
+            return
+        usage = message.get("usage")
+        if (
+            not isinstance(message.get("id"), str)
+            or not message["id"]
+            or not isinstance(usage, dict)
+        ):
+            return
+        numeric = {
+            key: value
+            for key, value in usage.items()
+            if key
+            in {
+                "input_tokens",
+                "output_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+            }
+            and type(value) is int
+            and value >= 0
+        }
+        if not numeric:
+            return
+        event.update(
+            subtype="claude_usage",
+            caught_up=False,
+            message={"id": message["id"], "usage": numeric, "content": []},
+        )
+        if isinstance(message.get("model"), str):
+            event["message"]["model"] = message["model"]
+            # The transcript is the ground truth for the model in effect: a /model
+            # typed in the terminal shows up on the next response. Claude writes
+            # ``<synthetic>`` on rows it produced itself, which name no model.
+            if message["model"] and not message["model"].startswith("<"):
+                self._model = message["model"]
+        state.latest = event
+        await self._emit(event)
 
     @staticmethod
     def _hook_event_name(payload: dict[str, Any]) -> str:
@@ -3126,6 +3556,10 @@ class TmuxInteractiveTransport(CLITransport):
             *command,
             env=env,
         )
+        # Record which broker this Claude reports to; a later broker adopts it only on match.
+        await self._run_tmux(
+            "set-option", "-t", self._session_name, HOOK_BINDING_OPTION, self._hook_binding()
+        )
 
     async def _apply_tmux_options(self) -> None:
         for args in (
@@ -3185,8 +3619,10 @@ class TmuxInteractiveTransport(CLITransport):
         parts: list[str] = []
         if self._steering_instructions_enabled:
             parts.append(_STEERING_INPUT_INSTRUCTION)
-        # Always advertise the session capabilities (present-file, and the Forge notify MCP
-        # when the broker injected it) so any Forge agent can hand the user a file or ping them.
+        # Always advertise the session capabilities (present-file, and the Forge notify MCP and
+        # forge-describe when the broker injected it) so any Forge agent can hand the user a
+        # file, ping them and say what it is doing. The fallback names present-file only:
+        # without SessionTools there is no broker loopback for forge-describe to reach.
         if self._session_tools is not None:
             parts.append(self._session_tools.instructions)
         else:
@@ -3320,7 +3756,7 @@ class TmuxInteractiveTransport(CLITransport):
             (
                 "#{pane_id}\t#{pane_index}\t#{window_name}\t#{pane_active}\t"
                 "#{pane_current_command}\t#{pane_width}\t#{pane_height}\t"
-                "#{cursor_x}\t#{cursor_y}\t#{pane_dead}\t#{pane_title}"
+                "#{cursor_x}\t#{cursor_y}\t#{pane_dead}\t#{pane_dead_status}\t#{pane_title}"
             ),
             check=False,
         )
@@ -3348,8 +3784,34 @@ class TmuxInteractiveTransport(CLITransport):
             cursor_x = self._coerce_int(parts[7] if len(parts) > 7 else None, 0)
             cursor_y = self._coerce_int(parts[8] if len(parts) > 8 else None, 0)
             pane_dead = (parts[9].strip() if len(parts) > 9 else "") == "1"
+            dead_status = parts[10].strip() if len(parts) > 10 else ""
             # pane_title is last so an (unlikely) embedded tab is recovered intact.
-            pane_title = "\t".join(parts[10:]).strip() if len(parts) > 10 else ""
+            pane_title = "\t".join(parts[11:]).strip() if len(parts) > 11 else ""
+            if self._primary_pane_id is None and window_name == "main" and pane_index == "0":
+                self._primary_pane_id = pane_id
+
+            # The PRIMARY pane is Claude itself: dead means the session is dead, whatever
+            # its teammates do. Report it once so the broker can stop instead of serving a
+            # corpse as "running" (LEX-1699: ios-speaker-bargein, 8 h on 2026-10-30).
+            if pane_dead and pane_id == self._primary_pane_id:
+                was_alive = self._alive
+                self._alive = False
+                if was_alive and emit_events:
+                    logger.error(
+                        "tmux session %s: Claude's pane exited (status %s); stopping",
+                        self._session_name,
+                        dead_status or "unknown",
+                    )
+                    with suppress(Exception):
+                        await self._emit(
+                            {
+                                "type": "transport_stopped",
+                                "reason": "claude_exited",
+                                "exit_status": dead_status or None,
+                            }
+                        )
+                await self._evict_pane(pane_id, window_name=window_name, emit_events=emit_events)
+                continue
 
             # DEAD pane: a corpse left listed by `remain-on-exit on` (kept for the primary REPL's
             # crash forensics). It never vanishes from `list-panes`, so the disappearance sweep
@@ -3656,11 +4118,7 @@ class TmuxInteractiveTransport(CLITransport):
                     waiting_since = None
                 if self._hook_events_enabled:
                     if now - self._turn_started_at - waited >= self._turn_max_seconds:
-                        await self._finish_hook_turn(
-                            content="",
-                            reason="timeout",
-                            is_error=True,
-                        )
+                        await self._finish_capped_hook_turn()
                         return
                     await asyncio.sleep(0.2)
                     continue
@@ -3672,7 +4130,8 @@ class TmuxInteractiveTransport(CLITransport):
                     await self._finish_synthetic_turn(reason="no_terminal_output")
                     return
                 if now - self._turn_started_at - waited >= self._turn_max_seconds:
-                    await self._finish_synthetic_turn(reason="timeout", is_error=True)
+                    await self._report_turn_cap(had_text=None)
+                    await self._finish_synthetic_turn(reason="timeout")
                     return
                 await asyncio.sleep(0.2)
         except asyncio.CancelledError:
@@ -3693,6 +4152,55 @@ class TmuxInteractiveTransport(CLITransport):
                 "cacheCreationInputTokens": 0,
             }
         }
+
+    async def _report_turn_cap(self, *, had_text: bool | None) -> None:
+        """Make a turn_max_seconds hit loud: an error log and a durable system frame.
+
+        The cap only stops Forge waiting for a turn whose end it never saw; it does not
+        mean the agent failed, so the turn itself is not marked as an error.
+        """
+        logger.error(
+            "tmux turn reached turn_max_seconds (%.0f s) without a completion signal; "
+            "ending it as a timeout. Raise SKULD__TMUX_TURN_MAX_SECONDS if turns run "
+            "longer, and check the terminal: the agent may still be working.",
+            self._turn_max_seconds,
+        )
+        event: dict[str, Any] = {
+            "type": "system",
+            "subtype": TURN_CAP_SUBTYPE,
+            "knob": TURN_MAX_SECONDS_ENV,
+            "turn_max_seconds": self._turn_max_seconds,
+            "metadata": {"source": "tmux_interactive"},
+        }
+        if had_text is not None:
+            event["had_text"] = had_text
+        await self._emit(event)
+
+    def _displayed_turn_text(self) -> str:
+        """The last message this turn displayed (or is still flushing), if any."""
+        pending = [text.strip() for text in self._display_msg_buffers.values() if text.strip()]
+        if pending:
+            return pending[-1]
+        displayed = [text.strip() for text in self._turn_displayed_texts if text.strip()]
+        return displayed[-1] if displayed else ""
+
+    async def _finish_capped_hook_turn(self) -> None:
+        """End a hook-mode turn that saw no Stop within turn_max_seconds, keeping its text.
+
+        A Stop can be missing for long, healthy turns: the main agent waiting on
+        background agents, or a Stop the transport could not attribute. The turn ends
+        with the last message it displayed, or else what the terminal shows, never with
+        an empty error that replaces the agent's reply.
+        """
+        if not self._turn_active:
+            return
+        content = (
+            self._displayed_turn_text()
+            or await self._capture_turn_text()
+            or self._turn_last_clean_text
+        )
+        await self._report_turn_cap(had_text=bool(content))
+        await self._finish_hook_turn(content=content, reason="timeout")
 
     async def _finish_synthetic_turn(self, *, reason: str, is_error: bool = False) -> None:
         if not self._turn_active:
@@ -4031,7 +4539,13 @@ class TmuxInteractiveTransport(CLITransport):
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        stdout_b, stderr_b = await process.communicate()
+        try:
+            stdout_b, stderr_b = await process.communicate()
+        except asyncio.CancelledError:
+            # A caller cancelled mid-command (the transport stopping): reap the child
+            # before re-raising, or its transport outlives the event loop unclosed.
+            await _reap(process)
+            raise
         result = _TmuxResult(
             returncode=process.returncode or 0,
             stdout=stdout_b.decode("utf-8", errors="replace"),

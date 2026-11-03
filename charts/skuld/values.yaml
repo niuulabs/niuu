@@ -304,6 +304,15 @@ broker:
   # -- Enable Claude Code experimental Agent Teams (Claude only)
   agentTeams: true
 
+# The session-bound Forge credential (forge_session). Forge sets these per session
+# when it mounts the credential from a Secret (Volundr's
+# forge_mcp.session_tokens.projection_adapter); never set the token itself here.
+forgeMcp:
+  # -- File the mounted credential is read from at start. Empty: no session credential.
+  tokenFile: ""
+  # -- Tool grants of the credential (message, lifecycle). Null keeps the token's own.
+  grants: null
+
 # Volundr API (for token usage reporting back to the control plane)
 volundr:
   # -- URL of the Volundr API service (set by session definition).

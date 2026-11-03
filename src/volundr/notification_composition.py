@@ -1,4 +1,5 @@
-"""Composition of Forge notification delivery: sinks, the resolver and the dispatcher.
+"""Composition of Forge notification delivery (sinks, the resolver and the dispatcher)
+and of the image worker that copies attached images.
 
 Kept out of ``main.py`` so the wiring can be built (and tested) from config alone.
 """
@@ -11,22 +12,38 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from niuu.adapters.notifications.integrations import IntegrationSinkResolver
+from niuu.domain.guild_membership import GuildInstance
 from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.integrations import IntegrationRepository
 from niuu.utils import import_class, resolve_secret_kwargs
+from volundr.adapters.outbound.notification_image_fetcher import (
+    HttpNotificationImageFetcher,
+    SessionLookup,
+)
 from volundr.adapters.outbound.notification_sinks import (
     ConfiguredNotificationSinks,
     build_configured_sinks,
 )
+from volundr.adapters.outbound.pillow_notification_images import (
+    PillowNotificationImageProcessor,
+)
 from volundr.adapters.outbound.postgres_notifications import (
     PostgresNotificationDeliveryRepository,
 )
-from volundr.config import NotificationsConfig, Settings
-from volundr.domain.ports import DeviceTokenRepository, NotificationChannel
+from volundr.config import NotificationImagesConfig, NotificationsConfig, Settings
+from volundr.domain.notification_ports import (
+    NotificationImageRepository,
+    NotificationRepository,
+)
+from volundr.domain.ports import DeviceTokenRepository, EventBroadcaster, NotificationChannel
 from volundr.domain.services.notification_dispatcher import (
     DispatcherSettings,
     NotificationDispatcher,
     NotificationRenderer,
+)
+from volundr.domain.services.notification_images import (
+    ImageWorkerSettings,
+    NotificationImageWorker,
 )
 
 logger = logging.getLogger(__name__)
@@ -138,3 +155,48 @@ def create_notification_delivery(
         dispatcher_settings(config),
     )
     return NotificationDelivery(dispatcher=dispatcher, sinks=sinks)
+
+
+def image_worker_settings(config: NotificationImagesConfig) -> ImageWorkerSettings:
+    return ImageWorkerSettings(
+        poll_interval_seconds=config.poll_interval_seconds,
+        batch_size=config.batch_size,
+        lease_seconds=config.lease_seconds,
+        fetch_timeout_seconds=config.fetch_timeout_seconds,
+        max_concurrent_fetches=config.max_concurrent_fetches,
+    )
+
+
+def create_notification_image_worker(
+    settings: Settings,
+    *,
+    notifications: NotificationRepository,
+    images: NotificationImageRepository,
+    session_lookup: SessionLookup,
+    broadcaster: EventBroadcaster | None,
+    guild_instance: GuildInstance | None = None,
+) -> NotificationImageWorker:
+    """Build the worker that copies attached images (``notifications.images``).
+
+    ``file_id`` images are read through the session's broker, routed like every
+    other server-side broker call (``openshell_internal_gateway_url``).
+    """
+    config = settings.notifications.images
+    return NotificationImageWorker(
+        images,
+        notifications,
+        HttpNotificationImageFetcher(
+            session_lookup=session_lookup,
+            gateway_url=settings.openshell_internal_gateway_url,
+            timeout_seconds=config.fetch_timeout_seconds,
+            max_redirects=config.max_redirects,
+            allow_private_networks=config.allow_private_networks,
+        ),
+        PillowNotificationImageProcessor(
+            thumbnail_max_side=config.thumbnail_max_side,
+            thumbnail_jpeg_quality=config.thumbnail_jpeg_quality,
+        ),
+        image_worker_settings(config),
+        broadcaster=broadcaster,
+        guild_instance=guild_instance,
+    )

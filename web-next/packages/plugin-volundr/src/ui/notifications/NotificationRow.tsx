@@ -208,6 +208,16 @@ export function NotificationRow({
                 </span>
               )}
               {hostLabel && <Chip tone="muted">{hostLabel}</Chip>}
+              {notification.speak && (
+                <span data-testid="notification-spoken">
+                  <Chip
+                    tone="brand"
+                    title={`To be spoken${notification.speak.priority === 'next_window' ? ' at the next good moment' : ' now'}: ${notification.speak.text}`}
+                  >
+                    Spoken
+                  </Chip>
+                </span>
+              )}
               {notification.engine && <CliBadge cli={notification.engine} compact />}
               {notification.model && <ModelChip model={notification.model} />}
               <time

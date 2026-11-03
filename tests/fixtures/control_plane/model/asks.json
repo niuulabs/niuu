@@ -1,0 +1,1244 @@
+{
+ "suite": "asks",
+ "spec": "model/questions.md (plan/06: questions and session questions; no timer hides; escalation every 24 h)",
+ "cases": [
+  {
+   "id": "A1",
+   "title": "Two asks naming the same ticket are never merged",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "session": "s1",
+     "ask": true,
+     "title": "Pick the layout for LEX-1387",
+     "at": 0
+    },
+    {
+     "t": "notice",
+     "id": "n2",
+     "session": "s1",
+     "ask": true,
+     "title": "Approve the release for LEX-1387",
+     "at": 1
+    },
+    {
+     "t": "cp_answer",
+     "ask": "question:thor:n1",
+     "delivered": true,
+     "at": 2
+    }
+   ],
+   "expect": [
+    {
+     "badge": 1
+    },
+    {
+     "badge": 2,
+     "rows": 2
+    },
+    {
+     "badge": 1,
+     "asks": {
+      "question:thor:n1": {
+       "resolution": "answered",
+       "closed_by": "cp_answer_delivered"
+      },
+      "question:thor:n2": {
+       "resolution": "open"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "A2",
+   "title": "A shared correlation_id neither merges nor resolves",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "ask": true,
+     "correlation_id": "build-2361",
+     "title": "Does 2361 install?",
+     "at": 0
+    },
+    {
+     "t": "notice",
+     "id": "n2",
+     "kind": "milestone",
+     "ask": false,
+     "correlation_id": "build-2361",
+     "title": "Build 2361 is on TestFlight",
+     "at": 5
+    }
+   ],
+   "expect": [
+    {
+     "badge": 1
+    },
+    {
+     "badge": 1,
+     "asks": {
+      "question:thor:n1": {
+       "resolution": "open"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "A3",
+   "title": "An unrelated user turn resolves nothing",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "session": "s1",
+     "ask": true,
+     "at": 0
+    },
+    {
+     "t": "turn",
+     "session": "s1",
+     "role": "user",
+     "at": 3
+    }
+   ],
+   "expect": [
+    {
+     "badge": 1
+    },
+    {
+     "badge": 1,
+     "asks": {
+      "question:thor:n1": {
+       "resolution": "open"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "A4",
+   "title": "A reply that starts and ends between two polls changes nothing by itself",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "session": "s1",
+     "ask": true,
+     "at": 0
+    },
+    {
+     "t": "snapshot",
+     "session": "s1",
+     "status": "running",
+     "activity_state": "idle",
+     "at": 4
+    }
+   ],
+   "expect": [
+    null,
+    {
+     "badge": 1
+    }
+   ]
+  },
+  {
+   "id": "A5",
+   "title": "The producer resolves its own ask",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "session": "s1",
+     "ask": true,
+     "at": 0
+    },
+    {
+     "t": "notice",
+     "id": "n2",
+     "session": "s1",
+     "about_ask": {
+      "id": "n1",
+      "action": "resolved"
+     },
+     "at": 9
+    }
+   ],
+   "expect": [
+    {
+     "badge": 1
+    },
+    {
+     "badge": 0,
+     "asks": {
+      "question:thor:n1": {
+       "resolution": "answered",
+       "closed_by": "about_question_resolved"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "A6",
+   "title": "A reminder updates the question; it neither closes it nor delays its escalation",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "session": "s1",
+     "ask": true,
+     "at": 0
+    },
+    {
+     "t": "notice",
+     "id": "n2",
+     "session": "s1",
+     "about_ask": {
+      "id": "n1",
+      "action": "remind"
+     },
+     "title": "Still waiting",
+     "at": 1200
+    },
+    {
+     "t": "clock",
+     "at": 1800
+    }
+   ],
+   "expect": [
+    null,
+    {
+     "badge": 1,
+     "asks": {
+      "question:thor:n1": {
+       "rev": 2
+      }
+     }
+    },
+    {
+     "badge": 1,
+     "asks": {
+      "question:thor:n1": {
+       "visibility": "counted",
+       "escalation_level": 1
+      }
+     },
+     "escalations": [
+      [
+       "question:thor:n1",
+       1
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "id": "A7",
+   "title": "A correction without about_ask leaves the ask alone",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "session": "s1",
+     "ask": true,
+     "at": 0
+    },
+    {
+     "t": "notice",
+     "id": "n2",
+     "session": "s1",
+     "kind": "milestone",
+     "ask": false,
+     "title": "Correction: use revision 2",
+     "at": 2
+    }
+   ],
+   "expect": [
+    null,
+    {
+     "badge": 1,
+     "asks": {
+      "question:thor:n1": {
+       "resolution": "open"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "A8",
+   "title": "Unanswered for 24 h: still counted, escalated once; again at 48 h; idempotent; stops when answered",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "ask": true,
+     "at": 0
+    },
+    {
+     "t": "clock",
+     "at": 1500
+    },
+    {
+     "t": "clock",
+     "at": 1600
+    },
+    {
+     "t": "clock",
+     "at": 2900
+    },
+    {
+     "t": "cp_answer",
+     "ask": "question:thor:n1",
+     "delivered": true,
+     "at": 2950
+    },
+    {
+     "t": "clock",
+     "at": 5000
+    }
+   ],
+   "expect": [
+    {
+     "badge": 1,
+     "escalations": []
+    },
+    {
+     "badge": 1,
+     "escalations": [
+      [
+       "question:thor:n1",
+       1
+      ]
+     ],
+     "asks": {
+      "question:thor:n1": {
+       "resolution": "open",
+       "visibility": "counted",
+       "escalation_level": 1
+      }
+     }
+    },
+    {
+     "escalations": [
+      [
+       "question:thor:n1",
+       1
+      ]
+     ]
+    },
+    {
+     "badge": 1,
+     "escalations": [
+      [
+       "question:thor:n1",
+       1
+      ],
+      [
+       "question:thor:n1",
+       2
+      ]
+     ]
+    },
+    {
+     "badge": 0
+    },
+    {
+     "escalations": [
+      [
+       "question:thor:n1",
+       1
+      ],
+      [
+       "question:thor:n1",
+       2
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "id": "A9",
+   "title": "An FYI decision from a legacy producer is listed as possibly, not counted",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "kind": "decision",
+     "title": "Deploying the Forge attachments index to Thor now",
+     "at": 0
+    }
+   ],
+   "expect": [
+    {
+     "badge": 0,
+     "possibly": [
+      "question:thor:n1"
+     ],
+     "asks": {
+      "question:thor:n1": {
+       "confidence": "inferred",
+       "hidden_reason": "unconfirmed"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "A10",
+   "title": "ask:false suppresses legacy inference, for that session from then on",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "session": "s1",
+     "kind": "decision",
+     "ask": false,
+     "title": "Pick a scroll bar colour?",
+     "at": 0
+    },
+    {
+     "t": "notice",
+     "id": "n2",
+     "session": "s1",
+     "kind": "decision",
+     "title": "Pick a layout?",
+     "at": 1
+    }
+   ],
+   "expect": [
+    {
+     "asks": {},
+     "badge": 0
+    },
+    {
+     "asks": {},
+     "badge": 0
+    }
+   ]
+  },
+  {
+   "id": "A11",
+   "title": "Two prompts in one session: one waiting-session row counted once; each prompt resolves on its own (R7-2)",
+   "steps": [
+    {
+     "t": "log",
+     "host": "mini-m6",
+     "session": "s1",
+     "kind": "ask_user_question",
+     "request_id": "a",
+     "at": 0
+    },
+    {
+     "t": "log",
+     "host": "mini-m6",
+     "session": "s1",
+     "kind": "ask_user_question",
+     "request_id": "b",
+     "at": 1
+    },
+    {
+     "t": "log",
+     "host": "mini-m6",
+     "session": "s1",
+     "kind": "ask_user_resolved",
+     "request_id": "a",
+     "reason": "answered",
+     "at": 2
+    },
+    {
+     "t": "snapshot",
+     "host": "mini-m6",
+     "session": "s1",
+     "status": "running",
+     "activity_state": "active",
+     "at": 3
+    }
+   ],
+   "expect": [
+    {
+     "badge": 1,
+     "waiting_sessions": [
+      "session:mini-m6:s1"
+     ]
+    },
+    {
+     "badge": 1,
+     "rows": 1,
+     "waiting_sessions": [
+      "session:mini-m6:s1"
+     ]
+    },
+    {
+     "badge": 1,
+     "asks": {
+      "sessionq:mini-m6:s1:a": {
+       "resolution": "answered"
+      },
+      "sessionq:mini-m6:s1:b": {
+       "resolution": "open"
+      }
+     }
+    },
+    {
+     "badge": 1,
+     "asks": {
+      "sessionq:mini-m6:s1:b": {
+       "resolution": "open"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "A12",
+   "title": "A declared relay groups with its origin and resolves with it",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "session": "ios-design",
+     "ask": true,
+     "title": "Dynamic Island next steps",
+     "at": 0
+    },
+    {
+     "t": "notice",
+     "id": "n2",
+     "session": "ios-coordinator",
+     "ask": true,
+     "title": "Dynamic Island next steps",
+     "about_ask": {
+      "id": "n1",
+      "action": "relay"
+     },
+     "at": 1
+    },
+    {
+     "t": "notice",
+     "id": "n3",
+     "session": "ios-design",
+     "about_ask": {
+      "id": "n1",
+      "action": "resolved"
+     },
+     "at": 30
+    }
+   ],
+   "expect": [
+    {
+     "rows": 1,
+     "badge": 1
+    },
+    {
+     "rows": 1,
+     "badge": 1,
+     "members": {
+      "question:thor:n1": [
+       "question:thor:n1",
+       "question:thor:n2"
+      ]
+     }
+    },
+    {
+     "rows": 0,
+     "badge": 0,
+     "asks": {
+      "question:thor:n1": {
+       "resolution": "answered"
+      },
+      "question:thor:n2": {
+       "resolution": "answered"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "A13",
+   "title": "Identical titles within 10 minutes and no link stay two rows",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "session": "ios-design",
+     "ask": true,
+     "title": "Dynamic Island next steps",
+     "at": 0
+    },
+    {
+     "t": "notice",
+     "id": "n2",
+     "session": "ios-coordinator",
+     "ask": true,
+     "title": "Dynamic Island next steps",
+     "at": 1
+    }
+   ],
+   "expect": [
+    {
+     "rows": 1
+    },
+    {
+     "rows": 2,
+     "badge": 2
+    }
+   ]
+  },
+  {
+   "id": "A14",
+   "title": "A question from a session that was archived stays open and counted, marked session ended",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "session": "s1",
+     "ask": true,
+     "at": 0
+    },
+    {
+     "t": "snapshot",
+     "session": "s1",
+     "status": "archived",
+     "at": 5
+    }
+   ],
+   "expect": [
+    {
+     "badge": 1
+    },
+    {
+     "badge": 1,
+     "asks": {
+      "question:thor:n1": {
+       "resolution": "open",
+       "visibility": "counted",
+       "session_ended": true
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "A15",
+   "title": "A native turn_ended is a cancellation, not an answer",
+   "steps": [
+    {
+     "t": "log",
+     "session": "s1",
+     "kind": "ask_user_question",
+     "request_id": "a",
+     "at": 0
+    },
+    {
+     "t": "log",
+     "session": "s1",
+     "kind": "ask_user_resolved",
+     "request_id": "a",
+     "reason": "turn_ended",
+     "at": 2
+    }
+   ],
+   "expect": [
+    {
+     "badge": 1
+    },
+    {
+     "badge": 0,
+     "asks": {
+      "sessionq:thor:s1:a": {
+       "resolution": "cancelled",
+       "closed_by": "turn_ended"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "A16",
+   "title": "A replacement withdraws the old ask and opens the new one",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "session": "s1",
+     "ask": true,
+     "title": "Pick A or B",
+     "at": 0
+    },
+    {
+     "t": "notice",
+     "id": "n2",
+     "session": "s1",
+     "ask": true,
+     "title": "Pick A, B or C",
+     "about_ask": {
+      "id": "n1",
+      "action": "replace"
+     },
+     "at": 5
+    }
+   ],
+   "expect": [
+    null,
+    {
+     "badge": 1,
+     "asks": {
+      "question:thor:n1": {
+       "resolution": "withdrawn",
+       "closed_by": "replaced"
+      },
+      "question:thor:n2": {
+       "resolution": "open"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "A17",
+   "title": "Dismissal closes an agent ask; a native ask refuses it",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "ask": true,
+     "at": 0
+    },
+    {
+     "t": "dismiss",
+     "ask": "question:thor:n1",
+     "at": 1
+    },
+    {
+     "t": "log",
+     "session": "s1",
+     "kind": "ask_user_question",
+     "request_id": "a",
+     "at": 2
+    },
+    {
+     "t": "dismiss",
+     "ask": "sessionq:thor:s1:a",
+     "at": 3
+    }
+   ],
+   "expect": [
+    null,
+    {
+     "badge": 0,
+     "asks": {
+      "question:thor:n1": {
+       "resolution": "dismissed"
+      }
+     }
+    },
+    null,
+    {
+     "badge": 1,
+     "errors": [
+      {
+       "ask": "sessionq:thor:s1:a",
+       "status": 409
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "A19",
+   "title": "A session question escalates too; an inferred one never does",
+   "steps": [
+    {
+     "t": "log",
+     "session": "s1",
+     "kind": "claude_permission_request",
+     "request_id": "p",
+     "at": 0
+    },
+    {
+     "t": "notice",
+     "id": "n9",
+     "kind": "decision",
+     "title": "Pick a scroll bar colour?",
+     "at": 0
+    },
+    {
+     "t": "clock",
+     "at": 1441
+    }
+   ],
+   "expect": [
+    null,
+    null,
+    {
+     "badge": 1,
+     "escalations": [
+      [
+       "sessionq:thor:s1:p",
+       1
+      ]
+     ],
+     "asks": {
+      "sessionq:thor:s1:p": {
+       "entity": "session_question"
+      },
+      "question:thor:n9": {
+       "entity": "question",
+       "confidence": "inferred"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "A20",
+   "title": "An unrelated session cannot resolve another session's question (R7-2)",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "session": "s1",
+     "ask": true,
+     "at": 0
+    },
+    {
+     "t": "notice",
+     "id": "n2",
+     "session": "s2",
+     "about_ask": {
+      "id": "n1",
+      "action": "resolved"
+     },
+     "at": 3
+    }
+   ],
+   "expect": [
+    {
+     "badge": 1
+    },
+    {
+     "badge": 1,
+     "asks": {
+      "question:thor:n1": {
+       "resolution": "open"
+      }
+     },
+     "errors": [
+      {
+       "notice": "n2",
+       "status": "rejected",
+       "reason": "not_asking_session"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "A21",
+   "title": "A mini-m6 coordinator relays a Thor question by a host-qualified reference (R7-2)",
+   "steps": [
+    {
+     "t": "notice",
+     "host": "thor",
+     "id": "n1",
+     "session": "ios-design",
+     "ask": true,
+     "title": "Pick a layout",
+     "at": 0
+    },
+    {
+     "t": "notice",
+     "host": "mini-m6",
+     "id": "r1",
+     "session": "ios-coordinator",
+     "ask": true,
+     "title": "Pick a layout",
+     "about_ask": {
+      "host": "thor",
+      "id": "n1",
+      "action": "relay"
+     },
+     "at": 1
+    }
+   ],
+   "expect": [
+    null,
+    {
+     "rows": 1,
+     "badge": 1,
+     "members": {
+      "question:thor:n1": [
+       "question:thor:n1",
+       "question:mini-m6:r1"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "A22",
+   "title": "Escalation delivers only the current due level; history keeps every level; restart re-sends nothing; then one a day (R7-5, R8-3)",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "ask": true,
+     "at": 0
+    },
+    {
+     "t": "clock",
+     "at": 4325
+    },
+    {
+     "t": "restart",
+     "at": 4326
+    },
+    {
+     "t": "clock",
+     "at": 5761
+    },
+    {
+     "t": "clock",
+     "at": 5765
+    }
+   ],
+   "expect": [
+    {
+     "deliveries": []
+    },
+    {
+     "escalations": [
+      [
+       "question:thor:n1",
+       1
+      ],
+      [
+       "question:thor:n1",
+       2
+      ],
+      [
+       "question:thor:n1",
+       3
+      ]
+     ],
+     "deliveries": [
+      [
+       "question:thor:n1",
+       3
+      ]
+     ]
+    },
+    {
+     "deliveries": [
+      [
+       "question:thor:n1",
+       3
+      ]
+     ]
+    },
+    {
+     "deliveries": [
+      [
+       "question:thor:n1",
+       3
+      ]
+     ]
+    },
+    {
+     "deliveries": [
+      [
+       "question:thor:n1",
+       3
+      ],
+      [
+       "question:thor:n1",
+       4
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "id": "A24",
+   "title": "A new question in the same session after the first was answered gets its own level-1 delivery (R8-3)",
+   "steps": [
+    {
+     "t": "log",
+     "session": "s1",
+     "kind": "ask_user_question",
+     "request_id": "A",
+     "at": 0
+    },
+    {
+     "t": "clock",
+     "at": 1440
+    },
+    {
+     "t": "log",
+     "session": "s1",
+     "kind": "ask_user_resolved",
+     "request_id": "A",
+     "reason": "answered",
+     "at": 1441
+    },
+    {
+     "t": "log",
+     "session": "s1",
+     "kind": "ask_user_question",
+     "request_id": "B",
+     "at": 2000
+    },
+    {
+     "t": "clock",
+     "at": 3440
+    }
+   ],
+   "expect": [
+    null,
+    {
+     "delivered_items": [
+      [
+       "sessionq:thor:s1:A",
+       1
+      ]
+     ]
+    },
+    null,
+    null,
+    {
+     "delivered_items": [
+      [
+       "sessionq:thor:s1:A",
+       1
+      ],
+      [
+       "sessionq:thor:s1:B",
+       1
+      ]
+     ],
+     "deliveries": [
+      [
+       "session:thor:s1",
+       1
+      ],
+      [
+       "session:thor:s1",
+       1
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "id": "A25",
+   "title": "A late first delivery is not followed by a boundary catch-up: one per row per 24 h (R8-3)",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "ask": true,
+     "at": 0
+    },
+    {
+     "t": "clock",
+     "at": 2879
+    },
+    {
+     "t": "clock",
+     "at": 2880
+    },
+    {
+     "t": "clock",
+     "at": 4319
+    }
+   ],
+   "expect": [
+    null,
+    {
+     "deliveries": [
+      [
+       "question:thor:n1",
+       1
+      ]
+     ]
+    },
+    {
+     "deliveries": [
+      [
+       "question:thor:n1",
+       1
+      ]
+     ]
+    },
+    {
+     "deliveries": [
+      [
+       "question:thor:n1",
+       1
+      ],
+      [
+       "question:thor:n1",
+       2
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "id": "A26",
+   "title": "The wire spelling of a question reference is question:<host>:<uuid> (judge R8 ruling)",
+   "steps": [
+    {
+     "t": "notice",
+     "host": "thor",
+     "id": "n1",
+     "session": "ios-design",
+     "ask": true,
+     "project": "P",
+     "at": 0
+    },
+    {
+     "t": "notice",
+     "host": "mini-m6",
+     "id": "r1",
+     "session": "ios-coordinator",
+     "ask": true,
+     "project": "P",
+     "about_ask": {
+      "id": "question:thor:n1",
+      "action": "relay"
+     },
+     "at": 1
+    }
+   ],
+   "expect": [
+    null,
+    {
+     "rows": 1,
+     "members": {
+      "question:thor:n1": [
+       "question:thor:n1",
+       "question:mini-m6:r1"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "A27",
+   "title": "A relay from another project is rejected (the API's same-project rule, bound in C3a)",
+   "steps": [
+    {
+     "t": "notice",
+     "id": "n1",
+     "session": "s1",
+     "ask": true,
+     "project": "P",
+     "at": 0
+    },
+    {
+     "t": "notice",
+     "id": "r1",
+     "session": "s9",
+     "ask": true,
+     "project": "Q",
+     "about_ask": {
+      "id": "question:thor:n1",
+      "action": "relay"
+     },
+     "at": 1
+    }
+   ],
+   "expect": [
+    null,
+    {
+     "errors": [
+      {
+       "notice": "r1",
+       "status": "rejected",
+       "reason": "relay_other_project"
+      }
+     ],
+     "members": {}
+    }
+   ]
+  },
+  {
+   "id": "A23",
+   "title": "A waiting session escalates as one row, from its oldest open prompt",
+   "steps": [
+    {
+     "t": "log",
+     "session": "s1",
+     "kind": "ask_user_question",
+     "request_id": "a",
+     "at": 0
+    },
+    {
+     "t": "log",
+     "session": "s1",
+     "kind": "claude_permission_request",
+     "request_id": "b",
+     "at": 600
+    },
+    {
+     "t": "clock",
+     "at": 1500
+    }
+   ],
+   "expect": [
+    null,
+    null,
+    {
+     "badge": 1,
+     "deliveries": [
+      [
+       "session:thor:s1",
+       1
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "id": "A18",
+   "title": "A permission resolves exactly through its own row",
+   "steps": [
+    {
+     "t": "log",
+     "session": "s1",
+     "kind": "claude_permission_request",
+     "request_id": "p",
+     "at": 0
+    },
+    {
+     "t": "log",
+     "session": "s1",
+     "kind": "permission_resolved",
+     "request_id": "p",
+     "behavior": "allow",
+     "at": 1
+    }
+   ],
+   "expect": [
+    {
+     "badge": 1
+    },
+    {
+     "badge": 0,
+     "asks": {
+      "sessionq:thor:s1:p": {
+       "resolution": "answered",
+       "closed_by": "permission_resolved"
+      }
+     }
+    }
+   ]
+  }
+ ]
+}

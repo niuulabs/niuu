@@ -205,9 +205,40 @@ class InMemorySessionRepository(SessionRepository):
                 "coordination": current.coordination,
                 "coordination_revision": current.coordination_revision,
                 "workload_config": config,
+                "short_description": current.short_description,
+                "description": current.description,
+                "short_description_updated_at": current.short_description_updated_at,
+                "description_updated_at": current.description_updated_at,
+                "session_usage": current.session_usage,
             }
         )
         self._sessions[session.id] = updated
+        return updated
+
+    async def update_description(self, session_id, changes, now):
+        current = self._sessions.get(session_id)
+        if current is None:
+            return None
+        updates = {}
+        for name, value in changes.items():
+            if getattr(current, name) != value:
+                updates[name] = value
+                updates[f"{name}_updated_at"] = now
+        if updates:
+            updates["updated_at"] = now
+        updated = current.model_copy(update=updates)
+        self._sessions[session_id] = updated
+        return updated
+
+    async def update_forge_mcp_grants(self, session_id, grants, now):
+        current = self._sessions.get(session_id)
+        if current is None:
+            return None
+        config = dict(current.workload_config or {})
+        block = config.get("forge_mcp")
+        config["forge_mcp"] = {**(block if isinstance(block, dict) else {}), "grants": grants}
+        updated = current.model_copy(update={"workload_config": config, "updated_at": now})
+        self._sessions[session_id] = updated
         return updated
 
     async def update_coordination(self, session, coordination):

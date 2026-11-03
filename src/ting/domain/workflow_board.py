@@ -26,12 +26,13 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
+from niuu.domain.workflow_gate import WORKFLOW_GATE_PENDING
 from ting.domain.models import RunStatus, Saga, SagaBoardWorkflow
 
 BOARD_VERSION = 1
 BACKLOG_COLUMN_ID = "backlog"
 DONE_COLUMN_ID = "done"
-GATE_STATUS_PENDING = "pending"
+GATE_STATUS_PENDING = WORKFLOW_GATE_PENDING
 GATE_STATUS_APPROVED = "approved"
 GATE_STATUS_CHANGES_REQUESTED = "changes_requested"
 SESSION_FAILED_REASON = "The session's agent stopped with an error. Open the session to see why."

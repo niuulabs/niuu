@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useId,
   useMemo,
   useState,
   useRef,
@@ -48,6 +49,7 @@ import type {
   AgentEventTarget,
   ChatMessage,
   ChatMessagePart,
+  InputAnswer,
   InputRequest,
   RoomParticipant,
   MeshEvent,
@@ -188,10 +190,12 @@ function InputRequestForm({
   onDismiss,
 }: {
   request: InputRequest;
-  onRespond: (requestId: string, values: string[]) => void;
+  onRespond: (requestId: string, values: (string | InputAnswer)[]) => void;
   onDismiss?: (requestId: string) => void;
 }) {
-  const [values, setValues] = useState(() => request.questions.map(() => ''));
+  const formId = useId();
+  const [selected, setSelected] = useState<number[][]>(() => request.questions.map(() => []));
+  const [text, setText] = useState(() => request.questions.map(() => ''));
   if (request.answerable === false) {
     return (
       <section className="niuu-chat-request" data-answerable="false">
@@ -203,6 +207,11 @@ function InputRequestForm({
               {question.choices.length > 0 && ` (${question.choices.join(' / ')})`}
             </p>
           ))}
+          {request.error && (
+            <p role="alert" className="niuu-chat-request-error">
+              {request.error}
+            </p>
+          )}
           <p className="niuu-chat-request-prompt">
             This question can&apos;t be answered from here. Answer it in the session&apos;s
             terminal; the card closes when Claude continues.
@@ -220,11 +229,26 @@ function InputRequestForm({
       </section>
     );
   }
+  // One structured answer per question: the chosen labels (several for a multi-select
+  // question) plus any typed text, in the shape Skuld's ask_user_answer accepts.
+  const answers: InputAnswer[] = request.questions.map((question, index) => {
+    const indexes = selected[index] ?? [];
+    const custom = (text[index] ?? '').trim();
+    const values = indexes.map((i) => question.choices[i]!).concat(custom ? [custom] : []);
+    return {
+      question: question.prompt,
+      ...(question.id ? { question_id: question.id } : {}),
+      ...(question.header ? { header: question.header } : {}),
+      answer: question.multiSelect ? values : (values[0] ?? ''),
+      option_indexes: indexes,
+      ...(custom ? { free_text: custom } : {}),
+    };
+  });
+  const complete = answers.every((answer) => answer.answer.length > 0);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const responses = values.map((value) => value.trim());
-    if (responses.some((value) => !value)) return;
-    onRespond(request.requestId, responses);
+    if (!complete) return;
+    onRespond(request.requestId, answers);
   };
 
   return (
@@ -238,46 +262,74 @@ function InputRequestForm({
               <label className="niuu-chat-request-prompt" htmlFor={inputId}>
                 {question.prompt}
               </label>
+              {question.multiSelect && (
+                <small className="niuu-chat-request-hint">Select all that apply.</small>
+              )}
               {question.choices.length > 0 && (
                 <div className="niuu-chat-request-choices" aria-label="Suggested responses">
-                  {question.choices.map((choice) => (
-                    <button
-                      type="button"
-                      className="niuu-chat-request-button"
-                      key={choice}
-                      onClick={() =>
-                        setValues((current) =>
-                          current.map((value, valueIndex) =>
-                            valueIndex === index ? choice : value,
-                          ),
-                        )
-                      }
-                    >
-                      {choice}
-                    </button>
-                  ))}
+                  {question.choices.map((choice, choiceIndex) => {
+                    const description = question.descriptions?.[choiceIndex];
+                    const descriptionId = `${formId}-${index}-${choiceIndex}`;
+                    return (
+                      <button
+                        type="button"
+                        className="niuu-chat-request-button niuu-chat-request-choice"
+                        aria-label={choice}
+                        aria-describedby={description ? descriptionId : undefined}
+                        aria-pressed={(selected[index] ?? []).includes(choiceIndex)}
+                        key={choiceIndex}
+                        onClick={() => {
+                          setSelected((current) =>
+                            current.map((value, i) =>
+                              i !== index
+                                ? value
+                                : question.multiSelect
+                                  ? value.includes(choiceIndex)
+                                    ? value.filter((v) => v !== choiceIndex)
+                                    : [...value, choiceIndex]
+                                  : [choiceIndex],
+                            ),
+                          );
+                          if (!question.multiSelect) {
+                            setText((current) =>
+                              current.map((value, i) => (i === index ? '' : value)),
+                            );
+                          }
+                        }}
+                      >
+                        <span>{choice}</span>
+                        {description && <small id={descriptionId}>{description}</small>}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
               <input
                 id={inputId}
                 className="niuu-chat-request-input"
-                value={values[index] ?? ''}
-                onChange={(event) =>
-                  setValues((current) =>
-                    current.map((value, valueIndex) =>
-                      valueIndex === index ? event.target.value : value,
-                    ),
-                  )
-                }
-                placeholder="Type a response"
+                value={text[index] ?? ''}
+                onChange={(event) => {
+                  setText((current) =>
+                    current.map((value, i) => (i === index ? event.target.value : value)),
+                  );
+                  if (!question.multiSelect) {
+                    setSelected((current) => current.map((value, i) => (i === index ? [] : value)));
+                  }
+                }}
+                placeholder={question.choices.length ? 'Or type another answer' : 'Type a response'}
               />
             </div>
           );
         })}
+        {request.error && (
+          <p role="alert" className="niuu-chat-request-error">
+            {request.error}
+          </p>
+        )}
         <button
           type="submit"
           className="niuu-chat-request-button niuu-chat-request-button--primary"
-          disabled={values.some((value) => !value.trim())}
+          disabled={!complete}
         >
           Submit
         </button>
@@ -370,7 +422,7 @@ export interface SessionChatProps {
   onRegenerate?: (messageId: string) => void;
   onBookmark?: (messageId: string, bookmarked: boolean) => void;
   onPermissionRespond?: (requestId: string, behavior: PermissionBehavior) => void;
-  onInputRespond?: (requestId: string, values: string[]) => void;
+  onInputRespond?: (requestId: string, values: (string | InputAnswer)[]) => void;
   /** Remove a card no client can answer (read-only cards only). */
   onInputDismiss?: (requestId: string) => void;
   onFetchFiles?: (path: string, apiBase: string) => Promise<FileEntry[]>;
@@ -898,7 +950,7 @@ export function SessionChat({
   );
 
   const handleInputRespond = useCallback(
-    (requestId: string, values: string[]) => {
+    (requestId: string, values: (string | InputAnswer)[]) => {
       onInputRespond?.(requestId, values);
     },
     [onInputRespond],

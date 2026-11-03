@@ -40,10 +40,17 @@ data:
     server_port: {{ .Values.service.targetPort | default 8080 }}
     projects:
       {{- .Values.config.projects | toYaml | nindent 6 }}
+    session_usage:
+      {{- .Values.sessionUsage | toYaml | nindent 6 }}
     conversation_recent_max_turns: {{ .Values.config.conversationRecentMaxTurns | default 15 }}
     conversation_recent_max_bytes: {{ .Values.config.conversationRecentMaxBytes | default 262144 }}
+    conversation_tail_initial_frames: {{ .Values.config.conversationTailInitialFrames | default 2000 }}
+    conversation_tail_growth: {{ .Values.config.conversationTailGrowth | default 2 }}
     runtime_health_timeout_seconds: {{ .Values.config.runtimeHealthTimeoutSeconds | default 3.0 }}
     preview_cache_dir: {{ .Values.previewCache.mountPath | default "/volundr/preview-cache" | quote }}
+    {{- with .Values.previewCache.edges }}
+    tool_result_preview: {{ toJson . }}
+    {{- end }}
     openshell_internal_gateway_url: {{ .Values.config.openshellInternalGatewayUrl | default "http://openshell.openshell.svc.cluster.local:8080" | quote }}
 
     cors:
@@ -83,9 +90,11 @@ data:
     push.enabled delivers the needs-input push through the notification outbox: it
     needs a notifications sink named push.attentionSink. Unless notifications.sinks
     already has one by that name, the chart adds the PushNotificationSink for it.
+    The push gateway alerts for that moment itself, so it gets no such sink.
     */}}
     {{- $notifications := deepCopy (.Values.notifications | default dict) }}
-    {{- if .Values.push.enabled }}
+    {{- $gatewayEnabled := get (.Values.push.gateway | default dict) "enabled" | default false }}
+    {{- if and .Values.push.enabled (not $gatewayEnabled) }}
     {{- $sinks := get $notifications "sinks" | default list }}
     {{- $attentionSink := .Values.push.attentionSink | default "push" }}
     {{- $hasSink := false }}
@@ -103,6 +112,26 @@ data:
 
     notifications: {{ toJson . }}
     {{- end }}
+    {{- with .Values.artifacts }}
+
+    artifacts: {{ toJson . }}
+    {{- end }}
+    {{- if .Values.presentedFiles.enabled }}
+
+    presented_files:
+      enabled: true
+      public_access: {{ .Values.presentedFiles.publicAccess | quote }}
+      public_base_url: {{ .Values.presentedFiles.publicBaseUrl | default "" | quote }}
+      max_bytes: {{ int64 .Values.presentedFiles.maxBytes }}
+      max_total_bytes: {{ int64 .Values.presentedFiles.maxTotalBytes }}
+      store:
+        adapter: "volundr.adapters.outbound.postgres_presented_files.PostgresPresentedFileStore"
+        root: {{ .Values.presentedFiles.mountPath | quote }}
+    {{- end }}
+    {{- with .Values.hostIdentity }}
+
+    host_identity: {{ toJson . }}
+    {{- end }}
 
     push:
       enabled: {{ .Values.push.enabled }}
@@ -110,6 +139,8 @@ data:
       adapter: {{ .Values.push.adapter | quote }}
       kwargs: {{ .Values.push.kwargs | default dict | toJson }}
       device_registry: {{ .Values.push.deviceRegistry | default "auto" | quote }}
+      apns: {{ .Values.push.apns | default dict | toJson }}
+      gateway: {{ .Values.push.gateway | default dict | toJson }}
       {{- if .Values.push.secretKwargs }}
       secret_kwargs_env:
         {{- range .Values.push.secretKwargs }}
@@ -133,6 +164,26 @@ data:
     {{- $workloadSigns = true }}
     {{- end }}
     {{- $_ := set $sessionTokens "enabled" $workloadSigns }}
+    {{- end }}
+    {{- if .Values.sessionCredentialProjection.enabled }}
+    {{- if not (get $sessionTokens "projection_adapter") }}
+    {{- $_ := set $sessionTokens "projection_adapter" "volundr.adapters.outbound.execution_credential_k8s.KubernetesExecutionCredentialProjection" }}
+    {{- $_ := set $sessionTokens "projection_kwargs" (dict "namespace" (include "volundr.sessionCredentialNamespace" .) "mount_path" .Values.sessionCredentialProjection.mountPath "secret_prefix" "forge-session" "volume_prefix" "forge-session" "purpose" "forge-session-credential") }}
+    {{- end }}
+    {{- end }}
+    {{- if .Values.presentedFiles.enabled }}
+    {{- if not .Values.presentedFiles.maxTotalBytes }}
+    {{- fail "presentedFiles.enabled needs presentedFiles.maxTotalBytes: the total bytes of copies Forge keeps, which must fit presentedFiles.persistence.size" }}
+    {{- end }}
+    {{- if and (eq .Values.presentedFiles.persistence.accessMode "ReadWriteOnce") (not .Values.rollout.colocate) }}
+    {{- fail "presentedFiles.persistence.accessMode ReadWriteOnce mounts on one node only: keep rollout.colocate true (every Forge pod on one node) or use ReadWriteMany" }}
+    {{- end }}
+    {{- if not $sessionTokens.enabled }}
+    {{- fail "presentedFiles.enabled needs Forge session credentials (brokers upload with them): enable workloadIdentity with signingKey.existingSecret, or set forgeMcp.session_tokens.enabled" }}
+    {{- end }}
+    {{- if not (get $sessionTokens "projection_adapter") }}
+    {{- fail "presentedFiles.enabled needs sessionCredentialProjection.enabled: session pods must hold their Forge credential to upload presented files" }}
+    {{- end }}
     {{- end }}
     {{- $_ := set $forgeMcp "session_tokens" $sessionTokens }}
 

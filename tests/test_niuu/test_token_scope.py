@@ -400,6 +400,10 @@ class TestForgeSessionScopes:
             token, "POST", f"/api/v1/forge/sessions/{session_id}/notifications"
         )
         assert credential_allows_route(token, "POST", "/api/v1/forge/mcp")
+        assert credential_allows_route(
+            token, "PUT", f"/api/v1/forge/sessions/{session_id}/description"
+        )
+        assert not credential_allows_route(token, "PUT", f"/api/v1/forge/sessions/{session_id}")
         # Missing grant, a route off the allow-list, and the identity route.
         assert not credential_allows_route(
             token, "POST", f"/api/v1/forge/sessions/{session_id}/messages"

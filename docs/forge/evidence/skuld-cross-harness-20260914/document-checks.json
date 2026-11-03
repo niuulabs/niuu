@@ -1,0 +1,16 @@
+{
+  "checked_at": "2026-09-14T23:08:14.758298+00:00",
+  "classification": "documentation_and_evidence_consistency_only",
+  "markdown_files": 6,
+  "local_links_checked": 35,
+  "capability_rows": 6,
+  "primary_snapshot_hashes_verified": 20,
+  "mode_field_deprecation_verified": true,
+  "errors": [],
+  "adapter_tests": {
+    "passed": 91,
+    "scope": "mocked Pi Grok Muse transport tests",
+    "live_native_or_ui_acceptance": false
+  },
+  "initial_test_attempt": "system Python collection failed: missing asyncpg; no software installed"
+}

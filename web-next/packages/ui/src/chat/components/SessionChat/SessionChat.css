@@ -337,9 +337,8 @@
   position: sticky;
   bottom: 0;
   z-index: 12;
-  padding: var(--space-3) var(--space-6) var(--space-4);
+  padding: var(--space-2) var(--space-6);
   flex-shrink: 0;
-  border-top: 1px solid color-mix(in srgb, var(--color-border-subtle) 80%, transparent);
   background: linear-gradient(
     to top,
     color-mix(in srgb, var(--color-bg-primary) 100%, transparent) 72%,
@@ -360,6 +359,24 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  max-height: 45dvh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.niuu-chat-request-question {
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-2) 0;
+  border: 0;
+}
+
+.niuu-chat-request-question .niuu-chat-request-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  margin-top: var(--space-2);
 }
 
 .niuu-chat-request {
@@ -411,6 +428,31 @@
 
 .niuu-chat-request-choices {
   margin-top: var(--space-1);
+}
+
+/* LEX-1502: choices with descriptions, multi-select state and the refusal message. */
+.niuu-chat-request-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  gap: var(--space-1);
+}
+
+.niuu-chat-request-choice[aria-pressed='true'] {
+  border-color: var(--color-brand);
+  background: var(--color-bg-tertiary);
+}
+
+.niuu-chat-request-choice small,
+.niuu-chat-request-hint {
+  color: var(--color-text-secondary);
+  font-weight: normal;
+}
+
+.niuu-chat-request-error {
+  color: var(--color-critical);
+  font-size: var(--text-sm);
 }
 
 .niuu-chat-request-response {

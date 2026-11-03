@@ -112,6 +112,27 @@ class TestHealthCheck:
         assert response.status_code == 200
         assert response.json() == {"status": "healthy"}
 
+    def test_health_reports_presented_file_usage_against_the_quota(self, tmp_path):
+        """LEX-1514: usage, the quota and the refusal count sit on the health surface."""
+        from fastapi.testclient import TestClient
+
+        from volundr.adapters.outbound.local_presented_files import LocalPresentedFileStore
+        from volundr.domain.presented_files import PresentedFileQuota
+
+        app = create_app()
+        quota = PresentedFileQuota(100)
+        quota.refusals = 2
+        app.state.presented_file_quota = quota
+        app.state.presented_file_store = LocalPresentedFileStore(root=str(tmp_path))
+
+        body = TestClient(app).get("/health").json()
+
+        assert body["presented_files"] == {
+            "used_bytes": 0,
+            "max_total_bytes": 100,
+            "quota_refusals": 2,
+        }
+
 
 class TestCORSMiddleware:
     """Tests for CORS middleware."""

@@ -9,14 +9,20 @@ from fastapi.testclient import TestClient
 
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from tests.conftest import MockEventBroadcaster, make_session_participant_service
+from tests.support.push_fakes import Clock, FakeDeviceRepository
 from volundr.adapters.inbound.rest import (
     _server_side_http_proxy_target,
     _server_side_ws_connect_overrides,
     create_router,
 )
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
-from volundr.domain.models import DeviceToken, EventType, RealtimeEvent
-from volundr.domain.ports import DeviceTokenRepository
+from volundr.domain.models import EventType, RealtimeEvent
+from volundr.domain.push import (
+    PushEnvironment,
+    PushTokenKind,
+    UnsupportedTokenKindError,
+    token_fingerprint,
+)
 from volundr.domain.services import SessionService, StatsService
 
 
@@ -43,32 +49,6 @@ def test_server_side_http_proxy_target_openshell_service_host():
     assert headers == {"Host": "forge-123--skuld.openshell.localhost:8080"}
 
 
-class _FakeDeviceRepo(DeviceTokenRepository):
-    """In-memory device repository for REST endpoint tests."""
-
-    def __init__(self):
-        self.devices: list[DeviceToken] = []
-
-    async def upsert(self, device: DeviceToken) -> DeviceToken:
-        self.devices = [
-            d
-            for d in self.devices
-            if not (d.owner_id == device.owner_id and d.token == device.token)
-        ]
-        self.devices.append(device)
-        return device
-
-    async def list_for_owner(self, owner_id: str) -> list[DeviceToken]:
-        return [d for d in self.devices if d.owner_id == owner_id]
-
-    async def delete(self, owner_id: str, token: str) -> bool:
-        before = len(self.devices)
-        self.devices = [
-            d for d in self.devices if not (d.owner_id == owner_id and d.token == token)
-        ]
-        return len(self.devices) < before
-
-
 class _StubIdentity(EnvoyHeaderAuthenticationAdapter):
     """Minimal identity so _optional_principal resolves a header principal."""
 
@@ -81,7 +61,7 @@ class TestDeviceEndpoints:
 
     @pytest.fixture
     def device_repo(self):
-        return _FakeDeviceRepo()
+        return FakeDeviceRepository(Clock())
 
     @pytest.fixture
     def client(self, repository, pod_manager, stats_repository, pricing_provider, device_repo):
@@ -109,6 +89,10 @@ class TestDeviceEndpoints:
         assert resp.status_code == 201
         assert resp.json()["platform"] == "ios"
         assert resp.json()["token"] == "tok-1"
+        # A registration without the newer fields is a production alert token.
+        assert resp.json()["kind"] == "alert"
+        assert resp.json()["environment"] == "production"
+        assert resp.json()["activity_id"] is None
 
         listed = client.get("/api/v1/forge/devices", headers=self._AUTH)
         assert listed.status_code == 200
@@ -128,18 +112,50 @@ class TestDeviceEndpoints:
                 "platform": "ios",
                 "token": "tok-env",
                 "environment": "sandbox",
-                "kind": "alert",  # what the Lexi app also sends; not part of this API
+                "kind": "alert",
+                "unknown": "ignored",
             },
             headers=self._AUTH,
         )
         assert resp.status_code == 201
-        assert device_repo.devices[-1].environment == "sandbox"
-        bad = client.post(
-            "/api/v1/forge/devices",
-            json={"platform": "ios", "token": "t", "environment": "staging"},
-            headers=self._AUTH,
+        (device,) = device_repo.devices.values()
+        assert device.environment is PushEnvironment.SANDBOX
+
+    @pytest.mark.parametrize(
+        ("sent", "stored", "assumed"),
+        [
+            ("development", "sandbox", []),
+            ("Production", "production", []),
+            (None, "production", ["missing"]),
+            ("staging", "production", ["unknown"]),
+        ],
+    )
+    def test_the_environment_is_normalised_and_an_assumed_one_is_counted(
+        self, repository, pod_manager, stats_repository, pricing_provider, sent, stored, assumed
+    ):
+        """A missing or unknown environment is stored as production and counted, not lost."""
+        noted: list[str] = []
+        device_repo = FakeDeviceRepository(Clock())
+        app = FastAPI()
+        app.state.identity = _StubIdentity()
+        session_service = SessionService(repository=repository, pod_manager=pod_manager)
+        app.include_router(
+            create_router(
+                session_service=session_service,
+                stats_service=StatsService(stats_repository, session_service),
+                pricing_provider=pricing_provider,
+                device_repository=device_repo,
+                on_environment_assumed=noted.append,
+                session_participant_service=make_session_participant_service(session_service),
+            )
         )
-        assert bad.status_code == 422
+        body = {"platform": "ios", "token": "tok-1"} | ({"environment": sent} if sent else {})
+
+        resp = TestClient(app).post("/api/v1/forge/devices", json=body, headers=self._AUTH)
+
+        assert resp.status_code == 201
+        assert resp.json()["environment"] == stored
+        assert noted == assumed
 
     def test_register_rejects_bad_platform(self, client):
         resp = client.post(
@@ -159,6 +175,140 @@ class TestDeviceEndpoints:
         assert resp.status_code == 204
         listed = client.get("/api/v1/forge/devices", headers=self._AUTH)
         assert listed.json() == []
+
+    def test_register_the_apps_exact_body(self, client, device_repo):
+        body = {
+            "platform": "ios",
+            "token": "0a1b2c3d",
+            "kind": "live_activity",
+            "environment": "sandbox",
+            "app_bundle_id": "com.xteo.lexi.chat",
+            "activity_id": "ACT-1",
+        }
+        resp = client.post("/api/v1/forge/devices", json=body, headers=self._AUTH)
+
+        assert resp.status_code == 201
+        stored = resp.json()
+        assert {key: stored[key] for key in body} == body
+        (device,) = device_repo.devices.values()
+        assert device.kind is PushTokenKind.LIVE_ACTIVITY
+        assert device.environment is PushEnvironment.SANDBOX
+        assert device.activity_id == "ACT-1"
+        assert device.owner_id == "user-1"
+
+    def test_a_widget_fallback_token_is_stored_and_logged_by_fingerprint(
+        self, client, device_repo, caplog
+    ):
+        caplog.set_level("INFO", logger="volundr.adapters.inbound.rest")
+        resp = client.post(
+            "/api/v1/forge/devices",
+            json={
+                "platform": "ios",
+                "token": "fallback-secret",
+                "kind": "widget_fallback",
+                "environment": "production",
+            },
+            headers=self._AUTH,
+        )
+
+        assert resp.status_code == 201 and resp.json()["kind"] == "widget_fallback"
+        (device,) = device_repo.devices.values()
+        assert device.kind is PushTokenKind.WIDGET_FALLBACK
+        assert (
+            f"Registered a widget_fallback push token {token_fingerprint('fallback-secret')} "
+            "(production)" in caplog.text
+        )
+        assert "fallback-secret" not in caplog.text
+
+    @pytest.mark.parametrize("kind", ["alert", "live_activity_start", "widget", "widget_fallback"])
+    def test_activity_id_belongs_to_live_activity_tokens_only(self, client, kind):
+        resp = client.post(
+            "/api/v1/forge/devices",
+            json={"platform": "ios", "token": "t", "kind": kind, "activity_id": None},
+            headers=self._AUTH,
+        )
+        assert resp.status_code == 201 and resp.json()["kind"] == kind
+
+        resp = client.post(
+            "/api/v1/forge/devices",
+            json={"platform": "ios", "token": "t", "kind": kind, "activity_id": "ACT-9"},
+            headers=self._AUTH,
+        )
+        assert resp.json()["activity_id"] is None
+
+    def test_one_token_registers_once_per_kind(self, client):
+        for kind in ("alert", "widget", "alert"):
+            client.post(
+                "/api/v1/forge/devices",
+                json={"platform": "ios", "token": "tok-1", "kind": kind},
+                headers=self._AUTH,
+            )
+        listed = client.get("/api/v1/forge/devices", headers=self._AUTH).json()
+        assert sorted(d["kind"] for d in listed) == ["alert", "widget"]
+
+    def test_a_token_moves_to_the_user_who_registers_it_last(self, client):
+        body = {"platform": "ios", "token": "tok-1"}
+        client.post("/api/v1/forge/devices", json=body, headers={"x-auth-user-id": "user-1"})
+        client.post("/api/v1/forge/devices", json=body, headers={"x-auth-user-id": "user-2"})
+
+        assert (
+            client.get("/api/v1/forge/devices", headers={"x-auth-user-id": "user-1"}).json() == []
+        )
+        second = client.get("/api/v1/forge/devices", headers={"x-auth-user-id": "user-2"}).json()
+        assert [d["token"] for d in second] == ["tok-1"]
+
+    @pytest.mark.parametrize("field", [{"kind": "voip"}, {"activity_id": "x" * 201}])
+    def test_register_rejects_unknown_values(self, client, field):
+        resp = client.post(
+            "/api/v1/forge/devices",
+            json={"platform": "ios", "token": "t", **field},
+            headers=self._AUTH,
+        )
+        assert resp.status_code == 422
+
+    def test_unregister_one_kind(self, client):
+        for kind in ("alert", "widget"):
+            client.post(
+                "/api/v1/forge/devices",
+                json={"platform": "ios", "token": "tok-1", "kind": kind},
+                headers=self._AUTH,
+            )
+        resp = client.request(
+            "DELETE", "/api/v1/forge/devices/tok-1", params={"kind": "widget"}, headers=self._AUTH
+        )
+        assert resp.status_code == 204
+        listed = client.get("/api/v1/forge/devices", headers=self._AUTH).json()
+        assert [d["kind"] for d in listed] == ["alert"]
+
+    def test_an_alert_only_registry_refuses_other_kinds(
+        self, repository, pod_manager, stats_repository, pricing_provider
+    ):
+        class AlertOnly(FakeDeviceRepository):
+            async def upsert(self, device):
+                if device.kind is not PushTokenKind.ALERT:
+                    raise UnsupportedTokenKindError("alert tokens only")
+                return await super().upsert(device)
+
+        app = FastAPI()
+        app.state.identity = _StubIdentity()
+        session_service = SessionService(repository=repository, pod_manager=pod_manager)
+        app.include_router(
+            create_router(
+                session_service=session_service,
+                stats_service=StatsService(stats_repository, session_service),
+                pricing_provider=pricing_provider,
+                device_repository=AlertOnly(Clock()),
+                session_participant_service=make_session_participant_service(session_service),
+            )
+        )
+        client = TestClient(app)
+        widget = {"platform": "ios", "token": "t", "kind": "widget"}
+        resp = client.post("/api/v1/forge/devices", json=widget, headers=self._AUTH)
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == "alert tokens only"
+        alert = {"platform": "ios", "token": "t"}
+        resp = client.post("/api/v1/forge/devices", json=alert, headers=self._AUTH)
+        assert resp.status_code == 201
 
     def test_requires_authentication(self, client):
         # No x-auth-user-id header -> no principal -> 401.

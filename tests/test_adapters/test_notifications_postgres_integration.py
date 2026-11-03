@@ -18,6 +18,7 @@ import pytest_asyncio
 
 from cli.resources import ordered_migration_files
 from niuu.domain.notifications import (
+    NotificationImageRef,
     NotificationKind,
     NotificationLink,
     NotificationSeverity,
@@ -26,6 +27,7 @@ from niuu.domain.notifications import (
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
 from volundr.adapters.outbound.postgres_notifications import (
     PostgresNotificationDeliveryRepository,
+    PostgresNotificationImageRepository,
     PostgresNotificationRepository,
     PostgresNotificationRuleRepository,
 )
@@ -34,12 +36,15 @@ from volundr.domain.models import SessionLogEntry
 from volundr.domain.notifications import (
     DeliveryStatus,
     NotificationCandidate,
+    NotificationImageState,
+    NotificationImageVariant,
     NotificationQuery,
     NotificationQuietHours,
     NotificationReadStateConflictError,
     NotificationRule,
     NotificationRuleMatch,
     NotificationScope,
+    ProcessedNotificationImage,
 )
 
 pytestmark = pytest.mark.integration
@@ -121,6 +126,7 @@ async def test_migration_is_idempotent_and_reversible(pool):
         "forge_notification_read_states",
         "forge_notification_rules",
         "forge_notification_deliveries",
+        "forge_notification_images",
     }
     assert await _tables(pool) == expected
     up = (MIGRATIONS / f"{MIGRATION}.up.sql").read_text()
@@ -128,8 +134,13 @@ async def test_migration_is_idempotent_and_reversible(pool):
     await pool.execute(up)  # re-applying is a no-op
     item_up = (MIGRATIONS / "000086_forge_notification_reads.up.sql").read_text()
     item_down = (MIGRATIONS / "000086_forge_notification_reads.down.sql").read_text()
-    await pool.execute(item_up)  # both migrations are idempotent
-    await pool.execute(item_down)  # children before the parent migration
+    image_up = (MIGRATIONS / "000093_forge_notification_images.up.sql").read_text()
+    image_down = (MIGRATIONS / "000093_forge_notification_images.down.sql").read_text()
+    await pool.execute(item_up)  # every migration is idempotent
+    await pool.execute(image_up)
+    await pool.execute(image_down)  # children before the parent migration
+    await pool.execute(image_down)
+    await pool.execute(item_down)
     await pool.execute(item_down)
     await pool.execute(down)
     assert await _tables(pool) == set()
@@ -137,6 +148,7 @@ async def test_migration_is_idempotent_and_reversible(pool):
     await pool.execute(up)
     await pool.execute(up)
     await pool.execute(item_up)
+    await pool.execute(image_up)
     assert await _tables(pool) == expected
 
 
@@ -317,6 +329,50 @@ async def test_outbox_claim_lease_fence_and_settle(pool):
     assert by_id[dead.id] == "dead" and by_id[quiet.id] == "suppressed"
 
 
+async def test_question_signals_survive_storage_and_the_outbox(pool):
+    """The ask and the runtime request live in metadata JSONB: the feed read and the
+    dispatcher's claimed notification both serve them exactly as recorded (LEX-1486)."""
+    repo = PostgresNotificationRepository(pool)
+    rules = PostgresNotificationRuleRepository(pool)
+    outbox = PostgresNotificationDeliveryRepository(pool, max_error_chars=50)
+    await rules.create(rule())
+    ask = {
+        "items": [
+            {
+                "id": "db",
+                "kind": "question",
+                "text": "Which database? 😀",
+                "options": [{"label": "Postgres", "description": "shared"}, {"label": "SQLite"}],
+                "multi_select": True,
+            },
+            {"id": "access", "kind": "action", "text": "Grant access."},
+        ]
+    }
+    asked = candidate(
+        "asked",
+        kind=NotificationKind.ATTENTION,
+        metadata={"turn_id": "asked", "question": True, "ask": ask},
+    )
+    blocked = candidate(
+        "blocked",
+        kind=NotificationKind.ATTENTION,
+        source=NotificationSource.SYSTEM,
+        metadata={"input_kind": "question", "request_id": "toolu_01"},
+    )
+    await repo.project([asked, blocked])
+
+    stored = await repo.get(asked.id)
+    assert stored.wire()["ask"] == ask and stored.wire()["question"] is True
+    runtime = (await repo.get(blocked.id)).wire()
+    assert runtime["input_request"] == {"kind": "question", "request_id": "toolu_01"}
+
+    claimed = {
+        item.notification.id: item for item in await outbox.claim_due(limit=5, lease_seconds=30)
+    }
+    assert claimed[asked.id].notification.wire()["ask"] == ask
+    assert claimed[blocked.id].notification.metadata["request_id"] == "toolu_01"
+
+
 async def test_expired_lease_is_reclaimed(pool):
     repo = PostgresNotificationRepository(pool)
     await PostgresNotificationRuleRepository(pool).create(rule())
@@ -376,3 +432,96 @@ async def test_individual_reads_concurrent_retry_isolation_and_watermark_cas(poo
     assert await repo.feed_counts(OWNER, read_through_seq=newer.seq) == (newer.seq, 0)
     await pool.execute("DELETE FROM forge_notifications WHERE id = $1", opened.id)
     assert await repo.read_ids(OWNER.user_id, [opened.id]) == set()
+
+
+IMAGE_FILE_ID = "pf_" + "1" * 32
+STORED_IMAGE = ProcessedNotificationImage(
+    mime="image/png",
+    width=1200,
+    height=800,
+    content=b"\x89PNG original \x00 bytes",
+    thumbnail_mime="image/jpeg",
+    thumbnail_width=320,
+    thumbnail_height=213,
+    thumbnail=b"\xff\xd8 thumb",
+)
+
+
+async def test_image_copy_round_trip(pool):
+    feed = PostgresNotificationRepository(pool)
+    images = PostgresNotificationImageRepository(pool, max_error_chars=40)
+    session_id = uuid4()
+    ref = NotificationImageRef(file_id=IMAGE_FILE_ID, alt="Login screen")
+    with_image = candidate("img", session_id=session_id, image=ref)
+    [created, plain] = await feed.project([with_image, candidate("plain")])
+    assert created.image.state is NotificationImageState.PENDING and plain.image is None
+    assert await feed.project([with_image]) == []  # replay: no second row or image
+
+    [pending] = await images.claim_pending(limit=5, lease_seconds=30)
+    assert (pending.notification_id, pending.session_id, pending.ref) == (
+        created.id,
+        session_id,
+        ref,
+    )
+    assert await images.get_content(created.id, NotificationImageVariant.ORIGINAL) is None
+    assert await images.mark_ready(pending, STORED_IMAGE) is True
+    assert await images.mark_ready(pending, STORED_IMAGE) is False  # settled once
+
+    original = await images.get_content(created.id, NotificationImageVariant.ORIGINAL)
+    thumb = await images.get_content(created.id, NotificationImageVariant.THUMB)
+    assert (original.mime, original.content) == ("image/png", STORED_IMAGE.content)
+    assert (thumb.mime, thumb.content) == ("image/jpeg", STORED_IMAGE.thumbnail)
+    page = await feed.list_feed(OWNER, NotificationQuery(limit=10), read_through_seq=0)
+    item = {n.id: n for n in page.items}[created.id].wire()
+    assert item["image_state"] == "ready"
+    assert (item["image"]["mime"], item["image"]["width"], item["image"]["alt"]) == (
+        "image/png",
+        1200,
+        "Login screen",
+    )
+    assert (await feed.get(created.id)).image.height == 800
+    [session_item] = await feed.list_for_session(session_id, after=0, limit=5)
+    assert session_item.image.state is NotificationImageState.READY
+    assert await images.claim_pending(limit=5, lease_seconds=30) == []
+
+
+async def test_image_claims_are_leased_fenced_and_failures_recorded(pool):
+    feed = PostgresNotificationRepository(pool)
+    images = PostgresNotificationImageRepository(pool, max_error_chars=12)
+    [created] = await feed.project(
+        [candidate("u", image=NotificationImageRef(url="https://x.example/a.png"))]
+    )
+    [first] = await images.claim_pending(limit=5, lease_seconds=30)
+    assert first.session_id is None and first.ref.url == "https://x.example/a.png"
+    assert await images.claim_pending(limit=5, lease_seconds=30) == []  # leased
+    await pool.execute(
+        "UPDATE forge_notification_images SET lease_until = now() - interval '1 second'"
+    )
+    [second] = await images.claim_pending(limit=5, lease_seconds=30)
+    assert second.attempts == first.attempts + 1
+    assert await images.mark_failed(first, error="stale worker") is False
+    assert await images.mark_failed(second, error="x.example answered HTTP 404") is True
+    assert await images.mark_ready(second, STORED_IMAGE) is False
+    stored = await feed.get(created.id)
+    assert stored.image.state is NotificationImageState.FAILED
+    assert stored.image.error == "x.example an"  # bounded by max_error_chars
+    assert await images.get_content(created.id, NotificationImageVariant.THUMB) is None
+
+
+async def test_image_rows_are_constrained_and_go_with_their_notification(pool):
+    feed = PostgresNotificationRepository(pool)
+    [created] = await feed.project(
+        [candidate("c", image=NotificationImageRef(file_id=IMAGE_FILE_ID))]
+    )
+    with pytest.raises(asyncpg.CheckViolationError):
+        await pool.execute(
+            "UPDATE forge_notification_images SET state = 'ready' WHERE notification_id = $1",
+            created.id,
+        )
+    with pytest.raises(asyncpg.CheckViolationError):
+        await pool.execute(
+            "UPDATE forge_notification_images SET state = 'failed' WHERE notification_id = $1",
+            created.id,
+        )
+    await pool.execute("DELETE FROM forge_notifications WHERE id = $1", created.id)
+    assert await pool.fetchval("SELECT count(*) FROM forge_notification_images") == 0

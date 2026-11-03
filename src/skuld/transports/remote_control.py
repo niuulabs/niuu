@@ -42,6 +42,7 @@ from skuld.claude_permission import (
     DEFAULT_CLAUDE_PERMISSION_MODE,
     resolve_claude_permission_mode,
 )
+from skuld.transports.claude_env import CLAUDE_OAUTH_TOKEN_FILE_ENV
 from skuld.transports.session_env import session_process_env
 
 logger = logging.getLogger("skuld.transport")
@@ -142,6 +143,8 @@ class RemoteControlTransport(CLITransport):
     async def start(self) -> None:
         if self.is_alive:
             return
+        if CLAUDE_OAUTH_TOKEN_FILE_ENV in os.environ:
+            raise ValueError("Claude OAuth token file is for inference, not Remote Control")
         cmd = self._build_command()
         logger.info("RemoteControlTransport: launching %s", " ".join(cmd))
         # Remote Control REQUIRES claude.ai OAuth. An inherited ANTHROPIC_API_KEY
@@ -150,7 +153,7 @@ class RemoteControlTransport(CLITransport):
         # API-key auth vars so RC uses the host's OAuth credentials (~/.claude).
         env = {
             k: v
-            for k, v in session_process_env().items()
+            for k, v in session_process_env(claude_oauth=True).items()
             if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
         }
         self._process = await asyncio.create_subprocess_exec(
