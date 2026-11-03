@@ -282,3 +282,28 @@ it('unchanged stream snapshots do not reset polling or clear failed source error
   expect(query.state.dataUpdatedAt).toBe(before);
   expect(query.state.error?.message).toBe('List unavailable');
 });
+
+it.each([
+  ['terminated', false],
+  ['archived', false],
+  ['failed', false],
+  ['running', 5_000],
+] as const)(
+  'polls a %s session detail only while it can change on its own',
+  async (state, interval) => {
+    store.getSession = vi.fn(async () => ({ ...row('polled'), state }));
+    const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { result } = renderHook(() => useSessionDetail('polled'), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={cache}>{children}</QueryClientProvider>
+      ),
+    });
+    await waitFor(() => expect(result.current.data?.state).toBe(state));
+
+    const query = cache
+      .getQueryCache()
+      .find({ queryKey: ['volundr', 'domain-session', 'polled', null] })!;
+    const refetchInterval = query.options.refetchInterval as (q: typeof query) => number | false;
+    expect(refetchInterval(query)).toBe(interval);
+  },
+);

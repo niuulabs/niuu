@@ -100,6 +100,14 @@ export type LiveSessionTab =
 
 type SessionTab = LiveSessionTab;
 
+/** Statuses that change only through an action or a pushed state change. */
+const SETTLED_RAW_STATUSES: ReadonlySet<VolundrSession['status']> = new Set([
+  'stopped',
+  'archived',
+  'failed',
+  'error',
+]);
+
 const ALL_TABS: Array<{ id: SessionTab; label: string; icon: typeof MessageSquareText }> = [
   { id: 'chat', label: 'Chat', icon: MessageSquareText },
   { id: 'terminal', label: 'Terminal', icon: SquareTerminal },
@@ -3111,8 +3119,18 @@ function LiveSessionDetailPageInner({
   const liveSessionQuery = useQuery({
     queryKey: ['volundr', 'raw-session', sessionId, instanceId ?? null],
     queryFn: ({ signal }) => volundr.getSession(sessionId, { instanceId, signal }),
-    refetchInterval: 5_000,
+    // A stopped, archived or failed session changes only through an action, which
+    // invalidates this query, or a pushed state change (below).
+    refetchInterval: (query) =>
+      query.state.data && SETTLED_RAW_STATUSES.has(query.state.data.status) ? false : 5_000,
   });
+  const domainState = sessionQuery.data?.state;
+  useEffect(() => {
+    if (!domainState) return;
+    void queryClient.invalidateQueries({
+      queryKey: ['volundr', 'raw-session', sessionId, instanceId ?? null],
+    });
+  }, [domainState, instanceId, queryClient, sessionId]);
   const liveSession = liveSessionQuery.data;
   const sessionStatus = liveSession?.status ?? null;
   const isRunning = sessionStatus === 'running';

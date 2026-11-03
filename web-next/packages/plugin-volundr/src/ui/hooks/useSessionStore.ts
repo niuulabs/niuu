@@ -161,12 +161,16 @@ export function useSessionList(filters?: SessionFilters) {
   };
 }
 
-/** Queries a single session by id from ISessionStore. */
+/** States that change only through an action, which refreshes the session itself. */
+const SETTLED_STATES: ReadonlySet<Session['state']> = new Set(['terminated', 'archived', 'failed']);
+
+/** Queries a single session by id from ISessionStore; a settled session is not polled. */
 export function useSessionDetail(sessionId: string, instanceId?: string) {
   const store = useService<ISessionStore>('sessionStore');
   return useQuery({
     queryKey: ['volundr', 'domain-session', sessionId, instanceId ?? null],
     queryFn: ({ signal }) => store.getSession(sessionId, { instanceId, signal }),
-    refetchInterval: LIVE_REFETCH_MS,
+    refetchInterval: (query) =>
+      query.state.data && SETTLED_STATES.has(query.state.data.state) ? false : LIVE_REFETCH_MS,
   });
 }
