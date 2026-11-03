@@ -17,11 +17,11 @@ from __future__ import annotations
 import ipaddress
 import re
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from pathlib import Path
 from urllib.parse import quote, urlsplit
 from uuid import UUID
 
@@ -135,8 +135,13 @@ class PresentedFileStore(ABC):
         different bytes under the same id raise :class:`PresentedFileConflictError`."""
 
     @abstractmethod
-    async def get(self, session_id: UUID, file_id: str) -> tuple[PresentedFile, Path] | None:
-        """The stored record and the path of its bytes, or ``None`` when absent."""
+    async def get(
+        self, session_id: UUID, file_id: str
+    ) -> tuple[PresentedFile, AsyncIterator[bytes]] | None:
+        """The stored record and its bytes as a stream, or ``None`` when absent.
+
+        The store opens the bytes itself, inside its own root, when the stream is first
+        read; callers never see where they live, so a store need not be a filesystem."""
 
     @abstractmethod
     async def delete_session(self, session_id: UUID) -> int:

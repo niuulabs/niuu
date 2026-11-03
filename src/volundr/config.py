@@ -55,7 +55,10 @@ from niuu.domain.notifications import (
     NotificationSource,
 )
 from niuu.domain.observability import ObservabilityConfig
-from niuu.domain.presented_files import PRESENTED_FILE_DEFAULT_MAX_BYTES
+from niuu.domain.presented_files import (
+    PRESENTED_FILE_DEFAULT_MAX_BYTES,
+    PRESENTED_FILE_DEFAULT_READ_CHUNK_BYTES,
+)
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.forge_mcp.models import ForgeMcpGrant
 from ravn.config import LLMConfig, PersonaSourceConfig
@@ -1585,6 +1588,14 @@ class PresentedFilesConfig(BaseModel):
         default=PRESENTED_FILE_DEFAULT_MAX_BYTES,
         gt=0,
         description="Largest durable copy accepted (matches Skuld's max_presented_file_bytes).",
+    )
+    read_chunk_bytes: int = Field(
+        default=PRESENTED_FILE_DEFAULT_READ_CHUNK_BYTES,
+        gt=0,
+        description=(
+            "Bytes read per step when Forge streams a durable copy to a client: the "
+            "memory one download holds at a time. Not a cap: every byte is served."
+        ),
     )
     max_total_bytes: int | None = Field(
         default=None,

@@ -44,6 +44,10 @@ BASE = "http://thor.tail737f2a.ts.net:8380"
 CLUSTER = "https://yggdrasil.niuu.world"
 
 
+async def _read(chunks) -> bytes:
+    return b"".join([chunk async for chunk in chunks])
+
+
 # ------------------------------------------------------------------ URL rules
 
 
@@ -170,9 +174,9 @@ async def test_store_roundtrip_is_idempotent_and_refuses_other_bytes(tmp_path):
     first = await store.put(sid, FILE_ID, name="report.pdf", mime="application/pdf", data=b"%PDF")
     again = await store.put(sid, FILE_ID, name="report.pdf", mime="application/pdf", data=b"%PDF")
     assert first == again and first.size == 4
-    record, path = await store.get(sid, FILE_ID)
-    assert record.name == "report.pdf" and path.read_bytes() == b"%PDF"
-    assert oct(path.parent.stat().st_mode & 0o777) == "0o700"
+    record, chunks = await store.get(sid, FILE_ID)
+    assert record.name == "report.pdf" and await _read(chunks) == b"%PDF"
+    assert oct((tmp_path / str(sid) / FILE_ID).stat().st_mode & 0o777) == "0o700"
     with pytest.raises(PresentedFileConflictError):
         await store.put(sid, FILE_ID, name="x", mime="text/plain", data=b"other")
     assert await store.get(uuid4(), FILE_ID) is None
@@ -220,6 +224,31 @@ async def test_local_store_serializes_its_exclusive_section(tmp_path):
 
     await asyncio.gather(section("a"), section("b"))
     assert order == ["a-in", "a-out", "b-in", "b-out"]
+
+
+async def test_store_streams_in_configured_chunks(tmp_path):
+    store = LocalPresentedFileStore(root=str(tmp_path), read_chunk_bytes=3)
+    sid = uuid4()
+    await store.put(sid, FILE_ID, name="a", mime="m", data=b"abcdefg")
+    _, chunks = await store.get(sid, FILE_ID)
+    assert [chunk async for chunk in chunks] == [b"abc", b"def", b"g"]
+    with pytest.raises(ValueError, match="read_chunk_bytes"):
+        LocalPresentedFileStore(root=str(tmp_path), read_chunk_bytes=0)
+
+
+async def test_a_link_swapped_in_after_the_check_is_never_followed(tmp_path):
+    store = LocalPresentedFileStore(root=str(tmp_path / "store"))
+    sid = uuid4()
+    await store.put(sid, FILE_ID, name="a.txt", mime="text/plain", data=b"a")
+    _, chunks = await store.get(sid, FILE_ID)
+    content = tmp_path / "store" / str(sid) / FILE_ID / "content"
+    content.unlink()
+    # Even a link to a file inside the store is refused: only the copy itself is read.
+    neighbour = tmp_path / "store" / str(sid) / "other"
+    neighbour.write_text("no")
+    os.symlink(neighbour, content)
+    with pytest.raises(OSError):
+        await _read(chunks)
 
 
 async def test_store_ignores_symlinked_content(tmp_path):
@@ -293,8 +322,8 @@ async def test_upload_stores_and_answers_the_durable_url(tmp_path):
     assert body["url"] == f"{BASE}/api/v1/forge/sessions/{sid}/files/presented/{FILE_ID}"
     assert body["name"] == "My report.pdf" and body["mime"] == "application/pdf"
     assert body["size"] == 8
-    record, path = await store.get(sid, FILE_ID)
-    assert path.read_bytes() == b"%PDF-1.4"
+    record, chunks = await store.get(sid, FILE_ID)
+    assert await _read(chunks) == b"%PDF-1.4"
     service._check_access.assert_awaited()
     # A retry with the same bytes is fine; other bytes are a conflict.
     url = f"/api/v1/forge/sessions/{sid}/files/presented/{FILE_ID}"
@@ -494,3 +523,16 @@ async def test_live_broker_fallback_carries_the_same_safety_policy(tmp_path):
     assert resp.headers["content-security-policy"] == "sandbox"
     assert resp.headers["x-content-type-options"] == "nosniff"
     assert resp.headers["cache-control"] == "private, no-store"
+
+
+@pytest.mark.parametrize(
+    ("name", "header"),
+    [
+        ("report.pdf", 'inline; filename="report.pdf"'),
+        ("plan ü.md", "inline; filename*=utf-8''plan%20%C3%BC.md"),
+    ],
+)
+def test_a_durable_copy_opens_inline_under_its_name(name, header):
+    from volundr.adapters.inbound.rest import _inline_disposition
+
+    assert _inline_disposition(name) == header

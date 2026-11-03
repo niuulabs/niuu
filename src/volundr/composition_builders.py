@@ -135,15 +135,16 @@ def _create_forge_session_projection(
 async def create_presented_file_store(settings: Settings, pool: Any) -> PresentedFileStore | None:
     """Forge's store of durable presented files (F2), or ``None`` when they are off.
 
-    Every store gets Forge's database pool. A store that cannot hold the quota, or
-    cannot be written, is fatal now rather than an HTTP 500 on the first upload.
+    Every store gets Forge's database pool and ``read_chunk_bytes``. A store that
+    cannot hold the quota, or cannot be written, is fatal now rather than an HTTP 500
+    on the first upload.
     """
     config = settings.presented_files
     if not config.enabled:
         return None
     store_config = dict(config.store)
     store_cls = import_class(store_config.pop("adapter"))
-    store = store_cls(pool=pool, **store_config)
+    store = store_cls(pool=pool, read_chunk_bytes=config.read_chunk_bytes, **store_config)
     if not isinstance(store, PresentedFileStore):
         raise TypeError(
             f"presented_files.store.adapter {store_cls.__name__} must implement PresentedFileStore"

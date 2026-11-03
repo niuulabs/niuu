@@ -22,8 +22,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import BinaryIO
 from uuid import UUID
 
+from niuu.domain.presented_files import PRESENTED_FILE_DEFAULT_READ_CHUNK_BYTES
 from volundr.domain.presented_files import (
     PresentedFile,
     PresentedFileConflictError,
@@ -40,11 +42,19 @@ _META = "meta.json"
 class LocalPresentedFileStore(PresentedFileStore):
     """Store presented files under a local directory."""
 
-    def __init__(self, root: str = "~/.niuu/presented-files", pool: object = None) -> None:
+    def __init__(
+        self,
+        root: str = "~/.niuu/presented-files",
+        pool: object = None,
+        read_chunk_bytes: int = PRESENTED_FILE_DEFAULT_READ_CHUNK_BYTES,
+    ) -> None:
         # ``pool``: the composition root hands every store Forge's database pool; a
-        # local directory needs none.
+        # local directory needs none. ``read_chunk_bytes``: presented_files.read_chunk_bytes.
+        if read_chunk_bytes <= 0:
+            raise ValueError("presented_files.read_chunk_bytes must be positive")
         self._root = Path(root).expanduser()
         self._lock = asyncio.Lock()
+        self._read_chunk_bytes = read_chunk_bytes
 
     @asynccontextmanager
     async def exclusive(self) -> AsyncIterator[None]:
@@ -92,8 +102,28 @@ class LocalPresentedFileStore(PresentedFileStore):
     ) -> PresentedFile:
         return await asyncio.to_thread(self._put, session_id, file_id, name, mime, data)
 
-    async def get(self, session_id: UUID, file_id: str) -> tuple[PresentedFile, Path] | None:
-        return await asyncio.to_thread(self._get, session_id, file_id)
+    async def get(
+        self, session_id: UUID, file_id: str
+    ) -> tuple[PresentedFile, AsyncIterator[bytes]] | None:
+        record = await asyncio.to_thread(self._get, session_id, file_id)
+        if record is None:
+            return None
+        return record, self._stream(session_id, file_id)
+
+    async def _stream(self, session_id: UUID, file_id: str) -> AsyncIterator[bytes]:
+        """The copy's bytes, opened on first read, inside the root, never via a link."""
+        handle = await asyncio.to_thread(self._open_content, session_id, file_id)
+        try:
+            while chunk := await asyncio.to_thread(handle.read, self._read_chunk_bytes):
+                yield chunk
+        finally:
+            await asyncio.to_thread(handle.close)
+
+    def _open_content(self, session_id: UUID, file_id: str) -> BinaryIO:
+        # The directory is resolved and kept inside the root (``_dir``); the content
+        # itself is opened with O_NOFOLLOW, so a link there is refused, never followed.
+        path = os.path.join(self._dir(session_id, file_id), _CONTENT)
+        return os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb")
 
     async def delete_session(self, session_id: UUID) -> int:
         return await asyncio.to_thread(self._delete_session, session_id)
@@ -137,9 +167,9 @@ class LocalPresentedFileStore(PresentedFileStore):
         digest = hashlib.sha256(data).hexdigest()
         existing = self._get(session_id, file_id)
         if existing is not None:
-            if existing[0].sha256 != digest:
+            if existing.sha256 != digest:
                 raise PresentedFileConflictError(f"{file_id} is already stored with other bytes")
-            return existing[0]
+            return existing
         target = self._dir(session_id, file_id)
         target.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
         record = PresentedFile(
@@ -162,7 +192,7 @@ class LocalPresentedFileStore(PresentedFileStore):
         self._write_atomic(target / _META, json.dumps(meta).encode())
         return record
 
-    def _get(self, session_id: UUID, file_id: str) -> tuple[PresentedFile, Path] | None:
+    def _get(self, session_id: UUID, file_id: str) -> PresentedFile | None:
         try:
             target = self._dir(session_id, file_id)
         except ValueError:
@@ -185,7 +215,7 @@ class LocalPresentedFileStore(PresentedFileStore):
             )
         except (OSError, ValueError, KeyError, TypeError):
             return None
-        return record, content
+        return record
 
     @staticmethod
     def _write_atomic(path: Path, data: bytes) -> None:

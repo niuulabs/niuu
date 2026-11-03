@@ -20,10 +20,10 @@ import hashlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from niuu.domain.presented_files import PRESENTED_FILE_DEFAULT_READ_CHUNK_BYTES
 from volundr.adapters.outbound.local_presented_files import LocalPresentedFileStore
 from volundr.domain.presented_files import (
     PresentedFile,
@@ -41,7 +41,12 @@ _COLUMNS = "session_id, file_id, name, mime, size, sha256, stored_at"
 class PostgresPresentedFileStore(LocalPresentedFileStore):
     """Bytes on a shared volume, records and the write lock in Forge's database."""
 
-    def __init__(self, root: str, pool: Any = None) -> None:
+    def __init__(
+        self,
+        root: str,
+        pool: Any = None,
+        read_chunk_bytes: int = PRESENTED_FILE_DEFAULT_READ_CHUNK_BYTES,
+    ) -> None:
         if pool is None:
             raise PresentedFileStoreUnavailableError(
                 "PostgresPresentedFileStore needs Forge's database pool; it is only "
@@ -52,7 +57,7 @@ class PostgresPresentedFileStore(LocalPresentedFileStore):
                 "PostgresPresentedFileStore needs presented_files.store.root: a "
                 "directory on a volume every Forge replica mounts"
             )
-        super().__init__(root=root)
+        super().__init__(root=root, read_chunk_bytes=read_chunk_bytes)
         self._pool = pool
 
     @asynccontextmanager
@@ -80,7 +85,9 @@ class PostgresPresentedFileStore(LocalPresentedFileStore):
         )
         return int(total)
 
-    async def get(self, session_id: UUID, file_id: str) -> tuple[PresentedFile, Path] | None:
+    async def get(
+        self, session_id: UUID, file_id: str
+    ) -> tuple[PresentedFile, AsyncIterator[bytes]] | None:
         if not is_presented_file_id(file_id):
             return None
         row = await self._pool.fetchrow(
@@ -98,7 +105,7 @@ class PostgresPresentedFileStore(LocalPresentedFileStore):
                 f"bytes are missing from presented_files.store.root {str(self._root)!r}: "
                 "every Forge replica must mount the same persistent volume there"
             )
-        return _record(row), content
+        return _record(row), self._stream(session_id, file_id)
 
     async def put(
         self, session_id: UUID, file_id: str, *, name: str, mime: str, data: bytes

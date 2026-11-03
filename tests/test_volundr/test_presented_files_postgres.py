@@ -77,6 +77,10 @@ def database() -> FakeDatabase:
     return FakeDatabase()
 
 
+async def _read(chunks) -> bytes:
+    return b"".join([chunk async for chunk in chunks])
+
+
 def _store(tmp_path, database) -> PostgresPresentedFileStore:
     return PostgresPresentedFileStore(root=str(tmp_path / "volume"), pool=database)
 
@@ -87,8 +91,8 @@ async def test_roundtrip_is_recorded_in_the_database(tmp_path, database):
     first = await store.put(sid, FILE_A, name="r.pdf", mime="application/pdf", data=b"%PDF")
     again = await store.put(sid, FILE_A, name="r.pdf", mime="application/pdf", data=b"%PDF")
     assert first == again and first.size == 4
-    record, path = await store.get(sid, FILE_A)
-    assert record.name == "r.pdf" and path.read_bytes() == b"%PDF"
+    record, chunks = await store.get(sid, FILE_A)
+    assert record.name == "r.pdf" and await _read(chunks) == b"%PDF"
     assert await store.total_bytes() == 4
     with pytest.raises(PresentedFileConflictError):
         await store.put(sid, FILE_A, name="x", mime="text/plain", data=b"other")
@@ -101,8 +105,8 @@ async def test_another_replica_serves_what_one_replica_stored(tmp_path, database
     writer, reader = _store(tmp_path, database), _store(tmp_path, database)
     sid = uuid4()
     await writer.put(sid, FILE_A, name="a.txt", mime="text/plain", data=b"abc")
-    record, path = await reader.get(sid, FILE_A)
-    assert record.sha256 and path.read_bytes() == b"abc"
+    record, chunks = await reader.get(sid, FILE_A)
+    assert record.sha256 and await _read(chunks) == b"abc"
     assert await reader.total_bytes() == 3
 
 
