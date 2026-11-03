@@ -512,6 +512,24 @@ async def test_planning_completion_fails_when_plan_artifact_was_not_published() 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("session_status", ["running", "stopped"])
+async def test_reconnect_does_not_fail_an_unfinished_planning_run(session_status: str) -> None:
+    """The publication proof is owed at completion, not on every refresh."""
+    campaign = _campaign(
+        completion_event="developer.plan.approved",
+        execution_contract="developer-planning/v1",
+        artifact_paths=["planning/{slug}/approved-plan.md"],
+    )
+    projector, repo, _ = _projector(_Adapter(session_status=session_status))
+
+    await projector._refresh_campaign(campaign)
+
+    saved = [call.args[0] for call in repo.save_campaign.await_args_list]
+    assert all(campaign.status is not WorkflowCampaignStatus.FAILED for campaign in saved)
+    assert all("failure_error" not in campaign.metadata for campaign in saved)
+
+
+@pytest.mark.asyncio
 async def test_idle_delivery_event_completes_before_releasing_session() -> None:
     campaign = _campaign(completion_event=_AUTHORITATIVE_COMPLETION_EVENT)
     delivery = {

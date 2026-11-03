@@ -664,10 +664,13 @@ class WorkflowCampaignProjector:
         if next_status == WorkflowCampaignStatus.FAILED:
             await self._save_failure(campaign, activity_metadata, session_name=session.name)
             return
-        completion = (
-            authoritative_completion if next_status == WorkflowCampaignStatus.COMPLETED else None
+        # Only a completing run must prove its plan was published; a running or
+        # blocked planning run has not reached that point yet.
+        missing_artifacts = (
+            _missing_required_planning_artifacts(campaign, authoritative_completion)
+            if next_status == WorkflowCampaignStatus.COMPLETED
+            else ()
         )
-        missing_artifacts = _missing_required_planning_artifacts(campaign, completion)
         if missing_artifacts:
             await self._save_failure(
                 campaign,
