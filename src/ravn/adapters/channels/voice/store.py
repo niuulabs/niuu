@@ -6,6 +6,10 @@ reopens it (a continued call keeps logging into the same record). Entries are
 stored verbatim, unknown fields included, and projected into the shapes the
 voice client reads: ``/api/logs`` sessions with ISO times, and ``/api/call-history``
 rows with epoch-millisecond times, finished turns and paired tool calls.
+
+It also keeps ``call_requests``: each call the resident asked to place (a ``notify``
+with ``speak``), how it was delivered, the phone's ``call.result`` and the voice call
+it became (see :mod:`ravn.adapters.channels.voice.calls`).
 """
 
 from __future__ import annotations
@@ -44,6 +48,28 @@ CREATE TABLE IF NOT EXISTS entries (
     FOREIGN KEY (call_id) REFERENCES calls(call_id)
 );
 CREATE INDEX IF NOT EXISTS idx_entries_call ON entries(call_id, seq);
+
+CREATE TABLE IF NOT EXISTS call_requests (
+    request_id      TEXT PRIMARY KEY,
+    notification_id TEXT NOT NULL UNIQUE,
+    idempotency_key TEXT NOT NULL,
+    channel         TEXT,
+    text            TEXT NOT NULL,
+    priority        TEXT NOT NULL,
+    created_at_ms   INTEGER NOT NULL,
+    expires_at_ms   INTEGER NOT NULL,
+    state           TEXT NOT NULL,
+    delivery        TEXT,
+    device_id       TEXT,
+    sent_at_ms      INTEGER,
+    push_tried      INTEGER NOT NULL DEFAULT 0,
+    push_reason     TEXT,
+    outcome         TEXT,
+    reason          TEXT,
+    answered_at_ms  INTEGER,
+    call_id         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_call_requests_state ON call_requests(state, created_at_ms);
 """
 
 #: Entry types the app logs (``VoiceSessionLogPayloads``).
@@ -61,6 +87,13 @@ _HISTORY_PROVIDERS = {
     "gemini": "gemini-live",
     "google": "gemini-live",
 }
+
+
+#: ``call_requests.state``: waiting for its window or a route to the phone, delivered and
+#: waiting for the phone's ``call.result``, answered, or never delivered before it expired.
+CALL_REQUEST_STATES = ("queued", "sent", "answered", "expired")
+#: ``call.result`` outcomes the phone sends.
+CALL_OUTCOMES = frozenset({"spoke", "aside", "deferred", "refused"})
 
 
 class UnknownCallError(LookupError):
@@ -101,13 +134,41 @@ class Entry:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class CallRequest:
+    """One request to ring the owner (a ``notify`` with ``speak``) and what became of it."""
+
+    request_id: str
+    notification_id: str
+    idempotency_key: str
+    channel: str | None
+    text: str
+    priority: str
+    created_at_ms: int
+    expires_at_ms: int
+    state: str
+    delivery: str | None
+    device_id: str | None
+    sent_at_ms: int | None
+    push_tried: bool
+    push_reason: str | None
+    outcome: str | None
+    reason: str | None
+    answered_at_ms: int | None
+    call_id: str | None
+
+
 class VoiceCallStore:
-    """SQLite-backed calls and their entries."""
+    """SQLite-backed calls and their entries, and the call requests the resident made.
+
+    The ``notify`` tool may run in another process (``ravn tool-mcp``) and queues call
+    requests in the same file; SQLite's WAL and busy timeout let both write.
+    """
 
     def __init__(self, path: str) -> None:
         resolved = Path(path).expanduser()
         resolved.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(str(resolved), check_same_thread=False)
+        self._db = sqlite3.connect(str(resolved), check_same_thread=False, timeout=10)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(SCHEMA)
@@ -232,6 +293,124 @@ class VoiceCallStore:
         ).fetchall()
         return [self._call(row) for row in rows]
 
+    # -- call requests ---------------------------------------------------
+
+    def queue_call_request(
+        self,
+        *,
+        request_id: str,
+        notification_id: str,
+        idempotency_key: str,
+        channel: str | None,
+        text: str,
+        priority: str,
+        created_at_ms: int,
+        expires_at_ms: int,
+    ) -> CallRequest | None:
+        """Queue a request; ``None`` when its notification already has one (a retried notify)."""
+        cursor = self._db.execute(
+            "INSERT OR IGNORE INTO call_requests (request_id, notification_id, idempotency_key,"
+            " channel, text, priority, created_at_ms, expires_at_ms, state)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued')",
+            (
+                request_id,
+                notification_id,
+                idempotency_key,
+                channel,
+                text,
+                priority,
+                created_at_ms,
+                expires_at_ms,
+            ),
+        )
+        self._db.commit()
+        return self.call_request(request_id) if cursor.rowcount else None
+
+    def call_request(self, request_id: str) -> CallRequest | None:
+        row = self._db.execute(
+            "SELECT * FROM call_requests WHERE request_id = ?", (request_id,)
+        ).fetchone()
+        return _call_request(row) if row is not None else None
+
+    def call_requests(self, *, state: str | None = None, limit: int = 100) -> list[CallRequest]:
+        """Oldest first; every state when *state* is ``None``."""
+        if state is None:
+            rows = self._db.execute(
+                "SELECT * FROM call_requests ORDER BY created_at_ms LIMIT ?", (limit,)
+            ).fetchall()
+        else:
+            rows = self._db.execute(
+                "SELECT * FROM call_requests WHERE state = ? ORDER BY created_at_ms LIMIT ?",
+                (state, limit),
+            ).fetchall()
+        return [_call_request(row) for row in rows]
+
+    def mark_call_sent(
+        self, request_id: str, *, delivery: str, device_id: str | None, at_ms: int
+    ) -> None:
+        self._db.execute(
+            "UPDATE call_requests SET state = 'sent', delivery = ?, device_id = ?, sent_at_ms = ?"
+            " WHERE request_id = ? AND state = 'queued'",
+            (delivery, device_id, at_ms, request_id),
+        )
+        self._db.commit()
+
+    def mark_call_pushed(self, request_id: str, *, sent: bool, reason: str, at_ms: int) -> None:
+        """The request's one push: with no socket to send it on, or after a socket delivery
+        the phone did not answer in time. A push that went out makes it a ``voip_push``."""
+        self._db.execute(
+            "UPDATE call_requests SET push_tried = 1, push_reason = ?,"
+            " delivery = CASE WHEN ? THEN 'voip_push' ELSE delivery END,"
+            " state = CASE WHEN ? AND state = 'queued' THEN 'sent' ELSE state END,"
+            " sent_at_ms = CASE WHEN ? AND sent_at_ms IS NULL THEN ? ELSE sent_at_ms END"
+            " WHERE request_id = ?",
+            (reason, int(sent), int(sent), int(sent), at_ms, request_id),
+        )
+        self._db.commit()
+
+    def expire_call_request(self, request_id: str) -> None:
+        """Close a request never delivered before its ``expiresAt`` (``delivery: none``)."""
+        self._db.execute(
+            "UPDATE call_requests SET state = 'expired', delivery = 'none', reason = 'expired'"
+            " WHERE request_id = ? AND state = 'queued'",
+            (request_id,),
+        )
+        self._db.commit()
+
+    def record_call_result(
+        self, request_id: str, *, outcome: str, reason: str | None, at_ms: int
+    ) -> bool:
+        """The phone's one answer; ``False`` for an unknown id or one already answered."""
+        cursor = self._db.execute(
+            "UPDATE call_requests SET state = 'answered', outcome = ?, reason = ?,"
+            " answered_at_ms = ? WHERE request_id = ? AND outcome IS NULL",
+            (outcome, reason, at_ms, request_id),
+        )
+        self._db.commit()
+        return bool(cursor.rowcount)
+
+    def link_call_request(self, request_id: str, call_id: str) -> bool:
+        """The voice call a request became (its ``session.start`` metadata names the request)."""
+        cursor = self._db.execute(
+            "UPDATE call_requests SET call_id = ? WHERE request_id = ?", (call_id, request_id)
+        )
+        self._db.commit()
+        return bool(cursor.rowcount)
+
+    def placed_calls_since(self, since_ms: int) -> list[int]:
+        """When each request delivered since *since_ms* was sent, that the phone did not turn down.
+
+        A refusal or deferral leaves the window open: only a call that rang, spoke, or is
+        still awaiting the phone's answer counts against the guardrails.
+        """
+        rows = self._db.execute(
+            "SELECT sent_at_ms FROM call_requests WHERE sent_at_ms IS NOT NULL"
+            " AND sent_at_ms >= ? AND (outcome IS NULL OR outcome IN ('spoke', 'aside'))"
+            " ORDER BY sent_at_ms",
+            (since_ms,),
+        ).fetchall()
+        return [int(row["sent_at_ms"]) for row in rows]
+
     # -- projections -----------------------------------------------------
 
     def session_json(self, call: Call) -> dict[str, Any]:
@@ -342,6 +521,29 @@ class VoiceCallStore:
             duration_ms=row["duration_ms"],
             entry_count=int(count),
         )
+
+
+def _call_request(row: sqlite3.Row) -> CallRequest:
+    return CallRequest(
+        request_id=row["request_id"],
+        notification_id=row["notification_id"],
+        idempotency_key=row["idempotency_key"],
+        channel=row["channel"],
+        text=row["text"],
+        priority=row["priority"],
+        created_at_ms=int(row["created_at_ms"]),
+        expires_at_ms=int(row["expires_at_ms"]),
+        state=row["state"],
+        delivery=row["delivery"],
+        device_id=row["device_id"],
+        sent_at_ms=row["sent_at_ms"],
+        push_tried=bool(row["push_tried"]),
+        push_reason=row["push_reason"],
+        outcome=row["outcome"],
+        reason=row["reason"],
+        answered_at_ms=row["answered_at_ms"],
+        call_id=row["call_id"],
+    )
 
 
 def _entry_ms(entry: Entry) -> int:

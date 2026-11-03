@@ -960,6 +960,7 @@ def tool_mcp(
         },
     )
     notification_outbox = None
+    call_requests = None
     try:
         project_config = ProjectConfig.discover()
         ravn_profile = _require_profile(profile)
@@ -969,8 +970,10 @@ def tool_mcp(
         notification_outbox = _tool_mcp_notification_outbox(settings, persona_config)
         if notification_outbox is not None:
             from ravn.adapters.tools.notify import ResidentNotifyTool
+            from ravn.cli.voice_wiring import build_resident_call_requests
 
-            tools.append(ResidentNotifyTool(notification_outbox))
+            call_requests = build_resident_call_requests(settings)
+            tools.append(ResidentNotifyTool(notification_outbox, calls=call_requests))
 
         from ravn.adapters.mcp.tool_port_server import ToolPortMcpServer
 
@@ -1023,6 +1026,8 @@ def tool_mcp(
         # Closed on every exit, including a failure while the server is built.
         if notification_outbox is not None:
             notification_outbox.close()
+        if call_requests is not None:
+            call_requests.close()
         shutdown_observability()
 
 

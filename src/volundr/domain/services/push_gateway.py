@@ -26,6 +26,9 @@ node:
 5. **Background.** Sends the app a silent push through its alert token, with the
    same interval rule, so iOS can wake it to read every server it knows.
 
+Apart from the feed, :meth:`PushGateway.ring` sends a resident's ``call.request`` to
+its owner's VoIP tokens (``POST /push/call``), capped per owner.
+
 A token APNs reports as dead (410, ``BadDeviceToken``, ``Unregistered``,
 ``ExpiredToken``) is deleted.
 
@@ -39,18 +42,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections import deque
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from niuu.domain.notifications import NotificationSeverity, severity_rank
 from volundr.domain.models import DevicePlatform, DeviceToken, EventType
 from volundr.domain.notifications import NotificationQuietHours, NotificationRateLimit
 from volundr.domain.ports import EventBroadcaster, PushTokenRegistry
 from volundr.domain.push import (
+    APNS_ACCEPTED_STATUS,
     APNS_MAX_COLLAPSE_ID_BYTES,
     APNS_PRIORITY_IMMEDIATE,
     APNS_PRIORITY_POWER_SAVING,
@@ -59,6 +64,7 @@ from volundr.domain.push import (
     ApnsPush,
     ApnsPushType,
     ApnsResult,
+    CallRequest,
     EnvironmentAssumed,
     GuildNotification,
     InterruptionLevel,
@@ -70,11 +76,14 @@ from volundr.domain.push import (
     alert_payload,
     apns_topic,
     background_payload,
+    call_expiration,
     clip,
     live_activity_content_state,
     live_activity_payload,
+    operator_test_call_frame,
     shorten,
     token_fingerprint,
+    voip_payload,
     widget_payload,
 )
 from volundr.domain.push_ports import (
@@ -177,6 +186,19 @@ class BackgroundSettings:
 
 
 @dataclass(frozen=True)
+class CallSettings:
+    """Rings: a resident's call request as a VoIP push (``push.gateway.calls``)."""
+
+    enabled: bool = True
+    max_per_hour: int = 6
+    ring_seconds: int = 60
+
+    def __post_init__(self) -> None:
+        if self.max_per_hour < 1 or self.ring_seconds < 1:
+            raise ValueError("calls max_per_hour and ring_seconds must be >= 1")
+
+
+@dataclass(frozen=True)
 class PushGatewaySettings:
     """Everything the gateway loop needs, from ``push.apns`` and ``push.gateway``."""
 
@@ -199,6 +221,7 @@ class PushGatewaySettings:
     live_activity: LiveActivitySettings
     widgets: WidgetSettings
     background: BackgroundSettings
+    calls: CallSettings = field(default_factory=CallSettings)
 
     def __post_init__(self) -> None:
         if not self.bundle_id:
@@ -233,6 +256,11 @@ class PushGatewayStats:
     live_activity_starts: int = 0
     widget_reloads: int = 0
     background_wakes: int = 0
+    #: Rings APNs accepted for at least one VoIP token, rings it took for none (or
+    #: that found no token), and rings refused by the per-owner cap.
+    calls_rung: int = 0
+    calls_undelivered: int = 0
+    calls_rate_limited: int = 0
     tokens_pruned: int = 0
     apns_rejections: int = 0
     stale_settles: int = 0
@@ -266,6 +294,35 @@ class PushTestResult:
 
 #: How much of a token a test result shows, enough to tell two devices apart.
 _TOKEN_SUFFIX_CHARS = 8
+
+#: The window of the per-owner ring cap.
+_RING_WINDOW = timedelta(hours=1)
+
+
+class CallRateLimitedError(Exception):
+    """The owner was rung ``max_per_hour`` times in the last hour."""
+
+    def __init__(self, retry_after_seconds: float) -> None:
+        super().__init__(f"Too many calls; try again in {int(retry_after_seconds) + 1} s")
+        self.retry_after_seconds = retry_after_seconds
+
+
+@dataclass(frozen=True)
+class CallRingDevice:
+    """APNs' answer for one VoIP token: its fingerprint, never the token."""
+
+    fingerprint: str
+    status: int | None
+    reason: str
+
+
+@dataclass(frozen=True)
+class CallRingResult:
+    """What a ring did: ``sent`` when APNs accepted it for at least one token."""
+
+    sent: bool
+    tokens: int
+    results: tuple[CallRingDevice, ...] = ()
 
 
 @dataclass
@@ -322,6 +379,8 @@ class PushGateway:
         self._last_discovery: datetime | None = None
         self._last_prune: datetime | None = None
         self._retry_owners: set[str] = set()
+        #: Per owner: when each request id was first rung in the last hour.
+        self._rings: dict[str, deque[tuple[datetime, str]]] = {}
         self._wake = asyncio.Event()
         self._stopping = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -1045,6 +1104,99 @@ class PushGateway:
             now - timedelta(seconds=self._settings.retention_seconds)
         )
 
+    # -- Calls -------------------------------------------------------------
+
+    @property
+    def calls_enabled(self) -> bool:
+        return self._settings.calls.enabled
+
+    def now(self) -> datetime:
+        """The gateway's clock (a ring's expiry is checked against it)."""
+        return self._clock()
+
+    async def ring(self, owner_id: str, call: CallRequest) -> CallRingResult:
+        """Send ``call`` to the owner's VoIP tokens for the app's bundle.
+
+        Raises :class:`CallRateLimitedError` past the owner's hourly cap; ringing the
+        same request id again (an escalation) does not count twice. A token APNs
+        reports as dead is deleted. The frame is checked before it gets here
+        (``validate_call_request``): nothing else is ever sent as a VoIP push.
+        """
+        now = self._clock()
+        counted = self._admit_ring(owner_id, call.request_id, now)
+        bundle = self._settings.bundle_id
+        devices = [
+            device
+            for device in await self._ios_devices(owner_id, (PushTokenKind.VOIP,))
+            if (device.app_bundle_id or bundle) == bundle
+        ]
+        if not devices:
+            if counted:
+                self._rings[owner_id].pop()
+            self.stats.calls_undelivered += 1
+            logger.info(
+                "Call request %s for owner %s not rung: no VoIP token", call.request_id, owner_id
+            )
+            return CallRingResult(sent=False, tokens=0)
+        expiration = call_expiration(
+            call.expires_at, now=now, ring_seconds=self._settings.calls.ring_seconds
+        )
+        results: list[CallRingDevice] = []
+        for device in devices:
+            result = await self._send(device, self._voip_push(device, call.frame, expiration))
+            results.append(
+                CallRingDevice(
+                    fingerprint=token_fingerprint(device.token),
+                    status=result.status_code,
+                    reason=result.reason,
+                )
+            )
+        sent = any(result.status == APNS_ACCEPTED_STATUS for result in results)
+        if sent:
+            self.stats.calls_rung += 1
+        else:
+            self.stats.calls_undelivered += 1
+        # Ids and fingerprints only: never a token, never the text.
+        logger.info(
+            "Call request %s for owner %s (session %s): %s, tokens %s",
+            call.request_id,
+            owner_id,
+            call.session_id,
+            "rung" if sent else "not accepted",
+            ", ".join(
+                f"{r.fingerprint}={r.status}{' ' + r.reason if r.reason else ''}" for r in results
+            ),
+        )
+        return CallRingResult(sent=sent, tokens=len(devices), results=tuple(results))
+
+    def _admit_ring(self, owner_id: str, request_id: str, now: datetime) -> bool:
+        """Count a ring against the owner's cap; ``False`` when the id was already
+        counted this hour. Raises :class:`CallRateLimitedError` when the cap is full."""
+        rings = self._rings.setdefault(owner_id, deque())
+        while rings and now - rings[0][0] >= _RING_WINDOW:
+            rings.popleft()
+        if any(rung == request_id for _, rung in rings):
+            return False
+        if len(rings) >= self._settings.calls.max_per_hour:
+            self.stats.calls_rate_limited += 1
+            retry_after = (rings[0][0] + _RING_WINDOW - now).total_seconds()
+            raise CallRateLimitedError(max(retry_after, 0.0))
+        rings.append((now, request_id))
+        return True
+
+    def _voip_push(
+        self, device: DeviceToken, frame: Mapping[str, Any], expiration: int
+    ) -> ApnsPush:
+        return ApnsPush(
+            token=device.token,
+            environment=device.environment,
+            topic=self._topic(device, ApnsPushType.VOIP),
+            push_type=ApnsPushType.VOIP,
+            priority=APNS_PRIORITY_IMMEDIATE,
+            payload=voip_payload(frame),
+            expiration=expiration,
+        )
+
     # -- Operator tools ----------------------------------------------------
 
     async def send_test(
@@ -1055,12 +1207,15 @@ class PushGateway:
         title: str,
         body: str,
         token: str | None = None,
+        call_session_id: str | None = None,
     ) -> list[PushTestResult]:
         """Push once to the owner's registered tokens for ``kind``, ignoring throttles.
 
         ``token`` narrows it to that one registered token. The alert opens the app's
         activity list; the Live Activity pushes carry the owner's real current
-        content; the background push and the widget reload are the real ones.
+        content; the background push and the widget reload are the real ones. The
+        VoIP push is a ``call.request`` saying "Test call" for ``call_session_id``
+        (a test session without it); it does not count against the ring cap.
         """
         devices = [
             device
@@ -1076,6 +1231,15 @@ class PushGateway:
             if page is None:
                 raise GuildFeedError("No Guild node answers right now; try again in a moment")
             state = self._content_state(owner_id, self._owner_items(owner_id, page), page, now)
+        if kind is PushTestKind.VOIP:
+            ring_seconds = self._settings.calls.ring_seconds
+            state = operator_test_call_frame(
+                str(uuid4()),
+                host=self._settings.origin_label or self._settings.instance_id,
+                now=now,
+                ring_seconds=ring_seconds,
+                session_id=call_session_id,
+            )
         results: list[PushTestResult] = []
         for device in devices:
             result = await self._send(
@@ -1120,6 +1284,13 @@ class PushGateway:
                 return self._widget_push(device)
             case PushTestKind.BACKGROUND:
                 return self._background_push(device)
+            case PushTestKind.VOIP:
+                # ``state`` is the test call frame.
+                return self._voip_push(
+                    device,
+                    state,
+                    int(now.timestamp()) + self._settings.calls.ring_seconds,
+                )
         return ApnsPush(
             token=device.token,
             environment=device.environment,
@@ -1169,6 +1340,7 @@ class PushGateway:
             "live_activity_start_enabled": self._settings.live_activity.start_enabled,
             "widgets_enabled": self._settings.widgets.enabled,
             "background_enabled": self._settings.background.enabled,
+            "calls_enabled": self._settings.calls.enabled,
             **stats,
         }
 

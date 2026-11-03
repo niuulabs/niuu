@@ -1061,8 +1061,9 @@ class DeviceRegistration(BaseModel):
     kind: PushTokenKind = Field(
         default=PushTokenKind.ALERT,
         description=(
-            "alert, live_activity, live_activity_start, widget, or widget_fallback (a widget "
-            "token the app read itself; stored and counted, never pushed to)"
+            "alert, live_activity, live_activity_start, widget, widget_fallback (a widget "
+            "token the app read itself; stored and counted, never pushed to), or voip (the "
+            "PushKit token, rung only with a call request)"
         ),
     )
     environment: str | None = Field(
@@ -2249,6 +2250,9 @@ def create_router(
                 # POST /devices takes every token kind, each naming its install_id: this
                 # node runs the push gateway. Other nodes take alert tokens only.
                 "push_installs": len(getattr(device_repository, "token_kinds", ())) > 1,
+                # POST /devices takes voip (PushKit) tokens, which this node rings with
+                # a resident's call.request (POST /push/call).
+                "push_voip": PushTokenKind.VOIP in getattr(device_repository, "token_kinds", ()),
             },
             "notifications_enabled": notifications,
             "projects_enabled": project_service is not None,

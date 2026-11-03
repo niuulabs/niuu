@@ -229,13 +229,14 @@ def test_when_no_guild_node_answers_the_test_push_is_a_502(rig):
 @pytest.mark.parametrize(
     "body",
     [
-        {"kind": "voip"},
+        {"kind": "carrier-pigeon"},
         {"title": ""},
         {"title": "t" * 121},
         {"body": "b" * 281},
         {"token": ""},
         {"token": "x" * 513},
         {"device": "x"},
+        {"kind": "voip", "session_id": ""},
     ],
 )
 def test_bad_requests_are_rejected(rig, body):
