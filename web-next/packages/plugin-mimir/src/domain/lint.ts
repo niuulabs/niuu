@@ -46,11 +46,25 @@ export interface LintIssue {
   message: string;
 }
 
+/**
+ * One mount's part in a lint. `unsupported` is a backend with no lint
+ * (gbrain): it was not checked, and `detail` says why.
+ */
+export interface LintMountStatus {
+  name: string;
+  status: 'linted' | 'unsupported';
+  pagesChecked: number;
+  issues: number;
+  detail: string;
+}
+
 export interface LintReport {
   issues: LintIssue[];
   /** Number of pages scanned during this lint run. */
   pagesChecked: number;
   summary: { error: number; warn: number; info: number };
+  /** Every mount the lint covered, including those that could not be linted. */
+  mounts: LintMountStatus[];
 }
 
 // ---------------------------------------------------------------------------

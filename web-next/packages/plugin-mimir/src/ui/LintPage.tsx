@@ -48,7 +48,8 @@ const CHECK_ROW_BASE =
 export function LintPage() {
   const navigate = useNavigate();
   const { activeMount, mountName } = useActiveMount();
-  const { issues, summary, isLoading, isError, error, runAutoFix, isFixing } = useLint(mountName);
+  const { report, issues, summary, isLoading, isError, error, runAutoFix, isFixing } =
+    useLint(mountName);
   const [selectedRule, setSelectedRule] = useState<LintRule | null>(null);
 
   const { countByRule, autoFixByRule } = issues.reduce<{
@@ -68,6 +69,7 @@ export function LintPage() {
   const totalAutoFixable = issues.filter((i) => i.autoFix).length;
   const autoFixableIds = filtered.filter((i) => i.autoFix).map((i) => i.id);
   const totalLint = summary.error + summary.warn + summary.info;
+  const notLinted = (report?.mounts ?? []).filter((mount) => mount.status === 'unsupported');
 
   // Build subtitle strings showing which rules contribute to each KPI
   const rulesByseverity = (sev: IssueSeverity) =>
@@ -130,6 +132,26 @@ export function LintPage() {
           <span className={KPI_SUB}>{autoFixRules || '—'}</span>
         </div>
       </div>
+
+      {/* ── Mounts that were not linted ─────────────────────────── */}
+      {notLinted.length > 0 && (
+        <section
+          aria-label="Mounts not linted"
+          className="niuu:flex niuu:flex-col niuu:gap-1 niuu:py-2 niuu:px-4 niuu:border niuu:border-border-subtle niuu:rounded-md niuu:bg-bg-secondary"
+        >
+          {notLinted.map((mount) => (
+            <div
+              key={mount.name}
+              className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-xs niuu:text-text-secondary"
+              data-testid="lint-unsupported-mount"
+            >
+              <StateDot state="degraded" />
+              <span className="niuu:font-mono niuu:text-text-primary">{mount.name}</span>
+              <span>not linted — {mount.detail}</span>
+            </div>
+          ))}
+        </section>
+      )}
 
       {/* ── 2-column layout ─────────────────────────────────────── */}
       <div className="niuu:grid niuu:grid-cols-[220px_1fr] niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:overflow-hidden niuu:flex-1 niuu:min-h-0">
