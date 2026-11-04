@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from ravn.cli.commands import _build_environment_signal_runtime
@@ -577,6 +579,24 @@ async def test_runtime_telemetry_reports_the_served_store_where_its_gateway_serv
         },
         {"name": "mimir-yggdrasil", "role": "shared", "platform_mount": "shared", "served_url": ""},
     ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_identity_is_republished_for_readers_that_restarted() -> None:
+    bus = InProcessBus()
+    telemetry: list[SleipnirEvent] = []
+    await bus.subscribe(["valkyrie.runtime.started"], lambda event: _record(telemetry, event))
+    settings = _settings()
+    settings.environment.runtime_snapshot_interval_seconds = 0.01
+    runtime = EnvironmentSignalRuntime(settings=settings, publisher=bus, enqueue=None)
+
+    await runtime.start()
+    await asyncio.sleep(0.05)
+    await runtime.stop()
+    await bus.flush()
+
+    assert len(telemetry) >= 3
+    assert all("memory" in event.payload for event in telemetry)
 
 
 @pytest.mark.asyncio

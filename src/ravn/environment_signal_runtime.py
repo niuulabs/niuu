@@ -164,6 +164,14 @@ class EnvironmentSignalRuntime:
             await self._publisher.start()  # type: ignore[attr-defined]
         self._adapters = self._build_adapters()
         await self._publish_runtime_started()
+        self._tasks.append(
+            asyncio.create_task(
+                self._runtime_snapshot_loop(
+                    self._settings.environment.runtime_snapshot_interval_seconds
+                ),
+                name=f"environment_runtime_snapshot:{self._environment.id}",
+            )
+        )
         for adapter in self._adapters:
             self._tasks.append(
                 asyncio.create_task(
@@ -223,6 +231,12 @@ class EnvironmentSignalRuntime:
         if not isinstance(adapter, SignalAdapter):
             raise TypeError(f"{source.adapter!r} does not implement SignalAdapter")
         return adapter
+
+    async def _runtime_snapshot_loop(self, interval: float) -> None:
+        """Republish the runtime identity; nothing replays it to a restarted reader."""
+        while True:
+            await asyncio.sleep(interval)
+            await self._publish_runtime_started()
 
     async def _poll_loop(self, adapter: SignalAdapter) -> None:
         interval = self._settings.environment.signal_poll_interval_seconds

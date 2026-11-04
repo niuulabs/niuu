@@ -5042,6 +5042,16 @@ class EnvironmentConfig(BaseModel):
         default=10.0,
         description="Seconds between polling enabled signal sources.",
     )
+    runtime_snapshot_interval_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description=(
+            "How often the resident republishes valkyrie.runtime.started (charter, "
+            "personality, memory), so a dashboard or the platform's Mímir restarted "
+            "without event replay knows it within this interval instead of after the "
+            "resident's next restart."
+        ),
+    )
     signal_idle_poll_event_interval_seconds: float = Field(
         default=300.0,
         ge=0.0,
