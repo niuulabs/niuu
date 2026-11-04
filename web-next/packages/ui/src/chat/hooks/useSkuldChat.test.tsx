@@ -1205,6 +1205,62 @@ page_path: council/demo/opinion-b.md
     expect(result.current.pendingInputRequests).toHaveLength(0);
   });
 
+  it('keeps descriptions, multi-select and ids and sends structured answers (LEX-1502)', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'ask_user_question',
+          request_id: 'muse-1',
+          questions: [
+            {
+              id: 'platforms',
+              header: 'Targets',
+              question: 'Which platforms?',
+              multiSelect: true,
+              options: [{ label: 'iOS', description: 'iPhone and iPad' }, { label: 'macOS' }],
+            },
+            { question: 'Which DB?', multi_select: false, options: [{ label: 'Postgres' }] },
+          ],
+        }),
+      );
+    });
+
+    expect(result.current.pendingInputRequests).toEqual([
+      {
+        requestId: 'muse-1',
+        questions: [
+          {
+            prompt: 'Which platforms?',
+            choices: ['iOS', 'macOS'],
+            descriptions: ['iPhone and iPad', undefined],
+            multiSelect: true,
+            id: 'platforms',
+            header: 'Targets',
+          },
+          { prompt: 'Which DB?', choices: ['Postgres'] },
+        ],
+      },
+    ]);
+
+    const structured = {
+      question: 'Which platforms?',
+      question_id: 'platforms',
+      answer: ['iOS', 'macOS'],
+      option_indexes: [0, 1],
+    };
+    act(() => result.current.respondToInput('muse-1', [structured, 'Postgres']));
+
+    expect(sendJson).toHaveBeenCalledWith({
+      type: 'ask_user_answer',
+      request_id: 'muse-1',
+      answers: [structured, { answer: 'Postgres' }],
+    });
+  });
+
   it('restores an answered question when Skuld rejects the answer', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 
@@ -1235,6 +1291,8 @@ page_path: council/demo/opinion-b.md
       {
         requestId: 'tty-1-abc',
         questions: [{ prompt: 'Deliver how?', choices: ['Folio', 'Tar'] }],
+        // LEX-1502: the card that comes back says why the answer was refused.
+        error: 'The live Claude menu does not match the pending question state',
       },
     ]);
     expect(result.current.messages.at(-1)?.content).toContain('does not match');

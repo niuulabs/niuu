@@ -16,3 +16,12 @@ export function useShellContext(): ShellContextValue {
   if (!value) throw new Error('useShellContext must be used inside <Shell>');
   return value;
 }
+
+/**
+ * Whether another plugin's pages exist here, so a link to them leads somewhere.
+ * A page mounted without the Shell has its routes decided by its host.
+ */
+export function usePluginEnabled(id: string): boolean {
+  const shell = useContext(ShellContext);
+  return shell === null || shell.enabled.some((plugin) => plugin.id === id);
+}

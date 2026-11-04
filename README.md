@@ -1,6 +1,9 @@
-# Niuu
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/design/brand/assets/niuu-lockup.svg">
+  <img alt="NIUU" src="docs/design/brand/assets/niuu-lockup-dark.svg" width="320">
+</picture>
 
-**Where AI agents work, collaborate, and evolve.**
+**A place where intelligent systems do real work.**
 
 Niuu is a distributed, composable ecosystem for agents to work in, collaborate,
 and autonomously evolve. It brings together independent agents with ongoing
@@ -74,7 +77,19 @@ The moving parts have distinct responsibilities:
 | **Observability** | Visibility into the distributed system and its activity |
 
 Agent runtimes own judgment and learning; shared services supply collaboration
-and infrastructure. See the [architecture guide](https://docs.niuu.cloud/concepts/platform-model/)
+and infrastructure.
+
+| Product | | Service |
+| --- | --- | --- |
+| **Platform** | Your environment | Guild |
+| **Workspaces** | Where work happens | Realms |
+| **Agents** | Who does the work | Ravn |
+| **Forge** | Build and execute | Völundr |
+| **Memory** | What is known | Mímir |
+| **Observatory** | What is happening | Observatory |
+
+Product names are what you see in the interface. Service names stay in APIs,
+configuration, packages, and commands. See the [architecture guide](https://docs.niuu.cloud/concepts/platform-model/)
 for the system diagram, service boundaries, and implementation names.
 
 ## Toward an operating system for agents

@@ -3,7 +3,7 @@
  *
  * Spec and research campaigns share one shape (`SpecCampaign = ResearchCampaign`),
  * and three surfaces read the same derivations out of it: the specs center, the
- * spec detail page, and the Simple-mode workflows page. They live here so the
+ * spec detail page, and the workflow catalog. They live here so the
  * derivation exists once.
  *
  * Owner: plugin-ting.

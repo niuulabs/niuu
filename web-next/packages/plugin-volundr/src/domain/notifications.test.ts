@@ -42,6 +42,7 @@ function row(overrides: Partial<SessionNotification> = {}): SessionNotification 
     engine: 'claude',
     model: 'opus',
     correlationId: null,
+    speak: null,
     createdAt: '2026-09-23T10:00:00Z',
     read: false,
     ...overrides,

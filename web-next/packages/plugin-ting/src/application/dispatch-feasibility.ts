@@ -71,8 +71,8 @@ export function checkRavenResolution(ctx: FeasibilityContext): FeasibilityGate {
     name: 'raven_resolution',
     passed: ctx.ravenResolved,
     reason: ctx.ravenResolved
-      ? 'Ravens available for assignment'
-      : 'No ravens available — all slots occupied or cluster offline',
+      ? 'Agents available for assignment'
+      : 'No agents available — all slots occupied or cluster offline',
   };
 }
 

@@ -73,6 +73,9 @@ def test_send_user_file_tool_pair_serves_attachment_bytes(tmp_path):
     assert response.content == payload
     assert response.headers["content-type"].startswith("text/markdown")
     assert "conveyor-app-ui.md" in response.headers["content-disposition"]
+    # The media type is the agent's claim: never run on the origin (judge R16-1).
+    assert response.headers["content-security-policy"] == "sandbox"
+    assert response.headers["x-content-type-options"] == "nosniff"
 
 
 def test_send_user_file_route_rejects_unpaired_path(tmp_path):

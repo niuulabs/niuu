@@ -30,6 +30,10 @@ class Participant:
     last_heartbeat_at: float | None = None
     authority_role: str = ""
     room_ids: tuple[str, ...] = ()
+    #: The session an agent from elsewhere lives in; delivery to it goes there.
+    session_id: str = ""
+    #: What every delivery to that session opens with, so it stands on its own.
+    notice_context: str = ""
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,466 @@
+{
+ "fixture": "derived state v2 (G10; judge R5-5, R6-3): one algorithm for counts, rows and the Code tab",
+ "cases": [
+  {
+   "name": "stuck after a turn-boundary flush: project-mode-ux, 21 Oct (real rows 10324-10536)",
+   "real": true,
+   "session": {
+    "status": "running",
+    "activity_state": "active",
+    "activity_state_since": "2026-10-21T00:59:35.383697+00:00",
+    "last_active": "2026-10-21T14:11:45+00:00"
+   },
+   "rows": [
+    {
+     "kind": "claude_hook",
+     "ts": "2026-10-21T00:59:35.320143+00:00",
+     "hook": "MessageDisplay"
+    },
+    {
+     "kind": "assistant",
+     "ts": "2026-10-21T00:59:35.320344+00:00"
+    },
+    {
+     "kind": "claude_hook",
+     "ts": "2026-10-21T00:59:35.333883+00:00",
+     "hook": "Stop"
+    },
+    {
+     "kind": "result",
+     "ts": "2026-10-21T00:59:35.334193+00:00"
+    },
+    {
+     "kind": "terminal_prompt_submitted",
+     "ts": "2026-10-21T00:59:35.369358+00:00"
+    },
+    {
+     "kind": "user_active",
+     "ts": "2026-10-21T00:59:35.383276+00:00"
+    },
+    {
+     "kind": "claude_hook",
+     "ts": "2026-10-21T01:00:35.395553+00:00",
+     "hook": "Notification"
+    },
+    {
+     "kind": "claude_hook",
+     "ts": "2026-10-21T01:53:24.09791+00:00",
+     "hook": "PreCompact"
+    },
+    {
+     "kind": "terminal_frame",
+     "ts": "2026-10-21T01:54:20.575213+00:00"
+    },
+    {
+     "kind": "system",
+     "ts": "2026-10-21T05:57:58.869531+00:00"
+    },
+    {
+     "kind": "capabilities",
+     "ts": "2026-10-21T05:57:58.869608+00:00"
+    }
+   ],
+   "open_native_asks": [],
+   "now": "2026-10-21T14:12:00+00:00",
+   "expect": {
+    "state": "idle",
+    "basis": "quiet_inferred",
+    "time_kind": "last_output",
+    "last_work_at": "2026-10-21T00:59:35.334193+00:00"
+   }
+  },
+  {
+   "name": "long silent Codex turn: cp-judge (gpt-6-astra) 06:49:12 \u2192 06:54:37, 5.4 min with no row (real)",
+   "real": true,
+   "session": {
+    "status": "running",
+    "activity_state": "active",
+    "activity_state_since": "2026-10-21T06:47:56.946355+00:00"
+   },
+   "rows": [
+    {
+     "kind": "assistant",
+     "ts": "2026-10-21T06:49:12.200000+00:00"
+    },
+    {
+     "kind": "message_delta",
+     "ts": "2026-10-21T06:49:12.267422+00:00"
+    }
+   ],
+   "open_native_asks": [],
+   "now": "2026-10-21T06:54:30+00:00",
+   "expect": {
+    "state": "working",
+    "basis": "forge",
+    "time_kind": "running_since"
+   }
+  },
+  {
+   "name": "Claude tool call open 12 min (Thor max in-tool gap is 10.0 min, m6's 15 min)",
+   "session": {
+    "status": "running",
+    "activity_state": "tool_executing",
+    "activity_state_since": "2026-10-21T10:00:00+00:00"
+   },
+   "rows": [
+    {
+     "kind": "claude_hook",
+     "ts": "2026-10-21T10:00:05+00:00",
+     "hook": "PreToolUse"
+    }
+   ],
+   "open_native_asks": [],
+   "now": "2026-10-21T10:12:05+00:00",
+   "expect": {
+    "state": "working",
+    "basis": "forge"
+   }
+  },
+  {
+   "name": "tool open but nothing for 61 min",
+   "session": {
+    "status": "running",
+    "activity_state": "tool_executing",
+    "activity_state_since": "2026-10-21T10:00:00+00:00"
+   },
+   "rows": [
+    {
+     "kind": "claude_hook",
+     "ts": "2026-10-21T10:00:05+00:00",
+     "hook": "PreToolUse"
+    }
+   ],
+   "open_native_asks": [],
+   "now": "2026-10-21T11:01:06+00:00",
+   "expect": {
+    "state": "idle",
+    "basis": "quiet_inferred"
+   }
+  },
+  {
+   "name": "completed idle turn: output 2 min ago, Forge idle \u2192 idle, not working",
+   "session": {
+    "status": "running",
+    "activity_state": "idle",
+    "activity_state_since": "2026-10-21T12:00:00+00:00",
+    "last_active": "2026-10-21T12:00:00+00:00"
+   },
+   "rows": [
+    {
+     "kind": "result",
+     "ts": "2026-10-21T12:00:00+00:00"
+    }
+   ],
+   "open_native_asks": [],
+   "now": "2026-10-21T12:02:00+00:00",
+   "expect": {
+    "state": "idle",
+    "basis": "forge",
+    "time_kind": "used"
+   }
+  },
+  {
+   "name": "reconnect-only log progress: system and capabilities rows 1 min ago, work 40 min ago \u2192 quiet",
+   "session": {
+    "status": "running",
+    "activity_state": "active",
+    "activity_state_since": "2026-10-21T11:00:00+00:00"
+   },
+   "rows": [
+    {
+     "kind": "assistant",
+     "ts": "2026-10-21T11:20:00+00:00"
+    },
+    {
+     "kind": "system",
+     "ts": "2026-10-21T11:59:00+00:00"
+    },
+    {
+     "kind": "capabilities",
+     "ts": "2026-10-21T11:59:00+00:00"
+    },
+    {
+     "kind": "user_confirmed",
+     "ts": "2026-10-21T11:59:01+00:00"
+    }
+   ],
+   "open_native_asks": [],
+   "now": "2026-10-21T12:00:00+00:00",
+   "expect": {
+    "state": "idle",
+    "basis": "quiet_inferred"
+   }
+  },
+  {
+   "name": "late upload: rows ingested now carry source times 3 h old \u2192 quiet",
+   "session": {
+    "status": "running",
+    "activity_state": "active",
+    "activity_state_since": "2026-10-21T08:55:00+00:00"
+   },
+   "rows": [
+    {
+     "kind": "assistant",
+     "ts": "2026-10-21T09:00:00+00:00"
+    },
+    {
+     "kind": "result",
+     "ts": "2026-10-21T09:00:01+00:00"
+    }
+   ],
+   "open_native_asks": [],
+   "now": "2026-10-21T12:00:00+00:00",
+   "expect": {
+    "state": "idle",
+    "basis": "quiet_inferred"
+   }
+  },
+  {
+   "name": "two pending controls, one resolved: still waiting (c8103dc7, fixture two_pending_one_session)",
+   "session": {
+    "status": "running",
+    "activity_state": "awaiting_input",
+    "activity_state_since": "2026-09-27T06:34:42+00:00"
+   },
+   "rows": [],
+   "open_native_asks": [
+    "2026-09-27T06:34:42.759924+00:00"
+   ],
+   "now": "2026-09-27T08:10:30+00:00",
+   "expect": {
+    "state": "awaiting_input",
+    "time_kind": "waiting_since"
+   }
+  },
+  {
+   "name": "65 min on a question card (m6 ios-fixes tty-4-cdd32dda, real): waiting, never quiet",
+   "real": true,
+   "session": {
+    "status": "running",
+    "activity_state": "awaiting_input",
+    "activity_state_since": "2026-10-21T09:20:08+00:00"
+   },
+   "rows": [
+    {
+     "kind": "claude_hook",
+     "ts": "2026-10-21T09:20:08.39+00:00",
+     "hook": "PreToolUse"
+    }
+   ],
+   "open_native_asks": [
+    "2026-10-21T09:20:08.399434+00:00"
+   ],
+   "now": "2026-10-21T10:25:00+00:00",
+   "expect": {
+    "state": "awaiting_input"
+   }
+  },
+  {
+   "name": "stopped with a stale active (R4-1)",
+   "session": {
+    "status": "stopped",
+    "activity_state": "active",
+    "activity_state_since": "2026-10-20T10:00:00+00:00",
+    "updated_at": "2026-10-20T11:00:00+00:00"
+   },
+   "rows": [],
+   "open_native_asks": [],
+   "now": "2026-10-21T12:00:00+00:00",
+   "expect": {
+    "state": "stopped"
+   }
+  },
+  {
+   "name": "failed with no activity (R4-1)",
+   "session": {
+    "status": "failed",
+    "activity_state": null,
+    "updated_at": "2026-10-20T11:00:00+00:00"
+   },
+   "rows": [],
+   "open_native_asks": [],
+   "now": "2026-10-21T12:00:00+00:00",
+   "expect": {
+    "state": "error"
+   }
+  },
+  {
+   "name": "dead prompt: UserPromptSubmit never run (nepal-journal 19 Oct 09:01, real) \u2192 quiet at 09:16",
+   "real": true,
+   "session": {
+    "status": "running",
+    "activity_state": "active",
+    "activity_state_since": "2026-10-19T09:01:03.251+00:00"
+   },
+   "rows": [
+    {
+     "kind": "result",
+     "ts": "2026-10-19T08:57:13.214894+00:00"
+    },
+    {
+     "kind": "claude_hook",
+     "ts": "2026-10-19T08:58:13.324015+00:00",
+     "hook": "Notification"
+    },
+    {
+     "kind": "claude_hook",
+     "ts": "2026-10-19T09:01:03.250944+00:00",
+     "hook": "UserPromptSubmit"
+    }
+   ],
+   "open_native_asks": [],
+   "now": "2026-10-19T09:20:00+00:00",
+   "expect": {
+    "state": "idle",
+    "basis": "quiet_inferred"
+   }
+  },
+  {
+   "name": "boundary: 14 min since work, no tool \u2192 working",
+   "session": {
+    "status": "running",
+    "activity_state": "active",
+    "activity_state_since": "2026-10-21T10:00:00+00:00"
+   },
+   "rows": [
+    {
+     "kind": "assistant",
+     "ts": "2026-10-21T10:00:00+00:00"
+    }
+   ],
+   "open_native_asks": [],
+   "now": "2026-10-21T10:14:00+00:00",
+   "expect": {
+    "state": "working"
+   }
+  },
+  {
+   "name": "boundary: 16 min since work, no tool \u2192 quiet",
+   "session": {
+    "status": "running",
+    "activity_state": "active",
+    "activity_state_since": "2026-10-21T10:00:00+00:00"
+   },
+   "rows": [
+    {
+     "kind": "assistant",
+     "ts": "2026-10-21T10:00:00+00:00"
+    }
+   ],
+   "open_native_asks": [],
+   "now": "2026-10-21T10:16:00+00:00",
+   "expect": {
+    "state": "idle",
+    "basis": "quiet_inferred"
+   }
+  },
+  {
+   "name": "R6-3: status stopping with a stale active and a recent row \u2192 stopped (ForgeKit maps stopping to stopped)",
+   "session": {
+    "status": "stopping",
+    "activity_state": "active",
+    "activity_state_since": "2026-10-21T10:00:00+00:00",
+    "updated_at": "2026-10-21T10:05:00+00:00"
+   },
+   "rows": [
+    {
+     "kind": "assistant",
+     "ts": "2026-10-21T10:04:00+00:00"
+    }
+   ],
+   "open_native_asks": [],
+   "now": "2026-10-21T10:05:30+00:00",
+   "expect": {
+    "state": "stopped"
+   }
+  },
+  {
+   "name": "R6-3: idle, no retained work rows, fresh last_active (the heartbeat) \u2192 time unknown, never 'used' at the heartbeat",
+   "session": {
+    "status": "running",
+    "activity_state": "idle",
+    "last_active": "2026-10-21T14:11:00+00:00"
+   },
+   "rows": [],
+   "open_native_asks": [],
+   "now": "2026-10-21T14:12:00+00:00",
+   "expect": {
+    "state": "idle",
+    "time_kind": "unknown"
+   }
+  },
+  {
+   "name": "R6-3: a recent row followed in seq by a late row with an older source time \u2192 still working (newest source time wins)",
+   "session": {
+    "status": "running",
+    "activity_state": "active",
+    "activity_state_since": "2026-10-21T09:00:00+00:00"
+   },
+   "rows": [
+    {
+     "kind": "assistant",
+     "ts": "2026-10-21T10:59:00+00:00"
+    },
+    {
+     "kind": "assistant",
+     "ts": "2026-10-21T09:10:00+00:00"
+    }
+   ],
+   "open_native_asks": [],
+   "now": "2026-10-21T11:00:00+00:00",
+   "expect": {
+    "state": "working",
+    "last_work_at": "2026-10-21T10:59:00+00:00"
+   }
+  },
+  {
+   "name": "R6-3: control state unknown (None) while Forge says awaiting_input \u2192 awaiting_input, never working/idle",
+   "session": {
+    "status": "running",
+    "activity_state": "awaiting_input",
+    "activity_state_since": "2026-10-21T08:00:00+00:00"
+   },
+   "rows": [],
+   "open_native_asks": null,
+   "now": "2026-10-21T12:00:00+00:00",
+   "expect": {
+    "state": "awaiting_input"
+   }
+  },
+  {
+   "name": "F12d fields-only path (the Code tab): last_work_at and tool_open from the session object",
+   "fields_only": true,
+   "session": {
+    "status": "running",
+    "activity_state": "tool_executing",
+    "activity_state_since": "2026-10-21T10:00:00+00:00",
+    "last_work_at": "2026-10-21T10:30:00+00:00",
+    "tool_open": true
+   },
+   "rows": null,
+   "open_native_asks": [],
+   "now": "2026-10-21T11:20:00+00:00",
+   "expect": {
+    "state": "working"
+   }
+  },
+  {
+   "name": "F12d fields-only path: stuck project-mode-ux through Forge's own fields",
+   "fields_only": true,
+   "session": {
+    "status": "running",
+    "activity_state": "active",
+    "activity_state_since": "2026-10-21T00:59:35.383697+00:00",
+    "last_work_at": "2026-10-21T00:59:35.334193+00:00",
+    "tool_open": false
+   },
+   "rows": null,
+   "open_native_asks": [],
+   "now": "2026-10-21T14:12:00+00:00",
+   "expect": {
+    "state": "idle",
+    "basis": "quiet_inferred"
+   }
+  }
+ ]
+}

@@ -4,13 +4,13 @@ import { ForgeSessionSettings } from './ForgeSessionSettings';
 
 describe('session display settings', () => {
   beforeEach(() => localStorage.clear());
-  it('keeps Chat required, defaults Diff and Files on, and persists optional tabs', () => {
+  it('keeps Chat required, defaults Diff, Files and Telemetry on, and persists optional tabs', () => {
     const { unmount } = render(<ForgeSessionSettings />);
     expect(screen.getByRole('checkbox', { name: /Chat/ })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: /Chat/ })).toBeDisabled();
-    for (const name of ['Diff', 'Files'])
+    for (const name of ['Diff', 'Files', 'Telemetry'])
       expect(screen.getByRole('checkbox', { name })).toBeChecked();
-    for (const name of ['Terminal', 'Chronicle', 'Telemetry', 'Log']) {
+    for (const name of ['Terminal', 'Chronicle', 'Log']) {
       expect(screen.getByRole('checkbox', { name })).not.toBeChecked();
     }
     fireEvent.click(screen.getByRole('checkbox', { name: 'Terminal' }));

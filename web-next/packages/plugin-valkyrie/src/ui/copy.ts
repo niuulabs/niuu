@@ -64,7 +64,7 @@ const ACTION_AUTHORITY_COPY: Record<string, TermCopy> = {
   },
   court_required: {
     label: 'Needs court approval',
-    description: 'The ODIN court must weigh this before anything executes.',
+    description: 'The review court must weigh this before anything executes.',
   },
   human_review_required: {
     label: 'Needs your approval',

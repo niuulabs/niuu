@@ -125,6 +125,17 @@ class TestLoad:
         assert config.iteration_budget == 40
 
     @respx.mock
+    def test_load_translates_the_registry_permission_name(self) -> None:
+        respx.get(f"{_BASE}/api/v1/personas/coder").mock(
+            return_value=httpx.Response(200, json={**_DETAIL_CODER, "permission_mode": "default"})
+        )
+
+        config = _adapter().load("coder")
+
+        assert config is not None
+        assert config.permission_mode == "workspace-write"
+
+    @respx.mock
     def test_load_parses_llm_fields(self) -> None:
         respx.get(f"{_BASE}/api/v1/personas/reviewer").mock(
             return_value=httpx.Response(200, json=_DETAIL_REVIEWER)

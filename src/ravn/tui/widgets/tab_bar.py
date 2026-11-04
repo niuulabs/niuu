@@ -40,15 +40,15 @@ class TabBar(Widget):
     TabBar ._tab {
         width: auto;
         padding: 0 1;
-        color: #52525b;
+        color: #648090;
         background: transparent;
     }
     TabBar ._tab:hover {
-        color: #a1a1aa;
+        color: #a5b7c1;
         background: #1c1c1e;
     }
     TabBar ._tab--active {
-        color: #f59e0b;
+        color: #86d0e8;
         background: #1a1400;
     }
     """

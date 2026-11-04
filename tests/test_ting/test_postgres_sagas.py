@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -9,7 +10,7 @@ from uuid import uuid4
 import pytest
 
 from ting.adapters.postgres_sagas import PostgresSagaRepository
-from ting.domain.models import Run, RunStatus, Saga, SagaStatus
+from ting.domain.models import Run, RunStatus, Saga, SagaBoardWorkflow, SagaStatus
 
 
 @pytest.fixture
@@ -325,6 +326,50 @@ class TestUpdateSagaWorkflow:
         assert call_args[0][2] == "1.0.0"
         assert call_args[0][4] == saga_id
         assert call_args[0][5] == "user-1"
+
+
+class TestBoardWorkflows:
+    @pytest.mark.asyncio
+    async def test_stores_the_ordered_pins(
+        self, repo: PostgresSagaRepository, mock_pool: MagicMock
+    ) -> None:
+        saga_id = uuid4()
+        pin = SagaBoardWorkflow(
+            workflow_id=uuid4(),
+            workflow_version="1.0.0",
+            workflow_snapshot={"name": "Planning"},
+        )
+
+        await repo.update_saga_board_workflows(saga_id, board_workflows=(pin,), owner_id="user-1")
+
+        args = mock_pool.execute.call_args[0]
+        assert "UPDATE sagas" in args[0]
+        assert json.loads(args[1]) == [
+            {
+                "workflow_id": str(pin.workflow_id),
+                "workflow_version": "1.0.0",
+                "workflow_snapshot": {"name": "Planning"},
+            }
+        ]
+        assert args[2:] == (saga_id, "user-1")
+
+    @pytest.mark.parametrize("encode", [lambda value: value, json.dumps])
+    def test_decodes_what_it_stored(self, encode) -> None:
+        workflow_id = uuid4()
+        stored = [
+            {
+                "workflow_id": str(workflow_id),
+                "workflow_version": "1.0.0",
+                "workflow_snapshot": {"name": "Planning"},
+            }
+        ]
+
+        [pin] = PostgresSagaRepository._decode_board_workflows(encode(stored))
+
+        assert pin == SagaBoardWorkflow(workflow_id, "1.0.0", {"name": "Planning"})
+
+    def test_a_saga_without_a_list_has_none(self) -> None:
+        assert PostgresSagaRepository._decode_board_workflows(None) == ()
 
 
 class TestCountByStatus:

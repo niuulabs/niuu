@@ -39,7 +39,7 @@ test.beforeEach(async ({ page }) => {
 
 test('mimir rune is visible in the rail', async ({ page }) => {
   await page.goto('/mimir');
-  const railButton = page.getByRole('button', { name: 'Mímir', exact: true });
+  const railButton = page.getByTestId('rail-item-mimir');
   await expect(railButton).toBeVisible();
   await expect(railButton).toHaveText('M');
 });

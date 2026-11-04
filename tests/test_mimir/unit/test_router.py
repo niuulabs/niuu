@@ -31,7 +31,7 @@ from ravn.domain.mimir import MimirMount, WriteRouting
 #: so they get a fixed admin identity rather than testing auth per call.
 _ADMIN_HEADERS = {
     "x-auth-user-id": "test-user",
-    "x-auth-tenant": "test-tenant",
+    "x-auth-tenant": "default",
     "x-auth-roles": "volundr:admin",
 }
 
@@ -1756,21 +1756,6 @@ def test_doctor_can_check_a_selected_filesystem_mount_in_a_federation(tmp_path):
     response = client.get("/mimir/doctor", params={"mount": "local"})
     assert response.status_code == 200
     assert len(response.json()["checks"]) == 8
-
-
-@pytest.mark.parametrize(
-    "cause,status", [(NotImplementedError("unsupported lint"), 501), (RuntimeError("offline"), 503)]
-)
-def test_federated_lint_failure_returns_json(tmp_path: Path, monkeypatch, cause, status) -> None:
-    from ravn.domain.exceptions import MimirUnavailableError
-
-    async def fail_lint(self, fix=False):
-        raise MimirUnavailableError("Mount cannot run lint") from cause
-
-    monkeypatch.setattr(CompositeMimirAdapter, "lint", fail_lint)
-    response = TestClient(_make_composite_app(tmp_path), headers=_ADMIN_HEADERS).get("/mimir/lint")
-    assert response.status_code == status
-    assert response.json() == {"detail": "Mount cannot run lint"}
 
 
 def test_registry_mounts_preserve_named_service_write_destination(tmp_path):

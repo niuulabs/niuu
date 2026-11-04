@@ -281,6 +281,20 @@ class MimirResidentState(ResidentStatePort):
             content=content,
         )
 
+    async def read_closed_operator_question(self, case_id: str) -> ResidentMemoryEntry | None:
+        path = str(Path(self._prefix) / _case_path(case_id, _OPERATOR_NEEDED_PATH))
+        try:
+            content = await self._mimir.read_page(path)
+        except FileNotFoundError:
+            return None
+        if _operator_marker_is_pending(content):
+            return None
+        return ResidentMemoryEntry(
+            path=path,
+            summary=_first_heading_or_line(content),
+            content=content,
+        )
+
     async def write_operator_answer(self, answer: str, *, case_id: str = "") -> str:
         now = datetime.now(UTC)
         marker_path = str(Path(self._prefix) / _case_path(case_id, _OPERATOR_NEEDED_PATH))

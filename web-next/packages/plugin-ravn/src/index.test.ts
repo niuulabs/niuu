@@ -1,6 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { createRootRoute } from '@tanstack/react-router';
-import { UI_MODE_STORAGE_KEY } from '@niuulabs/shell';
 import { ravnPlugin } from './index';
 
 function routeFor(path: string) {
@@ -8,37 +7,18 @@ function routeFor(path: string) {
   return routes.find((route) => route.options.path === path);
 }
 
-afterEach(() => localStorage.clear());
-
 describe('ravnPlugin', () => {
-  it('offers the Residents board only while Simple mode is on', () => {
-    expect(ravnPlugin.tabs).toContainEqual({
-      id: 'residents',
-      label: 'Residents',
-      path: '/ravn/residents',
-      simpleOnly: true,
-    });
-    expect(ravnPlugin.simple).toMatchObject({
-      tabs: ['residents', 'personas'],
-      title: 'Residents',
-      subtitle: 'who keeps what',
-    });
+  it('has two tabs: the ravens workbench and the persona library', () => {
+    expect(ravnPlugin.tabs?.map((tab) => tab.path)).toEqual(['/ravn', '/ravn/personas']);
   });
 
-  it('has two advanced tabs: the ravens workbench and the persona library', () => {
-    expect(ravnPlugin.tabs?.filter((tab) => !tab.simpleOnly).map((tab) => tab.path)).toEqual([
-      '/ravn',
-      '/ravn/personas',
-    ]);
-  });
-
-  it('registers the workbench, library and Residents routes plus the old addresses', () => {
+  it('registers the workbench and library routes plus the old addresses', () => {
     const routes = ravnPlugin.routes?.(createRootRoute()) ?? [];
     const paths = routes.map((route) => route.options.path);
     expect(paths).toEqual([
       '/ravn',
-      '/ravn/residents',
       '/ravn/personas',
+      '/ravn/residents',
       '/ravn/ravens',
       '/ravn/sessions',
       '/ravn/budget',
@@ -83,24 +63,14 @@ describe('ravnPlugin', () => {
     expect(thrown).toMatchObject({ options: { to: '/ravn', search: { tab: 'usage' } } });
   });
 
-  it('opens one ravn on the workbench even in Simple mode', () => {
-    localStorage.setItem(UI_MODE_STORAGE_KEY, 'simple');
-    const beforeLoad = routeFor('/ravn')?.options.beforeLoad as (ctx: unknown) => void;
-    expect(beforeLoad({ location: { search: { ravn: 'r-1' } } })).toBeUndefined();
-    expect(beforeLoad({ location: { search: { deploy: 'reviewer' } } })).toBeUndefined();
-  });
-
-  it('sends the plugin root to the Residents board in Simple mode', () => {
-    localStorage.setItem(UI_MODE_STORAGE_KEY, 'simple');
-    const beforeLoad = routeFor('/ravn')?.options.beforeLoad;
-    expect(() =>
-      (beforeLoad as (ctx: unknown) => void)({ location: { search: {} } }),
-    ).toThrowError();
-  });
-
-  it('keeps the workbench at the plugin root in Advanced mode', () => {
-    localStorage.setItem(UI_MODE_STORAGE_KEY, 'advanced');
-    const beforeLoad = routeFor('/ravn')?.options.beforeLoad;
-    expect((beforeLoad as (ctx: unknown) => void)({ location: { search: {} } })).toBeUndefined();
+  it('sends the old residents board to the workbench', () => {
+    const beforeLoad = routeFor('/ravn/residents')?.options.beforeLoad;
+    let thrown: unknown;
+    try {
+      (beforeLoad as (ctx: unknown) => void)({ location: { search: {} } });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ options: { to: '/ravn' } });
   });
 });

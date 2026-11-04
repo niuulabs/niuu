@@ -11,7 +11,7 @@ import contextlib
 import os
 import signal
 import sys
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -124,6 +124,18 @@ class TestPairingUrlScrape:
 
 
 class TestSpawnEnv:
+    async def test_file_token_mode_refuses_before_spawn_or_read(self, monkeypatch):
+        monkeypatch.setenv("SKULD__CLAUDE_OAUTH_TOKEN_FILE", "/test-only/unread-token")
+        transport = RemoteControlTransport("/tmp", session_id="tok12345")
+        with (
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as spawn,
+            patch("skuld.transports.claude_env._read_oauth_token_file") as read,
+        ):
+            with pytest.raises(ValueError, match="for inference, not Remote Control"):
+                await transport.start()
+            spawn.assert_not_called()
+            read.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_start_strips_api_key_auth_vars(self, monkeypatch):
         """Remote Control refuses to start under API-key auth — the spawn env

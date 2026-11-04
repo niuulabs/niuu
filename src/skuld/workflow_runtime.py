@@ -80,6 +80,10 @@ class WorkflowGateNode:
     require_brief: bool = False
 
 
+#: Durable log frame for an agent from another session joining or leaving the room.
+ROOM_MEMBER_FRAME = "room_member"
+
+
 @dataclass
 class WorkflowGateState:
     id: str
@@ -103,6 +107,7 @@ class WorkflowGateState:
     source: str = "workflow"
     summary: str = ""
     brief: str = ""
+    decided_by: str = ""
 
 
 @dataclass(frozen=True)
@@ -407,8 +412,7 @@ def _merge_workflow_terminal_outcomes(outcomes: list[dict[str, Any]]) -> dict[st
         fields = outcome.get("fields")
         candidate_artifacts = fields.get("artifact_paths") if isinstance(fields, dict) else None
         artifact_published = (
-            isinstance(fields, dict)
-            and fields.get("artifact_publication") == "mimir.page.written"
+            isinstance(fields, dict) and fields.get("artifact_publication") == "mimir.page.written"
         )
         if artifact_published and isinstance(candidate_artifacts, list):
             for artifact_path in candidate_artifacts:

@@ -129,6 +129,7 @@ type SessionPayload = {
     project_id: string;
     role: string;
     parent?: { instance_id: string; session_id: string } | null;
+    labels?: string[];
   } | null;
   id: string;
   name: string;
@@ -549,6 +550,7 @@ function normalizeSession(session: SessionPayload): VolundrSession {
                   sessionId: session.coordination.parent.session_id,
                 }
               : null,
+            labels: session.coordination.labels ?? [],
           },
         }
       : {}),
@@ -1773,6 +1775,16 @@ export function buildVolundrHttpAdapter(
             { signal: options?.signal },
           )
         : forgeClient.get('/projects'),
+    createProject: (name, options) =>
+      forgeClient.post('/projects', {
+        name,
+        ...(options?.instanceId ? { instance_id: options.instanceId } : {}),
+      }),
+    updateProject: (project, changes) =>
+      forgeClient.patch(
+        `/projects/${encodeURIComponent(project.id)}${project.instance_id ? `?instance_id=${encodeURIComponent(project.instance_id)}` : ''}`,
+        { ...changes, revision: project.revision },
+      ),
     getSessionProject: async (id, options) => {
       const payload = await forgeClient.get<SessionProjectPayload>(
         sessionProjectPath(id, options?.instanceId),

@@ -264,6 +264,11 @@ export function buildRealmGovernanceHttpAdapter(
     createRealm(request: RealmCreate) {
       return realmsClient.post<RealmSummary>('/realms', request);
     },
+    setRealmProject(slug: string, projectId: string | null) {
+      return realmsClient.patch<RealmSummary>(`/realms/${encodeURIComponent(slug)}/project`, {
+        project_id: projectId,
+      });
+    },
     async deleteRealm(slug: string) {
       await realmsClient.delete<void>(`/realms/${encodeURIComponent(slug)}`);
     },

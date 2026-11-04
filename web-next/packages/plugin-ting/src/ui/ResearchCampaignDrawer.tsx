@@ -193,7 +193,7 @@ export function ResearchCampaignDrawer({
                       )
                     }
                   >
-                    ᛗ open in Mímir
+                    Open in Memory
                   </button>
                   {selectedSource.originUrl ? (
                     <button
@@ -334,7 +334,7 @@ export function ResearchCampaignDrawer({
                     )
                   }
                 >
-                  Open in Völundr
+                  Open in Forge
                 </button>
                 {manifestArtifact ? (
                   <button

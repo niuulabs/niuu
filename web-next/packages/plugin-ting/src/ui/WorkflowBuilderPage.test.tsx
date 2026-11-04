@@ -48,8 +48,10 @@ const wf2: Workflow = {
   edges: [],
 };
 
-function wrap(service: Record<string, unknown>) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function wrap(
+  service: Record<string, unknown>,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   const personaService = {
     listPersonas: vi.fn().mockResolvedValue([]),
     getPersonaYaml: vi.fn().mockResolvedValue(''),
@@ -107,6 +109,20 @@ describe('WorkflowBuilderPage', () => {
     render(<WorkflowBuilderPage />, { wrapper: wrap({ 'ting.workflows': svc }) });
     await waitFor(() => expect(screen.getByTestId('builder-title')).toHaveTextContent(wf2.name));
     expect(screen.getByTestId(`delete-workflow-${wf2.id}`)).toBeInTheDocument();
+  });
+
+  it('caches the model catalog apart from the model list the AI models page reads', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const modelList = [{ id: 'claude-opus' }];
+    client.setQueryData(['bifrost', 'models'], modelList);
+
+    render(<WorkflowBuilderPage />, { wrapper: wrap({}, client) });
+
+    await waitFor(() =>
+      expect(client.getQueryData(['bifrost', 'model-catalog'])).toEqual(expect.any(Object)),
+    );
+    expect(Array.isArray(client.getQueryData(['bifrost', 'model-catalog']))).toBe(false);
+    expect(client.getQueryData(['bifrost', 'models'])).toBe(modelList);
   });
 
   it('renders the workflow-builder-page container', async () => {

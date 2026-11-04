@@ -157,9 +157,10 @@ export function RunMeshCanvas({
     function updateColors() {
       if (!canvas) return;
       const style = getComputedStyle(canvas);
-      const light = canvas.closest('[data-theme]')?.getAttribute('data-theme') === 'light';
+      const activeTheme = canvas.closest('[data-theme]')?.getAttribute('data-theme');
+      const themedAccent = activeTheme === 'light' || activeTheme === 'niuu';
       colorsRef.current = {
-        accent: light ? style.getPropertyValue('--color-brand').trim() : '',
+        accent: themedAccent ? style.getPropertyValue('--color-brand').trim() : '',
         labelPrimary:
           style.getPropertyValue('--color-text-primary').trim() || LABEL_COLOR_PRIMARY_FALLBACK,
         labelMuted:

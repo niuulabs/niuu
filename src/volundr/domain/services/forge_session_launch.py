@@ -8,6 +8,9 @@ it), so no migration is needed::
 
 * ``grants`` accumulate from the session-create request and the launch spec in
   use (``workload_config.forge_mcp.grants`` of the spec). A restart keeps them.
+* An operator can replace ``grants`` on an existing session
+  (``PUT /sessions/{id}/forge-mcp``); a session credential never can. The change
+  takes effect at the next start, which mints a new credential.
 * ``launch_id`` is replaced on every start. The session credential carries it,
   and Forge rejects a credential whose launch is no longer the session's current
   one, which revokes the previous launch's token on restart.
@@ -16,6 +19,7 @@ it), so no migration is needed::
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -39,6 +43,41 @@ class ForgeMcpGrantEscalationError(Exception):
             "A Forge session credential cannot grant what it does not hold: "
             f"{', '.join(self.grants)}{target}"
         )
+
+
+class ForgeMcpGrantChangeRefusedError(Exception):
+    """A scoped credential tried to change a session's Forge MCP grants.
+
+    Only an operator (a person or their PAT) sets grants after creation. A session
+    credential could otherwise widen its own grants or a peer's.
+    """
+
+    def __init__(self, session_id: UUID, token_use: str) -> None:
+        self.session_id = session_id
+        self.token_use = token_use
+        super().__init__(
+            f"A {token_use} credential cannot change Forge MCP grants (session "
+            f"{session_id}); an operator sets them with PUT /sessions/{{id}}/forge-mcp"
+        )
+
+
+@dataclass(frozen=True)
+class ForgeMcpGrants:
+    """Where a session's Forge MCP grants come from, and what its next mint carries.
+
+    ``stored`` is the session row's own (create request, launch specs, operator);
+    ``default`` the node's ``forge_mcp.default_grants``; ``by_role`` the
+    ``forge_mcp.role_grants`` entry for the session's project ``role``.
+    """
+
+    stored: frozenset[ForgeMcpGrant]
+    default: frozenset[ForgeMcpGrant]
+    role: str | None
+    by_role: frozenset[ForgeMcpGrant]
+
+    @property
+    def effective(self) -> frozenset[ForgeMcpGrant]:
+        return self.stored | self.default | self.by_role
 
 
 def _block(config: Mapping[str, Any] | None) -> Mapping[str, Any]:
@@ -86,10 +125,15 @@ def with_forge_mcp(
     """``config`` with its ``forge_mcp`` block replaced by these grants and launch."""
     updated = dict(config or {})
     updated[FORGE_MCP_KEY] = {
-        GRANTS_KEY: [grant.value for grant in normalize_grants(grants)],
+        GRANTS_KEY: stored_grant_values(grants),
         LAUNCH_ID_KEY: launch_id,
     }
     return updated
+
+
+def stored_grant_values(grants: Iterable[ForgeMcpGrant | str]) -> list[str]:
+    """Grants as they are stored on the session row: validated, sorted names."""
+    return [grant.value for grant in normalize_grants(grants)]
 
 
 def without_forge_mcp(config: Mapping[str, Any] | None) -> dict[str, Any]:

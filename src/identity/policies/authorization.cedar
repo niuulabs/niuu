@@ -182,3 +182,26 @@ when { resource.owner_id == principal.user_id && principal.roles.containsAny(["v
 @id("topology-source-read")
 permit(principal, action in [Niuu::Action::"read", Niuu::Action::"list"], resource is Niuu::topology_source)
 when { principal.roles.containsAny(["volundr:developer", "volundr:viewer", "volundr:admin"]) };
+
+// Tenant members read realms. Only the owner or a tenant admin changes one,
+// because a trust grant raises what its resident may do on its own. Residents
+// record capabilities as themselves, so that is a separate action.
+@id("realm-read")
+permit(principal, action in [Niuu::Action::"read", Niuu::Action::"list"], resource is Niuu::realm)
+when { principal.roles.containsAny(["volundr:developer", "volundr:viewer", "volundr:admin"]) };
+
+@id("realm-create")
+permit(principal, action == Niuu::Action::"create", resource is Niuu::realm)
+when { principal.roles.containsAny(["volundr:developer", "volundr:admin"]) };
+
+@id("realm-admin")
+permit(principal, action in [Niuu::Action::"update", Niuu::Action::"delete"], resource is Niuu::realm)
+when { principal.roles.contains("volundr:admin") };
+
+@id("realm-owner")
+permit(principal, action in [Niuu::Action::"update", Niuu::Action::"delete"], resource is Niuu::realm)
+when { resource.owner_id == principal.user_id && principal.roles.contains("volundr:developer") };
+
+@id("realm-record-capability")
+permit(principal, action == Niuu::Action::"record_capability", resource is Niuu::realm)
+when { principal.roles.containsAny(["volundr:developer", "volundr:admin"]) };

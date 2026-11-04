@@ -6,9 +6,9 @@ from uuid import uuid4
 
 import pytest
 
+from niuu.domain.transcript_rebuild import rebuild_turns
 from scripts.forge_corpus import entries, inspect_bundle, promote, replay_fixture, write_viewer
 from scripts.forge_trace import digest, write_json
-from volundr.domain.services.transcript_rebuild import rebuild_turns
 
 
 def bundle_at(path):

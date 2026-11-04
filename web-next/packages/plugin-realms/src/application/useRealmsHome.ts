@@ -1,24 +1,27 @@
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import type { IRavenStream, Ravn } from '@niuulabs/plugin-ravn';
+import { useReviews, useSagas, type ReviewItem as WorkReviewItem } from '@niuulabs/plugin-ting';
 import {
   useRealms,
   useReviewList,
+  useReviewSummary,
   useValkyrieDashboard,
   type EnvironmentSummary,
   type IRealmGovernanceService,
   type RealmSummary,
-  type ReviewItem,
   type ValkyrieResident,
 } from '@niuulabs/plugin-valkyrie';
 import type { IVolundrService } from '@niuulabs/plugin-volundr';
+import { unclaimedResidents } from '../domain/projects';
 import {
   activeSessionCount,
   bindingFromGrants,
   ravnForRealm,
   residentForRealm,
-  reviewsForRealm,
-  sessionsForRealm,
+  waitingOnBoard,
+  workProjectForBoard,
+  workspaceSessions,
 } from '../domain/join';
 import type { RealmBinding } from '../domain/realm';
 
@@ -45,9 +48,24 @@ export interface RealmHomeCard {
   ravn: Ravn | null;
   environment: EnvironmentSummary | null;
   binding: RealmBinding | null;
-  pendingReviews: ReviewItem[];
+  boardName: string | null;
+  pendingReviews: number;
+  waitingTickets: WorkReviewItem[];
   runningSessions: number;
   totalSessions: number;
+}
+
+export interface WaitingTicket {
+  item: WorkReviewItem;
+  card: RealmHomeCard;
+}
+
+export function needsYouCount(card: RealmHomeCard): number {
+  return card.pendingReviews + card.waitingTickets.length;
+}
+
+export function ticketsOf(cards: RealmHomeCard[]): WaitingTicket[] {
+  return cards.flatMap((card) => card.waitingTickets.map((item) => ({ item, card })));
 }
 
 /** Realms that need you first, then the awake ones, then by name. */
@@ -56,7 +74,7 @@ export function orderCards(cards: RealmHomeCard[]): RealmHomeCard[] {
     card.resident?.wakefulness === 'wakeful' ? 0 : card.resident ? 1 : card.ravn ? 2 : 3;
   return [...cards].sort(
     (a, b) =>
-      b.pendingReviews.length - a.pendingReviews.length ||
+      needsYouCount(b) - needsYouCount(a) ||
       rank(a) - rank(b) ||
       a.realm.name.localeCompare(b.realm.name),
   );
@@ -68,6 +86,11 @@ export function useRealmsHome() {
   const dashboard = useValkyrieDashboard();
   const ravens = useRavens();
   const reviews = useReviewList({ status: 'pending' });
+  // The list is one page of the queue; only the summary counts all of it.
+  const reviewSummary = useReviewSummary();
+  const pendingByEnvironment = reviewSummary.data?.pendingByEnvironment ?? {};
+  const sagas = useSagas();
+  const workReviews = useReviews();
   const sessions = useVolundrSessions();
   const governance = useService<IRealmGovernanceService>('valkyrie.realms');
   const grants = useQueries({
@@ -81,17 +104,20 @@ export function useRealmsHome() {
   // per-render array useQueries hands back.
   const cards: RealmHomeCard[] = (realms.data ?? []).map((realm, index) => {
     const resident = residentForRealm(dashboard.data, realm.slug);
-    const ravn = ravnForRealm(ravens.data, realm.slug);
-    const realmSessions = sessionsForRealm(sessions.data, realm.slug);
-    const pending = reviewsForRealm(reviews.data, resident);
+    const ravn = ravnForRealm(ravens.data, realm.slug, realm.id);
+    const binding = bindingFromGrants(grants[index]?.data);
+    const workProject = workProjectForBoard(sagas.data, binding?.trackerBoard);
+    const realmSessions = workspaceSessions(sessions.data, realm.slug, workProject?.id);
     return {
       realm,
       resident,
       ravn,
       environment:
         dashboard.data?.environments.find((entry) => entry.id === resident?.environmentId) ?? null,
-      binding: bindingFromGrants(grants[index]?.data),
-      pendingReviews: pending,
+      binding,
+      boardName: workProject?.name ?? null,
+      pendingReviews: resident ? (pendingByEnvironment[resident.environmentId] ?? 0) : 0,
+      waitingTickets: waitingOnBoard(workReviews.data?.items, workProject?.id),
       runningSessions: activeSessionCount(realmSessions),
       totalSessions: realmSessions.length,
     };
@@ -105,6 +131,11 @@ export function useRealmsHome() {
   return {
     cards,
     pendingReviews: reviews.data ?? [],
+    pendingTotal: reviewSummary.data?.pendingTotal ?? 0,
+    pendingByEnvironment,
+    waitingTickets: ticketsOf(cards),
+    needsYouError: reviews.error ?? reviewSummary.error ?? workReviews.error ?? sagas.error ?? null,
+    unclaimedResidents: unclaimedResidents(dashboard.data, realms.data),
     residentsOnline,
     sessionsRunning,
     isLoading: realms.isLoading,

@@ -102,6 +102,29 @@ class TestKubernetesResidentDiscoveryAdapter:
         assert resident.owner_id == "user-a"
         assert resident.tenant_id == "tenant-a"
 
+    async def test_a_named_cluster_places_each_resident_on_its_deployment(self) -> None:
+        adapter = KubernetesResidentDiscoveryAdapter(
+            namespace="volundr",
+            cluster="valhalla",
+            apps_api=SimpleNamespace(
+                list_namespaced_deployment=lambda **kwargs: SimpleNamespace(items=[_deployment()])
+            ),
+        )
+
+        (resident,) = await adapter.list_residents()
+
+        assert resident.placement is not None
+        assert resident.placement.model_dump() == {
+            "cluster": "valhalla",
+            "namespace": "volundr",
+            "workload": "resident-muninn",
+        }
+
+    async def test_without_a_cluster_a_resident_has_no_placement(self) -> None:
+        (resident,) = await _adapter_for(_deployment()).list_residents()
+
+        assert resident.placement is None
+
     async def test_defaults_when_annotations_absent(self) -> None:
         residents = await _adapter_for(_deployment()).list_residents()
 

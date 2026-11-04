@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -23,8 +23,10 @@ from niuu.domain.services.forge_session_token import (
     new_launch_id,
 )
 from niuu.domain.services.token_scope import FORGE_SESSION_TOKEN_USE
+from niuu.domain.session_description import SessionDescriptionPatch
 from niuu.forge_mcp.credentials import grants_from_scopes, normalize_grants
 from niuu.forge_mcp.models import ForgeMcpGrant
+from sleipnir.domain.catalog import volundr_session_forge_mcp_grants_changed
 from volundr.domain.execution_catalog import ExecutionCatalogError, ExecutionSelectionError
 from volundr.domain.models import (
     CleanupTarget,
@@ -42,6 +44,7 @@ from volundr.domain.models import (
     SessionSpec,
     SessionStatus,
     TenantRole,
+    _merge_pod_specs,
 )
 from volundr.domain.ports import (
     AuthorizationPort,
@@ -62,23 +65,32 @@ from volundr.domain.ports import (
     SessionSpanRepository,
     StoragePort,
 )
+from volundr.domain.presented_files import PresentedFileStore
 from volundr.domain.projects import SessionCoordination
 from volundr.domain.services.forge_session_launch import (
+    ForgeMcpGrantChangeRefusedError,
     ForgeMcpGrantEscalationError,
+    ForgeMcpGrants,
     grants_in,
     launch_id_of,
     launch_spec_grants,
+    stored_grant_values,
     with_forge_mcp,
     without_forge_mcp,
 )
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
+from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjectionPort
 
 if TYPE_CHECKING:
     from niuu.ports.user_integration import UserIntegrationPort
+    from sleipnir.ports.audit import AuditRepository
     from volundr.adapters.outbound.git_registry import GitProviderRegistry
     from volundr.domain.notification_ports import NotificationRecorder
 
 logger = logging.getLogger(__name__)
+
+#: The window ``worked_seconds_24h`` covers; its length is the field's definition.
+WORKED_WINDOW = timedelta(hours=24)
 
 
 def _sanitize_log(value: object) -> str:
@@ -176,9 +188,21 @@ class SessionService:
         notification_recorder: NotificationRecorder | None = None,
         forge_session_tokens: ForgeSessionTokenService | None = None,
         forge_mcp_default_grants: Iterable[ForgeMcpGrant | str] = (),
+        forge_mcp_role_grants: Mapping[str, Iterable[ForgeMcpGrant | str]] | None = None,
+        audit_repository: AuditRepository | None = None,
         user_integration: UserIntegrationPort | None = None,
+        presented_file_store: PresentedFileStore | None = None,
+        forge_session_projection: ExecutionCredentialProjectionPort | None = None,
     ):
+        if forge_session_projection is not None and not forge_session_projection.supports(
+            runtime_backend
+        ):
+            raise ValueError(
+                "forge_mcp.session_tokens.projection_adapter does not support runtime "
+                f"backend {runtime_backend!r}; configure a projection for that backend"
+            )
         self._repository = repository
+        self._presented_file_store = presented_file_store
         self._pod_manager = pod_manager
         self._git_registry = git_registry
         self._user_integration = user_integration
@@ -200,7 +224,13 @@ class SessionService:
         self._span_repository = span_repository
         self._notification_recorder = notification_recorder
         self._forge_session_tokens = forge_session_tokens
+        self._forge_session_projection = forge_session_projection
         self._forge_mcp_default_grants = frozenset(normalize_grants(forge_mcp_default_grants))
+        self._forge_mcp_role_grants = {
+            role: frozenset(normalize_grants(grants))
+            for role, grants in (forge_mcp_role_grants or {}).items()
+        }
+        self._audit_repository = audit_repository
         self._runtime_backend = runtime_backend
         self._execution_resolver = execution_resolver
         normalized_public_origin = public_origin.rstrip("/")
@@ -227,6 +257,7 @@ class SessionService:
         coordination: SessionCoordination | None = None,
         session_id: UUID | None = None,
         project_context: str = "",
+        description: SessionDescriptionPatch | None = None,
     ) -> Session:
         """Create a new session.
 
@@ -242,6 +273,7 @@ class SessionService:
                 and tenant_id on the session.
             origin: Where the session originated (volundr, claude, codex).
             external_session_id: Native CLI session id for imported sessions.
+            description: Optional seeded short/long description (already normalized).
 
         Returns:
             Created session.
@@ -303,6 +335,10 @@ class SessionService:
             external_session_id=external_session_id,
             workload_config={"project_context": project_context} if project_context else {},
         )
+        if description is not None:
+            seeded = {k: v for k, v in description.changes().items() if v is not None}
+            stamps = {f"{name}_updated_at": session.created_at for name in seeded}
+            session = session.model_copy(update={**seeded, **stamps})
         await self._check_access(session, principal, "create")
         created = await self._repository.create(session)
 
@@ -426,6 +462,14 @@ class SessionService:
                 timestamp=datetime.now(UTC),
             )
         )
+
+    async def notify_usage_changed(self, session_id: UUID) -> None:
+        """Publish the persisted usage summary through the existing session stream."""
+        if self._broadcaster is None:
+            return
+        session = await self._repository.get(session_id)
+        if session is not None:
+            await self._broadcaster.publish_session_updated(session)
 
     async def update_activity(
         self,
@@ -959,6 +1003,28 @@ class SessionService:
 
         return result
 
+    async def update_description(
+        self,
+        session_id: UUID,
+        patch: SessionDescriptionPatch,
+        principal: Principal | None = None,
+    ) -> Session:
+        """Write the sent description keys; publish only when a stored value changed."""
+        session = await self._repository.get(session_id)
+        if session is None:
+            raise SessionNotFoundError(session_id)
+        await self._check_access(session, principal, "update")
+        changes = patch.changes()
+        if not changes:
+            return session
+        result = await self._repository.update_description(session_id, changes, datetime.now(UTC))
+        if result is None:
+            raise SessionNotFoundError(session_id)
+        changed = any(getattr(result, name) != getattr(session, name) for name in changes)
+        if changed and self._broadcaster is not None:
+            await self._broadcaster.publish_session_updated(result)
+        return result
+
     async def update_coordination(
         self,
         session: Session,
@@ -1023,6 +1089,7 @@ class SessionService:
 
         # Run optional resource cleanup after session record is gone
         if deleted:
+            await self._cleanup_presented_files(session_id)
             if self._span_repository is not None:
                 await self._span_repository.delete_by_session(session_id)
             await self._run_targeted_cleanup(session_id, targets)
@@ -1054,6 +1121,24 @@ class SessionService:
 
         if CleanupTarget.CHRONICLES in targets:
             await self._cleanup_chronicles(session_id)
+
+    async def _cleanup_presented_files(self, session_id: UUID) -> None:
+        """Drop the session's durable presented files (F2) with the session."""
+        if self._presented_file_store is None:
+            return
+        try:
+            removed = await self._presented_file_store.delete_session(session_id)
+        except Exception as e:
+            logger.warning(
+                "Failed to remove presented files for session %s: %s",
+                _sanitize_log(session_id),
+                _sanitize_log(e),
+            )
+            return
+        if removed:
+            logger.info(
+                "Removed %d presented files for session %s", removed, _sanitize_log(session_id)
+            )
 
     async def _cleanup_workspace_storage(self, session_id: UUID) -> None:
         if self._storage is None:
@@ -1261,10 +1346,10 @@ class SessionService:
                 "workload_config": workload_config or {},
             }
         )
-        await self._repository.update(starting)
+        stored = await self._repository.update(starting)
 
         if self._broadcaster is not None:
-            await self._broadcaster.publish_session_updated(starting)
+            await self._broadcaster.publish_session_updated(stored)
 
         # Launch provisioning in background — don't block the HTTP response
         task = asyncio.create_task(
@@ -1386,10 +1471,10 @@ class SessionService:
             if cleanup_error is not None:
                 error = f"{error}; cleanup after provisioning failure also failed: {cleanup_error}"
             failed = session.with_status(SessionStatus.FAILED).with_error(error)
-            await self._repository.update(failed)
+            stored = await self._repository.update(failed)
 
             if self._broadcaster is not None:
-                await self._broadcaster.publish_session_updated(failed)
+                await self._broadcaster.publish_session_updated(stored)
 
     async def _start_with_pipeline(
         self,
@@ -1495,7 +1580,7 @@ class SessionService:
             contributions.append(contribution)
 
         spec = SessionSpec.merge(contributions)
-        spec.forge_session = self._mint_forge_session(session)
+        spec.forge_session = await self._deliver_forge_session(session, spec)
         if session.coordination and (
             project_context := session.workload_config.get("project_context")
         ):
@@ -1515,16 +1600,21 @@ class SessionService:
         requested: Iterable[ForgeMcpGrant | str],
         *,
         launch_spec: str | None,
+        role: str | None = None,
     ) -> None:
         """Refuse a new session whose grants exceed a session-credential caller's own.
 
+        The new session's project ``role`` counts: a session credential cannot file
+        a peer under a role whose ``forge_mcp.role_grants`` it does not hold itself.
         Raises :class:`ForgeMcpGrantEscalationError`. Callers that are not session
         credentials (humans, PATs) may grant anything.
         """
         if principal is None or principal.token_use != FORGE_SESSION_TOKEN_USE:
             return
-        wanted = frozenset(normalize_grants(requested)) | launch_spec_grants(
-            self._launch_spec_for(launch_spec)
+        wanted = (
+            frozenset(normalize_grants(requested))
+            | launch_spec_grants(self._launch_spec_for(launch_spec))
+            | self._role_grants(role)
         )
         beyond = wanted - grants_from_scopes(principal.scopes)
         if beyond:
@@ -1557,6 +1647,105 @@ class SessionService:
             launch_id=new_launch_id(),
         )
 
+    async def worked_seconds_24h(self, session_ids: list[UUID]) -> dict[UUID, int] | None:
+        """Seconds Forge worked on each session in the last 24 hours (LEX-1465).
+
+        ``None`` when this Forge records no turn spans (no span repository), so the
+        figure is unknown rather than zero. Sessions without work in the window get 0.
+        """
+        if self._span_repository is None:
+            return None
+        until = datetime.now(UTC)
+        worked = await self._span_repository.worked_seconds(
+            session_ids, since=until - WORKED_WINDOW, until=until
+        )
+        return {session_id: worked.get(session_id, 0) for session_id in session_ids}
+
+    def _role_grants(self, role: str | None) -> frozenset[ForgeMcpGrant]:
+        if role is None:
+            return frozenset()
+        return self._forge_mcp_role_grants.get(role, frozenset())
+
+    def forge_mcp_grants(self, session: Session) -> ForgeMcpGrants:
+        """The grants this session's next credential carries, by source."""
+        role = session.coordination.role if session.coordination is not None else None
+        return ForgeMcpGrants(
+            stored=grants_in(session.workload_config, source=f"session {session.id}"),
+            default=self._forge_mcp_default_grants,
+            role=role,
+            by_role=self._role_grants(role),
+        )
+
+    async def get_forge_mcp_grants(
+        self, session_id: UUID, principal: Principal | None
+    ) -> tuple[Session, ForgeMcpGrants]:
+        """An operator's view of a session's grants (refused to scoped credentials)."""
+        session = await self._operator_forge_mcp_session(session_id, principal, "read")
+        return session, self.forge_mcp_grants(session)
+
+    async def set_forge_mcp_grants(
+        self,
+        session_id: UUID,
+        grants: Iterable[ForgeMcpGrant | str],
+        principal: Principal | None,
+    ) -> tuple[Session, ForgeMcpGrants]:
+        """Replace the session's stored grants; they take effect at its next start.
+
+        Operator only: any scoped credential (a session's own, a build token) is
+        refused, so a session can never widen its own grants or a peer's. Every
+        change is appended to the audit log, and a failed audit write raises.
+        Grants a launch spec carries are added back at the next start, and the
+        node default and role grants apply regardless; this sets only the row's.
+        """
+        if self._audit_repository is None:
+            raise RuntimeError(
+                "Changing Forge MCP grants needs the audit log; this SessionService "
+                "was built without an audit repository"
+            )
+        session = await self._operator_forge_mcp_session(session_id, principal, "update")
+        previous = stored_grant_values(
+            grants_in(session.workload_config, source=f"session {session.id}")
+        )
+        values = stored_grant_values(grants)
+        updated = await self._repository.update_forge_mcp_grants(
+            session_id, values, datetime.now(UTC)
+        )
+        if updated is None:
+            raise SessionNotFoundError(session_id)
+        await self._audit_repository.append(
+            volundr_session_forge_mcp_grants_changed(
+                session_id=str(session_id),
+                owner_id=session.owner_id or "",
+                actor_user_id=principal.user_id if principal is not None else "",
+                actor_token_use=principal.token_use if principal is not None else "",
+                previous_grants=previous,
+                grants=values,
+                source="volundr",
+                tenant_id=session.tenant_id,
+            )
+        )
+        logger.info(
+            "Forge MCP grants for session %s set to %s (were %s) by %s; next start applies",
+            session_id,
+            values,
+            previous,
+            _sanitize_log(principal.user_id if principal is not None else "anonymous"),
+        )
+        if self._broadcaster is not None:
+            await self._broadcaster.publish_session_updated(updated)
+        return updated, self.forge_mcp_grants(updated)
+
+    async def _operator_forge_mcp_session(
+        self, session_id: UUID, principal: Principal | None, action: str
+    ) -> Session:
+        if principal is not None and principal.token_use:
+            raise ForgeMcpGrantChangeRefusedError(session_id, principal.token_use)
+        session = await self._repository.get(session_id)
+        if session is None:
+            raise SessionNotFoundError(session_id)
+        await self._check_access(session, principal, action)
+        return session
+
     def _launch_spec_for(self, name: str | None):
         """The launch spec a start applies (as the launch-spec contributor resolves it)."""
         if self._launch_spec_provider is None:
@@ -1567,11 +1756,44 @@ class SessionService:
                 return spec
         return self._launch_spec_provider.get_default("session")
 
+    @property
+    def delivers_forge_session(self) -> bool:
+        """Whether a launched broker receives its session credential: the pod manager
+        hands it over itself, or a projection mounts it into the session pod."""
+        if self._forge_session_tokens is None:
+            return False
+        if getattr(self._pod_manager, "delivers_forge_session_token", False):
+            return True
+        return self._forge_session_projection is not None
+
+    async def _deliver_forge_session(
+        self, session: Session, spec: SessionSpec
+    ) -> IssuedForgeSessionToken | None:
+        """Mint this launch's credential and hand it to the broker.
+
+        A pod manager that delivers it itself gets it on the spec (never in values).
+        Otherwise the projection publishes it (a Kubernetes Secret) and the spec only
+        names the mounted file, so the token never enters values or a manifest.
+        """
+        credential = self._mint_forge_session(session)
+        if credential is None:
+            return None
+        if getattr(self._pod_manager, "delivers_forge_session_token", False):
+            return credential
+        projected = await self._forge_session_projection.project(
+            session_id=session.id,
+            token=credential.token,
+            runtime_backend=self._runtime_backend,
+        )
+        spec.pod_spec = _merge_pod_specs(spec.pod_spec, projected.pod_spec)
+        forge_mcp = spec.values.setdefault("forgeMcp", {})
+        forge_mcp["tokenFile"] = projected.token_file
+        forge_mcp["grants"] = sorted(grant.value for grant in credential.grants)
+        return None
+
     def _mint_forge_session(self, session: Session) -> IssuedForgeSessionToken | None:
         """Mint this launch's scoped credential, when a broker can receive one."""
-        if self._forge_session_tokens is None:
-            return None
-        if not getattr(self._pod_manager, "delivers_forge_session_token", False):
+        if not self.delivers_forge_session:
             return None
         launch_id = launch_id_of(session.workload_config)
         if launch_id is None:
@@ -1582,10 +1804,7 @@ class SessionService:
                 session.id,
             )
             return None
-        grants = (
-            grants_in(session.workload_config, source=f"session {session.id}")
-            | self._forge_mcp_default_grants
-        )
+        grants = self.forge_mcp_grants(session).effective
         return self._forge_session_tokens.mint(
             session_id=session.id,
             session_name=session.name,
@@ -1636,8 +1855,12 @@ class SessionService:
     ) -> None:
         """Run contributor cleanup in reverse config order.
 
-        Failures are logged but don't block other contributors.
+        Contributor failures are logged but don't block other contributors. The
+        projected session credential is removed first, and a failure to remove it
+        raises.
         """
+        if self._forge_session_projection is not None:
+            await self._forge_session_projection.remove(session.id)
         if self._communication_route_repository is not None:
             try:
                 await self._communication_route_repository.deactivate_routes_for_session(session.id)
@@ -1705,9 +1928,9 @@ class SessionService:
         status_detail = await self._pod_manager.status_detail(current)
         msg = status_detail or "Provisioning failed: infrastructure reported failure"
         failed = current.with_status(SessionStatus.FAILED).with_error(msg)
-        await self._repository.update(failed)
+        stored = await self._repository.update(failed)
         if self._broadcaster is not None:
-            await self._broadcaster.publish_session_updated(failed)
+            await self._broadcaster.publish_session_updated(stored)
         await self._emit_session_failed(failed, msg)
 
     def _cancel_provisioning_task(self, session_id: UUID) -> None:
@@ -1824,10 +2047,10 @@ class SessionService:
         self._cancel_provisioning_task(session_id)
 
         stopping = session.with_status(SessionStatus.STOPPING)
-        await self._repository.update(stopping)
+        stored = await self._repository.update(stopping)
 
         if self._broadcaster is not None:
-            await self._broadcaster.publish_session_updated(stopping)
+            await self._broadcaster.publish_session_updated(stored)
 
         try:
             cleanup_context = None
@@ -1866,10 +2089,10 @@ class SessionService:
             return final
         except Exception as e:
             failed = stopping.with_status(SessionStatus.FAILED).with_error(str(e))
-            await self._repository.update(failed)
+            stored = await self._repository.update(failed)
 
             if self._broadcaster is not None:
-                await self._broadcaster.publish_session_updated(failed)
+                await self._broadcaster.publish_session_updated(stored)
 
             raise
 
@@ -2099,7 +2322,7 @@ class SessionService:
                     reconciled += 1
                 continue
 
-            actual_status = await self._pod_manager.status(session)
+            actual_status = _booting_status(session, await self._pod_manager.status(session))
 
             if session.status in {
                 SessionStatus.STOPPING,
@@ -2171,7 +2394,7 @@ class SessionService:
         if session.status not in reconcilable_statuses or self._spawn_in_flight(session):
             return session
 
-        actual_status = await self._pod_manager.status(session)
+        actual_status = _booting_status(session, await self._pod_manager.status(session))
         status_detail = await self._pod_manager.status_detail(session)
         if actual_status == session.status:
             if (
@@ -2205,6 +2428,18 @@ class SessionService:
         untouched (no false reap).
         """
         return await self.reconcile_session_if_active(session_id)
+
+
+def _booting_status(session: Session, actual_status: SessionStatus) -> SessionStatus:
+    """Keep a provisioning row provisioning while its runtime is still coming up.
+
+    Pod managers report a runtime that is not ready yet as STARTING. Writing that
+    back moves the row away from PROVISIONING, which ``_poll_readiness`` requires
+    to record the verdict, so the session would only reach RUNNING on a later read.
+    """
+    if session.status == SessionStatus.PROVISIONING and actual_status == SessionStatus.STARTING:
+        return SessionStatus.PROVISIONING
+    return actual_status
 
 
 def _communication_route_id(

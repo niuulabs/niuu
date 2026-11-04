@@ -8,11 +8,15 @@ tests can exercise the domain without a database.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+from niuu.domain.notifications import NotificationImageRef
 from volundr.domain.notification_ports import (
     NotificationDeliveryRepository,
+    NotificationImageRepository,
+    NotificationImageScheduler,
     NotificationRepository,
     NotificationRuleRepository,
 )
@@ -22,11 +26,17 @@ from volundr.domain.notifications import (
     Notification,
     NotificationCandidate,
     NotificationDelivery,
+    NotificationImage,
+    NotificationImageContent,
+    NotificationImageState,
+    NotificationImageVariant,
     NotificationPage,
     NotificationQuery,
     NotificationReadStateConflictError,
     NotificationRule,
     NotificationScope,
+    PendingNotificationImage,
+    ProcessedNotificationImage,
     ReadWatermark,
     rules_matching,
 )
@@ -36,10 +46,45 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-class InMemoryNotificationStore:
-    """Shared state; ``feed``, ``rule_repo`` and ``outbox`` are the three ports.
+@dataclass
+class InMemoryImageRow:
+    """One ``forge_notification_images`` row."""
 
-    ``clock`` stands in for the database's ``now()`` so tests can move time.
+    notification_id: UUID
+    session_id: UUID | None
+    ref: NotificationImageRef
+    created_at: datetime
+    state: NotificationImageState = NotificationImageState.PENDING
+    attempts: int = 0
+    lease_until: datetime | None = None
+    stored: ProcessedNotificationImage | None = None
+    error: str | None = None
+
+    def view(self) -> NotificationImage:
+        stored = self.stored
+        return NotificationImage(
+            state=self.state,
+            alt=self.ref.alt,
+            mime=stored.mime if stored else None,
+            width=stored.width if stored else None,
+            height=stored.height if stored else None,
+            error=self.error,
+        )
+
+
+class RecordingImageScheduler(NotificationImageScheduler):
+    def __init__(self) -> None:
+        self.wakes = 0
+
+    def wake(self) -> None:
+        self.wakes += 1
+
+
+class InMemoryNotificationStore:
+    """Shared state; ``feed``, ``rule_repo``, ``outbox`` and ``images`` are the ports.
+
+    ``clock`` stands in for the database's ``now()`` so tests can move time;
+    ``image_scheduler`` records how often the projection asked for image copies.
     """
 
     def __init__(self, clock: Callable[[], datetime] = _utc_now) -> None:
@@ -49,11 +94,24 @@ class InMemoryNotificationStore:
         self.deliveries: dict[UUID, NotificationDelivery] = {}
         self.watermarks: dict[str, ReadWatermark] = {}
         self.reads: set[tuple[str, UUID]] = set()
+        self.image_rows: dict[UUID, InMemoryImageRow] = {}
         self.project_calls = 0
         self.seq = 0
         self.feed = InMemoryNotificationRepository(self)
         self.rule_repo = InMemoryNotificationRuleRepository(self)
         self.outbox = InMemoryNotificationDeliveryRepository(self)
+        self.images = InMemoryNotificationImageRepository(self)
+        self.image_scheduler = RecordingImageScheduler()
+
+    def image_of(self, notification_id: UUID) -> NotificationImage | None:
+        row = self.image_rows.get(notification_id)
+        return row.view() if row is not None else None
+
+    def with_image(self, notification: Notification) -> Notification:
+        image = self.image_of(notification.id)
+        if image is None:
+            return notification
+        return notification.model_copy(update={"image": image})
 
 
 class InMemoryNotificationRepository(NotificationRepository):
@@ -69,13 +127,20 @@ class InMemoryNotificationRepository(NotificationRepository):
                 continue
             store.seq += 1
             notification = Notification(
-                **candidate.model_dump(),
+                **candidate.model_dump(exclude={"image"}),
                 id=candidate.id,
                 seq=store.seq,
                 created_at=store.clock(),
             )
             store.notifications[candidate.dedupe_key] = notification
-            created.append(notification)
+            if candidate.image is not None:
+                store.image_rows[notification.id] = InMemoryImageRow(
+                    notification_id=notification.id,
+                    session_id=notification.session_id,
+                    ref=candidate.image,
+                    created_at=store.clock(),
+                )
+            created.append(store.with_image(notification))
         enabled = [rule for rule in store.rules.values() if rule.enabled]
         now = store.clock()
         for notification in created:
@@ -96,11 +161,16 @@ class InMemoryNotificationRepository(NotificationRepository):
 
     def _visible(self, scope: NotificationScope) -> list[Notification]:
         return [
-            n for n in self.store.notifications.values() if scope.allows(n.owner_id, n.tenant_id)
+            self.store.with_image(n)
+            for n in self.store.notifications.values()
+            if scope.allows(n.owner_id, n.tenant_id)
         ]
 
     async def get(self, notification_id: UUID) -> Notification | None:
-        return next((n for n in self.store.notifications.values() if n.id == notification_id), None)
+        found = next(
+            (n for n in self.store.notifications.values() if n.id == notification_id), None
+        )
+        return self.store.with_image(found) if found is not None else None
 
     async def list_feed(
         self, scope: NotificationScope, query: NotificationQuery, *, read_through_seq: int
@@ -120,6 +190,7 @@ class InMemoryNotificationRepository(NotificationRepository):
                 or (n.seq > read_through_seq and (scope.user_id, n.id) not in self.store.reads)
                 == query.unread
             )
+            and (query.unresolved is None or (n.resolved_at is None) == query.unresolved)
             and (query.before is None or n.seq < query.before)
             and (query.after is None or n.seq > query.after)
         ]
@@ -132,7 +203,7 @@ class InMemoryNotificationRepository(NotificationRepository):
         self, session_id: UUID, *, after: int, limit: int
     ) -> list[Notification]:
         items = [
-            n
+            self.store.with_image(n)
             for n in self.store.notifications.values()
             if n.session_id == session_id and n.seq > after
         ]
@@ -167,6 +238,61 @@ class InMemoryNotificationRepository(NotificationRepository):
 
     async def read_ids(self, user_id: str, notification_ids: list[UUID]) -> set[UUID]:
         return {key for key in notification_ids if (user_id, key) in self.store.reads}
+
+    def _resolve_rows(
+        self, rows: list[Notification], *, resolved_at, resolved_by, resolution
+    ) -> list[Notification]:
+        resolved = []
+        for row in rows:
+            updated = row.model_copy(
+                update={
+                    "resolved_at": resolved_at,
+                    "resolved_by_notification_id": resolved_by,
+                    "resolution": resolution,
+                }
+            )
+            self.store.notifications[row.dedupe_key] = updated
+            resolved.append(self.store.with_image(updated))
+        return sorted(resolved, key=lambda n: n.seq)
+
+    async def resolve(
+        self, owner_id, notification_ids, *, resolved_at, resolved_by, resolution
+    ) -> list[Notification]:
+        rows = [
+            n
+            for n in self.store.notifications.values()
+            if n.owner_id == owner_id and n.id in notification_ids and n.resolved_at is None
+        ]
+        return self._resolve_rows(
+            rows, resolved_at=resolved_at, resolved_by=resolved_by, resolution=resolution
+        )
+
+    async def latest_milestone_seqs(self, session_ids) -> dict:
+        latest: dict = {}
+        for n in self.store.notifications.values():
+            if n.kind.value == "milestone" and n.session_id in session_ids:
+                latest[n.session_id] = max(latest.get(n.session_id, 0), n.seq)
+        return latest
+
+    async def resolve_correlated(
+        self, owner_id, correlation_id, *, before_seq, problems_only, resolved_at, resolved_by
+    ) -> list[Notification]:
+        rows = [
+            n
+            for n in self.store.notifications.values()
+            if n.owner_id == owner_id
+            and n.correlation_id == correlation_id
+            and n.seq < before_seq
+            and n.resolved_at is None
+            and (
+                not problems_only
+                or n.kind.value in ("attention", "error")
+                or n.severity.value == "critical"
+            )
+        ]
+        return self._resolve_rows(
+            rows, resolved_at=resolved_at, resolved_by=resolved_by, resolution=None
+        )
 
     async def mark_read(self, user_id: str, notification_id: UUID) -> None:
         if (user_id, notification_id) in self.store.reads:
@@ -310,3 +436,81 @@ class InMemoryNotificationDeliveryRepository(NotificationDeliveryRepository):
             and d.delivered_at is not None
             and d.delivered_at >= since
         )
+
+
+class InMemoryNotificationImageRepository(NotificationImageRepository):
+    """Image copies with the Postgres claim semantics: leases and fenced settles."""
+
+    def __init__(self, store: InMemoryNotificationStore) -> None:
+        self.store = store
+        self.rows = store.image_rows
+
+    async def claim_pending(
+        self, *, limit: int, lease_seconds: float
+    ) -> list[PendingNotificationImage]:
+        now = self.store.clock()
+        due = sorted(
+            (
+                row
+                for row in self.rows.values()
+                if row.state is NotificationImageState.PENDING
+                and (row.lease_until is None or row.lease_until <= now)
+            ),
+            key=lambda row: row.created_at,
+        )[:limit]
+        claimed = []
+        for row in due:
+            row.attempts += 1
+            row.lease_until = now + timedelta(seconds=lease_seconds)
+            claimed.append(
+                PendingNotificationImage(
+                    notification_id=row.notification_id,
+                    session_id=row.session_id,
+                    ref=row.ref,
+                    attempts=row.attempts,
+                )
+            )
+        return claimed
+
+    def _claimed(self, pending: PendingNotificationImage) -> InMemoryImageRow | None:
+        row = self.rows.get(pending.notification_id)
+        if (
+            row is None
+            or row.attempts != pending.attempts
+            or row.state is not NotificationImageState.PENDING
+        ):
+            return None
+        return row
+
+    async def mark_ready(
+        self, pending: PendingNotificationImage, image: ProcessedNotificationImage
+    ) -> bool:
+        row = self._claimed(pending)
+        if row is None:
+            return False
+        row.state, row.stored, row.error, row.lease_until = (
+            NotificationImageState.READY,
+            image,
+            None,
+            None,
+        )
+        return True
+
+    async def mark_failed(self, pending: PendingNotificationImage, *, error: str) -> bool:
+        row = self._claimed(pending)
+        if row is None:
+            return False
+        row.state, row.error, row.lease_until = NotificationImageState.FAILED, error, None
+        return True
+
+    async def get_content(
+        self, notification_id: UUID, variant: NotificationImageVariant
+    ) -> NotificationImageContent | None:
+        row = self.rows.get(notification_id)
+        if row is None or row.stored is None or row.state is not NotificationImageState.READY:
+            return None
+        if variant is NotificationImageVariant.THUMB:
+            return NotificationImageContent(
+                mime=row.stored.thumbnail_mime, content=row.stored.thumbnail
+            )
+        return NotificationImageContent(mime=row.stored.mime, content=row.stored.content)

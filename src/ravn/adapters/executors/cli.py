@@ -9,7 +9,7 @@ import logging
 import os
 import sys
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +20,7 @@ from niuu.adapters.cli import CliTurnRunner
 from niuu.observability import get_observability
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class
+from ravn.adapters.executors.cli_threads import CliThreadStore
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.events import RavnEvent
 from ravn.domain.harness import (
@@ -67,6 +68,12 @@ _RAVN_TOOLS_BOOTSTRAP_ENV = (
     "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE",
     "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL",
 )
+# The platform bearer, when the runtime supplies one by env (an OpenShell flock
+# persona exports the token its sandbox mediates). Passed through by name, never
+# by value: a value would land in the Codex command line, and off-cluster this
+# is a PAT. Without it the server's platform tools fell back to the projected
+# token file, which an OpenShell sandbox does not have.
+_RAVN_TOOLS_SECRET_ENV = ("RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN",)
 
 
 @dataclass(frozen=True)
@@ -75,6 +82,7 @@ class _TransportBinding:
 
     cls: type[CLITransport]
     supports_system_prompt: bool
+    supports_resume: bool = False
 
 
 def _accepts_resume_session_id(cls: type[CLITransport]) -> bool:
@@ -287,6 +295,8 @@ class CliTransportAgent(ExecutionAgentPort):
         persona: str,
         preloaded_tools: Iterable[object] = (),
         session_join_manager: Any | None = None,
+        thread_store: CliThreadStore | None = None,
+        thread_key: Callable[[], str] | None = None,
     ) -> None:
         self._transport_binding = transport_binding
         self._transport_kwargs = dict(transport_kwargs)
@@ -306,6 +316,10 @@ class CliTransportAgent(ExecutionAgentPort):
             getattr(tool, "name", f"tool_{idx}"): tool for idx, tool in enumerate(preloaded_tools)
         }
         self._session_join_manager = session_join_manager
+        self._thread_store = thread_store
+        self._thread_key = thread_key
+        self._held_thread_key = ""
+        self._resumed_thread = ""
         self._interrupt_reason: InterruptReason | None = None
         self._current_tool_names: dict[str, str] = {}
         self._tool_started_at: dict[str, float] = {}
@@ -321,7 +335,10 @@ class CliTransportAgent(ExecutionAgentPort):
         self._turn_result_payload: dict[str, Any] = {}
         # Construction is configuration-only. Read the capability declaration
         # now so callers can inspect the canonical profile before ``start``.
-        self._harness_capabilities = self._create_transport().capabilities
+        # Probe without claiming a workflow thread: the real transport claims it.
+        self._harness_capabilities = self._construct_transport(
+            dict(self._transport_kwargs)
+        ).capabilities
         self._harness_turn_active = False
         self._harness_closed = False
 
@@ -433,8 +450,12 @@ class CliTransportAgent(ExecutionAgentPort):
         self._turn_runner = None
         self._started = False
         self._harness_closed = True
-        if transport is not None:
-            await transport.stop()
+        if transport is None:
+            return
+        if self._thread_store is not None and self._held_thread_key:
+            self._thread_store.release(self._held_thread_key, transport.session_id or "")
+            self._held_thread_key = ""
+        await transport.stop()
 
     async def run_turn(self, user_input: str | HarnessTurnInput) -> TurnResult | HarnessTurnResult:
         """Run a legacy string turn or a canonical provider-neutral turn."""
@@ -797,7 +818,16 @@ class CliTransportAgent(ExecutionAgentPort):
         self._turn_runner = CliTurnRunner(self._transport)
 
         if not self._started:
-            await self._transport.start()
+            try:
+                await self._transport.start()
+            except Exception as exc:
+                if not self._resumed_thread:
+                    raise
+                raise RuntimeError(
+                    f"Persona {self._persona!r} could not resume workflow thread "
+                    f"{self._resumed_thread}; set resume_workflow_threads: false on its "
+                    "executor to run each step on a new thread"
+                ) from exc
             self._started = True
 
     async def _restart_for_provider_session(self, provider_session_id: str) -> None:
@@ -822,15 +852,36 @@ class CliTransportAgent(ExecutionAgentPort):
         self._turn_runner = CliTurnRunner(resumed_transport)
         self._started = True
 
+    def _claim_thread(self) -> str:
+        """Take this step's workflow thread, returning the one to resume ("" for none)."""
+        key = self._thread_key() if self._thread_key is not None else ""
+        if self._thread_store is None or not key:
+            return ""
+        thread = self._thread_store.claim(key)
+        if thread is None:
+            logger.info("cli: step of %s runs on its own thread; another step holds it", key)
+            return ""
+        self._held_thread_key = key
+        return thread
+
     def _create_transport(self, *, resume_session_id: str | None = None) -> CLITransport:
         kwargs = dict(self._transport_kwargs)
-        sig = inspect.signature(self._transport_binding.cls)
         if resume_session_id is not None:
+            # An explicit provider resume replaces the transport but keeps the
+            # workflow thread this step already holds; close() releases it.
             if not _accepts_resume_session_id(self._transport_binding.cls):
                 raise HarnessContractError(
                     "CLI transport cannot accept a provider session resume ID"
                 )
             kwargs["resume_session_id"] = resume_session_id
+        else:
+            self._resumed_thread = self._claim_thread()
+            if self._resumed_thread:
+                kwargs["resume_session_id"] = self._resumed_thread
+        return self._construct_transport(kwargs)
+
+    def _construct_transport(self, kwargs: dict[str, Any]) -> CLITransport:
+        sig = inspect.signature(self._transport_binding.cls)
         filtered = {key: value for key, value in kwargs.items() if key in sig.parameters}
         return self._transport_binding.cls(**filtered)
 
@@ -1147,6 +1198,7 @@ class CliTransportExecutor(ExecutorPort, HarnessExecutorPort):
         model_gateway: bool = False,
         model_gateway_url: str = "",
         model_gateway_token: str = "",
+        resume_workflow_threads: bool = True,
     ) -> None:
         self._transport_adapter = transport_adapter
         self._transport_kwargs = dict(transport_kwargs or {})
@@ -1155,6 +1207,8 @@ class CliTransportExecutor(ExecutorPort, HarnessExecutorPort):
         self._model_gateway = model_gateway
         self._model_gateway_url = model_gateway_url
         self._model_gateway_token = model_gateway_token
+        # A workflow step returning to its node carries on that node's thread.
+        self._resume_workflow_threads = resume_workflow_threads
         self._ravn_tool_mcp_timeout_seconds = max(
             1.0,
             float(ravn_tool_mcp_timeout_seconds),
@@ -1164,6 +1218,7 @@ class CliTransportExecutor(ExecutorPort, HarnessExecutorPort):
         self._binding = _TransportBinding(
             cls=cls,
             supports_system_prompt="system_prompt" in sig.parameters,
+            supports_resume="resume_session_id" in sig.parameters,
         )
 
     @property
@@ -1294,6 +1349,12 @@ class CliTransportExecutor(ExecutorPort, HarnessExecutorPort):
             persona=str(kwargs.get("persona", "")),
             preloaded_tools=tools,
             session_join_manager=kwargs.get("session_join_manager"),
+            thread_store=(
+                kwargs.get("workflow_thread_store")
+                if self._resume_workflow_threads and self._binding.supports_resume
+                else None
+            ),
+            thread_key=kwargs.get("workflow_thread_key"),
         )
 
     @staticmethod
@@ -1331,6 +1392,7 @@ def _with_ravn_tool_mcp_server(
     for name in _RAVN_TOOLS_BOOTSTRAP_ENV:
         if value := os.environ.get(name):
             env[name] = value
+    env_vars = [name for name in _RAVN_TOOLS_SECRET_ENV if os.environ.get(name)]
 
     args = ["-m", "ravn", "tool-mcp"]
     if config_path:
@@ -1358,6 +1420,7 @@ def _with_ravn_tool_mcp_server(
             "command": sys.executable,
             "args": args,
             "env": env,
+            **({"env_vars": env_vars} if env_vars else {}),
             # This server exposes the exact ToolPort registry supplied by the
             # persona.  Continuing without it would run a different, less
             # capable agent than the configured workflow requested.

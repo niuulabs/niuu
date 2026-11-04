@@ -1,11 +1,10 @@
 import { createElement } from 'react';
 import { createRoute, redirect } from '@tanstack/react-router';
-import { SquareTerminal } from 'lucide-react';
+import { SessionsIcon } from '@niuulabs/ui';
 import { definePlugin } from '@niuulabs/plugin-sdk';
-import { readUiMode } from '@niuulabs/shell';
 import { ForgePage } from './ui/ForgePage';
 import { VolundrPage } from './ui/VolundrPage';
-import { SimpleLaunchPage } from './ui/SimpleLaunchPage';
+import { NewSessionPage } from './ui/NewSessionPage';
 import { VolundrSessionsRoute, VolundrSessionRoute, VolundrArchivedRoute } from './ui/routes';
 import { LaunchCatalogPage } from './ui/LaunchCatalogPage';
 import { HistoryPage } from './ui/HistoryPage';
@@ -15,17 +14,12 @@ import { useUnreadNotificationCount } from './ui/hooks/useNotifications';
 export const volundrPlugin = definePlugin({
   id: 'volundr',
   rune: 'V',
-  title: 'Völundr',
-  subtitle: '',
-  simple: {
-    tabs: ['sessions'],
-    title: 'Sessions',
-    subtitle: 'coding agents in sandboxes',
-    // Coding sessions: a terminal an agent works in.
-    icon: createElement(SquareTerminal, { size: 17, 'aria-hidden': true }),
-  },
+  // Coding sessions: a terminal an agent works in.
+  icon: createElement(SessionsIcon),
+  title: 'Forge',
+  subtitle: 'build and execute',
   tabs: [
-    { id: 'forge', label: 'Forge', path: '/volundr/forge' },
+    { id: 'forge', label: 'Overview', path: '/volundr/forge' },
     { id: 'sessions', label: 'Sessions', path: '/volundr/sessions' },
     { id: 'catalog', label: 'Catalog', path: '/volundr/catalog' },
     {
@@ -41,7 +35,7 @@ export const volundrPlugin = definePlugin({
       path: '/volundr',
       beforeLoad: ({ location }) => {
         throw redirect({
-          to: (readUiMode() === 'simple' ? '/volundr/sessions' : '/volundr/forge') as never,
+          to: '/volundr/forge' as never,
           search: location.search as never,
         });
       },
@@ -65,7 +59,7 @@ export const volundrPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/volundr/sessions/new',
-      component: SimpleLaunchPage,
+      component: NewSessionPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -168,8 +162,8 @@ export { Terminal } from './ui/Terminal/Terminal';
 export type { TerminalProps } from './ui/Terminal/Terminal';
 export { FileTree } from './ui/FileTree/FileTree';
 export type { FileTreeProps } from './ui/FileTree/FileTree';
-export { FileViewer } from './ui/FileTree/FileViewer';
-export type { FileViewerProps } from './ui/FileTree/FileViewer';
+export { FileViewer } from '@niuulabs/ui';
+export type { FileViewerProps } from '@niuulabs/ui';
 export { SessionDetailPage } from './ui/SessionDetailPage';
 export type { SessionDetailPageProps, SessionTab } from './ui/SessionDetailPage';
 export {
@@ -186,8 +180,7 @@ export {
   useNotificationReadState,
   useUnreadNotificationCount,
 } from './ui/hooks/useNotifications';
-export { SimpleSessionsPage } from './ui/SimpleSessionsPage';
-export { SimpleLaunchPage } from './ui/SimpleLaunchPage';
+export { NewSessionPage } from './ui/NewSessionPage';
 export { useSessionList, useSessionDetail } from './ui/hooks/useSessionStore';
 export { sessionActivityTs, compareSessionsByActivity } from './ui/sessions/sessionLabels';
 export {
@@ -262,6 +255,7 @@ export type {
   SecretType,
   SessionSource,
   ForgeProject,
+  ForgeProjectChanges,
   SessionProjectMembership,
   SessionDefinition,
   SessionOrigin,

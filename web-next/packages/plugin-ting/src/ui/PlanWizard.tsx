@@ -1,7 +1,7 @@
+import { useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { useService } from '@niuulabs/plugin-sdk';
-import { Rune } from '@niuulabs/ui';
 import type { RepoRecord } from '@niuulabs/ui';
 import { PLAN_STEPS } from '../domain/plan';
 import { StepDots } from './StepDots';
@@ -11,6 +11,8 @@ import { PlanPrompt } from './PlanPrompt';
 import { PlanQuestions } from './PlanQuestions';
 import { PlanRuns } from './PlanRuns';
 import { PlanDraft } from './PlanDraft';
+import { usePlanTicketCheck } from './usePlanTicketCheck';
+import { buildRevisionRequest } from '../domain/planTicketCheck';
 import { PlanApproved } from './PlanApproved';
 import { PlanGuidanceRail } from './PlanGuidanceRail';
 import type { ITingService, PlanSession } from '../ports';
@@ -28,7 +30,7 @@ type RepoCatalogService = {
  * Layout: 2-column on prompt/questions/draft (left: wizard content, right: guidance rail).
  *         Full-width on running and approved (content fills the width).
  */
-export function PlanWizard() {
+export function PlanWizard({ resumeSlug }: { resumeSlug?: string } = {}) {
   const navigate = useNavigate();
   const ting = useService<ITingService>('ting');
   const queryClient = useQueryClient();
@@ -46,6 +48,15 @@ export function PlanWizard() {
     replan,
     saveDraft,
   } = usePlanWizard();
+  const resumed = useRef(false);
+  useEffect(() => {
+    if (!resumeSlug || resumed.current || !ting.getPlanSession) return;
+    resumed.current = true;
+    void ting.getPlanSession(resumeSlug).then((session) => {
+      if (session) void resumePlanSession(session);
+    });
+  }, [resumePlanSession, resumeSlug, ting]);
+  const ticketCheck = usePlanTicketCheck(state.repo, state.structure);
   const { data: workflows = [] } = useWorkflows();
   const { data: repos = [] } = useQuery({
     queryKey: ['ting-plan-repos'],
@@ -69,8 +80,8 @@ export function PlanWizard() {
   );
 
   function handleNewPlan() {
-    // Navigate back to /ting/plan to start fresh (the wizard unmounts and remounts)
-    window.location.href = '/ting/plan';
+    // Navigate back to /ting/plan/new to start fresh (the wizard unmounts and remounts)
+    window.location.href = '/ting/plan/new';
   }
 
   async function handleCancelPlanSession(session: PlanSession) {
@@ -90,13 +101,12 @@ export function PlanWizard() {
       <div className="ting-plan-main">
         <div className="ting-plan-main__inner">
           <div className="ting-plan-title">
-            <Rune glyph="ᚦ" size={24} />
             <div>
               <h1 className="niuu:text-base niuu:font-semibold niuu:text-text-secondary niuu:m-0">
-                New saga plan
+                New project plan
               </h1>
               <p className="ting-plan-title__copy">
-                Turn a rough brief into a decomposed saga with workflow, acceptance criteria, and
+                Turn a rough brief into a decomposed project with workflow, acceptance criteria, and
                 reviewable sub-tasks.
               </p>
             </div>
@@ -169,6 +179,14 @@ export function PlanWizard() {
               onSaveDraft={saveDraft}
               onEditPhase={editPhase}
               onRemoveRun={removeRun}
+              ticketFlags={ticketCheck.flags}
+              ticketCheckError={ticketCheck.error}
+              onRequestChanges={(note) => void submitAnswers({ 'draft-feedback': note })}
+              onRequestRevision={
+                state.session?.campaignSlug && ting.sendPlanFeedback
+                  ? (flags) => void submitAnswers({ 'draft-feedback': buildRevisionRequest(flags) })
+                  : undefined
+              }
             />
           )}
 

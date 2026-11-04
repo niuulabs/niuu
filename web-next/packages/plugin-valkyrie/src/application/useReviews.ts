@@ -18,6 +18,16 @@ export function useReviewList(filters: ReviewListFilters = {}) {
   });
 }
 
+/** One review by id, for a link that names it (it may be on no loaded page). */
+export function useReview(itemId: string) {
+  const service = useService<IOdinReviewService>('valkyrie.reviews');
+  return useQuery({
+    queryKey: [...REVIEWS_QUERY_KEY, 'item', itemId],
+    queryFn: () => service.getReview(itemId),
+    enabled: itemId !== '',
+  });
+}
+
 export function useReviewSummary(filters: ReviewSummaryFilters = {}) {
   const service = useService<IOdinReviewService>('valkyrie.reviews');
   return useQuery({

@@ -1,11 +1,6 @@
 import { Link } from '@tanstack/react-router';
 import type { Ravn } from '@niuulabs/plugin-ravn';
-import type {
-  EnvironmentSummary,
-  RealmSummary,
-  ReviewItem,
-  ValkyrieResident,
-} from '@niuulabs/plugin-valkyrie';
+import type { EnvironmentSummary, RealmSummary, ValkyrieResident } from '@niuulabs/plugin-valkyrie';
 import { wakefulnessCopy } from '@niuulabs/plugin-valkyrie';
 import { Chip, StateDot, type DotState } from '@niuulabs/ui';
 import type { RealmBinding } from '../domain/realm';
@@ -17,7 +12,9 @@ export interface RealmCardProps {
   ravn: Ravn | null;
   environment?: EnvironmentSummary | null;
   binding?: RealmBinding | null;
-  pendingReviews: ReviewItem[];
+  boardName?: string | null;
+  pendingReviews: number;
+  waitingTickets?: number;
   runningSessions: number;
 }
 
@@ -51,7 +48,9 @@ export function RealmCard({
   ravn,
   environment = null,
   binding = null,
+  boardName = null,
   pendingReviews,
+  waitingTickets = 0,
   runningSessions,
 }: RealmCardProps) {
   const wakefulness = resident?.wakefulness ?? null;
@@ -67,6 +66,7 @@ export function RealmCard({
       : 'no resident yet';
   const unresolved = environment?.unresolvedSignalCount ?? 0;
   const acted = agoLabel(resident?.lastActionAt);
+  const needsYou = pendingReviews + waitingTickets;
 
   return (
     <article
@@ -95,7 +95,9 @@ export function RealmCard({
         </Chip>
       </div>
       <div className="niuu:flex niuu:flex-wrap niuu:gap-1.5">
-        {binding?.trackerBoard ? <Chip tone="muted">board {binding.trackerBoard}</Chip> : null}
+        {binding?.trackerBoard ? (
+          <Chip tone="muted">board {boardName ?? binding.trackerBoard}</Chip>
+        ) : null}
         {binding?.bugBoard ? <Chip tone="muted">bugs {binding.bugBoard}</Chip> : null}
         {environment ? (
           <Chip tone={FAILING_HEALTH.has(environment.health) ? 'critical' : 'muted'}>
@@ -108,11 +110,7 @@ export function RealmCard({
       </div>
       <div className="niuu:flex niuu:gap-4 niuu:border-t niuu:border-border-subtle niuu:pt-2.5">
         <Stat value={runningSessions} label="in sessions" />
-        <Stat
-          value={pendingReviews.length}
-          label="needs you"
-          attention={pendingReviews.length > 0}
-        />
+        <Stat value={needsYou} label="needs you" attention={needsYou > 0} />
         {resident ? <Stat value={resident.toolCount} label="tools" /> : null}
       </div>
       <div className="niuu:flex niuu:items-center niuu:justify-between">
@@ -122,13 +120,14 @@ export function RealmCard({
         <Link
           to="/realms/$slug"
           params={{ slug: realm.slug }}
+          search={(pendingReviews === 0 && waitingTickets > 0 ? { tab: 'board' } : {}) as never}
           className={
-            pendingReviews.length > 0
+            needsYou > 0
               ? 'niuu:rounded-md niuu:border niuu:border-brand/50 niuu:bg-brand/10 niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:text-brand-300'
               : 'niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-text-secondary'
           }
         >
-          {pendingReviews.length > 0 ? `Review ${pendingReviews.length}` : 'Open ›'}
+          {needsYou > 0 ? `Review ${needsYou}` : 'Open ›'}
         </Link>
       </div>
     </article>

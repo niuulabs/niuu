@@ -686,6 +686,49 @@ class TestGitHubProviderWorkflow:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_a_listed_pull_request_that_merged_reads_as_merged(
+        self, provider: GitHubProvider
+    ):
+        respx.get("https://api.github.com/repos/user/repo/pulls").mock(
+            return_value=Response(
+                200,
+                json=[
+                    {
+                        "number": 5,
+                        "title": "Merged",
+                        "html_url": "https://github.com/user/repo/pull/5",
+                        "state": "closed",
+                        "merged_at": "2026-10-31T01:15:14Z",
+                        "head": {"ref": "feat/x-niu-1"},
+                        "base": {"ref": "main"},
+                        "created_at": "2026-10-31T01:02:51Z",
+                        "updated_at": "2026-10-31T01:15:14Z",
+                    },
+                    {
+                        "number": 6,
+                        "title": "Abandoned",
+                        "html_url": "https://github.com/user/repo/pull/6",
+                        "state": "closed",
+                        "merged_at": None,
+                        "head": {"ref": "feat/x-niu-2"},
+                        "base": {"ref": "main"},
+                        "created_at": "2026-10-31T01:02:51Z",
+                        "updated_at": "2026-10-31T01:15:14Z",
+                    },
+                ],
+            )
+        )
+
+        merged, abandoned = await provider.list_pull_requests(
+            "https://github.com/user/repo", status="all"
+        )
+
+        assert merged.status == PullRequestStatus.MERGED
+        assert abandoned.status == PullRequestStatus.CLOSED
+        await provider.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_list_pull_requests(self, provider: GitHubProvider):
         """list_pull_requests returns PRs."""
         respx.get("https://api.github.com/repos/user/repo/pulls").mock(

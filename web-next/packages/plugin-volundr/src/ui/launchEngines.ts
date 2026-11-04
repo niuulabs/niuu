@@ -38,9 +38,14 @@ const UNUSABLE_CREDENTIAL_STATUSES = new Set(['missing', 'enrolling']);
 /**
  * Session-definition labels that keep an engine out of the launch dialogs:
  * `batch` engines exist for Ting workflows, `remote-control` ones are driven
- * from the Claude app rather than launched here.
+ * from the Claude app rather than launched here, and `reviewer` ones are the
+ * lightweight reviewers agents are routed to, not a coding agent to work with.
  */
-export const HIDDEN_ENGINE_LABELS: ReadonlySet<string> = new Set(['batch', 'remote-control']);
+export const HIDDEN_ENGINE_LABELS: ReadonlySet<string> = new Set([
+  'batch',
+  'remote-control',
+  'reviewer',
+]);
 
 /** Vendor aliases, kept in step with `niuu.domain.model_runtime.normalize_model_vendor`. */
 const VENDOR_ALIASES: Record<string, string> = {

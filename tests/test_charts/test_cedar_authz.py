@@ -26,6 +26,7 @@ def render_cedar(chart=CHART, **overrides):
         "authorization.adapter": "identity.adapters.cedar.CedarAuthorizationAdapter",
         "identity.adapter": "volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter",
         "networkPolicy.enabled": "true",
+        "bifrost.url": "http://bifrost.test",
         **overrides,
     }
     command = [
@@ -206,6 +207,8 @@ def test_explicit_no_auth_profile(chart_name):
                     ),
                     "-f",
                     str(chart / "values-no-auth.yaml"),
+                    "--set",
+                    "bifrost.url=http://bifrost.test",
                 ]
             )
         )
@@ -494,6 +497,8 @@ def test_no_auth_overrides_central_identity_profile(chart_name):
         str(chart / "values-central-identity.yaml"),
         "-f",
         str(chart / "values-no-auth.yaml"),
+        "--set",
+        "bifrost.url=http://bifrost.test",
     ]
     docs = [d for d in yaml.safe_load_all(subprocess.check_output(command)) if d]
     config = next(

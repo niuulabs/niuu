@@ -1,8 +1,7 @@
-import { useState, type ReactNode } from 'react';
-import { Link, useNavigate } from '@tanstack/react-router';
-import { Boxes, MessageCircleQuestion, Terminal, Workflow } from 'lucide-react';
-import { useSetUiMode } from '@niuulabs/shell';
-import { reviewKindLabel, useDecideReview, type ReviewItem } from '@niuulabs/plugin-valkyrie';
+import type { ReactNode } from 'react';
+import { Link } from '@tanstack/react-router';
+import { Boxes, Terminal, Workflow } from 'lucide-react';
+import { usePluginEnabled } from '@niuulabs/shell';
 import type { Session } from '@niuulabs/plugin-volundr';
 import { Chip, EmptyState, ErrorState, LoadingState, StateDot } from '@niuulabs/ui';
 import { useDomainSessions, useHomeStatus } from '../application/useHome';
@@ -10,15 +9,15 @@ import { orderCards, useRealmsHome, type RealmHomeCard } from '../application/us
 import { greeting, stateSentence } from '../domain/homeCopy';
 import { continueSessions, isLive, needsYouSessions, sessionLabel } from '../domain/homeSessions';
 import { TemplateIcon, agoLabel } from '../ui/icons';
+import { NeedsYouRow } from '../ui/NeedsYouRow';
+import { NeedsYouError, TicketReviewRow } from '../ui/TicketReviewRow';
 
 const CARD =
   'niuu:flex niuu:flex-col niuu:gap-3.5 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-5';
 const PANEL =
-  'niuu:flex niuu:min-h-0 niuu:flex-col niuu:gap-1 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-3.5';
+  'niuu:flex niuu:flex-col niuu:gap-1 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-3.5';
 const PRIMARY =
   'niuu:rounded-md niuu:border niuu:border-brand/50 niuu:bg-brand/10 niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:font-medium niuu:text-brand-300 niuu:disabled:opacity-40';
-const BUTTON =
-  'niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:font-medium niuu:text-text-primary niuu:disabled:opacity-40';
 const LINK = 'niuu:text-[11px] niuu:text-brand-300';
 const ROW =
   'niuu:flex niuu:items-center niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:py-2.5 niuu:last:border-b-0';
@@ -73,11 +72,11 @@ const CHOICES: Choice[] = [
     id: 'realm',
     step: '3',
     icon: <Boxes size={18} aria-hidden="true" />,
-    title: 'Set up a realm',
+    title: 'Set up a workspace',
     blurb:
       'A resident that keeps an environment: the board, the sessions, the quality, the health.',
     bullets: ['Starts from a template', 'Works while you are away', 'Asks you only what it must'],
-    action: 'Set up a realm',
+    action: 'Set up a workspace',
     to: '/realms/new',
   },
 ];
@@ -136,59 +135,6 @@ function StatusChips({
       <Chip tone="muted">{repos} repositories</Chip>
       {boards === null ? null : <Chip tone="muted">{boards} boards</Chip>}
       <Chip tone="muted">{host}</Chip>
-    </div>
-  );
-}
-
-function ReviewRow({
-  item,
-  card,
-  busy,
-  onDecide,
-}: {
-  item: ReviewItem;
-  card: RealmHomeCard | null;
-  busy: boolean;
-  onDecide: (item: ReviewItem, decision: 'approved' | 'rejected') => void;
-}) {
-  return (
-    <div className={ROW} data-testid={`home-needs-you-${item.itemId}`}>
-      <span className="niuu:flex niuu:h-7 niuu:w-7 niuu:shrink-0 niuu:items-center niuu:justify-center niuu:rounded-full niuu:border niuu:border-status-amber/40 niuu:bg-status-amber/10 niuu:text-status-amber">
-        <MessageCircleQuestion size={13} aria-hidden="true" />
-      </span>
-      <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col">
-        <span className="niuu:truncate niuu:text-sm niuu:text-text-primary">{item.title}</span>
-        <span className="niuu:truncate niuu:text-xs niuu:text-text-muted">
-          {card ? `${card.realm.name} · ` : ''}
-          {item.summary}
-        </span>
-      </div>
-      <Chip tone="muted">{reviewKindLabel(item.kind)}</Chip>
-      <button
-        type="button"
-        className={PRIMARY}
-        disabled={busy}
-        onClick={() => onDecide(item, 'approved')}
-      >
-        Approve
-      </button>
-      <button
-        type="button"
-        className={BUTTON}
-        disabled={busy}
-        onClick={() => onDecide(item, 'rejected')}
-      >
-        Reject
-      </button>
-      {card ? (
-        <Link to="/realms/$slug" params={{ slug: card.realm.slug }} className={LINK}>
-          Open
-        </Link>
-      ) : (
-        <Link to={'/valkyrie/inbox' as never} className={LINK}>
-          Open
-        </Link>
-      )}
     </div>
   );
 }
@@ -263,46 +209,30 @@ function Panel({
 }
 
 /**
- * The Simple-mode landing page: what do you want to do, what is waiting on you,
+ * The landing page: what do you want to do, what is waiting on you,
  * and what you were in the middle of. Everything here links somewhere that already
- * exists; the page owns no state of its own beyond what it has just decided.
+ * exists; the page owns no state of its own.
  */
 export function HomePage() {
   const home = useRealmsHome();
+  const realmsEnabled = usePluginEnabled('realms');
   const status = useHomeStatus();
   const sessions = useDomainSessions();
-  const decide = useDecideReview();
-  const setUiMode = useSetUiMode();
-  const navigate = useNavigate();
-  const [decided, setDecided] = useState<string[]>([]);
-  const [switchError, setSwitchError] = useState<string | null>(null);
 
-  const pending = home.pendingReviews.filter((item) => !decided.includes(item.itemId));
   const blocked = needsYouSessions(sessions.data);
   const recent = continueSessions(sessions.data, CONTINUE_LIMIT);
   const live = (sessions.data ?? []).filter(isLive).length;
-  const wakefulRealms = orderCards(home.cards)
+  // With Realms off its pages have no routes, so nothing here may point at them.
+  const realmCards = realmsEnabled ? home.cards : [];
+  const tickets = realmsEnabled ? home.waitingTickets : [];
+  // The summary count, not the list: the list is capped by the review API.
+  const waiting = home.pendingTotal + blocked.length + tickets.length;
+  const choices = realmsEnabled ? CHOICES : CHOICES.filter((choice) => choice.id !== 'realm');
+  const wakefulRealms = orderCards(realmCards)
     .filter((card) => WAKEFUL.has(card.resident?.wakefulness ?? ''))
     .slice(0, CONTINUE_LIMIT);
   const cardFor = (environmentId: string) =>
-    home.cards.find((card) => card.resident?.environmentId === environmentId) ?? null;
-
-  function answer(item: ReviewItem, decision: 'approved' | 'rejected') {
-    setDecided((ids) => [...ids, item.itemId]);
-    decide.mutate(
-      { itemId: item.itemId, decision },
-      { onError: () => setDecided((ids) => ids.filter((id) => id !== item.itemId)) },
-    );
-  }
-
-  function openDashboard() {
-    setSwitchError(null);
-    setUiMode('advanced')
-      .then(() => navigate({ to: '/volundr/forge' as never }))
-      .catch((cause: unknown) =>
-        setSwitchError(cause instanceof Error ? cause.message : String(cause)),
-      );
-  }
+    realmCards.find((card) => card.resident?.environmentId === environmentId) ?? null;
 
   return (
     <div
@@ -318,9 +248,9 @@ export function HomePage() {
             {home.error
               ? 'Could not read what is running.'
               : stateSentence({
-                  realms: home.cards.length,
+                  realms: realmCards.length,
                   running: live,
-                  needsYou: pending.length + blocked.length,
+                  needsYou: waiting,
                 })}
           </p>
         </div>
@@ -333,43 +263,51 @@ export function HomePage() {
         />
       </header>
 
-      <div className="niuu:grid niuu:grid-cols-3 niuu:gap-5">
-        {CHOICES.map((choice) => (
+      <div
+        className={`niuu:grid niuu:gap-5 ${realmsEnabled ? 'niuu:grid-cols-3' : 'niuu:grid-cols-2'}`}
+      >
+        {choices.map((choice) => (
           <ChoiceCard key={choice.id} choice={choice} />
         ))}
       </div>
 
       {home.error ? (
-        <ErrorState title="Could not load your realms" message={String(home.error)} />
+        <ErrorState title="Could not load your workspaces" message={String(home.error)} />
       ) : home.isLoading ? (
         <LoadingState label="Looking at what is running…" />
       ) : (
-        <div className="niuu:grid niuu:min-h-0 niuu:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] niuu:gap-5">
+        <div className="niuu:grid niuu:grid-cols-1 niuu:gap-5 niuu:xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
           <Panel
             title="Needs you"
             testId="home-needs-you"
             aside={
               <span className="niuu:text-xs niuu:text-text-muted">
-                {pending.length + blocked.length} open ·{' '}
-                <Link to="/realms/needs-you" className={LINK}>
+                {waiting} open ·{' '}
+                <Link
+                  to={(realmsEnabled ? '/realms/needs-you' : '/valkyrie/inbox') as never}
+                  className={LINK}
+                >
                   inbox
                 </Link>
               </span>
             }
           >
-            {pending.length + blocked.length === 0 ? (
+            <NeedsYouError error={home.needsYouError} />
+            {waiting === 0 ? (
               <span className="niuu:py-3 niuu:text-xs niuu:text-text-faint">
                 Nothing is waiting on you.
               </span>
             ) : (
               <>
-                {pending.slice(0, NEEDS_YOU_LIMIT).map((item) => (
-                  <ReviewRow
+                {tickets.slice(0, NEEDS_YOU_LIMIT).map(({ item, card }) => (
+                  <TicketReviewRow key={item.taskId} item={item} workspace={card.realm.name} />
+                ))}
+                {home.pendingReviews.slice(0, NEEDS_YOU_LIMIT).map((item) => (
+                  <NeedsYouRow
                     key={item.itemId}
                     item={item}
                     card={cardFor(item.environmentId)}
-                    busy={decide.isPending}
-                    onDecide={answer}
+                    testId={`home-needs-you-${item.itemId}`}
                   />
                 ))}
                 {blocked.slice(0, NEEDS_YOU_LIMIT).map((session) => (
@@ -381,11 +319,6 @@ export function HomePage() {
                 ))}
               </>
             )}
-            {decide.error ? (
-              <span className="niuu:pt-2 niuu:text-xs niuu:text-critical-fg">
-                {String(decide.error)}
-              </span>
-            ) : null}
           </Panel>
 
           <Panel title="Continue" testId="home-continue">
@@ -411,22 +344,6 @@ export function HomePage() {
           </Panel>
         </div>
       )}
-
-      <div className="niuu:flex niuu:items-center niuu:gap-3">
-        <button
-          type="button"
-          className={`${LINK} niuu:self-start`}
-          onClick={openDashboard}
-          data-testid="home-open-advanced"
-        >
-          Skip this and open the dashboard (Advanced) ›
-        </button>
-        {switchError ? (
-          <span className="niuu:text-[11px] niuu:text-critical-fg" role="alert">
-            {switchError}
-          </span>
-        ) : null}
-      </div>
     </div>
   );
 }

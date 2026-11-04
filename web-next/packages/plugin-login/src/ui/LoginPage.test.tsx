@@ -33,7 +33,7 @@ describe('LoginPage', () => {
 
   it('renders the niuu wordmark', () => {
     wrap(baseAuth);
-    expect(screen.getByRole('heading', { level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'NIUU' })).toBeInTheDocument();
   });
 
   it('renders the primary sign-in button', () => {
@@ -115,7 +115,7 @@ describe('LoginPage', () => {
 
   it('explains the identity handoff and shows one sign-in action', () => {
     wrap(baseAuth);
-    expect(screen.getByText('Where AI agents work, collaborate, and evolve.')).toBeVisible();
+    expect(screen.getByText('A place where intelligent systems do real work.')).toBeVisible();
     expect(screen.getByText('You’ll continue to Niuu Identity.')).toBeVisible();
     expect(screen.getAllByRole('button')).toHaveLength(1);
   });
@@ -123,6 +123,29 @@ describe('LoginPage', () => {
   it('renders the logo SVG', () => {
     const { container } = wrap(baseAuth);
     expect(container.querySelector('svg')).not.toBeNull();
+  });
+
+  it('shows the claim and kicker', () => {
+    wrap(baseAuth);
+    expect(screen.getByText('niuu · autonomous work')).toBeVisible();
+    expect(screen.getByText('A place where intelligent systems do real work.')).toBeVisible();
+  });
+
+  it('draws the continuity field in the hero composition', () => {
+    wrap(baseAuth);
+    expect(screen.getByTestId('continuity-field')).toHaveClass('niuu-continuity--hero');
+  });
+
+  it('titles the panel as sign in', () => {
+    wrap(baseAuth);
+    expect(screen.getByRole('heading', { level: 2, name: 'Sign in' })).toBeInTheDocument();
+  });
+
+  it('lists the product features in the strip', () => {
+    wrap(baseAuth);
+    expect(screen.getByRole('contentinfo')).toHaveTextContent(
+      'Autonomous·Collaborative·Persistent·Observable·Self-hosted',
+    );
   });
 });
 

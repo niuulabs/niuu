@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from niuu.domain.models import IntegrationType
+from niuu.domain.models import IntegrationType, actor_name
 
 
 class TestIntegrationType:
@@ -48,3 +48,8 @@ class TestIntegrationType:
 
     def test_messaging_string_representation(self):
         assert str(IntegrationType.MESSAGING) == "messaging"
+
+
+def test_an_actor_goes_by_its_short_name() -> None:
+    assert actor_name("system:serviceaccount:nats:regin") == "regin"
+    assert actor_name("regin") == "regin"

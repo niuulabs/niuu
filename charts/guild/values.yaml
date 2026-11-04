@@ -266,6 +266,12 @@ guildTransport:
   # -- Timeout for the Ravn resident/session proxy's owner-probe HTTP GET
   # and its TLS-pin handshake.
   ownerProbeTimeoutSeconds: 15.0
+  # -- How long the facade remembers which node owns a session (and each node's
+  # projects id) and reads it there alone. Lower it when sessions move between nodes.
+  sessionOwnerTtlSeconds: 3600.0
+  # -- How long a node without the notifications feed (an older Forge) is left
+  # out of the merged feed before it is asked again.
+  feedlessRecheckSeconds: 3600.0
   # -- Host suffixes (label-boundary match) exempt from the
   # https-unless-allow_plaintext transport-security policy, the same way
   # localhost is: in-cluster Kubernetes service DNS never leaves the

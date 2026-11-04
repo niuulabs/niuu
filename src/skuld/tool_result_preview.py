@@ -46,6 +46,16 @@ them sharp on @2x (marginally soft on @3x, thumbnail-fine) and doubles as the
 instant scaled-up placeholder when the full-size viewer opens.
 """
 
+PREVIEW_MIN_EDGE = 320
+"""Smallest longest edge a client may ask for (``?max_edge=``)."""
+
+PREVIEW_EDGE_LIMIT = 1600
+"""Largest longest edge a client may ask for (``?max_edge=``).
+
+Bounds the Pillow work and cache bytes per request: a 2x tile on a large Mac
+panel is ~1200-1600px, and beyond that the client should fetch the full image.
+"""
+
 PREVIEW_JPEG_QUALITY = 72
 """JPEG quality for previews — ~15-25 KB per image at 400px, visually clean."""
 
@@ -127,9 +137,11 @@ def generate_preview_jpeg(raw: bytes, *, max_edge: int = PREVIEW_MAX_EDGE) -> by
 class PreviewCache:
     """Disk cache of generated previews + the async single-flight machinery.
 
-    Layout: ``{root}/{sha256(session_id)}/{sha256(tool_use_id)[:40]}-e{max_edge}.jpg``.
-    Hash both client-supplied identifiers so filesystem safety does not depend
-    on validation in callers.
+    Layout: ``{root}/{sha256(session_id)}/{sha256(tool_use_id, max_edge)[:40]}.jpg``.
+    ``max_edge`` is the cache's default edge unless a call names another one, so
+    each requested size is its own entry.
+    Hash every client-supplied value (the identifiers and the edge) so filesystem
+    safety does not depend on validation in callers.
     Writes are tmp + ``os.replace`` (atomic, safe across processes). mtime is
     touched on read so pruning evicts least-recently-USED entries when the cache
     exceeds ``max_entries`` / ``max_bytes``. The cache survives platform
@@ -154,16 +166,18 @@ class PreviewCache:
 
     # -- paths -------------------------------------------------------------
 
-    def _path(self, session_id: str, tool_use_id: str) -> Path:
-        digest = hashlib.sha256(tool_use_id.encode("utf-8")).hexdigest()[:40]
+    def _path(self, session_id: str, tool_use_id: str, max_edge: int | None = None) -> Path:
+        edge = self.max_edge if max_edge is None else max_edge
+        key = f"{tool_use_id}\0e{edge}"
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:40]
         session_digest = hashlib.sha256(str(session_id).encode("utf-8")).hexdigest()
-        return self.root / session_digest / f"{digest}-e{self.max_edge}.jpg"
+        return self.root / session_digest / f"{digest}.jpg"
 
     # -- disk cache --------------------------------------------------------
 
-    def get(self, session_id: str, tool_use_id: str) -> bytes | None:
+    def get(self, session_id: str, tool_use_id: str, max_edge: int | None = None) -> bytes | None:
         """Return the cached preview bytes, touching mtime as an LRU signal."""
-        path = self._path(session_id, tool_use_id)
+        path = self._path(session_id, tool_use_id, max_edge)
         try:
             data = path.read_bytes()
         except OSError:
@@ -178,9 +192,11 @@ class PreviewCache:
         """Existence check without reading bytes (used by the warm pass)."""
         return self._path(session_id, tool_use_id).exists()
 
-    def put(self, session_id: str, tool_use_id: str, jpeg: bytes) -> None:
+    def put(
+        self, session_id: str, tool_use_id: str, jpeg: bytes, max_edge: int | None = None
+    ) -> None:
         """Atomically persist a preview, then opportunistically prune over caps."""
-        path = self._path(session_id, tool_use_id)
+        path = self._path(session_id, tool_use_id, max_edge)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f".{uuid4().hex}.tmp")
         tmp.write_bytes(jpeg)

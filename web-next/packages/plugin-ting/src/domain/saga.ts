@@ -38,6 +38,8 @@ export type SagaRepoRef = z.infer<typeof sagaRepoRefSchema>;
 export const sagaSchema = z.object({
   /** Unique identifier (UUID). */
   id: z.string().uuid(),
+  /** The Forge project this work belongs to. */
+  projectId: z.string().optional(),
   /** External tracker issue/milestone ID. */
   trackerId: z.string(),
   /** Tracker system type (e.g. "linear", "github"). */
@@ -68,6 +70,8 @@ export const sagaSchema = z.object({
   workflow: z.string().optional(),
   /** Applied workflow version string (e.g. "1.4.2"). */
   workflowVersion: z.string().optional(),
+  /** The workflows the project's board runs, in order; empty means its one workflow. */
+  boardWorkflows: z.array(z.object({ id: z.string(), name: z.string() })).optional(),
   /** Assigned Volundr target identifier. */
   instanceId: z.string().uuid().optional(),
   /** Assigned Volundr target display name. */
@@ -80,6 +84,7 @@ export const sagaSchema = z.object({
   baseBranch: z.string().default('main'),
 });
 export type Saga = z.infer<typeof sagaSchema>;
+export type SagaBoardWorkflow = NonNullable<Saga['boardWorkflows']>[number];
 
 export const runSchema = z.object({
   id: z.string().uuid(),

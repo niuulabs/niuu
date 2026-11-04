@@ -92,6 +92,8 @@ export interface Session {
   trackerIssue?: TrackerIssue;
   /** Where the session originated ('volundr' | 'claude' | 'codex'); absent means volundr-native. */
   origin?: string;
+  /** Why Forge failed the session, as Forge reported it. */
+  error?: string;
 }
 
 /** Legal transitions in the session lifecycle state machine. */

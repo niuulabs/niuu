@@ -31,7 +31,16 @@ _NGINX_QUERY_VARIABLES = re.compile(r"\$(request|request_uri|args|query_string|a
 
 def _render(chart: str) -> list[dict]:
     result = subprocess.run(
-        ["helm", "template", "test", str(CHARTS / chart), "--set", "envoy.enabled=true"],
+        [
+            "helm",
+            "template",
+            "test",
+            str(CHARTS / chart),
+            "--set",
+            "envoy.enabled=true",
+            "--set",
+            "bifrost.url=http://bifrost.test",
+        ],
         check=True,
         capture_output=True,
         text=True,

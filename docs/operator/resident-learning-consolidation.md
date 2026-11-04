@@ -102,7 +102,9 @@ the next turn still reported that it could not inspect the patch.
    occurrences of one friction record at `friction/<kind>/<slug>.md`. Reflection
    lists the session's friction to the model, and the model says which items the
    lesson would prevent (`addresses_friction`). Those friction records are
-   linked to the lesson.
+   linked to the lesson. Ravn keeps these pages itself: `mimir_write` refuses
+   them, and a page whose record block is malformed fails loudly, naming the
+   page, until it is repaired.
 6. **Self-improvement pass** (`reflection.self_improvement.enabled`). This runs
    in the consolidation dream, right after curation:
    - **Judge earlier actions.** An action is *ineffective* when its friction

@@ -15,9 +15,9 @@ function wrap(ui: React.ReactNode, repo = createMockRegistryRepository()) {
 }
 
 describe('RegistryPage', () => {
-  it('renders the Registry title and subtitle', () => {
+  it('renders the Component types title and subtitle', () => {
     wrap(<RegistryPage />);
-    expect(screen.getByText('Registry')).toBeInTheDocument();
+    expect(screen.getByText('Component types')).toBeInTheDocument();
     expect(screen.getByText(/entity type definitions/)).toBeInTheDocument();
   });
 

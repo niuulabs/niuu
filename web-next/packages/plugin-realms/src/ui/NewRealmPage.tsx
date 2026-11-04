@@ -11,7 +11,7 @@ import {
   type ResidentMemberDraft,
 } from '@niuulabs/plugin-ravn';
 import type { ITrackerBrowserService } from '@niuulabs/plugin-ting';
-import { useRealmTrustGrants } from '@niuulabs/plugin-valkyrie';
+import { useRealmTrustGrants, useRealms } from '@niuulabs/plugin-valkyrie';
 import {
   ConfirmRow,
   SectionCard,
@@ -46,6 +46,7 @@ import {
 } from '../domain/realm';
 import { parseSentence } from '../domain/sentence';
 import { REALM_TEMPLATES, templateById } from '../domain/templates';
+import { ProjectPicker } from './ProjectPicker';
 import { RecipeChecklist } from './RecipeChecklist';
 import { WalkthroughRail } from './WalkthroughRail';
 
@@ -73,6 +74,7 @@ interface NewRealmSearch {
   sentence?: string;
   from?: string;
   template?: string;
+  project?: string;
 }
 
 function TemplateStep({
@@ -177,7 +179,9 @@ function ConnectStep({
     queryKey: ['mimir', 'deployments'],
     queryFn: () => {
       if (!mimir.mounts.getDeployments) {
-        throw new Error('This Mímir has no deployment target; realm memory cannot be created.');
+        throw new Error(
+          'This memory instance has no deployment target; workspace memory cannot be created.',
+        );
       }
       return mimir.mounts.getDeployments();
     },
@@ -186,13 +190,16 @@ function ConnectStep({
   const targets = useMemo(() => {
     const status = deployments.data;
     if (!status) return [];
-    const ids = (status.targets ?? []).map((target) => target.id);
-    if (ids.length > 0) return ids;
-    return status.target ? [status.target] : [];
+    const listed = (status.targets ?? []).map((target) => ({
+      value: target.id,
+      label: target.source_name ? `${target.source_name} · ${target.cluster}` : target.id,
+    }));
+    if (listed.length > 0) return listed;
+    return status.target ? [{ value: status.target, label: status.target }] : [];
   }, [deployments.data]);
 
   useEffect(() => {
-    if (!draft.mountTarget && targets[0]) onChange({ ...draft, mountTarget: targets[0] });
+    if (!draft.mountTarget && targets[0]) onChange({ ...draft, mountTarget: targets[0].value });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [targets]);
 
@@ -204,8 +211,25 @@ function ConnectStep({
   return (
     <div className="niuu:flex niuu:flex-col niuu:gap-4" data-testid="wizard-step-connect">
       <SectionCard
+        title="Project"
+        description="The project this workspace serves. Workspaces in one project share its brief."
+      >
+        <ProjectPicker
+          value={draft}
+          onChange={({ projectId, newProjectName }) =>
+            onChange({ ...draft, projectId, newProjectName })
+          }
+          testId="realm-project"
+        />
+      </SectionCard>
+
+      <SectionCard
         title="Repository"
-        description="Where the resident works. Cloned into a sandbox for every session."
+        description={
+          template.needsRepo
+            ? 'Where the resident works. Cloned into a sandbox for every session.'
+            : 'Optional for this template.'
+        }
       >
         {repos.error ? (
           <ErrorState message={String(repos.error)} />
@@ -217,7 +241,15 @@ function ConnectStep({
               <RepoSelect
                 repos={repos.data ?? []}
                 value={draft.repo}
-                onChange={(repo) => onChange({ ...draft, repo, branch: '' })}
+                onChange={(repo) =>
+                  onChange({
+                    ...draft,
+                    repo,
+                    branch:
+                      repos.data?.find((entry) => `${entry.org}/${entry.name}` === repo)
+                        ?.defaultBranch ?? '',
+                  })
+                }
                 valueMode="slug"
                 testId="realm-repo"
               />
@@ -240,7 +272,7 @@ function ConnectStep({
         title="Tracker board"
         description={
           template.needsBoard
-            ? 'Where work comes from. The resident reads the board and moves tickets as it works.'
+            ? 'Optional. Where work comes from: the resident reads the board and moves tickets as it works.'
             : 'Optional for this template.'
         }
       >
@@ -318,15 +350,15 @@ function ConnectStep({
       </SectionCard>
 
       <SectionCard
-        title="Realm memory"
-        description="A Mímir mount is created for this realm; the resident writes what it learns there."
+        title="Workspace memory"
+        description="A memory mount is created for this workspace; the resident writes what it learns there."
       >
         {deployments.error ? (
           <ErrorState message={String(deployments.error)} />
         ) : (
           <Field label="Created on">
             <Select
-              options={targets.map((target) => ({ value: target, label: target }))}
+              options={targets}
               placeholder={
                 deployments.isLoading ? 'Loading targets…' : 'No deployment target configured'
               }
@@ -436,7 +468,7 @@ function CharterStep({
       </div>
       <SectionCard
         title="What it may do on its own"
-        description="Starts cautious. Trust ratchets up as it proves itself; loosen any rung later from the realm page."
+        description="Starts cautious. Trust ratchets up as it proves itself; loosen any rung later from the workspace page."
       >
         <div className="niuu:flex niuu:flex-col" data-testid="trust-ladder">
           {ACTION_CLASSES.map((actionClass) => (
@@ -477,7 +509,13 @@ function LaunchStep({
 }) {
   const template = templateById(draft.templateId);
   // Fields the recipe does not require: an empty value is a default, not a gap.
-  const optional = new Set<keyof RealmDraft>(['branch', 'bugBoard', 'model']);
+  const optional = new Set<keyof RealmDraft>([
+    'branch',
+    'bugBoard',
+    'model',
+    'trackerBoard',
+    ...(template.needsRepo ? [] : (['repo'] as const)),
+  ]);
   const source = (key: keyof RealmDraft) =>
     inferred.has(key) ? (
       <Chip tone="brand">from your sentence</Chip>
@@ -491,7 +529,8 @@ function LaunchStep({
           <p className="niuu:m-0 niuu:text-sm niuu:text-text-secondary">
             I will be a <strong className="niuu:text-text-primary">{template.name}</strong> for{' '}
             <strong className="niuu:text-text-primary">
-              {draft.repo || 'a repository you still need to pick'}
+              {draft.repo ||
+                (template.needsRepo ? 'a repository you still need to pick' : draft.name)}
             </strong>
             {draft.trackerBoard ? (
               <>
@@ -506,7 +545,7 @@ function LaunchStep({
         </SectionCard>
       ) : null}
       <SectionCard
-        title="Realm draft"
+        title="Workspace draft"
         description="Every row is the same field the step-by-step setup shows."
       >
         <div className="niuu:flex niuu:flex-col">
@@ -589,6 +628,7 @@ export function NewRealmPage() {
   const parsed = useMemo(() => (sentence ? parseSentence(sentence) : null), [sentence]);
   const fromSlug = search.from?.trim() || null;
   const fromGrants = useRealmTrustGrants(fromSlug ?? '', fromSlug !== null);
+  const realms = useRealms();
   const fromPersona = useQuery({
     queryKey: ['ravn', 'personas', fromSlug ? personaNameFor(fromSlug) : ''],
     queryFn: () => personas.getPersona(personaNameFor(fromSlug as string)),
@@ -600,7 +640,12 @@ export function NewRealmPage() {
       search.template && REALM_TEMPLATES.some((t) => t.id === search.template)
         ? search.template
         : EMPTY_DRAFT.templateId;
-    const base: RealmDraft = { ...EMPTY_DRAFT, templateId, trust: templateById(templateId).trust };
+    const base: RealmDraft = {
+      ...EMPTY_DRAFT,
+      templateId,
+      trust: templateById(templateId).trust,
+      projectId: search.project ?? '',
+    };
     if (!parsed) return base;
     const trust: TrustPreset = { ...base.trust };
     for (const actionClass of parsed.askBefore)
@@ -644,6 +689,8 @@ export function NewRealmPage() {
           : current.templateId,
       charter: description,
       mountTarget: binding?.mountTarget ?? current.mountTarget,
+      projectId:
+        realms.data?.find((realm) => realm.slug === fromSlug)?.project_id ?? current.projectId,
       trust,
     }));
     setStep('connect');
@@ -713,11 +760,11 @@ export function NewRealmPage() {
 
   const titles: Record<Step, [string, string]> = {
     template: [
-      'What kind of realm is this?',
-      'A template is a starting point, not a script. The resident learns the realm and adjusts.',
+      'What kind of workspace is this?',
+      'A template is a starting point, not a script. The resident learns the workspace and adjusts.',
     ],
     connect: [
-      'Connect the realm to its world.',
+      'Connect the workspace to its world.',
       'Everything here is an integration you already have or add once. The resident reaches these through MCP; it never gets your raw credentials.',
     ],
     charter: [
@@ -735,7 +782,7 @@ export function NewRealmPage() {
       <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col">
         <div className="niuu:flex niuu:items-center niuu:justify-between niuu:border-b niuu:border-border-subtle niuu:px-8 niuu:py-3">
           <span className="niuu:text-[15px] niuu:font-medium niuu:text-text-primary">
-            New realm
+            New workspace
           </span>
           <StepIndicator current={step} steps={STEPS} labels={STEP_LABELS} />
           <span className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
@@ -751,7 +798,7 @@ export function NewRealmPage() {
           </div>
           {content}
           {step === 'launch' && (launching || progress.error) ? (
-            <SectionCard title="Starting the realm">
+            <SectionCard title="Starting the workspace">
               <RecipeChecklist progress={progress} />
             </SectionCard>
           ) : null}

@@ -208,6 +208,16 @@ export function NotificationRow({
                 </span>
               )}
               {hostLabel && <Chip tone="muted">{hostLabel}</Chip>}
+              {notification.speak && (
+                <span data-testid="notification-spoken">
+                  <Chip
+                    tone="brand"
+                    title={`To be spoken${notification.speak.priority === 'next_window' ? ' at the next good moment' : ' now'}: ${notification.speak.text}`}
+                  >
+                    Spoken
+                  </Chip>
+                </span>
+              )}
               {notification.engine && <CliBadge cli={notification.engine} compact />}
               {notification.model && <ModelChip model={notification.model} />}
               <time
@@ -284,6 +294,15 @@ export function NotificationRow({
                 })}
               </ul>
             )}
+            {notification.reviewId ? (
+              <a
+                href={`/valkyrie/inbox?item=${encodeURIComponent(notification.reviewId)}`}
+                className="niuu:self-start niuu:rounded-md niuu:border niuu:border-brand/50 niuu:bg-brand/10 niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:font-medium niuu:text-brand-300"
+                data-testid="notification-review-link"
+              >
+                Answer it in the inbox
+              </a>
+            ) : null}
             <DeliveryStatus notification={notification} sinkLabels={sinkLabels} />
           </div>
         )}

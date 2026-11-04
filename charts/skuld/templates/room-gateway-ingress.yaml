@@ -1,0 +1,62 @@
+{{- if and (include "skuld.roomGatewayEnabled" .) .Values.roomGateway.ingress.enabled -}}
+{{- include "skuld.roomGatewayValidate" . -}}
+{{- $ing := .Values.roomGateway.ingress -}}
+{{- $pathMode := eq ($ing.mode | default "path") "path" -}}
+{{- $annotations := deepCopy ($ing.annotations | default dict) -}}
+{{- if $pathMode -}}
+{{- /*
+Traefik strips /rooms/<routeId> before the request reaches the pod, so the
+broker serves /session and /ws/ravn/<peer>. Our middleware runs first; any
+middleware chain the operator already set follows it.
+*/ -}}
+{{- $chain := list (printf "%s-%s-strip@kubernetescrd" .Release.Namespace (include "skuld.fullname" .)) -}}
+{{- with (index $annotations "traefik.ingress.kubernetes.io/router.middlewares") -}}
+{{- $chain = concat $chain (splitList "," .) -}}
+{{- end -}}
+{{- $_ := set $annotations "traefik.ingress.kubernetes.io/router.middlewares" (join "," $chain) -}}
+{{- end -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "skuld.fullname" . }}
+  labels:
+    {{- include "skuld.labels" . | nindent 4 }}
+  {{- with $annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if $ing.className }}
+  ingressClassName: {{ $ing.className }}
+  {{- end }}
+  {{- if $ing.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ $ing.host | quote }}
+      secretName: {{ $ing.tls.secretName | quote }}
+  {{- end }}
+  rules:
+    - host: {{ $ing.host | quote }}
+      http:
+        paths:
+          - path: {{ include "skuld.roomGatewayPathPrefix" . | default "/" | quote }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "skuld.fullname" . }}
+                port:
+                  name: http
+{{- if $pathMode }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "skuld.fullname" . }}-strip
+  labels:
+    {{- include "skuld.labels" . | nindent 4 }}
+spec:
+  stripPrefix:
+    prefixes:
+      - {{ include "skuld.roomGatewayPathPrefix" . | quote }}
+{{- end }}
+{{- end }}

@@ -9,7 +9,7 @@ FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d
 # The sandbox base ships gh v2.102.0 (the latest release), built with Go 1.27.1 and
 # golang.org/x/net v0.58.0 (GO-2026-6603/6604/6611/6612). Replace it with the same
 # release built with Go 1.27.3 and the patched module until upstream ships them.
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS gh-build
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:8a5046497cda39860b832ffdbe8dd66018a0f05bb01352f533a36e7e2ced66a0 AS gh-build
 ARG TARGETARCH
 WORKDIR /src
 RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.102.0.tar.gz -O /tmp/gh.tar.gz \

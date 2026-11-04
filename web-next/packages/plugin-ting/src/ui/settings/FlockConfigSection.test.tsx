@@ -85,6 +85,6 @@ describe('FlockConfigSection', () => {
 
   it('shows max active sagas field', async () => {
     render(<FlockConfigSection />, { wrapper: wrap(defaultServices()) });
-    await waitFor(() => expect(screen.getByLabelText(/max active sagas/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText(/max active projects/i)).toBeInTheDocument());
   });
 });

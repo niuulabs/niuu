@@ -76,7 +76,13 @@ class EffortControlMixin:
                 self.model = current["model"]
                 self._runtime_service_tier = current.get("service_tier")
                 self._save_effort(current["effort"])
-            frame = {"type": "runtime_options", "request_id": request_id, **state}
+            # ``applied`` marks the acknowledgement of a change, as opposed to a read.
+            frame = {
+                "type": "runtime_options",
+                "request_id": request_id,
+                "applied": options is not None,
+                **state,
+            }
             await self._emit_broker_frame(frame)
             return frame
 

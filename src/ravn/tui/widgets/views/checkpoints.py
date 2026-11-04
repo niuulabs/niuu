@@ -13,9 +13,9 @@ from textual.widgets import DataTable
 
 _REASON_STYLE: dict[str, str] = {
     "manual": "#06b6d4",
-    "interrupt": "#f59e0b",
-    "error": "#ef4444",
-    "auto": "#71717a",
+    "interrupt": "#86d0e8",
+    "error": "#e78d94",
+    "auto": "#78909d",
 }
 
 
@@ -30,7 +30,7 @@ class CheckpointsView(Widget):
     CheckpointsView {
         height: 1fr;
         width: 1fr;
-        background: #09090b;
+        background: #071019;
     }
     CheckpointsView DataTable {
         height: 1fr;
@@ -86,7 +86,7 @@ class CheckpointsView(Widget):
             created = cp.get("created_at", "—")
             itr = str(cp.get("iteration", "—"))
             reason = cp.get("interrupted_by", "—")
-            style = _REASON_STYLE.get(reason, "#a1a1aa")
+            style = _REASON_STYLE.get(reason, "#a5b7c1")
             table.add_row(task_id, label, tags, created, itr, f"[{style}]{reason}[/]")
 
     def load_checkpoints(self, checkpoints: list[dict[str, Any]]) -> None:

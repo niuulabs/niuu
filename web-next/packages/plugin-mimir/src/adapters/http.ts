@@ -138,9 +138,19 @@ interface RawLintIssue {
   message: string;
 }
 
+interface RawLintMount {
+  name: string;
+  status: 'linted' | 'unsupported';
+  pages_checked: number;
+  issues: number;
+  detail: string;
+}
+
 interface RawLintReport {
   issues: RawLintIssue[];
   pages_checked: number;
+  /** Absent from Mímir services that predate per-mount lint status. */
+  mounts?: RawLintMount[];
 }
 
 interface RawEmbeddingResult {
@@ -541,6 +551,13 @@ export function toLintReport(raw: RawLintReport): LintReport {
     issues,
     pagesChecked: raw.pages_checked,
     summary: tallySeverity(issues),
+    mounts: (raw.mounts ?? []).map((mount) => ({
+      name: mount.name,
+      status: mount.status,
+      pagesChecked: mount.pages_checked,
+      issues: mount.issues,
+      detail: mount.detail,
+    })),
   };
 }
 

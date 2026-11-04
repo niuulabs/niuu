@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Ravn } from '@niuulabs/plugin-ravn';
+import type { ReviewItem as WorkReviewItem, Saga } from '@niuulabs/plugin-ting';
 import type {
   RealmSummary,
   RealmTrustGrant,
@@ -17,6 +18,9 @@ import {
   residentForRealm,
   reviewsForRealm,
   sessionsForRealm,
+  waitingOnBoard,
+  workProjectForBoard,
+  workspaceSessions,
 } from './join';
 
 const realm: RealmSummary = {
@@ -111,6 +115,22 @@ describe('realm joins', () => {
     expect(residentForRealm(undefined, 'lexi-api')).toBeNull();
   });
 
+  it('finds a resident whose display name is capitalised', () => {
+    const runa = { ...resident, id: 'a', name: 'Runa', environmentId: 'env-k8s-valhalla' };
+    expect(residentForRealm({ ...dashboard, valkyries: [runa] }, 'runa')).toBe(runa);
+    const ravnRuna = { ...ravn, residentName: 'Runa' } as unknown as Ravn;
+    expect(ravnForRealm([ravnRuna], 'runa')).toBe(ravnRuna);
+  });
+
+  it('prefers a resident by name when two share an environment', () => {
+    const shared = 'env-k8s-valhalla';
+    const runa = { ...resident, id: 'a', name: 'runa', environmentId: shared };
+    const regin = { ...resident, id: 'b', name: 'regin', environmentId: shared };
+    const both = { ...dashboard, valkyries: [runa, regin] };
+    expect(residentForRealm(both, 'regin')).toBe(regin);
+    expect(residentForRealm(both, 'valhalla')).toBe(runa);
+  });
+
   it('finds the ravn by resident name, then by persona', () => {
     expect(ravnForRealm([ravn], 'lexi-api')).toBe(ravn);
     const byPersona = {
@@ -147,6 +167,46 @@ describe('realm joins', () => {
   it('keeps only the reviews addressed to the realm environment', () => {
     expect(reviewsForRealm(reviews, resident).map((r) => r.itemId)).toEqual(['rv1', 'rv3']);
     expect(reviewsForRealm(reviews, null)).toEqual([]);
+  });
+
+  it('finds the Work link of a tracker board', () => {
+    const link = { id: 'link-1', trackerId: 'board-1' } as Saga;
+    expect(workProjectForBoard([link], 'board-1')).toBe(link);
+    expect(workProjectForBoard([link], 'board-2')).toBeNull();
+    expect(workProjectForBoard([link], undefined)).toBeNull();
+    expect(workProjectForBoard(undefined, 'board-1')).toBeNull();
+  });
+
+  it('counts what Work started for the board and everything that launched', () => {
+    const member = (id: string, coordination: object) =>
+      ({ id, personaName: '', status: 'running', coordination }) as unknown as VolundrSession;
+    const all = [
+      ...sessions,
+      member('coordinator', { labels: ['work-project:link-1'] }),
+      member('worker', { parent: { sessionId: 'coordinator', instanceId: 'x' } }),
+      member('other-board', { labels: ['work-project:link-2'] }),
+    ];
+    expect(workspaceSessions(all, 'lexi-api', 'link-1').map((s) => s.id)).toEqual([
+      's1',
+      's2',
+      'coordinator',
+      'worker',
+    ]);
+    expect(workspaceSessions(all, 'lexi-api', undefined).map((s) => s.id)).toEqual(['s1', 's2']);
+    expect(workspaceSessions(undefined, 'lexi-api', 'link-1')).toEqual([]);
+  });
+
+  it('keeps only what is waiting on the board', () => {
+    const item = (taskId: string, state: string, projectId: string) =>
+      ({ taskId, state, projectId }) as WorkReviewItem;
+    const items = [
+      item('here', 'waiting', 'link-1'),
+      item('decided', 'done', 'link-1'),
+      item('there', 'waiting', 'link-2'),
+    ];
+    expect(waitingOnBoard(items, 'link-1').map((entry) => entry.taskId)).toEqual(['here']);
+    expect(waitingOnBoard(items, undefined)).toEqual([]);
+    expect(waitingOnBoard(undefined, 'link-1')).toEqual([]);
   });
 
   it('reads the binding back from the observe grant', () => {

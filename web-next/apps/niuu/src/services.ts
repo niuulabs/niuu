@@ -22,6 +22,7 @@ import {
   createMockDispatcherService,
   createMockTingSessionService,
   createMockTrackerService,
+  createMockWorkService,
   createMockWorkflowService,
   createMockResearchService,
   createMockSpecsService,
@@ -119,7 +120,7 @@ export class UnsupportedSessionStoreOperationError extends Error {
 
   constructor(operation: 'create' | 'update') {
     super(
-      `The app session-store adapter does not support session ${operation}. Use the Forge lifecycle service instead.`,
+      `The app session-store adapter does not support session ${operation}. Use the session lifecycle service instead.`,
     );
     this.name = 'UnsupportedSessionStoreOperationError';
     this.operation = operation;
@@ -821,7 +822,7 @@ export function buildServiceBackendStatus(
   return Object.fromEntries(
     Object.entries(resolved).map(([serviceName, status]) => [
       serviceName,
-      status.mode === 'unavailable' && serviceName !== 'ting.work'
+      status.mode === 'unavailable'
         ? {
             ...status,
             mode: 'demo',
@@ -905,7 +906,11 @@ function toSessionRavnId(session: VolundrSession): string {
 
 function toSessionPreview(session: VolundrSession): string | undefined {
   if (session.source.type === 'git') {
-    return `${session.source.repo}#${session.source.branch}`;
+    // Sessions with no repository still carry an empty git source.
+    if (!session.source.repo) return undefined;
+    return session.source.branch
+      ? `${session.source.repo}#${session.source.branch}`
+      : session.source.repo;
   }
   return session.source.local_path ?? session.source.paths[0]?.mount_path;
 }
@@ -958,6 +963,7 @@ function toDomainSession(session: VolundrSession): Session {
     preview: toSessionPreview(session),
     trackerIssue: session.trackerIssue,
     origin: session.origin,
+    error: session.error,
   };
 }
 
@@ -974,6 +980,8 @@ function buildSplitVolundrService(
     getStats: (options) => forge.getStats(options),
     getRepos: () => forge.getRepos(),
     getProjects: (options) => forge.getProjects(options),
+    createProject: (name, options) => forge.createProject(name, options),
+    updateProject: (project, changes) => forge.updateProject(project, changes),
     getSessionProject: (id, options) => forge.getSessionProject(id, options),
     assignSessionProject: (id, assignment, options) =>
       forge.assignSessionProject(id, assignment, options),
@@ -1367,7 +1375,7 @@ function buildVolundrClusterAdapter(volundr: IVolundrService): IClusterAdapter {
               {
                 id: 'shared',
                 slug: 'shared',
-                name: 'Shared Forge',
+                name: 'Shared host',
                 baseUrl: '',
                 enabled: true,
                 isDefault: false,
@@ -1390,7 +1398,7 @@ function buildVolundrClusterAdapter(volundr: IVolundrService): IClusterAdapter {
           {
             id: 'shared',
             slug: 'shared',
-            name: capacityFromNodes(nodes).gpu > 0 ? 'Shared GPU Forge' : 'Shared Forge',
+            name: capacityFromNodes(nodes).gpu > 0 ? 'Shared GPU host' : 'Shared host',
             baseUrl: '',
             enabled: true,
             isDefault: false,
@@ -1620,10 +1628,12 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     ting: tingService,
     'ting.work': workClient
       ? buildWorkHttpAdapter(workClient)
-      : unavailableService<IWorkService>(
-          'ting.work',
-          'Configure a live Ting backend to view work.',
-        ),
+      : config.demoMode
+        ? createMockWorkService()
+        : unavailableService<IWorkService>(
+            'ting.work',
+            'Configure a live work backend to view work.',
+          ),
     'ting.workflowExecutions': tingClient
       ? buildWorkflowExecutionHttpAdapter(tingClient)
       : unavailableService<IWorkflowExecutionService>('ting.workflowExecutions'),

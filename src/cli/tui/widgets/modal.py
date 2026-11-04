@@ -29,20 +29,20 @@ class NiuuModal(Widget):
     NiuuModal #modal-container {
         width: 60;
         max-height: 20;
-        background: #18181b;
-        border: round #f59e0b;
+        background: #10212d;
+        border: round #e4bd7e;
         padding: 1 2;
     }
     NiuuModal #modal-title {
         text-align: center;
         text-style: bold;
-        color: #f59e0b;
+        color: #e4bd7e;
         height: 1;
         margin-bottom: 1;
     }
     NiuuModal #modal-body {
         height: auto;
-        color: #fafafa;
+        color: #edf4f7;
     }
     """
 

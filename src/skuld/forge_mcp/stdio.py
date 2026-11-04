@@ -29,6 +29,8 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from typing import IO, Any
 
+from niuu.question_standard import QUESTION_STANDARD
+
 logger = logging.getLogger("skuld.forge_mcp.stdio")
 
 # Protocol constants (MCP revisions this server implements, JSON-RPC error codes).
@@ -48,7 +50,11 @@ SERVER_INSTRUCTIONS = (
     "Forge tools for this coding session: `notify` the user only when they would want "
     "to be interrupted (task done, you need them, or a failure stops the work; never for "
     "turn ends or progress), `environment` to learn where you run, and read tools to "
-    "inspect other sessions. Tools that act on other sessions need an operator grant."
+    "inspect other sessions. Tools that act on other sessions need an operator grant. "
+    "Keep your session's `short_description` current with `describe_session`: set it "
+    "when you start, whenever the phase changes, when blocked ('Blocked on …') and when "
+    "done ('Done: …'); put the fuller status someone opening the session would want in "
+    "`description`. Questions follow this standard: " + QUESTION_STANDARD
 )
 _ERROR_BODY_CHARS = 500
 

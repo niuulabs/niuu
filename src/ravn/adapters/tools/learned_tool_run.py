@@ -39,6 +39,7 @@ from ravn.valkyrie_evolution.resident_learning import (
     DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES,
     EVOLUTION_ROLLED_BACK_EVENT,
 )
+from ravn.valkyrie_evolution.tool_curation import ROLLED_BACK
 from ravn.valkyrie_evolution.tool_runtime import remove_tool_venv
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher
@@ -359,7 +360,7 @@ class LearnedToolRunTool(ToolPort):
         peers learn the capability is gone; when wired with tools_dir, the
         tool's dedicated dependency venv is reclaimed.
         """
-        await skill_manager.archive(name)
+        await skill_manager.archive(name, reason=ROLLED_BACK, detail=result.content)
         if self._tools_dir is not None:
             remove_tool_venv(
                 venvs_dir=learned_tool_venvs_dir(self._tools_dir.parent),

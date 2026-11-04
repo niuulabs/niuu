@@ -15,7 +15,6 @@ import {
 import { createQueryClient } from '@niuulabs/query';
 import { AuthProvider, useAuth } from '@niuulabs/auth';
 import { Shell } from '@niuulabs/shell';
-import { LogoKnot } from '@niuulabs/plugin-login';
 import { SetupGate, ConnectionRecoveryProvider } from '@niuulabs/plugin-setup';
 import { loadEnabledPlugins } from './plugins';
 import { buildServiceBackendStatus, buildServices, isUnavailableService } from './services';
@@ -242,7 +241,7 @@ function ApplicationShell({ plugins }: { plugins: PluginDescriptor[] }) {
     return (
       <div className="niuu-disconnected">
         <h1>Disconnected</h1>
-        <p>Your sessions continue running on their Forge hosts.</p>
+        <p>Your sessions continue running on their hosts.</p>
         <button type="button" onClick={() => setDisconnected(false)}>
           Reconnect
         </button>
@@ -254,11 +253,6 @@ function ApplicationShell({ plugins }: { plugins: PluginDescriptor[] }) {
         <AccountControls onDisconnect={() => (enabled ? logout() : setDisconnected(true))} />
       }
       plugins={plugins}
-      brand={
-        <span className="niuu:inline-flex niuu:items-center niuu:justify-center niuu:text-sky-300">
-          <LogoKnot size={22} stroke={1.8} />
-        </span>
-      }
     />
   );
 }

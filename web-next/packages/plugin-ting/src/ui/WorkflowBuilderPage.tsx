@@ -58,7 +58,7 @@ export function WorkflowBuilderPage() {
   const { data: personas } = usePersonasBrowser();
   const { data: registryMounts = [] } = useWorkflowRegistryMounts();
   const modelsQuery = useQuery({
-    queryKey: ['bifrost', 'models'],
+    queryKey: ['bifrost', 'model-catalog'],
     queryFn: () => bifrost.getModelCatalog(),
   });
   const reposQuery = useQuery({

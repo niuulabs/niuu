@@ -156,9 +156,30 @@ export interface InputRequest {
   questions: Array<{
     prompt: string;
     choices: string[];
+    /** Per-choice explanation, aligned with ``choices`` (LEX-1502). */
+    descriptions?: Array<string | undefined>;
+    /** The question accepts several choices (Muse and Claude can send these). */
+    multiSelect?: boolean;
+    /** The runtime's question id, echoed in the answer when present. */
+    id?: string;
+    header?: string;
   }>;
   /** False when no client can answer it (it must be answered in the session's terminal). */
   answerable?: boolean;
+  /** Why the last answer was refused (the broker's message); shown on the card. */
+  error?: string;
+}
+
+/** One structured answer, in the shape Skuld's ``ask_user_answer`` accepts. */
+export interface InputAnswer {
+  question: string;
+  question_id?: string;
+  header?: string;
+  /** One label or typed text; a list for a multi-select question. */
+  answer: string | string[];
+  option_indexes: number[];
+  /** The typed text, when the answer is not one of the offered choices. */
+  free_text?: string;
 }
 
 export interface FileEntry {

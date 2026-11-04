@@ -228,7 +228,7 @@ export function ConfirmStep({
     <div className="niuu:flex niuu:flex-col niuu:gap-4" data-testid="step-confirm-content">
       <SectionCard
         title="Launch summary"
-        description="Final review before Forge provisions the session."
+        description="Final review before the host provisions the session."
       >
         <div className="niuu:flex niuu:flex-col niuu:divide-y niuu:divide-border-subtle">
           <ConfirmRow label="session" value={deriveSessionName(form)} />

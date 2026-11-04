@@ -10,10 +10,16 @@ import httpx
 import pytest
 import respx
 
+from niuu.domain.models import Principal
 from ravn.adapters.personas.loader import PersonaConfig
 from ravn.domain.persona_document import portable_persona_from_config
 from ting.adapters.volundr_http import VolundrHTTPAdapter
-from ting.ports.volundr import ActivityStreamConnected, SpawnRequest
+from ting.ports.volundr import (
+    ActivityStreamConnected,
+    ForgeProjectRef,
+    SessionMembership,
+    SpawnRequest,
+)
 
 BASE_URL = "http://volundr.test:8000"
 SESSIONS_URL = f"{BASE_URL}/api/v1/forge/sessions"
@@ -184,6 +190,29 @@ class TestPortablePersonas:
 
 
 class TestSpawnSession:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_refusal_keeps_the_reason_forge_gave(self, adapter: VolundrHTTPAdapter):
+        respx.post(SESSIONS_URL).mock(
+            return_value=httpx.Response(
+                409, json={"detail": "No session slot is free: 4 of 4 sessions are running."}
+            )
+        )
+        request = SpawnRequest(
+            name="my-session",
+            repo="org/repo",
+            branch="feat/alpha",
+            model="m",
+            tracker_issue_id="ALPHA-1",
+            tracker_issue_url="https://linear.app/i-1",
+            system_prompt="",
+            initial_prompt="",
+            base_branch="dev",
+        )
+
+        with pytest.raises(httpx.HTTPStatusError, match="No session slot is free: 4 of 4"):
+            await adapter.spawn_session(request)
+
     @pytest.mark.asyncio
     @respx.mock
     async def test_success(self, adapter: VolundrHTTPAdapter):
@@ -543,50 +572,103 @@ class TestListSessions:
 
 
 class TestGetPRStatus:
-    @pytest.mark.asyncio
-    @respx.mock
-    async def test_success(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1/pr").mock(
+    """Reads the real provider route, which works for a stopped session on any deployment."""
+
+    @staticmethod
+    def _session(branch: str = "feat/x-niu-1") -> None:
+        respx.get(f"{SESSIONS_URL}/ses-1").mock(
             return_value=httpx.Response(
                 200,
                 json={
-                    "pr_id": "42",
-                    "url": "https://github.com/org/repo/pull/42",
-                    "state": "open",
-                    "mergeable": True,
-                    "ci_passed": True,
+                    "id": "ses-1",
+                    "name": "run",
+                    "status": "stopped",
+                    "tracker_issue_id": None,
+                    "source": {
+                        "type": "git",
+                        "repo": "https://github.com/o/r",
+                        "branch": branch,
+                        "base_branch": "main",
+                    },
                 },
             )
         )
 
+    @staticmethod
+    def _pull_request(number: int, branch: str = "feat/x-niu-1", **overrides) -> dict:
+        return {
+            "number": number,
+            "title": "A change",
+            "url": f"https://github.com/o/r/pull/{number}",
+            "repo_url": "https://github.com/o/r",
+            "provider": "github",
+            "source_branch": branch,
+            "target_branch": "main",
+            "status": "open",
+            "ci_status": None,
+            **overrides,
+        }
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_it_reads_the_newest_pull_request_from_the_sessions_branch(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        self._session()
+        route = respx.get(f"{BASE_URL}/api/v1/niuu/repos/prs").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    self._pull_request(9, branch="feat/x-niu-2"),
+                    self._pull_request(4, status="closed"),
+                    self._pull_request(7, status="merged", ci_status="passing"),
+                ],
+            )
+        )
+
         pr_status = await adapter.get_pr_status("ses-1")
-        assert pr_status.pr_id == "42"
-        assert pr_status.url == "https://github.com/org/repo/pull/42"
-        assert pr_status.state == "open"
-        assert pr_status.mergeable is True
+
+        assert route.calls.last.request.url.params["repo_url"] == "https://github.com/o/r"
+        assert route.calls.last.request.url.params["status"] == "all"
+        assert pr_status.pr_id == "7"
+        assert pr_status.url == "https://github.com/o/r/pull/7"
+        assert pr_status.state == "merged"
         assert pr_status.ci_passed is True
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_ci_passed_none(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1/pr").mock(
-            return_value=httpx.Response(
-                200,
-                json={
-                    "pr_id": "pr-1",
-                    "state": "open",
-                    "mergeable": False,
-                },
-            )
+    async def test_failing_ci_reads_as_failed(self, adapter: VolundrHTTPAdapter):
+        self._session()
+        respx.get(f"{BASE_URL}/api/v1/niuu/repos/prs").mock(
+            return_value=httpx.Response(200, json=[self._pull_request(1, ci_status="failing")])
         )
 
-        pr_status = await adapter.get_pr_status("ses-1")
-        assert pr_status.ci_passed is None
+        assert (await adapter.get_pr_status("ses-1")).ci_passed is False
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_branch_with_no_pull_request_is_none(self, adapter: VolundrHTTPAdapter):
+        self._session()
+        respx.get(f"{BASE_URL}/api/v1/niuu/repos/prs").mock(
+            return_value=httpx.Response(200, json=[self._pull_request(1, branch="other")])
+        )
+
+        assert await adapter.get_pr_status("ses-1") is None
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_session_that_no_longer_exists_is_none(self, adapter: VolundrHTTPAdapter):
+        respx.get(f"{SESSIONS_URL}/ses-1").mock(return_value=httpx.Response(404))
+
+        assert await adapter.get_pr_status("ses-1") is None
 
     @pytest.mark.asyncio
     @respx.mock
     async def test_raises_on_error(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1/pr").mock(return_value=httpx.Response(500, text="error"))
+        self._session()
+        respx.get(f"{BASE_URL}/api/v1/niuu/repos/prs").mock(
+            return_value=httpx.Response(500, text="error")
+        )
 
         with pytest.raises(httpx.HTTPStatusError):
             await adapter.get_pr_status("ses-1")
@@ -714,18 +796,7 @@ class TestSendMessage:
     @pytest.mark.asyncio
     @respx.mock
     async def test_send_directed_room_message(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1").mock(
-            return_value=httpx.Response(
-                200,
-                json={
-                    "id": "ses-1",
-                    "name": "research-council",
-                    "status": "running",
-                    "chat_endpoint": "http://volundr.test:8000/s/ses-1/chat",
-                },
-            )
-        )
-        route = respx.post("http://volundr.test:8000/s/ses-1/chat/api/room/direct").mock(
+        route = respx.post(f"{SESSIONS_URL}/ses-1/room/direct").mock(
             return_value=httpx.Response(200, json={"ok": True})
         )
 
@@ -735,8 +806,7 @@ class TestSendMessage:
             "Please prefer the staged rollout option.",
         )
 
-        sent = route.calls[0].request
-        body = json.loads(sent.content)
+        body = json.loads(route.calls[0].request.content)
         assert body["target_peer_id"] == "flock-council-chair"
         assert body["content"] == "Please prefer the staged rollout option."
         assert body["source"] == "ting"
@@ -744,18 +814,7 @@ class TestSendMessage:
     @pytest.mark.asyncio
     @respx.mock
     async def test_publish_workflow_event(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1").mock(
-            return_value=httpx.Response(
-                200,
-                json={
-                    "id": "ses-1",
-                    "name": "developer-delivery",
-                    "status": "running",
-                    "chat_endpoint": "http://volundr.test:8000/s/ses-1/chat",
-                },
-            )
-        )
-        route = respx.post("http://volundr.test:8000/s/ses-1/chat/api/room/workflow-events").mock(
+        route = respx.post(f"{SESSIONS_URL}/ses-1/room/workflow-events").mock(
             return_value=httpx.Response(200, json={"status": "published"})
         )
 
@@ -777,47 +836,38 @@ class TestSendMessage:
         }
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("operation", ["workflow", "direct"])
     @respx.mock
-    async def test_room_control_uses_configured_gateway_origin(self, adapter, operation):
-        respx.get(f"{SESSIONS_URL}/ses-1").respond(
-            200,
-            json={
-                "id": "ses-1",
-                "name": "developer-delivery",
-                "status": "running",
-                "chat_endpoint": "wss://browser-only.example/s/ses-1/session",
-            },
+    async def test_joining_and_leaving_a_room_go_through_forge(self, adapter):
+        joined = respx.post(f"{SESSIONS_URL}/ses-1/room/join").respond(200, json={})
+        left = respx.post(f"{SESSIONS_URL}/ses-1/room/leave").respond(200, json={})
+
+        await adapter.join_room(
+            "ses-1",
+            participant_id="ticket-coordinator",
+            display_name="Coordinator",
+            member_session_id="ses-2",
+            notice_context="[Ticket NIU-1]",
         )
-        suffix = "workflow-events" if operation == "workflow" else "direct"
-        route = respx.post(f"{BASE_URL}/s/ses-1/api/room/{suffix}").respond(200, json={})
-        if operation == "workflow":
-            await adapter.publish_workflow_event(
-                "ses-1", "test.observed", "observation", request_id="continuation-1"
-            )
-        else:
-            await adapter.send_directed_room_message("ses-1", "flock-coordinator", "reply")
-        assert route.call_count == 1
+        await adapter.leave_room("ses-1", "ticket-coordinator", reason="run_finished")
+
+        assert joined.call_count == 1
+        assert left.call_count == 1
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_room_control_preserves_direct_skuld_origin(self, adapter):
-        respx.get(f"{SESSIONS_URL}/ses-1").respond(
-            200,
-            json={
-                "id": "ses-1",
-                "name": "direct-session",
-                "status": "running",
-                "chat_endpoint": "wss://session-ingress.example/session",
-            },
-        )
-        route = respx.post("https://session-ingress.example/api/room/workflow-events").respond(
-            200, json={}
-        )
-        await adapter.publish_workflow_event(
-            "ses-1", "test.observed", "observation", request_id="continuation-1"
-        )
-        assert route.call_count == 1
+    async def test_leaving_the_room_of_a_session_that_is_gone(self, adapter):
+        respx.post(f"{SESSIONS_URL}/ses-1/room/leave").respond(404, json={})
+
+        with pytest.raises(LookupError, match="no room to leave"):
+            await adapter.leave_room("ses-1", "ticket-coordinator", reason="run_finished")
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_refused_room_call_stays_loud(self, adapter):
+        respx.post(f"{SESSIONS_URL}/ses-1/room/direct").respond(403, json={})
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await adapter.send_directed_room_message("ses-1", "flock-coordinator", "reply")
 
 
 class TestStopSession:
@@ -1119,7 +1169,32 @@ class TestWorkflowGates:
             "decision": "APPROVE",
             "notes": "Looks bounded.",
             "source": "ting.plan",
+            "actor": "",
         }
+
+    @respx.mock
+    async def test_resolving_a_gate_names_the_agent_behind_the_caller(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        route = respx.post(f"{SESSIONS_URL}/ses-1/workflow/gates/gate-1/resolve").mock(
+            return_value=httpx.Response(200, json={"status": "resolved"})
+        )
+
+        await adapter.resolve_workflow_gate(
+            "ses-1",
+            "gate-1",
+            "APPROVE",
+            principal=Principal(
+                user_id="u1",
+                email="a@b.c",
+                tenant_id="t1",
+                roles=[],
+                actor="system:serviceaccount:nats:regin",
+            ),
+        )
+
+        sent = json.loads(route.calls.last.request.content)
+        assert sent["actor"] == "system:serviceaccount:nats:regin"
 
 
 class _FakeLineIterator:
@@ -1333,3 +1408,171 @@ class TestSubscribeActivity:
                 items.append(item)
 
         assert items == []
+
+
+PROJECTS_URL = f"{BASE_URL}/api/v1/forge/projects"
+FLAGS_URL = f"{BASE_URL}/api/v1/forge/feature-flags"
+PROJECT_ID = "5c3115f1-0b77-44c3-a4a6-ae4eca22239a"
+
+
+def _flags(instance_id: str | None = "forge-host") -> httpx.Response:
+    return httpx.Response(200, json={"project_instance_id": instance_id})
+
+
+@respx.mock
+async def test_get_project_returns_the_project_and_its_host_id(
+    adapter: VolundrHTTPAdapter,
+) -> None:
+    respx.get(f"{PROJECTS_URL}/{PROJECT_ID}").mock(
+        return_value=httpx.Response(200, json={"id": PROJECT_ID, "name": "Shop"})
+    )
+    respx.get(FLAGS_URL).mock(return_value=_flags())
+
+    project = await adapter.get_project(PROJECT_ID)
+
+    assert project == ForgeProjectRef(id=PROJECT_ID, name="Shop", instance_id="forge-host")
+
+
+@respx.mock
+async def test_get_project_answers_none_for_a_project_this_forge_does_not_know(
+    adapter: VolundrHTTPAdapter,
+) -> None:
+    respx.get(f"{PROJECTS_URL}/{PROJECT_ID}").mock(return_value=httpx.Response(404))
+
+    assert await adapter.get_project(PROJECT_ID) is None
+
+
+@respx.mock
+async def test_a_forge_without_projects_says_so(adapter: VolundrHTTPAdapter) -> None:
+    respx.get(f"{PROJECTS_URL}/{PROJECT_ID}").mock(
+        return_value=httpx.Response(200, json={"id": PROJECT_ID, "name": "Shop"})
+    )
+    respx.get(FLAGS_URL).mock(return_value=_flags(None))
+
+    with pytest.raises(httpx.HTTPError, match="serves no projects"):
+        await adapter.get_project(PROJECT_ID)
+
+
+@respx.mock
+async def test_ensure_project_leaves_a_known_project_alone(adapter: VolundrHTTPAdapter) -> None:
+    respx.get(f"{PROJECTS_URL}/{PROJECT_ID}").mock(
+        return_value=httpx.Response(200, json={"id": PROJECT_ID, "name": "Shop"})
+    )
+    respx.get(FLAGS_URL).mock(return_value=_flags())
+    created = respx.post(PROJECTS_URL)
+
+    project = await adapter.ensure_project(PROJECT_ID, "Other name")
+
+    assert project.name == "Shop"
+    assert not created.called
+
+
+@respx.mock
+async def test_ensure_project_creates_it_under_works_id(adapter: VolundrHTTPAdapter) -> None:
+    respx.get(f"{PROJECTS_URL}/{PROJECT_ID}").mock(return_value=httpx.Response(404))
+    respx.get(FLAGS_URL).mock(return_value=_flags())
+    created = respx.post(PROJECTS_URL).mock(
+        return_value=httpx.Response(201, json={"id": PROJECT_ID, "name": "Shop"})
+    )
+
+    project = await adapter.ensure_project(PROJECT_ID, "Shop")
+
+    assert json.loads(created.calls.last.request.content) == {"id": PROJECT_ID, "name": "Shop"}
+    assert project.instance_id == "forge-host"
+
+
+@respx.mock
+async def test_ensure_project_reports_why_forge_refused(adapter: VolundrHTTPAdapter) -> None:
+    respx.get(f"{PROJECTS_URL}/{PROJECT_ID}").mock(return_value=httpx.Response(404))
+    respx.post(PROJECTS_URL).mock(
+        return_value=httpx.Response(409, json={"detail": "Project ID already taken"})
+    )
+
+    with pytest.raises(httpx.HTTPStatusError, match="Project ID already taken"):
+        await adapter.ensure_project(PROJECT_ID, "Shop")
+
+
+@respx.mock
+async def test_session_project_reads_the_membership(adapter: VolundrHTTPAdapter) -> None:
+    respx.get(f"{SESSIONS_URL}/ses-1/project").mock(
+        return_value=httpx.Response(
+            200, json={"revision": 1, "coordination": {"project_id": PROJECT_ID}}
+        )
+    )
+    respx.get(f"{SESSIONS_URL}/ses-2/project").mock(
+        return_value=httpx.Response(200, json={"revision": 0, "coordination": None})
+    )
+
+    assert await adapter.session_project("ses-1") == PROJECT_ID
+    assert await adapter.session_project("ses-2") is None
+
+
+@respx.mock
+async def test_join_project_leaves_a_member_alone(adapter: VolundrHTTPAdapter) -> None:
+    respx.get(f"{SESSIONS_URL}/ses-1/project").mock(
+        return_value=httpx.Response(
+            200, json={"revision": 3, "coordination": {"project_id": PROJECT_ID}}
+        )
+    )
+    assigned = respx.put(f"{SESSIONS_URL}/ses-1/project")
+
+    await adapter.join_project("ses-1", PROJECT_ID, role="coordinator")
+
+    assert not assigned.called
+
+
+@respx.mock
+async def test_join_project_assigns_at_the_session_revision(adapter: VolundrHTTPAdapter) -> None:
+    respx.get(f"{SESSIONS_URL}/ses-1/project").mock(
+        return_value=httpx.Response(200, json={"revision": 2, "coordination": None})
+    )
+    assigned = respx.put(f"{SESSIONS_URL}/ses-1/project").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    await adapter.join_project("ses-1", PROJECT_ID, role="coordinator")
+
+    assert json.loads(assigned.calls.last.request.content) == {
+        "project_id": PROJECT_ID,
+        "expected_revision": 2,
+        "role": "coordinator",
+    }
+
+
+@respx.mock
+async def test_a_launch_carries_its_project_and_parent(adapter: VolundrHTTPAdapter) -> None:
+    created = respx.post(SESSIONS_URL).mock(
+        return_value=httpx.Response(
+            201, json={"id": "ses-1", "name": "work", "status": "created", "source": {}}
+        )
+    )
+
+    await adapter.spawn_session(
+        SpawnRequest(
+            name="work",
+            repo="",
+            branch="",
+            model="m",
+            tracker_issue_id="NIU-1",
+            tracker_issue_url="",
+            system_prompt="",
+            initial_prompt="go",
+            base_branch="",
+            membership=SessionMembership(
+                project_id=PROJECT_ID,
+                role="worker",
+                parent_instance_id="forge-host",
+                parent_session_id="coordinator-1",
+                objective="Delivery",
+                labels=("work-project:p1",),
+            ),
+        )
+    )
+
+    assert json.loads(created.calls.last.request.content)["coordination"] == {
+        "project_id": PROJECT_ID,
+        "role": "worker",
+        "objective": "Delivery",
+        "labels": ["work-project:p1"],
+        "parent": {"instance_id": "forge-host", "session_id": "coordinator-1"},
+    }

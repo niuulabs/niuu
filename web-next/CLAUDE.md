@@ -111,13 +111,14 @@ Three feature-flag tiers, any of which can hide a plugin:
 
 Styling in `web-next/` uses **Tailwind CSS** mapped to our design tokens.
 
-- **`@niuulabs/design-tokens` owns `tokens.css`** — ported from the earlier
-  prototype system and now treated as the single source of truth for color,
-  spacing, typography, motion, and theme (ice / amber / spring).
+- **`@niuulabs/design-tokens` owns `tokens.css`** — implements the NIUU brand system
+  (`docs/design/brand/`) and is the single source of truth for color, spacing,
+  typography, motion, and theme (niuu / ice / amber / spring / xteo / midnight-blue /
+  deep-blue / dark-blue / light).
 - **Tailwind config reads from tokens** — `tailwind.config.ts` in each package
   pulls from `tokens.css` via `theme.extend`. Never hard-code hex or px in a class
   (`bg-[#09090b]` is a bug — use `bg-bg-primary` mapped to `var(--color-bg-primary)`).
-- **Single brand theme policy** — default is `ice`. `[data-theme]` on `<html>` swaps
+- **Single brand theme policy** — default is `niuu`. `[data-theme]` on `<html>` swaps
   token values; Tailwind classes don't change.
 - **Each plugin package publishes its own pre-compiled CSS.** Consumers install the
   plugin and import its `styles.css`. They do **not** need Tailwind in their build.
@@ -225,6 +226,7 @@ web-next/
 ```bash
 pnpm install            # install workspace deps (first thing in a fresh clone)
 pnpm dev                # run @niuulabs/niuu at :5173
+pnpm dev:remote         # this UI on yggdrasil's real APIs at :5199; sign in as usual, actions are real
 pnpm test               # vitest run with coverage
 pnpm test:watch         # vitest watch
 pnpm test:e2e           # playwright test

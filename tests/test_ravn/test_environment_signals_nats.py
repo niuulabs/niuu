@@ -240,6 +240,7 @@ async def test_durable_transport_persists_to_inbox_without_queueing_each_poll() 
         enqueue=enqueue,
         resident_signal_processor=process,
         durable_home_enabled=True,
+        home_wake=lambda: None,
     )
     runtime._adapters = [adapter]
 

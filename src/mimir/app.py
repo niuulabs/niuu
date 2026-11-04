@@ -175,6 +175,7 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         deployment=deployment,
         public_url=config.announce_url or "",
         tenant_id=config.tenant_id,
+        platform_tenant_id=config.platform_tenant_id,
         adapter=adapter,
         name=config.name,
         role=config.role,
@@ -190,6 +191,7 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         auth=identity_adapter,
         auth_mode=auth_mode,
         live_activity=live_activity,
+        platform_tenant_id=config.platform_tenant_id,
     )
 
     @asynccontextmanager
@@ -411,5 +413,13 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
                 )
             ],
         )
+
+    # Wire compression — see niuu.gzip_sse for SSE safety. The standalone
+    # service had none, so /mimir/graph shipped 1.1 MB and /mimir/pages 880 KB
+    # of repetitive JSON raw to every browser that opened the Mímir page.
+    # Added last, so it is the outermost layer and covers every router above.
+    from niuu.gzip_sse import SSESafeGZipMiddleware
+
+    app.add_middleware(SSESafeGZipMiddleware, minimum_size=4096)
 
     return app

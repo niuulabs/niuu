@@ -6,6 +6,7 @@ import {
   isForgeNotifyCall,
   parseForgeNotificationLinks,
   parseForgeNotificationPayload,
+  parseForgeNotificationSpeak,
   severityRank,
 } from './forge-notification';
 
@@ -59,6 +60,21 @@ describe('forge notification value types', () => {
     expect(parseForgeNotificationPayload(null)).toBeNull();
     expect(parseForgeNotificationPayload('title')).toBeNull();
     expect(parseForgeNotificationPayload({ kind: 'info', title: '   ' })).toBeNull();
+  });
+
+  it('parses a speak intent, defaulting the priority and refusing blank text', () => {
+    expect(parseForgeNotificationSpeak({ text: ' Done. ', priority: 'next_window' })).toEqual({
+      text: 'Done.',
+      priority: 'next_window',
+    });
+    expect(parseForgeNotificationSpeak({ text: 'Done.' })).toEqual({
+      text: 'Done.',
+      priority: 'now',
+    });
+    expect(parseForgeNotificationSpeak({ text: ' ' })).toBeNull();
+    expect(parseForgeNotificationSpeak({ text: 3 })).toBeNull();
+    expect(parseForgeNotificationSpeak('Done.')).toBeNull();
+    expect(parseForgeNotificationSpeak(null)).toBeNull();
   });
 
   it('drops malformed links', () => {

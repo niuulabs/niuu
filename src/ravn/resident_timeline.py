@@ -142,7 +142,7 @@ async def build_resident_timeline(
         entry = await state.read(ref)
         if entry is None:
             continue
-        turn = _turn_from_content(ref, entry.content)
+        turn = turn_from_content(ref, entry.content)
         if turn is not None:
             turns.append(turn)
     turns.sort(key=lambda item: (item.updated_at, item.turn_index))
@@ -224,8 +224,8 @@ def _with_changes(turns: list[ResidentTimelineTurn]) -> list[ResidentTimelineTur
     return projected
 
 
-def _turn_from_content(ref: str, content: str) -> ResidentTimelineTurn | None:
-    fields = _outcome_fields(content)
+def turn_from_content(ref: str, content: str) -> ResidentTimelineTurn | None:
+    fields = turn_outcome_fields(content)
     working_state = _normalized_working_state(fields.get("working_state"))
     judgment = {key: value for key, value in fields.items() if key != "working_state"}
     return ResidentTimelineTurn(
@@ -253,7 +253,7 @@ def _turn_from_content(ref: str, content: str) -> ResidentTimelineTurn | None:
     )
 
 
-def _outcome_fields(content: str) -> dict[str, Any]:
+def turn_outcome_fields(content: str) -> dict[str, Any]:
     """Recover the outcome mapping from its persisted ``repr()`` lines."""
     section = _section(content, _OUTCOME_HEADING)
     fields: dict[str, Any] = {}

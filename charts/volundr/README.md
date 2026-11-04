@@ -25,8 +25,8 @@ helm pull oci://ghcr.io/niuulabs/charts/volundr --version 0.0.0-ting.160
 # Create namespace
 kubectl create namespace volundr
 
-# Install the chart
-helm install volundr ./charts/volundr -n volundr
+# Install the chart; bifrost.url is required, Volundr does not host Bifrost
+helm install volundr ./charts/volundr -n volundr --set bifrost.url=http://bifrost
 
 # Or install with custom values
 helm install volundr ./charts/volundr -n volundr -f my-values.yaml
@@ -51,6 +51,7 @@ kubectl create secret generic volundr-anthropic-api -n volundr \
 
 ```bash
 helm install volundr ./charts/volundr -n volundr \
+  --set bifrost.url=http://bifrost \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=volundr.example.com
 ```

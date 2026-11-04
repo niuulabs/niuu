@@ -76,7 +76,7 @@ describe('RavnWorkbench — list', () => {
     fireEvent.change(screen.getByTestId('ravn-search'), { target: { value: 'openclaw' } });
     expect(within(list).queryByText('Muninn')).not.toBeInTheDocument();
     fireEvent.change(screen.getByTestId('ravn-search'), { target: { value: 'zzz' } });
-    expect(screen.getByTestId('ravn-list-empty')).toHaveTextContent('No ravens match');
+    expect(screen.getByTestId('ravn-list-empty')).toHaveTextContent('No agents match');
 
     fireEvent.change(screen.getByTestId('ravn-search'), { target: { value: '' } });
     fireEvent.change(screen.getByTestId('ravn-grouping'), { target: { value: 'engine' } });
@@ -98,9 +98,9 @@ describe('RavnWorkbench — list', () => {
   it('invites a first deploy when the fleet is empty', async () => {
     mountRavn('/ravn', ravnServices({ ravens: [] }));
     expect(await screen.findByTestId('ravn-workbench-empty')).toBeInTheDocument();
-    expect(screen.getByTestId('ravn-list-empty')).toHaveTextContent('No ravens yet');
-    fireEvent.click(screen.getByRole('button', { name: 'Deploy a ravn' }));
-    expect(await screen.findByRole('dialog', { name: 'Deploy a ravn' })).toBeInTheDocument();
+    expect(screen.getByTestId('ravn-list-empty')).toHaveTextContent('No agents yet');
+    fireEvent.click(screen.getByRole('button', { name: 'Deploy an agent' }));
+    expect(await screen.findByRole('dialog', { name: 'Deploy an agent' })).toBeInTheDocument();
   });
 });
 
@@ -251,7 +251,7 @@ describe('RavnWorkbench — ravn header', () => {
 
   it('goes back to the list on narrow screens', async () => {
     const router = mountRavn(`/ravn?ravn=${RAVN_ID}`, ravnServices());
-    fireEvent.click(await screen.findByRole('button', { name: 'Ravens' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Agents' }));
     await waitFor(() => expect(router.state.location.search).toEqual({}));
   });
 });
@@ -261,7 +261,7 @@ describe('RavnWorkbench — deploy', () => {
     const services = ravnServices();
     const router = mountRavn('/ravn', services);
     fireEvent.click(await screen.findByTestId('ravn-deploy-open'));
-    const dialog = await screen.findByRole('dialog', { name: 'Deploy a ravn' });
+    const dialog = await screen.findByRole('dialog', { name: 'Deploy an agent' });
     expect(await within(dialog).findByTestId('ravn-deploy-profile-nemoclaw-local')).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -309,7 +309,7 @@ describe('RavnWorkbench — deploy', () => {
 
   it('opens with a persona picked when linked from the library', async () => {
     mountRavn('/ravn?deploy=reviewer', ravnServices());
-    const dialog = await screen.findByRole('dialog', { name: 'Deploy a ravn' });
+    const dialog = await screen.findByRole('dialog', { name: 'Deploy an agent' });
     fireEvent.change(await within(dialog).findByTestId('ravn-deploy-name'), {
       target: { value: 'Critic' },
     });

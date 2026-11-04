@@ -14,7 +14,7 @@ export function LaunchWizard(props: LaunchWizardProps & { initialStandard?: Forg
     if (!open) setAdvanced(false);
     props.onOpenChange(open);
   };
-  // A preset or a prefilled form (Simple mode, Realms) is already an advanced
+  // A preset or a prefilled form (Workspaces) is already an advanced
   // launch; only a bare open offers the quick standards.
   if (advanced || props.initialLaunchSpecRef || props.initialForm)
     return <AdvancedLaunchWizard {...props} onOpenChange={close} />;
@@ -22,7 +22,7 @@ export function LaunchWizard(props: LaunchWizardProps & { initialStandard?: Forg
     <Dialog open={props.open} onOpenChange={close}>
       <DialogContent
         title="Quick launch"
-        description="Choose a Forge and a workspace, then start your session."
+        description="Choose a host and a workspace, then start your session."
         className="vol-quick__modal"
       >
         <QuickLaunch

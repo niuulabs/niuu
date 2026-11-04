@@ -1,4 +1,7 @@
-{{- if and .Values.wsAuth.enforce_ownership .Values.envoy.enabled }}
+{{- include "skuld.roomGatewayValidate" . -}}
+{{- $room := include "skuld.roomGatewayEnabled" . -}}
+{{- $upstream := ternary "local_broker" "local_nginx" (not (empty $room)) -}}
+{{- if include "skuld.authEnforced" . }}
 {{- if not (and .Values.envoy.jwt.enabled .Values.envoy.jwt.issuer .Values.envoy.jwt.audiences .Values.envoy.jwt.keycloakTls (hasPrefix "https://" .Values.envoy.jwt.jwksUri)) }}
 {{- fail "Enforced Skuld sidecar requires a JWT issuer, audiences and verified HTTPS JWKS" }}
 {{- end }}
@@ -6,7 +9,7 @@
 {{- fail "Enforced Skuld workload JWTs require issuer, audiences and verified HTTPS JWKS" }}
 {{- end }}
 {{- end }}
-{{- if .Values.envoy.enabled }}
+{{- if include "skuld.envoyEnabled" . }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -37,12 +40,12 @@ data:
                         - name: backend
                           domains: ["*"]
                           routes:
-                            {{- if .Values.wsAuth.enforce_ownership }}
+                            {{- if and .Values.wsAuth.enforce_ownership (not $room) }}
                             {{- range list "/health" "/ready" }}
                             - match:
                                 path: {{ . | quote }}
                               route:
-                                cluster: local_nginx
+                                cluster: {{ $upstream }}
                               typed_per_filter_config:
                                 envoy.filters.http.ext_authz:
                                   "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
@@ -55,7 +58,7 @@ data:
                                     string_match:
                                       exact: OPTIONS
                               route:
-                                cluster: local_nginx
+                                cluster: {{ $upstream }}
                               typed_per_filter_config:
                                 envoy.filters.http.ext_authz:
                                   "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
@@ -64,7 +67,7 @@ data:
                             - match:
                                 prefix: "/"
                               route:
-                                cluster: local_nginx
+                                cluster: {{ $upstream }}
                                 timeout: {{ .Values.envoy.upstreamTimeout }}
                     http_filters:
                       {{- if .Values.envoy.jwt.enabled }}
@@ -165,6 +168,7 @@ data:
                                 {{- end }}
                             {{- end }}
                           rules:
+                            {{- if not $room }}
                             - match:
                                 path: /health
                             - match:
@@ -174,6 +178,7 @@ data:
                                 headers:
                                   - name: ":method"
                                     exact_match: "OPTIONS"
+                            {{- end }}
                             - match:
                                 prefix: "/"
                               requires:
@@ -189,7 +194,7 @@ data:
                       {{- with .Values.envoy.extraHttpFilters }}
                       {{- toYaml . | nindent 22 }}
                       {{- end }}
-                      {{- if (and .Values.wsAuth.enforce_ownership .Values.envoy.enabled) }}
+                      {{- if include "skuld.authEnforced" . }}
                       - name: envoy.filters.http.ext_authz
                         typed_config:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
@@ -209,7 +214,7 @@ data:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 
       clusters:
-        {{- if (and .Values.wsAuth.enforce_ownership .Values.envoy.enabled) }}
+        {{- if include "skuld.authEnforced" . }}
         - name: cedar_authz
           connect_timeout: {{ .Values.envoy.connectTimeout }}
           type: STATIC
@@ -228,6 +233,22 @@ data:
                           address: 127.0.0.1
                           port_value: {{ .Values.envoy.authorization.port }}
         {{- end }}
+        {{- if $room }}
+        # Room gateway: no nginx. Envoy fronts the loopback-only broker directly.
+        - name: local_broker
+          connect_timeout: {{ .Values.envoy.connectTimeout }}
+          type: STATIC
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: local_broker
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: 127.0.0.1
+                          port_value: 8081
+        {{- else }}
         - name: local_nginx
           connect_timeout: {{ .Values.envoy.connectTimeout }}
           type: STATIC
@@ -241,6 +262,7 @@ data:
                         socket_address:
                           address: 127.0.0.1
                           port_value: {{ .Values.service.port | default 8080 }}
+        {{- end }}
         {{- if .Values.envoy.jwt.enabled }}
         - name: keycloak
           connect_timeout: {{ .Values.envoy.connectTimeout }}

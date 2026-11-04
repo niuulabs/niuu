@@ -4,9 +4,9 @@ import copy
 
 import pytest
 
+from niuu.domain.transcript_rebuild import rebuild_turns
 from niuu.domain.transcript_reducer import is_read_path_excluded, reduce_frames
 from tests.test_domain.test_transcript_rebuild import _entry
-from volundr.domain.services.transcript_rebuild import rebuild_turns
 
 
 @pytest.mark.parametrize(

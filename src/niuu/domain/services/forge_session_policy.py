@@ -46,11 +46,10 @@ class RoutePolicy:
     binding: Binding
 
 
-#: ``{session_id}`` only matches a UUID, so a sibling route such as
-#: ``/sessions/stream`` can never be mistaken for a session read.
-_PARAM_PATTERNS = {
-    "session_id": r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-}
+_UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+#: ``{session_id}`` and ``{project_id}`` only match a UUID, so a sibling route such as
+#: ``/sessions/stream`` or ``/projects/search`` can never be mistaken for a read of one.
+_PARAM_PATTERNS = {"session_id": _UUID, "project_id": _UUID}
 _ANY_SEGMENT = r"[^/]+"
 
 
@@ -84,6 +83,7 @@ ROUTE_POLICIES: tuple[RoutePolicy, ...] = (
     # Session reads, owner-scoped.
     RoutePolicy("GET", f"{FORGE_PREFIX}/sessions", _READ, Binding.NONE),
     RoutePolicy("GET", _S, _READ, Binding.OWNED),
+    RoutePolicy("GET", f"{_S}/status", _READ, Binding.OWNED),
     RoutePolicy("GET", f"{_S}/conversation", _READ, Binding.OWNED),
     RoutePolicy("GET", f"{_S}/conversation/turns/{{turn_id}}", _READ, Binding.OWNED),
     RoutePolicy("GET", f"{_S}/log", _READ, Binding.OWNED),
@@ -91,11 +91,25 @@ ROUTE_POLICIES: tuple[RoutePolicy, ...] = (
     RoutePolicy("GET", f"{_S}/transcript", _READ, Binding.OWNED),
     RoutePolicy("GET", f"{_S}/transcript/download", _READ, Binding.OWNED),
     RoutePolicy("GET", f"{_S}/message-deliveries/{{request_id}}", _READ, Binding.OWNED),
+    # Artifact publications and their bursts (F1/F1n), owner-scoped like the feed.
+    RoutePolicy("GET", f"{FORGE_PREFIX}/artifact-publications", _READ, Binding.NONE),
+    RoutePolicy("GET", f"{FORGE_PREFIX}/artifact-bursts", _READ, Binding.NONE),
+    RoutePolicy("GET", f"{FORGE_PREFIX}/artifact-bursts/{{burst_id}}", _READ, Binding.NONE),
     # Steering another session needs the `message` grant; never the session itself.
     RoutePolicy("POST", f"{_S}/messages", FORGE_SESSION_MESSAGE_SCOPE, Binding.PEER),
+    RoutePolicy("POST", f"{_S}/room/{{operation}}", FORGE_SESSION_MESSAGE_SCOPE, Binding.PEER),
     # Lifecycle needs the `lifecycle` grant: create, start/resume and stop. No
     # delete or archive, and a session cannot start or stop itself.
     RoutePolicy("POST", f"{FORGE_PREFIX}/sessions", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.NONE),
+    # Creating a session in a project first reads that project on the node (the Guild
+    # facade checks it is known there). Volundr still enforces the owner's access; listing,
+    # creating and changing projects stay denied.
+    RoutePolicy(
+        "GET",
+        f"{FORGE_PREFIX}/projects/{{project_id}}",
+        FORGE_SESSION_LIFECYCLE_SCOPE,
+        Binding.NONE,
+    ),
     RoutePolicy("POST", f"{_S}/start", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.PEER),
     RoutePolicy("POST", f"{_S}/resume", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.PEER),
     RoutePolicy("POST", f"{_S}/stop", FORGE_SESSION_LIFECYCLE_SCOPE, Binding.PEER),
@@ -103,6 +117,10 @@ ROUTE_POLICIES: tuple[RoutePolicy, ...] = (
     RoutePolicy("POST", f"{_S}/log", FORGE_NOTIFY_SCOPE, Binding.OWN),
     RoutePolicy("POST", f"{_S}/activity", FORGE_NOTIFY_SCOPE, Binding.OWN),
     RoutePolicy("POST", f"{_S}/usage", FORGE_NOTIFY_SCOPE, Binding.OWN),
+    # The agent keeps its own session's descriptions current; PUT {_S} stays denied.
+    RoutePolicy("PUT", f"{_S}/description", FORGE_NOTIFY_SCOPE, Binding.OWN),
+    # The broker's durable copy of a file its own session presented (F2).
+    RoutePolicy("PUT", f"{_S}/files/presented/{{file_id}}", FORGE_NOTIFY_SCOPE, Binding.OWN),
     # The Forge-hosted MCP. Each tool re-enters this allow-list as a REST call.
     RoutePolicy("POST", f"{FORGE_PREFIX}/mcp", None, Binding.NONE),
 )

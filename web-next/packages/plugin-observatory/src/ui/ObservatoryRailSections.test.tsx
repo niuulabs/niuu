@@ -78,7 +78,14 @@ describe('ObservatoryRailSections', () => {
     expect(screen.getByText('No residents reporting.')).toBeInTheDocument();
     expect(screen.getByText('No agent meshes discovered.')).toBeInTheDocument();
     expect(screen.getByText('No clusters discovered.')).toBeInTheDocument();
-    expect(screen.getByText('No Mímir instances discovered.')).toBeInTheDocument();
+    expect(screen.getByText('No memory instances discovered.')).toBeInTheDocument();
+  });
+
+  it('says it is still reading before the first snapshot, not that nothing exists', () => {
+    render(<ObservatoryRailSections topology={null} selectedId={null} onSelect={vi.fn()} />);
+
+    expect(screen.getByTestId('rail-loading')).toHaveTextContent('Reading the estate');
+    expect(screen.queryByText('No clusters discovered.')).not.toBeInTheDocument();
   });
 
   it('selects a node when its row is clicked', async () => {
@@ -122,11 +129,5 @@ describe('ObservatoryRailSections', () => {
 
     // Scoped to the mesh row: the Residents count is also 2.
     expect(screen.getByTestId('rail-row-mesh-forge')).toHaveTextContent('2');
-  });
-
-  it('survives an absent topology', () => {
-    render(<ObservatoryRailSections topology={null} selectedId={null} onSelect={vi.fn()} />);
-
-    expect(screen.getByText('No residents reporting.')).toBeInTheDocument();
   });
 });

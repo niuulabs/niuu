@@ -20,6 +20,8 @@ from niuu.forge_mcp.tools import UnknownToolError
 logger = logging.getLogger("skuld.broker")
 
 FORGE_MCP_TOOLS_PATH = "/api/forge-mcp/tools"
+#: The ``forge-describe`` shim calls the ``describe_session`` tool through this route.
+DESCRIBE_TOOL_PATH = f"{FORGE_MCP_TOOLS_PATH}/describe_session"
 
 
 def register_forge_mcp_routes(

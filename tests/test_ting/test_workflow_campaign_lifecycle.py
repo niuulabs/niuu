@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
@@ -64,6 +65,12 @@ def test_terminal_session_cleanup_needed_false_once_flag_recorded() -> None:
 def test_terminal_session_cleanup_needed_false_for_non_terminal_status() -> None:
     campaign = _campaign(status=WorkflowCampaignStatus.RUNNING)
     assert terminal_session_cleanup_needed(campaign) is False
+
+
+def test_terminal_session_cleanup_needed_false_for_a_run_that_never_had_a_session() -> None:
+    campaign = _campaign(status=WorkflowCampaignStatus.FAILED)
+
+    assert terminal_session_cleanup_needed(replace(campaign, session_id="")) is False
 
 
 @pytest.mark.asyncio

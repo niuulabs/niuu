@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
+import { useSearch } from '@tanstack/react-router';
 import {
-  Check,
   ChevronLeft,
   ChevronRight,
   Gavel,
@@ -10,12 +10,10 @@ import {
   Shield,
   Sunrise,
   TrendingUp,
-  X,
 } from 'lucide-react';
 import { HighlightedCode, MarkdownContent, SegmentedFilter } from '@niuulabs/ui';
 import {
   reviewArtifactEvidence,
-  reviewEffectStatement,
   reviewInvestigationPrompt,
   reviewPolicyFindings,
   LIST_LIMIT,
@@ -23,8 +21,9 @@ import {
   type ReviewKind,
   type ReviewRiskClass,
 } from '../domain';
-import { useDecideReview, useReviewList, useReviewSummary } from '../application/useReviews';
-import { KIND_LABELS, riskClasses, sortByUrgency, statusClasses, timeAgo } from './reviewFormat';
+import { useReview, useReviewList, useReviewSummary } from '../application/useReviews';
+import { KIND_LABELS, riskClasses, sortByUrgency, timeAgo } from './reviewFormat';
+import { ReviewDecisionPanel } from './ReviewDecisionPanel';
 
 const PANEL =
   'niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:rounded-md';
@@ -160,95 +159,6 @@ function ArtifactViewer({ item }: { item: ReviewItem }) {
   );
 }
 
-function DecisionPanel({ item }: { item: ReviewItem }) {
-  const decide = useDecideReview();
-  const [reason, setReason] = useState('');
-  const [validationError, setValidationError] = useState('');
-  const isOperatorQuestion =
-    typeof item.evidence.operator_question === 'object' && item.evidence.operator_question !== null;
-
-  const submit = (decision: 'approved' | 'rejected') => {
-    if (decision === 'rejected' && !reason.trim() && !isOperatorQuestion) {
-      setValidationError('A reason is required to reject.');
-      return;
-    }
-    setValidationError('');
-    decide.mutate({
-      itemId: item.itemId,
-      decision,
-      reason:
-        decision === 'rejected' && isOperatorQuestion && !reason.trim()
-          ? 'No, do not proceed.'
-          : reason,
-      participantId: 'human:operator',
-    });
-  };
-
-  if (item.status !== 'pending') {
-    return (
-      <div data-testid="review-verdict" className={`${PANEL} niuu:p-3 niuu:text-sm`}>
-        <span className={statusClasses(item.status)}>{item.status.replace('_', ' ')}</span>
-        <span className={`niuu:ml-2 ${MUTED}`}>
-          by {item.decidedBy || 'operator'}
-          {item.decisionReason ? ` — ${item.decisionReason}` : ''}
-        </span>
-        {item.applyDetail ? (
-          <p className={`niuu:mt-1 niuu:text-xs ${MUTED}`}>{item.applyDetail}</p>
-        ) : null}
-      </div>
-    );
-  }
-
-  return (
-    <div data-testid="review-decision" className="niuu:flex niuu:flex-col niuu:gap-2">
-      <p className={`niuu:rounded-md niuu:bg-bg-tertiary niuu:p-2 niuu:text-xs ${MUTED}`}>
-        {reviewEffectStatement(item)}
-      </p>
-      <div className="niuu:flex niuu:items-center niuu:gap-2">
-        <input
-          aria-label={isOperatorQuestion ? 'Operator answer' : 'Decision reason'}
-          placeholder={
-            isOperatorQuestion
-              ? 'Optional details or an exact answer'
-              : 'Reason (recorded in the audit trail)'
-          }
-          value={reason}
-          onChange={(event) => setReason(event.target.value)}
-          className="niuu:flex-1 niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
-        />
-        <button
-          type="button"
-          className={`${BUTTON} niuu:text-state-ok`}
-          disabled={decide.isPending}
-          onClick={() => submit('approved')}
-        >
-          <Check size={14} aria-hidden="true" />
-          {isOperatorQuestion ? 'Yes' : 'Approve'}
-        </button>
-        <button
-          type="button"
-          className={`${BUTTON} niuu:text-critical`}
-          disabled={decide.isPending}
-          onClick={() => submit('rejected')}
-        >
-          <X size={14} aria-hidden="true" />
-          {isOperatorQuestion ? 'No' : 'Reject'}
-        </button>
-      </div>
-      {validationError ? (
-        <p role="alert" className="niuu:text-xs niuu:text-critical">
-          {validationError}
-        </p>
-      ) : null}
-      {decide.isError ? (
-        <p role="alert" className="niuu:text-xs niuu:text-critical">
-          {decide.error instanceof Error ? decide.error.message : 'Decision failed'}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
 function BriefViewer({ item }: { item: ReviewItem }) {
   if (item.kind !== 'morning_brief') return null;
   const markdown = item.evidence.brief_markdown;
@@ -285,7 +195,7 @@ function ReviewDetail({ item }: { item: ReviewItem }) {
       <LineageStrip item={item} />
       <BriefViewer item={item} />
       <ArtifactViewer item={item} />
-      <DecisionPanel item={item} />
+      <ReviewDecisionPanel item={item} />
     </section>
   );
 }
@@ -348,7 +258,10 @@ export function InboxPage() {
   const [queryInput, setQueryInput] = useState('');
   const [query, setQuery] = useState('');
   const [offset, setOffset] = useState(0);
-  const [selectedId, setSelectedId] = useState<string>('');
+  // `?item=` opens one review, as a notification's "Answer it" link asks.
+  const linkedId = String((useSearch({ strict: false }) as { item?: unknown }).item ?? '');
+  const [selectedId, setSelectedId] = useState<string>(linkedId);
+  const linked = useReview(linkedId);
   const hasFilters = Boolean(kindFilter || riskFilter || environmentFilter || query);
   const summaryFilters = useMemo(
     () =>
@@ -373,7 +286,9 @@ export function InboxPage() {
   });
 
   const items = useMemo(() => sortByUrgency((data ?? []).slice(0, LIST_LIMIT)), [data]);
-  const selected = items.find((item) => item.itemId === selectedId) ?? items[0];
+  // The linked review may sit on no loaded page, or be filtered out: show it anyway.
+  const linkedItem = linked.data && linked.data.itemId === selectedId ? linked.data : undefined;
+  const selected = items.find((item) => item.itemId === selectedId) ?? linkedItem ?? items[0];
   const matchingTotal = filteredSummary?.pendingTotal ?? items.length;
   const pendingTotal = globalSummary?.pendingTotal ?? matchingTotal;
   const hasNextPage = (data?.length ?? 0) > LIST_LIMIT;
@@ -459,7 +374,7 @@ export function InboxPage() {
               aria-label="Search review inbox"
               value={queryInput}
               onChange={(event) => setQueryInput(event.target.value)}
-              placeholder="Search title, environment, valkyrie, action…"
+              placeholder="Search title, environment, resident, action…"
               className="niuu:min-w-0 niuu:flex-1 niuu:bg-transparent niuu:py-1.5 niuu:text-xs niuu:text-text-primary niuu:outline-none"
             />
           </label>
@@ -536,7 +451,7 @@ export function InboxPage() {
         <div data-testid="inbox-empty" className={`${PANEL} niuu:p-6 niuu:text-sm ${MUTED}`}>
           {hasFilters
             ? 'No pending reviews match these filters.'
-            : 'Nothing needs you. Held builds, guarded promotions, peer learnings, and court escalations will appear here the moment a valkyrie wants a decision.'}
+            : 'Nothing needs you. Held builds, guarded promotions, peer learnings, and court escalations will appear here the moment a resident wants a decision.'}
         </div>
       ) : (
         <div className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:gap-3">

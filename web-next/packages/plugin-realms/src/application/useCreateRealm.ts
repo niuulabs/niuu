@@ -26,27 +26,29 @@ import {
   type RealmDraft,
 } from '../domain/realm';
 import { templateById } from '../domain/templates';
+import { PROJECTS_QUERY_KEY, resolveProjectChoice } from './useProjects';
 
 /** One step of the create recipe, in the order it runs. */
 export interface RecipeStep {
   id: string;
   label: string;
   /** Where the partial state is visible if this step fails. */
-  advancedPath: string;
+  detailPath: string;
 }
 
 export const RECIPE_STEPS: RecipeStep[] = [
-  { id: 'validate', label: 'check the draft', advancedPath: '/realms' },
-  { id: 'connections', label: 'test connections', advancedPath: '/settings/integrations' },
-  { id: 'realm', label: 'create the realm', advancedPath: '/valkyrie' },
-  { id: 'memory', label: 'create realm memory', advancedPath: '/mimir/registry' },
-  { id: 'routing', label: 'route memory writes', advancedPath: '/mimir/registry' },
-  { id: 'persona', label: 'write the persona', advancedPath: '/ravn/personas' },
-  { id: 'trust', label: 'grant trust', advancedPath: '/valkyrie' },
-  { id: 'jobs', label: 'schedule standing jobs', advancedPath: '/ravn' },
-  { id: 'board', label: 'import the tracker board', advancedPath: '/ting/sagas' },
-  { id: 'charter', label: 'write the charter to memory', advancedPath: '/mimir' },
-  { id: 'resident', label: 'start the resident', advancedPath: '/ravn/ravens' },
+  { id: 'validate', label: 'check the draft', detailPath: '/realms' },
+  { id: 'connections', label: 'test connections', detailPath: '/settings/integrations' },
+  { id: 'project', label: 'set up the project', detailPath: '/volundr' },
+  { id: 'realm', label: 'create the workspace', detailPath: '/valkyrie' },
+  { id: 'memory', label: 'create workspace memory', detailPath: '/mimir/registry' },
+  { id: 'routing', label: 'route memory writes', detailPath: '/mimir/registry' },
+  { id: 'persona', label: 'write the persona', detailPath: '/ravn/personas' },
+  { id: 'trust', label: 'grant trust', detailPath: '/valkyrie' },
+  { id: 'jobs', label: 'schedule standing jobs', detailPath: '/ravn' },
+  { id: 'board', label: 'import the tracker board', detailPath: '/ting/sagas' },
+  { id: 'charter', label: 'write the charter to memory', detailPath: '/mimir' },
+  { id: 'resident', label: 'start the resident', detailPath: '/ravn/ravens' },
 ];
 
 export type StepState = 'todo' | 'running' | 'done' | 'failed';
@@ -137,7 +139,7 @@ export function useCreateRealm() {
       };
 
       await step('validate', async () => {
-        const problem = requiredDraftError(draft, template.needsBoard);
+        const problem = requiredDraftError(draft, template.needsRepo);
         if (problem) throw new Error(problem);
       });
 
@@ -150,6 +152,10 @@ export function useCreateRealm() {
         }
       });
 
+      const projectId = await step('project', () =>
+        resolveProjectChoice(volundr, draft, draft.name, draft.instanceId || undefined),
+      );
+
       const realm = await step('realm', () =>
         realms.createRealm({
           slug: draft.slug,
@@ -157,13 +163,16 @@ export function useCreateRealm() {
           sleipnir_domain: 'code',
           instance_id: draft.instanceId || null,
           autonomy_profile: 'balanced',
+          project_id: projectId,
         }),
       );
       setProgress((current) => ({ ...current, realm }));
 
       await step('memory', async () => {
         if (!mimir.mounts.deployInstance) {
-          throw new Error('This Mímir has no deployment target; set one in Mímir › Registry.');
+          throw new Error(
+            'This memory instance has no deployment target; set one in Memory › Library.',
+          );
         }
         await mimir.mounts.deployInstance({
           name: deploymentNameFor(draft.slug),
@@ -196,7 +205,7 @@ export function useCreateRealm() {
       await step('trust', async () => {
         await realms.createTrustGrant(draft.slug, {
           action_class: 'observe',
-          target: draft.repo,
+          target: draft.repo || '*',
           level: 2,
           limits: {
             template: template.id,
@@ -247,12 +256,14 @@ export function useCreateRealm() {
       });
 
       await step('board', async () => {
-        if (!template.needsBoard || !draft.trackerBoard) return;
+        if (!draft.trackerBoard) return;
         await tracker.importProject(
           draft.trackerBoard,
-          [draft.repo],
+          draft.repo ? [draft.repo] : [],
           draft.branch || undefined,
-          draft.instanceId || null,
+          // A project stays on the Forge that holds it, wherever the resident runs.
+          projectId ? null : draft.instanceId || null,
+          projectId ? { forgeProjectId: projectId } : undefined,
         );
       });
 
@@ -277,7 +288,7 @@ export function useCreateRealm() {
           await new Promise((resolve) => setTimeout(resolve, MOUNT_DISCOVERY_INTERVAL_MS));
         }
         throw new Error(
-          `Realm memory ${mountName} did not appear within 60 s; the deployment is still starting. Check Mímir › Registry and write the charter from Settings once it is up.`,
+          `Workspace memory ${mountName} did not appear within 60 s; the deployment is still starting. Check Memory › Library and write the charter from Settings once it is up.`,
         );
       });
 
@@ -294,6 +305,7 @@ export function useCreateRealm() {
 
       await queryClient.invalidateQueries({ queryKey: REALMS_QUERY_KEY });
       await queryClient.invalidateQueries({ queryKey: ['ravn'] });
+      await queryClient.invalidateQueries({ queryKey: PROJECTS_QUERY_KEY });
       return realm;
     },
     [mimir, personas, queryClient, realms, residents, tracker, triggers, volundr],

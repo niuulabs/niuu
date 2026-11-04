@@ -13,9 +13,9 @@ from niuu.domain.text_projection import (
     repair_legacy_turns,
     repair_marker,
 )
+from niuu.domain.transcript_rebuild import rebuild_turns
 from niuu.domain.transcript_reducer import NON_BROADCAST_KINDS, reduce_frames
 from skuld.history_hydration import merge_history_turns
-from volundr.domain.services.transcript_rebuild import rebuild_turns
 
 
 def captured():

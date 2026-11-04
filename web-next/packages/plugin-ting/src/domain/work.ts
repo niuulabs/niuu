@@ -35,6 +35,100 @@ export interface WorkSummary {
   actions: string[];
 }
 
+export interface BoardGate {
+  id: string;
+  activationId: string;
+  nodeId: string;
+  label: string;
+  condition: string;
+  instructions: string;
+  summary: string;
+  requestedAt: string;
+  attempt: number;
+}
+
+export type BoardTicketState =
+  | 'notStarted'
+  | 'ready'
+  | 'starting'
+  | 'running'
+  | 'needsDecision'
+  | 'blocked'
+  | 'done'
+  | 'unknown';
+
+/** The last answer a person gave at a gate on this ticket's run. */
+export interface BoardDecision {
+  label: string;
+  status: string;
+  decidedBy: string;
+  notes: string;
+  decidedAt: string;
+}
+
+export interface BoardPlacement {
+  columnId: string | null;
+  state: BoardTicketState;
+  gate: BoardGate | null;
+  reason?: string | null;
+  /** Workflows this ticket has finished, so a drag can tell what it would skip. */
+  passedWorkflowIds?: string[];
+  lastDecision?: BoardDecision | null;
+}
+
+/** The persistent session a ticket works through for as long as it is open. */
+export interface TicketCoordinatorRef {
+  sessionId: string;
+  status: 'active' | 'closed';
+  connectionId: string | null;
+  chatEndpoint: string | null;
+  startError?: string | null;
+}
+
+export interface TicketWorkflowRun {
+  taskId: string;
+  workflowName: string;
+  status: string;
+  sessionId: string | null;
+  currentStep?: string | null;
+  prUrl?: string | null;
+}
+
+/** One thing a person reviews at a gate, as the workflow declares it. */
+export interface ReviewPanel {
+  widget: string;
+  title: string;
+  /** Where its content comes from; panels that show the run's own session have none. */
+  source?: { kind: 'outcome' | 'file' | 'url'; value: string } | null;
+  /** Workspace files a page may ask for. */
+  files?: string[];
+}
+
+export interface WorkBoardColumn {
+  id: string;
+  title: string;
+  kind: 'tracker' | 'work' | 'gate';
+  review: 'plan' | 'code' | 'output' | null;
+  panels?: ReviewPanel[];
+  approveColumnId: string | null;
+  changesColumnId: string | null;
+  /** The workflow that declares this column; the tracker's own columns have none. */
+  workflowId?: string | null;
+  workflowName?: string | null;
+}
+
+/** Read from the project's workflows; the board never defines a column or a gate itself. */
+export interface WorkBoardLayout {
+  columns: WorkBoardColumn[];
+}
+
+export interface GateDecision {
+  gateId: string;
+  activationId: string;
+  decision: 'approve' | 'request_changes';
+  notes: string;
+}
+
 export interface WorkTask {
   source: TrackerProjectRef & {
     issueId: string;
@@ -42,6 +136,7 @@ export interface WorkTask {
     statusType: string;
   };
   title: string;
+  description?: string;
   operationalRun: {
     id: string;
     status: string;
@@ -59,6 +154,9 @@ export interface WorkTask {
     workflowId: string | null;
   } | null;
   actions: string[];
+  board?: BoardPlacement | null;
+  coordinator?: TicketCoordinatorRef | null;
+  workflowRun?: TicketWorkflowRun | null;
 }
 
 /** Only the execution section is cursor-paged; do not infer global totals from it. */
@@ -74,4 +172,5 @@ export interface WorkDetail {
   item: WorkSummary;
   tasks: WorkTask[];
   coverage: SourceCoverage[];
+  board?: WorkBoardLayout | null;
 }

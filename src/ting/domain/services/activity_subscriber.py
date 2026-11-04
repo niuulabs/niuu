@@ -28,7 +28,7 @@ except ImportError:
     _catalog_run_needs_approval = None  # type: ignore[assignment]
 
 from ting.config import WatcherConfig
-from ting.domain.models import RavnOutcome, Run, RunStatus, SessionMessage
+from ting.domain.models import PR_STATE_MERGED, RavnOutcome, Run, RunStatus, SessionMessage
 from ting.ports.activity_projection import ActivityProjector
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.event_bus import EventBusPort, TingEvent
@@ -533,9 +533,14 @@ class SessionActivitySubscriber:
         session = next((result for result in results if isinstance(result, VolundrSession)), None)
         if session is not None:
             if session.status in self._FAILED_STATUSES:
-                await self._handle_failure(
+                await self._handle_session_end(
                     run,
                     tracker,
+                    next(
+                        adapter
+                        for adapter, result in zip(queryable, results, strict=True)
+                        if result is session
+                    ),
                     owner_id,
                     reason=f"Session {session.status}",
                 )
@@ -743,6 +748,8 @@ class SessionActivitySubscriber:
             event.metadata,
         )
         terminal_event = event.state == "error" or bool(event.session_status)
+        if self._workflow_campaign_projector is not None:
+            await self._workflow_campaign_projector.deliver_coordinator_brief(event, volundr)
         if self._attested_review_projector is not None:
             await self._attested_review_projector.handle_activity(event, owner_id)
         if (
@@ -754,7 +761,7 @@ class SessionActivitySubscriber:
         ):
             return
         if await self._maybe_handle_help_needed(
-            event, owner_id, connection_id=volundr.target_id or None
+            event, volundr, owner_id, connection_id=volundr.target_id or None
         ):
             return
         if (
@@ -863,7 +870,9 @@ class SessionActivitySubscriber:
             await self._handle_failure(run, tracker, owner_id, reason="Session not found")
             return
         if session.status in ("stopped", "failed"):
-            await self._handle_failure(run, tracker, owner_id, reason=f"Session {session.status}")
+            await self._handle_session_end(
+                run, tracker, volundr, owner_id, reason=f"Session {session.status}"
+            )
             return
 
         if session.workload_type == "ravn_flock":
@@ -920,9 +929,9 @@ class SessionActivitySubscriber:
         pr_url: str | None = None
         try:
             pr = await volundr.get_pr_status(run.session_id)
-            signals["pr_exists"] = bool(pr.pr_id)
-            signals["ci_passed"] = bool(pr.ci_passed)
-            if pr.pr_id:
+            if pr is not None:
+                signals["pr_exists"] = True
+                signals["ci_passed"] = bool(pr.ci_passed)
                 pr_id = pr.pr_id
                 pr_url = pr.url
         except Exception:
@@ -955,9 +964,23 @@ class SessionActivitySubscriber:
             pr_url=pr_url,
         )
 
+    async def _record_run_pull_request(
+        self, run: Run, tracker: TrackerPort, volundr: VolundrPort
+    ) -> None:
+        """Keep the pull request Forge sees for a run, so the board can link to it."""
+        try:
+            pr = await volundr.get_pr_status(run.session_id or "")
+            if pr is not None:
+                await tracker.update_run_progress(run.tracker_id, pr_url=pr.url, pr_id=pr.pr_id)
+        except Exception:
+            logger.error(
+                "Could not record the pull request of run %s", run.tracker_id, exc_info=True
+            )
+
     async def _maybe_handle_help_needed(
         self,
         event: ActivityEvent,
+        volundr: VolundrPort,
         owner_id: str,
         *,
         connection_id: str | None = None,
@@ -980,6 +1003,7 @@ class SessionActivitySubscriber:
 
         if run.session_id:
             payload["session_id"] = run.session_id
+            await self._record_run_pull_request(run, tracker, volundr)
 
         serialized = json.dumps(payload, default=str, sort_keys=True)
         messages = await tracker.get_session_messages(run.tracker_id)
@@ -1211,7 +1235,46 @@ class SessionActivitySubscriber:
         reason = str(event.metadata.get("error") or event.metadata.get("message") or "").strip()
         if not reason:
             reason = f"Session {event.session_status or event.state or 'failed'}"
-        await self._handle_failure(run, tracker, owner_id, reason=reason)
+        await self._handle_session_end(run, tracker, volundr, owner_id, reason=reason)
+
+    async def _handle_session_end(
+        self,
+        run: Run,
+        tracker: TrackerPort,
+        volundr: VolundrPort,
+        owner_id: str,
+        *,
+        reason: str,
+    ) -> None:
+        """Close a run whose session ended: a merged pull request outlives its session."""
+        try:
+            pr = await volundr.get_pr_status(run.session_id or "")
+        except Exception:
+            # Not knowing must not read as failed: the run would cancel merged work.
+            logger.error(
+                "Leaving run %s open: its session ended and Forge could not say whether "
+                "its pull request merged",
+                run.tracker_id,
+                exc_info=True,
+            )
+            return
+        if pr is None or pr.state != PR_STATE_MERGED:
+            await self._handle_failure(run, tracker, owner_id, reason=reason)
+            return
+        await tracker.update_run_progress(
+            run.tracker_id,
+            status=RunStatus.MERGED,
+            pr_url=pr.url,
+            pr_id=pr.pr_id,
+        )
+        await tracker.update_run_state(run.tracker_id, RunStatus.MERGED)
+        await self._emit_state_changed(run, owner_id, "MERGED", pr_id=pr.pr_id, pr_url=pr.url)
+        logger.info(
+            "Session %s ended after its pull request merged (tracker=%s, pr=%s)",
+            run.session_id,
+            run.tracker_id,
+            pr.pr_id,
+        )
 
     async def _handle_failure(
         self,

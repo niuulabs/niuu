@@ -3,26 +3,6 @@ import { describe, expect, it } from 'vitest';
 import { buildMountedSettingsProviders } from './SettingsRegistry';
 
 describe('buildMountedSettingsProviders', () => {
-  it('mounts the interface mode control with the Settings plugin', () => {
-    const providers = buildMountedSettingsProviders({
-      demoMode: false,
-      theme: 'ice',
-      plugins: { settings: { enabled: true, order: 0 } },
-      services: {},
-    });
-
-    expect(providers).toHaveLength(1);
-    expect(providers[0]).toMatchObject({
-      source: 'local',
-      id: 'interface',
-      defaultSectionId: 'mode',
-      scope: 'user',
-    });
-    const provider = providers[0];
-    if (provider?.source !== 'local') throw new Error('Expected local interface settings');
-    expect(provider.sections[0]).toMatchObject({ id: 'mode', label: 'Display mode' });
-  });
-
   it('includes remote providers for enabled plugins', () => {
     const providers = buildMountedSettingsProviders({
       demoMode: false,
@@ -121,8 +101,9 @@ it('mounts personal storage and session display alongside Volundr service settin
     plugins: { volundr: { enabled: true, order: 1 } },
     services: {},
   });
-  expect(providers.map((p) => p.id)).toEqual(['session-view', 'storage', 'volundr']);
-  expect(providers[0]).toMatchObject({ source: 'local', scope: 'user', defaultSectionId: 'tabs' });
-  expect(providers[1]).toMatchObject({ source: 'local', scope: 'user' });
-  expect(providers[2]).toMatchObject({ source: 'remote', scope: 'service' });
+  // Providers sort by title, and Volundr's reads "Forge".
+  expect(providers.map((p) => p.id)).toEqual(['volundr', 'session-view', 'storage']);
+  expect(providers[0]).toMatchObject({ source: 'remote', scope: 'service' });
+  expect(providers[1]).toMatchObject({ source: 'local', scope: 'user', defaultSectionId: 'tabs' });
+  expect(providers[2]).toMatchObject({ source: 'local', scope: 'user' });
 });

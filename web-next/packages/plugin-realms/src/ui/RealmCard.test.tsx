@@ -34,7 +34,7 @@ function mount(props: Partial<RealmCardProps>) {
         realm={realm}
         resident={null}
         ravn={null}
-        pendingReviews={[]}
+        pendingReviews={0}
         runningSessions={0}
         {...props}
       />
@@ -71,7 +71,7 @@ describe('RealmCard', () => {
     } as ValkyrieResident;
     mount({
       resident,
-      pendingReviews: [{ itemId: 'a' }, { itemId: 'b' }] as never,
+      pendingReviews: 2,
       runningSessions: 3,
     });
     expect(await screen.findByText('Review 2')).toBeInTheDocument();
@@ -96,6 +96,16 @@ describe('RealmCard', () => {
     expect(screen.getByText('board LXA')).toBeInTheDocument();
     expect(screen.getByText('bugs QA')).toBeInTheDocument();
     expect(screen.getByText('2 open signals')).toBeInTheDocument();
+  });
+
+  it('names the board, and counts tickets waiting with the questions', async () => {
+    mount({
+      binding: { template: 'blank', repo: '', branch: '', trackerBoard: 'uuid' } as never,
+      boardName: 'Spring board',
+      waitingTickets: 2,
+    });
+    expect(await screen.findByText('board Spring board')).toBeInTheDocument();
+    expect(screen.getByText('Review 2')).toBeInTheDocument();
   });
 
   it('falls back to an unknown dot for an unexpected wakefulness value', async () => {

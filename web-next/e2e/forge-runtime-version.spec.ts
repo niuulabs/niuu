@@ -78,11 +78,11 @@ test('runtime inspection shows loading, version mismatch and retry without resta
   await expect(page.getByText('old12345')).toBeVisible();
   await expect(page.getByText('new12345')).toBeVisible();
   await page.keyboard.press('Escape');
-  await expect(page.getByText('Skuld runtime', { exact: true })).not.toBeVisible();
+  await expect(page.getByText('Session runtime', { exact: true })).not.toBeVisible();
   await page.getByRole('button', { name: 'Runtime update available' }).focus();
   await page.keyboard.press('Enter');
   fail = true;
   await page.getByRole('button', { name: 'Check again' }).click();
-  await expect(page.getByText('This Forge could not report its runtime version.')).toBeVisible();
+  await expect(page.getByText('This host could not report its runtime version.')).toBeVisible();
   expect(mutations.filter((path) => /\/(start|stop|resume)$/.test(path))).toEqual([]);
 });

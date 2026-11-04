@@ -912,6 +912,21 @@ describe('buildTingHttpAdapter', () => {
       });
     });
 
+    it('sets the ordered board workflows and reads them back on a saga', async () => {
+      const client = makeClient();
+      const stored = [{ id: 'workflow-1', name: 'Ticket Planning Flow' }];
+      client.put.mockResolvedValue({ board_workflows: stored });
+      client.get.mockResolvedValue({ ...rawSaga, board_workflows: stored });
+      const adapter = buildTingHttpAdapter(client);
+
+      await expect(adapter.setBoardWorkflows('saga 1', ['workflow-1'])).resolves.toEqual(stored);
+
+      expect(client.put).toHaveBeenCalledWith('/sagas/saga%201/board-workflows', {
+        workflow_ids: ['workflow-1'],
+      });
+      expect((await adapter.getSaga('saga-1'))?.boardWorkflows).toEqual(stored);
+    });
+
     it('assigns saga targets and maps the resulting saga', async () => {
       const client = makeClient();
       client.put.mockResolvedValue({
@@ -2254,6 +2269,27 @@ describe('buildTrackerHttpAdapter', () => {
       workflowVersion: undefined,
       start_immediately: false,
     });
+  });
+
+  it('names the Forge project a tracker joins', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({ ...rawSaga, project_id: 'forge-1' });
+
+    const saga = await buildTrackerHttpAdapter(client).importProject(
+      'proj-1',
+      [],
+      undefined,
+      null,
+      {
+        forgeProjectId: 'forge-1',
+      },
+    );
+
+    expect(client.post).toHaveBeenCalledWith(
+      '/tracker/import',
+      expect.objectContaining({ forge_project_id: 'forge-1', repos: [] }),
+    );
+    expect(saga.projectId).toBe('forge-1');
   });
 
   it('sends repo refs and tag target selectors when importing a project', async () => {

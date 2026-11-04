@@ -310,9 +310,7 @@ Acceptance: retrieve after restart.
 
 Reviews: architecture pass; correctness pass; security pass.
 """
-            result = await MimirWriteTool(mimir).execute(
-                {"path": artifact_path, "content": plan}
-            )
+            result = await MimirWriteTool(mimir).execute({"path": artifact_path, "content": plan})
             assert result.is_error is False, result.content
             drive_loop.record_tool_outcome_fields(
                 task=ravn_task,
@@ -361,8 +359,7 @@ plan: Persist the approved plan.
         terminal = next(
             call.args[1]
             for call in broker._emit_pipeline_event.await_args_list
-            if call.args[0] == "outcome"
-            and call.args[1]["event_type"] == "developer.plan.approved"
+            if call.args[0] == "outcome" and call.args[1]["event_type"] == "developer.plan.approved"
         )
         await broker._maybe_report_flock_completion(
             "workflow-stop:planning-complete",

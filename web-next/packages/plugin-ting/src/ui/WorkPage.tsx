@@ -3,7 +3,6 @@ import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import {
-  AlertCircle,
   ArrowLeft,
   ArrowRight,
   ChevronRight,
@@ -19,38 +18,29 @@ import {
 import { EmptyState, ErrorState, LoadingState, Modal, relTime } from '@niuulabs/ui';
 import type { IDispatchBus } from '../ports';
 import type {
-  SourceCoverage,
   WorkCollection,
   WorkDetail,
   WorkResourceKind,
   WorkSummary,
   WorkTask,
 } from '../domain/work';
+import { CONDITION_LABEL, KIND_LABEL, type WorkView } from '../domain/workBoard';
 import { mergeWorkPages, useWorkCollection, useWorkDetail } from './useWork';
+import { ProjectBoard } from './ProjectBoard';
+import { WorkCoverageNotices } from './WorkCoverageNotices';
 import { TrackerWorkImportDialog } from './TrackerWorkImportDialog';
 import { WorkCampaignResults } from './WorkCampaignResults';
+import {
+  TicketBoard,
+  tingRunLabel,
+  WorkBoard,
+  WorkConditionBadge,
+  WorkTaskActions,
+  WorkViewToggle,
+} from './WorkBoard';
 import './WorkPage.css';
 
 type WorkFilter = 'overview' | 'attention' | 'active' | 'completed';
-type WorkCondition = WorkSummary['condition'];
-
-const CONDITION_LABEL: Record<WorkCondition, string> = {
-  needsAttention: 'Needs attention',
-  active: 'In progress',
-  waiting: 'Waiting',
-  completed: 'Completed',
-  failed: 'Failed',
-  unknown: 'Unknown',
-};
-
-const KIND_LABEL: Record<WorkSummary['kind'], string> = {
-  project: 'Connected project',
-  research: 'Research',
-  specification: 'Specification',
-  planning: 'Plan',
-  workflowLaunch: 'Workflow',
-  workflowExecution: 'Workflow execution',
-};
 
 const FILTER_LABEL: Record<WorkFilter, string> = {
   overview: 'Overview',
@@ -80,13 +70,6 @@ function summaryBackendKind(item: WorkSummary): WorkResourceKind {
   return 'campaign';
 }
 
-function conditionTone(condition: WorkCondition): string {
-  if (condition === 'needsAttention' || condition === 'failed') return 'attention';
-  if (condition === 'completed') return 'complete';
-  if (condition === 'active') return 'active';
-  return 'quiet';
-}
-
 function workMatchesFilter(item: WorkSummary, filter: WorkFilter): boolean {
   if (filter === 'overview') return true;
   if (filter === 'attention') {
@@ -114,15 +97,6 @@ function workMatchesSearch(item: WorkSummary, search: string): boolean {
     .join(' ')
     .toLocaleLowerCase();
   return haystack.includes(search.trim().toLocaleLowerCase());
-}
-
-function WorkConditionBadge({ condition }: { condition: WorkCondition }) {
-  return (
-    <span className={`ting-work-condition ting-work-condition--${conditionTone(condition)}`}>
-      <span aria-hidden="true" />
-      {CONDITION_LABEL[condition]}
-    </span>
-  );
 }
 
 function WorkRow({ item, onSelect }: { item: WorkSummary; onSelect: () => void }) {
@@ -178,38 +152,6 @@ function WorkSection({
   );
 }
 
-function CoverageNotices({
-  coverage,
-  onRetry,
-}: {
-  coverage: SourceCoverage[];
-  onRetry?: () => void;
-}) {
-  const incomplete = coverage.filter((entry) => entry.status !== 'complete');
-  if (incomplete.length === 0) return null;
-  return (
-    <section className="ting-work-coverage" aria-label="Source coverage">
-      {incomplete.map((entry) => (
-        <div key={`${entry.source}:${entry.connectionId ?? ''}`} role="status">
-          <AlertCircle aria-hidden="true" />
-          <span>
-            <strong>{entry.source}</strong>{' '}
-            {entry.error?.message ??
-              (entry.status === 'partial'
-                ? 'returned partial results'
-                : 'is currently unavailable')}
-          </span>
-          {onRetry ? (
-            <button type="button" onClick={onRetry}>
-              Retry
-            </button>
-          ) : null}
-        </div>
-      ))}
-    </section>
-  );
-}
-
 function NewWorkDialog({
   open,
   onOpenChange,
@@ -253,7 +195,7 @@ function NewWorkDialog({
             </span>
           </div>
           <div className="ting-new-work-links">
-            <Link to="/ting/plan" onClick={() => onOpenChange(false)}>
+            <Link to="/ting/plan/new" onClick={() => onOpenChange(false)}>
               Plan delivery
             </Link>
             <Link
@@ -316,40 +258,26 @@ function WorkTaskRow({
             Tracker <strong>{task.source.status}</strong>
           </span>
           <span>
-            Ting{' '}
-            <strong>
-              {task.operationalRun
-                ? task.operationalRun.status
-                : operationalRunCoverageComplete
-                  ? 'Not started'
-                  : 'Unknown · linkage unavailable'}
-            </strong>
+            Ting <strong>{tingRunLabel(task, operationalRunCoverageComplete)}</strong>
           </span>
         </div>
       </div>
-      <div className="ting-work-task__actions">
-        {task.operationalRun?.sessionId ? (
-          <Link to={`/volundr/sessions/${task.operationalRun.sessionId}` as never}>
-            Open session
-          </Link>
-        ) : null}
-        {task.dispatch ? (
-          <button type="button" disabled={dispatching} onClick={() => onDispatch(task)}>
-            {dispatching ? 'Starting…' : 'Start eligible work'}
-          </button>
-        ) : null}
-      </div>
+      <WorkTaskActions task={task} dispatching={dispatching} onDispatch={onDispatch} />
     </article>
   );
 }
 
 function WorkDetailView({
   detail,
+  view,
+  onViewChange,
   onBack,
   onNew,
   onRefresh,
 }: {
   detail: WorkDetail;
+  view: WorkView;
+  onViewChange: (view: WorkView) => void;
   onBack: () => void;
   onNew: () => void;
   onRefresh: () => Promise<unknown>;
@@ -394,8 +322,8 @@ function WorkDetailView({
       if (!result || result.status !== 'spawned') {
         throw new Error(
           result
-            ? `Ting did not start this ticket (${result.status}). Review it in Operations.`
-            : 'Ting did not return a dispatch result. Review the ticket in Operations.',
+            ? `Niuu did not start this ticket (${result.status}). Review it in Operations.`
+            : 'Niuu did not return a dispatch result. Review the ticket in Operations.',
         );
       }
       await queryClient.invalidateQueries({ queryKey: ['ting', 'work'] });
@@ -405,6 +333,45 @@ function WorkDetailView({
     } finally {
       setDispatchingIssueId(null);
     }
+  }
+
+  if (detail.board && view === 'board') {
+    return (
+      <div className="ting-work-detail ting-work-detail--board" data-testid="work-detail">
+        <header className="ting-board-bar">
+          <button
+            type="button"
+            className="ting-work-back"
+            aria-label="Back to work"
+            onClick={onBack}
+          >
+            <ArrowLeft aria-hidden="true" /> Work
+          </button>
+          <h1>{item.title}</h1>
+          <WorkConditionBadge condition={item.condition} />
+          {sourceLabel(item) ? <small>{sourceLabel(item)}</small> : null}
+          <div className="ting-board-bar__tools">
+            <small>{detail.tasks.length} tickets</small>
+            <Link to={item.links.specialist as never}>{specialistLabel(item)}</Link>
+            <button type="button" className="ting-work-new-secondary" onClick={onNew}>
+              <Plus aria-hidden="true" /> New work
+            </button>
+            <WorkViewToggle view={view} onChange={onViewChange} />
+          </div>
+        </header>
+        <WorkCoverageNotices coverage={detail.coverage} onRetry={() => void onRefresh()} />
+        {actionError ? (
+          <p className="ting-work-action-error" role="alert">
+            {actionError}
+          </p>
+        ) : null}
+        <ProjectBoard
+          board={detail.board}
+          projectId={item.id.slice('project:'.length)}
+          tasks={detail.tasks}
+        />
+      </div>
+    );
   }
 
   return (
@@ -458,7 +425,7 @@ function WorkDetailView({
         </div>
       </header>
 
-      <CoverageNotices coverage={detail.coverage} onRetry={() => void onRefresh()} />
+      <WorkCoverageNotices coverage={detail.coverage} onRetry={() => void onRefresh()} />
       {actionError ? (
         <p className="ting-work-action-error" role="alert">
           {actionError}
@@ -495,18 +462,30 @@ function WorkDetailView({
         <section className="ting-work-tasks" aria-labelledby="project-tasks-title">
           <div className="ting-work-section__heading">
             <h2 id="project-tasks-title">Project tickets</h2>
-            <span>{detail.tasks.length} tickets</span>
+            <div className="ting-work-section__tools">
+              <span>{detail.tasks.length} tickets</span>
+              <WorkViewToggle view={view} onChange={onViewChange} />
+            </div>
           </div>
           {detail.tasks.length > 0 ? (
-            detail.tasks.map((task) => (
-              <WorkTaskRow
-                key={`${task.source.connectionId}:${task.source.issueId}`}
-                task={task}
-                dispatching={dispatchingIssueId === task.source.issueId}
+            view === 'board' ? (
+              <TicketBoard
+                tasks={detail.tasks}
+                dispatchingIssueId={dispatchingIssueId}
                 operationalRunCoverageComplete={operationalRunCoverageComplete}
                 onDispatch={(selected) => void handleDispatch(selected)}
               />
-            ))
+            ) : (
+              detail.tasks.map((task) => (
+                <WorkTaskRow
+                  key={`${task.source.connectionId}:${task.source.issueId}`}
+                  task={task}
+                  dispatching={dispatchingIssueId === task.source.issueId}
+                  operationalRunCoverageComplete={operationalRunCoverageComplete}
+                  onDispatch={(selected) => void handleDispatch(selected)}
+                />
+              ))
+            )
           ) : trackerCoverageComplete ? (
             <EmptyState
               title="No tickets in this project"
@@ -556,6 +535,8 @@ function WorkOverview({
   collection,
   filter,
   search,
+  view,
+  onViewChange,
   onFilter,
   onSearch,
   onSelect,
@@ -568,6 +549,8 @@ function WorkOverview({
   collection: WorkCollection;
   filter: WorkFilter;
   search: string;
+  view: WorkView;
+  onViewChange: (view: WorkView) => void;
   onFilter: (filter: WorkFilter) => void;
   onSearch: (search: string) => void;
   onSelect: (item: WorkSummary) => void;
@@ -621,9 +604,10 @@ function WorkOverview({
             placeholder="Search loaded work"
           />
         </label>
+        <WorkViewToggle view={view} onChange={onViewChange} />
       </div>
 
-      <CoverageNotices coverage={collection.coverage} onRetry={onRetry} />
+      <WorkCoverageNotices coverage={collection.coverage} onRetry={onRetry} />
 
       {collection.projects.length > 0 ? (
         <section className="ting-work-mobile-projects" aria-labelledby="mobile-projects-title">
@@ -643,6 +627,8 @@ function WorkOverview({
             search ? 'Try a different search or filter.' : 'Start work from a tracker or brief.'
           }
         />
+      ) : view === 'board' ? (
+        <WorkBoard items={visible} hideEmptyColumns={filter !== 'overview'} onSelect={onSelect} />
       ) : filter === 'overview' ? (
         <>
           <WorkSection title="Needs attention" items={needsAttention} onSelect={onSelect} />
@@ -672,13 +658,18 @@ export function WorkPage() {
   const params = useParams({ strict: false }) as { workId?: string };
   const routeIdentity = parseWorkRouteId(params.workId);
   const invalidRouteIdentity = Boolean(params.workId && !routeIdentity);
-  const searchParams = useSearch({ strict: false }) as { filter?: string; q?: string };
+  const searchParams = useSearch({ strict: false }) as {
+    filter?: string;
+    q?: string;
+    view?: string;
+  };
   const filter = (['overview', 'attention', 'active', 'completed'] as const).includes(
     searchParams.filter as WorkFilter,
   )
     ? (searchParams.filter as WorkFilter)
     : 'overview';
   const search = typeof searchParams.q === 'string' ? searchParams.q : '';
+  const view: WorkView = searchParams.view === 'board' ? 'board' : 'list';
   const [newWorkOpen, setNewWorkOpen] = useState(false);
   const [trackerImportOpen, setTrackerImportOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -702,13 +693,26 @@ export function WorkPage() {
     contentRef.current.scrollTop = listScrollPosition.current;
   }, [routeIdentity]);
 
+  function workSearch(next: { filter?: WorkFilter; q?: string; view: WorkView }) {
+    return {
+      ...(next.filter && next.filter !== 'overview' ? { filter: next.filter } : {}),
+      ...(next.q ? { q: next.q } : {}),
+      ...(next.view === 'board' ? { view: next.view } : {}),
+    };
+  }
+
   function updateSearch(next: { filter?: WorkFilter; q?: string }) {
     void navigate({
       to: '/ting/work' as never,
-      search: {
-        ...(next.filter && next.filter !== 'overview' ? { filter: next.filter } : {}),
-        ...(next.q ? { q: next.q } : {}),
-      } as never,
+      search: workSearch({ ...next, view }) as never,
+    });
+  }
+
+  function changeView(next: WorkView) {
+    void navigate({
+      to: (routeIdentity ? '/ting/work/$workId' : '/ting/work') as never,
+      ...(routeIdentity ? { params: { workId: params.workId } as never } : {}),
+      search: workSearch({ filter, q: search, view: next }) as never,
     });
   }
 
@@ -720,10 +724,7 @@ export function WorkPage() {
     void navigate({
       to: '/ting/work/$workId' as never,
       params: { workId } as never,
-      search: {
-        ...(filter !== 'overview' ? { filter } : {}),
-        ...(search ? { q: search } : {}),
-      } as never,
+      search: workSearch({ filter, q: search, view }) as never,
     });
   }
 
@@ -749,7 +750,11 @@ export function WorkPage() {
   if (!routeIdentity && !collection) return <LoadingState label="Loading work…" />;
 
   return (
-    <div className={`ting-work-page${routeIdentity ? ' ting-work-page--detail' : ''}`}>
+    <div
+      className={`ting-work-page${routeIdentity ? ' ting-work-page--detail' : ''}${
+        routeIdentity && view === 'board' && detailQuery.data?.board ? ' ting-work-page--board' : ''
+      }`}
+    >
       <aside className="ting-work-sidebar" aria-label="Work workspace">
         <div className="ting-work-sidebar__brand">
           <span>Work</span>
@@ -808,6 +813,8 @@ export function WorkPage() {
           ) : (
             <WorkDetailView
               detail={detailQuery.data}
+              view={view}
+              onViewChange={changeView}
               onBack={() => updateSearch({ filter, q: search })}
               onNew={() => setNewWorkOpen(true)}
               onRefresh={() => detailQuery.refetch()}
@@ -818,6 +825,8 @@ export function WorkPage() {
             collection={visibleCollection}
             filter={filter}
             search={search}
+            view={view}
+            onViewChange={changeView}
             onFilter={(next) => updateSearch({ filter: next, q: search })}
             onSearch={(next) => updateSearch({ filter, q: next })}
             onSelect={selectWork}

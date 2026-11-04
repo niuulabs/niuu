@@ -115,6 +115,8 @@ data:
 
     guild_transport_connect_timeout_seconds: {{ .Values.guildTransport.connectTimeoutSeconds | default 5.0 }}
     guild_owner_probe_timeout_seconds: {{ .Values.guildTransport.ownerProbeTimeoutSeconds | default 15.0 }}
+    guild_session_owner_ttl_seconds: {{ .Values.guildTransport.sessionOwnerTtlSeconds | default 3600.0 }}
+    guild_feedless_recheck_seconds: {{ .Values.guildTransport.feedlessRecheckSeconds | default 3600.0 }}
     {{- $trustedPlaintextHostSuffixes := .Values.guildTransport.trustedPlaintextHostSuffixes }}
     {{- if not (kindIs "invalid" $trustedPlaintextHostSuffixes) }}
     guild_transport_trusted_plaintext_host_suffixes: {{ $trustedPlaintextHostSuffixes | toJson }}

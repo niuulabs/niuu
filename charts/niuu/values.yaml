@@ -114,6 +114,10 @@ volundr:
       allowedOrigins:
         - "*"
       allowCredentials: true
+  bifrost:
+    # This release's Bifrost service. Set the URL explicitly when bifrost.enabled
+    # is false, or when bifrost renames its service or changes its port.
+    url: 'http://{{ include "niuu.componentFullname" (dict "root" . "name" "bifrost") }}'
   web:
     ingress:
       enabled: false

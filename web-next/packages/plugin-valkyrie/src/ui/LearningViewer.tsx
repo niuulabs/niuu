@@ -99,7 +99,7 @@ function StructuredPayload({ learning }: { learning: LearningRecord }) {
         <PayloadRow label="scope" value={learning.scope} />
         <PayloadRow label="status" value={statusLabel(learning.status)} />
         <PayloadRow label="source env" value={learning.sourceEnvironmentId} />
-        <PayloadRow label="source valkyrie" value={learning.sourceValkyrieId} />
+        <PayloadRow label="source resident" value={learning.sourceValkyrieId} />
         <PayloadRow
           label="confidence"
           value={<ConfidenceMeter confidence={learning.confidence} />}
@@ -156,7 +156,7 @@ function EvidenceAndLinks({ learning }: { learning: LearningRecord }) {
           />
         ) : null}
         <PayloadRow
-          label="source valkyrie"
+          label="source resident"
           value={<span className="niuu:font-mono">{learning.sourceValkyrieId}</span>}
         />
       </div>

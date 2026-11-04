@@ -124,7 +124,7 @@ export interface DeployResidentRequest {
   flockMemberId?: string;
   flockRole?: string;
   flockPeerId?: string;
-  /** The realm this resident is deployed for (Simple mode). */
+  /** The realm this resident is deployed for. */
   realmId?: string;
 }
 

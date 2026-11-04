@@ -605,7 +605,7 @@ describe('Specs pages', () => {
     fireEvent.click(screen.getByRole('button', { name: /Manifest/i }));
     await waitFor(() => expect(screen.getByText(/10-prd.md/i)).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: /Open in Mimir/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Open in Memory/i }));
     expect(mockNavigate).toHaveBeenCalledWith({ to: '/mimir' });
 
     fireEvent.click(screen.getByRole('button', { name: /Delete/i }));
@@ -853,7 +853,7 @@ Plain fallback content.`,
     await waitFor(() => expect(screen.getByText('Intake review required')).toBeInTheDocument());
     expect(screen.getByText('No document has been written yet.')).toBeInTheDocument();
     expect(screen.getAllByText('none')).toHaveLength(2);
-    fireEvent.click(screen.getByRole('button', { name: /Open in Mimir/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Open in Memory/i }));
     expect(mockSetTweak).not.toHaveBeenCalledWith('mimir.selectedPagePath', expect.anything());
     expect(screen.getByRole('button', { name: 'session-sdcp' })).toBeInTheDocument();
   });

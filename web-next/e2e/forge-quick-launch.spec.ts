@@ -171,7 +171,7 @@ test('Claude and Codex quick launch submits the native contract with optional re
   await page.screenshot({ path: '/tmp/forge-quick-launch-desktop.png', fullPage: true });
   await page.getByRole('button', { name: /^Codex/ }).click();
   await expect(page.getByLabel('Model', { exact: true })).toHaveValue('gpt-6-astra');
-  await page.getByLabel('Forge', { exact: true }).selectOption('spark');
+  await page.getByLabel('Host', { exact: true }).selectOption('spark');
   await expect(page.getByLabel('Working folder')).toHaveValue('/home/xteo/repos');
   await page.getByLabel('Effort', { exact: true }).selectOption('ultra');
   await page.getByRole('button', { name: 'Launch Codex', exact: true }).click();
@@ -208,7 +208,7 @@ test('Git selection, errors, and the legacy runtime remain explicit choices', as
 test('connection management points to Guild without a duplicate Forge tab', async ({ page }) => {
   await fixture(page);
   await page.goto('/volundr/catalog');
-  await expect(page.getByRole('link', { name: 'Manage environments in Guild' })).toHaveAttribute(
+  await expect(page.getByRole('link', { name: 'Manage hosts in Platform' })).toHaveAttribute(
     'href',
     '/guild',
   );

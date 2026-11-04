@@ -9,6 +9,7 @@ grant that P3/P4 read to decide which Ting workflow a Valkyrie may commission.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -20,29 +21,35 @@ logger = logging.getLogger(__name__)
 BUILD_ACTION_CLASS = "build"
 
 
+class RealmNotFoundError(LookupError):
+    """The realm id belongs to another tenant, so this tenant cannot use it."""
+
+
 class RealmService:
     """Service for realm, trust-grant, and capability lifecycle management."""
 
     def __init__(self, repo: RealmRepository) -> None:
         self._repo = repo
 
-    async def list_realms(self) -> list[Realm]:
-        """List all realms."""
-        return await self._repo.list_realms()
+    async def list_realms(self, tenant_id: str) -> list[Realm]:
+        """List the tenant's realms."""
+        return await self._repo.list_realms(tenant_id)
 
-    async def get_realm(self, realm_ref: UUID | str) -> Realm | None:
-        """Retrieve a realm by id or slug."""
-        return await self._repo.get_realm(realm_ref)
+    async def get_realm(self, realm_ref: UUID | str, tenant_id: str) -> Realm | None:
+        """Retrieve the tenant's realm by id or slug."""
+        return await self._repo.get_tenant_realm(realm_ref, tenant_id)
 
     async def create_realm(
         self,
         slug: str,
         name: str,
         *,
+        tenant_id: str,
         sleipnir_domain: str | None = None,
         owner_id: str | None = None,
         instance_id: str | None = None,
         autonomy_profile: str = "balanced",
+        project_id: UUID | None = None,
     ) -> Realm:
         """Create a new realm."""
         now = datetime.now(UTC)
@@ -54,6 +61,8 @@ class RealmService:
             owner_id=owner_id,
             instance_id=instance_id,
             autonomy_profile=autonomy_profile,
+            tenant_id=tenant_id,
+            project_id=project_id,
             created_at=now,
             updated_at=now,
         )
@@ -67,10 +76,12 @@ class RealmService:
         slug: str,
         name: str,
         *,
+        tenant_id: str,
         sleipnir_domain: str | None = None,
         owner_id: str | None = None,
         instance_id: str | None = None,
         autonomy_profile: str = "balanced",
+        project_id: UUID | None = None,
     ) -> Realm:
         """Create or replace a realm at a caller-supplied id.
 
@@ -79,8 +90,13 @@ class RealmService:
         the resident) so the resident's realm_id means the same realm
         everywhere, not a second, disconnected row. Unlike create_realm,
         this does not allocate a new id — id is the upsert key.
+
+        Raises ``RealmNotFoundError`` when the id belongs to another tenant: a
+        known id must not let one tenant overwrite another's realm.
         """
         existing = await self._repo.get_realm(realm_id)
+        if existing is not None and existing.tenant_id != tenant_id:
+            raise RealmNotFoundError(f"Realm not found: {realm_id}")
         now = datetime.now(UTC)
         realm = Realm(
             id=realm_id,
@@ -90,6 +106,9 @@ class RealmService:
             owner_id=owner_id,
             instance_id=instance_id,
             autonomy_profile=autonomy_profile,
+            tenant_id=tenant_id,
+            # A sync that does not know the project must not detach the realm from it.
+            project_id=project_id or (existing.project_id if existing is not None else None),
             created_at=existing.created_at if existing is not None else now,
             updated_at=now,
         )
@@ -97,14 +116,27 @@ class RealmService:
         logger.info("realm synced: id=%s slug=%s", saved.id, saved.slug)
         return saved
 
-    async def delete_realm(self, realm_ref: UUID | str) -> Realm | None:
-        """Delete a realm by id or slug, with its trust grants and capabilities.
+    async def set_project(
+        self, realm_ref: UUID | str, tenant_id: str, project_id: UUID | None
+    ) -> Realm:
+        """Move the tenant's realm into a project, or out of one."""
+        realm = await self._repo.get_tenant_realm(realm_ref, tenant_id)
+        if realm is None:
+            raise RealmNotFoundError(f"Realm not found: {realm_ref}")
+        saved = await self._repo.save_realm(
+            replace(realm, project_id=project_id, updated_at=datetime.now(UTC))
+        )
+        logger.info("realm project set: id=%s project_id=%s", saved.id, project_id)
+        return saved
+
+    async def delete_realm(self, realm_ref: UUID | str, tenant_id: str) -> Realm | None:
+        """Delete the tenant's realm by id or slug, with its grants and capabilities.
 
         Returns the realm that was deleted, or ``None`` when there was none.
         The realm's resident is not touched here: residents belong to the
         Ravn fleet and are removed through its own lifecycle routes.
         """
-        realm = await self._repo.get_realm(realm_ref)
+        realm = await self._repo.get_tenant_realm(realm_ref, tenant_id)
         if realm is None:
             return None
         await self._repo.delete_realm(realm.id)
@@ -183,8 +215,10 @@ class RealmService:
         )
         return saved
 
-    async def resolve_build_grant(self, realm_slug_or_valkyrie_id: UUID | str) -> TrustGrant | None:
-        """Resolve the effective ``build`` trust grant for a realm.
+    async def resolve_build_grant(
+        self, realm_slug_or_valkyrie_id: UUID | str, tenant_id: str
+    ) -> TrustGrant | None:
+        """Resolve the effective ``build`` trust grant for the tenant's realm.
 
         Accepts a realm slug (or the Valkyrie id, which is the realm slug) or a
         realm UUID. Trust grants are an append-only ledger, so the MOST RECENT
@@ -194,7 +228,7 @@ class RealmService:
         irrevocable). Level is only the tie-break for identical timestamps.
         Returns ``None`` when the realm is unknown or has no ``build`` grant.
         """
-        realm = await self._repo.get_realm(realm_slug_or_valkyrie_id)
+        realm = await self._repo.get_tenant_realm(realm_slug_or_valkyrie_id, tenant_id)
         if realm is None:
             return None
 

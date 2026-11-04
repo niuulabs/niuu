@@ -274,6 +274,23 @@ describe('createMockRealmGovernanceService', () => {
     expect(workflows).toEqual(createSeedToolWorkflows());
   });
 
+  it('moves a realm into a project and out again', async () => {
+    const service = createMockRealmGovernanceService();
+
+    expect((await service.setRealmProject('host-jozef', 'project-1')).project_id).toBe('project-1');
+    expect((await service.getRealm('host-jozef')).project_id).toBe('project-1');
+    expect((await service.setRealmProject('host-jozef', null)).project_id).toBeNull();
+    await expect(service.setRealmProject('missing', null)).rejects.toThrow();
+  });
+
+  it('creates a realm in a project', async () => {
+    const service = createMockRealmGovernanceService();
+
+    const realm = await service.createRealm({ slug: 'copy', name: 'Copy', project_id: 'p' });
+
+    expect(realm.project_id).toBe('p');
+  });
+
   it('deletes a realm and forgets its grants', async () => {
     const service = createMockRealmGovernanceService();
 

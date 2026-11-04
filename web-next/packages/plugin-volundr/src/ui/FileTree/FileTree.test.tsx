@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { FileTree } from './FileTree';
-import { FileViewer } from './FileViewer';
+import { FileViewer } from '@niuulabs/ui';
 import type { FileTreeNode } from '../../ports/IFileSystemPort';
 
 // ---------------------------------------------------------------------------

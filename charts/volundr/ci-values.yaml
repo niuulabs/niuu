@@ -26,6 +26,10 @@ service:
 ingress:
   enabled: false
 
+# The smoke test installs no Bifrost, so Volundr keeps retrying this address.
+bifrost:
+  url: "http://bifrost"
+
 storage:
   sessions:
     enabled: false

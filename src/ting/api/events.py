@@ -14,9 +14,20 @@ from collections.abc import AsyncGenerator
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
+from niuu.domain.models import Principal
+from ting.adapters.inbound.auth import extract_principal
 from ting.ports.event_bus import EventBusPort, TingEvent
 
 logger = logging.getLogger(__name__)
+
+
+def visible_to(event: TingEvent, principal: Principal) -> bool:
+    """Whether *principal* may see *event*.
+
+    The bus is shared by every org, and an event names the user whose work
+    raised it. An event with no owner reaches nobody: it could be anyone's.
+    """
+    return event.owner_id == principal.user_id
 
 
 async def resolve_event_bus() -> EventBusPort:  # pragma: no cover
@@ -31,22 +42,26 @@ async def _sse_generator(
     event_bus: EventBusPort,
     q: asyncio.Queue[TingEvent],
     keepalive_interval: float,
+    principal: Principal,
 ) -> AsyncGenerator[str, None]:
     """Async generator that streams SSE messages.
 
-    Yields the current state snapshot immediately, then relays events from *q*.
-    Sends an SSE comment keepalive after ``keepalive_interval`` idle seconds.
+    Yields the current state snapshot immediately, then relays events from *q*,
+    in both cases only those *principal* may see.  Sends an SSE comment
+    keepalive after ``keepalive_interval`` idle seconds.
     Calls ``event_bus.unsubscribe(q)`` in a finally block so the queue is
     always cleaned up on disconnect or error.
     """
     try:
         for snapshot_event in event_bus.get_snapshot():
-            yield snapshot_event.to_sse()
+            if visible_to(snapshot_event, principal):
+                yield snapshot_event.to_sse()
 
         while True:
             try:
                 event: TingEvent = await asyncio.wait_for(q.get(), timeout=keepalive_interval)
-                yield event.to_sse()
+                if visible_to(event, principal):
+                    yield event.to_sse()
             except TimeoutError:
                 yield ": keepalive\n\n"
     finally:
@@ -69,9 +84,10 @@ def create_events_router(keepalive_interval: float = 15.0) -> APIRouter:
     @router.get("/events", summary="SSE event stream")
     async def sse_stream(
         request: Request,  # noqa: ARG001
+        principal: Principal = Depends(extract_principal),
         event_bus: EventBusPort = Depends(resolve_event_bus),
     ) -> StreamingResponse:
-        """Stream all real-time Ting state changes as Server-Sent Events.
+        """Stream the caller's real-time Ting state changes as Server-Sent Events.
 
         The client receives a state snapshot immediately on connect, followed
         by live events as they are emitted.  The connection is kept alive with
@@ -88,7 +104,7 @@ def create_events_router(keepalive_interval: float = 15.0) -> APIRouter:
         q = event_bus.subscribe()
 
         return StreamingResponse(
-            _sse_generator(event_bus, q, keepalive_interval),
+            _sse_generator(event_bus, q, keepalive_interval, principal),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

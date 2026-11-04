@@ -275,6 +275,7 @@ export const FAKE_LINT_REPORT: LintReport = {
   ],
   pagesChecked: FAKE_PAGES.length,
   summary: tallySeverity([]),
+  mounts: [],
 };
 
 const FAKE_RELATED: Record<string, RelatedPage[]> = {

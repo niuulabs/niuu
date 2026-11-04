@@ -41,6 +41,7 @@ describe('reviewFormat', () => {
     expect(statusClasses('apply_failed')).toContain('critical');
     expect(statusClasses('applied')).toContain('ok');
     expect(statusClasses('expired')).toContain('muted');
+    expect(statusClasses('withdrawn')).toContain('muted');
   });
 
   it('renders compact relative time', () => {

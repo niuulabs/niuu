@@ -40,6 +40,8 @@ from tests.test_sleipnir.conftest import make_event
 
 pynng = pytest.importorskip("pynng", reason="pynng not installed; skipping nng tests")
 
+PROBE_EVENT_ID = "connection-probe"
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -701,16 +703,32 @@ async def test_reconnection_subscriber_survives_publisher_restart(ipc_address):
 # ---------------------------------------------------------------------------
 
 
+async def _publish_until_heard(pub: NngPublisher, heard: asyncio.Event) -> None:
+    """Probe until the subscriber hears the publisher.
+
+    PUB drops whatever it sends before SUB's dial completes and connect_settle_ms
+    is only a blind sleep, so a test that needs every event confirms the pipe first.
+    """
+    async with asyncio.timeout(10.0):
+        while not heard.is_set():
+            await pub.publish(make_event(event_id=PROBE_EVENT_ID))
+            await asyncio.sleep(0.01)
+
+
 async def test_ipc_latency_under_threshold(ipc_address):
     """Median IPC round-trip should be well under 10 ms (not µs since we're in
     a containerised CI environment, but still fast enough to be useful)."""
     latencies: list[float] = []
     n = 50
+    connected = asyncio.Event()
     events_received = asyncio.Event()
 
     timestamps: dict[str, float] = {}
 
     async def handler(evt: SleipnirEvent) -> None:
+        if evt.event_id == PROBE_EVENT_ID:
+            connected.set()
+            return
         latencies.append(time.monotonic() - timestamps[evt.event_id])
         if len(latencies) >= n:
             events_received.set()
@@ -718,6 +736,7 @@ async def test_ipc_latency_under_threshold(ipc_address):
     async with NngPublisher(ipc_address) as pub:
         async with NngSubscriber(ipc_address) as sub:
             await sub.subscribe(["ravn.*"], handler)
+            await _publish_until_heard(pub, connected)
 
             for i in range(n):
                 eid = f"lat-{i}"
@@ -828,9 +847,13 @@ async def test_nng_end_to_end_latency_10k_events(ipc_address):
     n = 10_000
     latencies: list[float] = []
     t_publish: dict[str, float] = {}
+    connected = asyncio.Event()
     all_done = asyncio.Event()
 
     async def handler(evt: SleipnirEvent) -> None:
+        if evt.event_id == PROBE_EVENT_ID:
+            connected.set()
+            return
         latencies.append(time.perf_counter() - t_publish[evt.event_id])
         if len(latencies) >= n:
             all_done.set()
@@ -838,13 +861,17 @@ async def test_nng_end_to_end_latency_10k_events(ipc_address):
     async with NngPublisher(ipc_address) as pub:
         async with NngSubscriber(ipc_address) as sub:
             await sub.subscribe(["ravn.*"], handler)
+            await _publish_until_heard(pub, connected)
 
             for i in range(n):
                 eid = f"lat-{i}"
                 t_publish[eid] = time.perf_counter()
                 await pub.publish(make_event(event_id=eid))
 
-            await asyncio.wait_for(all_done.wait(), timeout=120.0)
+            try:
+                await asyncio.wait_for(all_done.wait(), timeout=120.0)
+            except TimeoutError:
+                pytest.fail(f"Only {len(latencies)}/{n} events were delivered")
 
     latencies.sort()
     p50_ms = latencies[n // 2] * 1000

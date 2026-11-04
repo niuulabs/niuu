@@ -1,9 +1,0 @@
-{
-  "cookies": [],
-  "origins": [
-    {
-      "origin": "http://localhost:5173",
-      "localStorage": [{ "name": "niuu.compactUx.mode", "value": "advanced" }]
-    }
-  ]
-}

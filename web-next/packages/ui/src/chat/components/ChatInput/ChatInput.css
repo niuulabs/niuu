@@ -1,8 +1,10 @@
 .niuu-chat-input-wrapper {
-  display: flex;
-  flex-direction: column;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-lg);
   background-color: var(--color-bg-secondary);
@@ -23,6 +25,7 @@
 }
 
 .niuu-chat-input-attachments {
+  grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
@@ -83,10 +86,14 @@
 }
 
 .niuu-chat-input-area {
-  position: relative;
+  min-width: 0;
+  align-self: center;
 }
 
 .niuu-chat-textarea {
+  display: block;
+  box-sizing: border-box;
+  padding: 0;
   width: 100%;
   resize: none;
   border: none;
@@ -115,10 +122,10 @@
   display: none;
 }
 
-.niuu-chat-input-bottom-bar {
+.niuu-chat-input-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--space-2);
 }
 
 .niuu-chat-input-left-actions {
@@ -221,28 +228,62 @@
   height: 16px;
 }
 
-[data-theme='xteo'] .niuu-chat-input-wrapper {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .niuu-chat-input-wrapper {
   background: var(--color-panel-quiet);
   box-shadow: none;
   border-color: var(--color-border-quiet);
-  padding: 14px 16px 12px;
-  gap: 14px;
 }
-[data-theme='xteo'] .niuu-chat-input-wrapper:focus-within {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .niuu-chat-input-wrapper:focus-within {
   border-color: var(--color-border-subtle);
 }
-[data-theme='xteo'] .niuu-chat-textarea {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .niuu-chat-textarea {
   font-size: 15px;
-  line-height: 1.65;
+  line-height: 1.5;
 }
-[data-theme='xteo'] .niuu-chat-textarea::placeholder {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .niuu-chat-textarea::placeholder {
   color: var(--color-text-muted);
 }
-[data-theme='xteo'] .niuu-chat-send-btn {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .niuu-chat-send-btn {
   width: 36px;
   height: 36px;
 }
-[data-theme='xteo'] .niuu-chat-send-btn[data-active] {
+:is(
+    [data-theme='xteo'],
+    [data-theme='midnight-blue'],
+    [data-theme='deep-blue'],
+    [data-theme='dark-blue']
+  )
+  .niuu-chat-send-btn[data-active] {
   background: var(--brand-600);
   color: var(--color-accent-on-fill);
   border-color: var(--brand-600);

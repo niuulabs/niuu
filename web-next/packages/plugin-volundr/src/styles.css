@@ -37,3 +37,11 @@
 [data-theme='light'] {
   --volundr-label-background: transparent;
 }
+
+/* NIUU colors for legacy fixed-color surfaces. */
+[data-theme='niuu'] .niuu\:bg-\[\#0b0c10\] {
+  background-color: var(--niuu-bg-primary);
+}
+[data-theme='niuu'] .niuu\:bg-\[\#12212b\] {
+  background-color: var(--niuu-bg-secondary);
+}

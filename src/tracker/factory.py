@@ -11,6 +11,13 @@ from tracker.ports import IssueTrackerProvider
 
 logger = logging.getLogger(__name__)
 
+# Ting stores its own class on some connections. Those classes implement Ting's
+# TrackerPort, so a connection to the same tracker resolves to the provider here.
+_SHARED_TRACKER_ADAPTERS = {
+    "ting.adapters.linear.LinearTrackerAdapter": "volundr.adapters.outbound.linear.LinearAdapter",
+    "ting.adapters.jira.JiraTrackerAdapter": "volundr.adapters.outbound.jira.JiraAdapter",
+}
+
 
 class TrackerFactory:
     """Creates IssueTrackerProvider instances from IntegrationConnection configs.
@@ -46,12 +53,13 @@ class TrackerFactory:
                 f"for user '{connection.owner_id}'"
             )
 
-        cls = _import_class(connection.adapter)
+        adapter = _SHARED_TRACKER_ADAPTERS.get(connection.adapter, connection.adapter)
+        cls = _import_class(adapter)
         kwargs = {**cred, **connection.config}
         instance = cls(**kwargs)
         logger.info(
             "Created tracker adapter: %s (user=%s)",
-            connection.adapter.rsplit(".", 1)[-1],
+            adapter.rsplit(".", 1)[-1],
             connection.owner_id,
         )
         return instance

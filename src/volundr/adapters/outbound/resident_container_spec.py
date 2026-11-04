@@ -677,6 +677,8 @@ def _resident_ravn_config(
         },
         "environment": {"resident_name": runtime.name},
     }
+    if isinstance(resident.get("personaSource"), dict):
+        config["persona_source"] = resident["personaSource"]
     if llm:
         config["llm"] = llm
     if isinstance(resident.get("wakefulness"), dict):

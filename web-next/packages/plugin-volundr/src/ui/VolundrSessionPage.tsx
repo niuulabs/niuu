@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useService } from '@niuulabs/plugin-sdk';
 import { Terminal } from './Terminal/Terminal';
 import { FileTree } from './FileTree/FileTree';
-import { FileViewer } from './FileTree/FileViewer';
+import { FileViewer } from '@niuulabs/ui';
 import type { IPtyStream } from '../ports/IPtyStream';
 import type { IFileSystemPort, FileTreeNode } from '../ports/IFileSystemPort';
 import { useQuery } from '@tanstack/react-query';

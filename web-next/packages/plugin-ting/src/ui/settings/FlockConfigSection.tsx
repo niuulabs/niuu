@@ -18,7 +18,7 @@ function validate(values: Partial<FlockConfig>): ValidationError[] {
   if (values.maxActiveSagas !== undefined && values.maxActiveSagas < 1) {
     errors.push({
       id: 'flock-max-sagas',
-      label: 'Max active sagas',
+      label: 'Max active projects',
       message: 'Must be at least 1',
     });
   }
@@ -84,7 +84,7 @@ export function FlockConfigSection() {
         Flock Config
       </h3>
       <p className="niuu:text-sm niuu:text-text-secondary niuu:mb-4">
-        Global defaults applied to new sagas and runs in this Ting deployment.
+        Global defaults applied to new projects and runs in this deployment.
       </p>
 
       <form
@@ -96,11 +96,7 @@ export function FlockConfigSection() {
         {errors.length > 0 && <ValidationSummary errors={errors} />}
 
         <Field id="flock-name" label="Flock name" required>
-          <Input
-            name="flockName"
-            defaultValue={config?.flockName}
-            placeholder="My Ting deployment"
-          />
+          <Input name="flockName" defaultValue={config?.flockName} placeholder="My deployment" />
         </Field>
 
         <Field id="flock-branch" label="Default base branch" required>
@@ -131,7 +127,7 @@ export function FlockConfigSection() {
           />
         </Field>
 
-        <Field id="flock-max-sagas" label="Max active sagas" required>
+        <Field id="flock-max-sagas" label="Max active projects" required>
           <Input
             name="maxActiveSagas"
             type="number"

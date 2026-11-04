@@ -4,7 +4,7 @@ import { niuuConfigSchema } from './config';
 describe('niuuConfigSchema', () => {
   it('fills sensible defaults from an empty object', () => {
     const parsed = niuuConfigSchema.parse({});
-    expect(parsed.theme).toBe('ice');
+    expect(parsed.theme).toBe('niuu');
     expect(parsed.plugins).toEqual({});
     expect(parsed.services).toEqual({});
   });
@@ -52,6 +52,11 @@ describe('niuuConfigSchema', () => {
   it('rejects an invalid theme', () => {
     expect(() => niuuConfigSchema.parse({ theme: 'ultraviolet' })).toThrow();
   });
+
+  it.each(['xteo', 'midnight-blue', 'deep-blue', 'dark-blue', 'light'])(
+    'accepts %s as the configured theme',
+    (theme) => expect(niuuConfigSchema.parse({ theme }).theme).toBe(theme),
+  );
 
   it('rejects an invalid service URL', () => {
     expect(() =>

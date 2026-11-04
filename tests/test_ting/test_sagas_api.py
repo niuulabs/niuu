@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -57,6 +60,7 @@ from ting.domain.models import (
 from ting.ports.volundr import VolundrSession
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
+from ting.system_workflows import load_system_workflows
 
 from .test_tracker_api import MockSagaRepo, MockTracker
 
@@ -617,6 +621,221 @@ class TestGetSaga:
         assert body["workflow_version"] == workflow.version
 
 
+class TestBoardWorkflows:
+    @staticmethod
+    def _client(
+        mock_tracker: MockTracker,
+        saga_repo: MockSagaRepo,
+        workflows: list[WorkflowDefinition],
+        campaigns: list[WorkflowCampaign] | None = None,
+    ) -> TestClient:
+        app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
+        app.include_router(create_sagas_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
+        app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
+        campaign_repo = MagicMock()
+        campaign_repo.list_campaigns = AsyncMock(return_value=campaigns or [])
+        campaign_repo.list_ticket_campaigns = partial(
+            WorkflowCampaignRepository.list_ticket_campaigns, campaign_repo
+        )
+        app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaign_repo
+        app.state.settings = _dev_settings()
+        app.state.workflow_repo = InMemoryWorkflowRepository(workflows)
+        return TestClient(app)
+
+    @staticmethod
+    def _bundled(*names: str) -> list[WorkflowDefinition]:
+        by_name = {workflow.name: workflow for workflow in load_system_workflows()}
+        return [by_name[name] for name in names]
+
+    def test_a_project_without_a_repository_refuses_a_workflow_that_needs_one(
+        self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        [delivery] = self._bundled("Reviewed Delivery Flow")
+        saga_repo.sagas[0] = replace(saga_repo.sagas[0], repos=[], repo_branches={})
+        client = self._client(mock_tracker, saga_repo, [delivery])
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/board-workflows",
+            json={"workflow_ids": [str(delivery.id)]},
+        )
+
+        assert response.status_code == 422
+        assert "needs a repository" in response.json()["detail"]
+
+    def test_a_project_without_a_repository_takes_a_workflow_that_needs_none(
+        self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        [work] = self._bundled("Ticket Work Flow")
+        saga_repo.sagas[0] = replace(saga_repo.sagas[0], repos=[], repo_branches={})
+        client = self._client(mock_tracker, saga_repo, [work])
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/board-workflows",
+            json={"workflow_ids": [str(work.id)]},
+        )
+
+        assert response.status_code == 200
+        assert saga_repo.sagas[0].board_workflows[0].workflow_id == work.id
+
+    def test_assigning_a_workflow_that_needs_a_repository_is_refused_without_one(
+        self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        [delivery] = self._bundled("Reviewed Delivery Flow")
+        saga_repo.sagas[0] = replace(saga_repo.sagas[0], repos=[], repo_branches={})
+        client = self._client(mock_tracker, saga_repo, [delivery])
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/workflow",
+            json={"workflow_id": str(delivery.id)},
+        )
+
+        assert response.status_code == 422
+        assert "needs a repository" in response.json()["detail"]
+
+    def test_orders_and_pins_the_workflows(
+        self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        planning, delivery = self._bundled("Ticket Planning Flow", "Reviewed Delivery Flow")
+        client = self._client(mock_tracker, saga_repo, [planning, delivery])
+        saga = saga_repo.sagas[0]
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga.id}/board-workflows",
+            json={"workflow_ids": [str(planning.id), str(delivery.id)]},
+        )
+
+        assert response.status_code == 200
+        assert [item["id"] for item in response.json()["board_workflows"]] == [
+            str(planning.id),
+            str(delivery.id),
+        ]
+        pins = saga_repo.sagas[0].board_workflows
+        assert [pin.workflow_id for pin in pins] == [planning.id, delivery.id]
+        assert pins[0].workflow_snapshot["name"] == "Ticket Planning Flow"
+        detail = client.get(f"/api/v1/ting/sagas/{saga.id}").json()
+        assert detail["board_workflows"][0] == {
+            "id": str(planning.id),
+            "name": "Ticket Planning Flow",
+        }
+
+    def test_reordering_keeps_each_workflows_pin(
+        self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        planning, delivery = self._bundled("Ticket Planning Flow", "Reviewed Delivery Flow")
+        client = self._client(mock_tracker, saga_repo, [planning, delivery])
+        saga = saga_repo.sagas[0]
+        url = f"/api/v1/ting/sagas/{saga.id}/board-workflows"
+        client.put(url, json={"workflow_ids": [str(planning.id), str(delivery.id)]})
+        pinned = saga_repo.sagas[0].board_workflows[0]
+
+        client.app.state.workflow_repo = InMemoryWorkflowRepository([])
+        response = client.put(url, json={"workflow_ids": [str(delivery.id), str(planning.id)]})
+
+        assert response.status_code == 200
+        assert saga_repo.sagas[0].board_workflows[1] == pinned
+
+    def test_a_workflow_without_columns_is_refused(
+        self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        [planning] = self._bundled("Saga Planning")
+        client = self._client(mock_tracker, saga_repo, [planning])
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/board-workflows",
+            json={"workflow_ids": [str(planning.id)]},
+        )
+
+        assert response.status_code == 422
+        assert "declares no board columns" in response.json()["detail"]
+
+    def test_a_private_workflow_is_refused(
+        self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        [delivery] = self._bundled("Reviewed Delivery Flow")
+        private = replace(
+            delivery,
+            scope=WorkflowScope.USER,
+            owner_id="dev-user",
+            read_only=False,
+        )
+        client = self._client(mock_tracker, saga_repo, [private])
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/board-workflows",
+            json={"workflow_ids": [str(private.id)]},
+        )
+
+        assert response.status_code == 422
+        assert "only start system workflows" in response.json()["detail"]
+
+    def test_a_workflow_listed_twice_is_refused(
+        self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        [delivery] = self._bundled("Reviewed Delivery Flow")
+        client = self._client(mock_tracker, saga_repo, [delivery])
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/board-workflows",
+            json={"workflow_ids": [str(delivery.id), str(delivery.id)]},
+        )
+
+        assert response.status_code == 422
+
+    def test_a_board_needing_a_widget_not_installed_is_refused(
+        self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        planning = self._bundled("Ticket Planning Flow")[0]
+        graph = deepcopy(planning.graph)
+        column = next(item for item in graph["board"]["columns"] if item.get("gate"))
+        column["panels"] = [{"widget": "acme-print/print-quality", "title": "Quality"}]
+        client = self._client(mock_tracker, saga_repo, [replace(planning, graph=graph)])
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/board-workflows",
+            json={"workflow_ids": [str(planning.id)]},
+        )
+
+        assert response.status_code == 422
+        assert "acme-print/print-quality" in response.json()["detail"]
+
+    def test_a_workflow_with_a_run_stays_on_the_board(
+        self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        planning, delivery = self._bundled("Ticket Planning Flow", "Reviewed Delivery Flow")
+        saga = saga_repo.sagas[0]
+        running = SimpleNamespace(
+            workflow_id=planning.id,
+            workflow_name=planning.name,
+            status=WorkflowCampaignStatus.RUNNING,
+            metadata={"ticket": {"sagaId": str(saga.id), "issueId": "issue-1"}},
+            created_at=datetime.now(UTC),
+        )
+        client = self._client(mock_tracker, saga_repo, [planning, delivery], [running])
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga.id}/board-workflows",
+            json={"workflow_ids": [str(delivery.id)]},
+        )
+
+        assert response.status_code == 409
+        assert "Ticket Planning Flow" in response.json()["detail"]
+        assert saga_repo.sagas[0].board_workflows == ()
+
+    def test_an_unknown_project_is_not_found(
+        self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
+    ):
+        client = self._client(mock_tracker, saga_repo, [])
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{uuid4()}/board-workflows",
+            json={"workflow_ids": []},
+        )
+
+        assert response.status_code == 404
+
+
 class TestAssignWorkflow:
     def test_assigns_graph_backed_workflow(
         self, mock_tracker: MockTracker, saga_repo: MockSagaRepo
@@ -962,13 +1181,34 @@ class TestAssignRepos:
         client: TestClient,
         saga_repo: MockSagaRepo,
     ) -> None:
+        saga_repo.sagas[0] = replace(
+            saga_repo.sagas[0],
+            workflow_id=uuid4(),
+            workflow_snapshot={"name": "Delivery", "graph": {}},
+        )
+
         response = client.put(
             f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/repos",
             json={"repo_refs": []},
         )
 
         assert response.status_code == 422
-        assert response.json()["detail"] == "At least one repository is required"
+        assert "Delivery needs a repository" in response.json()["detail"]
+        assert saga_repo.sagas[0].repos
+
+    def test_clears_the_repositories_of_a_project_that_needs_none(
+        self,
+        client: TestClient,
+        saga_repo: MockSagaRepo,
+    ) -> None:
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/repos",
+            json={"repo_refs": []},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["repos"] == []
+        assert saga_repo.sagas[0].repos == []
 
 
 class TestSpawnPlanSession:
@@ -1513,6 +1753,15 @@ class _DispatchRecorder:
             raise RuntimeError("dispatch unavailable")
 
 
+def _no_plan_campaigns() -> MagicMock:
+    """A campaign repository for commits that come from no plan.
+
+    A FastAPI dependency, so it must take no arguments: MagicMock itself reads as
+    one that wants `args` and `kwargs` query parameters.
+    """
+    return MagicMock()
+
+
 class TestCommitSaga:
     def test_kicks_off_initial_dispatch_when_service_is_available(
         self,
@@ -1524,6 +1773,7 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: repo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plan_campaigns
         app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         recorder = _DispatchRecorder()
@@ -1568,6 +1818,7 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: repo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plan_campaigns
         app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         app.state.dispatch_service = _DispatchRecorder(should_fail=True)
@@ -1623,6 +1874,7 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: repo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plan_campaigns
         app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         client = TestClient(app)
@@ -1646,6 +1898,7 @@ class TestCommitSaga:
         app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plan_campaigns
         app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         client = TestClient(app)
@@ -1688,6 +1941,7 @@ class TestCommitSaga:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [FailingTracker()]
         app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = _no_plan_campaigns
         app.dependency_overrides[resolve_git] = AsyncMock
         app.state.settings = _dev_settings()
         client = TestClient(app)

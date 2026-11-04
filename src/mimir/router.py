@@ -31,7 +31,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Callable
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
@@ -69,6 +68,7 @@ from niuu.domain.mimir import (
     compute_source_id,
 )
 from niuu.domain.models import Principal
+from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 from niuu.ports.mimir import MimirPort
 from ravn.adapters.tools._url_security import check_ssrf
@@ -233,11 +233,27 @@ class LintIssueResponse(BaseModel):
     auto_fix: bool
 
 
+class LintMountResponse(BaseModel):
+    """One mount's part in a lint.
+
+    ``unsupported`` is a backend with no lint (gbrain): it was not checked,
+    and ``detail`` says why, rather than the mount failing every other
+    mount's lint or quietly reading as clean.
+    """
+
+    name: str
+    status: Literal["linted", "unsupported"]
+    pages_checked: int = 0
+    issues: int = 0
+    detail: str = ""
+
+
 class LintResponse(BaseModel):
     issues: list[LintIssueResponse]
     pages_checked: int
     issues_found: bool
     summary: dict[str, int]
+    mounts: list[LintMountResponse] = Field(default_factory=list)
 
 
 class GraphNode(BaseModel):
@@ -682,37 +698,80 @@ def _lint_issue_key(issue_id: str, page_path: str) -> str:
     return f"{issue_id}:{page_path}"
 
 
-async def _page_mount_map(
-    adapter: MimirPort,
+def _mount_failed(operation: str, mount_name: str, exc: Exception) -> MimirUnavailableError:
+    """A mount that could not do its part fails the aggregate, naming itself.
+
+    An aggregate without it would read as a smaller corpus, not an outage —
+    see ``.claude/rules/no-fallbacks.md``.
+    """
+    return MimirUnavailableError(
+        f"Mímir mount {mount_name!r} failed during {operation}: {exc}. "
+        "Fix or remove that mount — results from the remaining mounts would "
+        "be silently incomplete."
+    )
+
+
+def _by_read_priority(mounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(mounts, key=lambda mount: mount.get("priority", 0))
+
+
+async def _list_each_mount(
+    mounts: list[dict[str, Any]],
     *,
-    default_name: str,
-    default_role: str,
-    mounts: list[dict[str, Any]] | None = None,
     category: str | None = None,
     prefix: str | None = None,
-) -> dict[str, list[str]]:
-    """Map page path → the mounts holding it, scoped the same way the caller is.
+) -> list[tuple[str, list[MimirPageMeta]]]:
+    """Every mount's page listing, asked concurrently, in read-priority order.
 
-    The scope matters: this decorates a page listing, so it only needs the pages
-    in that listing. Asking each mount for its whole corpus regardless of filter
-    silently undid the caller's ``prefix`` — ``GET /mimir/pages?prefix=...``
-    scoped its own read and then walked all 578 pages here anyway, which is the
-    cost Ting pays once per campaign and 18 times per research page view.
+    Mounts are separate services — the local wiki, gbrain tenants, remote
+    Mímir instances — so asking them one after another made every aggregate
+    read cost the sum of all of them. The scope matters too: callers decorate
+    a filtered listing, and walking each mount's whole corpus regardless of
+    ``prefix`` is the cost Ting paid 18 times per research page view.
     """
-    mount_map: dict[str, list[str]] = {}
-    mounts = mounts or _extract_mount_definitions(
-        adapter,
-        default_name=default_name,
-        default_role=default_role,
-    )
-    for mount in mounts:
+
+    async def one(mount: dict[str, Any]) -> tuple[str, list[MimirPageMeta]]:
         try:
-            pages = await mount["port"].list_pages(category=category, prefix=prefix)
-        except Exception:
-            continue
+            return mount["name"], await mount["port"].list_pages(category=category, prefix=prefix)
+        except Exception as exc:
+            raise _mount_failed("list_pages", mount["name"], exc) from exc
+
+    return list(await asyncio.gather(*(one(mount) for mount in _by_read_priority(mounts))))
+
+
+def _mounts_by_path(listings: list[tuple[str, list[MimirPageMeta]]]) -> dict[str, list[str]]:
+    """Map page path → the mounts holding it, in read-priority order."""
+    mount_map: dict[str, list[str]] = {}
+    for name, pages in listings:
         for page in pages:
-            mount_map.setdefault(page.path, []).append(mount["name"])
+            mount_map.setdefault(page.path, []).append(name)
     return mount_map
+
+
+async def _lint_each_mount(
+    mounts: list[dict[str, Any]], *, fix: bool
+) -> list[tuple[str, MimirLintReport | None, str]]:
+    """Lint every mount concurrently: ``(name, report, "")`` or ``(name, None, why)``.
+
+    A backend with no lint (gbrain) answers ``NotImplementedError``. That is
+    the mount saying what it is, not failing, so it is returned as
+    unsupported for the caller to report — it used to fail the whole call
+    with 501, so one gbrain tenant stopped every Mímir mount being linted.
+    Any other failure still fails the call: a merged report without that
+    mount would read as a clean bill of health over a corpus never checked.
+    """
+
+    async def one(mount: dict[str, Any]) -> tuple[str, MimirLintReport | None, str]:
+        try:
+            return mount["name"], await mount["port"].lint(fix=fix), ""
+        except NotImplementedError as exc:
+            return mount["name"], None, str(exc) or "this backend has no lint"
+        except MimirUnavailableError:
+            raise
+        except Exception as exc:
+            raise _mount_failed("lint", mount["name"], exc) from exc
+
+    return list(await asyncio.gather(*(one(mount) for mount in _by_read_priority(mounts))))
 
 
 async def _source_page_map(
@@ -871,20 +930,28 @@ async def _merged_mount_responses(
     registry_store: MimirRegistryStore | None,
     mounts: list[dict[str, Any]] | None = None,
     tenant_id: str = "",
+    other_org: bool = False,
 ) -> list[MountResponse]:
-    live_summaries = [
-        await _summarize_mount(mount)
-        for mount in (
-            mounts
-            or _extract_mount_definitions(
-                adapter,
-                default_name=default_name,
-                default_role=default_role,
+    live_summaries = list(
+        await asyncio.gather(
+            *(
+                _summarize_mount(mount)
+                for mount in (
+                    mounts
+                    if mounts is not None
+                    else _extract_mount_definitions(
+                        adapter,
+                        default_name=default_name,
+                        default_role=default_role,
+                    )
+                )
             )
         )
-    ]
+    )
     live_by_name = {mount.name: mount for mount in live_summaries}
     entries = registry_store.list_entries(tenant_id=tenant_id) if registry_store is not None else []
+    if other_org:
+        entries = [entry for entry in entries if entry.tenant_id]
     if not entries:
         return sorted(live_summaries, key=lambda mount: mount.priority)
 
@@ -1072,6 +1139,25 @@ def _decorate_source(
 # ---------------------------------------------------------------------------
 
 
+#: Routes that read this host directly rather than through the caller's mounts.
+_HOST_ONLY_ROUTES = (
+    "/doctor",
+    "/routing/rules",
+    "/ravns/bindings",
+    "/entities/index",
+    "/related",
+    "/evidence",
+    "/page/revise",
+    "/eval/",
+    "/activity/live",
+)
+
+
+def _is_host_only_route(path: str) -> bool:
+    route = path.split("/mimir", 1)[-1]
+    return route.startswith(_HOST_ONLY_ROUTES)
+
+
 class MimirRouter:
     """Wraps a ``MimirPort`` and exposes it as a FastAPI ``APIRouter``.
 
@@ -1111,8 +1197,11 @@ class MimirRouter:
         auth: HeaderAuthenticationPort,
         auth_mode: str = "envoy",
         live_activity: LiveActivityRecorder | None = None,
+        platform_tenant_id: str = DEFAULT_PLATFORM_TENANT_ID,
     ) -> None:
         self._owner_tenant = tenant_id
+        self._platform_tenant_id = platform_tenant_id
+        self._other_org: ContextVar[bool] = ContextVar("mimir_other_org", default=False)
         self._auth = auth
         self._auth_mode = auth_mode
         self._public_url = public_url
@@ -1251,11 +1340,13 @@ class MimirRouter:
         # local-dev/no-auth callers to tenant-scoped restrictions designed
         # for multi-tenant deployments (host-path mount rejection, entry
         # lookups keyed by tenant) that "none" never had.
+        other_org = False
         if self._auth_mode == "none":
             tenant = ""
         else:
             principal = await self._verified_principal(request)
             tenant = principal.tenant_id if principal is not None else ""
+            other_org = principal is not None and tenant != self._platform_tenant_id
             if (
                 principal is not None
                 and not tenant
@@ -1266,7 +1357,10 @@ class MimirRouter:
                 )
         if self._owner_tenant and tenant != self._owner_tenant:
             raise HTTPException(403, "Knowledge instance belongs to a different tenant")
+        if other_org and _is_host_only_route(request.url.path):
+            raise HTTPException(403, "This route reads the host's own knowledge")
         tenant_token = self._tenant.set(tenant)
+        other_org_token = self._other_org.set(other_org)
         mounts_token = self._deployed_mounts.set([])
         try:
             if self._deployment is not None and "/deployments" not in request.url.path:
@@ -1281,6 +1375,7 @@ class MimirRouter:
                 if mount.get("close_after_request"):
                     await mount["port"].aclose()
             self._deployed_mounts.reset(mounts_token)
+            self._other_org.reset(other_org_token)
             self._tenant.reset(tenant_token)
 
     def _validate_registry_write(self, request: RegistryMountRequest) -> None:
@@ -1333,6 +1428,7 @@ class MimirRouter:
         return port
 
     def _mount_definitions(self) -> list[dict[str, Any]]:
+        other_org = self._other_org.get()
         mounts = _extract_mount_definitions(
             self._adapter,
             default_name=self._name,
@@ -1342,12 +1438,14 @@ class MimirRouter:
             mount["access_scope"] = "tenant" if self._owner_tenant else "global"
         if self._deployment is not None:
             mounts.extend(self._deployed_mounts.get())
+        if other_org:
+            mounts = [mount for mount in mounts if mount["access_scope"] == "tenant"]
         seen = {mount["name"] for mount in mounts}
         if self._registry_store is None:
             return mounts
 
         for entry in self._registry_store.list_entries(tenant_id=self._tenant.get()):
-            if entry.name in seen:
+            if entry.name in seen or (other_org and not entry.tenant_id):
                 continue
             port = self._registry_port(entry.name)
             if port is None:
@@ -1416,6 +1514,23 @@ class MimirRouter:
             return await reader.search_attributed(query)
         return [(self._name, page) for page in await reader.search(query)]
 
+    async def _lint_response(self, mount: str | None, *, fix: bool) -> LintResponse:
+        """Lint one mount, or every mount, attributing each issue to its mount.
+
+        Across mounts, a mount whose backend has no lint is listed as
+        unsupported while the others are still linted. Asked for by name,
+        the same mount answers 501: the one thing requested cannot be done.
+        """
+        if mount is None:
+            targets = self._mount_definitions()
+        else:
+            port, resolved = self._resolve_port(mount)
+            targets = [{"name": resolved, "port": port}]
+        results = await _lint_each_mount(targets, fix=fix)
+        if mount is not None and results[0][1] is None:
+            raise HTTPException(501, results[0][2])
+        return _lint_to_response(results, assignments=_get_lint_assignment_store(self._adapter))
+
     def _register_routes(self) -> None:
         router = self.router
         adapter = self._adapter
@@ -1458,6 +1573,7 @@ class MimirRouter:
                 default_name=self._name,
                 default_role=self._role,
                 registry_store=self._registry_store,
+                other_org=self._other_org.get(),
                 tenant_id=self._tenant.get(),
                 mounts=mounts,
             )
@@ -1483,7 +1599,11 @@ class MimirRouter:
                     for mount in mounts
                 ]
             else:
-                entries = self._registry_store.list_entries(tenant_id=self._tenant.get())
+                entries = [
+                    entry
+                    for entry in self._registry_store.list_entries(tenant_id=self._tenant.get())
+                    if entry.tenant_id or not self._other_org.get()
+                ]
             names = {entry.name for entry in entries}
             if self._deployment is not None:
                 for mount in self._deployed_mounts.get():
@@ -1685,23 +1805,28 @@ class MimirRouter:
             prefix: str | None = Query(default=None),
             mount: str | None = Query(default=None),
         ) -> list[PageMetaResponse]:
-            mounts = self._mount_definitions()
-            port, resolved_mount = self._resolve_port(mount)
-            pages = await port.list_pages(category=category, prefix=prefix)
-            mount_map = await _page_mount_map(
-                adapter,
-                default_name=self._name,
-                default_role=self._role,
-                mounts=mounts,
-                category=category,
-                prefix=prefix,
-            )
             if mount is not None:
+                port, resolved_mount = self._resolve_port(mount)
+                pages = await port.list_pages(category=category, prefix=prefix)
                 return [_decorate_page_meta(page, mounts=[resolved_mount]) for page in pages]
-            return [
-                _decorate_page_meta(page, mounts=mount_map.get(page.path, [self._name]))
-                for page in pages
-            ]
+            # One listing per mount serves both the merged list and the mount
+            # attribution. Listing through the composite and then again per
+            # mount for the attribution walked every mount twice, one after
+            # another — 12.9 s on yggdrasil, where the slowest mount alone
+            # takes under 2.
+            listings = await _list_each_mount(
+                self._mount_definitions(), category=category, prefix=prefix
+            )
+            mount_map = _mounts_by_path(listings)
+            seen: set[str] = set()
+            merged: list[PageMetaResponse] = []
+            for _, pages in listings:
+                for page in pages:
+                    if page.path in seen:
+                        continue
+                    seen.add(page.path)
+                    merged.append(_decorate_page_meta(page, mounts=mount_map[page.path]))
+            return merged
 
         @router.get("/page", response_model=PageResponse)
         async def read_page(
@@ -1722,13 +1847,7 @@ class MimirRouter:
             # pages to answer for one — and Ting reads ~10 pages per campaign,
             # 18 campaigns per research page view, so a single view cost ~180
             # corpus walks. A path is its own prefix.
-            mount_map = await _page_mount_map(
-                adapter,
-                default_name=self._name,
-                default_role=self._role,
-                mounts=mounts,
-                prefix=page.meta.path,
-            )
+            mount_map = _mounts_by_path(await _list_each_mount(mounts, prefix=page.meta.path))
             return _decorate_page(page, mounts=mount_map.get(page.meta.path, [self._name]))
 
         @router.get("/search", response_model=list[SearchResult])
@@ -1859,29 +1978,10 @@ class MimirRouter:
 
         @router.get("/lint", response_model=LintResponse)
         async def lint(mount: str | None = Query(default=None)) -> LintResponse:
-            mounts = self._mount_definitions()
-            port, resolved_mount = self._resolve_port(mount)
             try:
-                report = await port.lint()
-            except NotImplementedError as exc:
-                raise HTTPException(501, str(exc)) from exc
+                return await self._lint_response(mount, fix=False)
             except MimirUnavailableError as exc:
-                status = 501 if isinstance(exc.__cause__, NotImplementedError) else 503
-                raise HTTPException(status, str(exc)) from exc
-            mount_map = await _page_mount_map(
-                adapter,
-                default_name=self._name,
-                default_role=self._role,
-                mounts=mounts,
-            )
-            assignments = _get_lint_assignment_store(adapter)
-            return _lint_to_response(
-                report,
-                assignments=assignments,
-                mount_lookup=lambda path: (
-                    resolved_mount if mount is not None else mount_map.get(path, [self._name])[0]
-                ),
-            )
+                raise HTTPException(503, str(exc)) from exc
 
         @router.post("/lint/fix", response_model=LintResponse)
         async def lint_fix(
@@ -1889,23 +1989,10 @@ class MimirRouter:
             mount: str | None = Query(default=None),
         ) -> LintResponse:
             del request
-            mounts = self._mount_definitions()
-            port, resolved_mount = self._resolve_port(mount)
-            report = await port.lint(fix=True)
-            mount_map = await _page_mount_map(
-                adapter,
-                default_name=self._name,
-                default_role=self._role,
-                mounts=mounts,
-            )
-            assignments = _get_lint_assignment_store(adapter)
-            return _lint_to_response(
-                report,
-                assignments=assignments,
-                mount_lookup=lambda path: (
-                    resolved_mount if mount is not None else mount_map.get(path, [self._name])[0]
-                ),
-            )
+            try:
+                return await self._lint_response(mount, fix=True)
+            except MimirUnavailableError as exc:
+                raise HTTPException(503, str(exc)) from exc
 
         @router.get("/doctor")
         async def doctor_report(mount: str | None = Query(default=None)) -> dict[str, Any]:
@@ -1993,22 +2080,11 @@ class MimirRouter:
         @router.post("/lint/reassign", response_model=LintResponse)
         async def lint_reassign(request: LintReassignRequest) -> LintResponse:
             assignments = _get_lint_assignment_store(adapter)
-            mounts = self._mount_definitions()
-            report = await self._read_adapter().lint()
-            for issue in report.issues:
-                if issue.id in request.issue_ids:
-                    assignments[_lint_issue_key(issue.id, issue.page_path)] = request.assignee
-            mount_map = await _page_mount_map(
-                adapter,
-                default_name=self._name,
-                default_role=self._role,
-                mounts=mounts,
-            )
-            return _lint_to_response(
-                report,
-                assignments=assignments,
-                mount_lookup=lambda path: mount_map.get(path, [self._name])[0],
-            )
+            for _, report, _ in await _lint_each_mount(self._mount_definitions(), fix=False):
+                for issue in report.issues if report is not None else []:
+                    if issue.id in request.issue_ids:
+                        assignments[_lint_issue_key(issue.id, issue.page_path)] = request.assignee
+            return await self._lint_response(None, fix=False)
 
         @router.get("/dreams", response_model=list[DreamCycleResponse])
         async def list_dream_cycles(
@@ -2193,10 +2269,19 @@ class MimirRouter:
             if mount is not None:
                 port, name = self._resolve_port(mount)
                 mounts = [{"name": name, "port": port}]
+
+            async def mount_graph(item: dict[str, Any]) -> Any:
+                try:
+                    return await item["port"].get_graph()
+                except Exception as exc:
+                    raise _mount_failed("get_graph", item["name"], exc) from exc
+
+            # Asked concurrently: one after another, the graph cost the sum of
+            # every mount's (5.6 s on yggdrasil against a 1.9 s slowest mount).
+            graphs = await asyncio.gather(*(mount_graph(item) for item in mounts))
             nodes: list[GraphNode] = []
             edges: list[GraphEdge] = []
-            for item in mounts:
-                result = await item["port"].get_graph()
+            for item, result in zip(mounts, graphs, strict=True):
                 # Keep identical paths in different mounts independently navigable.
                 prefix = quote(item["name"], safe="") + ":"
                 ids = {node.id: prefix + quote(node.id, safe="") for node in result.nodes}
@@ -2493,13 +2578,16 @@ def _meta_to_response(meta: MimirPageMeta) -> PageMetaResponse:
 
 
 def _lint_to_response(
-    report: MimirLintReport,
+    results: list[tuple[str, MimirLintReport | None, str]],
     *,
     assignments: dict[str, str] | None = None,
-    mount_lookup: Callable[[str], str] | None = None,
 ) -> LintResponse:
     assignment_map = assignments or {}
-    mount_name_for = mount_lookup or (lambda _path: "local")
+    reports = [(name, report) for name, report, _ in results if report is not None]
+    merged = MimirLintReport(
+        issues=[issue for _, report in reports for issue in report.issues],
+        pages_checked=sum(report.pages_checked for _, report in reports),
+    )
     return LintResponse(
         issues=[
             LintIssueResponse(
@@ -2510,13 +2598,24 @@ def _lint_to_response(
                 auto_fixable=issue.auto_fixable,
                 rule=issue.id,
                 page=issue.page_path,
-                mount=mount_name_for(issue.page_path),
+                mount=name,
                 assignee=assignment_map.get(_lint_issue_key(issue.id, issue.page_path)),
                 auto_fix=issue.auto_fixable,
             )
+            for name, report in reports
             for issue in report.issues
         ],
-        pages_checked=report.pages_checked,
-        issues_found=report.issues_found,
-        summary=report.summary,
+        pages_checked=merged.pages_checked,
+        issues_found=merged.issues_found,
+        summary=merged.summary,
+        mounts=[
+            LintMountResponse(
+                name=name,
+                status="linted" if report is not None else "unsupported",
+                pages_checked=report.pages_checked if report is not None else 0,
+                issues=len(report.issues) if report is not None else 0,
+                detail=detail,
+            )
+            for name, report, detail in results
+        ],
     )

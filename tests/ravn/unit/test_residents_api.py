@@ -16,8 +16,13 @@ import respx
 
 from niuu.domain.models import Principal
 from ravn.adapters.platform_runtime import HttpPlatformRuntimeAdapter
-from ravn.api.residents import ResidentDirectory, forward_auth
-from ravn.ports.resident_discovery import StandaloneResident
+from ravn.api.residents import (
+    ResidentDirectory,
+    ResidentLogsUnavailableError,
+    ResidentNotFoundError,
+    forward_auth,
+)
+from ravn.ports.resident_discovery import ResidentPlacement, StandaloneResident
 
 _BASE = "http://volundr.test"
 _PRINCIPAL = Principal(
@@ -32,6 +37,7 @@ def _directory(
     *,
     discovery=None,
     managed: list[dict] | None = None,
+    logs=None,
 ) -> ResidentDirectory:
     managed_runtimes = managed or []
 
@@ -53,7 +59,9 @@ def _directory(
     ).mock(side_effect=resident_response)
     return ResidentDirectory(
         platform=HttpPlatformRuntimeAdapter(base_url=_BASE),
+        platform_tenant_id="tenant-a",
         discovery=discovery,
+        logs=logs,
     )
 
 
@@ -78,6 +86,22 @@ class _StaticDiscovery:
 
     async def list_residents(self) -> list[StandaloneResident]:
         return self._residents
+
+
+class _RecordingLogs:
+    def __init__(self) -> None:
+        self.reads: list[tuple[ResidentPlacement, int, tuple[str, ...], str]] = []
+        self.closed = False
+
+    async def read_logs(self, placement, *, lines, sources, min_level):
+        self.reads.append((placement, lines, sources, min_level))
+        return {"entries": [{"timestampMs": 1, "message": "hello"}], "bufferTotal": 1}
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+_PLACEMENT = ResidentPlacement(cluster="valhalla", namespace="skuld", workload="resident-muninn")
 
 
 class _FailingDiscovery:
@@ -393,10 +417,11 @@ class TestManagedResidentCommands:
                 },
             )
         )
-        directory = _directory()
+        directory = _directory(managed=[_managed_runtime()])
 
         logs = await directory.get_raven_logs(
             runtime_id,
+            principal=_PRINCIPAL,
             lines=25,
             sources=("sandbox",),
             min_level="INFO",
@@ -673,6 +698,86 @@ class TestListSessions:
         assert got["chat_endpoint"] == "ws://host:8080/s/1111/session"
 
 
+class TestUnmanagedResidentLogs:
+    async def _logs(self, directory, ravn_id="resident-muninn", principal=_PRINCIPAL):
+        return await directory.get_raven_logs(
+            ravn_id,
+            principal=principal,
+            lines=50,
+            sources=("ravn",),
+            min_level="warning",
+            auth_headers={},
+            auth_params={},
+        )
+
+    @respx.mock
+    async def test_a_placed_resident_is_read_from_the_log_source_by_placement(self):
+        logs = _RecordingLogs()
+        directory = _directory(
+            discovery=_StaticDiscovery([_standalone(placement=_PLACEMENT)]), logs=logs
+        )
+
+        page = await self._logs(directory)
+
+        assert page["bufferTotal"] == 1
+        assert logs.reads == [(_PLACEMENT, 50, ("ravn",), "warning")]
+
+    @respx.mock
+    async def test_a_resident_without_placement_says_what_to_configure(self):
+        directory = _directory(discovery=_StaticDiscovery([_standalone()]), logs=_RecordingLogs())
+
+        with pytest.raises(ResidentLogsUnavailableError, match="has no placement"):
+            await self._logs(directory)
+
+    @respx.mock
+    async def test_no_log_source_says_what_to_configure(self):
+        directory = _directory(discovery=_StaticDiscovery([_standalone(placement=_PLACEMENT)]))
+
+        with pytest.raises(ResidentLogsUnavailableError, match="resident_logs.adapter"):
+            await self._logs(directory)
+
+    @respx.mock
+    async def test_a_resident_the_caller_may_not_see_is_not_found(self):
+        hidden = _standalone(
+            placement=_PLACEMENT,
+            visibility="user",
+            owner_id="someone-else",
+            tenant_id="tenant-a",
+        )
+        logs = _RecordingLogs()
+        directory = _directory(discovery=_StaticDiscovery([hidden]), logs=logs)
+
+        with pytest.raises(ResidentNotFoundError):
+            await self._logs(directory)
+        assert logs.reads == []
+
+    @respx.mock
+    async def test_an_unknown_resident_is_not_found(self):
+        directory = _directory(discovery=_StaticDiscovery([]), logs=_RecordingLogs())
+
+        with pytest.raises(ResidentNotFoundError):
+            await self._logs(directory, ravn_id="nobody")
+
+    @respx.mock
+    async def test_a_placed_resident_reports_its_cluster(self):
+        directory = _directory(discovery=_StaticDiscovery([_standalone(placement=_PLACEMENT)]))
+
+        raven = await directory.get_raven("resident-muninn", _PRINCIPAL, {}, {})
+
+        assert raven is not None
+        assert raven["cluster"] == "valhalla"
+
+    async def test_aclose_closes_the_log_source(self):
+        logs = _RecordingLogs()
+        directory = ResidentDirectory(
+            platform=HttpPlatformRuntimeAdapter(base_url=_BASE), logs=logs
+        )
+
+        await directory.aclose()
+
+        assert logs.closed
+
+
 class TestGetRaven:
     @respx.mock
     async def test_get_discovered_resident(self):
@@ -695,6 +800,16 @@ class TestGetRaven:
     async def test_no_discovery_configured_returns_none(self):
         directory = _directory()
         assert await directory.get_raven("resident-muninn", _PRINCIPAL, {}, {}) is None
+
+    @respx.mock
+    async def test_a_non_uuid_id_is_never_looked_up_as_a_managed_runtime(self):
+        directory = _directory(discovery=_StaticDiscovery([_standalone(id="valkyrie-ymir-k8s")]))
+
+        raven = await directory.get_raven("valkyrie-ymir-k8s", _PRINCIPAL, {}, {})
+
+        assert raven is not None
+        assert raven["id"] == "valkyrie-ymir-k8s"
+        assert not any(call.request.url.path.endswith("/valkyrie-ymir-k8s") for call in respx.calls)
 
     @respx.mock
     async def test_rejects_malformed_managed_id_before_platform_call(self):

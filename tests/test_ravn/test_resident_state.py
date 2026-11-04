@@ -236,3 +236,35 @@ async def test_mimir_prune_spares_an_unconsumed_answer(tmp_path):
 
     assert removed == 0
     assert any("cases/answered/" in ref for ref in await state.list_refs())
+
+
+def _asking_turn(case_id: str) -> ResidentTurnRecord:
+    return ResidentTurnRecord(
+        turn_index=1,
+        prompt="p",
+        response="r",
+        outcome_fields={},
+        tool_names=(),
+        usage=TokenUsage(input_tokens=1, output_tokens=1),
+        case_id=case_id,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["mimir", "local"])
+async def test_a_closed_operator_question_is_readable_with_how_it_closed(tmp_path, kind):
+    state = _mimir_state(tmp_path) if kind == "mimir" else LocalResidentState(tmp_path / "local")
+    for case_id in ("pending", "answered", "withdrawn"):
+        await state.write_operator_needed(
+            question="may I?", reason="because", turn=_asking_turn(case_id), case_id=case_id
+        )
+    await state.write_operator_answer("yes", case_id="answered")
+    await state.withdraw_operator_needed("withdrawn", reason="merged", turn_ref="turn-1")
+
+    assert await state.read_closed_operator_question("pending") is None
+    assert await state.read_closed_operator_question("never-asked") is None
+    answered = await state.read_closed_operator_question("answered")
+    withdrawn = await state.read_closed_operator_question("withdrawn")
+    assert answered is not None and "- status: answered" in answered.content
+    assert withdrawn is not None and "- status: withdrawn" in withdrawn.content
+    assert "- withdraw_reason: merged" in withdrawn.content

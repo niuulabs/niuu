@@ -13,6 +13,7 @@ export interface RealmTemplate {
   blurb: string;
   keepsDoing: string[];
   needs: string[];
+  needsRepo: boolean;
   needsBoard: boolean;
   needsBugBoard: boolean;
   recommended?: boolean;
@@ -44,7 +45,7 @@ function prompt(role: string) {
     [
       `# ${role}`,
       '',
-      'You are the resident that keeps this realm. Your charter, written by its owner:',
+      'You are the resident that keeps this workspace. Your charter, written by its owner:',
       '',
       charter.trim(),
       '',
@@ -52,7 +53,7 @@ function prompt(role: string) {
       `Tracker board: ${board || 'not set'}`,
       '',
       'Work inside your trust grants. When an action asks for approval, ask and wait.',
-      'Write what you learn to realm memory so the next turn starts from it.',
+      'Write what you learn to workspace memory so the next turn starts from it.',
     ].join('\n');
 }
 
@@ -67,9 +68,10 @@ export const REALM_TEMPLATES: RealmTemplate[] = [
       'work tickets → pull requests',
       'validate every PR against acceptance criteria',
       'watch CI, errors and staleness',
-      'write what it learns to realm memory',
+      'write what it learns to workspace memory',
     ],
     needs: ['repository', 'tracker board', 'CI', 'bug board (optional)'],
+    needsRepo: true,
     needsBoard: true,
     needsBugBoard: false,
     recommended: true,
@@ -93,6 +95,7 @@ export const REALM_TEMPLATES: RealmTemplate[] = [
       'keep the regression suite green',
     ],
     needs: ['repository', 'bug board'],
+    needsRepo: true,
     needsBoard: true,
     needsBugBoard: true,
     jobs: [
@@ -107,9 +110,10 @@ export const REALM_TEMPLATES: RealmTemplate[] = [
     id: 'docs-resident',
     name: 'Docs resident',
     blurb:
-      'Keeps docs, runbooks and realm memory in step with the code. Flags stale pages, drafts updates, never touches production code.',
+      'Keeps docs, runbooks and workspace memory in step with the code. Flags stale pages, drafts updates, never touches production code.',
     keepsDoing: ['detect drift between code and docs', 'draft doc updates as pull requests'],
-    needs: ['repository', 'realm memory'],
+    needs: ['repository', 'workspace memory'],
+    needsRepo: true,
     needsBoard: false,
     needsBugBoard: false,
     jobs: [{ kind: 'cron', spec: '0 3 * * *', label: 'nightly drift check' }],
@@ -124,6 +128,7 @@ export const REALM_TEMPLATES: RealmTemplate[] = [
       'Only a charter. Good when the environment is not a codebase: a lab, a home, a shop floor.',
     keepsDoing: ['whatever the charter says'],
     needs: ['a charter'],
+    needsRepo: false,
     needsBoard: false,
     needsBugBoard: false,
     jobs: [],
@@ -135,6 +140,6 @@ export const REALM_TEMPLATES: RealmTemplate[] = [
 
 export function templateById(id: string): RealmTemplate {
   const template = REALM_TEMPLATES.find((candidate) => candidate.id === id);
-  if (!template) throw new Error(`Unknown realm template: ${id}`);
+  if (!template) throw new Error(`Unknown workspace template: ${id}`);
   return template;
 }

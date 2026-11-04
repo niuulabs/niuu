@@ -130,6 +130,15 @@ describe('tokens.css completeness', () => {
     }
   });
 
+  it('niuu theme overrides exist in [data-theme="niuu"]', () => {
+    expect(css).toContain("[data-theme='niuu']");
+  });
+
+  it('only the niuu theme defines the --niuu-* fallbacks', () => {
+    const outside = css.replace(/\[data-theme='niuu'\] \{[^}]*\}/, '');
+    expect(outside).not.toMatch(/^\s*--niuu-/m);
+  });
+
   it('ice theme overrides exist in [data-theme="ice"]', () => {
     expect(css).toContain("[data-theme='ice']");
   });

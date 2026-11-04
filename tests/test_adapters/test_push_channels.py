@@ -1,5 +1,6 @@
 """Tests for the push NotificationChannel adapters."""
 
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import urlparse
 
@@ -13,6 +14,7 @@ from volundr.adapters.outbound.push_channels import (
     WebhookNotificationChannel,
 )
 from volundr.domain.models import DevicePlatform, DeviceToken, PushMessage
+from volundr.domain.push import PushTokenKind
 
 # A throwaway EC P-256 private key (test-only) for the APNs ES256 JWT path.
 _TEST_P8 = """-----BEGIN PRIVATE KEY-----
@@ -176,6 +178,57 @@ class TestApnsChannel:
 
         assert client.post.call_args[1]["headers"]["apns-topic"] == "com.niuu.forge.widget"
 
+    async def test_only_alert_tokens_receive_the_alert(self):
+        client = MagicMock()
+        client.post = AsyncMock(return_value=MagicMock(status_code=200))
+        channel = self._channel(client)
+        others = [
+            DeviceToken(owner_id="u", platform=DevicePlatform.IOS, token=kind.value, kind=kind)
+            for kind in PushTokenKind
+            if kind is not PushTokenKind.ALERT
+        ]
+
+        await channel.send(_message(), others)
+        client.post.assert_not_called()
+
+        await channel.send(_message(), [*others, _ios_device("alert")])
+        assert client.post.call_count == 1
+        assert client.post.call_args[0][0].endswith("/3/device/alert")
+
+    def test_key_from_a_file(self, tmp_path):
+        path = tmp_path / "AuthKey_KEY123.p8"
+        path.write_text(_TEST_P8)
+        channel = ApnsNotificationChannel(
+            team_id="TEAM123",
+            key_id="KEY123",
+            bundle_id="com.niuu.forge",
+            private_key_path=str(path),
+        )
+        assert channel._auth_token().count(".") == 2
+
+    @pytest.mark.parametrize(
+        "keys",
+        [{}, {"private_key": _TEST_P8, "private_key_path": "/etc/key.p8"}],
+    )
+    def test_exactly_one_key_source_is_required(self, keys):
+        with pytest.raises(ValueError, match="exactly one of private_key_path and private_key"):
+            ApnsNotificationChannel(
+                team_id="TEAM123", key_id="KEY123", bundle_id="com.niuu.forge", **keys
+            )
+
+    def test_a_wrong_key_is_refused_when_the_channel_is_built(self, tmp_path):
+        with pytest.raises(ValueError, match="not an unencrypted PEM private key"):
+            ApnsNotificationChannel(
+                team_id="TEAM123", key_id="KEY123", bundle_id="com.niuu.forge", private_key="nope"
+            )
+        with pytest.raises(ValueError, match="cannot be read"):
+            ApnsNotificationChannel(
+                team_id="TEAM123",
+                key_id="KEY123",
+                bundle_id="com.niuu.forge",
+                private_key_path=str(tmp_path / "missing.p8"),
+            )
+
 
 class TestApnsCategory:
     """A push can name an APNs category and carry custom keys; others are untouched."""
@@ -234,6 +287,37 @@ class TestApnsCategory:
         body = client.post.call_args[1]["json"]
         assert "category" not in body["aps"]
         assert set(body) == {"aps", "session_id", "kind", "request_id"}
+
+
+class TestApnsCollapseId:
+    """An outbox notification collapses on its id; a push without one has no collapse id."""
+
+    def _channel(self, client) -> ApnsNotificationChannel:
+        return ApnsNotificationChannel(
+            team_id="TEAM123",
+            key_id="KEY123",
+            private_key=_TEST_P8,
+            bundle_id="com.niuu.forge",
+            client=client,
+        )
+
+    async def test_a_notification_push_collapses_on_the_notification_id(self):
+        client = MagicMock()
+        client.post = AsyncMock(return_value=MagicMock(status_code=200))
+        message = replace(_message(), notification_id="5b0c8f0e-2f7a-5d1e-9c3b-1a2b3c4d5e6f")
+
+        await self._channel(client).deliver(message, [_ios_device("d1"), _ios_device("d2")])
+
+        for call in client.post.call_args_list:
+            assert call[1]["headers"]["apns-collapse-id"] == message.notification_id
+
+    async def test_a_push_without_a_notification_id_has_no_collapse_id(self):
+        client = MagicMock()
+        client.post = AsyncMock(return_value=MagicMock(status_code=200))
+
+        await self._channel(client).deliver(_message(), [_ios_device("d1")])
+
+        assert "apns-collapse-id" not in client.post.call_args[1]["headers"]
 
 
 class TestApnsDeviceEnvironment:

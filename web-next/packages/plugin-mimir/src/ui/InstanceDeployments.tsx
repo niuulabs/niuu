@@ -66,7 +66,7 @@ export function InstanceDeployments() {
               <span className="registry-engine-icon" aria-hidden="true">
                 {backend === 'mimir' ? '▤' : '✧'}
               </span>
-              <strong>{backend === 'mimir' ? 'Mimir' : 'gbrain'}</strong>
+              <strong>{backend === 'mimir' ? 'Wiki memory' : 'gbrain'}</strong>
               <span>
                 {backend === 'mimir'
                   ? 'A source-backed wiki, with an optional warden to keep it fresh.'
@@ -89,7 +89,7 @@ export function InstanceDeployments() {
         )}
         {!query.isPending && !query.error && targets.length === 0 && (
           <p role="status">
-            No deployment services are available in your Guild. Register an enabled platform Mimir
+            No deployment services are available in your infrastructure. Register an enabled memory
             service with a configured deployment target.
           </p>
         )}
