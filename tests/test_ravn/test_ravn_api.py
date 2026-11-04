@@ -3512,3 +3512,68 @@ def test_wardens_and_reviews_are_limited_to_the_platform_org(
     other_org = {"x-auth-user-id": "alice", "x-auth-tenant": "org-a"}
 
     assert client.request(method, path, headers=other_org).status_code == 403
+
+
+def _runtime_started(valkyrie_id: str, memory: list[dict[str, str]]) -> SleipnirEvent:
+    return SleipnirEvent(
+        event_type="valkyrie.runtime.started",
+        source="ravn:valkyrie:valhalla",
+        payload={
+            "environment_id": "valhalla",
+            "valkyrie_id": valkyrie_id,
+            "valkyrie_name": "Regin",
+            "charter": "Deliver tickets.",
+            "memory": memory,
+        },
+        summary="runtime started",
+        urgency=0.2,
+        domain="infrastructure",
+        timestamp=datetime(2026, 11, 4, 9, 0, tzinfo=UTC),
+    )
+
+
+def test_resident_memory_reaches_the_dashboard_with_its_platform_mount():
+    projection = ValkyrieDashboardProjection()
+    projection.record_event(
+        _runtime_started(
+            "regin",
+            [
+                {"name": "local", "role": "local", "platform_mount": "regin"},
+                {"name": "mimir-yggdrasil", "role": "shared", "platform_mount": ""},
+            ],
+        )
+    )
+
+    dashboard = projection.dashboard()
+    regin = next(entry for entry in dashboard["valkyries"] if entry["id"] == "regin")
+
+    assert regin["memory"] == [
+        {"name": "local", "role": "local", "platformMount": "regin"},
+        {"name": "mimir-yggdrasil", "role": "shared", "platformMount": ""},
+    ]
+    assert dashboard["telemetry"]["runtime"][0]["memory"] == regin["memory"]
+
+
+def test_configured_resident_takes_the_memory_it_reports():
+    projection = ValkyrieDashboardProjection()
+    projection.record_event(
+        _runtime_started(
+            "valkyrie-ymir-k8s",
+            [{"name": "local", "role": "local", "platform_mount": "sigrun"}],
+        )
+    )
+
+    sigrun = next(
+        entry for entry in projection.dashboard()["valkyries"] if entry["id"] == "valkyrie-ymir-k8s"
+    )
+
+    assert sigrun["memory"] == [{"name": "local", "role": "local", "platformMount": "sigrun"}]
+
+
+def test_resident_without_reported_memory_carries_none():
+    projection = ValkyrieDashboardProjection()
+    projection.record_event(_runtime_started("regin", []))
+
+    regin = next(entry for entry in projection.dashboard()["valkyries"] if entry["id"] == "regin")
+
+    assert regin["memory"] == []

@@ -2494,6 +2494,15 @@ class MimirInstanceConfig(BaseModel):
         default=0,
         description="Read order — lower value is queried first (local=0, shared=1, domain=2).",
     )
+    platform_mount: str = Field(
+        default="",
+        description=(
+            "Name the platform's Mímir lists this instance under, the mount /mimir "
+            "opens it by. The resident reports it with its identity so a workspace "
+            "made around the resident can open this memory. Empty means the "
+            "platform does not serve this instance, and the workspace says so."
+        ),
+    )
 
 
 class MimirReadRetryConfig(BaseModel):

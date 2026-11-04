@@ -18,8 +18,9 @@ import {
 } from '@niuulabs/plugin-valkyrie';
 import {
   buildRealmView,
-  reviewsForRealm,
   residentForRealm,
+  residentMemory,
+  reviewsForRealm,
   sessionsForRealm,
   waitingOnBoard,
   workProjectForBoard,
@@ -118,6 +119,8 @@ export function useRealmView(slug: string) {
     queryFn: () => mimir.mounts.listMounts(),
   });
   const mount = mounts.data?.find((entry) => entry.name === mountName) ?? null;
+  // A workspace made around a running resident opens the memory that resident reports.
+  const ownMemory = view && !view.binding ? residentMemory(resident, mounts.data) : [];
 
   return {
     realm,
@@ -138,6 +141,7 @@ export function useRealmView(slug: string) {
     budget: budgetState.data ?? null,
     mount,
     mountName,
+    residentMemory: ownMemory,
     isLoading: realms.isLoading,
     notFound: !realms.isLoading && realms.data !== undefined && realm === null,
     error: realms.error ?? grants.error ?? null,

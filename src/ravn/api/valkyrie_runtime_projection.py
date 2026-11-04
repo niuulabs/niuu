@@ -42,6 +42,21 @@ def _as_number(value: Any) -> float:
     return float(value) if isinstance(value, int | float) else 0.0
 
 
+def _resident_memory(value: Any) -> list[dict[str, str]]:
+    """The memory stores a resident reports, each with the mount /mimir opens it by."""
+    if not isinstance(value, list):
+        return []
+    return [
+        {
+            "name": str(entry.get("name") or ""),
+            "role": str(entry.get("role") or ""),
+            "platformMount": str(entry.get("platform_mount") or ""),
+        }
+        for entry in value
+        if isinstance(entry, dict) and entry.get("name")
+    ]
+
+
 def _retired_tool(entry: dict[str, Any]) -> dict[str, str]:
     return {
         "name": str(entry.get("name") or ""),
@@ -230,6 +245,7 @@ def _runtime_entry(
         "valkyrieName": _event_valkyrie_name(payload),
         "residentPersonality": str(payload.get("resident_personality") or ""),
         "charter": str(payload.get("charter") or ""),
+        "memory": _resident_memory(payload.get("memory")),
         "signalTaskSeverities": _as_string_list(payload.get("signal_task_severities")),
         "sourceCount": payload.get("source_count", 0),
         "driveLoopEnabled": bool(payload.get("drive_loop_enabled")),
@@ -411,6 +427,8 @@ def _merge_observed_runtime(dashboard: Dashboard) -> Dashboard:
             valkyrie["charter"] = str(observed["charter"])
         if observed and observed.get("signalTaskSeverities"):
             valkyrie["signalTaskSeverities"] = _as_string_list(observed["signalTaskSeverities"])
+        if observed and observed.get("memory"):
+            valkyrie["memory"] = deepcopy(observed["memory"])
         valkyrie["identitySource"] = "observed"
         valkyrie["status"] = "online"
         observed_at = str(observed.get("observedAt") or "") if observed else ""
@@ -436,6 +454,7 @@ def _merge_observed_runtime(dashboard: Dashboard) -> Dashboard:
                 "specialty": str(observed.get("residentPersonality") or "observed resident"),
                 "charter": str(observed.get("charter") or ""),
                 "signalTaskSeverities": _as_string_list(observed.get("signalTaskSeverities")),
+                "memory": deepcopy(observed.get("memory") or []),
                 "wakefulness": str(observed.get("wakefulness") or "watching"),
                 "autonomyMode": "autonomous" if observed.get("driveLoopEnabled") else "guarded",
                 "status": "online",

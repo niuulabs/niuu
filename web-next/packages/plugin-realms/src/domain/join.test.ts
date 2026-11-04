@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { Mount } from '@niuulabs/domain';
 import type { Ravn } from '@niuulabs/plugin-ravn';
 import type { ReviewItem as WorkReviewItem, Saga } from '@niuulabs/plugin-ting';
 import type {
@@ -16,6 +17,7 @@ import {
   latestGrants,
   ravnForRealm,
   residentForRealm,
+  residentMemory,
   reviewsForRealm,
   sessionsForRealm,
   waitingOnBoard,
@@ -241,5 +243,38 @@ describe('realm joins', () => {
       runningSessions: 1,
     });
     expect(view.binding?.trackerBoard).toBe('board-1');
+  });
+});
+
+describe('residentMemory', () => {
+  const regin = {
+    ...resident,
+    memory: [
+      { name: 'local', role: 'local', platformMount: 'regin' },
+      { name: 'mimir-yggdrasil', role: 'shared', platformMount: '' },
+      { name: 'research', role: 'domain', platformMount: 'research' },
+    ],
+  } as ValkyrieResident;
+  const reginMount = { name: 'regin', pages: 12, status: 'healthy' } as Mount;
+
+  it('opens each store only by the platform mount the resident names', () => {
+    expect(residentMemory(regin, [reginMount, { name: 'local' } as Mount])).toEqual([
+      { store: regin.memory![0], mount: reginMount },
+      { store: regin.memory![1], mount: null },
+      { store: regin.memory![2], mount: null },
+    ]);
+  });
+
+  it('is empty when the resident has not reported its memory', () => {
+    expect(residentMemory(resident, [reginMount])).toEqual([]);
+    expect(residentMemory(null, [reginMount])).toEqual([]);
+  });
+
+  it('leaves a named mount unopened until the mounts are known', () => {
+    expect(residentMemory(regin, undefined).map((entry) => entry.mount)).toEqual([
+      null,
+      null,
+      null,
+    ]);
   });
 });

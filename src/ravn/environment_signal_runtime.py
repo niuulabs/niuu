@@ -850,6 +850,26 @@ class EnvironmentSignalRuntime:
     def _resident_personality(self) -> str:
         return self._settings.environment.resident_personality.strip()
 
+    def _resident_memory(self) -> list[dict[str, str]]:
+        """Where this resident keeps its memory, for a workspace to open it.
+
+        A store without ``mimir.instances`` is the single local store the
+        write routing already calls ``local``; it has no platform mount.
+        """
+        mimir = self._settings.mimir
+        if not mimir.enabled:
+            return []
+        if not mimir.instances:
+            return [{"name": "local", "role": "local", "platform_mount": ""}]
+        return [
+            {
+                "name": instance.name,
+                "role": instance.role,
+                "platform_mount": instance.platform_mount.strip(),
+            }
+            for instance in mimir.instances
+        ]
+
     def _workflow_capability_sources_enabled(self) -> bool:
         return any(
             source.enabled and source.adapter
@@ -869,6 +889,7 @@ class EnvironmentSignalRuntime:
             "valkyrie_name": self._resident_name(),
             "resident_personality": self._resident_personality(),
             "charter": self._settings.environment.charter.strip(),
+            "memory": self._resident_memory(),
             "environment_id": self._environment.id,
             "source_count": len(sources),
             "sources": sources,

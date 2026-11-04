@@ -8,6 +8,7 @@ from ravn.cli.commands import _build_environment_signal_runtime
 from ravn.config import (
     CapabilitySourceConfig,
     EnvironmentConfig,
+    MimirInstanceConfig,
     Settings,
     SignalSourceConfig,
 )
@@ -513,6 +514,50 @@ async def test_charter_travels_in_runtime_telemetry_and_task_context() -> None:
     )
     assert enqueued
     assert "**Charter:** Keep the host healthy and quiet" in enqueued[0].initiative_context
+
+
+async def _runtime_started_payload(settings: Settings) -> dict:
+    bus = InProcessBus()
+    telemetry: list[SleipnirEvent] = []
+    await bus.subscribe(["valkyrie.runtime.started"], lambda event: _record(telemetry, event))
+    runtime = EnvironmentSignalRuntime(settings=settings, publisher=bus, enqueue=None)
+    await runtime.start()
+    await bus.flush()
+    await runtime.stop()
+    return telemetry[0].payload
+
+
+@pytest.mark.asyncio
+async def test_runtime_telemetry_reports_each_memory_instance_and_its_platform_mount() -> None:
+    settings = _settings()
+    settings.mimir.instances = [
+        MimirInstanceConfig(name="local", role="local", path="/tmp/m", platform_mount=" regin "),
+        MimirInstanceConfig(name="mimir-yggdrasil", role="shared", url="https://m/api/v1"),
+    ]
+
+    payload = await _runtime_started_payload(settings)
+
+    assert payload["memory"] == [
+        {"name": "local", "role": "local", "platform_mount": "regin"},
+        {"name": "mimir-yggdrasil", "role": "shared", "platform_mount": ""},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_telemetry_reports_the_single_local_store_as_unserved() -> None:
+    payload = await _runtime_started_payload(_settings())
+
+    assert payload["memory"] == [{"name": "local", "role": "local", "platform_mount": ""}]
+
+
+@pytest.mark.asyncio
+async def test_runtime_telemetry_reports_no_memory_when_mimir_is_disabled() -> None:
+    settings = _settings()
+    settings.mimir.enabled = False
+
+    payload = await _runtime_started_payload(settings)
+
+    assert payload["memory"] == []
 
 
 @pytest.mark.asyncio

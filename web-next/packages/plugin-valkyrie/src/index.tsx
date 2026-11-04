@@ -193,6 +193,7 @@ export type {
   RealmDetail,
   RealmSummary,
   RealmTrustGrant,
+  ResidentMemoryStore,
   RetiredLearnedTool,
   ReviewItem,
   ReviewKind,

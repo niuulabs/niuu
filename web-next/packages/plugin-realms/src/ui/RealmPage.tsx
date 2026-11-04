@@ -53,6 +53,7 @@ import { activeSessionCount, ravnForRealm } from '../domain/join';
 import { ACTION_CLASSES } from '../domain/realm';
 import { sessionsWithDescendants } from '../domain/sessionTree';
 import { ConnectionsPanel } from './ConnectionsPanel';
+import { ResidentMemoryList } from './ResidentMemoryList';
 import { ResidentPanel } from './ResidentPanel';
 import { SessionsTable } from './SessionsTable';
 import { TicketReviewRow } from './TicketReviewRow';
@@ -491,7 +492,9 @@ export function RealmPage() {
   ]);
 
   const switchTab = (next: RealmTab) => {
-    if (next === 'memory' && data.mountName) ctx.setTweak('activeMount', data.mountName);
+    const memoryMount =
+      data.mountName ?? data.residentMemory.find((entry) => entry.mount)?.mount?.name;
+    if (next === 'memory' && memoryMount) ctx.setTweak('activeMount', memoryMount);
     setTab(next);
   };
 
@@ -762,16 +765,16 @@ export function RealmPage() {
 
         {tab === 'memory' ? (
           <div className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:flex-col niuu:gap-3">
-            <div className="niuu:flex niuu:items-center niuu:gap-3 niuu:text-xs">
-              <span className="niuu:font-mono niuu:text-text-secondary">
-                {data.mountName ?? 'no mount'}
-              </span>
-              <span className="niuu:text-text-muted">
-                {data.mount
-                  ? `${data.mount.pages} pages · ${data.mount.status}`
-                  : 'not discovered yet'}
-              </span>
-            </div>
+            {data.mountName ? (
+              <div className="niuu:flex niuu:items-center niuu:gap-3 niuu:text-xs">
+                <span className="niuu:font-mono niuu:text-text-secondary">{data.mountName}</span>
+                <span className="niuu:text-text-muted">
+                  {data.mount
+                    ? `${data.mount.pages} pages · ${data.mount.status}`
+                    : 'not discovered yet'}
+                </span>
+              </div>
+            ) : null}
             {data.mount && data.mountName ? (
               <EmptyState
                 title="Workspace memory"
@@ -788,9 +791,9 @@ export function RealmPage() {
                 description="The memory instance created with the workspace has not been discovered yet."
               />
             ) : (
-              <EmptyState
-                title="No workspace memory"
-                description="This resident keeps its own memory. A workspace made around a running resident does not create another."
+              <ResidentMemoryList
+                residentName={data.resident?.name ?? 'This resident'}
+                entries={data.residentMemory}
               />
             )}
             {data.mountName ? (

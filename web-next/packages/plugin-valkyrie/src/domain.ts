@@ -24,6 +24,15 @@ export interface EnvironmentSummary {
   lastSignalAt: string;
 }
 
+/** One Mímir store a resident reads, as it reports it. */
+export interface ResidentMemoryStore {
+  /** The resident's own name for the store (`mimir.instances[].name`). */
+  name: string;
+  role: string;
+  /** The mount `/mimir` opens it by; empty when the platform does not serve it. */
+  platformMount: string;
+}
+
 export interface ValkyrieResident {
   id: string;
   name: string;
@@ -35,6 +44,8 @@ export interface ValkyrieResident {
   charter?: string;
   /** Signal severities that trigger an autonomous investigation task. */
   signalTaskSeverities?: string[];
+  /** Where the resident keeps its memory; absent until it reports it. */
+  memory?: ResidentMemoryStore[];
   wakefulness: WakefulnessState;
   autonomyMode: AutonomyMode;
   status: 'online' | 'busy' | 'blocked' | 'offline';
@@ -1051,6 +1062,7 @@ export interface ValkyrieRuntimeTelemetry {
   valkyrieName?: string;
   residentPersonality?: string;
   charter?: string;
+  memory?: ResidentMemoryStore[];
   signalTaskSeverities?: string[];
   sourceCount: number;
   driveLoopEnabled: boolean;

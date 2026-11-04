@@ -1,8 +1,10 @@
 import type { Ravn } from '@niuulabs/plugin-ravn';
 import type { ReviewItem as WorkReviewItem, Saga } from '@niuulabs/plugin-ting';
+import type { Mount } from '@niuulabs/domain';
 import type {
   RealmSummary,
   RealmTrustGrant,
+  ResidentMemoryStore,
   ReviewItem,
   ValkyrieDashboard,
   ValkyrieResident,
@@ -180,4 +182,26 @@ export function buildRealmView(input: {
     ).length,
     runningSessions: activeSessionCount(sessions),
   };
+}
+
+/** A memory store the resident reports, with the platform mount serving it once discovered. */
+export interface ResidentMemoryEntry {
+  store: ResidentMemoryStore;
+  mount: Mount | null;
+}
+
+/**
+ * The resident's own memory, joined to the mounts the platform's Mímir lists.
+ * A store is opened only by the platform mount the resident names for it.
+ */
+export function residentMemory(
+  resident: ValkyrieResident | null,
+  mounts: Mount[] | undefined,
+): ResidentMemoryEntry[] {
+  return (resident?.memory ?? []).map((store) => ({
+    store,
+    mount: store.platformMount
+      ? (mounts?.find((entry) => entry.name === store.platformMount) ?? null)
+      : null,
+  }));
 }
