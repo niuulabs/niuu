@@ -2784,14 +2784,19 @@ async def test_start_hands_the_broker_its_session_credential_as_a_private_file(
 
     [projected] = client.written_files
     assert projected["files"] == {
-        "/run/secrets/niuu-forge-session/token": spec.forge_session.token.encode()
+        "/sandbox/.volundr/forge-session/token": spec.forge_session.token.encode()
     }
     [broker] = client.execs
-    assert broker["env"]["SKULD__FORGE_MCP__TOKEN_FILE"] == "/run/secrets/niuu-forge-session/token"
+    assert broker["env"]["SKULD__FORGE_MCP__TOKEN_FILE"] == "/sandbox/.volundr/forge-session/token"
     assert broker["env"]["SKULD__FORGE_MCP__GRANTS"] == ForgeMcpGrant.MESSAGE.value
+    assert broker["env"]["SKULD__HOME_DIR"] == "/sandbox", "present-file stages under ~"
     assert spec.forge_session.token not in json.dumps(broker), "only the path is in the env"
     assert spec.forge_session.token not in json.dumps(client.created, default=str)
     assert order == ["files", "exec"], "the file exists before the broker starts"
+    [(root, archive)] = adapter._credential_file_archives(projected["files"])
+    assert root == "/sandbox", "extracted under the sandbox home, which every sandbox has"
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as members:
+        assert members.getmember(".volundr/forge-session/token").mode == 0o600
 
 
 @pytest.mark.asyncio

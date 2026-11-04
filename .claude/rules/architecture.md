@@ -119,7 +119,7 @@ principal for "this one session".
 
 Delivery: the local process pod manager hands the credential to the broker in
 its environment (`delivers_forge_session_token`). The OpenShell pod manager
-writes it to a private file (`/run/secrets/niuu-forge-session/token`, 0600) with
+writes it to a private file (`~/.volundr/forge-session/token`, 0600) with
 the sandbox's other credential files before the broker starts, and names only
 the path in the broker's env (`delivers_forge_session_token` too). For Flux and Kubernetes session
 pods, `forge_mcp.session_tokens.projection_adapter`

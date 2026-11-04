@@ -225,10 +225,10 @@ OAUTH_CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-s
 GRANT_AUDIENCE_PREFIX = "niuu:credential:"
 PLATFORM_GRANT_AUDIENCE_PREFIX = "niuu:platform:"
 PLATFORM_ACCESS_TOKEN_ENV = "NIUU_VOLUNDR_ACCESS_TOKEN"
-#: Where a session broker reads its Forge session credential: a private file (0600)
-#: written before the broker starts, as the Kubernetes projection mounts it there.
-#: Only the path travels in the broker's env, never the token.
-FORGE_SESSION_TOKEN_PATH = "/run/secrets/niuu-forge-session/token"
+#: Where, under the sandbox home, a session broker reads its Forge session credential:
+#: a private file (0600) written before the broker starts. A session sandbox has no
+#: /run/secrets. Only the path travels in the broker's env, never the token.
+FORGE_SESSION_TOKEN_FILE = ".volundr/forge-session/token"
 FORGE_MCP_TOKEN_FILE_ENV = "SKULD__FORGE_MCP__TOKEN_FILE"
 DEFAULT_CREDENTIAL_TOKEN_ENDPOINT = (
     "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
@@ -1114,7 +1114,7 @@ class OpenShellGatewayPodManager(
     @property
     def delivers_forge_session_token(self) -> bool:
         """The broker reads its session credential from a private file written into
-        the sandbox before it starts (``FORGE_SESSION_TOKEN_PATH``)."""
+        the sandbox before it starts (``FORGE_SESSION_TOKEN_FILE`` under its home)."""
         return True
 
     def __init__(
@@ -1895,7 +1895,9 @@ class OpenShellGatewayPodManager(
             )
             credential_context = await self._resolve_credential_env(session, spec)
             env.update(credential_context.environment)
-            forge_session_files, forge_session_env = _forge_session_projection(spec)
+            forge_session_files, forge_session_env = _forge_session_projection(
+                spec, token_path=f"{self._sandbox_home}/{FORGE_SESSION_TOKEN_FILE}"
+            )
             process_env = {
                 **env,
                 **credential_context.process_environment,
@@ -4228,6 +4230,8 @@ class OpenShellGatewayPodManager(
             "SKULD__SESSION__MODEL": runtime.model,
             "SKULD__SESSION__WORKSPACE_DIR": self._sandbox_workspace,
             "SKULD__PERSISTENCE_MOUNT_PATH": self._sandbox_workspace,
+            # The broker's ~ (where present-file stages): the sandbox home it runs in.
+            "SKULD__HOME_DIR": self._sandbox_home,
             "SKULD__HOST": "0.0.0.0",
             "SKULD__PORT": str(self._service_port),
             "RAVN_STATE_DIR": f"{self._sandbox_workspace}/.ravn",
@@ -4825,6 +4829,9 @@ class OpenShellGatewayPodManager(
         env["SKULD__HOST"] = "127.0.0.1"
         env["SKULD__PORT"] = str(self._service_port)
         env["SKULD__PERSISTENCE_MOUNT_PATH"] = self._sandbox_workspace
+        # The broker's ~ (where present-file stages): the sandbox home it runs in, not
+        # the cluster layout's {mount}/{session}/home, which no sandbox has.
+        env["SKULD__HOME_DIR"] = self._sandbox_home
         if session.owner_id:
             env["SKULD__SESSION__OWNER_ID"] = session.owner_id
         if session.tenant_id:
@@ -5029,7 +5036,9 @@ def _provider_grant_name(
     return f"volundr-{UUID(session_id).hex[:12]}-{digest}"
 
 
-def _forge_session_projection(spec: SessionSpec) -> tuple[dict[str, bytes], dict[str, str]]:
+def _forge_session_projection(
+    spec: SessionSpec, *, token_path: str
+) -> tuple[dict[str, bytes], dict[str, str]]:
     """The session credential's file and the broker env naming it, when Forge minted one.
 
     Written with the other credential files before the broker's command runs, so the
@@ -5039,9 +5048,9 @@ def _forge_session_projection(spec: SessionSpec) -> tuple[dict[str, bytes], dict
     if credential is None:
         return {}, {}
     return (
-        {FORGE_SESSION_TOKEN_PATH: credential.token.encode("utf-8")},
+        {token_path: credential.token.encode("utf-8")},
         {
-            FORGE_MCP_TOKEN_FILE_ENV: FORGE_SESSION_TOKEN_PATH,
+            FORGE_MCP_TOKEN_FILE_ENV: token_path,
             FORGE_MCP_GRANTS_ENV: ",".join(grant.value for grant in credential.grants),
         },
     )
