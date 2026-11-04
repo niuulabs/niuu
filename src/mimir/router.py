@@ -1198,8 +1198,12 @@ class MimirRouter:
         auth_mode: str = "envoy",
         live_activity: LiveActivityRecorder | None = None,
         platform_tenant_id: str = DEFAULT_PLATFORM_TENANT_ID,
+        remote_mounts: list[dict[str, Any]] | None = None,
     ) -> None:
         self._owner_tenant = tenant_id
+        # Operator-declared stores other services serve: name, tenant_id, role,
+        # priority, categories and a built port (see mimir.config.RemoteMountConfig).
+        self._remote_mounts = list(remote_mounts or [])
         self._platform_tenant_id = platform_tenant_id
         self._other_org: ContextVar[bool] = ContextVar("mimir_other_org", default=False)
         self._auth = auth
@@ -1441,6 +1445,28 @@ class MimirRouter:
         if other_org:
             mounts = [mount for mount in mounts if mount["access_scope"] == "tenant"]
         seen = {mount["name"] for mount in mounts}
+        tenant = self._tenant.get()
+        for remote in self._remote_mounts:
+            if remote["tenant_id"] and remote["tenant_id"] != tenant:
+                continue
+            if not remote["tenant_id"] and other_org:
+                continue
+            if remote["name"] in seen:
+                raise ValueError(
+                    f"Remote mount {remote['name']} conflicts with another mount of that "
+                    "name; rename it in remote_mounts"
+                )
+            mounts.append(
+                {
+                    "name": remote["name"],
+                    "access_scope": "tenant" if remote["tenant_id"] else "global",
+                    "role": remote["role"],
+                    "categories": remote["categories"],
+                    "priority": remote["priority"],
+                    "port": remote["port"],
+                }
+            )
+            seen.add(remote["name"])
         if self._registry_store is None:
             return mounts
 

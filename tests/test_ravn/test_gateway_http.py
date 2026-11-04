@@ -691,3 +691,147 @@ def test_resident_hud_is_not_registered_unless_enabled(tmp_path):
     client = TestClient(gateway.app)
     assert client.get("/resident/hud").status_code == 404
     assert client.get("/resident/hud-data").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# /mimir — the resident's own store, served for the platform's Mímir
+# ---------------------------------------------------------------------------
+
+
+async def _local_store(tmp_path):
+    from mimir.adapters.markdown import MarkdownMimirAdapter
+
+    store = MarkdownMimirAdapter(root=str(tmp_path / "local"))
+    await store.upsert_page("learnings/release.md", "# Release\n\nShip on Thursdays.\n")
+    return store
+
+
+def _served_gateway(mimir, claims: dict, **overrides) -> TestClient:
+    verifier = MagicMock()
+    verifier.verify = AsyncMock(return_value=claims)
+    config = _make_http_config(
+        mimir_served_mount="local",
+        mimir_required_claims={"workload_service": "mimir"},
+        **overrides,
+    )
+    gateway = HttpGateway(config, _make_gateway_mock(), mimir=mimir, mimir_verifier=verifier)
+    return TestClient(gateway.app)
+
+
+async def test_served_mimir_answers_only_the_named_workload(tmp_path) -> None:
+    store = await _local_store(tmp_path)
+    client = _served_gateway(store, {"workload_service": "mimir"})
+
+    assert client.get("/mimir/pages").status_code == 401
+    response = client.get("/mimir/pages", headers={"Authorization": "Bearer platform-mimir"})
+
+    assert response.status_code == 200
+    assert [page["path"] for page in response.json()] == ["learnings/release.md"]
+
+
+async def test_served_mimir_refuses_another_workload(tmp_path) -> None:
+    client = _served_gateway(await _local_store(tmp_path), {"workload_service": "ting"})
+
+    response = client.get("/mimir/pages", headers={"Authorization": "Bearer ting"})
+
+    assert response.status_code == 403
+
+
+async def test_served_mimir_refuses_a_token_the_verifier_rejects(tmp_path) -> None:
+    verifier = MagicMock()
+    verifier.verify = AsyncMock(side_effect=ValueError("bad signature"))
+    gateway = HttpGateway(
+        _make_http_config(
+            mimir_served_mount="local",
+            mimir_required_claims={"workload_service": "mimir"},
+        ),
+        _make_gateway_mock(),
+        mimir=await _local_store(tmp_path),
+        mimir_verifier=verifier,
+    )
+
+    response = TestClient(gateway.app).get(
+        "/mimir/pages", headers={"Authorization": "Bearer forged"}
+    )
+
+    assert response.status_code == 401
+
+
+async def test_served_mimir_serves_the_named_composite_mount(tmp_path) -> None:
+    from ravn.adapters.mimir.composite import CompositeMimirAdapter
+    from ravn.domain.mimir import MimirMount
+
+    local = await _local_store(tmp_path)
+    shared = MagicMock()
+    composite = CompositeMimirAdapter(
+        mounts=[
+            MimirMount(name="local", port=local, role="local", read_priority=0),
+            MimirMount(name="shared", port=shared, role="shared", read_priority=1),
+        ]
+    )
+    client = _served_gateway(composite, {"workload_service": "mimir"})
+
+    response = client.get("/mimir/pages", headers={"Authorization": "Bearer platform-mimir"})
+
+    assert [page["path"] for page in response.json()] == ["learnings/release.md"]
+    shared.list_pages.assert_not_called()
+
+
+def test_mimir_is_not_served_unless_named() -> None:
+    client = TestClient(HttpGateway(_make_http_config(), _make_gateway_mock()).app)
+
+    assert client.get("/mimir/pages").status_code == 404
+
+
+def test_serving_mimir_without_required_claims_is_fatal() -> None:
+    with pytest.raises(ValueError, match="mimir_required_claims"):
+        HttpGateway(
+            _make_http_config(mimir_served_mount="local"),
+            _make_gateway_mock(),
+            mimir=MagicMock(),
+            mimir_verifier=MagicMock(),
+        )
+
+
+def test_serving_mimir_without_a_verifier_is_fatal() -> None:
+    with pytest.raises(ValueError, match="mimir_auth.adapter"):
+        HttpGateway(
+            _make_http_config(
+                mimir_served_mount="local",
+                mimir_required_claims={"workload_service": "mimir"},
+            ),
+            _make_gateway_mock(),
+            mimir=MagicMock(),
+        )
+
+
+def test_serving_mimir_the_resident_does_not_have_is_fatal() -> None:
+    with pytest.raises(ValueError, match="no Mímir"):
+        _served_gateway(None, {})
+
+
+def test_serving_a_named_store_from_a_single_local_store_is_fatal() -> None:
+    from niuu.ports.mimir import MimirPort
+
+    with pytest.raises(ValueError, match="only its single local store"):
+        HttpGateway(
+            _make_http_config(
+                mimir_served_mount="research",
+                mimir_required_claims={"workload_service": "mimir"},
+            ),
+            _make_gateway_mock(),
+            mimir=MagicMock(spec=MimirPort),
+            mimir_verifier=MagicMock(),
+        )
+
+
+def test_serving_an_unmounted_composite_store_is_fatal() -> None:
+    from ravn.adapters.mimir.composite import CompositeMimirAdapter
+    from ravn.domain.exceptions import MimirUnavailableError
+    from ravn.domain.mimir import MimirMount
+
+    composite = CompositeMimirAdapter(
+        mounts=[MimirMount(name="shared", port=MagicMock(), role="shared", read_priority=1)]
+    )
+    with pytest.raises(MimirUnavailableError, match="'local' is not mounted"):
+        _served_gateway(composite, {})

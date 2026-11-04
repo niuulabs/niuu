@@ -132,6 +132,15 @@ class CompositeMimirAdapter(MimirPort):
     def _mount_names(self) -> list[str]:
         return sorted(self._mount_map)
 
+    def mount(self, name: str) -> MimirMount:
+        """The mounted instance called *name*; raises when nothing is mounted under it."""
+        mount = self._mount_map.get(name)
+        if mount is None:
+            raise MimirUnavailableError(
+                f"Mímir mount {name!r} is not mounted; mounted: {self._mount_names() or '(none)'}"
+            )
+        return mount
+
     def ingest_targets(self, explicit: str | None = None) -> list[str]:
         """Return the mount names an ingest should target.
 

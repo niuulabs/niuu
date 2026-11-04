@@ -503,6 +503,7 @@ async def _run_daemon(
                 channels_cfg.http,
                 gw,
                 resident_runtime=resident_runtime,
+                mimir=daemon_mimir,
             )
             tasks.append(asyncio.create_task(http_gateway.run(), name="http"))
             gw_tasks.append("http")

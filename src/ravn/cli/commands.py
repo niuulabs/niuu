@@ -1707,7 +1707,12 @@ async def _run_gateway(
         tasks.append(asyncio.create_task(tg.run(), name="telegram"))
 
     if settings.gateway.channels.http.enabled:
-        ht = HttpGateway(settings.gateway.channels.http, gw)
+        http_cfg = settings.gateway.channels.http
+        ht = HttpGateway(
+            http_cfg,
+            gw,
+            mimir=_build_mimir(settings) if http_cfg.mimir_served_mount.strip() else None,
+        )
         tasks.append(asyncio.create_task(ht.run(), name="http"))
 
     def _voice_factory() -> Any:

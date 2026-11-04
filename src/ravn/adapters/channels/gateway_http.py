@@ -5,6 +5,8 @@ Endpoints:
   GET  /status  — JSON: active session IDs and count.
   GET  /events  — SSE broadcast of *all* events across all sessions.
   WS   /ws      — WebSocket chat with CLI-format translation.
+  /mimir/*      — the resident's own Mímir store, when ``mimir_served_mount``
+                  names it; every call needs a verified workload JWT.
 
 Runs via uvicorn inside an asyncio task (no subprocess).
 Suitable for Home Assistant automations, local scripts, and cron jobs.
@@ -29,6 +31,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
+from niuu.domain.models import Principal
+from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
+from niuu.ports.mimir import MimirPort
 from niuu.ports.workload_identity import WorkloadIdentityVerifier
 from niuu.utils import resolve_secret_kwargs
 from ravn.adapters.channels.gateway import RavnGateway
@@ -44,6 +49,38 @@ def _import_class(dotted_path: str) -> type:
     module_path, class_name = dotted_path.rsplit(".", 1)
     module = importlib.import_module(module_path)
     return getattr(module, class_name)
+
+
+class _GatewayCheckedIdentity(HeaderAuthenticationPort):
+    """The served Mímir's identity port: callers are checked by the gateway, not here.
+
+    The router runs with ``auth_mode="none"`` behind the gateway's workload
+    check, so it never asks this port for a tenant. What does ask it (the
+    deploy-admin check) is refused: a resident's served store deploys nothing.
+    """
+
+    async def validate_headers(self, headers: dict[str, str]) -> Principal:
+        raise InvalidTokenError("The served resident Mímir is authenticated by the gateway")
+
+
+def _served_mimir(mimir: MimirPort | None, name: str) -> tuple[MimirPort, str]:
+    """The resident's Mímir instance called *name*, and its role."""
+    from ravn.adapters.mimir.composite import CompositeMimirAdapter
+
+    if mimir is None:
+        raise ValueError(
+            f"gateway.channels.http.mimir_served_mount={name!r} but this resident has "
+            "no Mímir; enable mimir or clear mimir_served_mount"
+        )
+    if isinstance(mimir, CompositeMimirAdapter):
+        mount = mimir.mount(name)
+        return mount.port, mount.role
+    if name != "local":
+        raise ValueError(
+            f"gateway.channels.http.mimir_served_mount={name!r} but this resident has "
+            "only its single local store; serve 'local' or configure mimir.instances"
+        )
+    return mimir, "local"
 
 
 class ChatRequest(BaseModel):
@@ -80,11 +117,23 @@ class HttpGateway:
         gateway: RavnGateway,
         resident_runtime: Any | None = None,
         a2a_push_verifier: WorkloadIdentityVerifier | None = None,
+        mimir: MimirPort | None = None,
+        mimir_verifier: WorkloadIdentityVerifier | None = None,
     ) -> None:
         self._config = config
         self._gateway = gateway
         self._resident_runtime = resident_runtime
         self._a2a_push_verifier = a2a_push_verifier or self._build_a2a_push_verifier()
+        self._mimir = mimir
+        self._mimir_verifier: WorkloadIdentityVerifier | None = None
+        if config.mimir_served_mount.strip():
+            if not config.mimir_required_claims:
+                raise ValueError(
+                    f"gateway.channels.http.mimir_served_mount={config.mimir_served_mount!r} "
+                    "needs gateway.channels.http.mimir_required_claims naming the workload "
+                    "allowed to read it"
+                )
+            self._mimir_verifier = mimir_verifier or self._build_mimir_verifier()
         self._resident_status_provider: (
             Callable[[], dict[str, Any] | Awaitable[dict[str, Any]]] | None
         ) = None
@@ -98,6 +147,57 @@ class HttpGateway:
         kwargs = resolve_secret_kwargs(auth.kwargs, auth.secret_kwargs_env)
         verifier_class = _import_class(auth.adapter)
         return verifier_class(**kwargs)
+
+    def _build_mimir_verifier(self) -> WorkloadIdentityVerifier:
+        name = self._config.mimir_served_mount
+        auth = self._config.mimir_auth
+        if not auth.adapter.strip():
+            raise ValueError(
+                f"gateway.channels.http.mimir_served_mount={name!r} needs "
+                "gateway.channels.http.mimir_auth.adapter to verify who reads it"
+            )
+        kwargs = resolve_secret_kwargs(auth.kwargs, auth.secret_kwargs_env)
+        return _import_class(auth.adapter)(**kwargs)
+
+    async def _require_mimir_caller(self, authorization: str | None = Header(default=None)) -> None:
+        """Admit only the workload the served Mímir names in its required claims."""
+        if self._mimir_verifier is None:
+            raise RuntimeError("The resident's Mímir is served without a workload verifier")
+        scheme, _, presented = (authorization or "").partition(" ")
+        if scheme.casefold() != "bearer" or not presented.strip():
+            raise HTTPException(
+                status_code=401, detail="The resident's Mímir requires a bearer workload identity"
+            )
+        try:
+            claims = await self._mimir_verifier.verify(presented.strip())
+        except Exception as exc:
+            logger.warning("Rejected served-Mímir workload identity: %s", type(exc).__name__)
+            raise HTTPException(
+                status_code=401, detail="Invalid workload identity for the resident's Mímir"
+            ) from exc
+        for claim, expected in self._config.mimir_required_claims.items():
+            if claims.get(claim) != expected:
+                raise HTTPException(
+                    status_code=403, detail="Workload is not authorized for the resident's Mímir"
+                )
+
+    def _mount_served_mimir(self, app: FastAPI) -> None:
+        from mimir.router import MimirRouter
+
+        name = self._config.mimir_served_mount.strip()
+        port, role = _served_mimir(self._mimir, name)
+        router = MimirRouter(
+            adapter=port,
+            name=name,
+            role=role,
+            auth=_GatewayCheckedIdentity(),
+            auth_mode="none",
+        )
+        app.include_router(
+            router.router,
+            prefix="/mimir",
+            dependencies=[Depends(self._require_mimir_caller)],
+        )
 
     @property
     def app(self) -> FastAPI:
@@ -304,6 +404,9 @@ class HttpGateway:
                     raise HTTPException(status_code=422, detail=str(exc)) from exc
                 except LookupError as exc:
                     raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        if self._config.mimir_served_mount.strip():
+            self._mount_served_mimir(app)
 
         @app.websocket("/ws")
         async def websocket_chat(ws: WebSocket) -> None:

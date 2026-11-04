@@ -1417,6 +1417,26 @@ class HttpChannelConfig(BaseModel):
         ge=1024,
         description="Maximum accepted A2A callback body size.",
     )
+    mimir_served_mount: str = Field(
+        default="",
+        description=(
+            "The resident's own Mímir instance (a mimir.instances[].name, or 'local' "
+            "for the single store) served at /mimir so the platform's Mímir can mount "
+            "it as a registry mount. Empty serves nothing. Every request must carry a "
+            "workload JWT that mimir_auth verifies and that matches mimir_required_claims."
+        ),
+    )
+    mimir_auth: WorkloadIdentityVerifierConfig = Field(
+        default_factory=lambda: WorkloadIdentityVerifierConfig(name="served-mimir", adapter=""),
+        description="JWT verifier for callers of the served Mímir; required when it is served.",
+    )
+    mimir_required_claims: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Exact JWT claims a served-Mímir caller must carry, naming the workload "
+            "allowed to read and write this memory; required when it is served."
+        ),
+    )
     resident_hud_enabled: bool = Field(
         default=False,
         description="Expose the resident's read-only HUD and live data endpoints.",

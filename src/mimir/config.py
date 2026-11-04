@@ -178,6 +178,37 @@ class MimirObservabilityConfig(ObservabilityConfig):
     service_name: str = Field(default="mimir")
 
 
+class RemoteMountConfig(BaseModel):
+    """A Mímir store another service serves, mounted here by the operator.
+
+    A resident serving its own memory from its gateway is the case this is
+    for. The operator names the URL and the credential, so this host never
+    presents its workload identity to a destination a tenant chose (tenant
+    registry writes refuse auth settings for that reason).
+    """
+
+    name: str = Field(min_length=1, description="Mount name /mimir lists and opens it by.")
+    tenant_id: str = Field(
+        default="",
+        description="Tenant that sees the mount; empty makes it global to the platform org.",
+    )
+    role: str = Field(default="shared", description="Memory role: shared, local or domain.")
+    read_priority: int = Field(default=10, description="Read order; lower is queried first.")
+    categories: list[str] | None = Field(
+        default=None, description="Category allowlist; None accepts all categories."
+    )
+    adapter: str = Field(
+        min_length=1,
+        description=(
+            "Fully-qualified MimirPort class, e.g. ravn.adapters.mimir.http.HttpMimirAdapter."
+        ),
+    )
+    kwargs: dict = Field(
+        default_factory=dict,
+        description="Constructor kwargs for the adapter (base_url, auth, ...).",
+    )
+
+
 class MimirServiceConfig(BaseSettings):
     """Configuration for a Mímir service instance (standalone or plugin).
 
@@ -324,6 +355,13 @@ class MimirServiceConfig(BaseSettings):
     )
     deployment: dict | None = Field(
         default=None, description="Dynamic knowledge deployment adapter and constructor kwargs."
+    )
+    remote_mounts: list[RemoteMountConfig] = Field(
+        default_factory=list,
+        description=(
+            "Stores other services serve (a resident's own memory) that this host "
+            "mounts, each with the adapter and credential the operator chose."
+        ),
     )
     ranking: RankingConfig = Field(
         default_factory=RankingConfig,

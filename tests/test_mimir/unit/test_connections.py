@@ -36,3 +36,35 @@ def test_invalid_selected_well_never_uses_hosted_default(config, error):
 def test_configured_adapter_must_implement_the_port():
     with pytest.raises(TypeError, match="must implement MimirPort"):
         resolve_mimir_connection(adapter="builtins.dict", url="https://wrong-store.test")
+
+
+def test_registry_mount_carries_workload_auth_as_plain_kwargs():
+    from ravn.domain.mimir import MimirAuth
+
+    port = resolve_mimir_connection(
+        adapter="ravn.adapters.mimir.http.HttpMimirAdapter",
+        kwargs={
+            "base_url": "https://regin.valhalla.test",
+            "auth": {
+                "type": "workload",
+                "token_file": "/var/run/secrets/niuu-workload/token",
+                "exchange_url": "https://platform.test/api/v1/tokens/workload/exchange",
+                "audiences": ["regin-mimir"],
+            },
+        },
+    )
+
+    assert port._auth == MimirAuth(
+        type="workload",
+        token_file="/var/run/secrets/niuu-workload/token",
+        exchange_url="https://platform.test/api/v1/tokens/workload/exchange",
+        audiences=("regin-mimir",),
+    )
+
+
+def test_registry_mount_auth_with_an_unknown_field_is_refused():
+    with pytest.raises(TypeError, match="unexpected keyword"):
+        resolve_mimir_connection(
+            adapter="ravn.adapters.mimir.http.HttpMimirAdapter",
+            kwargs={"base_url": "https://regin.valhalla.test", "auth": {"tokn": "x"}},
+        )

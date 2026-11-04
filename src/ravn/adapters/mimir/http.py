@@ -72,12 +72,16 @@ class HttpMimirAdapter(MimirPort):
     def __init__(
         self,
         base_url: str,
-        auth: MimirAuth | None = None,
+        auth: MimirAuth | dict[str, Any] | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
         environment_id: str = "",
         mount: str | None = None,
         workload_token_refresh_margin_seconds: float | None = None,
     ) -> None:
+        # A registry mount names this adapter with plain kwargs, so its auth
+        # arrives as a mapping of MimirAuth fields; an unknown field raises.
+        if isinstance(auth, dict):
+            auth = MimirAuth(**{**auth, "audiences": tuple(auth.get("audiences") or ())})
         self._mount = mount
         self._base_url = base_url.rstrip("/")
         self._environment_id = environment_id
