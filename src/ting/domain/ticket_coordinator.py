@@ -49,6 +49,16 @@ def ticket_metadata(*, saga_id: UUID, issue_id: str, identifier: str, title: str
     return {"sagaId": str(saga_id), "issueId": issue_id, "identifier": identifier, "title": title}
 
 
+def ticket_label(metadata: dict[str, Any]) -> str | None:
+    """Return "NIU-1 · Title" when campaign metadata names a ticket by identifier and title."""
+    raw = metadata.get(TICKET_METADATA_KEY)
+    if not isinstance(raw, dict):
+        return None
+    identifier = str(raw.get("identifier") or "").strip()
+    title = str(raw.get("title") or "").strip()
+    return f"{identifier} · {title}" if identifier and title else None
+
+
 def ticket_of(metadata: dict[str, Any]) -> tuple[str, str] | None:
     """Return (saga id, issue id) when campaign metadata names a ticket."""
     raw = metadata.get(TICKET_METADATA_KEY)

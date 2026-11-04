@@ -227,6 +227,14 @@ def test_a_run_introduces_itself_to_its_review_page() -> None:
         "regin",
         "regin",
     )
+    assert run.ticket is None
+
+
+def test_a_tickets_run_names_the_ticket_it_was_started_for() -> None:
+    run = review_run(_campaign(_ticket()))
+
+    assert run.ticket is not None
+    assert (run.ticket.project_id, run.ticket.issue_id) == (str(SAGA_ID), "issue-1")
 
 
 def test_other_runs_are_not_reviews() -> None:

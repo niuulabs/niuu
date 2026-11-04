@@ -322,6 +322,40 @@ async def test_list_keeps_healthy_sections_when_repositories_fail() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_tickets_run_is_named_by_its_ticket_not_its_workflow() -> None:
+    from dataclasses import replace
+
+    from ting.domain.ticket_coordinator import TICKET_METADATA_KEY, ticket_metadata
+
+    ticket_run = replace(
+        _campaign(surface="ting.workflow"),
+        name="Ticket Planning Flow",
+        metadata={
+            "surface": "ting.workflow",
+            TICKET_METADATA_KEY: ticket_metadata(
+                saga_id=uuid4(), issue_id="issue-1", identifier="NIU-1117", title="A2A access"
+            ),
+        },
+    )
+    unnamed = replace(
+        _campaign(surface="ting.workflow"),
+        id=uuid4(),
+        name="Ticket Work Flow",
+        metadata={"surface": "ting.workflow", TICKET_METADATA_KEY: {"sagaId": "s", "issueId": "i"}},
+    )
+    saga_repo, campaign_repo = _repositories(campaigns=[ticket_run, unnamed])
+
+    result = await _service(
+        saga_repo=saga_repo, campaign_repo=campaign_repo, trackers=[]
+    ).list_work(execution_limit=10, execution_cursor="")
+
+    titles = {item.id: item.title for item in result.campaigns}
+    assert titles[f"campaign:{ticket_run.id}"] == "NIU-1117 · A2A access"
+    # A ticket stamp without a name keeps the run's own name.
+    assert titles[f"campaign:{unnamed.id}"] == "Ticket Work Flow"
+
+
+@pytest.mark.asyncio
 async def test_active_campaign_is_unknown_when_lifecycle_subscriber_is_unavailable() -> None:
     campaign = _campaign()
     saga_repo, campaign_repo = _repositories(campaigns=[campaign])

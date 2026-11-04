@@ -31,6 +31,7 @@ from ting.domain.ticket_coordinator import (
     PULL_REQUEST_KEY,
     TicketCoordinator,
     TicketCoordinatorStatus,
+    ticket_label,
     ticket_of,
 )
 from ting.domain.tracker_routing import TrackerRoutingError, select_tracker_for_saga
@@ -977,7 +978,8 @@ def _campaign_summary(
     return WorkSummary(
         id=f"campaign:{campaign.id}",
         kind=kind,
-        title=campaign.name,
+        # A ticket's run is named by its ticket: the workflow it runs is the same for every one.
+        title=ticket_label(campaign.metadata) or campaign.name,
         condition=condition,
         raw_state=RawWorkState(source="campaign", status=campaign.status.value),
         current_step=active_stage.label if active_stage else None,

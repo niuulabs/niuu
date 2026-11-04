@@ -57,8 +57,16 @@ class ReviewItem:
 
 
 @dataclass(frozen=True)
+class ReviewTicket:
+    """The ticket a run was started for, so its review page can name and reach it."""
+
+    project_id: str
+    issue_id: str
+
+
+@dataclass(frozen=True)
 class ReviewRun:
-    """A run with no ticket, as its review page introduces it."""
+    """A run, as its review page introduces it."""
 
     slug: str
     title: str
@@ -68,6 +76,7 @@ class ReviewRun:
     repo: str
     branch: str
     started_by: str | None = None
+    ticket: ReviewTicket | None = None
 
 
 def is_project_plan(campaign: WorkflowCampaign) -> bool:
@@ -110,7 +119,13 @@ def review_run(campaign: WorkflowCampaign) -> ReviewRun:
         repo=str(campaign.metadata.get("repo") or ""),
         branch=str(campaign.metadata.get("branch") or ""),
         started_by=_started_by(campaign.metadata),
+        ticket=_ticket(campaign.metadata),
     )
+
+
+def _ticket(metadata: Mapping[str, Any]) -> ReviewTicket | None:
+    ticket = ticket_of(dict(metadata))
+    return ReviewTicket(project_id=ticket[0], issue_id=ticket[1]) if ticket else None
 
 
 def _state(campaign: WorkflowCampaign, gate_label: str | None) -> ReviewState:

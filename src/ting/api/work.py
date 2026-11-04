@@ -363,6 +363,11 @@ class TicketReviewsResponse(_ResponseModel):
     plan_slug: str | None = None
 
 
+class ReviewTicketResponse(_ResponseModel):
+    project_id: str
+    issue_id: str
+
+
 class ReviewRunResponse(_ResponseModel):
     slug: str
     title: str
@@ -372,6 +377,8 @@ class ReviewRunResponse(_ResponseModel):
     repo: str
     branch: str
     started_by: str | None = None
+    #: The ticket the run was started for; its review page names it and talks to its coordinator.
+    ticket: ReviewTicketResponse | None = None
 
 
 class RunReviewsResponse(_ResponseModel):
@@ -1096,7 +1103,7 @@ def create_work_router() -> APIRouter:
         principal: Principal = Depends(extract_principal),
         campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> RunReviewsResponse:
-        """What a run with no ticket has put in front of a person."""
+        """What a run has put in front of a person, and the ticket it was started for."""
         sessions = _forge_sessions(request, principal)
         if sessions is None:
             raise HTTPException(status_code=503, detail="No Forge connection is available")

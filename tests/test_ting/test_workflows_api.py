@@ -1525,6 +1525,12 @@ class TestWorkflowCatalogAPI:
         assert campaign.workflow_version == "1.0.0"
         assert campaign.workflow_snapshot["workflow_revision"].startswith("sha256:")
         assert campaign.metadata["surface"] == "ting.workflow-launch"
+        # The run is named by its brief, not by the session it ran in.
+        assert campaign.metadata["prompt"] == (
+            "Research whether AI grief companions are a credible product category."
+        )
+        assert campaign.metadata["repo"] == "https://github.com/niuulabs/volundr.git"
+        assert campaign.metadata["branch"] == "feat/research"
         assert "actor_id" not in campaign.metadata
 
     def _launch_infra_change(self, body: dict) -> tuple[Any, RecordingVolundrPort]:

@@ -547,6 +547,10 @@ def create_workflows_router() -> APIRouter:
             metadata={
                 "surface": _DIRECT_LAUNCH_SURFACE,
                 "launch_slug": execution.slug,
+                # What the person asked for, so the run's review page can say what it is about.
+                "prompt": body.prompt,
+                **({"repo": body.repo} if body.repo else {}),
+                **({"branch": body.branch} if body.branch else {}),
                 "document_revision": (
                     execution.workflow.document_revision
                     or workflow_document_revision(execution.workflow)
