@@ -56,6 +56,7 @@ from mimir.compiled_truth import parse_page as parse_compiled_truth_page
 from mimir.config import LiveActivityConfig
 from mimir.live_activity import LiveActivityRecorder
 from mimir.ports.deployment import DeploymentRequest, KnowledgeDeploymentPort
+from mimir.ports.resident_memory import ResidentMemoryDirectoryPort
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
 from niuu.domain.knowledge_graph import cross_mount_source_edges
 from niuu.domain.mimir import (
@@ -850,11 +851,25 @@ def _parse_count(detail: str, label: str) -> int:
     return 0
 
 
+#: Where resident mounts sort in the mount list. Listing order only: a resident
+#: mount is never part of a merged read, so this never ranks its pages.
+RESIDENT_MOUNT_PRIORITY = 10
+
+
 async def _summarize_mount(
     mount: dict[str, Any],
 ) -> MountResponse:
     port: MimirPort = mount["port"]
-    summary = await port.summarize()
+    if mount.get("resident"):
+        # A resident is another service: one that cannot answer is listed as
+        # down, with why, rather than taking every other mount's listing with it.
+        try:
+            summary = await port.summarize()
+        except Exception as exc:
+            logger.error("Resident mount %s did not answer: %s", mount["name"], exc)
+            return _down_resident_mount(mount, exc)
+    else:
+        summary = await port.summarize()
 
     url = getattr(port, "_base_url", "")
     host = "embedded"
@@ -881,6 +896,28 @@ async def _summarize_mount(
         embedding="fts",
         size_kb=0,
         desc=f"{mount.get('access_scope', 'unknown')} knowledge instance",
+    )
+
+
+def _down_resident_mount(mount: dict[str, Any], exc: Exception) -> MountResponse:
+    url = getattr(mount["port"], "_base_url", "")
+    return MountResponse(
+        name=mount["name"],
+        role=mount["role"],
+        access_scope=mount.get("access_scope", "unknown"),
+        host=urlparse(url).netloc or "remote",
+        url=url,
+        priority=mount["priority"],
+        categories=mount["categories"],
+        status="down",
+        pages=0,
+        sources=0,
+        lint_issues=0,
+        lint_checked_at="",
+        last_write="",
+        embedding="fts",
+        size_kb=0,
+        desc=f"resident {mount['resident']} did not answer: {type(exc).__name__}: {exc}",
     )
 
 
@@ -1198,12 +1235,18 @@ class MimirRouter:
         auth_mode: str = "envoy",
         live_activity: LiveActivityRecorder | None = None,
         platform_tenant_id: str = DEFAULT_PLATFORM_TENANT_ID,
-        remote_mounts: list[dict[str, Any]] | None = None,
+        resident_memory: ResidentMemoryDirectoryPort | None = None,
+        resident_mount_auth: dict[str, Any] | None = None,
     ) -> None:
         self._owner_tenant = tenant_id
-        # Operator-declared stores other services serve: name, tenant_id, role,
-        # priority, categories and a built port (see mimir.config.RemoteMountConfig).
-        self._remote_mounts = list(remote_mounts or [])
+        # Stores residents serve (mimir.config.ResidentMemoryConfig). Read by
+        # name only: _mount_definitions leaves them out of every merged read.
+        self._resident_memory = resident_memory
+        self._resident_mount_auth = resident_mount_auth
+        if resident_memory is not None and not resident_mount_auth:
+            raise ValueError("resident_memory needs mount_auth to present to residents")
+        self._resident_ports: dict[tuple[str, str], MimirPort] = {}
+        self._resident_mounts: ContextVar[list] = ContextVar("mimir_resident_mounts", default=[])
         self._platform_tenant_id = platform_tenant_id
         self._other_org: ContextVar[bool] = ContextVar("mimir_other_org", default=False)
         self._auth = auth
@@ -1366,6 +1409,7 @@ class MimirRouter:
         tenant_token = self._tenant.set(tenant)
         other_org_token = self._other_org.set(other_org)
         mounts_token = self._deployed_mounts.set([])
+        residents_token = self._resident_mounts.set([])
         try:
             if self._deployment is not None and "/deployments" not in request.url.path:
                 self._deployed_mounts.set(
@@ -1373,14 +1417,56 @@ class MimirRouter:
                         tenant, request.headers.get("authorization", "")
                     )
                 )
+            if self._wants_resident_mounts(request):
+                self._resident_mounts.set(await self._served_resident_mounts())
             yield
         finally:
             for mount in self._deployed_mounts.get():
                 if mount.get("close_after_request"):
                     await mount["port"].aclose()
             self._deployed_mounts.reset(mounts_token)
+            self._resident_mounts.reset(residents_token)
             self._other_org.reset(other_org_token)
             self._tenant.reset(tenant_token)
+
+    def _wants_resident_mounts(self, request: Request) -> bool:
+        """Ask the directory only to list mounts, or to open a mount this host lacks.
+
+        Reading the host's own mounts never depends on a resident or on the
+        directory being reachable.
+        """
+        if self._resident_memory is None or self._other_org.get():
+            return False
+        if request.url.path.endswith("/mounts"):
+            return True
+        name = request.query_params.get("mount")
+        return bool(name) and name not in {m["name"] for m in self._mount_definitions()}
+
+    async def _served_resident_mounts(self) -> list[dict[str, Any]]:
+        from ravn.adapters.mimir.http import HttpMimirAdapter
+
+        directory, mount_auth = self._resident_memory, self._resident_mount_auth
+        if directory is None or mount_auth is None:
+            raise RuntimeError("Resident memory is not configured on this host")
+        mounts = []
+        for served in await directory.served():
+            key = (served.name, served.url)
+            port = self._resident_ports.get(key)
+            if port is None:
+                port = HttpMimirAdapter(base_url=served.url, auth=dict(mount_auth))
+                self._resident_ports[key] = port
+            mounts.append(
+                {
+                    "name": served.name,
+                    "access_scope": "global",
+                    "role": served.role,
+                    "categories": None,
+                    "priority": RESIDENT_MOUNT_PRIORITY,
+                    "port": port,
+                    "resident": served.valkyrie_id,
+                }
+            )
+        return mounts
 
     def _validate_registry_write(self, request: RegistryMountRequest) -> None:
         if not self._tenant.get():
@@ -1431,7 +1517,8 @@ class MimirRouter:
         self._registry_local_ports[mount_name] = (cache_key, port)
         return port
 
-    def _mount_definitions(self) -> list[dict[str, Any]]:
+    def _mount_definitions(self, *, include_residents: bool = False) -> list[dict[str, Any]]:
+        """Every mount this request may read; resident mounts only when asked for by name."""
         other_org = self._other_org.get()
         mounts = _extract_mount_definitions(
             self._adapter,
@@ -1445,28 +1532,15 @@ class MimirRouter:
         if other_org:
             mounts = [mount for mount in mounts if mount["access_scope"] == "tenant"]
         seen = {mount["name"] for mount in mounts}
-        tenant = self._tenant.get()
-        for remote in self._remote_mounts:
-            if remote["tenant_id"] and remote["tenant_id"] != tenant:
-                continue
-            if not remote["tenant_id"] and other_org:
-                continue
-            if remote["name"] in seen:
-                raise ValueError(
-                    f"Remote mount {remote['name']} conflicts with another mount of that "
-                    "name; rename it in remote_mounts"
-                )
-            mounts.append(
-                {
-                    "name": remote["name"],
-                    "access_scope": "tenant" if remote["tenant_id"] else "global",
-                    "role": remote["role"],
-                    "categories": remote["categories"],
-                    "priority": remote["priority"],
-                    "port": remote["port"],
-                }
-            )
-            seen.add(remote["name"])
+        if include_residents and not other_org:
+            for resident in self._resident_mounts.get():
+                if resident["name"] in seen:
+                    raise ValueError(
+                        f"Resident mount {resident['name']} conflicts with another mount "
+                        "of that name; rename the resident's platform_mount"
+                    )
+                mounts.append(resident)
+                seen.add(resident["name"])
         if self._registry_store is None:
             return mounts
 
@@ -1521,7 +1595,7 @@ class MimirRouter:
         if mount_name is None:
             return self._read_adapter(), self._name
 
-        for mount in self._mount_definitions():
+        for mount in self._mount_definitions(include_residents=True):
             if mount["name"] == mount_name:
                 return mount["port"], mount_name
         raise HTTPException(404, f"Unknown mount: {mount_name}")
@@ -1593,7 +1667,7 @@ class MimirRouter:
 
         @router.get("/mounts", response_model=list[MountResponse])
         async def list_mounts() -> list[MountResponse]:
-            mounts = self._mount_definitions()
+            mounts = self._mount_definitions(include_residents=True)
             return await _merged_mount_responses(
                 adapter,
                 default_name=self._name,

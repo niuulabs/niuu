@@ -178,34 +178,25 @@ class MimirObservabilityConfig(ObservabilityConfig):
     service_name: str = Field(default="mimir")
 
 
-class RemoteMountConfig(BaseModel):
-    """A Mímir store another service serves, mounted here by the operator.
+class ResidentMemoryConfig(BaseModel):
+    """Mount the memory residents serve from their own gateways.
 
-    A resident serving its own memory from its gateway is the case this is
-    for. The operator names the URL and the credential, so this host never
-    presents its workload identity to a destination a tenant chose (tenant
-    registry writes refuse auth settings for that reason).
+    The directory says which stores are served and where; this host then
+    reads each by name only (``?mount=resident-<id>``), never in merged reads,
+    so a resident that is down cannot break this host's own answers.
     """
 
-    name: str = Field(min_length=1, description="Mount name /mimir lists and opens it by.")
-    tenant_id: str = Field(
-        default="",
-        description="Tenant that sees the mount; empty makes it global to the platform org.",
-    )
-    role: str = Field(default="shared", description="Memory role: shared, local or domain.")
-    read_priority: int = Field(default=10, description="Read order; lower is queried first.")
-    categories: list[str] | None = Field(
-        default=None, description="Category allowlist; None accepts all categories."
-    )
-    adapter: str = Field(
-        min_length=1,
+    directory: dict = Field(
         description=(
-            "Fully-qualified MimirPort class, e.g. ravn.adapters.mimir.http.HttpMimirAdapter."
+            "Dynamic ResidentMemoryDirectoryPort adapter and kwargs, e.g. "
+            "mimir.adapters.valkyrie_memory.ValkyrieMemoryDirectory."
         ),
     )
-    kwargs: dict = Field(
-        default_factory=dict,
-        description="Constructor kwargs for the adapter (base_url, auth, ...).",
+    mount_auth: dict = Field(
+        description=(
+            "MimirAuth fields this host presents to residents, e.g. a workload "
+            "exchange for the audience residents verify."
+        ),
     )
 
 
@@ -356,12 +347,9 @@ class MimirServiceConfig(BaseSettings):
     deployment: dict | None = Field(
         default=None, description="Dynamic knowledge deployment adapter and constructor kwargs."
     )
-    remote_mounts: list[RemoteMountConfig] = Field(
-        default_factory=list,
-        description=(
-            "Stores other services serve (a resident's own memory) that this host "
-            "mounts, each with the adapter and credential the operator chose."
-        ),
+    resident_memory: ResidentMemoryConfig | None = Field(
+        default=None,
+        description="Mount the memory residents serve; None mounts none.",
     )
     ranking: RankingConfig = Field(
         default_factory=RankingConfig,

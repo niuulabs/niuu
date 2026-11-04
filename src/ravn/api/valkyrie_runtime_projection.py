@@ -51,6 +51,7 @@ def _resident_memory(value: Any) -> list[dict[str, str]]:
             "name": str(entry.get("name") or ""),
             "role": str(entry.get("role") or ""),
             "platformMount": str(entry.get("platform_mount") or ""),
+            "servedUrl": str(entry.get("served_url") or ""),
         }
         for entry in value
         if isinstance(entry, dict) and entry.get("name")

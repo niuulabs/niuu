@@ -31,6 +31,8 @@ export interface ResidentMemoryStore {
   role: string;
   /** The mount `/mimir` opens it by; empty when the platform does not serve it. */
   platformMount: string;
+  /** The resident gateway serving this store, when the resident serves it itself. */
+  servedUrl?: string;
 }
 
 export interface ValkyrieResident {

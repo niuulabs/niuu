@@ -262,17 +262,18 @@ config:
   # (buffer_size: 2000, window_seconds: 900). Fields match
   # mimir.config.LiveActivityConfig.
   liveActivity: {}
-  # Stores other services serve that this instance mounts, e.g. a resident's
-  # own memory served from its gateway (gateway.channels.http.mimir_served_mount).
-  # The operator names the URL and the credential here; tenant registry writes
-  # cannot carry auth. Fields match mimir.config.RemoteMountConfig:
-  #   - name: regin
-  #     role: local
-  #     adapter: ravn.adapters.mimir.http.HttpMimirAdapter
-  #     kwargs:
-  #       base_url: https://regin.example
-  #       auth: {type: workload, exchange_url: ..., audiences: [regin-mimir]}
-  remoteMounts: []
+  # Mount the memory residents serve from their own gateways
+  # (gateway.channels.http.mimir_served_mount). The directory says which stores
+  # are served and where; each is opened by name only (resident-<id>), never in
+  # merged reads. Fields match mimir.config.ResidentMemoryConfig:
+  #   directory:
+  #     adapter: mimir.adapters.valkyrie_memory.ValkyrieMemoryDirectory
+  #     base_url: http://<host serving /api/v1/ravn/valkyrie>
+  #     auth_adapter: niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter
+  #     auth_kwargs: {exchange_url: ..., token_file: ..., audiences: [volundr-api]}
+  #     timeout_seconds: 10
+  #   mount_auth: {type: workload, exchange_url: ..., token_file: ..., audiences: [resident-memory]}
+  residentMemory: null
 
 # Optional dynamic Flux deployment adapter configuration. Disabled by default.
 # Supply namespace, source_name, chart_versions, images and cluster in this map.

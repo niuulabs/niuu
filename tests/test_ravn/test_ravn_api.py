@@ -3548,8 +3548,8 @@ def test_resident_memory_reaches_the_dashboard_with_its_platform_mount():
     regin = next(entry for entry in dashboard["valkyries"] if entry["id"] == "regin")
 
     assert regin["memory"] == [
-        {"name": "local", "role": "local", "platformMount": "regin"},
-        {"name": "mimir-yggdrasil", "role": "shared", "platformMount": ""},
+        {"name": "local", "role": "local", "platformMount": "regin", "servedUrl": ""},
+        {"name": "mimir-yggdrasil", "role": "shared", "platformMount": "", "servedUrl": ""},
     ]
     assert dashboard["telemetry"]["runtime"][0]["memory"] == regin["memory"]
 
@@ -3567,7 +3567,9 @@ def test_configured_resident_takes_the_memory_it_reports():
         entry for entry in projection.dashboard()["valkyries"] if entry["id"] == "valkyrie-ymir-k8s"
     )
 
-    assert sigrun["memory"] == [{"name": "local", "role": "local", "platformMount": "sigrun"}]
+    assert sigrun["memory"] == [
+        {"name": "local", "role": "local", "platformMount": "sigrun", "servedUrl": ""}
+    ]
 
 
 def test_resident_without_reported_memory_carries_none():
@@ -3577,3 +3579,38 @@ def test_resident_without_reported_memory_carries_none():
     regin = next(entry for entry in projection.dashboard()["valkyries"] if entry["id"] == "regin")
 
     assert regin["memory"] == []
+
+
+def test_served_memory_route_lists_only_stores_a_gateway_serves():
+    from unittest.mock import MagicMock
+
+    from ravn.api.valkyrie_routes import create_valkyrie_router
+
+    projection = ValkyrieDashboardProjection()
+    projection.record_event(
+        _runtime_started(
+            "regin",
+            [
+                {
+                    "name": "local",
+                    "role": "local",
+                    "platform_mount": "resident-regin",
+                    "served_url": "https://regin.valhalla.test",
+                },
+                {"name": "mimir-yggdrasil", "role": "shared", "platform_mount": "shared"},
+            ],
+        )
+    )
+    app = FastAPI()
+    app.include_router(create_valkyrie_router(projection, room_client=MagicMock()))
+
+    served = _TestClient(app).get("/api/v1/ravn/valkyrie/memory").json()
+
+    assert served == [
+        {
+            "valkyrieId": "regin",
+            "name": "resident-regin",
+            "role": "local",
+            "url": "https://regin.valhalla.test",
+        }
+    ]

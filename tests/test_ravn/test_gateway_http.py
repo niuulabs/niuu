@@ -710,6 +710,7 @@ def _served_gateway(mimir, claims: dict, **overrides) -> TestClient:
     verifier = MagicMock()
     verifier.verify = AsyncMock(return_value=claims)
     config = _make_http_config(
+        public_url="https://regin.test",
         mimir_served_mount="local",
         mimir_required_claims={"workload_service": "mimir"},
         **overrides,
@@ -742,6 +743,7 @@ async def test_served_mimir_refuses_a_token_the_verifier_rejects(tmp_path) -> No
     verifier.verify = AsyncMock(side_effect=ValueError("bad signature"))
     gateway = HttpGateway(
         _make_http_config(
+            public_url="https://regin.test",
             mimir_served_mount="local",
             mimir_required_claims={"workload_service": "mimir"},
         ),
@@ -786,7 +788,7 @@ def test_mimir_is_not_served_unless_named() -> None:
 def test_serving_mimir_without_required_claims_is_fatal() -> None:
     with pytest.raises(ValueError, match="mimir_required_claims"):
         HttpGateway(
-            _make_http_config(mimir_served_mount="local"),
+            _make_http_config(public_url="https://regin.test", mimir_served_mount="local"),
             _make_gateway_mock(),
             mimir=MagicMock(),
             mimir_verifier=MagicMock(),
@@ -797,6 +799,7 @@ def test_serving_mimir_without_a_verifier_is_fatal() -> None:
     with pytest.raises(ValueError, match="mimir_auth.adapter"):
         HttpGateway(
             _make_http_config(
+                public_url="https://regin.test",
                 mimir_served_mount="local",
                 mimir_required_claims={"workload_service": "mimir"},
             ),
@@ -816,6 +819,7 @@ def test_serving_a_named_store_from_a_single_local_store_is_fatal() -> None:
     with pytest.raises(ValueError, match="only its single local store"):
         HttpGateway(
             _make_http_config(
+                public_url="https://regin.test",
                 mimir_served_mount="research",
                 mimir_required_claims={"workload_service": "mimir"},
             ),
@@ -835,3 +839,16 @@ def test_serving_an_unmounted_composite_store_is_fatal() -> None:
     )
     with pytest.raises(MimirUnavailableError, match="'local' is not mounted"):
         _served_gateway(composite, {})
+
+
+def test_serving_mimir_without_a_public_url_is_fatal() -> None:
+    with pytest.raises(ValueError, match="public_url"):
+        HttpGateway(
+            _make_http_config(
+                mimir_served_mount="local",
+                mimir_required_claims={"workload_service": "mimir"},
+            ),
+            _make_gateway_mock(),
+            mimir=MagicMock(),
+            mimir_verifier=MagicMock(),
+        )

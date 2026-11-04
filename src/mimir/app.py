@@ -28,7 +28,6 @@ from fastapi.responses import JSONResponse
 from identity.adapters.jwks import JwksBearerAuthenticationAdapter
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.config import MimirServiceConfig
-from mimir.connections import resolve_mimir_connection
 from mimir.live_activity import LiveActivityRecorder
 from mimir.mcp import MimirMcpServer
 from mimir.registry import MimirRegistryStore
@@ -164,17 +163,13 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         settings = dict(config.deployment)
         module, name = settings.pop("adapter").rsplit(".", 1)
         deployment = getattr(importlib.import_module(module), name)(**settings)
-    remote_mounts = [
-        {
-            "name": mount.name,
-            "tenant_id": mount.tenant_id,
-            "role": mount.role,
-            "priority": mount.read_priority,
-            "categories": mount.categories,
-            "port": resolve_mimir_connection(adapter=mount.adapter, kwargs=mount.kwargs),
-        }
-        for mount in config.remote_mounts
-    ]
+    resident_memory = None
+    if config.resident_memory is not None:
+        import importlib
+
+        directory = dict(config.resident_memory.directory)
+        module, name = directory.pop("adapter").rsplit(".", 1)
+        resident_memory = getattr(importlib.import_module(module), name)(**directory)
     # Shared between the REST router and the MCP server so a resident
     # reading/writing through either surface shows up in the same
     # GET /activity/live window (see .claude/rules/no-magic-numbers.md —
@@ -196,7 +191,10 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         auth=identity_adapter,
         auth_mode=auth_mode,
         live_activity=live_activity,
-        remote_mounts=remote_mounts,
+        resident_memory=resident_memory,
+        resident_mount_auth=(
+            dict(config.resident_memory.mount_auth) if config.resident_memory else None
+        ),
     )
     mcp_server = MimirMcpServer(
         adapter=adapter,

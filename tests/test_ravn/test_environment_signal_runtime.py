@@ -538,8 +538,8 @@ async def test_runtime_telemetry_reports_each_memory_instance_and_its_platform_m
     payload = await _runtime_started_payload(settings)
 
     assert payload["memory"] == [
-        {"name": "local", "role": "local", "platform_mount": "regin"},
-        {"name": "mimir-yggdrasil", "role": "shared", "platform_mount": ""},
+        {"name": "local", "role": "local", "platform_mount": "regin", "served_url": ""},
+        {"name": "mimir-yggdrasil", "role": "shared", "platform_mount": "", "served_url": ""},
     ]
 
 
@@ -547,7 +547,36 @@ async def test_runtime_telemetry_reports_each_memory_instance_and_its_platform_m
 async def test_runtime_telemetry_reports_the_single_local_store_as_unserved() -> None:
     payload = await _runtime_started_payload(_settings())
 
-    assert payload["memory"] == [{"name": "local", "role": "local", "platform_mount": ""}]
+    assert payload["memory"] == [
+        {"name": "local", "role": "local", "platform_mount": "", "served_url": ""}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_telemetry_reports_the_served_store_where_its_gateway_serves_it() -> None:
+    settings = _settings()
+    settings.mimir.instances = [
+        MimirInstanceConfig(name="local", role="local", path="/tmp/m"),
+        MimirInstanceConfig(
+            name="mimir-yggdrasil", role="shared", url="https://m/api/v1", platform_mount="shared"
+        ),
+    ]
+    http = settings.gateway.channels.http
+    http.enabled = True
+    http.public_url = "https://regin.valhalla.test/"
+    http.mimir_served_mount = "local"
+
+    payload = await _runtime_started_payload(settings)
+
+    assert payload["memory"] == [
+        {
+            "name": "local",
+            "role": "local",
+            "platform_mount": "resident-valkyrie-host-jozef",
+            "served_url": "https://regin.valhalla.test",
+        },
+        {"name": "mimir-yggdrasil", "role": "shared", "platform_mount": "shared", "served_url": ""},
+    ]
 
 
 @pytest.mark.asyncio

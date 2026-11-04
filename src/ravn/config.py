@@ -1417,13 +1417,22 @@ class HttpChannelConfig(BaseModel):
         ge=1024,
         description="Maximum accepted A2A callback body size.",
     )
+    public_url: str = Field(
+        default="",
+        description=(
+            "External base URL this gateway is reachable at. Required when it serves "
+            "the resident's Mímir: the resident reports it so the platform's Mímir "
+            "can mount that memory."
+        ),
+    )
     mimir_served_mount: str = Field(
         default="",
         description=(
             "The resident's own Mímir instance (a mimir.instances[].name, or 'local' "
-            "for the single store) served at /mimir so the platform's Mímir can mount "
-            "it as a registry mount. Empty serves nothing. Every request must carry a "
-            "workload JWT that mimir_auth verifies and that matches mimir_required_claims."
+            "for the single store) served at /mimir. The resident reports it at "
+            "public_url, and the platform's Mímir mounts it as resident-<id>. Empty "
+            "serves nothing. Every request must carry a workload JWT that mimir_auth "
+            "verifies and that matches mimir_required_claims."
         ),
     )
     mimir_auth: WorkloadIdentityVerifierConfig = Field(

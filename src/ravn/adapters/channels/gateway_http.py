@@ -127,6 +127,12 @@ class HttpGateway:
         self._mimir = mimir
         self._mimir_verifier: WorkloadIdentityVerifier | None = None
         if config.mimir_served_mount.strip():
+            if not config.public_url.strip():
+                raise ValueError(
+                    f"gateway.channels.http.mimir_served_mount={config.mimir_served_mount!r} "
+                    "needs gateway.channels.http.public_url, the URL the platform's Mímir "
+                    "reaches this gateway at"
+                )
             if not config.mimir_required_claims:
                 raise ValueError(
                     f"gateway.channels.http.mimir_served_mount={config.mimir_served_mount!r} "

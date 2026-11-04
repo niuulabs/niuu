@@ -854,20 +854,31 @@ class EnvironmentSignalRuntime:
         """Where this resident keeps its memory, for a workspace to open it.
 
         A store without ``mimir.instances`` is the single local store the
-        write routing already calls ``local``; it has no platform mount.
+        write routing already calls ``local``. The store the gateway serves
+        is reported at the gateway's public URL, under ``resident-<id>``
+        unless the operator named its platform mount.
         """
         mimir = self._settings.mimir
         if not mimir.enabled:
             return []
-        if not mimir.instances:
-            return [{"name": "local", "role": "local", "platform_mount": ""}]
+        stores = [
+            (instance.name, instance.role, instance.platform_mount.strip())
+            for instance in mimir.instances
+        ] or [("local", "local", "")]
+        http = self._settings.gateway.channels.http
+        served = http.mimir_served_mount.strip() if http.enabled else ""
         return [
             {
-                "name": instance.name,
-                "role": instance.role,
-                "platform_mount": instance.platform_mount.strip(),
+                "name": name,
+                "role": role,
+                "platform_mount": (
+                    (platform_mount or f"resident-{self._settings.mesh.own_peer_id}")
+                    if name == served
+                    else platform_mount
+                ),
+                "served_url": http.public_url.strip().rstrip("/") if name == served else "",
             }
-            for instance in mimir.instances
+            for name, role, platform_mount in stores
         ]
 
     def _workflow_capability_sources_enabled(self) -> bool:

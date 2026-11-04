@@ -507,6 +507,22 @@ def create_valkyrie_router(
     async def get_dashboard() -> Dashboard:
         return store.dashboard()
 
+    @router.get("/memory")
+    async def list_served_memory() -> list[dict[str, str]]:
+        """Each resident store a gateway serves, for the platform's Mímir to mount."""
+        return [
+            {
+                "valkyrieId": str(valkyrie.get("id") or ""),
+                "name": store_entry["platformMount"],
+                "role": store_entry["role"],
+                "url": store_entry["servedUrl"],
+            }
+            for valkyrie in store.dashboard().get("valkyries", [])
+            if isinstance(valkyrie, dict)
+            for store_entry in valkyrie.get("memory") or []
+            if store_entry.get("servedUrl") and store_entry.get("platformMount")
+        ]
+
     @router.get("/environments")
     async def list_environments() -> list[dict[str, Any]]:
         return store.environments()
