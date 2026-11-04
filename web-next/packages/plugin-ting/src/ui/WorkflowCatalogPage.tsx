@@ -8,13 +8,13 @@
  * Owner: plugin-ting.
  */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useNavigate, useSearch } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useOptionalService, useService } from '@niuulabs/plugin-sdk';
 import { LoadingState, cn, type RepoRecord } from '@niuulabs/ui';
 import { Workflow as WorkflowIcon } from 'lucide-react';
-import type { ITrackerBrowserService, TrackerIssue } from '../ports';
+import type { IDispatchBus, ITrackerBrowserService, TrackerIssue } from '../ports';
 import type { Workflow } from '../domain/workflow';
 import { useCreateWorkflow, useLaunchWorkflow, useWorkflows } from './useWorkflows';
 import { useResearchCampaigns } from './useResearch';
@@ -26,6 +26,7 @@ import {
 } from './WorkflowLaunchForm';
 import { WorkflowStrip, gateWaitsForPerson } from './WorkflowStrip';
 import { WorkflowRunsCard } from './WorkflowRunsCard';
+import { DispatchTargetSelect } from './DispatchView';
 import { WorkflowIssuePicker, issueLaunchPrompt } from './WorkflowIssuePicker';
 import { WorkflowImportDialog } from './WorkflowImportDialog';
 import { usePersonasBrowser } from './settings/usePersonasBrowser';
@@ -137,6 +138,7 @@ export function WorkflowCatalogPage() {
   const search = useSearch({ strict: false }) as WorkflowCatalogSearch;
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const tracker = useOptionalService<ITrackerBrowserService>('ting.tracker');
+  const dispatchBus = useOptionalService<IDispatchBus>('ting.dispatch');
   const { data: workflows, isLoading, isError, error } = useWorkflows();
   const runCounts = useWorkflowRunCounts();
   const createWorkflow = useCreateWorkflow();
@@ -150,6 +152,18 @@ export function WorkflowCatalogPage() {
     queryKey: ['niuu', 'repos'],
     queryFn: () => repoCatalog.getRepos(),
   });
+  // Which Forge runs the launch; left on Auto, Ting places it among the targets.
+  const clustersQuery = useQuery({
+    queryKey: ['ting', 'dispatch-clusters'],
+    queryFn: () => dispatchBus!.getClusters(),
+    enabled: dispatchBus !== undefined,
+    retry: false,
+  });
+  const clusters = useMemo(
+    () => (clustersQuery.data ?? []).filter((cluster) => cluster.enabled),
+    [clustersQuery.data],
+  );
+  const [connectionId, setConnectionId] = useState('');
 
   const selected =
     workflows?.find((workflow) => workflow.id === search.workflow) ?? workflows?.[0] ?? null;
@@ -182,7 +196,10 @@ export function WorkflowCatalogPage() {
     try {
       const result = await launchWorkflow.mutateAsync({
         workflowId: selected.id,
-        request: workflowLaunchRequest(draft.values),
+        request: {
+          ...workflowLaunchRequest(draft.values),
+          ...(connectionId ? { connectionId } : {}),
+        },
       });
       draft.reset();
       await navigate({
@@ -336,6 +353,22 @@ export function WorkflowCatalogPage() {
                   promptRows={3}
                   onPromptSubmit={() => void handleLaunch()}
                 />
+                {dispatchBus ? (
+                  <div className="niuu:mt-3">
+                    <DispatchTargetSelect
+                      label="Run on"
+                      clusters={clusters}
+                      selectedClusterId={connectionId}
+                      onChange={setConnectionId}
+                      isLoading={clustersQuery.isLoading}
+                    />
+                    {clustersQuery.error ? (
+                      <p role="alert">
+                        Could not load Forge targets: {clustersQuery.error.message}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="niuu:mt-4 niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
                   <span className="niuu:text-xs niuu:text-text-muted">
                     {gatesSentence(selected)}

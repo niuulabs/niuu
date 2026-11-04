@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import type { RepoRecord } from '@niuulabs/ui';
@@ -341,6 +341,46 @@ describe('WorkflowCatalogPage', () => {
       expect(screen.getByTestId(`catalog-workflow-${buildWorkflow.id}`)).toBeInTheDocument(),
     );
     expect(screen.queryByTestId('catalog-workflow-pick-issue')).not.toBeInTheDocument();
+  });
+
+  it('launches on the Forge target picked under Run on', async () => {
+    const services = makeServices({
+      'ting.dispatch': {
+        getClusters: vi.fn().mockResolvedValue([
+          { connectionId: 'ymir', name: 'Ymir', url: '', enabled: true },
+          { connectionId: 'valhalla', name: 'Valhalla', url: '', enabled: true },
+          { connectionId: 'off', name: 'Off', url: '', enabled: false },
+        ]),
+      },
+    });
+    renderPage(services);
+    const target = await screen.findByRole('combobox', { name: 'Run on' });
+    await waitFor(() => expect(within(target).getAllByRole('option')).toHaveLength(3));
+
+    fireEvent.change(target, { target: { value: 'valhalla' } });
+    fireEvent.change(screen.getByTestId('workflow-launch-prompt'), {
+      target: { value: 'Plan it.' },
+    });
+    fireEvent.click(screen.getByTestId('catalog-workflow-launch'));
+
+    const workflows = services['ting.workflows'] as { launchWorkflow: ReturnType<typeof vi.fn> };
+    await waitFor(() =>
+      expect(workflows.launchWorkflow).toHaveBeenCalledWith(
+        buildWorkflow.id,
+        expect.objectContaining({ prompt: 'Plan it.', connectionId: 'valhalla' }),
+      ),
+    );
+  });
+
+  it('says when the Forge targets cannot be read', async () => {
+    renderPage(
+      makeServices({
+        'ting.dispatch': { getClusters: vi.fn().mockRejectedValue(new Error('Ting is down')) },
+      }),
+    );
+    expect(
+      await screen.findByText('Could not load Forge targets: Ting is down'),
+    ).toBeInTheDocument();
   });
 
   it('launches with repo and branch from the url and opens the session', async () => {

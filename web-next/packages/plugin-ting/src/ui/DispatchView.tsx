@@ -212,24 +212,26 @@ function PendingDispatchBar({
   );
 }
 
-function DispatchTargetSelect({
+export function DispatchTargetSelect({
   clusters,
   selectedClusterId,
   onChange,
   isLoading,
+  label = 'Dispatch target',
 }: {
   clusters: DispatchCluster[];
   selectedClusterId: string;
   onChange: (clusterId: string) => void;
   isLoading: boolean;
+  label?: string;
 }) {
   return (
     <label className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-xs niuu:text-text-secondary">
-      <span className="niuu:whitespace-nowrap">Dispatch target</span>
+      <span className="niuu:whitespace-nowrap">{label}</span>
       <select
         value={selectedClusterId}
         onChange={(e) => onChange(e.target.value)}
-        aria-label="Dispatch target"
+        aria-label={label}
         disabled={isLoading}
         className="niuu:min-w-[180px] niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:text-text-primary niuu:outline-none niuu:focus:border-brand niuu:disabled:opacity-60"
       >
