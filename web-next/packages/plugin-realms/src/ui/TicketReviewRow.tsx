@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router';
-import { reviewPath, type ReviewItem } from '@niuulabs/plugin-ting';
+import { reviewPath, useReturnTo, type ReviewItem } from '@niuulabs/plugin-ting';
 import { Chip } from '@niuulabs/ui';
 
 const PRIMARY =
@@ -7,6 +7,7 @@ const PRIMARY =
 
 /** A ticket at a gate. The decision is made on its review, where the work can be read. */
 export function TicketReviewRow({ item, workspace }: { item: ReviewItem; workspace: string }) {
+  const returnTo = useReturnTo();
   const label = [workspace, item.identifier, item.gateLabel].filter(Boolean).join(' · ');
   return (
     <div
@@ -18,7 +19,7 @@ export function TicketReviewRow({ item, workspace }: { item: ReviewItem; workspa
         <span className="niuu:truncate niuu:text-xs niuu:text-text-muted">{label}</span>
       </div>
       <Chip tone="muted">{item.workflowName}</Chip>
-      <Link to={reviewPath(item) as never} className={PRIMARY}>
+      <Link to={reviewPath(item) as never} search={{ returnTo } as never} className={PRIMARY}>
         Review
       </Link>
     </div>

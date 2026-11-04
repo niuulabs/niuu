@@ -1,67 +1,18 @@
 import './TicketReviewPage.css';
-import { Link, useParams } from '@tanstack/react-router';
-import { ExternalLink } from 'lucide-react';
-import type { WorkBoardLayout, WorkTask } from '../../domain/work';
-import type { RunReview } from '../../domain/review';
-import { CoordinatorChat } from '../CoordinatorChat';
-import { useGateDecision, useTicketReviews, useWorkDetail } from '../useWork';
-import { ReviewWorkspace } from './ReviewWorkspace';
+import { Link, Navigate, useParams, useSearch } from '@tanstack/react-router';
+import { isPending } from '../../domain/review';
+import { useTicketReviews, useWorkDetail } from '../useWork';
 
-function TicketReview({
-  projectId,
-  task,
-  board,
-  reviews,
-  planSlug,
-}: {
-  projectId: string;
-  task: WorkTask;
-  board: WorkBoardLayout | null;
-  reviews: readonly RunReview[];
-  planSlug?: string | null;
-}) {
-  const decide = useGateDecision(projectId);
-  return (
-    <ReviewWorkspace
-      subject={{
-        identifier: task.source.identifier,
-        title: task.title,
-        gate: task.board?.gate ?? null,
-        pullRequestUrl: task.workflowRun?.prUrl ?? task.operationalRun?.prUrl ?? null,
-        canAsk: task.coordinator?.status === 'active' && Boolean(task.coordinator.chatEndpoint),
-      }}
-      board={board}
-      reviews={reviews}
-      railLabel="Ticket"
-      rail={
-        <>
-          {task.description ? <p>{task.description}</p> : null}
-          <a href={task.source.url} target="_blank" rel="noreferrer">
-            Open ticket <ExternalLink aria-hidden="true" />
-          </a>
-          {planSlug ? (
-            <Link to={`/ting/artifacts/${planSlug}` as never}>Open the project plan</Link>
-          ) : null}
-        </>
-      }
-      talk={(talk) => (
-        <CoordinatorChat coordinator={task.coordinator} name={task.source.identifier} {...talk} />
-      )}
-      deciding={decide.isPending}
-      decisionFailure={decide.error}
-      onDecide={(decision, onSuccess) =>
-        decide.mutate({ issueId: task.source.issueId, decision }, { onSuccess })
-      }
-    />
-  );
-}
-
-/** One ticket's reviews: what its workflows want a person to look at, and the agent beside it. */
+/**
+ * A ticket's review is its run's review: one page for a run, whichever way it was opened. This
+ * route sends a ticket to the run that waits for a person, or else to its newest run.
+ */
 export function TicketReviewPage() {
   const { projectId, issueId } = useParams({ strict: false }) as {
     projectId: string;
     issueId: string;
   };
+  const search = useSearch({ strict: false }) as { returnTo?: string };
   const detail = useWorkDetail('project', projectId);
   const record = useTicketReviews(projectId, issueId);
 
@@ -84,29 +35,22 @@ export function TicketReviewPage() {
       </p>
     );
   }
-  const reviews = record.data?.reviews ?? [];
-  const unreadable = record.data?.unreadableRuns ?? [];
+  const waiting = record.data?.reviews.find((review) => review.revisions.some(isPending));
+  const slug = waiting?.taskId ?? task.workflowRun?.taskId;
+  if (!slug) {
+    return (
+      <p className="ting-review__state">
+        Nothing to review on {task.source.identifier} yet.{' '}
+        <Link to={`/ting/work/project:${projectId}` as never}>Back to the board</Link>
+      </p>
+    );
+  }
   return (
-    <div className="ting-review-page">
-      {unreadable.length > 0 ? (
-        <p className="ting-review__error" role="alert">
-          The session of {unreadable.join(', ')} is gone, so its review cannot be read.
-        </p>
-      ) : null}
-      {reviews.length > 0 ? (
-        <TicketReview
-          projectId={projectId}
-          task={task}
-          board={detail.data?.board ?? null}
-          reviews={reviews}
-          planSlug={record.data?.planSlug}
-        />
-      ) : (
-        <p className="ting-review__state">
-          Nothing to review on {task.source.identifier} yet.{' '}
-          <Link to={`/ting/work/project:${projectId}` as never}>Back to the board</Link>
-        </p>
-      )}
-    </div>
+    <Navigate
+      to={'/ting/artifacts/$slug' as never}
+      params={{ slug } as never}
+      search={(search.returnTo ? { returnTo: search.returnTo } : {}) as never}
+      replace
+    />
   );
 }

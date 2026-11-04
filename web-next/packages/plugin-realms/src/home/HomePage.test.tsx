@@ -141,7 +141,8 @@ describe('HomePage', () => {
     expect(await screen.findByTestId('needs-you-ticket-run-1')).toHaveTextContent('Valhalla');
     expect(screen.getByRole('link', { name: 'Review' })).toHaveAttribute(
       'href',
-      '/ting/review/link-1/issue-1',
+      // Review links carry the page they were opened from, so the review can lead back.
+      '/ting/review/link-1/issue-1?returnTo=%2Fhome',
     );
   });
 

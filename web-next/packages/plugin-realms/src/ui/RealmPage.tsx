@@ -267,7 +267,7 @@ function SmallCard({
 }) {
   return (
     <div
-      className={`niuu:flex niuu:flex-col niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-3.5 ${grow ? 'niuu:min-h-0 niuu:flex-1' : ''}`}
+      className={`niuu:flex niuu:flex-col niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-3.5 ${grow ? 'niuu:flex-1' : ''}`}
     >
       <div className="niuu:flex niuu:items-center niuu:justify-between">
         <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">{title}</span>
@@ -428,7 +428,7 @@ export function RealmPage() {
   const navigate = useNavigate();
   const data = useRealmView(slug);
   const ravens = useRavens();
-  const ravn = ravnForRealm(ravens.data, slug, data.realm?.id);
+  const ravn = ravnForRealm(ravens.data, slug, data.realm?.id, data.resident?.id);
   const projects = useForgeProjects();
   const board = useTrackerBoard(data.view?.binding?.trackerBoard || null);
   const walkthrough = useWalkthrough(FIRST_REALM_WALKTHROUGH);
@@ -628,7 +628,8 @@ export function RealmPage() {
               />
             </div>
 
-            <div className="niuu:grid niuu:min-h-0 niuu:flex-1 niuu:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] niuu:gap-4">
+            {/* The row is never shorter than the cards on the right; the log scrolls within it. */}
+            <div className="niuu:grid niuu:flex-1 niuu:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] niuu:gap-4">
               <div className="niuu:flex niuu:min-h-0 niuu:flex-col niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:pb-1 niuu:pt-3">
                 <div className="niuu:flex niuu:items-center niuu:justify-between niuu:pb-1">
                   <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
@@ -645,7 +646,7 @@ export function RealmPage() {
                   <Timeline decisions={data.decisions} />
                 </div>
               </div>
-              <div className="niuu:flex niuu:min-h-0 niuu:flex-col niuu:gap-3">
+              <div className="niuu:flex niuu:flex-col niuu:gap-3">
                 <SmallCard
                   title="Trust"
                   aside={
@@ -689,6 +690,11 @@ export function RealmPage() {
                       warnAt={Math.round(data.budget.warnAt * 100)}
                       size="sm"
                     />
+                  ) : data.budgetError ? (
+                    <span className="niuu:text-[11px] niuu:text-critical">
+                      Budget unavailable:{' '}
+                      {(data.budgetError as { detail?: string }).detail ?? data.budgetError.message}
+                    </span>
                   ) : (
                     <span className="niuu:text-[11px] niuu:text-text-faint">
                       Nothing spent yet.

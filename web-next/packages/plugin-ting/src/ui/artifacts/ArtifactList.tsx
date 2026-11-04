@@ -10,6 +10,7 @@ import {
   type ArtifactRow,
   type WaitingRun,
 } from '../useArtifacts';
+import { useReturnTo } from '../review/reviewBack';
 
 /** One line of the list: an artifact, or a gate waiting on someone with nothing to read yet. */
 interface ListRow {
@@ -100,11 +101,13 @@ function age(iso: string): string {
 }
 
 function Row({ row }: { row: ListRow }) {
+  // The review page sends the person back to this list, filtered as they left it.
+  const returnTo = useReturnTo();
   return (
     <Link
       className="ting-artifacts__row"
       to={row.href as never}
-      search={row.search as never}
+      search={{ ...row.search, returnTo } as never}
       data-testid="artifact-row"
     >
       <span className="ting-artifacts__kind">{row.kind}</span>

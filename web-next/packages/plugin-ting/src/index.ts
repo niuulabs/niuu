@@ -492,6 +492,7 @@ export {
 } from './ui/WorkflowLaunchForm';
 export { WorkflowStrip, gateWaitsForPerson, type WorkflowStripProps } from './ui/WorkflowStrip';
 export { WorkflowCatalogPage } from './ui/WorkflowCatalogPage';
+export { useReturnTo } from './ui/review/reviewBack';
 export { TrackerBoard, useTrackerBoard } from './ui/TrackerBoard';
 export { TrackerWorkImportDialog } from './ui/TrackerWorkImportDialog';
 export { mergeWorkPages, useReviews, useWorkCollection } from './ui/useWork';

@@ -14,6 +14,15 @@ const routerState = vi.hoisted(() => ({
 }));
 
 vi.mock('@tanstack/react-router', () => ({
+  Navigate: ({ to, params }: { to: string; params?: Record<string, string> }) => (
+    <span data-testid="navigate">
+      {Object.entries(params ?? {}).reduce(
+        (path, [key, value]) => path.replace(`$${key}`, value),
+        to,
+      )}
+    </span>
+  ),
+  useRouterState: () => '/here',
   useNavigate: () => mockNavigate,
   useParams: () => routerState.params,
   useSearch: () => routerState.search,
@@ -875,6 +884,38 @@ describe('WorkPage', () => {
     renderPage(makeWorkService({ get: vi.fn().mockResolvedValue(detail) }));
 
     expect(await screen.findByRole('link', { name: /open details/i })).toBeInTheDocument();
+  });
+
+  it('opens a workflow run on its own page, with a way back here', async () => {
+    const launch = {
+      ...summary('campaign:launch-2', 'workflowLaunch', 'needsAttention', 'Ticket Planning Flow'),
+      campaignSlug: 'a2a-run-2',
+    };
+    renderPage(
+      makeWorkService({ list: vi.fn().mockResolvedValue({ ...collection, campaigns: [launch] }) }),
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Ticket Planning Flow/ }));
+
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/ting/artifacts/$slug',
+      params: { slug: 'a2a-run-2' },
+      search: { returnTo: '/here' },
+    });
+  });
+
+  it('sends an old link to a workflow run on to the run page', async () => {
+    routerState.params = { workId: 'campaign:launch-2' };
+    const launch = summary('campaign:launch-2', 'workflowLaunch', 'needsAttention', 'NIU-1 plan');
+    const detail: WorkDetail = {
+      item: { ...launch, campaignSlug: 'a2a-run-2' },
+      tasks: [],
+      coverage: [],
+    };
+    renderPage(makeWorkService({ get: vi.fn().mockResolvedValue(detail) }));
+
+    expect(await screen.findByTestId('navigate')).toHaveTextContent('/ting/artifacts/a2a-run-2');
+    expect(screen.queryByText('Review the proposed acceptance criteria')).toBeNull();
   });
 
   it('retries the source from the detail view coverage notice', async () => {

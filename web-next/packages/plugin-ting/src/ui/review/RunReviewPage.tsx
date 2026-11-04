@@ -1,7 +1,12 @@
 import './TicketReviewPage.css';
 import { useMemo } from 'react';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
+import { ArrowLeft, ExternalLink } from 'lucide-react';
+import { MarkdownContent } from '@niuulabs/ui';
 import { isPending, type RunReview, type RunReviews } from '../../domain/review';
+import { boardSteps, gateSteps } from '../../domain/runSteps';
+import { CONDITION_LABEL } from '../../domain/workBoard';
+import type { WorkBoardLayout, WorkTask } from '../../domain/work';
 import {
   artifactKeysShown,
   artifactReview,
@@ -15,7 +20,8 @@ import {
   type RunRef,
   type SessionRef,
 } from '../../domain/artifacts';
-import { useRunGateDecision, useRunReviews } from '../useWork';
+import { CoordinatorChat } from '../CoordinatorChat';
+import { useRunGateDecision, useRunReviews, useWorkDetail } from '../useWork';
 import {
   useArtifactSession,
   useArtifactTexts,
@@ -26,7 +32,15 @@ import {
   useStartRevision,
   useWaiting,
 } from '../useArtifacts';
-import { ReviewWorkspace, type ReviewSend } from './ReviewWorkspace';
+import { ReviewWorkspace, RunSteps, type ReviewSend } from './ReviewWorkspace';
+import { reviewBack, useReturnTo, type ReviewBack } from './reviewBack';
+
+/** A review opened from nowhere in particular goes back to the list of everything reviewed. */
+const ARTIFACTS_HOME: ReviewBack = {
+  pathname: '/ting/artifacts',
+  search: {},
+  label: 'Back to Artifacts',
+};
 
 /** A run has no board to ask, so its waiting gate is the one its log shows as pending. */
 function pendingGate(reviews: readonly RunReview[]) {
@@ -57,16 +71,51 @@ function textFailures(failed: ReturnType<typeof useArtifactTexts>['failed']) {
   );
 }
 
+/** A Forge session the run worked in, opened on its live page with a way back here. */
+function SessionLink({
+  sessionId,
+  instanceId,
+  label,
+  state,
+}: {
+  sessionId: string;
+  instanceId: string | null;
+  label: string;
+  state: string;
+}) {
+  const returnTo = useReturnTo();
+  return (
+    <li>
+      <Link
+        to={'/volundr/session/$sessionId' as never}
+        params={{ sessionId } as never}
+        search={{ ...(instanceId ? { instance_id: instanceId } : {}), returnTo } as never}
+      >
+        {label}
+      </Link>
+      <span>{state}</span>
+    </li>
+  );
+}
+
 function RunWorkspace({
   record,
   run,
+  ticket,
+  board,
   publications,
   initialReview,
+  back,
 }: {
   record: RunReviews;
   run: RunRef;
+  /** The ticket the run was started for: the page is that ticket's review, with its coordinator. */
+  ticket: WorkTask | null;
+  /** The ticket's board, which names the columns the run moves through. */
+  board: WorkBoardLayout | null;
   publications: readonly Publication[];
   initialReview: string | null;
+  back: ReviewBack;
 }) {
   const navigate = useNavigate();
   const waiting = useWaiting();
@@ -82,7 +131,7 @@ function RunWorkspace({
   );
   const read = useArtifactTexts(run, presented);
   // A gate that shows an artifact reads it in its own panel; the rest get a tab each.
-  const shownByGates = artifactKeysShown(record.reviews);
+  const shownByGates = artifactKeysShown(record.reviews, presented);
   const artifacts = presented.filter((artifact) => !shownByGates.has(artifact.key));
   const reviews = [
     ...gatesWithArtifacts(record.reviews, presented, read.texts),
@@ -132,13 +181,89 @@ function RunWorkspace({
   }
 
   const unread = textFailures(read.failed);
+  const steps =
+    ticket && board && run.workflowId
+      ? boardSteps(board, run.workflowId, ticket.board)
+      : gateSteps(record.reviews);
+
+  const rail = (
+    <>
+      {ticket ? (
+        <a href={ticket.source.url} target="_blank" rel="noreferrer">
+          Open {ticket.source.identifier} <ExternalLink aria-hidden="true" />
+        </a>
+      ) : null}
+      {ticket?.description ? (
+        <div className="ting-review__markdown">
+          <MarkdownContent content={ticket.description} />
+        </div>
+      ) : null}
+      {brief ? (
+        <details className="ting-review__brief">
+          <summary>What it was asked to do</summary>
+          <div className="ting-review__markdown">
+            <MarkdownContent content={brief} />
+          </div>
+        </details>
+      ) : null}
+      <h2>Sessions</h2>
+      <ul className="ting-review__sessions">
+        {ticket?.coordinator ? (
+          <SessionLink
+            sessionId={ticket.coordinator.sessionId}
+            instanceId={ticket.coordinator.connectionId}
+            label="Coordinator"
+            state={ticket.coordinator.status === 'active' ? 'Active' : 'Closed'}
+          />
+        ) : null}
+        <SessionLink
+          sessionId={record.run.sessionId}
+          instanceId={run.instanceId}
+          label={`${record.run.workflowName} run`}
+          state={CONDITION_LABEL[run.condition]}
+        />
+      </ul>
+      {record.run.branch ? <span>On {record.run.branch}</span> : null}
+      {record.run.startedBy ? <span>Started by {record.run.startedBy}</span> : null}
+    </>
+  );
 
   if (reviews.length === 0) {
     return (
-      <p className="ting-review__state">
-        {record.run.workflowName} has produced nothing to review yet.{' '}
-        <Link to={'/ting/artifacts' as never}>Back to Artifacts</Link>
-      </p>
+      <div className="ting-review">
+        <header className="ting-review__head">
+          <Link
+            to={back.pathname as never}
+            search={back.search as never}
+            className="ting-review__back"
+          >
+            <ArrowLeft aria-hidden="true" /> {back.label}
+          </Link>
+          <div className="ting-review__title">
+            <div>
+              <span className="ting-work-task__key">{ticket?.source.identifier ?? 'Run'}</span>
+              <h1 title={ticket?.title ?? record.run.title}>{ticket?.title ?? record.run.title}</h1>
+            </div>
+            <span className="ting-review__workflow">{record.run.workflowName}</span>
+          </div>
+          <span className="ting-review__status">{CONDITION_LABEL[run.condition]}</span>
+          {steps.length > 0 ? (
+            <RunSteps workflowName={record.run.workflowName} steps={steps} />
+          ) : null}
+        </header>
+        <div className="ting-review__columns ting-review__columns--wide">
+          <aside className="ting-review__ticket" aria-label={ticket ? 'Ticket' : 'Run'}>
+            <h2>{ticket ? 'Ticket' : 'Run'}</h2>
+            {rail}
+          </aside>
+          <main className="ting-review__subject">
+            <p className="ting-review__state">
+              {record.run.workflowName} has put nothing in front of a person yet. Its sessions show
+              what it is doing.
+            </p>
+          </main>
+        </div>
+      </div>
     );
   }
   return (
@@ -146,30 +271,32 @@ function RunWorkspace({
       {unread}
       <ReviewWorkspace
         subject={{
-          identifier: null,
+          identifier: ticket?.source.identifier ?? null,
           // What the run is about; the workflow is named on the path beside it.
-          title: record.run.title,
+          title: ticket?.title ?? record.run.title,
           gate,
-          pullRequestUrl: null,
-          canAsk: false,
+          pullRequestUrl: ticket?.workflowRun?.prUrl ?? null,
+          canAsk:
+            ticket?.coordinator?.status === 'active' && Boolean(ticket.coordinator.chatEndpoint),
         }}
-        board={null}
+        board={board}
         reviews={reviews}
+        steps={steps}
         initialReview={initialReview}
-        railLabel="Run"
-        rail={
-          <>
-            {brief ? (
-              <details className="ting-review__brief">
-                <summary>What it was asked to do</summary>
-                <p>{brief}</p>
-              </details>
-            ) : null}
-            {record.run.startedBy ? <span>Started by {record.run.startedBy}</span> : null}
-            {record.run.branch ? <span>On {record.run.branch}</span> : null}
-            <Link to={`/volundr/sessions/${record.run.sessionId}` as never}>Open the session</Link>
-          </>
+        back={back}
+        railLabel={ticket ? 'Ticket' : 'Run'}
+        talk={
+          ticket
+            ? (talk) => (
+                <CoordinatorChat
+                  coordinator={ticket.coordinator}
+                  name={ticket.source.identifier}
+                  {...talk}
+                />
+              )
+            : undefined
         }
+        rail={rail}
         deciding={decide.isPending}
         decisionFailure={decide.error}
         onDecide={(decision, onSuccess) => decide.mutate(decision, { onSuccess })}
@@ -182,11 +309,25 @@ function RunWorkspace({
 /** One run's artifacts and the gates it waits at, for a run that belongs to no ticket. */
 export function RunReviewPage() {
   const { slug } = useParams({ strict: false }) as { slug: string };
-  const search = useSearch({ strict: false }) as { artifact?: string };
+  const search = useSearch({ strict: false }) as { artifact?: string; returnTo?: string };
   const record = useRunReviews(slug);
   const runs = useRun(slug);
   const run = runs.run;
   const publications = useRunPublications(run);
+  const ticketRef = record.data?.run.ticket ?? null;
+  const project = useWorkDetail(ticketRef ? 'project' : null, ticketRef?.projectId ?? null);
+  const ticket =
+    project.data?.tasks.find((task) => task.source.issueId === ticketRef?.issueId) ?? null;
+  // A ticket's run opened from nowhere in particular goes back to the ticket's board.
+  const home: ReviewBack =
+    ticketRef && project.data
+      ? {
+          pathname: `/ting/work/project:${ticketRef.projectId}`,
+          search: { view: 'board' },
+          label: `Back to the ${project.data.item.title} board`,
+        }
+      : ARTIFACTS_HOME;
+  const back = reviewBack(search.returnTo, home);
 
   if (record.isLoading || runs.loading || publications.isLoading) {
     return <p className="ting-review__state">Loading the run…</p>;
@@ -228,8 +369,11 @@ export function RunReviewPage() {
       <RunWorkspace
         record={record.data}
         run={run}
+        ticket={ticket}
+        board={project.data?.board ?? null}
         publications={publications.data ?? []}
         initialReview={search.artifact ?? null}
+        back={back}
       />
     </div>
   );
@@ -239,10 +383,12 @@ function SessionWorkspace({
   session,
   publications,
   initialReview,
+  back,
 }: {
   session: SessionRef;
   publications: readonly Publication[];
   initialReview: string | null;
+  back: ReviewBack;
 }) {
   const message = useSendToRun(session);
   const artifacts = useMemo(() => sessionArtifacts(session, publications), [session, publications]);
@@ -286,6 +432,7 @@ function SessionWorkspace({
         board={null}
         reviews={reviews}
         initialReview={initialReview}
+        back={back}
         railLabel="Session"
         rail={
           <>
@@ -305,7 +452,11 @@ function SessionWorkspace({
 /** What one session that is no workflow run presented, on the same review page as a run. */
 export function SessionArtifactsPage() {
   const { sessionId } = useParams({ strict: false }) as { sessionId: string };
-  const search = useSearch({ strict: false }) as { artifact?: string; instance?: string };
+  const search = useSearch({ strict: false }) as {
+    artifact?: string;
+    instance?: string;
+    returnTo?: string;
+  };
   const instanceId = search.instance ?? null;
   const session = useArtifactSession(sessionId, instanceId);
   const publications = useSessionPublications(
@@ -331,6 +482,7 @@ export function SessionArtifactsPage() {
         session={session.data}
         publications={publications.data ?? []}
         initialReview={search.artifact ?? null}
+        back={reviewBack(search.returnTo, ARTIFACTS_HOME)}
       />
     </div>
   );

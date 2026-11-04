@@ -59,6 +59,8 @@ export interface ReviewRun {
   repo: string;
   branch: string;
   startedBy?: string | null;
+  /** The ticket the run was started for, when a coordinator started it. */
+  ticket?: { projectId: string; issueId: string } | null;
 }
 
 export interface RunReviews {

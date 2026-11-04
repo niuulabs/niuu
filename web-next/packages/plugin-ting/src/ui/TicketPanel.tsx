@@ -7,6 +7,8 @@ import type { BoardDecision, WorkBoardColumn, WorkBoardLayout, WorkTask } from '
 import { BOARD_STATE_LABEL } from '../domain/workBoard';
 import { CoordinatorChat } from './CoordinatorChat';
 import { useGateDecision } from './useWork';
+import { Dockable } from './review/Dockable';
+import { useReturnTo } from './review/reviewBack';
 
 const QUESTION: Record<NonNullable<WorkBoardColumn['review']>, string> = {
   plan: 'Is this the right plan?',
@@ -61,12 +63,18 @@ function PullRequestLink({ task }: { task: WorkTask }) {
   );
 }
 
-function OpenReview({ projectId, task }: { projectId: string; task: WorkTask }) {
+/** The run's review page: the same one Artifacts and Work open, with a way back here. */
+function OpenReview({ task }: { task: WorkTask }) {
+  const returnTo = useReturnTo();
   if (!task.workflowRun) return null;
   return (
     <div className="ting-board-panel__links">
-      <Link to={`/ting/review/${projectId}/${task.source.issueId}` as never}>
-        Open the full review
+      <Link
+        to={'/ting/artifacts/$slug' as never}
+        params={{ slug: task.workflowRun.taskId } as never}
+        search={{ returnTo } as never}
+      >
+        Open the run
       </Link>
     </div>
   );
@@ -93,6 +101,9 @@ function ReviewTab({
   const noteField = useRef<HTMLTextAreaElement>(null);
   const approve = board.columns.find((item) => item.id === column.approveColumnId);
   const changes = board.columns.find((item) => item.id === column.changesColumnId);
+  // A step can stop and ask (a plan that cannot be presented, say) outside the board's own
+  // gate columns: the run continues or goes back where the workflow says, not to a column.
+  const routed = column.kind === 'gate';
 
   useEffect(() => {
     if (intent === 'requestChanges') noteField.current?.focus();
@@ -102,7 +113,7 @@ function ReviewTab({
   if (!gate) {
     return (
       <>
-        <OpenReview projectId={projectId} task={task} />
+        <OpenReview task={task} />
         {lastDecision ? <DecisionRecord decision={lastDecision} /> : null}
         <PullRequestLink task={task} />
       </>
@@ -127,7 +138,7 @@ function ReviewTab({
 
   return (
     <>
-      <OpenReview projectId={projectId} task={task} />
+      <OpenReview task={task} />
       {gate.instructions ? <p className="ting-board-panel__text">{gate.instructions}</p> : null}
       {gate.summary ? <p className="ting-board-panel__text">{gate.summary}</p> : null}
       {lastDecision ? <DecisionRecord decision={lastDecision} /> : null}
@@ -142,18 +153,22 @@ function ReviewTab({
         eyebrow={`${gate.label} · waiting for you`}
         title={column.review ? QUESTION[column.review] : gate.condition}
         summary={column.review ? gate.condition : undefined}
-        hint={`${
-          approve?.kind === 'tracker'
-            ? 'Approve closes the ticket.'
-            : `Approve continues to ${approve?.title}.`
-        } Changes go back to ${changes?.title} in the same run. A new review needs a new decision.`}
+        hint={
+          routed
+            ? `${
+                approve?.kind === 'tracker'
+                  ? 'Approve closes the ticket.'
+                  : `Approve continues to ${approve?.title}.`
+              } Changes go back to ${changes?.title} in the same run. A new review needs a new decision.`
+            : 'Approve lets the run continue. Changes go back to the agent in the same run, with your comment.'
+        }
         note={notes}
         onNoteChange={setNotes}
         noteLabel="Comment"
         noteRef={noteField}
         requireNote
-        approveLabel={`Approve → ${approve?.title}`}
-        changesLabel={`Request changes → ${changes?.title}`}
+        approveLabel={routed ? `Approve → ${approve?.title}` : 'Approve'}
+        changesLabel={routed ? `Request changes → ${changes?.title}` : 'Request changes'}
         busy={decide.isPending}
         error={decide.error ? decisionError(decide.error) : null}
         onApprove={() => submit('approve')}
@@ -208,16 +223,22 @@ export function TicketPanel({
   projectId,
   task,
   intent,
+  floating,
+  onFloatingChange,
   onClose,
 }: {
   board: WorkBoardLayout;
   projectId: string;
   task: WorkTask;
   intent: GateIntent;
+  /** Popped out, the panel floats over the board and the board gets the width back. */
+  floating: boolean;
+  onFloatingChange: (floating: boolean) => void;
   onClose: () => void;
 }) {
   const column = board.columns.find((item) => item.id === task.board?.columnId);
-  const reviewing = Boolean(task.board?.gate && column?.kind === 'gate');
+  // Any gate the ticket waits at is decided here, in a gate column or not.
+  const reviewing = Boolean(task.board?.gate);
   const [chosenTab, setTab] = useState<PanelTab>(reviewing ? 'review' : 'coordinator');
   const reviewed = reviewing || Boolean(task.board?.lastDecision);
   const tab = chosenTab === 'review' && !reviewed ? 'coordinator' : chosenTab;
@@ -227,16 +248,17 @@ export function TicketPanel({
     { id: 'workflow', label: 'Workflow' },
   ];
   return (
-    <aside
+    <Dockable
+      label={task.source.identifier}
+      floating={floating}
+      onFloatingChange={onFloatingChange}
       className={`ting-board-panel${tab === 'coordinator' ? ' ting-board-panel--chat' : ''}`}
-      aria-label={task.source.identifier}
-    >
-      <div className="ting-board-panel__head">
-        <span className="ting-work-task__key">{task.source.identifier}</span>
-        <button type="button" onClick={onClose}>
+      actions={
+        <button type="button" className="ting-dockable__hide" onClick={onClose}>
           Hide
         </button>
-      </div>
+      }
+    >
       <h3>{task.title}</h3>
       <div className="ting-board-tabs" role="tablist" aria-label="Ticket details">
         {tabs.map(({ id, label }) => (
@@ -265,6 +287,6 @@ export function TicketPanel({
         />
       ) : null}
       {tab === 'workflow' ? <WorkflowTab board={board} task={task} /> : null}
-    </aside>
+    </Dockable>
   );
 }

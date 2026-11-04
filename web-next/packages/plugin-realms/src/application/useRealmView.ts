@@ -113,14 +113,15 @@ export function useRealmView(slug: string) {
     enabled: ravnId !== null,
   });
 
-  const mountName = view?.binding ? mountNameFor(slug) : null;
+  // An adopted resident keeps its own memory; only a created workspace has a mount of its own.
+  const mountName = view && !view.adopted ? mountNameFor(slug) : null;
   const mounts = useQuery({
     queryKey: ['mimir', 'mounts'],
     queryFn: () => mimir.mounts.listMounts(),
   });
   const mount = mounts.data?.find((entry) => entry.name === mountName) ?? null;
   // A workspace made around a running resident opens the memory that resident reports.
-  const ownMemory = view && !view.binding ? residentMemory(resident, mounts.data) : [];
+  const ownMemory = view?.adopted ? residentMemory(resident, mounts.data) : [];
 
   return {
     realm,
@@ -139,6 +140,7 @@ export function useRealmView(slug: string) {
     findings: findings.data ?? [],
     ticketsError: intake.error ?? findings.error ?? null,
     budget: budgetState.data ?? null,
+    budgetError: budgetState.error,
     mount,
     mountName,
     residentMemory: ownMemory,

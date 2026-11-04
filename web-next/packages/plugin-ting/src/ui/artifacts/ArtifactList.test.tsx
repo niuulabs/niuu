@@ -10,6 +10,7 @@ import { ArtifactList } from './ArtifactList';
 import { ArtifactsPage } from './ArtifactsPage';
 
 vi.mock('@tanstack/react-router', () => ({
+  useRouterState: () => '/here',
   Link: ({
     children,
     to,
@@ -158,14 +159,14 @@ describe('ArtifactList', () => {
     expect(rows[0]).toHaveTextContent('notes.md');
     expect(rows[0]).toHaveAttribute(
       'href',
-      '/ting/artifacts/session/session-elsewhere?artifact=session-elsewhere%3Anotes&instance=valhalla',
+      '/ting/artifacts/session/session-elsewhere?artifact=session-elsewhere%3Anotes&instance=valhalla&returnTo=%2Fhere',
     );
     const plan = within(waiting)
       .getByText(/plan\.md · v2 of 2 versions/)
       .closest('a');
     expect(plan).toHaveAttribute(
       'href',
-      '/ting/artifacts/a2a-plan?artifact=session-a2a-plan%3Aplan',
+      '/ting/artifacts/a2a-plan?artifact=session-a2a-plan%3Aplan&returnTo=%2Fhere',
     );
   });
 
@@ -207,7 +208,7 @@ describe('ArtifactList', () => {
 
     const waiting = await screen.findByRole('region', { name: 'Waiting on you' });
     const gate = within(waiting).getByText('Infra change').closest('a');
-    expect(gate).toHaveAttribute('href', '/ting/artifacts/a2a-gate');
+    expect(gate).toHaveAttribute('href', '/ting/artifacts/a2a-gate?returnTo=%2Fhere');
     expect(gate).toHaveTextContent('Decision');
   });
 
@@ -220,7 +221,7 @@ describe('ArtifactList', () => {
 
     const waiting = await screen.findByRole('region', { name: 'Waiting on you' });
     const row = within(waiting).getByText('Developer Planning').closest('a');
-    expect(row).toHaveAttribute('href', '/ting/artifacts/a2a-plan');
+    expect(row).toHaveAttribute('href', '/ting/artifacts/a2a-plan?returnTo=%2Fhere');
     expect(row).toHaveTextContent('Waiting at a gate · nothing presented yet');
   });
 

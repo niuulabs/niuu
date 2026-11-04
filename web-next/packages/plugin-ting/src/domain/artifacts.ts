@@ -370,17 +370,27 @@ export function gatesWithArtifacts(
   }));
 }
 
-/** Artifact keys a gate's own document panels already show, which need no second tab. */
-export function artifactKeysShown(reviews: readonly RunReview[]): Set<string> {
+/**
+ * Artifact keys a gate's own document panels already show, which need no second tab. A gate
+ * shows the document under its field's name whether or not its revision links the presented
+ * file: a plan presented as `plan` is the plan the gate asks about, and a second tab without
+ * the gate's decision would be the one a person opens.
+ */
+export function artifactKeysShown(
+  reviews: readonly RunReview[],
+  presented: readonly Pick<Artifact, 'key'>[],
+): Set<string> {
   const fields = new Set(
     reviews
       .flatMap((review) => review.panels)
       .filter((panel) => panel.widget === 'document' && panel.source?.kind === 'outcome')
       .map((panel) => panel.source!.value),
   );
-  const keys = reviews
+  const linked = reviews
     .flatMap((review) => review.revisions)
     .flatMap((revision) => revision.artifacts ?? [])
     .map((artifact) => artifact.artifactKey);
-  return new Set(keys.filter((key) => fields.has(key)));
+  return new Set(
+    [...linked, ...presented.map((artifact) => artifact.key)].filter((key) => fields.has(key)),
+  );
 }

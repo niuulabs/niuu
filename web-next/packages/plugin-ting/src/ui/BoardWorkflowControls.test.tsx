@@ -8,6 +8,7 @@ import type { Workflow } from '../domain/workflow';
 import { TrackerBoard } from './TrackerBoard';
 
 vi.mock('@tanstack/react-router', () => ({
+  useRouterState: () => '/here',
   Link: ({ children, to, role }: { children: ReactNode; to: string; role?: string }) => (
     <a href={to} role={role}>
       {children}

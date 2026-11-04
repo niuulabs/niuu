@@ -13,7 +13,14 @@ import {
 } from '@niuulabs/plugin-ravn';
 import { ToolBuilderGrantCard, useCreateTrustGrant } from '@niuulabs/plugin-valkyrie';
 import { SectionCard } from '@niuulabs/plugin-volundr';
-import { Chip, EmptyState, ErrorState, LoadingState, SegmentedFilter } from '@niuulabs/ui';
+import {
+  Chip,
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  MarkdownContent,
+  SegmentedFilter,
+} from '@niuulabs/ui';
 import { TEARDOWN_STEPS, useDeleteRealm } from '../application/useDeleteRealm';
 import { RAVENS_QUERY_KEY } from '../application/useRealmsHome';
 import {
@@ -36,7 +43,16 @@ const DANGER =
  * delete route on the platform yet, so removing the resident is how a realm is
  * switched off: nothing runs, the charter and trust stay for when it comes back.
  */
-function ResidentControls({ ravn, realmName }: { ravn: Ravn | null; realmName: string }) {
+function ResidentControls({
+  ravn,
+  realmName,
+  observed,
+}: {
+  ravn: Ravn | null;
+  realmName: string;
+  /** A resident seen running that the platform did not deploy, such as an adopted one. */
+  observed: string | null;
+}) {
   const residents = useService<IResidentControl>('ravn.residents');
   const queryClient = useQueryClient();
   const [armed, setArmed] = useState(false);
@@ -52,6 +68,14 @@ function ResidentControls({ ravn, realmName }: { ravn: Ravn | null; realmName: s
       void refresh();
     },
   });
+  if (!ravn && observed) {
+    return (
+      <EmptyState
+        title={`${observed} is running`}
+        description={`${observed} runs from its own deployment, which the platform did not create, so it is paused, restarted or removed there.`}
+      />
+    );
+  }
   if (!ravn) {
     return (
       <EmptyState
@@ -135,10 +159,13 @@ function RealmTeardown({
   slug,
   ravn,
   realmName,
+  keeps,
 }: {
   slug: string;
   ravn: Ravn | null;
   realmName: string;
+  /** An adopted resident the platform did not deploy, which keeps running. */
+  keeps: string | null;
 }) {
   const navigate = useNavigate();
   const teardown = useDeleteRealm(slug);
@@ -146,9 +173,9 @@ function RealmTeardown({
   return (
     <div className="niuu:flex niuu:flex-col niuu:gap-2" data-testid="realm-teardown">
       <span className="niuu:text-xs niuu:text-text-muted">
-        Deleting the workspace removes its resident, persona, memory routing rule, trust and
-        capabilities. The memory instance stays (the platform cannot remove one yet); its pages are
-        still under Memory › Library.
+        {keeps
+          ? `Deleting the workspace removes its trust and capabilities. ${keeps} was running before the workspace and keeps running, with its own persona and memory.`
+          : 'Deleting the workspace removes its resident, persona, memory routing rule, trust and capabilities. The memory instance stays (the platform cannot remove one yet); its pages are still under Memory › Library.'}
       </span>
       <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
         {armed ? (
@@ -283,10 +310,21 @@ export function ResidentPanel({
       {section === 'charter' ? (
         persona.error ? (
           (persona.error as { status?: number }).status === 404 ? (
-            <EmptyState
-              title={`No persona named ${view.personaName} yet`}
-              description="This workspace was made around a resident that was already running, so its charter stays with the resident. Clone the workspace to start one with its own charter, or write the persona under Agents › Personas."
-            />
+            view.residentCharter ? (
+              <SectionCard
+                title="Charter"
+                description={`${view.residentLabel} runs persona ${view.personaName} from its own deployment, so its charter is changed there. This is the charter it reports.`}
+              >
+                <div data-testid="resident-charter">
+                  <MarkdownContent content={view.residentCharter} />
+                </div>
+              </SectionCard>
+            ) : (
+              <EmptyState
+                title={`No persona named ${view.personaName} yet`}
+                description="This workspace was made around a resident that was already running, so its charter stays with the resident. Clone the workspace to start one with its own charter, or write the persona under Agents › Personas."
+              />
+            )
           ) : (
             <ErrorState message={String(persona.error)} />
           )
@@ -343,10 +381,15 @@ export function ResidentPanel({
             title="Resident"
             description="Pause, resume, restart or remove the resident that keeps this workspace."
           >
-            <ResidentControls ravn={ravn} realmName={realmName} />
+            <ResidentControls ravn={ravn} realmName={realmName} observed={view.residentLabel} />
           </SectionCard>
           <SectionCard title="Delete the workspace" description="Gone from the list, for good.">
-            <RealmTeardown slug={slug} ravn={ravn} realmName={realmName} />
+            <RealmTeardown
+              slug={slug}
+              ravn={ravn}
+              realmName={realmName}
+              keeps={view.adopted && !ravn ? view.residentLabel : null}
+            />
           </SectionCard>
         </div>
       ) : null}

@@ -159,8 +159,16 @@ export interface RealmView {
   autonomyProfile: string;
   instanceId: string | null;
   binding: RealmBinding | null;
+  /**
+   * Made around a resident that was already running: nothing was deployed for it, so its
+   * persona, charter and memory are the resident's own, not the `realm-<slug>` ones.
+   */
+  adopted: boolean;
   personaName: string;
   residentName: string;
+  /** The resident's own name and the charter it reports, once it has been seen. */
+  residentLabel: string | null;
+  residentCharter: string;
   environmentId: string | null;
   wakefulness: string | null;
   autonomyMode: string | null;

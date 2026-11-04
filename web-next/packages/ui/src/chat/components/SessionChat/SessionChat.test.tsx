@@ -1146,7 +1146,7 @@ describe('SessionChat', () => {
     expect(within(dialog).getByText('Ravn-A outcome')).toBeInTheDocument();
     expect(within(dialog).getAllByTestId('outcome-card').length).toBeGreaterThan(0);
     expect(within(dialog).getByText('Verified')).toBeInTheDocument();
-    expect(within(dialog).getByText('checks_passed')).toBeInTheDocument();
+    expect(within(dialog).getByText('checks passed')).toBeInTheDocument();
     expect(within(dialog).getByText('12')).toBeInTheDocument();
     const routePairItems = within(dialog)
       .getAllByText('Route pair count')
