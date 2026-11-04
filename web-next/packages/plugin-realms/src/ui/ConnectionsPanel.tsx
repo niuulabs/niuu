@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useNavigate } from '@tanstack/react-router';
+import { Link } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   TrackerWorkImportDialog,
@@ -71,14 +71,13 @@ function ConnectTracker({
   view: RealmView;
   onClose: () => void;
 }) {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const work = useWorkCollection();
   const grant = useCreateTrustGrant(realm.slug);
   const connected = mergeWorkPages(work.data?.pages)?.projects ?? [];
   const binding = view.binding;
 
-  function bind(saga: Saga) {
+  function bind(trackerBoard: string) {
     // The latest observe grant is where a workspace looks, so this rebinds the board.
     grant.mutate(
       {
@@ -89,7 +88,7 @@ function ConnectTracker({
           template: binding?.template ?? '',
           repo: binding?.repo ?? '',
           branch: binding?.branch ?? '',
-          tracker_board: saga.trackerId,
+          tracker_board: trackerBoard,
           bug_board: binding?.bugBoard ?? '',
           mount_target: binding?.mountTarget ?? '',
         },
@@ -109,14 +108,13 @@ function ConnectTracker({
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
-      onImported={bind}
+      onImported={(saga: Saga) => bind(saga.trackerId)}
       connectedProjects={connected}
-      onOpenProject={(project) =>
-        void navigate({
-          to: '/ting/work/$workId' as never,
-          params: { workId: project.id } as never,
-        })
-      }
+      // A tracker project Work already has is used as it is: its board becomes this one's.
+      onOpenProject={(project) => {
+        if (project.source?.projectId) bind(project.source.projectId);
+      }}
+      openProjectLabel="Use it for this workspace"
       forgeProjectId={realm.project_id ?? undefined}
     />
   );

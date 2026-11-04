@@ -535,7 +535,8 @@
 
 .ting-tracker-import {
   display: grid;
-  grid-template-columns: minmax(220px, 0.8fr) minmax(320px, 1.2fr);
+  /* Two columns where the dialog has room, one where it does not. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
   gap: 16px;
   min-height: 410px;
 }

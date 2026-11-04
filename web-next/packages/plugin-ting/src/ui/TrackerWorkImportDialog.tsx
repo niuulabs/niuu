@@ -18,7 +18,6 @@ import type {
   TrackerProject,
 } from '../ports';
 import type { WorkSummary } from '../domain/work';
-import { useWorkflows, useWorkflowVersions } from './useWorkflows';
 
 type RepoCatalogService = {
   getRepos(): Promise<RepoRecord[]>;
@@ -35,20 +34,22 @@ export function TrackerWorkImportDialog({
   onImported,
   connectedProjects,
   onOpenProject,
+  openProjectLabel = 'Open connected project',
   forgeProjectId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onImported: (saga: Saga) => void;
   connectedProjects: WorkSummary[];
+  /** What happens to a tracker project Work already has: opened in Work, or used where asked. */
   onOpenProject: (project: WorkSummary) => void;
+  openProjectLabel?: string;
   /** Forge project the tracker joins; omitted, it stands on its own. */
   forgeProjectId?: string;
 }) {
   const tracker = useService<ITrackerBrowserService>('ting.tracker');
   const repos = useService<RepoCatalogService>('niuu.repos');
   const dispatch = useService<IDispatchBus>('ting.dispatch');
-  const workflowsQuery = useWorkflows();
   const projectsQuery = useQuery({
     queryKey: ['ting', 'tracker', 'projects'],
     queryFn: () => tracker.listProjects(),
@@ -67,16 +68,12 @@ export function TrackerWorkImportDialog({
   const [projectSourceKey, setProjectSourceKey] = useState('');
   const [repo, setRepo] = useState('');
   const [branch, setBranch] = useState('');
-  const [workflowId, setWorkflowId] = useState('');
-  const [workflowVersion, setWorkflowVersion] = useState('');
-  const [workflowVersionExplicit, setWorkflowVersionExplicit] = useState(false);
   const [targetId, setTargetId] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const projects = projectsQuery.data ?? [];
   const catalog = reposQuery.data ?? [];
-  const workflows = workflowsQuery.data ?? [];
   if (open && !projectSourceKey && projects[0]) {
     setProjectSourceKey(projectKey(projects[0]));
   }
@@ -84,19 +81,6 @@ export function TrackerWorkImportDialog({
     ? (projects.find((project) => projectKey(project) === projectSourceKey) ?? null)
     : (projects[0] ?? null);
   const selectedProjectMissing = Boolean(projectSourceKey && !selectedProject);
-  const selectedWorkflow = workflows.find((workflow) => workflow.id === workflowId) ?? null;
-  const selectedWorkflowMissing = Boolean(workflowId && !selectedWorkflow);
-  const versionsQuery = useWorkflowVersions(workflowId);
-  const versions = versionsQuery.data ?? [];
-  const selectedVersion = workflowVersion || selectedWorkflow?.version || '';
-  const selectedVersionMissing = Boolean(
-    workflowId &&
-    workflowVersion &&
-    !versionsQuery.isFetching &&
-    !versionsQuery.isError &&
-    (versions.length > 0 || workflowVersionExplicit) &&
-    !versions.some((version) => version.version === workflowVersion),
-  );
   const enabledTargets = useMemo(
     () => (targetsQuery.data ?? []).filter((target) => target.enabled),
     [targetsQuery.data],
@@ -112,21 +96,15 @@ export function TrackerWorkImportDialog({
     (target) => (target.instanceId ?? target.connectionId) === targetId,
   );
   const selectedTargetMissing = Boolean(targetId && !selectedTarget);
-  const selectedVersionUnavailable = Boolean(workflowId && versionsQuery.isError);
   const canImport = Boolean(
     projectsQuery.isSuccess &&
     reposQuery.isSuccess &&
-    workflowsQuery.isSuccess &&
     targetsQuery.isSuccess &&
     selectedProject &&
     !selectedProjectMissing &&
     !existingProject &&
     (!repo.trim() || branch.trim()) &&
     !selectedTargetMissing &&
-    !selectedWorkflowMissing &&
-    !selectedVersionUnavailable &&
-    !selectedVersionMissing &&
-    !versionsQuery.isFetching &&
     !busy,
   );
 
@@ -134,9 +112,6 @@ export function TrackerWorkImportDialog({
     setProjectSourceKey('');
     setRepo('');
     setBranch('');
-    setWorkflowId('');
-    setWorkflowVersion('');
-    setWorkflowVersionExplicit(false);
     setTargetId('');
     setBusy(false);
     setError(null);
@@ -166,7 +141,6 @@ export function TrackerWorkImportDialog({
           target: target
             ? { mode: 'instance', instanceId: target.instanceId ?? target.connectionId }
             : { mode: 'default' },
-          ...(workflowId ? { workflowId, workflowVersion: selectedVersion || undefined } : {}),
         },
       );
       onOpenChange(false);
@@ -184,7 +158,7 @@ export function TrackerWorkImportDialog({
       open={open}
       onOpenChange={setOpen}
       title="Bring in a tracker project"
-      description="Connect its tickets to a workflow, and a repository if the work needs one. Importing does not start execution."
+      description="Bring its tickets in, with a repository if the work changes code. The workflows they run are set on the board. Importing starts nothing."
       className="niuu:max-w-[900px]"
       actions={[
         { label: 'Cancel', variant: 'secondary', disabled: busy },
@@ -197,29 +171,16 @@ export function TrackerWorkImportDialog({
         },
       ]}
     >
-      {projectsQuery.isLoading ||
-      reposQuery.isLoading ||
-      workflowsQuery.isLoading ||
-      targetsQuery.isLoading ? (
+      {projectsQuery.isLoading || reposQuery.isLoading || targetsQuery.isLoading ? (
         <LoadingState label="Loading connected projects…" />
-      ) : projectsQuery.isError ||
-        reposQuery.isError ||
-        workflowsQuery.isError ||
-        targetsQuery.isError ? (
+      ) : projectsQuery.isError || reposQuery.isError || targetsQuery.isError ? (
         <ErrorState
-          title="Project setup could not be loaded"
+          title="Tracker projects could not be loaded"
           message={
-            [projectsQuery.error, reposQuery.error, workflowsQuery.error, targetsQuery.error].find(
-              Boolean,
-            ) instanceof Error
-              ? (
-                  [
-                    projectsQuery.error,
-                    reposQuery.error,
-                    workflowsQuery.error,
-                    targetsQuery.error,
-                  ].find(Boolean) as Error
-                ).message
+            [projectsQuery.error, reposQuery.error, targetsQuery.error].find(Boolean) instanceof
+            Error
+              ? ([projectsQuery.error, reposQuery.error, targetsQuery.error].find(Boolean) as Error)
+                  .message
               : 'Unknown error'
           }
         />
@@ -267,102 +228,58 @@ export function TrackerWorkImportDialog({
                 them.
               </p>
             </div>
-            <label>
-              <span>Repository (optional)</span>
-              <RepoSelect
-                repos={catalog}
-                value={repo}
-                valueMode="slug"
-                onChange={(value) => {
-                  const selected = catalog.find(
-                    (candidate) =>
-                      `${candidate.org}/${candidate.name}` === value ||
-                      candidate.cloneUrl === value,
-                  );
-                  setRepo(value);
-                  setBranch(selected?.defaultBranch ?? 'main');
-                }}
-                placeholder="Select repository"
-                testId="work-import-repository"
-              />
-            </label>
-            <label>
-              <span>Branch</span>
-              <BranchSelect
-                loadBranches={repos.getBranches}
-                repos={catalog}
-                selectedRepos={repo ? [repo] : []}
-                value={branch}
-                onChange={setBranch}
-                placeholder="Select branch"
-                testId="work-import-branch"
-              />
-            </label>
-            <div className="ting-tracker-import__pair">
-              <label>
-                <span>Workflow</span>
-                <select
-                  value={workflowId}
-                  onChange={(event) => {
-                    const nextWorkflowId = event.target.value;
-                    setWorkflowId(nextWorkflowId);
-                    setWorkflowVersion(
-                      workflows.find((workflow) => workflow.id === nextWorkflowId)?.version ?? '',
-                    );
-                    setWorkflowVersionExplicit(false);
-                  }}
-                >
-                  <option value="">Use project default</option>
-                  {workflows.map((workflow) => (
-                    <option key={workflow.id} value={workflow.id}>
-                      {workflow.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>Version</span>
-                <select
-                  value={selectedVersion}
-                  onChange={(event) => {
-                    setWorkflowVersion(event.target.value);
-                    setWorkflowVersionExplicit(true);
-                  }}
-                  disabled={!workflowId || versionsQuery.isLoading}
-                >
-                  {!workflowId ? <option value="">Default</option> : null}
-                  {selectedVersionMissing ? (
-                    <option value={workflowVersion}>{workflowVersion} · unavailable</option>
-                  ) : null}
-                  {workflowId && versions.length === 0 && selectedWorkflow ? (
-                    <option value={selectedWorkflow.version}>{selectedWorkflow.version}</option>
-                  ) : null}
-                  {versions.map((version) => (
-                    <option key={version.documentRevision} value={version.version}>
-                      {version.version}
-                      {version.isHead ? ' · current' : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <label>
-              <span>Execution target</span>
-              <select value={targetId} onChange={(event) => setTargetId(event.target.value)}>
-                <option value="">Let Niuu choose</option>
-                {enabledTargets.map((target: DispatchCluster) => (
-                  <option
-                    key={target.instanceId ?? target.connectionId}
-                    value={target.instanceId ?? target.connectionId}
-                  >
-                    {target.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {existingProject ? null : (
+              <>
+                <label>
+                  <span>Repository (optional)</span>
+                  <RepoSelect
+                    repos={catalog}
+                    value={repo}
+                    valueMode="slug"
+                    onChange={(value) => {
+                      const selected = catalog.find(
+                        (candidate) =>
+                          `${candidate.org}/${candidate.name}` === value ||
+                          candidate.cloneUrl === value,
+                      );
+                      setRepo(value);
+                      setBranch(selected?.defaultBranch ?? 'main');
+                    }}
+                    placeholder="Select repository"
+                    testId="work-import-repository"
+                  />
+                </label>
+                <label>
+                  <span>Branch</span>
+                  <BranchSelect
+                    loadBranches={repos.getBranches}
+                    repos={catalog}
+                    selectedRepos={repo ? [repo] : []}
+                    value={branch}
+                    onChange={setBranch}
+                    placeholder="Select branch"
+                    testId="work-import-branch"
+                  />
+                </label>
+                <label>
+                  <span>Execution target</span>
+                  <select value={targetId} onChange={(event) => setTargetId(event.target.value)}>
+                    <option value="">Let Niuu choose</option>
+                    {enabledTargets.map((target: DispatchCluster) => (
+                      <option
+                        key={target.instanceId ?? target.connectionId}
+                        value={target.instanceId ?? target.connectionId}
+                      >
+                        {target.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
             <p className="ting-tracker-import__effect">
               {existingProject
-                ? 'This source-qualified project is already connected. Open it to review its current setup and tickets.'
+                ? 'Work already has this tracker project, with its tickets and board.'
                 : 'This imports project structure and assignments. Review the resulting ticket list, then start only eligible work explicitly.'}
             </p>
             {existingProject ? (
@@ -374,7 +291,7 @@ export function TrackerWorkImportDialog({
                   onOpenProject(existingProject);
                 }}
               >
-                Open connected project
+                {openProjectLabel}
               </button>
             ) : null}
             {selectedTargetMissing ? (
@@ -385,21 +302,6 @@ export function TrackerWorkImportDialog({
             {selectedProjectMissing ? (
               <p role="alert" className="ting-work-action-error">
                 The selected tracker project is no longer available. Choose another project.
-              </p>
-            ) : null}
-            {selectedWorkflowMissing ? (
-              <p role="alert" className="ting-work-action-error">
-                The selected workflow is no longer available. Choose another workflow.
-              </p>
-            ) : null}
-            {selectedVersionMissing ? (
-              <p role="alert" className="ting-work-action-error">
-                The selected workflow version is no longer available. Choose another version.
-              </p>
-            ) : null}
-            {selectedVersionUnavailable ? (
-              <p role="alert" className="ting-work-action-error">
-                Workflow versions could not be loaded. Retry before importing this project.
               </p>
             ) : null}
             {error ? (

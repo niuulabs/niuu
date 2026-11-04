@@ -134,6 +134,7 @@ function renderDialog({
   onOpenChange = vi.fn(),
   onImported = vi.fn(),
   onOpenProject = vi.fn(),
+  openProjectLabel,
   forgeProjectId,
 }: {
   tracker?: ITrackerBrowserService;
@@ -142,6 +143,7 @@ function renderDialog({
   onOpenChange?: (open: boolean) => void;
   onImported?: (saga: Saga) => void;
   onOpenProject?: (project: WorkSummary) => void;
+  openProjectLabel?: string;
   forgeProjectId?: string;
 } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -161,6 +163,7 @@ function renderDialog({
           onImported={onImported}
           connectedProjects={connectedProjects}
           onOpenProject={onOpenProject}
+          {...(openProjectLabel ? { openProjectLabel } : {})}
           forgeProjectId={forgeProjectId}
         />
       </ServicesProvider>
@@ -191,8 +194,8 @@ describe('TrackerWorkImportDialog', () => {
     const onOpenChange = vi.fn();
     renderDialog({ tracker: trackerService(importProject), onImported, onOpenChange });
     await selectRepository();
-    fireEvent.change(screen.getByLabelText('Workflow'), { target: { value: workflow.id } });
-    await waitFor(() => expect(screen.getByLabelText('Version')).toHaveValue('2.0.0'));
+    // The workflows a project runs are set on its board, never at import.
+    expect(screen.queryByLabelText('Workflow')).toBeNull();
     fireEvent.change(screen.getByLabelText('Execution target'), {
       target: { value: 'instance-1' },
     });
@@ -208,8 +211,6 @@ describe('TrackerWorkImportDialog', () => {
         repoRefs: [{ repo: 'niuulabs/volundr', branch: 'main' }],
         trackerConnectionId: 'linear-main',
         target: { mode: 'instance', instanceId: 'instance-1' },
-        workflowId: workflow.id,
-        workflowVersion: '2.0.0',
       },
     );
     expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -272,9 +273,32 @@ describe('TrackerWorkImportDialog', () => {
     const onOpenProject = vi.fn();
     renderDialog({ connectedProjects: [existing], onOpenProject });
 
-    expect(await screen.findByText(/already connected/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Work already has this tracker project/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Import project' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Open connected project' }));
+    expect(onOpenProject).toHaveBeenCalledWith(existing);
+  });
+
+  it('names what happens to a project Work already has, as the caller asks', async () => {
+    const existing = {
+      id: 'project:saga-1',
+      kind: 'project',
+      title: 'Platform',
+      source: {
+        connectionId: 'linear-main',
+        provider: 'Linear',
+        projectId: 'project-same',
+        url: 'https://linear.example/platform',
+        status: 'started',
+      },
+    } as WorkSummary;
+    const onOpenProject = vi.fn();
+    renderDialog({
+      connectedProjects: [existing],
+      onOpenProject,
+      openProjectLabel: 'Use it for this workspace',
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Use it for this workspace' }));
     expect(onOpenProject).toHaveBeenCalledWith(existing);
   });
 
@@ -353,17 +377,6 @@ describe('TrackerWorkImportDialog', () => {
     expect(screen.queryByRole('button', { name: 'Import project' })).not.toBeEnabled();
   });
 
-  it('blocks import when an explicitly selected workflow version cannot be loaded', async () => {
-    renderDialog({
-      workflows: workflowService(vi.fn().mockRejectedValue(new Error('version history offline'))),
-    });
-    await selectRepository();
-    fireEvent.change(screen.getByLabelText('Workflow'), { target: { value: workflow.id } });
-
-    expect(await screen.findByRole('alert')).toHaveTextContent(/versions could not be loaded/i);
-    expect(screen.getByRole('button', { name: 'Import project' })).toBeDisabled();
-  });
-
   it('does not switch to another tracker project when the selected project disappears', async () => {
     const listProjects = vi
       .fn()
@@ -409,106 +422,5 @@ describe('TrackerWorkImportDialog', () => {
     expect(importProject.mock.calls[0]?.[4]).toEqual(
       expect.objectContaining({ trackerConnectionId: 'linear-main' }),
     );
-  });
-
-  it('does not retain an unavailable workflow after the catalog refreshes', async () => {
-    const listWorkflows = vi.fn().mockResolvedValueOnce([workflow]).mockResolvedValueOnce([]);
-    const workflows = { ...workflowService(), listWorkflows };
-    const { client } = renderDialog({ workflows });
-    await selectRepository();
-    fireEvent.change(screen.getByLabelText('Workflow'), { target: { value: workflow.id } });
-    await waitFor(() => expect(screen.getByLabelText('Version')).toHaveValue('2.0.0'));
-
-    await act(() => client.invalidateQueries({ queryKey: ['ting', 'workflows'], exact: true }));
-
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      /selected workflow is no longer available/i,
-    );
-    expect(screen.getByRole('button', { name: 'Import project' })).toBeDisabled();
-  });
-
-  it('does not replace a selected historical version with the new workflow head', async () => {
-    const listVersions = vi
-      .fn()
-      .mockResolvedValueOnce([
-        {
-          version: '1.5.0',
-          documentRevision: 'revision-1',
-          createdAt: '2026-09-19T10:00:00Z',
-          isHead: false,
-        },
-        {
-          version: '2.0.0',
-          documentRevision: 'revision-2',
-          createdAt: '2026-09-20T10:00:00Z',
-          isHead: true,
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          version: '2.0.0',
-          documentRevision: 'revision-2',
-          createdAt: '2026-09-20T10:00:00Z',
-          isHead: true,
-        },
-      ]);
-    const { client } = renderDialog({ workflows: workflowService(listVersions) });
-    await selectRepository();
-    fireEvent.change(screen.getByLabelText('Workflow'), { target: { value: workflow.id } });
-    await waitFor(() => expect(screen.getByLabelText('Version')).toHaveValue('2.0.0'));
-    await screen.findByRole('option', { name: '1.5.0' });
-    fireEvent.change(screen.getByLabelText('Version'), { target: { value: '1.5.0' } });
-
-    await act(() =>
-      client.invalidateQueries({
-        queryKey: ['ting', 'workflows', workflow.id, 'versions'],
-        exact: true,
-      }),
-    );
-
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      /selected workflow version is no longer available/i,
-    );
-    expect(screen.getByRole('button', { name: 'Import project' })).toBeDisabled();
-    expect(screen.getByLabelText('Version')).toHaveValue('1.5.0');
-    expect(screen.getByRole('option', { name: '1.5.0 · unavailable' })).toBeInTheDocument();
-  });
-
-  it('marks an explicitly selected historical version unavailable when history refreshes empty', async () => {
-    const listVersions = vi
-      .fn()
-      .mockResolvedValueOnce([
-        {
-          version: '1.5.0',
-          documentRevision: 'revision-1',
-          createdAt: '2026-09-19T10:00:00Z',
-          isHead: false,
-        },
-        {
-          version: '2.0.0',
-          documentRevision: 'revision-2',
-          createdAt: '2026-09-20T10:00:00Z',
-          isHead: true,
-        },
-      ])
-      .mockResolvedValueOnce([]);
-    const { client } = renderDialog({ workflows: workflowService(listVersions) });
-    await selectRepository();
-    fireEvent.change(screen.getByLabelText('Workflow'), { target: { value: workflow.id } });
-    await screen.findByRole('option', { name: '1.5.0' });
-    fireEvent.change(screen.getByLabelText('Version'), { target: { value: '1.5.0' } });
-
-    await act(() =>
-      client.invalidateQueries({
-        queryKey: ['ting', 'workflows', workflow.id, 'versions'],
-        exact: true,
-      }),
-    );
-
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      /selected workflow version is no longer available/i,
-    );
-    expect(screen.getByLabelText('Version')).toHaveValue('1.5.0');
-    expect(screen.getByRole('button', { name: 'Import project' })).toBeDisabled();
   });
 });
