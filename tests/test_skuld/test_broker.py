@@ -601,7 +601,8 @@ class TestBroker:
     ):
         """A flock session mounts no home volume; present-file still stages under home."""
         settings.persistence_mount_path = str(tmp_path / "sessions")
-        settings.session.workspace_dir = ""
+        # Forge names the workspace explicitly, at the cluster layout's own path.
+        settings.session.workspace_dir = f"{tmp_path}/sessions/{settings.session.id}/workspace"
         broker = Broker(settings=settings)
 
         await broker.startup()
@@ -618,6 +619,8 @@ class TestBroker:
         assert not settings.creates_session_home
         settings.home_dir = ""
         assert settings.creates_session_home
+        settings.session.workspace_dir = str(tmp_path / "elsewhere")
+        assert not settings.creates_session_home, "home is not beside this workspace"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("room_enabled", [False, True])

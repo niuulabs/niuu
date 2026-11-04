@@ -1376,13 +1376,15 @@ class SkuldSettings(BaseSettings):
     def creates_session_home(self) -> bool:
         """Whether home is the cluster layout's directory beside the workspace.
 
-        That is ``{persistence_mount_path}/{session.id}/home`` on the session volume,
-        derived like the workspace when neither a home volume nor a home directory is
-        configured (a flock session mounts no home volume). The broker creates it as it
-        creates the workspace; a configured home is never created, so a missing mount
-        stays an error.
+        That is ``{persistence_mount_path}/{session.id}/home`` on the session volume, in
+        the same session directory as the workspace, when neither a home volume nor a
+        home directory is configured (a flock session mounts no home volume). The broker
+        creates it as it creates the workspace; a configured home is never created, so a
+        missing mount stays an error.
         """
-        return not (self.home_dir or self.persistent_home_path or self.session.workspace_dir)
+        if self.home_dir or self.persistent_home_path:
+            return False
+        return Path(self.home_path).parent == Path(self.workspace_path).parent
 
     @property
     def presented_files_path(self) -> str:
