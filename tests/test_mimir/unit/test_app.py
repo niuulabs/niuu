@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import sys
 from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock, patch
@@ -12,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from mimir.app import _build_embed_fn, create_app
 from mimir.config import MimirServiceConfig
+from mimir.registry import MimirRegistryStore
 
 # ---------------------------------------------------------------------------
 # _build_embed_fn
@@ -231,23 +234,52 @@ def test_lifespan_handles_rebuild_failure_gracefully(tmp_path: Path) -> None:
             pass
 
 
-def test_lifespan_skips_announce_when_no_url(tmp_path: Path) -> None:
-    config = MimirServiceConfig(path=str(tmp_path / "mimir"), announce_url=None)
-    app = create_app(config)
-    # No announce_url — lifespan should not attempt announcement
-    with TestClient(app):
-        pass
+def test_announce_url_unset_registers_local_mount(tmp_path: Path) -> None:
+    config = MimirServiceConfig(path=str(tmp_path / "mimir"), name="home", announce_url=None)
+    create_app(config)
+
+    store = MimirRegistryStore(tmp_path / "mimir" / ".mimir-registry.json")
+    (entry,) = [e for e in store.list_entries() if e.name == "home"]
+    assert entry.kind == "local"
+    assert entry.url == ""
 
 
-def test_lifespan_announce_url_exception_is_swallowed(tmp_path: Path) -> None:
+def test_announce_url_registers_remote_mount_at_that_url(tmp_path: Path) -> None:
     config = MimirServiceConfig(
         path=str(tmp_path / "mimir"),
-        announce_url="http://sleipnir.local/announce",
+        name="shared",
+        announce_url="https://mimir.example.test",
+    )
+    create_app(config)
+
+    store = MimirRegistryStore(tmp_path / "mimir" / ".mimir-registry.json")
+    (entry,) = [e for e in store.list_entries() if e.name == "shared"]
+    assert entry.kind == "remote"
+    assert entry.url == "https://mimir.example.test"
+
+
+def test_announce_url_startup_does_not_reach_for_sleipnir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Replaces a test asserting a failed Sleipnir announce was swallowed.
+
+    The lifespan imported ``_announce_mimir`` from Ravn's Sleipnir mesh, which
+    does not exist, and logged the ImportError at debug. Every configured
+    announce did nothing while reading as working, and nothing consumes a
+    Mímir announce event, so the path is gone rather than repaired. Making the
+    module unimportable proves startup no longer depends on it at all.
+    """
+    monkeypatch.setitem(sys.modules, "ravn.adapters.mesh.sleipnir_mesh", None)
+    config = MimirServiceConfig(
+        path=str(tmp_path / "mimir"),
+        announce_url="https://mimir.example.test",
     )
     app = create_app(config)
-    # The import of _announce_mimir will fail in test (ravn not wired) — that's fine
-    with TestClient(app):
+
+    with caplog.at_level(logging.DEBUG, logger="mimir"), TestClient(app):
         pass
+
+    assert not [r for r in caplog.records if "announce" in r.getMessage()]
 
 
 @pytest.mark.asyncio

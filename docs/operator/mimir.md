@@ -222,7 +222,7 @@ the YAML file are how you configure Mímir inside `./start-dev` / Kubernetes.
 | `host` / `port` | `0.0.0.0` / `7477` | standalone bind |
 | `name` / `role` | `local` / `local` | role ∈ `local` \| `shared` \| `domain` |
 | `categories` | `None` | category filter for domain-scoped instances |
-| `announce_url` | `None` | set to announce on Sleipnir for discovery |
+| `announce_url` | `None` | public URL of this instance; the mount registry lists it as a remote mount there |
 | `search_db` | `<path>/search.db` | disposable; safe to delete |
 | `embedding_model` | `None` | e.g. `all-MiniLM-L6-v2`; None = FTS-only |
 | `eval_capture` | **`True`** | search queries → `evals/*.jsonl` (Analytics + replay); disable for privacy-sensitive deployments |
@@ -276,9 +276,8 @@ Change a boost → run `uv run python scripts/mimir_ranking_ablation.py
 5. **Federation (multi-mount)** — several Mímirs (e.g. `local` + team
    `shared` + a `domain` instance scoped to categories) registered in
    `.mimir-registry.json`; reads merge across mounts by priority, writes route
-   by path prefix (`write_routing`), discovery via the registry API or
-   Sleipnir announce. Auth: bearer token in dev, SPIFFE-ready (`auth_ref`) for
-   production.
+   by path prefix (`write_routing`), discovery via the registry API. Auth:
+   bearer token in dev, SPIFFE-ready (`auth_ref`) for production.
 
 **Backup** = copy the directory. `search.db` and the link graph are derived
 state; the markdown + `raw/` JSON are the only things that matter.

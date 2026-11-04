@@ -52,9 +52,9 @@ def serve(
     path: str | None = typer.Option(None, help="Root directory for the Mímir store."),
     host: str | None = typer.Option(None, help="Host address to bind to."),
     port: int | None = typer.Option(None, help="Port to bind to."),
-    name: str | None = typer.Option(None, help="Instance name for Sleipnir announce."),
+    name: str | None = typer.Option(None, help="Instance name in the mount registry."),
     role: str | None = typer.Option(None, help="Instance role: shared, local, or domain."),
-    announce_url: str | None = typer.Option(None, help="Public URL to announce on Sleipnir."),
+    announce_url: str | None = typer.Option(None, help="Public URL this instance is reachable at."),
     embedding_model: str | None = typer.Option(
         None,
         help="sentence-transformers model for hybrid search (e.g. all-MiniLM-L6-v2).",
