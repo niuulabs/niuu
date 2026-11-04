@@ -186,6 +186,7 @@ export function ProjectBoard({
   const [adding, setAdding] = useState(false);
   const [stageWorkflowId, setStageWorkflowId] = useState<string | null>(null);
   const [intent, setIntent] = useState<GateIntent>(null);
+  const [panelFloating, setPanelFloating] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [pendingSkip, setPendingSkip] = useState<PendingSkip | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -275,7 +276,9 @@ export function ProjectBoard({
   return (
     <div
       className={`ting-project-board${
-        selected || stageWorkflowId !== null || adding ? ' ting-project-board--panel' : ''
+        (selected && !panelFloating) || stageWorkflowId !== null || adding
+          ? ' ting-project-board--panel'
+          : ''
       }`}
       data-testid="project-board"
     >
@@ -373,6 +376,8 @@ export function ProjectBoard({
           projectId={projectId}
           task={selected}
           intent={intent}
+          floating={panelFloating}
+          onFloatingChange={setPanelFloating}
           onClose={() => {
             setSelectedId(null);
             setIntent(null);

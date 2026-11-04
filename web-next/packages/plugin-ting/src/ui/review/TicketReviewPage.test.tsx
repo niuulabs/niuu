@@ -8,13 +8,59 @@ import type { ReviewRevision, RunReview, TicketReviews } from '../../domain/revi
 import type { ReviewPanel, WorkDetail, WorkTask } from '../../domain/work';
 import { TicketReviewPage } from './TicketReviewPage';
 import { ReviewPanelSlot } from './reviewPanels';
+import { ReviewWorkspace } from './ReviewWorkspace';
+import { CoordinatorChat } from '../CoordinatorChat';
+import { useGateDecision, useTicketReviews, useWorkDetail } from '../useWork';
 
 const sendMessage = vi.fn();
+const navigated = vi.hoisted(() => ({ props: null as null | Record<string, unknown> }));
 
 vi.mock('@tanstack/react-router', () => ({
   useParams: () => ({ projectId: 'project-1', issueId: 'issue-1' }),
+  useSearch: () => ({ returnTo: '/realms/niuu?tab=board' }),
+  useRouterState: () => '/here',
+  Navigate: (props: Record<string, unknown>) => {
+    navigated.props = props;
+    return <div data-testid="navigate" />;
+  },
   Link: ({ children }: { children: React.ReactNode }) => <a href="/board">{children}</a>,
 }));
+
+/**
+ * The review workspace as a ticket's run shows it: the ticket beside the document and its
+ * coordinator to talk to. The run page composes it the same way.
+ */
+function TicketReviewHarness() {
+  const project = useWorkDetail('project', 'project-1');
+  const record = useTicketReviews('project-1', 'issue-1');
+  const decide = useGateDecision('project-1');
+  const work = project.data?.tasks[0];
+  if (!work || !record.data) return <p>Loading review…</p>;
+  return (
+    <ReviewWorkspace
+      subject={{
+        identifier: work.source.identifier,
+        title: work.title,
+        gate: work.board?.gate ?? null,
+        pullRequestUrl: work.workflowRun?.prUrl ?? null,
+        canAsk: work.coordinator?.status === 'active' && Boolean(work.coordinator.chatEndpoint),
+      }}
+      board={project.data?.board ?? null}
+      reviews={record.data.reviews}
+      back={{ pathname: '/realms/niuu', search: { tab: 'board' }, label: 'Back to the board' }}
+      railLabel="Ticket"
+      rail={work.description ? <p>{work.description}</p> : null}
+      talk={(talk) => (
+        <CoordinatorChat coordinator={work.coordinator} name={work.source.identifier} {...talk} />
+      )}
+      deciding={decide.isPending}
+      decisionFailure={decide.error}
+      onDecide={(decision, onSuccess) =>
+        decide.mutate({ issueId: work.source.issueId, decision }, { onSuccess })
+      }
+    />
+  );
+}
 
 vi.mock('@niuulabs/ui', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@niuulabs/ui')>()),
@@ -143,7 +189,7 @@ function setup(reviews: TicketReviews, work: WorkTask = task()) {
       client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
     >
       <ServicesProvider services={{ 'ting.work': service as unknown as IWorkService }}>
-        <TicketReviewPage />
+        <TicketReviewHarness />
       </ServicesProvider>
     </QueryClientProvider>,
   );
@@ -157,7 +203,7 @@ function select(text: string) {
   fireEvent.mouseUp(screen.getByRole('region', { name: 'Plan' }));
 }
 
-describe('TicketReviewPage', () => {
+describe("a ticket run's review", () => {
   beforeEach(() => {
     sendMessage.mockClear();
     vi.restoreAllMocks();
@@ -337,20 +383,23 @@ describe('TicketReviewPage', () => {
     expect(screen.getByRole('region', { name: 'Plan' }).querySelector('mark')).toHaveTextContent(
       'Trace every tick',
     );
-    expect(screen.getByRole('link', { name: 'Open the project plan' })).toBeInTheDocument();
   });
 
-  it('says when a run can no longer be read', async () => {
-    setup({ reviews: [], unreadableRuns: ['Ticket Planning Flow'] });
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('Ticket Planning Flow');
-    expect(screen.getByText(/Nothing to review on PLT-212/)).toBeInTheDocument();
+  it('offers the way back to where the review was opened', async () => {
+    setup({ reviews: [planReview()], unreadableRuns: [] });
+    expect(await screen.findByRole('link', { name: /Back to the board/ })).toBeInTheDocument();
   });
+});
 
-  it('says when the review cannot be read', async () => {
+describe('TicketReviewPage', () => {
+  function open(reviews: TicketReviews | Error, work: WorkTask = task()) {
+    navigated.props = null;
     const service = {
-      get: vi.fn().mockResolvedValue(detail(task())),
-      ticketReviews: vi.fn().mockRejectedValue(new Error('Forge is down')),
+      get: vi.fn().mockResolvedValue(detail(work)),
+      ticketReviews:
+        reviews instanceof Error
+          ? vi.fn().mockRejectedValue(reviews)
+          : vi.fn().mockResolvedValue(reviews),
     };
     render(
       <QueryClientProvider
@@ -361,7 +410,44 @@ describe('TicketReviewPage', () => {
         </ServicesProvider>
       </QueryClientProvider>,
     );
+  }
 
+  it("opens the review of the ticket's run that waits for a person, keeping the way back", async () => {
+    const decided = { ...planReview([revision({ status: 'approved' })]), taskId: 'a2a-old' };
+    open({ reviews: [decided, { ...planReview(), taskId: 'a2a-waiting' }], unreadableRuns: [] });
+
+    await screen.findByTestId('navigate');
+    expect(navigated.props).toMatchObject({
+      to: '/ting/artifacts/$slug',
+      params: { slug: 'a2a-waiting' },
+      search: { returnTo: '/realms/niuu?tab=board' },
+      replace: true,
+    });
+  });
+
+  it('opens its newest run when nothing waits', async () => {
+    open(
+      { reviews: [], unreadableRuns: [] },
+      task({
+        workflowRun: {
+          taskId: 'a2a-latest',
+          status: 'running',
+          workflowName: 'Ticket Planning Flow',
+        } as WorkTask['workflowRun'],
+      }),
+    );
+
+    await screen.findByTestId('navigate');
+    expect(navigated.props).toMatchObject({ params: { slug: 'a2a-latest' } });
+  });
+
+  it('says so when the ticket has no run to review', async () => {
+    open({ reviews: [], unreadableRuns: [] });
+    expect(await screen.findByText(/Nothing to review on PLT-212/)).toBeInTheDocument();
+  });
+
+  it('says when the review cannot be read', async () => {
+    open(new Error('Forge is down'));
     expect(await screen.findByRole('alert')).toHaveTextContent('Forge is down');
   });
 });

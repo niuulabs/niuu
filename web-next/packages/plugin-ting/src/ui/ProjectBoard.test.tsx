@@ -9,6 +9,7 @@ import type { IWorkService } from '../ports';
 import { ProjectBoard } from './ProjectBoard';
 
 vi.mock('@tanstack/react-router', () => ({
+  useRouterState: () => '/here',
   Link: ({ children, to }: { children: React.ReactNode; to: string }) => (
     <a href={to}>{children}</a>
   ),
@@ -111,6 +112,42 @@ describe('ProjectBoard', () => {
         decision: 'approve',
         notes: '',
       }),
+    );
+  });
+
+  it('decides a gate a step raised outside the gate columns', async () => {
+    const decideGate = vi.spyOn(service, 'decideGate');
+    const gated = detail.tasks.find((task) => task.source.issueId === GATED)!;
+    // A planner that could not present its plan stops in its own column and asks.
+    renderBoard(
+      withTask(detail, GATED, {
+        board: { ...gated.board!, columnId: 'building', state: 'blocked' },
+      }),
+      service,
+    );
+    openGate();
+
+    const panel = screen.getByRole('complementary');
+    expect(within(panel).getByRole('tab', { name: 'Review' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(within(panel).getByText(/Approve lets the run continue/)).toBeInTheDocument();
+    fireEvent.change(within(panel).getByLabelText('Comment'), {
+      target: { value: 'Present plan.md again.' },
+    });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Request changes' }));
+
+    await waitFor(() =>
+      expect(decideGate).toHaveBeenCalledWith(
+        'demo-platform',
+        GATED,
+        expect.objectContaining({
+          gateId: 'demo-gate-207',
+          decision: 'request_changes',
+          notes: 'Present plan.md again.',
+        }),
+      ),
     );
   });
 
@@ -473,6 +510,21 @@ describe('ProjectBoard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
 
     expect(screen.queryByRole('complementary')).not.toBeInTheDocument();
+  });
+
+  it('floats the panel over the board, which takes its width back until it is docked', () => {
+    renderBoard(detail, service);
+    openGate();
+    const board = screen.getByTestId('project-board');
+    expect(board).toHaveClass('ting-project-board--panel');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pop out' }));
+    expect(screen.getByRole('dialog')).toHaveClass('ting-dockable--floating');
+    expect(board).not.toHaveClass('ting-project-board--panel');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Put back in its column' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(board).toHaveClass('ting-project-board--panel');
   });
 
   it('says why a move is refused', () => {

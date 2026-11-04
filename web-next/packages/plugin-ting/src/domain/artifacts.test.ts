@@ -275,8 +275,15 @@ describe('reviewing artifacts', () => {
       'the plan copied into the outcome',
       'the plan copied into the outcome',
     ]);
-    expect(artifactKeysShown(gates)).toEqual(new Set(['plan']));
-    expect(artifactKeysShown([planGate([gateRevision({})])])).toEqual(new Set());
+    expect(artifactKeysShown(gates, [])).toEqual(new Set(['plan']));
+    expect(artifactKeysShown([planGate([gateRevision({})])], [])).toEqual(new Set());
+    // Unlinked, a plan presented under the gate's own field is still the gate's document.
+    expect(artifactKeysShown([planGate([gateRevision({})])], [{ key: 'plan' }])).toEqual(
+      new Set(['plan']),
+    );
+    expect(artifactKeysShown([planGate([gateRevision({})])], [{ key: 'notes' }])).toEqual(
+      new Set(),
+    );
   });
 
   it('asks a new run to revise a version against the notes, under the same key', () => {

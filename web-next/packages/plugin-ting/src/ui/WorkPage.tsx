@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Link, Navigate, useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import {
@@ -39,6 +39,7 @@ import { ProjectBoard } from './ProjectBoard';
 import { WorkCoverageNotices } from './WorkCoverageNotices';
 import { TrackerWorkImportDialog } from './TrackerWorkImportDialog';
 import { WorkCampaignResults } from './WorkCampaignResults';
+import { useReturnTo } from './review/reviewBack';
 import {
   TicketBoard,
   tingRunLabel,
@@ -238,11 +239,42 @@ function sourceLabel(item: WorkSummary): string | null {
 
 /** A project is managed where its workspace lives, in Projects; Work only shows its tickets. */
 function specialistPath(item: WorkSummary): string {
-  return item.kind === 'project' ? '/realms' : item.links.specialist;
+  if (item.kind === 'project') return '/realms';
+  // A workflow run's page is where its documents are read and its gates decided.
+  if (item.kind === 'workflowLaunch' && item.campaignSlug) {
+    return `/ting/artifacts/${encodeURIComponent(item.campaignSlug)}`;
+  }
+  return item.links.specialist;
+}
+
+/** Where a piece of work is managed or decided; a review there leads back to this page. */
+function SpecialistLink({
+  item,
+  className,
+  children,
+}: {
+  item: WorkSummary;
+  className?: string;
+  children?: ReactNode;
+}) {
+  const returnTo = useReturnTo();
+  const to = specialistPath(item);
+  return (
+    <Link
+      to={to as never}
+      search={(to.startsWith('/ting/artifacts') ? { returnTo } : undefined) as never}
+      className={className}
+    >
+      {children ?? specialistLabel(item)}
+    </Link>
+  );
 }
 
 function specialistLabel(item: WorkSummary): string {
   if (item.kind === 'project') return 'Manage in Projects';
+  if (item.kind === 'workflowLaunch' && item.campaignSlug) {
+    return item.attention?.kind === 'decision' ? 'Review and decide' : 'Open the run';
+  }
   if (item.kind === 'specification' && item.actions.includes('review'))
     return 'Review specification';
   if (item.kind === 'research') return 'Open research';
@@ -352,6 +384,17 @@ function WorkDetailView({
     }
   }
 
+  // A run's own page replaces this one; an old link to it lands there.
+  if (item.kind === 'workflowLaunch' && item.campaignSlug) {
+    return (
+      <Navigate
+        to={'/ting/artifacts/$slug' as never}
+        params={{ slug: item.campaignSlug } as never}
+        replace
+      />
+    );
+  }
+
   if (detail.board && view === 'board') {
     return (
       <div className="ting-work-detail ting-work-detail--board" data-testid="work-detail">
@@ -369,7 +412,7 @@ function WorkDetailView({
           {sourceLabel(item) ? <small>{sourceLabel(item)}</small> : null}
           <div className="ting-board-bar__tools">
             <small>{detail.tasks.length} tickets</small>
-            <Link to={specialistPath(item) as never}>{specialistLabel(item)}</Link>
+            <SpecialistLink item={item} />
             <button type="button" className="ting-work-new-secondary" onClick={onNew}>
               <Plus aria-hidden="true" /> New work
             </button>
@@ -436,9 +479,9 @@ function WorkDetailView({
               Open definition
             </Link>
           ) : null}
-          <Link to={specialistPath(item) as never} className="ting-work-primary-link">
+          <SpecialistLink item={item} className="ting-work-primary-link">
             {specialistLabel(item)} <ArrowRight aria-hidden="true" />
-          </Link>
+          </SpecialistLink>
         </div>
       </header>
 
@@ -711,6 +754,8 @@ export function WorkPage() {
     contentRef.current.scrollTop = listScrollPosition.current;
   }, [routeIdentity]);
 
+  const returnTo = useReturnTo();
+
   function workSearch(next: { filter?: WorkFilter; q?: string; view: WorkView }) {
     return {
       ...(next.filter && next.filter !== 'overview' ? { filter: next.filter } : {}),
@@ -736,6 +781,15 @@ export function WorkPage() {
 
   function selectWork(item: WorkSummary) {
     listScrollPosition.current = contentRef.current?.scrollTop ?? 0;
+    // A workflow run has one page, where its steps, sessions and reviews are.
+    if (item.kind === 'workflowLaunch' && item.campaignSlug) {
+      void navigate({
+        to: '/ting/artifacts/$slug' as never,
+        params: { slug: item.campaignSlug } as never,
+        search: { returnTo } as never,
+      });
+      return;
+    }
     const kind = summaryBackendKind(item);
     const expectedPrefix = `${kind}:`;
     const workId = item.id.startsWith(expectedPrefix) ? item.id : `${kind}:${item.id}`;

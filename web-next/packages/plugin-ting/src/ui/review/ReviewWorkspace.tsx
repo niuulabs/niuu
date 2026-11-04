@@ -1,5 +1,7 @@
 import './TicketReviewPage.css';
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Link } from '@tanstack/react-router';
+import { ArrowLeft } from 'lucide-react';
 import { useOptionalService } from '@niuulabs/plugin-sdk';
 import {
   GateDecision,
@@ -16,9 +18,19 @@ import {
   type ReviewRevision,
   type RunReview,
 } from '../../domain/review';
+import type { RunStep } from '../../domain/runSteps';
 import type { GateDecision as GateAnswer, WorkBoardLayout } from '../../domain/work';
 import { decisionError } from '../TicketPanel';
+import { Dockable } from './Dockable';
 import { ReviewPanelSlot } from './reviewPanels';
+import type { ReviewBack } from './reviewBack';
+
+const STEP_STATE_LABEL: Record<RunStep['state'], string> = {
+  done: 'Done',
+  current: 'Working',
+  waiting: 'Waiting for you',
+  ahead: '',
+};
 
 const DECIDED_LABEL: Record<string, string> = {
   approved: 'Approved',
@@ -61,6 +73,36 @@ function statusLabel(revision: ReviewRevision): string {
     : (DECIDED_LABEL[revision.status] ?? revision.status);
 }
 
+/** The run's steps, as far as the board or its gates record them. */
+export function RunSteps({
+  workflowName,
+  steps,
+}: {
+  workflowName: string;
+  steps: readonly RunStep[];
+}) {
+  return (
+    <ol className="ting-review__steps" aria-label={`${workflowName} steps`}>
+      {steps.map((step) => (
+        <li
+          key={step.id}
+          className={`ting-review__step ting-review__step--${step.state}`}
+          aria-current={step.state === 'current' || step.state === 'waiting' ? 'step' : undefined}
+        >
+          <span>{step.title}</span>
+          {step.note || STEP_STATE_LABEL[step.state] ? (
+            <small>
+              {step.state === 'waiting'
+                ? STEP_STATE_LABEL.waiting
+                : (step.note ?? STEP_STATE_LABEL[step.state])}
+            </small>
+          ) : null}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 function GateHistory({ revisions }: { revisions: readonly ReviewRevision[] }) {
   return (
     <ol className="ting-review-history">
@@ -84,18 +126,22 @@ export function ReviewWorkspace({
   reviews,
   railLabel,
   rail,
+  steps,
   talk: renderTalk,
   deciding,
   decisionFailure,
   onDecide,
   send,
   initialReview,
+  back,
 }: {
   subject: ReviewSubject;
   board: WorkBoardLayout | null;
   reviews: readonly RunReview[];
   railLabel: string;
   rail: ReactNode;
+  /** Where the run is in its workflow; the header shows them across the page. */
+  steps?: readonly RunStep[];
   talk?: (props: ReviewTalk) => ReactNode;
   deciding: boolean;
   decisionFailure: unknown;
@@ -104,6 +150,8 @@ export function ReviewWorkspace({
   send?: ((review: RunReview) => ReviewSend | null) | undefined;
   /** The review to open on, by its column id; otherwise the one waiting for a person. */
   initialReview?: string | null;
+  /** The page the person came from, so they can go straight back to it. */
+  back: ReviewBack;
 }) {
   const [chosenColumn, setChosenColumn] = useState<string | null>(initialReview ?? null);
   const [chosenRevision, setChosenRevision] = useState<number | null>(null);
@@ -113,6 +161,7 @@ export function ReviewWorkspace({
   const [selection, setSelection] = useState('');
   const [asking, setAsking] = useState<string | null>(null);
   const [chatQuotes, setChatQuotes] = useState<readonly string[]>([]);
+  const [floating, setFloating] = useState(false);
   const talk = useRef<HTMLElement>(null);
   const lineComments = useReviewComments();
   const filesystem = useOptionalService<IFileSystemPort>('filesystem');
@@ -145,7 +194,6 @@ export function ReviewWorkspace({
   const column = board?.columns.find((item) => item.id === review.columnId);
   const approve = board?.columns.find((item) => item.id === column?.approveColumnId);
   const changes = board?.columns.find((item) => item.id === column?.changesColumnId);
-  const path = board?.columns.filter((item) => item.workflowId === column?.workflowId) ?? [];
 
   function readSelection() {
     setSelection(window.getSelection()?.toString().trim() ?? '');
@@ -196,6 +244,13 @@ export function ReviewWorkspace({
   return (
     <div className="ting-review">
       <header className="ting-review__head">
+        <Link
+          to={back.pathname as never}
+          search={back.search as never}
+          className="ting-review__back"
+        >
+          <ArrowLeft aria-hidden="true" /> {back.label}
+        </Link>
         <div className="ting-review__title">
           <div>
             <span className="ting-work-task__key">
@@ -203,14 +258,7 @@ export function ReviewWorkspace({
             </span>
             <h1 title={subject.title}>{subject.title}</h1>
           </div>
-          <nav className="ting-review__path" aria-label="Workflow">
-            <span>{review.workflowName}</span>
-            {path.map((item) => (
-              <span key={item.id} aria-current={item.id === review.columnId ? 'step' : undefined}>
-                {item.title}
-              </span>
-            ))}
-          </nav>
+          <span className="ting-review__workflow">{review.workflowName}</span>
         </div>
         <span className="ting-review__status">{statusLabel(revision)}</span>
         {reviews.length > 1 ? (
@@ -255,9 +303,12 @@ export function ReviewWorkspace({
             {showChanges ? 'Hide changes' : `Show changes since r${previous.number}`}
           </button>
         ) : null}
+        {steps && steps.length > 0 ? (
+          <RunSteps workflowName={review.workflowName} steps={steps} />
+        ) : null}
       </header>
 
-      <div className="ting-review__columns">
+      <div className={`ting-review__columns${floating ? ' ting-review__columns--wide' : ''}`}>
         <aside className="ting-review__ticket" aria-label={railLabel}>
           <h2>{railLabel}</h2>
           {rail}
@@ -318,7 +369,13 @@ export function ReviewWorkspace({
           </div>
         </main>
 
-        <aside ref={talk} className="ting-review__talk" aria-label="Talk it through">
+        <Dockable
+          label={renderTalk ? 'Decide and talk it through' : 'Decide'}
+          floating={floating}
+          onFloatingChange={setFloating}
+          className="ting-review__talk"
+          panelRef={talk}
+        >
           {decidable ? (
             <GateDecision
               title={review.title}
@@ -367,7 +424,7 @@ export function ReviewWorkspace({
             onQuoteDone: () => setAsking(null),
             onQuotes: reportQuotes,
           })}
-        </aside>
+        </Dockable>
       </div>
     </div>
   );

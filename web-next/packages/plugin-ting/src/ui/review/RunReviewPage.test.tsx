@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Blob as NodeBlob } from 'node:buffer';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -6,7 +6,7 @@ import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import type { IFileSystemPort } from '@niuulabs/ui';
 import type { IRunLogService, IWorkService, IWorkflowService } from '../../ports';
 import type { ReviewRevision, RunReviews } from '../../domain/review';
-import type { WorkSummary } from '../../domain/work';
+import type { WorkDetail, WorkSummary } from '../../domain/work';
 import type { Publication } from '../../domain/artifacts';
 import { RunReviewPage, SessionArtifactsPage } from './RunReviewPage';
 
@@ -14,11 +14,27 @@ const navigate = vi.hoisted(() => vi.fn());
 const search = vi.hoisted(() => ({ value: {} as Record<string, string> }));
 
 vi.mock('@tanstack/react-router', () => ({
+  useRouterState: () => '/here',
   useParams: () => ({ slug: 'a2a-9', sessionId: 'session-b10' }),
   useSearch: () => search.value,
   useNavigate: () => navigate,
-  Link: ({ children, to }: { children: React.ReactNode; to: string }) => (
-    <a href={to}>{children}</a>
+  Link: ({
+    children,
+    to,
+    params,
+  }: {
+    children: React.ReactNode;
+    to: string;
+    params?: Record<string, string>;
+  }) => (
+    <a
+      href={Object.entries(params ?? {}).reduce(
+        (path, [key, value]) => path.replace(`$${key}`, value),
+        to,
+      )}
+    >
+      {children}
+    </a>
   ),
 }));
 
@@ -44,7 +60,7 @@ function record(overrides: Partial<RunReviews> = {}): RunReviews {
       slug: 'a2a-9',
       title: 'Plan NIU-1125 only',
       workflowName: 'Infra Change Flow',
-      prompt: 'Plan NIU-1125 only\nRead the complete ticket.',
+      prompt: 'Plan NIU-1125 only\n\nRead the **complete** ticket.',
       sessionId: 'session-9',
       repo: 'https://github.com/niuulabs/niuu',
       branch: 'regin',
@@ -118,6 +134,7 @@ function setup({
   publications = vi.fn().mockResolvedValue([]),
   sendMessage = vi.fn().mockResolvedValue(undefined),
   launchWorkflow = vi.fn(),
+  get = vi.fn(),
 }: {
   runReviews?: IWorkService['runReviews'];
   decideRunGate?: IWorkService['decideRunGate'];
@@ -125,10 +142,12 @@ function setup({
   publications?: IRunLogService['publications'];
   sendMessage?: IRunLogService['sendMessage'];
   launchWorkflow?: IWorkflowService['launchWorkflow'];
+  get?: IWorkService['get'];
 } = {}) {
   const work = {
     runReviews,
     decideRunGate,
+    get,
     reviews: vi.fn().mockResolvedValue({ items: [] }),
     list: vi.fn().mockResolvedValue({
       projects: [],
@@ -168,18 +187,133 @@ describe('RunReviewPage', () => {
   it('introduces the run and what started it', async () => {
     setup();
 
-    // The run is named by what it is about; its workflow is on the path beside it.
+    // The run is named by what it is about; its workflow and its steps are beside it.
     expect(await screen.findByRole('heading', { name: 'Plan NIU-1125 only' })).toBeInTheDocument();
-    expect(screen.getByRole('navigation', { name: 'Workflow' })).toHaveTextContent(
-      'Infra Change Flow',
-    );
+    const steps = screen.getByRole('list', { name: 'Infra Change Flow steps' });
+    expect(steps).toHaveTextContent('Approve the merge');
+    expect(steps).toHaveTextContent('Waiting for you');
     expect(screen.getByText('Started by regin')).toBeInTheDocument();
     expect(screen.getByText('On regin')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open the session' })).toHaveAttribute(
+    // The session the run works in opens on its live page.
+    expect(screen.getByRole('link', { name: 'Infra Change Flow run' })).toHaveAttribute(
       'href',
-      '/volundr/sessions/session-9',
+      '/volundr/session/session-9',
     );
     expect(screen.getByText('Ready to merge.')).toBeInTheDocument();
+  });
+
+  it("shows a ticket's run as its board columns, with its coordinator and its board", async () => {
+    const board: WorkDetail = {
+      item: { ...campaign('active', 'active'), id: 'project:p-1', kind: 'project', title: 'A2A' },
+      coverage: [],
+      board: {
+        columns: [
+          {
+            id: 'backlog',
+            title: 'Backlog',
+            kind: 'tracker',
+            review: null,
+            approveColumnId: null,
+            changesColumnId: null,
+          },
+          {
+            id: 'build',
+            title: 'Building',
+            kind: 'work',
+            review: null,
+            approveColumnId: null,
+            changesColumnId: null,
+            workflowId: 'wf-infra',
+          },
+          {
+            id: 'merge-gate',
+            title: 'Approve the merge',
+            kind: 'gate',
+            review: 'code',
+            approveColumnId: 'ship',
+            changesColumnId: 'build',
+            workflowId: 'wf-infra',
+          },
+          {
+            id: 'ship',
+            title: 'Shipping',
+            kind: 'work',
+            review: null,
+            approveColumnId: null,
+            changesColumnId: null,
+            workflowId: 'wf-infra',
+          },
+        ],
+      },
+      tasks: [
+        {
+          source: {
+            connectionId: 'linear',
+            provider: 'linear',
+            projectId: 'p-1',
+            url: 'https://linear.app/x/NIU-9',
+            issueId: 'issue-9',
+            identifier: 'NIU-9',
+            status: 'In Progress',
+            statusType: 'started',
+          },
+          title: 'Pin the controller version',
+          description: 'Keep the **pinned** version.',
+          board: {
+            columnId: 'merge-gate',
+            state: 'needsDecision',
+            gate: { id: 'gate-1', activationId: 'activation-1' },
+          },
+          coordinator: {
+            sessionId: 'coord-9',
+            status: 'active',
+            connectionId: 'valhalla',
+            chatEndpoint: null,
+          },
+        },
+      ],
+    } as unknown as WorkDetail;
+    setup({
+      runReviews: vi
+        .fn()
+        .mockResolvedValue(
+          record({ run: { ...record().run, ticket: { projectId: 'p-1', issueId: 'issue-9' } } }),
+        ),
+      get: vi.fn().mockResolvedValue(board),
+    });
+
+    expect(
+      await screen.findByRole('heading', { name: 'Pin the controller version' }),
+    ).toBeInTheDocument();
+    const steps = screen.getByRole('list', { name: 'Infra Change Flow steps' });
+    expect(
+      within(steps)
+        .getAllByRole('listitem')
+        .map((step) => step.textContent),
+    ).toEqual(['BuildingDone', 'Approve the mergeWaiting for you', 'Shipping']);
+    expect(screen.getByText('pinned', { selector: 'strong' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Coordinator' })).toHaveAttribute(
+      'href',
+      '/volundr/session/coord-9',
+    );
+    // Opened from nowhere in particular, the way back is the ticket's board.
+    expect(screen.getByRole('link', { name: /Back to the A2A board/ })).toHaveAttribute(
+      'href',
+      '/ting/work/project:p-1',
+    );
+    expect(screen.getByRole('button', { name: 'Approve → Shipping' })).toBeInTheDocument();
+  });
+
+  it('shows a run that has put nothing in front of a person, with its sessions', async () => {
+    setup({ runReviews: vi.fn().mockResolvedValue(record({ reviews: [] })) });
+
+    expect(await screen.findByText(/has put nothing in front of a person yet/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Plan NIU-1125 only' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Infra Change Flow run' })).toHaveAttribute(
+      'href',
+      '/volundr/session/session-9',
+    );
+    expect(screen.getByRole('link', { name: /Back to Artifacts/ })).toBeInTheDocument();
   });
 
   it('answers the pending gate with what the person saw', async () => {
@@ -273,7 +407,8 @@ describe('RunReviewPage', () => {
       'valhalla',
       expect.objectContaining({ sessionId: 'session-9' }),
     );
-    expect(screen.getByText(/Read the complete ticket/)).toBeInTheDocument();
+    // The brief is markdown, rendered as such.
+    expect(screen.getByText('complete', { selector: 'strong' })).toBeInTheDocument();
   });
 
   it('says which version could not be read', async () => {
