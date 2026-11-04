@@ -6,6 +6,7 @@ SPIFFE JWT-SVIDs later by changing issuer/audience/JWKS configuration.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import ssl
 from typing import Any
@@ -66,7 +67,19 @@ class JwtWorkloadIdentityVerifier(WorkloadIdentityVerifier):
             claims = jwt.decode(token, **kwargs)
             return dict(claims)
 
-        key = self._resolve_key(token)
+        # The exchange offers every proof to every verifier. A proof from another
+        # issuer can never verify here, so it is refused before this issuer's keys
+        # are fetched: one unreachable cluster must not stall every exchange.
+        if self._issuer:
+            claimed = jwt.decode(token, options={"verify_signature": False}).get("iss")
+            if claimed != self._issuer:
+                raise jwt.InvalidIssuerError(
+                    f"proof issuer {claimed!r} is not this verifier's {self._issuer!r}"
+                )
+
+        # PyJWKClient fetches over blocking urllib; off the event loop, a slow
+        # issuer delays only the exchange that needs it, not the whole host.
+        key = await asyncio.to_thread(self._resolve_key, token)
         claims = jwt.decode(token, key=key, **kwargs)
         return dict(claims)
 

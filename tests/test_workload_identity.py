@@ -1148,6 +1148,56 @@ async def test_exchange_logs_which_workload_it_spoke_for(caplog: pytest.LogCaptu
     assert result.token not in line
 
 
+@pytest.mark.asyncio
+async def test_a_verifier_for_another_issuer_refuses_without_fetching_its_keys() -> None:
+    """eitri's issuer timing out froze every exchange: each proof was offered to
+    every cluster's verifier, and each fetched its keys before checking issuer."""
+    from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
+
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    verifier = JwtWorkloadIdentityVerifier(
+        issuer="https://k8s-issuer.eitri.example",
+        audiences=["volundr-api"],
+        jwks_uri="https://k8s-issuer.eitri.example/openid/v1/jwks",
+    )
+
+    def unreachable(_token: str) -> Any:
+        raise AssertionError("fetched the keys of an issuer the proof does not name")
+
+    verifier._resolve_key = unreachable  # type: ignore[method-assign]
+
+    with pytest.raises(jwt.InvalidIssuerError, match="eitri"):
+        await verifier.verify(_workload_token(proof_key))
+
+
+@pytest.mark.asyncio
+async def test_a_verifier_fetches_keys_off_the_event_loop() -> None:
+    """PyJWKClient blocks; on the loop, one slow issuer stops the whole host."""
+    import threading
+
+    from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
+
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    verifier = JwtWorkloadIdentityVerifier(
+        issuer=WORKLOAD_ISSUER,
+        audiences=["volundr-api"],
+        static_jwks={"keys": [_jwk_from_key(proof_key, kid="k8s-proof")]},
+    )
+    resolve = verifier._resolve_key
+    threads: list[threading.Thread] = []
+
+    def recording(token: str) -> Any:
+        threads.append(threading.current_thread())
+        return resolve(token)
+
+    verifier._resolve_key = recording  # type: ignore[method-assign]
+
+    claims = await verifier.verify(_workload_token(proof_key))
+
+    assert claims["sub"] == WORKLOAD_SUBJECT
+    assert threads and threads[0] is not threading.main_thread()
+
+
 def _granting(service: WorkloadIdentityService, scopes: list[str]) -> WorkloadIdentityService:
     """The mapping lists ``scopes`` in its privileged_scopes."""
     service._config.mappings[0].privileged_scopes = scopes
