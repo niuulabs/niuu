@@ -95,12 +95,33 @@ describe('ConnectionsPanel', () => {
             boardWorkflows: [{ id: 'wf-1', name: 'Ticket Work Flow' }],
           }),
         },
-        'ting.work': { get: async () => ({ board: null, tasks: [], coverage: [] }) },
+        'ting.work': {
+          get: async () => ({
+            board: {
+              columns: [
+                {
+                  id: 'working',
+                  title: 'Working',
+                  kind: 'work',
+                  review: null,
+                  approveColumnId: null,
+                  changesColumnId: null,
+                  workflowId: 'wf-1',
+                  workflowName: 'Ticket Work Flow',
+                },
+              ],
+            },
+            tasks: [],
+            coverage: [],
+          }),
+        },
       },
       log,
     );
-    const card = await screen.findByRole('region', { name: 'Board workflows' });
-    expect(within(card).getByText(/Ticket Work Flow/)).toBeInTheDocument();
+    // Workflows are edited on the board; Connections names them and links there.
+    const card = await screen.findByTestId('connection-workflows');
+    expect(await within(card).findByText('Ticket Work Flow')).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: 'Open the board' })).toBeInTheDocument();
     expect(
       within(screen.getByTestId('connection-tracker')).getByText(/Board one/),
     ).toBeInTheDocument();

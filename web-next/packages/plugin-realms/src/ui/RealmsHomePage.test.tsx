@@ -20,7 +20,7 @@ describe('RealmsHomePage', () => {
     renderRealms('/realms');
     await screen.findByTestId('realm-card-valhalla');
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
-      /workspaces, each kept by a resident/,
+      /workspaces across your projects, each kept by a resident/,
     );
   });
 
@@ -193,7 +193,7 @@ describe('RealmsHomePage', () => {
   it('shows the empty state when there are no realms', async () => {
     const log = createCallLog();
     renderRealms('/realms', { 'valkyrie.realms': fakeRealmService(log, []) }, log);
-    await screen.findByText('No workspaces yet');
+    await screen.findByText('No projects yet');
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Start with one sentence');
   });
 

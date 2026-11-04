@@ -18,8 +18,8 @@ export const realmsPlugin = definePlugin({
   rune: 'R',
   // A set of environments, each its own box.
   icon: <RealmsIcon />,
-  title: 'Workspaces',
-  subtitle: 'where work happens',
+  title: 'Projects',
+  subtitle: 'what you work on',
   tabs: REALMS_TABS.map((tab) => ({ ...tab })),
   routes: (rootRoute) => [
     createRoute({ getParentRoute: () => rootRoute, path: '/realms', component: RealmsHomePage }),

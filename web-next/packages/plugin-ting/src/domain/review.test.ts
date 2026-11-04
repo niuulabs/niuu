@@ -143,8 +143,10 @@ describe('reviewPath', () => {
     expect(reviewPath(item)).toBe('/ting/review/p/i');
   });
 
-  it('opens a project plan on its plan page', () => {
-    expect(reviewPath({ ...item, kind: 'projectPlan', issueId: null })).toBe('/ting/plan/a2a-1');
+  it("opens a project plan on its run's page in Artifacts", () => {
+    expect(reviewPath({ ...item, kind: 'projectPlan', issueId: null })).toBe(
+      '/ting/artifacts/a2a-1',
+    );
   });
 });
 

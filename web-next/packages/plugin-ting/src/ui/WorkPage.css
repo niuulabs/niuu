@@ -1161,6 +1161,151 @@ button.ting-work-card:hover {
 .ting-board-run__band[aria-pressed='true'] {
   border-color: var(--color-brand);
 }
+.ting-board-run__head {
+  position: relative;
+  display: flex;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.ting-board-run__head .ting-board-run__band {
+  flex: 1;
+  min-width: 0;
+}
+.ting-board-band-menu__toggle {
+  height: 32px;
+  min-width: 36px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.ting-board-band-menu__toggle:hover,
+.ting-board-band-menu__toggle[aria-expanded='true'] {
+  border-color: var(--color-brand);
+  color: var(--color-text-primary);
+}
+.ting-board-band-menu__list {
+  position: absolute;
+  top: 36px;
+  right: 0;
+  z-index: 5;
+  display: flex;
+  width: 240px;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-1);
+}
+.ting-board-band-menu__list > a,
+.ting-board-band-menu__list > button {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: 0 var(--space-2);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.ting-board-band-menu__list > a:hover,
+.ting-board-band-menu__list > button:hover {
+  background: var(--color-bg-tertiary);
+}
+.ting-board-band-menu__list > .ting-board-band-menu__remove {
+  color: var(--color-critical-fg);
+}
+.ting-board-band-menu__list > span {
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+.ting-board-add {
+  display: flex;
+  flex: 0 0 170px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  margin-top: 40px;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  padding: var(--space-3);
+  color: var(--color-brand);
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+.ting-board-add:hover,
+.ting-board-add[aria-expanded='true'] {
+  border-color: var(--color-brand);
+}
+.ting-board-add > span {
+  font-size: 22px;
+  line-height: 1;
+}
+.ting-board-add > small {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+.ting-board-choices {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ting-board-choice {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-1);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-primary);
+  padding: var(--space-2) var(--space-3);
+}
+.ting-board-choice > small {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+.ting-board-choice > .ting-board-choice__blocked,
+.ting-board-panel__text.ting-board-choice__blocked {
+  color: var(--status-amber);
+}
+.ting-board-choice > button {
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--color-brand);
+  padding: var(--space-1) var(--space-3);
+  color: var(--color-bg-primary);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ting-board-choice__columns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.ting-board-chip {
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+  padding: 1px 8px;
+  color: var(--color-text-primary);
+  font-size: var(--text-xs);
+}
+.ting-board-chip--gate {
+  background: color-mix(in srgb, var(--status-amber) 18%, var(--color-bg-secondary));
+  color: var(--status-amber);
+}
 .ting-board-run__band small {
   color: var(--color-text-muted);
   font-weight: 400;

@@ -71,7 +71,7 @@ test('a project nobody can find says so', async ({ page }) => {
   await page.goto('/realms/projects/nope');
 
   await expect(page.getByText('No such project')).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('link', { name: 'Back to workspaces' }).click();
+  await page.getByRole('link', { name: 'Back to projects' }).click();
   await expect(page.getByTestId('realms-home')).toBeVisible();
 });
 

@@ -110,7 +110,18 @@ describe('RealmPage', () => {
             },
           ],
         },
-        'ting.work': { get: async () => ({ board: null, tasks: [], coverage: [] }) },
+        'ting.work': {
+          get: async () => ({
+            board: null,
+            tasks: [
+              {
+                source: { issueId: 'i-1', identifier: 'LXA-1', url: 'https://linear.app/x/LXA-1' },
+                title: 'First ticket',
+              },
+            ],
+            coverage: [],
+          }),
+        },
       },
       log,
     );

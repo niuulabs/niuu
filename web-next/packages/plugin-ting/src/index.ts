@@ -5,13 +5,10 @@ import { definePlugin } from '@niuulabs/plugin-sdk';
 import { WorkflowBuilderPage } from './ui/WorkflowBuilderPage';
 import { WorkflowsRoute } from './ui/WorkflowsRoute';
 import { WorkPage } from './ui/WorkPage';
-import { SagasPage } from './ui/SagasPage';
 import { DispatchView } from './ui/DispatchView';
 import { TingTopbar } from './ui/TingTopbar';
 import { TingFooter } from './ui/TingFooter';
-import { PlanWizard } from './ui/PlanWizard';
 import { ArtifactsPage } from './ui/artifacts/ArtifactsPage';
-import { PlanDetailPage } from './ui/PlanDetailPage';
 import { RunReviewPage, SessionArtifactsPage } from './ui/review/RunReviewPage';
 import { TicketReviewPage } from './ui/review/TicketReviewPage';
 import { TingSubnav } from './ui/TingSubnav';
@@ -171,15 +168,25 @@ export const tingPlugin = definePlugin({
       path: '/ting/specs/$slug',
       component: SpecsCampaignPage,
     }),
+    // Projects are managed on their workspace boards; old project links land in Work.
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting/sagas',
-      component: SagasPage,
+      beforeLoad: () => {
+        throw redirect({ to: '/ting/work' as never });
+      },
+      component: () => null,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting/sagas/$sagaId',
-      component: SagasPage,
+      beforeLoad: ({ params }) => {
+        throw redirect({
+          to: '/ting/work/$workId' as never,
+          params: { workId: `project:${params.sagaId}` } as never,
+        });
+      },
+      component: () => null,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -218,15 +225,25 @@ export const tingPlugin = definePlugin({
       },
       component: () => null,
     }),
+    // Delivery is planned by putting a planning workflow on a workspace board.
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting/plan/new',
-      component: PlanWizard,
+      beforeLoad: () => {
+        throw redirect({ to: '/realms' as never });
+      },
+      component: () => null,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting/plan/$slug',
-      component: PlanDetailPage,
+      beforeLoad: ({ params }) => {
+        throw redirect({
+          to: '/ting/artifacts/$slug' as never,
+          params: { slug: params.slug } as never,
+        });
+      },
+      component: () => null,
     }),
   ],
   subnav: () => TingSubnav(),
@@ -475,7 +492,6 @@ export {
 } from './ui/WorkflowLaunchForm';
 export { WorkflowStrip, gateWaitsForPerson, type WorkflowStripProps } from './ui/WorkflowStrip';
 export { WorkflowCatalogPage } from './ui/WorkflowCatalogPage';
-export { BoardWorkflowsCard } from './ui/BoardWorkflowsCard';
 export { TrackerBoard, useTrackerBoard } from './ui/TrackerBoard';
 export { TrackerWorkImportDialog } from './ui/TrackerWorkImportDialog';
 export { mergeWorkPages, useReviews, useWorkCollection } from './ui/useWork';

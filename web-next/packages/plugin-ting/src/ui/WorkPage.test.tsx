@@ -327,10 +327,8 @@ describe('WorkPage', () => {
     await screen.findByText('Define usage-based billing');
 
     fireEvent.click(screen.getByRole('button', { name: /new work/i }));
-    fireEvent.click(screen.getByRole('link', { name: 'Plan delivery' }));
-    expect(screen.queryByRole('dialog', { name: 'Start new work' })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: /new work/i }));
+    // Delivery is planned on a workspace board now, so New work offers no separate plan flow.
+    expect(screen.queryByRole('link', { name: 'Plan delivery' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('link', { name: 'Start research' }));
     expect(screen.queryByRole('dialog', { name: 'Start new work' })).not.toBeInTheDocument();
 

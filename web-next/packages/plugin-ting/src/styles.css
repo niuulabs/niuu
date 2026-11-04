@@ -1,6 +1,5 @@
 @import 'tailwindcss' prefix(niuu);
 
-@import './ui/DashboardPage.css';
 @import './ui/WorkflowBuilder/nodeAccent.css';
 @import './ui/WorkflowBuilder/workflowCanvas.css';
 @config "../tailwind.config.ts";

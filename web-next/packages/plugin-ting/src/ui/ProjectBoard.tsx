@@ -9,6 +9,12 @@ import {
   resolveBoardMove,
   type ProjectBoardColumn,
 } from '../domain/workBoard';
+import {
+  AddWorkflowColumn,
+  AddWorkflowPanel,
+  BoardBandMenu,
+  type BoardWorkflowEdits,
+} from './BoardWorkflowControls';
 import { StagePanel } from './StagePanel';
 import { TicketPanel, type GateIntent } from './TicketPanel';
 import { useStartTicket } from './useWork';
@@ -168,12 +174,16 @@ export function ProjectBoard({
   board,
   projectId,
   tasks,
+  edits,
 }: {
   board: WorkBoardLayout;
   projectId: string;
   tasks: WorkTask[];
+  /** Where the project is managed, its workflows are edited on the board itself. */
+  edits?: BoardWorkflowEdits;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
   const [stageWorkflowId, setStageWorkflowId] = useState<string | null>(null);
   const [intent, setIntent] = useState<GateIntent>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -185,6 +195,7 @@ export function ProjectBoard({
 
   function select(task: WorkTask) {
     setStageWorkflowId(null);
+    setAdding(false);
     setSelectedId(ticketId(task));
     setIntent(null);
     setNotice(null);
@@ -264,7 +275,7 @@ export function ProjectBoard({
   return (
     <div
       className={`ting-project-board${
-        selected || stageWorkflowId !== null ? ' ting-project-board--panel' : ''
+        selected || stageWorkflowId !== null || adding ? ' ting-project-board--panel' : ''
       }`}
       data-testid="project-board"
     >
@@ -272,6 +283,11 @@ export function ProjectBoard({
         {notice ? (
           <p className="ting-board-notice" role="status">
             {notice}
+          </p>
+        ) : null}
+        {edits?.error && !adding ? (
+          <p className="ting-board-notice" role="alert">
+            {edits.error}
           </p>
         ) : null}
         {pendingSkip ? (
@@ -301,22 +317,38 @@ export function ProjectBoard({
           {groups.backlog.map(renderColumn)}
           {groups.workflows.map((workflow) => (
             <div className="ting-board-run" key={workflow.id}>
-              <button
-                type="button"
-                className="ting-board-run__band"
-                aria-pressed={stageWorkflowId === workflow.id}
-                onClick={() => {
-                  setSelectedId(null);
-                  setStageWorkflowId((open) => (open === workflow.id ? null : workflow.id));
-                }}
-              >
-                <span>{workflow.name}</span>
-                <small>One run</small>
-              </button>
+              <div className="ting-board-run__head">
+                <button
+                  type="button"
+                  className="ting-board-run__band"
+                  aria-pressed={stageWorkflowId === workflow.id}
+                  onClick={() => {
+                    setSelectedId(null);
+                    setAdding(false);
+                    setStageWorkflowId((open) => (open === workflow.id ? null : workflow.id));
+                  }}
+                >
+                  <span>{workflow.name}</span>
+                  <small>One run</small>
+                </button>
+                {edits && workflow.id ? (
+                  <BoardBandMenu workflowId={workflow.id} name={workflow.name} edits={edits} />
+                ) : null}
+              </div>
               <div className="ting-board-run__columns">{workflow.columns.map(renderColumn)}</div>
             </div>
           ))}
           {groups.done.map(renderColumn)}
+          {edits ? (
+            <AddWorkflowColumn
+              open={adding}
+              onToggle={() => {
+                setSelectedId(null);
+                setStageWorkflowId(null);
+                setAdding((open) => !open);
+              }}
+            />
+          ) : null}
         </div>
         {groups.unplaced.length > 0 ? (
           <p className="ting-board-notice" role="status">
@@ -326,6 +358,7 @@ export function ProjectBoard({
           </p>
         ) : null}
       </div>
+      {adding && edits ? <AddWorkflowPanel edits={edits} onClose={() => setAdding(false)} /> : null}
       {stageWorkflowId !== null ? (
         <StagePanel
           board={board}

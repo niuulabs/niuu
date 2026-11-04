@@ -31,7 +31,7 @@ function services(detail: unknown) {
 
 describe('TrackerBoard', () => {
   it('draws the board of the Work project behind the tracker project', async () => {
-    const work = services({ board: { workflows: [] }, tasks: [], coverage: [] });
+    const work = services({ board: { columns: [] }, tasks: [], coverage: [] });
     render(<TrackerBoard trackerId="tracker-1" fallback="none" />, { wrapper: wrap(work) });
     expect(await screen.findByText('board for saga-1')).toBeInTheDocument();
     expect(work['ting.work'].get).toHaveBeenCalledWith('project', 'saga-1');
@@ -39,7 +39,7 @@ describe('TrackerBoard', () => {
 
   it('retries a source that fell short', async () => {
     const work = services({
-      board: { workflows: [] },
+      board: { columns: [] },
       tasks: [],
       coverage: [{ source: 'tracker', status: 'failed' }],
     });
@@ -55,11 +55,13 @@ describe('TrackerBoard', () => {
     expect(await screen.findByText('no board here')).toBeInTheDocument();
   });
 
-  it('shows the fallback when the project has no workflow with columns', async () => {
+  it('offers to add a workflow when the project has none with columns yet', async () => {
     render(<TrackerBoard trackerId="tracker-1" fallback="no columns" />, {
       wrapper: wrap(services({ board: null, tasks: [], coverage: [] })),
     });
-    expect(await screen.findByText('no columns')).toBeInTheDocument();
+    expect(await screen.findByText(/No workflows on this board yet/)).toBeInTheDocument();
+    expect(screen.getByTestId('board-add-workflow')).toBeInTheDocument();
+    expect(screen.queryByText('no columns')).toBeNull();
   });
 
   it('reports a board that could not load', async () => {

@@ -403,7 +403,7 @@ function BoardTab({
         fallback={
           <SectionCard
             title={`Tickets · ${intake.length}`}
-            description="Choose board workflows under Connections to run them from here."
+            description="This tracker is not connected to Work yet. Connect it under Connections to work its tickets on a board."
           >
             <IssueTable issues={intake} emptyText="Board is empty" />
           </SectionCard>
@@ -459,7 +459,7 @@ export function RealmPage() {
         message={`There is no workspace called ${slug}.`}
         action={
           <Link to="/realms" className={BUTTON}>
-            Back to workspaces
+            Back to projects
           </Link>
         }
       />
@@ -743,7 +743,9 @@ export function RealmPage() {
           />
         ) : null}
 
-        {tab === 'connections' ? <ConnectionsPanel realm={data.realm} view={view} /> : null}
+        {tab === 'connections' ? (
+          <ConnectionsPanel realm={data.realm} view={view} onOpenBoard={() => switchTab('board')} />
+        ) : null}
 
         {tab === 'sessions' ? (
           <div className="niuu:flex niuu:flex-col niuu:gap-4">

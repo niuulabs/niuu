@@ -1,65 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
-
-async function mockPlanWizardApi(page: Page) {
-  await page.route('**/api/v1/ting/sagas/plan', async (route) => {
-    if (route.request().method() === 'GET') {
-      await route.fulfill({ json: [] });
-      return;
-    }
-    await route.fulfill({
-      json: {
-        session_id: 'e2e-plan-session',
-        chat_endpoint: null,
-        questions: [{ id: 'scope', question: 'What should the plan cover?' }],
-      },
-    });
-  });
-  await page.route('**/api/v1/ting/sagas/decompose', (route) => route.fulfill({ json: [] }));
-  await page.route('**/api/v1/ting/sagas/extract-structure', (route) =>
-    route.fulfill({
-      json: {
-        found: true,
-        structure: {
-          name: 'Authentication plan',
-          phases: [
-            {
-              name: 'Build',
-              runs: [
-                {
-                  name: 'Implement authentication',
-                  description: 'Build the authentication module.',
-                  acceptance_criteria: ['Authentication succeeds'],
-                  declared_files: ['src/auth.ts'],
-                  estimate_hours: 4,
-                  confidence: 85,
-                },
-              ],
-            },
-          ],
-          risks: [],
-        },
-      },
-    }),
-  );
-  await page.route('**/api/v1/ting/sagas/commit', (route) =>
-    route.fulfill({
-      json: {
-        id: 'e2e-auth-saga',
-        tracker_id: 'E2E-1',
-        tracker_type: 'linear',
-        slug: 'authentication-plan',
-        name: 'Authentication plan',
-        repos: [],
-        feature_branch: 'feat/authentication-plan',
-        base_branch: 'main',
-        status: 'active',
-        confidence: 85,
-        created_at: '2026-09-20T00:00:00Z',
-        phase_summary: { total: 1, completed: 0 },
-      },
-    }),
-  );
-}
+import { test, expect } from '@playwright/test';
 
 test('ting lands on Work with the primary navigation only', async ({ page }) => {
   await page.goto('/ting');
@@ -71,30 +10,9 @@ test('ting lands on Work with the primary navigation only', async ({ page }) => 
   await expect(page.getByTestId('ting-tab-dispatch')).toHaveCount(0);
 });
 
-test('sagas route renders search, filters, and actions', async ({ page }) => {
+test('old project links land in Work, where projects are listed', async ({ page }) => {
   await page.goto('/ting/sagas');
-
-  await expect(page.getByRole('searchbox', { name: 'Search projects' })).toBeVisible({
-    timeout: 5000,
-  });
-  await expect(page.getByRole('searchbox', { name: 'Filter projects' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Import project from tracker' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Export projects as JSON' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Create new saga' })).toBeVisible();
-  const selectedSaga = page.getByRole('complementary').locator('button[aria-pressed="true"]');
-  await expect(selectedSaga).toBeVisible();
-  await expect(selectedSaga).toContainText(/\d+\/\d+ runs/i);
-});
-
-test('selecting a saga opens its detail route', async ({ page }) => {
-  await page.goto('/ting/sagas');
-
-  const selectedSaga = page.getByRole('complementary').locator('button[aria-pressed="true"]');
-  await expect(selectedSaga).toBeVisible({ timeout: 5000 });
-  await selectedSaga.click();
-
-  await expect(page).toHaveURL(/\/ting\/sagas\/[^/]+$/);
-  await expect(selectedSaga).toHaveAttribute('aria-pressed', 'true');
+  await expect(page).toHaveURL(/\/ting\/work$/);
 });
 
 test('dispatch route renders queue and rules surfaces', async ({ page }) => {
@@ -114,61 +32,9 @@ test('dispatch route search accepts input', async ({ page }) => {
   await expect(search).toHaveValue('auth');
 });
 
-test('plan wizard renders the prompt step', async ({ page }) => {
+test('the retired plan wizard sends people to Projects', async ({ page }) => {
   await page.goto('/ting/plan/new');
-
-  await expect(page.getByRole('form', { name: 'Plan prompt form' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Describe your goal' })).toBeVisible();
-  await expect(page.getByRole('navigation', { name: 'Plan wizard steps' })).toBeVisible();
-});
-
-test('plan wizard advances to clarifying questions', async ({ page }) => {
-  await mockPlanWizardApi(page);
-  await page.goto('/ting/plan/new');
-
-  await page.getByRole('textbox', { name: 'Goal description' }).fill('Build auth module');
-  await page.getByRole('button', { name: 'Next →' }).click();
-
-  await expect(page.getByRole('form', { name: 'Clarifying questions form' })).toBeVisible({
-    timeout: 5000,
-  });
-  await expect(page.getByRole('heading', { name: 'Clarify your plan' })).toBeVisible();
-});
-
-test('plan wizard can decompose into running and review states', async ({ page }) => {
-  await mockPlanWizardApi(page);
-  await page.goto('/ting/plan/new');
-
-  await page.getByRole('textbox', { name: 'Goal description' }).fill('Build auth module');
-  await page.getByRole('button', { name: 'Next →' }).click();
-  await expect(page.getByRole('form', { name: 'Clarifying questions form' })).toBeVisible({
-    timeout: 5000,
-  });
-
-  await page.getByRole('button', { name: 'Decompose ->' }).click();
-  await expect(page.getByLabel('Decomposing plan')).toBeVisible({ timeout: 5000 });
-  await expect(page.getByRole('heading', { name: 'Review your plan' })).toBeVisible({
-    timeout: 10000,
-  });
-});
-
-test('plan wizard can approve into the launched state', async ({ page }) => {
-  await mockPlanWizardApi(page);
-  await page.goto('/ting/plan/new');
-
-  await page.getByRole('textbox', { name: 'Goal description' }).fill('Build auth module');
-  await page.getByRole('button', { name: 'Next →' }).click();
-  await expect(page.getByRole('form', { name: 'Clarifying questions form' })).toBeVisible({
-    timeout: 5000,
-  });
-
-  await page.getByRole('button', { name: 'Decompose ->' }).click();
-  await expect(page.getByRole('heading', { name: 'Review your plan' })).toBeVisible({
-    timeout: 10000,
-  });
-
-  await page.getByRole('button', { name: 'Approve & Launch' }).click();
-  await expect(page.getByTestId('plan-approved')).toBeVisible({ timeout: 5000 });
+  await expect(page).toHaveURL(/\/realms$/);
 });
 
 test('workflow catalog opens the existing builder', async ({ page }) => {

@@ -210,9 +210,6 @@ function NewWorkDialog({
             </span>
           </div>
           <div className="ting-new-work-links">
-            <Link to="/ting/plan/new" onClick={() => onOpenChange(false)}>
-              Plan delivery
-            </Link>
             <Link
               to="/ting/research/new"
               search={{ returnTo: '/ting/work' } as never}
@@ -239,8 +236,13 @@ function sourceLabel(item: WorkSummary): string | null {
   return [item.source.provider, item.source.projectId].filter(Boolean).join(' · ');
 }
 
+/** A project is managed where its workspace lives, in Projects; Work only shows its tickets. */
+function specialistPath(item: WorkSummary): string {
+  return item.kind === 'project' ? '/realms' : item.links.specialist;
+}
+
 function specialistLabel(item: WorkSummary): string {
-  if (item.kind === 'project') return 'Project setup';
+  if (item.kind === 'project') return 'Manage in Projects';
   if (item.kind === 'specification' && item.actions.includes('review'))
     return 'Review specification';
   if (item.kind === 'research') return 'Open research';
@@ -367,7 +369,7 @@ function WorkDetailView({
           {sourceLabel(item) ? <small>{sourceLabel(item)}</small> : null}
           <div className="ting-board-bar__tools">
             <small>{detail.tasks.length} tickets</small>
-            <Link to={item.links.specialist as never}>{specialistLabel(item)}</Link>
+            <Link to={specialistPath(item) as never}>{specialistLabel(item)}</Link>
             <button type="button" className="ting-work-new-secondary" onClick={onNew}>
               <Plus aria-hidden="true" /> New work
             </button>
@@ -434,7 +436,7 @@ function WorkDetailView({
               Open definition
             </Link>
           ) : null}
-          <Link to={item.links.specialist as never} className="ting-work-primary-link">
+          <Link to={specialistPath(item) as never} className="ting-work-primary-link">
             {specialistLabel(item)} <ArrowRight aria-hidden="true" />
           </Link>
         </div>
@@ -453,7 +455,7 @@ function WorkDetailView({
             {item.attention.kind === 'decision' ? 'Your decision' : 'Needs attention'}
           </span>
           <h2>{item.attention.message}</h2>
-          <Link to={item.links.specialist as never}>{specialistLabel(item)}</Link>
+          <Link to={specialistPath(item) as never}>{specialistLabel(item)}</Link>
         </section>
       ) : hasMeaningfulCurrentStep ? (
         <section className="ting-work-current-step">

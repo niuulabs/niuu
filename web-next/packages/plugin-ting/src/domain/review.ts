@@ -104,12 +104,11 @@ export function moduleWidgetRef(widget: string): { module: string; name: string 
   return module && name && rest.length === 0 ? { module, name } : null;
 }
 
-/** Where a review lives: a ticket's or a run's review page, or its project plan's. */
+/** Where a review lives: a ticket's review page, or the run's page in Artifacts. */
 export function reviewPath(item: ReviewItem): string {
-  if (item.kind === 'run') return `/ting/artifacts/${item.taskId}`;
   return item.kind === 'ticket' && item.projectId && item.issueId
     ? `/ting/review/${item.projectId}/${item.issueId}`
-    : `/ting/plan/${item.taskId}`;
+    : `/ting/artifacts/${item.taskId}`;
 }
 
 /** A quote shorter than this would mark text that merely happens to match. */

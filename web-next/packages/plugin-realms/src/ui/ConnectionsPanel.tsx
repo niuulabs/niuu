@@ -2,10 +2,8 @@ import { useState } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import {
-  BoardWorkflowsCard,
   TrackerWorkImportDialog,
   mergeWorkPages,
-  useSaga,
   useTrackerBoard,
   useWorkCollection,
   type Saga,
@@ -165,11 +163,55 @@ function RepositoryCard({ view }: { view: RealmView }) {
   );
 }
 
+/** Which workflows the board runs; they are added, reordered and removed on the board itself. */
+function WorkflowsCard({
+  names,
+  loading,
+  onOpenBoard,
+}: {
+  names: string[];
+  loading: boolean;
+  onOpenBoard: () => void;
+}) {
+  return (
+    <SectionCard
+      title="Workflows"
+      description="Add, reorder or remove them where you see them, on the board."
+    >
+      <div
+        className="niuu:flex niuu:flex-wrap niuu:items-center niuu:justify-between niuu:gap-3"
+        data-testid="connection-workflows"
+      >
+        <span className="niuu:text-sm niuu:text-text-primary">
+          {loading ? 'Reading the board…' : names.length > 0 ? names.join(' → ') : 'None yet'}
+        </span>
+        <button type="button" className={BUTTON} onClick={onOpenBoard}>
+          Open the board
+        </button>
+      </div>
+    </SectionCard>
+  );
+}
+
 /** What a workspace is connected to, moved here from settings, Work and the wizard. */
-export function ConnectionsPanel({ realm, view }: { realm: RealmSummary; view: RealmView }) {
+export function ConnectionsPanel({
+  realm,
+  view,
+  onOpenBoard,
+}: {
+  realm: RealmSummary;
+  view: RealmView;
+  onOpenBoard: () => void;
+}) {
   const board = useTrackerBoard(view.binding?.trackerBoard || null);
-  // The list leaves out the board's workflows, so the card reads the project itself.
-  const saga = useSaga(board.saga?.id ?? '');
+  // Named from the board itself, which is what tickets actually run.
+  const names = [
+    ...new Set(
+      (board.detail?.board?.columns ?? []).flatMap((column) =>
+        column.workflowName ? [column.workflowName] : [],
+      ),
+    ),
+  ];
   return (
     <div className="niuu:flex niuu:flex-col niuu:gap-4" data-testid="realm-connections">
       <div className="niuu:grid niuu:grid-cols-[repeat(auto-fit,minmax(260px,1fr))] niuu:gap-4">
@@ -177,7 +219,9 @@ export function ConnectionsPanel({ realm, view }: { realm: RealmSummary; view: R
         <TrackerCard realm={realm} view={view} />
         <RepositoryCard view={view} />
       </div>
-      {saga.data ? <BoardWorkflowsCard saga={saga.data} /> : null}
+      {board.saga ? (
+        <WorkflowsCard names={names} loading={board.isLoading} onOpenBoard={onOpenBoard} />
+      ) : null}
     </div>
   );
 }

@@ -40,7 +40,7 @@ function TicketReview({
             Open ticket <ExternalLink aria-hidden="true" />
           </a>
           {planSlug ? (
-            <Link to={`/ting/plan/${planSlug}` as never}>Open the project plan</Link>
+            <Link to={`/ting/artifacts/${planSlug}` as never}>Open the project plan</Link>
           ) : null}
         </>
       }

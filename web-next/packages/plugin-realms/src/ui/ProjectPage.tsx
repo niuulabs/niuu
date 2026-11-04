@@ -95,7 +95,7 @@ export function ProjectPage() {
         message="This project does not exist, or no Forge you can reach holds it."
         action={
           <Link to="/realms" className={BUTTON}>
-            Back to workspaces
+            Back to projects
           </Link>
         }
       />

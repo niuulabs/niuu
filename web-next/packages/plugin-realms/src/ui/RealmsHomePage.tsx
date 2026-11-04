@@ -126,19 +126,19 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
       <header className="niuu:flex niuu:items-end niuu:justify-between niuu:gap-6">
         <div className="niuu:flex niuu:max-w-3xl niuu:flex-col niuu:gap-1.5">
           <span className="niuu:font-mono niuu:text-[11px] niuu:uppercase niuu:tracking-[0.3em] niuu:text-brand-300">
-            workspaces
+            projects
           </span>
           <h1 className="niuu:m-0 niuu:text-2xl niuu:font-bold niuu:tracking-tight niuu:text-text-primary">
             {home.error
-              ? 'Workspaces'
+              ? 'Projects'
               : home.cards.length === 0
-                ? 'No workspaces yet. Start with one sentence.'
-                : `${countWords(home.cards.length)} workspace${home.cards.length === 1 ? '' : 's'}, each kept by a resident.`}
+                ? 'No projects yet. Start with one sentence.'
+                : `${countWords(home.cards.length)} workspace${home.cards.length === 1 ? '' : 's'} across your projects, each kept by a resident.`}
           </h1>
           <p className="niuu:m-0 niuu:text-[15px] niuu:text-text-secondary">
-            A workspace is one resident and the job you give it, grouped by the project it serves.
-            It works its tickets in sessions, watches health and keeps learning. You review what it
-            asks you to.
+            A project is what you work on, and its workspaces sit under it. A workspace is one
+            resident and the job you give it: it works its tickets in sessions, watches health and
+            keeps learning. You review what it asks you to.
           </p>
         </div>
         <div className="niuu:flex niuu:shrink-0 niuu:gap-2">
@@ -157,9 +157,9 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
       <SentenceComposer />
 
       {home.error ? (
-        <ErrorState title="Could not load workspaces" message={String(home.error)} />
+        <ErrorState title="Could not load projects" message={String(home.error)} />
       ) : home.isLoading ? (
-        <LoadingState label="Loading workspaces…" />
+        <LoadingState label="Loading projects…" />
       ) : view === 'templates' ? (
         <TemplatesView />
       ) : view === 'needs-you' ? (
@@ -186,8 +186,8 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
         <>
           {home.cards.length === 0 ? (
             <EmptyState
-              title="No workspaces yet"
-              description="Type a sentence above, or set one up step by step."
+              title="No projects yet"
+              description="Type a sentence above to start a workspace, or set one up step by step."
               action={
                 <Link to="/realms/new" className={PRIMARY}>
                   Set one up step by step

@@ -46,7 +46,7 @@ export const RECIPE_STEPS: RecipeStep[] = [
   { id: 'persona', label: 'write the persona', detailPath: '/ravn/personas' },
   { id: 'trust', label: 'grant trust', detailPath: '/valkyrie' },
   { id: 'jobs', label: 'schedule standing jobs', detailPath: '/ravn' },
-  { id: 'board', label: 'import the tracker board', detailPath: '/ting/sagas' },
+  { id: 'board', label: 'import the tracker board', detailPath: '/ting/work' },
   { id: 'charter', label: 'write the charter to memory', detailPath: '/mimir' },
   { id: 'resident', label: 'start the resident', detailPath: '/ravn/ravens' },
 ];
