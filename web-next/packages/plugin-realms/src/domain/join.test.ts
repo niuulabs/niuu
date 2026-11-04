@@ -243,6 +243,35 @@ describe('realm joins', () => {
       runningSessions: 1,
     });
     expect(view.binding?.trackerBoard).toBe('board-1');
+    expect(view.adopted).toBe(false);
+  });
+
+  it("reads an adopted resident's own persona and charter, not the realm-<slug> ones", () => {
+    const regin = {
+      ...resident,
+      name: 'lexi-api',
+      persona: 'regin',
+      charter: 'Steward the **delivery**.',
+    };
+    const boardOnly = grants.map((grant) =>
+      grant.action_class === 'observe'
+        ? { ...grant, limits: { tracker_board: 'board-1', mount_target: '' } }
+        : grant,
+    );
+    const view = buildRealmView({
+      realm,
+      dashboard: { valkyries: [regin], environments: [] } as unknown as ValkyrieDashboard,
+      ravens: [],
+      grants: boardOnly,
+      reviews,
+      sessions,
+    });
+    expect(view).toMatchObject({
+      adopted: true,
+      personaName: 'regin',
+      residentLabel: 'lexi-api',
+      residentCharter: 'Steward the **delivery**.',
+    });
   });
 });
 

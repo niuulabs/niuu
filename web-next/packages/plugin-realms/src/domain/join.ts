@@ -162,14 +162,20 @@ export function buildRealmView(input: {
   const resident = residentForRealm(input.dashboard, realm.slug);
   const ravn = ravnForRealm(input.ravens, realm.slug, realm.id);
   const sessions = sessionsForRealm(input.sessions, realm.slug);
+  const binding = bindingFromGrants(input.grants);
+  // The create recipe always names where the workspace memory goes; adopting names none.
+  const adopted = !binding?.mountTarget;
   return {
     slug: realm.slug,
     name: realm.name,
     autonomyProfile: realm.autonomy_profile,
     instanceId: realm.instance_id,
-    binding: bindingFromGrants(input.grants),
-    personaName: personaNameFor(realm.slug),
+    binding,
+    adopted,
+    personaName: adopted && resident ? resident.persona : personaNameFor(realm.slug),
     residentName: residentNameFor(realm.slug),
+    residentLabel: resident?.name ?? null,
+    residentCharter: resident?.charter ?? '',
     environmentId: resident?.environmentId ?? null,
     wakefulness: resident?.wakefulness ?? null,
     autonomyMode: resident?.autonomyMode ?? null,

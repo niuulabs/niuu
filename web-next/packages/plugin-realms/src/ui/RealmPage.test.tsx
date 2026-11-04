@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { createSeedRealms } from '@niuulabs/plugin-valkyrie';
+import { createMockValkyrieService, createSeedRealms } from '@niuulabs/plugin-valkyrie';
 import {
   createCallLog,
+  fakePersonas,
   fakeRealmService,
   fakeTracker,
   workspaceWithWaitingTicket,
@@ -194,5 +195,59 @@ describe('RealmPage', () => {
     expect(await screen.findByText(/Triggers that wake the resident/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Memory' }));
     expect(await screen.findByText(/realms\/valhalla\/charter.md/)).toBeInTheDocument();
+  });
+
+  it("shows an adopted resident's own charter, lifecycle and memory", async () => {
+    const user = userEvent.setup();
+    const log = createCallLog();
+    const realms = fakeRealmService(log, createSeedRealms());
+    // Adopting names a board but no memory target: nothing was deployed for the workspace.
+    await realms.createTrustGrant('valhalla', {
+      action_class: 'observe',
+      target: '*',
+      level: 2,
+      limits: { tracker_board: 'board-1', mount_target: '' },
+    });
+    const valkyrie = createMockValkyrieService();
+    const dashboard = valkyrie.getDashboard.bind(valkyrie);
+    renderRealms(
+      '/realms/valhalla',
+      {
+        'valkyrie.realms': realms,
+        valkyrie: {
+          ...valkyrie,
+          getDashboard: async () => {
+            const data = await dashboard();
+            return {
+              ...data,
+              valkyries: data.valkyries.map((entry) => ({
+                ...entry,
+                charter: 'Keep **valhalla** healthy.',
+              })),
+            };
+          },
+        },
+        // The resident's persona lives in its own deployment, not the registry.
+        'ravn.personas': {
+          ...fakePersonas(log),
+          getPersona: async () => Promise.reject(Object.assign(new Error('nope'), { status: 404 })),
+        },
+      },
+      log,
+    );
+    await screen.findByTestId('realm-page');
+    await user.click(screen.getByRole('button', { name: 'Resident' }));
+    const charter = await screen.findByTestId('resident-charter');
+    expect(charter.querySelector('strong')).toHaveTextContent('valhalla');
+    expect(screen.getByText(/Sigrun runs persona cluster-guardian/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Lifecycle' }));
+    expect(await screen.findByText(/Sigrun was running before the workspace/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Memory' }));
+    expect(
+      await screen.findByText(/Sigrun has not reported where it keeps its memory/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Workspace memory is still starting')).not.toBeInTheDocument();
   });
 });

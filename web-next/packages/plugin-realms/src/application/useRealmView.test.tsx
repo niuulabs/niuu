@@ -134,7 +134,8 @@ describe('useRealmView', () => {
         action_class: 'observe',
         target: 'github.com/niuulabs/niuu',
         level: 1,
-        limits: { tracker_board: 'board-1' },
+        // The create recipe always names where the workspace memory is made.
+        limits: { tracker_board: 'board-1', mount_target: 'shared' },
         granted_by: null,
         granted_at: '2026-10-18T00:00:00Z',
       },

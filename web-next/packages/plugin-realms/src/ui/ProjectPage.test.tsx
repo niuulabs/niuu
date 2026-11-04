@@ -127,7 +127,8 @@ describe('ProjectPage', () => {
     expect(row).toHaveTextContent('Valhalla · NIU-1 · Review the result');
     expect(within(row).getByRole('link', { name: 'Review' })).toHaveAttribute(
       'href',
-      '/ting/review/link-1/issue-1',
+      // Review links carry the page they were opened from, so the review can lead back.
+      '/ting/review/link-1/issue-1?returnTo=%2Frealms%2Fprojects%2Fproject-yggdrasil',
     );
     const card = within(screen.getByTestId('realm-card-valhalla'));
     await waitFor(() => expect(card.getByText('Review 1')).toBeInTheDocument());
