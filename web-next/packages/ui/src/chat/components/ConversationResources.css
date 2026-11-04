@@ -34,6 +34,12 @@
   border-radius: 10px;
   background: var(--color-bg-secondary);
 }
+.niuu-chat-presented-file > div {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
 .niuu-chat-presented-file strong {
   overflow-wrap: anywhere;
 }

@@ -147,7 +147,8 @@ function RunWorkspace({
       <ReviewWorkspace
         subject={{
           identifier: null,
-          title: record.run.workflowName,
+          // What the run is about; the workflow is named on the path beside it.
+          title: record.run.title,
           gate,
           pullRequestUrl: null,
           canAsk: false,

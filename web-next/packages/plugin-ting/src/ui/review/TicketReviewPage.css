@@ -233,14 +233,16 @@
   max-width: none;
 }
 
-.ting-review-panel__file iframe {
+.ting-review-panel__file iframe,
+.ting-review-panel__file .niuu-image-preview {
   width: 100%;
   height: calc(100vh - 300px);
   min-height: 420px;
   border: 0;
 }
 
-.ting-review-panel a {
+/* :where keeps shared widgets' own link styles (the file preview's Download) winning. */
+.ting-review-panel :where(a) {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);

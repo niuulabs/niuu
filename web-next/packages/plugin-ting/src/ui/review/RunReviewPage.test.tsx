@@ -1,7 +1,9 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { Blob as NodeBlob } from 'node:buffer';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import type { IFileSystemPort } from '@niuulabs/ui';
 import type { IRunLogService, IWorkService, IWorkflowService } from '../../ports';
 import type { ReviewRevision, RunReviews } from '../../domain/review';
 import type { WorkSummary } from '../../domain/work';
@@ -166,7 +168,11 @@ describe('RunReviewPage', () => {
   it('introduces the run and what started it', async () => {
     setup();
 
-    expect(await screen.findByRole('heading', { name: 'Infra Change Flow' })).toBeInTheDocument();
+    // The run is named by what it is about; its workflow is on the path beside it.
+    expect(await screen.findByRole('heading', { name: 'Plan NIU-1125 only' })).toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'Workflow' })).toHaveTextContent(
+      'Infra Change Flow',
+    );
     expect(screen.getByText('Started by regin')).toBeInTheDocument();
     expect(screen.getByText('On regin')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open the session' })).toHaveAttribute(
@@ -431,12 +437,17 @@ describe('SessionArtifactsPage', () => {
     search.value = { instance: 'valhalla' };
   });
 
-  function renderSession(runLog: Partial<IRunLogService>) {
+  function renderSession(runLog: Partial<IRunLogService>, filesystem?: Partial<IFileSystemPort>) {
     render(
       <QueryClientProvider
         client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
       >
-        <ServicesProvider services={{ 'ting.runLog': { presentedText, ...runLog } }}>
+        <ServicesProvider
+          services={{
+            'ting.runLog': { presentedText, ...runLog },
+            ...(filesystem ? { filesystem } : {}),
+          }}
+        >
           <SessionArtifactsPage />
         </ServicesProvider>
       </QueryClientProvider>,
@@ -490,6 +501,23 @@ describe('SessionArtifactsPage', () => {
         expect.stringContaining('Shorter, please.'),
       ),
     );
+  });
+
+  it("shows a presented file in place from Forge's stored copy", async () => {
+    const downloadPresentedFile = vi
+      .fn()
+      .mockResolvedValue(new NodeBlob(['<svg/>'], { type: 'image/svg+xml' }) as unknown as Blob);
+    renderSession(
+      {
+        session: vi.fn().mockResolvedValue(null),
+        publications: vi.fn().mockResolvedValue(FILES),
+      },
+      { downloadPresentedFile },
+    );
+
+    expect(await screen.findByRole('img', { name: 'Architecture Diagram' })).toBeInTheDocument();
+    expect(downloadPresentedFile.mock.calls[0]?.slice(0, 2)).toEqual(['session-b10', 'pf_2']);
+    expect(screen.queryByTestId('presented-file-card')).not.toBeInTheDocument();
   });
 
   it('takes no notes once the session stopped, and still opens its files', async () => {

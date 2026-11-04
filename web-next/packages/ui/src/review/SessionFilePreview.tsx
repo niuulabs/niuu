@@ -7,28 +7,43 @@ import { ResourcePreviewContent, loadPreview, type LoadedPreview } from './Resou
 export function SessionFilePreview({
   sessionId,
   path,
+  presented,
   filesystem,
 }: {
   sessionId: string;
-  /** Absolute path in the session's workspace. */
+  /** Absolute path in the session's workspace, or the file's id when it was presented. */
   path: string;
+  /** A file the session presented: Forge's stored copy, which outlives the session. */
+  presented?: { name: string; mime?: string };
   filesystem: IFileSystemPort;
 }) {
   const fileKey = `${sessionId}:${path}`;
   const [read, setRead] = useState<{ key: string; preview?: LoadedPreview; error?: string }>();
+  const presentedName = presented?.name;
+  const presentedMime = presented?.mime;
   const resource = useMemo<ConversationResource>(
-    () => ({ kind: 'workspace', path, name: path.split('/').at(-1) ?? path }),
-    [path],
+    () =>
+      presentedName !== undefined
+        ? {
+            kind: 'presented',
+            path,
+            name: presentedName,
+            ...(presentedMime ? { mime: presentedMime } : {}),
+          }
+        : { kind: 'workspace', path, name: path.split('/').at(-1) ?? path },
+    [path, presentedName, presentedMime],
   );
+  const download =
+    resource.kind === 'presented' ? filesystem.downloadPresentedFile : filesystem.downloadFile;
 
   useEffect(() => {
-    if (!filesystem.downloadFile) return;
+    if (!download) return;
     const abort = new AbortController();
     let url: string | undefined;
-    void filesystem
-      .downloadFile(sessionId, path, abort.signal)
+    void download
+      .call(filesystem, sessionId, path, abort.signal)
       .then(async (blob) => {
-        const preview = await loadPreview(blob, resource.name);
+        const preview = await loadPreview(blob, resource.name, resource.mime);
         if (abort.signal.aborted) {
           URL.revokeObjectURL(preview.url);
           return;
@@ -45,10 +60,16 @@ export function SessionFilePreview({
       abort.abort();
       if (url) URL.revokeObjectURL(url);
     };
-  }, [fileKey, filesystem, path, resource.name, sessionId]);
+  }, [download, fileKey, filesystem, path, resource, sessionId]);
 
-  if (!filesystem.downloadFile) {
-    return <p role="alert">File downloads are unavailable on this backend.</p>;
+  if (!download) {
+    return (
+      <p role="alert">
+        {resource.kind === 'presented'
+          ? 'Presented-file downloads are unavailable on this backend.'
+          : 'File downloads are unavailable on this backend.'}
+      </p>
+    );
   }
   const current = read?.key === fileKey ? read : undefined;
   if (current?.error) return <p role="alert">{current.error}</p>;

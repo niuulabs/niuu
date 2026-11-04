@@ -254,10 +254,23 @@ function PullRequestPanel({ pullRequestUrl, revision }: ReviewPanelProps) {
   );
 }
 
-/** A file a session presented that is not text: it opens in the shared file preview. */
-function PresentedFilePanel({ panel, revision }: ReviewPanelProps) {
+/** A file a session presented that is not text, shown in place from Forge's stored copy. */
+function PresentedFilePanel({ panel, revision, filesystem, sessionId }: ReviewPanelProps) {
   const field = panel.source?.value ?? '';
   const fileId = revision.fields[field] ?? '';
+  const name = revision.fields[presentedFileName(field)] ?? panel.title;
+  const mime = revision.fields[presentedFileMime(field)];
+  if (filesystem && sessionId && fileId)
+    return (
+      <div className="ting-review-panel__file">
+        <SessionFilePreview
+          sessionId={sessionId}
+          path={fileId}
+          presented={{ name, ...(mime ? { mime } : {}) }}
+          filesystem={filesystem}
+        />
+      </div>
+    );
   return (
     <PresentedFileCard
       block={{
@@ -266,8 +279,8 @@ function PresentedFilePanel({ panel, revision }: ReviewPanelProps) {
         name: 'present_file',
         input: {
           file_id: fileId,
-          name: revision.fields[presentedFileName(field)] ?? panel.title,
-          mime: revision.fields[presentedFileMime(field)],
+          name,
+          mime,
         },
       }}
     />

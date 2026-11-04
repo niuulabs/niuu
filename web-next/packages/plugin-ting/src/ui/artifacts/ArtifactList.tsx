@@ -156,9 +156,12 @@ export function ArtifactList({ projectId }: { projectId?: string }) {
       (!kind || row.kind === kind) &&
       (!needle || `${row.title} ${row.byline}`.toLowerCase().includes(needle)),
   );
-  const waiting = rows.filter((row) => row.status === 'waiting');
+  // With no status picked, what waits is listed once, above the projects.
+  const waitingFirst = status === null;
+  const waiting = waitingFirst ? shown.filter((row) => row.status === 'waiting') : [];
   const groups = new Map<string, ListRow[]>();
   for (const row of shown) {
+    if (waitingFirst && row.status === 'waiting') continue;
     const name = row.project?.name ?? NO_PROJECT;
     groups.set(name, [...(groups.get(name) ?? []), row]);
   }
@@ -233,7 +236,7 @@ export function ArtifactList({ projectId }: { projectId?: string }) {
         </p>
       ) : null}
 
-      {status === null && waiting.length > 0 ? (
+      {waiting.length > 0 ? (
         <section className="ting-artifacts__waiting" aria-label="Waiting on you">
           <h2>Waiting on you · {waiting.length}</h2>
           {waiting.map((row) => (

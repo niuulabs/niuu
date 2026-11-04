@@ -145,12 +145,12 @@ describe('ArtifactList', () => {
     const waiting = await screen.findByRole('region', { name: 'Waiting on you' });
     expect(within(waiting).getByText('Developer Planning')).toBeInTheDocument();
     const group = screen.getByRole('region', { name: 'No project' });
-    await waitFor(() => expect(within(group).getAllByTestId('artifact-row')).toHaveLength(4));
+    await waitFor(() => expect(within(group).getAllByTestId('artifact-row')).toHaveLength(3));
     const rows = within(group).getAllByTestId('artifact-row');
+    // What waits is listed once, above the projects, not again in its project.
     expect(rows.map((row) => row.textContent)).toEqual([
       expect.stringContaining('Ad hoc notes'),
       expect.stringContaining('Research report'),
-      expect.stringContaining('plan.md · v2 of 2 versions'),
       expect.stringContaining('Session session- (gone)'),
     ]);
     expect(rows[0]).toHaveTextContent('notes.md');
@@ -158,7 +158,10 @@ describe('ArtifactList', () => {
       'href',
       '/ting/artifacts/session/session-elsewhere?artifact=session-elsewhere%3Anotes&instance=valhalla',
     );
-    expect(rows[2]).toHaveAttribute(
+    const plan = within(waiting)
+      .getByText(/plan\.md · v2 of 2 versions/)
+      .closest('a');
+    expect(plan).toHaveAttribute(
       'href',
       '/ting/artifacts/a2a-plan?artifact=session-a2a-plan%3Aplan',
     );
@@ -236,12 +239,14 @@ describe('ArtifactList', () => {
     expect(
       screen.getByText('Session session-elsewhere: Session lookup failed'),
     ).toBeInTheDocument();
+    const waiting = screen.getByRole('region', { name: 'Waiting on you' });
+    expect(within(waiting).getAllByTestId('artifact-row')[0]).toHaveTextContent('Plan');
     const group = screen.getByRole('region', { name: 'No project' });
     expect(
       within(group)
         .getAllByTestId('artifact-row')
         .map((row) => row.textContent),
-    ).toEqual([expect.stringContaining('Plan'), expect.stringContaining('(gone)')]);
+    ).toEqual([expect.stringContaining('(gone)')]);
   });
 
   it("for one project lists only its own sessions' files", async () => {
