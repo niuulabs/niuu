@@ -1,0 +1,15 @@
+.niuu-sidebar-resizer {
+  flex: 0 0 7px;
+  width: 7px;
+  align-self: stretch;
+  cursor: col-resize;
+  touch-action: none;
+  border: 0;
+  background: var(--color-border-subtle);
+  padding: 0;
+}
+.niuu-sidebar-resizer:hover,
+.niuu-sidebar-resizer:focus-visible {
+  background: var(--color-brand);
+  outline: none;
+}

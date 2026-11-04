@@ -168,8 +168,12 @@
     overflow-y: auto;
   }
 
+  .ting-workflow-catalog__resizer {
+    display: none;
+  }
+
   .ting-workflow-catalog__sidebar {
-    flex: 0 0 auto;
+    flex: 0 0 auto !important;
     max-height: 260px;
     border-right: 0;
     border-bottom: 1px solid var(--color-border-subtle);

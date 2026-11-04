@@ -97,19 +97,6 @@
 .forge-session-state[data-state='failed'] {
   color: var(--color-critical);
 }
-.forge-session-resizer {
-  flex: 0 0 7px;
-  cursor: col-resize;
-  touch-action: none;
-  border: 0;
-  background: var(--color-border-subtle);
-  padding: 0;
-}
-.forge-session-resizer:hover,
-.forge-session-resizer:focus-visible {
-  background: var(--color-brand);
-  outline: none;
-}
 .forge-session-list button:focus-visible {
   outline: 2px solid var(--color-brand);
   outline-offset: -2px;

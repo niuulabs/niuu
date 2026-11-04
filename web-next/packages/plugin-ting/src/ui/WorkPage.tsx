@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
@@ -15,7 +15,16 @@ import {
   Search,
   TicketCheck,
 } from 'lucide-react';
-import { EmptyState, ErrorState, LoadingState, Modal, relTime } from '@niuulabs/ui';
+import {
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  Modal,
+  SidebarResizer,
+  relTime,
+  useResizableSidebar,
+  type SidebarBounds,
+} from '@niuulabs/ui';
 import type { IDispatchBus } from '../ports';
 import type {
   WorkCollection,
@@ -41,6 +50,9 @@ import {
 import './WorkPage.css';
 
 type WorkFilter = 'overview' | 'attention' | 'active' | 'completed' | 'failed';
+
+/** The Work sidebar's width bounds; the person drags its edge between them. */
+const WORK_SIDEBAR: SidebarBounds = { default: 240, min: 200, max: 480, keyboardStep: 20 };
 
 const FILTER_LABEL: Record<WorkFilter, string> = {
   overview: 'Overview',
@@ -658,6 +670,7 @@ function WorkOverview({
 export function WorkPage() {
   const navigate = useNavigate();
   const pageQueryClient = useQueryClient();
+  const sidebar = useResizableSidebar('niuu.work.sidebarWidth', WORK_SIDEBAR);
   const params = useParams({ strict: false }) as { workId?: string };
   const routeIdentity = parseWorkRouteId(params.workId);
   const invalidRouteIdentity = Boolean(params.workId && !routeIdentity);
@@ -757,6 +770,7 @@ export function WorkPage() {
       className={`ting-work-page${routeIdentity ? ' ting-work-page--detail' : ''}${
         routeIdentity && view === 'board' && detailQuery.data?.board ? ' ting-work-page--board' : ''
       }`}
+      style={{ '--ting-work-sidebar-width': `${sidebar.width}px` } as CSSProperties}
     >
       <aside className="ting-work-sidebar" aria-label="Work workspace">
         <div className="ting-work-sidebar__brand">
@@ -801,6 +815,11 @@ export function WorkPage() {
           </Link>
         </div>
       </aside>
+      <SidebarResizer
+        label="Resize work sidebar"
+        className="ting-work-sidebar-resizer"
+        {...sidebar.resizer}
+      />
 
       <div className="ting-work-content" ref={contentRef}>
         {routeIdentity ? (

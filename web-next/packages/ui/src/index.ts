@@ -35,6 +35,7 @@ export * from './composites/LifecycleBadge';
 export * from './composites/Modal';
 export * from './primitives/Meter';
 export * from './primitives/SegmentedFilter';
+export * from './primitives/ResizableSidebar';
 export type { Option } from './primitives/option';
 export * from './primitives/Field';
 export * from './primitives/Input';

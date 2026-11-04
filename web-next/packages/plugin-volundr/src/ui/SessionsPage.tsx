@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
@@ -12,6 +12,8 @@ import {
   DialogContent,
   Tooltip,
   TooltipProvider,
+  SidebarResizer,
+  useResizableSidebar,
 } from '@niuulabs/ui';
 import type { DotState } from '@niuulabs/ui';
 import {
@@ -52,7 +54,6 @@ import {
   SESSION_STATE_LABELS,
   STOPPABLE_STATES,
   SIDEBAR_WIDTH,
-  sidebarWidth,
   matchesSessionFilter,
   type SessionFilter,
 } from './sessions/presentation';
@@ -600,13 +601,7 @@ export function SessionsPage() {
   const [filter, setFilter] = useForgePreference<SessionFilter>('filter', 'live', SESSION_FILTERS);
   const [details, setDetails] = useForgePreference('details', '0', ['0', '1']);
   const [tokens, setTokens] = useForgePreference('tokens', '0', ['0', '1']);
-  const [storedWidth, setStoredWidth] = useForgePreference<string>(
-    'sidebarWidth',
-    String(SIDEBAR_WIDTH.default),
-  );
-  const [dragWidth, setDragWidth] = useState<number | null>(null);
-  const width = dragWidth ?? sidebarWidth(storedWidth);
-  const drag = useRef<{ x: number; width: number } | null>(null);
+  const { width, resizer } = useResizableSidebar('niuu.forge.sidebarWidth', SIDEBAR_WIDTH);
   const [rowBusyId, setRowBusyId] = useState<string>();
   const [actionError, setActionError] = useState<string>();
   const [deleteTarget, setDeleteTarget] = useState<Session | null>(null);
@@ -1204,54 +1199,10 @@ export function SessionsPage() {
 
         {/* ── Main content: session detail ───────────────────────── */}
         {!sidebarCollapsed && (
-          <div
-            role="separator"
-            aria-label="Resize session list"
-            aria-orientation="vertical"
-            aria-valuemin={SIDEBAR_WIDTH.min}
-            aria-valuemax={SIDEBAR_WIDTH.max}
-            aria-valuenow={width}
-            tabIndex={0}
+          <SidebarResizer
+            label="Resize session list"
             className="forge-session-resizer"
-            onPointerDown={(event) => {
-              drag.current = { x: event.clientX, width };
-              event.currentTarget.setPointerCapture(event.pointerId);
-            }}
-            onPointerMove={(event) => {
-              if (drag.current)
-                setDragWidth(sidebarWidth(drag.current.width + event.clientX - drag.current.x));
-            }}
-            onPointerUp={(event) => {
-              if (!drag.current) return;
-              setStoredWidth(
-                String(sidebarWidth(drag.current.width + event.clientX - drag.current.x)),
-              );
-              drag.current = null;
-              setDragWidth(null);
-            }}
-            onPointerCancel={() => {
-              drag.current = null;
-              setDragWidth(null);
-            }}
-            onKeyDown={(event) => {
-              if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-              event.preventDefault();
-              setStoredWidth(
-                String(
-                  sidebarWidth(
-                    event.key === 'Home'
-                      ? SIDEBAR_WIDTH.min
-                      : event.key === 'End'
-                        ? SIDEBAR_WIDTH.max
-                        : width +
-                          (event.key === 'ArrowRight'
-                            ? SIDEBAR_WIDTH.keyboardStep
-                            : -SIDEBAR_WIDTH.keyboardStep),
-                  ),
-                ),
-              );
-            }}
-            onDoubleClick={() => setStoredWidth(String(SIDEBAR_WIDTH.default))}
+            {...resizer}
           />
         )}
 

@@ -1482,7 +1482,7 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.queryByRole('tab', { name: /Terminal/i })).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole('tab', { name: /Logs/i }));
       localStorage.setItem('niuu.forge.sessionTabs', 'chat,files');
-      fireEvent(window, new Event('niuu:forge-preferences'));
+      fireEvent(window, new Event('niuu:preferences'));
       await waitFor(() =>
         expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute('aria-selected', 'true'),
       );

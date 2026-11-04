@@ -12,7 +12,14 @@ import { useMemo, useState } from 'react';
 import { Link, useNavigate, useSearch } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useOptionalService, useService } from '@niuulabs/plugin-sdk';
-import { LoadingState, cn, type RepoRecord } from '@niuulabs/ui';
+import {
+  LoadingState,
+  SidebarResizer,
+  cn,
+  useResizableSidebar,
+  type RepoRecord,
+  type SidebarBounds,
+} from '@niuulabs/ui';
 import { Workflow as WorkflowIcon } from 'lucide-react';
 import type { IDispatchBus, ITrackerBrowserService, TrackerIssue } from '../ports';
 import type { Workflow } from '../domain/workflow';
@@ -133,7 +140,11 @@ function useWorkflowRunCounts(): Record<string, number> {
   return counts;
 }
 
+/** The workflow list's width bounds; the person drags its edge between them. */
+const CATALOG_SIDEBAR: SidebarBounds = { default: 320, min: 240, max: 560, keyboardStep: 20 };
+
 export function WorkflowCatalogPage() {
+  const sidebar = useResizableSidebar('niuu.work.workflowsSidebarWidth', CATALOG_SIDEBAR);
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as WorkflowCatalogSearch;
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
@@ -221,7 +232,11 @@ export function WorkflowCatalogPage() {
 
   return (
     <div data-testid="workflow-catalog-page" className="ting-workflow-catalog">
-      <aside className="ting-workflow-catalog__sidebar" aria-label="Workflow catalog">
+      <aside
+        className="ting-workflow-catalog__sidebar"
+        aria-label="Workflow catalog"
+        style={{ flexBasis: `${sidebar.width}px` }}
+      >
         <div className="ting-workflow-catalog__heading">
           <h2>Workflows</h2>
           <div className="niuu:flex niuu:items-center niuu:gap-2">
@@ -268,6 +283,11 @@ export function WorkflowCatalogPage() {
           ))}
         </div>
       </aside>
+      <SidebarResizer
+        label="Resize workflow list"
+        className="ting-workflow-catalog__resizer"
+        {...sidebar.resizer}
+      />
 
       {importOpen ? (
         <WorkflowImportDialog

@@ -1,6 +1,6 @@
 .ting-work-page {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: var(--ting-work-sidebar-width, 240px) auto minmax(0, 1fr);
   min-height: 100%;
   height: 100%;
   overflow: hidden;
@@ -1045,7 +1045,8 @@ button.ting-work-card:hover {
 .ting-work-page--board {
   grid-template-columns: minmax(0, 1fr);
 }
-.ting-work-page--board .ting-work-sidebar {
+.ting-work-page--board .ting-work-sidebar,
+.ting-work-page--board .ting-work-sidebar-resizer {
   display: none;
 }
 .ting-work-detail--board {
@@ -1435,7 +1436,8 @@ button.ting-work-card:hover {
   .ting-work-page {
     display: block;
   }
-  .ting-work-sidebar {
+  .ting-work-sidebar,
+  .ting-work-sidebar-resizer {
     display: none;
   }
   .ting-work-content {
