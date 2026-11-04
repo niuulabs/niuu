@@ -582,24 +582,6 @@ async def test_runtime_telemetry_reports_the_served_store_where_its_gateway_serv
 
 
 @pytest.mark.asyncio
-async def test_runtime_identity_is_republished_for_readers_that_restarted() -> None:
-    bus = InProcessBus()
-    telemetry: list[SleipnirEvent] = []
-    await bus.subscribe(["valkyrie.runtime.started"], lambda event: _record(telemetry, event))
-    settings = _settings()
-    settings.environment.runtime_snapshot_interval_seconds = 0.01
-    runtime = EnvironmentSignalRuntime(settings=settings, publisher=bus, enqueue=None)
-
-    await runtime.start()
-    await asyncio.sleep(0.05)
-    await runtime.stop()
-    await bus.flush()
-
-    assert len(telemetry) >= 3
-    assert all("memory" in event.payload for event in telemetry)
-
-
-@pytest.mark.asyncio
 async def test_runtime_telemetry_reports_no_memory_when_mimir_is_disabled() -> None:
     settings = _settings()
     settings.mimir.enabled = False
@@ -682,7 +664,6 @@ def test_idle_triage_prompt_is_bounded_regardless_of_batch_size() -> None:
 
 @pytest.mark.asyncio
 async def test_idle_triage_loop_enqueues_and_resets_batch() -> None:
-    import asyncio
 
     bus = InProcessBus()
     enqueued: list[AgentTask] = []

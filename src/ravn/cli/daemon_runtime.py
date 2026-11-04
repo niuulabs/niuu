@@ -534,6 +534,7 @@ async def _run_daemon(
     present_file_relay: Any = None
     environment_signal_runtime: Any | None = None
     resident_wakefulness: Any | None = None
+    resident_identity: Any | None = None
     odin_court: Any | None = None
     feedback_recorder: Any | None = None
     huddle_archiver: Any | None = None
@@ -841,6 +842,19 @@ async def _run_daemon(
             asyncio.create_task(environment_signal_runtime.wait(), name="environment_signals")
         )
 
+    # Every resident reports who it is, sources or not, and keeps reporting it:
+    # nothing replays valkyrie.runtime.started to a reader that restarted.
+    if environment_signal_publisher is not None:
+        from ravn.environment_signal_runtime import build_runtime_environment  # noqa: PLC0415
+        from ravn.resident_identity import ResidentIdentityPublisher  # noqa: PLC0415
+
+        resident_identity = ResidentIdentityPublisher(
+            settings=settings,
+            publisher=environment_signal_publisher,
+            environment=build_runtime_environment(settings),
+        )
+        await resident_identity.start()
+
     async def _handle_mcp_tool_result(
         server_name: str,
         tool_name: str,
@@ -950,6 +964,8 @@ async def _run_daemon(
             await huddle_archiver.stop()
         if resident_learning_runtime is not None:
             await resident_learning_runtime.stop()
+        if resident_identity is not None:
+            await resident_identity.stop()
         if environment_signal_runtime is not None:
             await environment_signal_runtime.stop()
         if environment_signal_publisher_started and environment_signal_publisher is not None:

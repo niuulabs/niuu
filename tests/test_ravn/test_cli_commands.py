@@ -1634,6 +1634,9 @@ class TestDaemonAgentFactory:
             async def stop(self) -> None:
                 self.started = False
 
+            async def publish(self, event) -> None:  # noqa: ANN001
+                return None
+
         publisher = _FakePublisher()
 
         class _FakeExecutor:
@@ -1766,6 +1769,9 @@ class TestDaemonAgentFactory:
                 return None
 
             async def stop(self) -> None:
+                return None
+
+            async def publish(self, event) -> None:  # noqa: ANN001
                 return None
 
         class _FakeExecutor:

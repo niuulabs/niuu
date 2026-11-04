@@ -35,6 +35,7 @@ from ravn.domain.valkyrie_contracts import (
     resident_outcome_template,
 )
 from ravn.ports.signal_adapter import NormalizedSignal, SignalAdapter
+from ravn.resident_identity import resident_identity_payload, resident_name
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher
 
@@ -164,14 +165,6 @@ class EnvironmentSignalRuntime:
             await self._publisher.start()  # type: ignore[attr-defined]
         self._adapters = self._build_adapters()
         await self._publish_runtime_started()
-        self._tasks.append(
-            asyncio.create_task(
-                self._runtime_snapshot_loop(
-                    self._settings.environment.runtime_snapshot_interval_seconds
-                ),
-                name=f"environment_runtime_snapshot:{self._environment.id}",
-            )
-        )
         for adapter in self._adapters:
             self._tasks.append(
                 asyncio.create_task(
@@ -231,12 +224,6 @@ class EnvironmentSignalRuntime:
         if not isinstance(adapter, SignalAdapter):
             raise TypeError(f"{source.adapter!r} does not implement SignalAdapter")
         return adapter
-
-    async def _runtime_snapshot_loop(self, interval: float) -> None:
-        """Republish the runtime identity; nothing replays it to a restarted reader."""
-        while True:
-            await asyncio.sleep(interval)
-            await self._publish_runtime_started()
 
     async def _poll_loop(self, adapter: SignalAdapter) -> None:
         interval = self._settings.environment.signal_poll_interval_seconds
@@ -855,45 +842,10 @@ class EnvironmentSignalRuntime:
         return task
 
     def _resident_name(self) -> str:
-        return (
-            self._settings.environment.resident_name
-            or self._settings.mesh.own_peer_id
-            or "Valkyrie"
-        )
+        return resident_name(self._settings)
 
     def _resident_personality(self) -> str:
         return self._settings.environment.resident_personality.strip()
-
-    def _resident_memory(self) -> list[dict[str, str]]:
-        """Where this resident keeps its memory, for a workspace to open it.
-
-        A store without ``mimir.instances`` is the single local store the
-        write routing already calls ``local``. The store the gateway serves
-        is reported at the gateway's public URL, under ``resident-<id>``
-        unless the operator named its platform mount.
-        """
-        mimir = self._settings.mimir
-        if not mimir.enabled:
-            return []
-        stores = [
-            (instance.name, instance.role, instance.platform_mount.strip())
-            for instance in mimir.instances
-        ] or [("local", "local", "")]
-        http = self._settings.gateway.channels.http
-        served = http.mimir_served_mount.strip() if http.enabled else ""
-        return [
-            {
-                "name": name,
-                "role": role,
-                "platform_mount": (
-                    (platform_mount or f"resident-{self._settings.mesh.own_peer_id}")
-                    if name == served
-                    else platform_mount
-                ),
-                "served_url": http.public_url.strip().rstrip("/") if name == served else "",
-            }
-            for name, role, platform_mount in stores
-        ]
 
     def _workflow_capability_sources_enabled(self) -> bool:
         return any(
@@ -910,24 +862,11 @@ class EnvironmentSignalRuntime:
             for adapter in self._adapters
         ]
         payload = {
-            "valkyrie_id": self._settings.mesh.own_peer_id,
-            "valkyrie_name": self._resident_name(),
-            "resident_personality": self._resident_personality(),
-            "charter": self._settings.environment.charter.strip(),
-            "memory": self._resident_memory(),
-            "environment_id": self._environment.id,
+            **resident_identity_payload(self._settings, self._environment),
             "source_count": len(sources),
             "sources": sources,
             "poll_interval_seconds": self._settings.environment.signal_poll_interval_seconds,
-            "signal_task_severities": list(self._settings.environment.signal_task_severities),
             "drive_loop_enabled": self._enqueue is not None,
-            "initiative_enabled": self._settings.initiative.enabled,
-            "llm_model": self._settings.effective_model(),
-            "reflection_model": self._settings.effective_memory_reflection_model(),
-            "post_session_reflection_enabled": self._settings.reflection.enabled,
-            "post_session_reflection_model": (
-                self._settings.effective_post_session_reflection_config().llm_alias
-            ),
         }
         event = SleipnirEvent(
             event_type="valkyrie.runtime.started",
