@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "mimir.labels" . | nindent 4 }}
 data:
-  # Instance metadata — used by the deployment args and Sleipnir announce
+  # Instance metadata — used by the deployment args
   MIMIR_NAME: {{ .Values.config.name | default "local" | quote }}
   MIMIR_ROLE: {{ .Values.config.role | default "local" | quote }}
   MIMIR_DATA_PATH: {{ .Values.config.dataPath | default "/data/mimir" | quote }}

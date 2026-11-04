@@ -205,24 +205,6 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             logger.warning("mimir[%s]: search index rebuild failed: %s", config.name, exc)
 
-        if config.announce_url:
-            logger.info(
-                "mimir[%s]: announcing at %s (role=%s)",
-                config.name,
-                config.announce_url,
-                config.role,
-            )
-            try:
-                from ravn.adapters.mesh.sleipnir_mesh import _announce_mimir  # type: ignore[import]
-
-                await _announce_mimir(
-                    name=config.name,
-                    url=config.announce_url,
-                    role=config.role,
-                    categories=config.categories,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("mimir: sleipnir announce skipped (%s)", exc)
         try:
             yield
         finally:

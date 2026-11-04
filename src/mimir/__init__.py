@@ -16,7 +16,7 @@ Co-located on the Ravn gateway::
 
 Discovery
 ---------
-On startup the service announces itself on Sleipnir::
-
-    {"type": "odin.mimir.announce", "name": "shared", "url": "...", "role": "shared"}
+Ravens find a Mímir through their configured ``mimir.instances`` and the
+service's own mount registry (``GET /mimir/registry/mounts``), which carries the
+``announce_url`` as the instance's public URL.
 """

@@ -1163,7 +1163,7 @@ class MimirRouter:
 
     Args:
         adapter: The MimirPort implementation to delegate to.
-        name:    Instance name (used in announce events).
+        name:    Instance name (shown in the mount registry).
         role:    Instance role: ``shared``, ``local``, or ``domain``.
         auth:    Identity source for ``_require_deploy_auth`` and per-request
             tenant scoping — required, no default. Callers must pass the

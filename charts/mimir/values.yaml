@@ -237,11 +237,11 @@ ingress:
 # Mímir service configuration
 # ---------------------------------------------------------------------------
 config:
-  # -- Instance name (used in Sleipnir announce events).
+  # -- Instance name (shown in the mount registry).
   name: "local"
   # -- Instance role: shared, local, or domain.
   role: "local"
-  # -- Public URL to announce on Sleipnir. Empty = no announcement.
+  # -- Public URL this instance is reachable at. Empty = registered as a local mount.
   announceUrl: ""
   # -- Category filter for domain-scoped Mímirs. Empty = all categories.
   categories: []

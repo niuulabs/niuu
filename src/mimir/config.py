@@ -222,7 +222,7 @@ class MimirServiceConfig(BaseSettings):
     )
     name: str = Field(
         default="local",
-        description="Instance name used in Sleipnir announce events.",
+        description="Instance name shown in the mount registry.",
     )
     role: str = Field(
         default="local",
@@ -280,8 +280,10 @@ class MimirServiceConfig(BaseSettings):
     announce_url: str | None = Field(
         default=None,
         description=(
-            "Public URL this service is reachable at, announced on Sleipnir. "
-            "If None, announcement is skipped."
+            "Public URL this service is reachable at. When set, the mount registry "
+            "lists this instance as a remote mount at that URL, and registry "
+            "entries for deployed remote knowledge mounts point at it. "
+            "None = a local mount."
         ),
     )
     search_db: str | None = Field(
