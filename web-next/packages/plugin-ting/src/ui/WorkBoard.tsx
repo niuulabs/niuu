@@ -13,7 +13,8 @@ import {
 } from '../domain/workBoard';
 
 function conditionTone(condition: WorkCondition): string {
-  if (condition === 'needsAttention' || condition === 'failed') return 'attention';
+  if (condition === 'needsAttention') return 'attention';
+  if (condition === 'failed') return 'failed';
   if (condition === 'completed') return 'complete';
   if (condition === 'active') return 'active';
   return 'quiet';

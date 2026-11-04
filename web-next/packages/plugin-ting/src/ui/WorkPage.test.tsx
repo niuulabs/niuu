@@ -557,6 +557,39 @@ describe('WorkPage', () => {
     expect(badge).toHaveClass('ting-work-condition--quiet');
   });
 
+  it('lists failed work under Failed, apart from what needs you', async () => {
+    const failed = summary('campaign:failed-1', 'workflowLaunch', 'failed', 'Broken delivery');
+    renderPage(
+      makeWorkService({
+        list: vi.fn().mockResolvedValue({ ...collection, campaigns: [specification, failed] }),
+      }),
+    );
+
+    await screen.findByText('Broken delivery');
+    const needsYou = screen.getByRole('region', { name: 'Needs attention' });
+    expect(within(needsYou).getByText('Define usage-based billing')).toBeInTheDocument();
+    expect(within(needsYou).queryByText('Broken delivery')).not.toBeInTheDocument();
+    const failedSection = screen.getByRole('region', { name: 'Failed' });
+    expect(within(failedSection).getByText('Broken delivery')).toBeInTheDocument();
+    // Red marks a failure; amber stays for what waits on you.
+    expect(failedSection.querySelector('.ting-work-condition--failed')).toHaveTextContent('Failed');
+  });
+
+  it('narrows the overview list to only failed work under the Failed filter', async () => {
+    const failed = summary('campaign:failed-1', 'workflowLaunch', 'failed', 'Broken delivery');
+    routerState.search = { filter: 'failed' };
+    renderPage(
+      makeWorkService({
+        list: vi.fn().mockResolvedValue({ ...collection, campaigns: [specification, failed] }),
+      }),
+    );
+
+    await screen.findByText('Broken delivery');
+    const main = screen.getByTestId('work-overview');
+    expect(within(main).getByRole('heading', { level: 1, name: 'Failed' })).toBeInTheDocument();
+    expect(within(main).queryByText('Define usage-based billing')).not.toBeInTheDocument();
+  });
+
   it('narrows the overview list to only completed work under the Completed filter', async () => {
     routerState.search = { filter: 'completed' };
     renderPage();

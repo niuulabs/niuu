@@ -40,13 +40,14 @@ import {
 } from './WorkBoard';
 import './WorkPage.css';
 
-type WorkFilter = 'overview' | 'attention' | 'active' | 'completed';
+type WorkFilter = 'overview' | 'attention' | 'active' | 'completed' | 'failed';
 
 const FILTER_LABEL: Record<WorkFilter, string> = {
   overview: 'Overview',
   attention: 'Needs attention',
   active: 'Active',
   completed: 'Completed',
+  failed: 'Failed',
 };
 
 export function workRouteId(item: Pick<WorkSummary, 'id'>): string {
@@ -72,9 +73,9 @@ function summaryBackendKind(item: WorkSummary): WorkResourceKind {
 
 function workMatchesFilter(item: WorkSummary, filter: WorkFilter): boolean {
   if (filter === 'overview') return true;
-  if (filter === 'attention') {
-    return item.condition === 'needsAttention' || item.condition === 'failed';
-  }
+  // Needs attention is what asks you for something; a failed run is listed under Failed.
+  if (filter === 'attention') return item.condition === 'needsAttention';
+  if (filter === 'failed') return item.condition === 'failed';
   if (filter === 'active') {
     return ['active', 'waiting', 'unknown'].includes(item.condition);
   }
@@ -138,10 +139,12 @@ function WorkSection({
   onSelect: (item: WorkSummary) => void;
 }) {
   if (items.length === 0) return null;
+  // An id holds no spaces, or the heading names nothing.
+  const headingId = `work-section-${title.toLocaleLowerCase().replace(/\s+/g, '-')}`;
   return (
-    <section className="ting-work-section" aria-labelledby={`work-section-${title}`}>
+    <section className="ting-work-section" aria-labelledby={headingId}>
       <div className="ting-work-section__heading">
-        <h2 id={`work-section-${title}`}>{title}</h2>
+        <h2 id={headingId}>{title}</h2>
       </div>
       <div className="ting-work-list">
         {items.map((item) => (
@@ -564,13 +567,12 @@ function WorkOverview({
   const visible = all.filter(
     (item) => workMatchesFilter(item, filter) && workMatchesSearch(item, search),
   );
-  const needsAttention = visible.filter(
-    (item) => item.condition === 'needsAttention' || item.condition === 'failed',
-  );
+  const needsAttention = visible.filter((item) => item.condition === 'needsAttention');
   const active = visible.filter((item) =>
     ['active', 'waiting', 'unknown'].includes(item.condition),
   );
   const completed = visible.filter((item) => item.condition === 'completed');
+  const failed = visible.filter((item) => item.condition === 'failed');
 
   return (
     <main className="ting-work-overview" data-testid="work-overview">
@@ -634,6 +636,7 @@ function WorkOverview({
           <WorkSection title="Needs attention" items={needsAttention} onSelect={onSelect} />
           <WorkSection title="Active" items={active} onSelect={onSelect} />
           <WorkSection title="Completed" items={completed} onSelect={onSelect} />
+          <WorkSection title="Failed" items={failed} onSelect={onSelect} />
         </>
       ) : (
         <WorkSection title={FILTER_LABEL[filter]} items={visible} onSelect={onSelect} />
@@ -663,7 +666,7 @@ export function WorkPage() {
     q?: string;
     view?: string;
   };
-  const filter = (['overview', 'attention', 'active', 'completed'] as const).includes(
+  const filter = (['overview', 'attention', 'active', 'completed', 'failed'] as const).includes(
     searchParams.filter as WorkFilter,
   )
     ? (searchParams.filter as WorkFilter)

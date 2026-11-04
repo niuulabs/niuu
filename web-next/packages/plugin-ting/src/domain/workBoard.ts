@@ -33,11 +33,13 @@ export interface BoardColumn<T> {
   items: T[];
 }
 
+// Needs attention is what asks you for something; a failed run is history, kept in its own column.
 const WORK_COLUMNS: { id: string; title: string; conditions: WorkCondition[] }[] = [
-  { id: 'attention', title: 'Needs attention', conditions: ['needsAttention', 'failed'] },
+  { id: 'attention', title: 'Needs attention', conditions: ['needsAttention'] },
   { id: 'active', title: 'In progress', conditions: ['active', 'unknown'] },
   { id: 'waiting', title: 'Waiting', conditions: ['waiting'] },
   { id: 'completed', title: 'Completed', conditions: ['completed'] },
+  { id: 'failed', title: 'Failed', conditions: ['failed'] },
 ];
 
 export function groupWorkByCondition(items: WorkSummary[]): BoardColumn<WorkSummary>[] {

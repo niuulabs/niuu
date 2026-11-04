@@ -15,7 +15,7 @@ function columnIds<T>(columns: { id: string; items: T[] }[]) {
 }
 
 describe('groupWorkByCondition', () => {
-  it('keeps every condition on the board and failed work beside attention items', () => {
+  it('keeps every condition on the board, with failed work apart from what needs you', () => {
     const columns = groupWorkByCondition([
       work('a', 'needsAttention'),
       work('b', 'failed'),
@@ -26,10 +26,11 @@ describe('groupWorkByCondition', () => {
     ]);
 
     expect(columns.map((column) => [column.id, column.items.map((item) => item.title)])).toEqual([
-      ['attention', ['a', 'b']],
+      ['attention', ['a']],
       ['active', ['c', 'd']],
       ['waiting', ['e']],
       ['completed', ['f']],
+      ['failed', ['b']],
     ]);
   });
 });

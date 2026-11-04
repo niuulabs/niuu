@@ -390,6 +390,12 @@
 .ting-work-condition--attention > span {
   background: var(--status-amber);
 }
+.ting-work-condition--failed {
+  color: var(--color-critical);
+}
+.ting-work-condition--failed > span {
+  background: var(--color-critical);
+}
 .ting-work-condition--active {
   color: var(--color-brand);
 }
