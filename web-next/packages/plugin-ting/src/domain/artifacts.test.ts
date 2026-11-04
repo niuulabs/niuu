@@ -169,8 +169,15 @@ describe('artifacts from publications', () => {
 
 describe('artifact status', () => {
   it('waits on a person only while the run is held at a gate', () => {
-    expect(artifactStatus({ ...RUN, status: 'blocked' }, NONE)).toBe('waiting');
+    expect(
+      artifactStatus(
+        { ...RUN, status: 'blocked', attention: { kind: 'decision', message: '' } },
+        NONE,
+      ),
+    ).toBe('waiting');
     expect(artifactStatus(RUN, new Set(['a2a-1']))).toBe('waiting');
+    // Blocked with no decision asked (its session never started): no one is waited on.
+    expect(artifactStatus({ ...RUN, status: 'blocked' }, NONE)).toBe('inProgress');
     // A finished run keeps its last attention note; it no longer waits.
     expect(
       artifactStatus(

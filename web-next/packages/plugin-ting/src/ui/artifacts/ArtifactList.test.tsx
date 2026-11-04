@@ -40,7 +40,9 @@ function run(slug: string, status: string, condition: WorkSummary['condition']):
     condition,
     rawState: { source: 'campaign', status },
     currentStep: null,
-    attention: null,
+    // A run held at a gate asks for a decision, as Work reports it.
+    attention:
+      condition === 'needsAttention' ? { kind: 'decision', message: 'Waiting for input.' } : null,
     createdAt: null,
     updatedAt: null,
     source: null,

@@ -92,10 +92,13 @@ const BLOCKED = 'blocked';
 
 /**
  * The run is held at a gate a person answers. Only a blocked run waits: finished runs
- * keep their last attention note, so it says nothing about now.
+ * keep their last attention note, so it says nothing about now. A run blocked with no
+ * decision asked of anyone (a session that never started) waits on no one.
  */
 export function runWaits(run: RunRef, waitingSlugs: ReadonlySet<string>): boolean {
-  return waitingSlugs.has(run.slug) || run.status === BLOCKED;
+  return (
+    waitingSlugs.has(run.slug) || (run.status === BLOCKED && run.attention?.kind === 'decision')
+  );
 }
 
 export function artifactStatus(run: RunRef, waitingSlugs: ReadonlySet<string>): ArtifactStatus {
