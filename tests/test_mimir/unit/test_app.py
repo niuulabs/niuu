@@ -279,7 +279,9 @@ def test_announce_url_startup_does_not_reach_for_sleipnir(
     with caplog.at_level(logging.DEBUG, logger="mimir"), TestClient(app):
         pass
 
-    assert not [r for r in caplog.records if "announce" in r.getMessage()]
+    # The message template, not the rendered text: tmp_path carries this test's
+    # own name, so every record naming the store path would say "announce".
+    assert not [r for r in caplog.records if "announce" in str(r.msg)]
 
 
 @pytest.mark.asyncio
