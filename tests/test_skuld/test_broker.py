@@ -596,6 +596,30 @@ class TestBroker:
         assert test_broker._transport is not None
 
     @pytest.mark.asyncio
+    async def test_startup_creates_the_cluster_layouts_home_beside_the_workspace(
+        self, settings, tmp_path
+    ):
+        """A flock session mounts no home volume; present-file still stages under home."""
+        settings.persistence_mount_path = str(tmp_path / "sessions")
+        settings.session.workspace_dir = ""
+        broker = Broker(settings=settings)
+
+        await broker.startup()
+
+        assert os.path.isdir(settings.home_path)
+        assert settings.home_path == f"{tmp_path}/sessions/{settings.session.id}/home"
+
+    def test_a_configured_home_is_never_created(self, settings, tmp_path):
+        settings.session.workspace_dir = ""
+        settings.persistent_home_path = str(tmp_path / "mounted-home")
+        assert not settings.creates_session_home
+        settings.persistent_home_path = ""
+        settings.home_dir = str(tmp_path / "local-home")
+        assert not settings.creates_session_home
+        settings.home_dir = ""
+        assert settings.creates_session_home
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("room_enabled", [False, True])
     async def test_startup_dispatches_workflow_trigger_instead_of_auto_starting_transport(
         self, tmp_path, room_enabled

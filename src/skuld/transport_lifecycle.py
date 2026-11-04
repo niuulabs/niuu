@@ -235,6 +235,9 @@ class TransportLifecycleMixin:
         self._startup_failure = ""
         logger.info("Broker starting for session %s", self.session_id)
         logger.info("Transport adapter: %s", self._settings.transport_adapter)
+        if self._settings.creates_session_home:
+            # Present-file stages under home; without it every present fails to stage.
+            os.makedirs(self._settings.home_path, exist_ok=True)
         _rebuild_presented_registry()  # recover present-file cards across broker restarts
         _resume_presented_uploads()  # F2: finish durable uploads cut off by the restart
         await self._ensure_session_trace_started()
