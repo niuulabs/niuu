@@ -940,6 +940,7 @@ def tool_mcp(
     traceparent: str = typer.Option("", "--traceparent", hidden=True),
     tracestate: str = typer.Option("", "--tracestate", hidden=True),
     notification_channel: str = typer.Option("", "--notification-channel", hidden=True),
+    present_file_relay: str = typer.Option("", "--present-file-relay", hidden=True),
 ) -> None:
     """Serve the active Ravn ToolPort set over MCP stdio."""
     if config:
@@ -974,6 +975,8 @@ def tool_mcp(
 
             call_requests = build_resident_call_requests(settings)
             tools.append(ResidentNotifyTool(notification_outbox, calls=call_requests))
+        if present_file_relay:
+            tools.append(_tool_mcp_present_file_tool(settings, present_file_relay))
 
         from ravn.adapters.mcp.tool_port_server import ToolPortMcpServer
 
@@ -1045,6 +1048,35 @@ def _tool_mcp_notification_outbox(settings: Settings, persona_config: Any | None
     if not _notify_tool_allowed(settings, persona_config):
         return None
     return build_resident_notification_outbox(settings)
+
+
+def _tool_mcp_present_file_tool(settings: Settings, relay_socket: str) -> Any:
+    """``present_file`` for a CLI agent, presenting through its daemon's relay.
+
+    The daemon passes the relay only when the agent's task offers ``present_file``
+    (persona and trust filters already applied). This server cannot join the flock
+    mesh, so the tool's broker request goes through the daemon, which holds it. A
+    relay that is not there fails the server at startup, which fails the CLI agent's
+    turn: the agent never runs quietly without a tool its task was given.
+    """
+    from ravn.adapters.tools.present_file import PresentFileTool  # noqa: PLC0415
+    from ravn.adapters.tools.present_file_relay import PresentFileRelayClient  # noqa: PLC0415
+
+    config = settings.present_file
+    if not config.enabled:
+        raise RuntimeError(
+            "tool-mcp was given a present-file relay but present_file.enabled is false in "
+            "its config; the daemon and its tool server must read the same RAVN_CONFIG"
+        )
+    relay = PresentFileRelayClient(relay_socket)
+    relay.require_reachable()
+    return PresentFileTool(
+        relay,
+        broker_peer_id=config.broker_peer_id,
+        own_peer_id=settings.mesh.own_peer_id,
+        workspace_root=settings.permission.workspace_root,
+        timeout_s=config.timeout_s,
+    )
 
 
 def _build_tool_mcp_tools(settings: Settings, *, persona_config: Any | None) -> list[Any]:

@@ -356,6 +356,8 @@ async def _run_daemon(
 
         # NIU-571: Apply trust gradient constraints for thread-triggered tasks
         tools = _apply_trust_filter(tools, settings, triggered_by)
+        # A CLI agent's tool server reaches the broker through the daemon's relay.
+        present_file_relay_socket = _present_file_relay_socket(tools, present_file_relay)
 
         executor = _build_executor(resolved_persona)
         resolved_extended_thinking = _resolve_extended_thinking(
@@ -378,6 +380,7 @@ async def _run_daemon(
             max_iterations=resolved_max_iterations,
             workspace_dir=str(workspace),
             mcp_servers=_transport_mcp_servers(settings),
+            present_file_relay=present_file_relay_socket,
             session=session,
             pre_tool_hooks=pre_hooks or None,
             post_tool_hooks=post_hooks or None,
@@ -527,6 +530,7 @@ async def _run_daemon(
     trigger_names: list[str] = []
     drive_loop: Any = None
     _cascade_participant: Any = None
+    present_file_relay: Any = None
     environment_signal_runtime: Any | None = None
     resident_wakefulness: Any | None = None
     odin_court: Any | None = None
@@ -692,6 +696,7 @@ async def _run_daemon(
                 for event_type, handler in pending:
                     logger.info("mesh: subscribing to event_type=%s", event_type)
                     await _cascade_mesh.subscribe(event_type, handler)
+                present_file_relay = await _start_present_file_relay(settings, _cascade_mesh)
 
         trigger_names = [t.name for t in drive_loop._triggers]
         tasks.append(asyncio.create_task(drive_loop.run(), name="drive_loop"))
@@ -930,6 +935,8 @@ async def _run_daemon(
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if present_file_relay is not None:
+            await present_file_relay.stop()
         if _cascade_participant is not None:
             await _cascade_participant.stop()
         if resident_wakefulness is not None:
@@ -983,6 +990,44 @@ async def _shutdown_step(name: str, step: Any) -> None:
     except Exception as exc:  # noqa: BLE001 - reported and counted below
         logger.error("daemon shutdown: %s failed", name, exc_info=True)
         record_degraded(f"shutdown.{name}", f"{name} failed during shutdown: {exc}")
+
+
+async def _start_present_file_relay(settings: Any, mesh: Any) -> Any | None:
+    """Serve ``present_file`` to the daemon's CLI agents' tool servers, when configured.
+
+    Their ``ravn tool-mcp`` process cannot join the flock mesh, so it presents through
+    this relay, which forwards to the broker over the daemon's own mesh connection.
+    """
+    if not settings.present_file.enabled:
+        return None
+    from ravn.adapters.tools.present_file_relay import PresentFileRelayServer  # noqa: PLC0415
+
+    relay = PresentFileRelayServer(
+        mesh,
+        broker_peer_id=settings.present_file.broker_peer_id,
+        timeout_s=settings.present_file.timeout_s,
+    )
+    await relay.start()
+    return relay
+
+
+def _present_file_relay_socket(tools: list[Any], relay: Any | None) -> str:
+    """The relay socket a CLI agent's tool server presents through, when it has the tool.
+
+    The tool exists only with the flock mesh, and the daemon starts the relay with that
+    mesh, so a task offered ``present_file`` without a relay is a wiring fault: raised,
+    never a CLI agent quietly missing the tool.
+    """
+    from ravn.adapters.tools.present_file import PRESENT_FILE_TOOL_NAME  # noqa: PLC0415
+
+    if not any(getattr(tool, "name", "") == PRESENT_FILE_TOOL_NAME for tool in tools):
+        return ""
+    if relay is None:
+        raise RuntimeError(
+            "present_file is offered but the daemon's present-file relay is not running; "
+            "it starts with the flock mesh (mesh.enabled with cascade.enabled)"
+        )
+    return relay.socket_path
 
 
 def _notify_tool_allowed(settings: Any, persona: Any | None) -> bool:

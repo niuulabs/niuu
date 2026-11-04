@@ -1103,6 +1103,7 @@ class CliTransportExecutor(ExecutorPort):
                 task_id=task_id,
                 trace_carrier=get_observability().inject(),
                 notification_channel=current_notification_channel.get() or "",
+                present_file_relay=str(kwargs.get("present_file_relay") or ""),
             )
         transport_kwargs.update(self._transport_kwargs)
         if self._model_gateway:
@@ -1128,6 +1129,7 @@ class CliTransportExecutor(ExecutorPort):
                 task_id=task_id,
                 trace_carrier=get_observability().inject(),
                 notification_channel=current_notification_channel.get() or "",
+                present_file_relay=str(kwargs.get("present_file_relay") or ""),
             )
         if read_only and _delegates_permission_config_to_cli(self._binding.cls):
             # An explicit persona boundary must win over workload-level Codex
@@ -1200,6 +1202,7 @@ def _with_ravn_tool_mcp_server(
     task_id: str = "",
     trace_carrier: dict[str, str] | None = None,
     notification_channel: str = "",
+    present_file_relay: str = "",
 ) -> list[dict[str, Any]]:
     if not tools or any(str(server.get("name") or "") == "ravn-tools" for server in mcp_servers):
         return mcp_servers
@@ -1236,6 +1239,9 @@ def _with_ravn_tool_mcp_server(
     if notification_channel:
         # The server's notify tool names the channel this turn runs in.
         args.extend(["--notification-channel", notification_channel])
+    if present_file_relay:
+        # The server cannot join the flock mesh; it presents through the daemon.
+        args.extend(["--present-file-relay", present_file_relay])
 
     return [
         *mcp_servers,

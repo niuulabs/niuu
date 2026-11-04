@@ -80,7 +80,7 @@ def test_tool_mcp_attaches_build_tool_for_allowed_persona(tmp_path) -> None:
             return_value=server,
         ),
     ):
-        commands_mod.tool_mcp(config="", persona="ivaldi", profile="")
+        commands_mod.tool_mcp(config="", persona="ivaldi", profile="", present_file_relay="")
 
     attach.assert_called_once_with(
         server,

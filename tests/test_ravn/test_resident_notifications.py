@@ -365,7 +365,11 @@ class TestCliAgentNotify:
             pytest.raises(RuntimeError, match="cannot bind stdio"),
         ):
             commands_mod.tool_mcp(
-                config="", persona="resident-codex", profile="", notification_channel=""
+                config="",
+                persona="resident-codex",
+                profile="",
+                notification_channel="",
+                present_file_relay="",
             )
 
         outbox.close.assert_called_once_with()
@@ -404,7 +408,11 @@ class TestCliAgentNotify:
             patch("ravn.adapters.mcp.tool_port_server.ToolPortMcpServer", side_effect=server_for),
         ):
             commands_mod.tool_mcp(
-                config="", persona="resident-codex", profile="", notification_channel="room-7"
+                config="",
+                persona="resident-codex",
+                profile="",
+                notification_channel="room-7",
+                present_file_relay="",
             )
 
         assert [tool.name for tool in served["tools"]] == [NOTIFY_TOOL_NAME]

@@ -18,7 +18,7 @@ import json
 import re
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 from niuu.domain.presented_files import (
     PRESENT_FILE_RPC_TYPE,
@@ -28,9 +28,6 @@ from niuu.domain.presented_files import (
 from ravn.cap_telemetry import record_cap_hit
 from ravn.domain.models import ToolResult
 from ravn.ports.tool import ToolPort
-
-if TYPE_CHECKING:
-    from ravn.ports.mesh import MeshPort
 
 PRESENT_FILE_TOOL_NAME = "present_file"
 _PERMISSION = "artifact:present"
@@ -78,6 +75,15 @@ _INPUT_SCHEMA = {
 }
 
 
+class BrokerRpc(Protocol):
+    """The mesh ``send`` the tool needs: the daemon's mesh, or a tool server's relay
+    to it (:mod:`ravn.adapters.tools.present_file_relay`)."""
+
+    async def send(
+        self, target_peer_id: str, message: dict, *, timeout_s: float | None = None
+    ) -> dict: ...
+
+
 class PresentFileError(ValueError):
     """The request names no presentable document; the message says what to fix."""
 
@@ -87,7 +93,7 @@ class PresentFileTool(ToolPort):
 
     def __init__(
         self,
-        mesh: MeshPort,
+        mesh: BrokerRpc,
         *,
         broker_peer_id: str,
         own_peer_id: str,
