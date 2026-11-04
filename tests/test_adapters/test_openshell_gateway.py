@@ -2754,6 +2754,62 @@ async def test_start_projects_non_agent_file_mapping_into_sandbox(
 
 
 @pytest.mark.asyncio
+async def test_start_hands_the_broker_its_session_credential_as_a_private_file(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from niuu.forge_mcp.models import ForgeMcpGrant
+    from tests.support.forge_session import token_service
+
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    order: list[str] = []
+    write_files = client.write_files
+    exec_detached = client.exec_detached
+    client.write_files = lambda **kwargs: (order.append("files"), write_files(**kwargs))[1]
+    client.exec_detached = lambda **kwargs: (order.append("exec"), exec_detached(**kwargs))[1]
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+    spec.forge_session = token_service().mint(
+        session_id=session.id,
+        session_name=session.name,
+        owner_id="owner-1",
+        tenant_id=None,
+        grants=(ForgeMcpGrant.MESSAGE,),
+        launch_id="launch-1",
+    )
+
+    assert manager.delivers_forge_session_token is True
+    await manager.start(session, spec)
+
+    [projected] = client.written_files
+    assert projected["files"] == {
+        "/run/secrets/niuu-forge-session/token": spec.forge_session.token.encode()
+    }
+    [broker] = client.execs
+    assert broker["env"]["SKULD__FORGE_MCP__TOKEN_FILE"] == "/run/secrets/niuu-forge-session/token"
+    assert broker["env"]["SKULD__FORGE_MCP__GRANTS"] == ForgeMcpGrant.MESSAGE.value
+    assert spec.forge_session.token not in json.dumps(broker), "only the path is in the env"
+    assert spec.forge_session.token not in json.dumps(client.created, default=str)
+    assert order == ["files", "exec"], "the file exists before the broker starts"
+
+
+@pytest.mark.asyncio
+async def test_start_without_a_session_credential_projects_no_token_file(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+
+    await manager.start(_session(), SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    assert client.written_files == []
+    [broker] = client.execs
+    assert "SKULD__FORGE_MCP__TOKEN_FILE" not in broker["env"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "destination",
     (

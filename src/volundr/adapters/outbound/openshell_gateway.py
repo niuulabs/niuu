@@ -50,7 +50,10 @@ from niuu.ports.session_proxy import SessionProxyTarget
 from niuu.ports.workload_identity import WorkloadTokenIssuer
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
 from volundr.adapters.outbound.k8s_storage_adapter import _storage_bytes
-from volundr.adapters.outbound.local_process import LocalProcessPodManager
+from volundr.adapters.outbound.local_process import (
+    FORGE_MCP_GRANTS_ENV,
+    LocalProcessPodManager,
+)
 from volundr.adapters.outbound.openshell_contract import (
     DEFAULT_SANDBOX_ATTACHABLE_LABELS,
     OPENSHELL_WORKSPACE,
@@ -222,6 +225,11 @@ OAUTH_CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-s
 GRANT_AUDIENCE_PREFIX = "niuu:credential:"
 PLATFORM_GRANT_AUDIENCE_PREFIX = "niuu:platform:"
 PLATFORM_ACCESS_TOKEN_ENV = "NIUU_VOLUNDR_ACCESS_TOKEN"
+#: Where a session broker reads its Forge session credential: a private file (0600)
+#: written before the broker starts, as the Kubernetes projection mounts it there.
+#: Only the path travels in the broker's env, never the token.
+FORGE_SESSION_TOKEN_PATH = "/run/secrets/niuu-forge-session/token"
+FORGE_MCP_TOKEN_FILE_ENV = "SKULD__FORGE_MCP__TOKEN_FILE"
 DEFAULT_CREDENTIAL_TOKEN_ENDPOINT = (
     "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
 )
@@ -1103,6 +1111,12 @@ class OpenShellGatewayPodManager(
     def runtime_backend(self) -> str:
         return "openshell"
 
+    @property
+    def delivers_forge_session_token(self) -> bool:
+        """The broker reads its session credential from a private file written into
+        the sandbox before it starts (``FORGE_SESSION_TOKEN_PATH``)."""
+        return True
+
     def __init__(
         self,
         *,
@@ -1881,7 +1895,12 @@ class OpenShellGatewayPodManager(
             )
             credential_context = await self._resolve_credential_env(session, spec)
             env.update(credential_context.environment)
-            process_env = {**env, **credential_context.process_environment}
+            forge_session_files, forge_session_env = _forge_session_projection(spec)
+            process_env = {
+                **env,
+                **credential_context.process_environment,
+                **forge_session_env,
+            }
             runtime_processes = _runtime_processes_from_spec(spec)
             workloads = (spec.values.get("openshell") or {}).get("workloads", [])
             workload_start_file = ""
@@ -1926,7 +1945,7 @@ class OpenShellGatewayPodManager(
                     policy=self._sandbox_policy,
                 )
             ready = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
-            projected_files = dict(credential_context.files)
+            projected_files = {**credential_context.files, **forge_session_files}
             for process in runtime_processes:
                 projected_files.update(process.files)
             if projected_files:
@@ -5008,6 +5027,24 @@ def _provider_grant_name(
         f"{session_id}\0{credential_name}\0{field_name}\0{env_name}".encode()
     ).hexdigest()[:12]
     return f"volundr-{UUID(session_id).hex[:12]}-{digest}"
+
+
+def _forge_session_projection(spec: SessionSpec) -> tuple[dict[str, bytes], dict[str, str]]:
+    """The session credential's file and the broker env naming it, when Forge minted one.
+
+    Written with the other credential files before the broker's command runs, so the
+    broker finds it at startup (it refuses to start on an unreadable ``token_file``).
+    """
+    credential = spec.forge_session
+    if credential is None:
+        return {}, {}
+    return (
+        {FORGE_SESSION_TOKEN_PATH: credential.token.encode("utf-8")},
+        {
+            FORGE_MCP_TOKEN_FILE_ENV: FORGE_SESSION_TOKEN_PATH,
+            FORGE_MCP_GRANTS_ENV: ",".join(grant.value for grant in credential.grants),
+        },
+    )
 
 
 def _runtime_processes_from_spec(spec: SessionSpec) -> tuple[OpenShellRuntimeProcess, ...]:
