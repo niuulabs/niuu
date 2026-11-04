@@ -117,6 +117,34 @@ def _mapping_problem(mapping: Any) -> str:
     return ""
 
 
+def _claimed_identity(token: str) -> tuple[str, str]:
+    """The issuer and subject a proof *claims*, read without verifying it.
+
+    Never trusted: it only picks which mappings are worth verifying the proof
+    against, and names the caller when the exchange refuses it. ``("", "")``
+    when the proof is not a JWT.
+    """
+    try:
+        claims = jwt.decode(token, options={"verify_signature": False})
+    except jwt.InvalidTokenError:
+        return "", ""
+    return str(claims.get("iss") or ""), str(claims.get("sub") or "")
+
+
+def _names_caller(mapping: Any, issuer: str, subject: str) -> bool:
+    """Whether a mapping is for this issuer and subject, as the proof claims them.
+
+    A mapping that fails this can never match the verified claims either, so its
+    verifier is not asked: a proof is only verified by the clusters it could be from.
+    """
+    if str(getattr(mapping, "issuer", "") or "").strip() != issuer:
+        return False
+    exact = str(getattr(mapping, "subject", "") or "").strip()
+    if exact:
+        return subject == exact
+    return subject.startswith(str(getattr(mapping, "subject_prefix", "") or "").strip())
+
+
 def _owner_from(mapping: Any) -> str:
     return str(getattr(mapping, "owner_from", "") or "").strip()
 
@@ -193,6 +221,27 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         audiences: list[str] | None = None,
         scopes: list[str] | None = None,
     ) -> WorkloadExchangeResult:
+        try:
+            return await self._exchange(token, audiences=audiences, scopes=scopes)
+        except WorkloadIdentityError as exc:
+            issuer, subject = _claimed_identity(token)
+            # The caller gets a bare 401; this line is the only place an operator
+            # learns which workload was refused and why. Never log the proof itself.
+            logger.warning(
+                "Workload exchange refused: issuer=%s subject=%s reason=%s",
+                issuer or "?",
+                subject or "?",
+                exc,
+            )
+            raise
+
+    async def _exchange(
+        self,
+        token: str,
+        *,
+        audiences: list[str] | None,
+        scopes: list[str] | None,
+    ) -> WorkloadExchangeResult:
         if not self.enabled:
             raise WorkloadIdentityError("Workload identity exchange is disabled")
         if not token.strip():
@@ -208,7 +257,10 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
                 f"Scopes {privileged} cannot share a token with {sorted(build_scopes)}: "
                 "request them in separate exchanges"
             )
-        last_error: Exception | None = None
+        claimed_issuer, claimed_subject = _claimed_identity(token)
+        # Every reason a mapping for this caller could not admit it. Refusals from
+        # mappings for other callers are left out: they would bury the real one.
+        reasons: list[str] = []
         # Each verifier checks the proof once; several mappings usually share one.
         verified: dict[str, dict[str, Any] | Exception] = {}
         candidates: list[
@@ -217,21 +269,23 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         for mapping in getattr(self._config, "mappings", []) or []:
             problem = _mapping_problem(mapping)
             if problem:
-                last_error = WorkloadIdentityError(problem)
+                reasons.append(problem)
+                continue
+            if claimed_issuer and not _names_caller(mapping, claimed_issuer, claimed_subject):
                 continue
             verifier_name = getattr(mapping, "verifier", "kubernetes")
             verifier = self._verifiers.get(verifier_name)
             if verifier is None:
-                last_error = WorkloadIdentityError(f"Verifier not configured: {verifier_name}")
+                reasons.append(f"Verifier not configured: {verifier_name}")
                 continue
             if verifier_name not in verified:
                 try:
                     verified[verifier_name] = await verifier.verify(token)
                 except Exception as exc:
                     verified[verifier_name] = exc
+                    reasons.append(f"verifier {verifier_name!r} refused the proof: {exc}")
             claims = verified[verifier_name]
             if isinstance(claims, Exception):
-                last_error = claims
                 continue
             if not self._matches(mapping, claims):
                 continue
@@ -241,7 +295,7 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
                 # active record this mapping does not apply to the caller at all.
                 delegation = await self._active_delegation(verifier_name, claims)
                 if delegation is None:
-                    last_error = WorkloadIdentityError(
+                    reasons.append(
                         f"No active delegation for {claims.get('sub')!r} on {verifier_name!r}"
                     )
                     continue
@@ -272,8 +326,11 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
                 delegation=delegation,
             )
 
-        detail = f": {last_error}" if last_error else ""
-        raise WorkloadIdentityError(f"No workload identity mapping matched{detail}")
+        if not reasons:
+            reasons.append(
+                f"no mapping admits subject {claimed_subject!r} from issuer {claimed_issuer!r}"
+            )
+        raise WorkloadIdentityError("No workload identity mapping matched: " + "; ".join(reasons))
 
     async def _active_delegation(
         self, verifier_name: str, claims: dict[str, Any]

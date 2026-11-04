@@ -40,6 +40,7 @@ from niuu.service_integrations import (
     seed_linear_integration,
 )
 from niuu.service_runtime import (
+    configure_logging,
     create_authorization_adapter,
     create_credential_store,
     create_identity_adapter,
@@ -136,6 +137,9 @@ def create_app(
 
     loaded_settings = apply_service_database_settings(settings or _load_settings(), "niuu-shared")
     app.state.settings = loaded_settings
+    # Without this only uvicorn's own loggers had a handler: every info line the
+    # shared services wrote was dropped, and warnings reached stderr unformatted.
+    configure_logging(loaded_settings.logging)
 
     # Configured and instrumented here, not in lifespan: Starlette builds and
     # caches its middleware stack on the app's first ASGI __call__ (which is

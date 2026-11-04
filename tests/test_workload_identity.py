@@ -1148,6 +1148,152 @@ async def test_exchange_logs_which_workload_it_spoke_for(caplog: pytest.LogCaptu
     assert result.token not in line
 
 
+class _RecordingVerifier:
+    """A verifier for one cluster that records being asked and answers with *outcome*."""
+
+    def __init__(self, outcome: dict[str, Any] | Exception) -> None:
+        self.outcome = outcome
+        self.asked = 0
+
+    async def verify(self, token: str) -> dict[str, Any]:
+        self.asked += 1
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
+def _cluster_mapping(*, name: str, verifier: str, issuer: str, subject: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        name=name,
+        verifier=verifier,
+        subject=subject,
+        subject_prefix="",
+        issuer=issuer,
+        claims={},
+        owner_id=OWNER_ID,
+        tenant_id="default",
+        email="",
+        roles=["volundr:developer"],
+        metadata={},
+    )
+
+
+def _two_cluster_service(
+    jarnvidr: _RecordingVerifier, ymir: _RecordingVerifier
+) -> WorkloadIdentityService:
+    """ymir's mapping listed last, as on the live config: its refusal used to be
+    the only reason a jarnvidr caller was given."""
+    return WorkloadIdentityService(
+        SimpleNamespace(
+            enabled=True,
+            issuer=EXCHANGE_ISSUER,
+            audiences=["volundr-api"],
+            mappings=[
+                _cluster_mapping(
+                    name="valkyrie-jarnvidr",
+                    verifier="k8s-jarnvidr",
+                    issuer=WORKLOAD_ISSUER,
+                    subject=WORKLOAD_SUBJECT,
+                ),
+                _cluster_mapping(
+                    name="forge-ymir",
+                    verifier="k8s-ymir",
+                    issuer="https://k8s-issuer.ymir.example",
+                    subject="system:serviceaccount:volundr:niuu-volundr",
+                ),
+            ],
+        ),
+        verifiers={"k8s-jarnvidr": jarnvidr, "k8s-ymir": ymir},
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_names_the_callers_own_verifier_failure() -> None:
+    """jarnvidr's JWKS answered 502, yet its valkyrie was told its issuer was not ymir's."""
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    jarnvidr = _RecordingVerifier(OSError("HTTP Error 502: Bad Gateway"))
+    ymir = _RecordingVerifier(jwt.InvalidIssuerError("proof issuer is not this verifier's"))
+    service = _two_cluster_service(jarnvidr, ymir)
+
+    with pytest.raises(WorkloadIdentityError) as refused:
+        await service.exchange(_workload_token(proof_key))
+
+    assert "'k8s-jarnvidr' refused the proof: HTTP Error 502" in str(refused.value)
+    assert "not this verifier" not in str(refused.value)
+    # A mapping for another cluster's issuer cannot admit this proof; never ask its verifier.
+    assert ymir.asked == 0
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_is_logged_with_the_callers_issuer_and_subject(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    token = _workload_token(proof_key)
+    jarnvidr = _RecordingVerifier(OSError("HTTP Error 502: Bad Gateway"))
+    service = _two_cluster_service(jarnvidr, _RecordingVerifier({}))
+
+    with caplog.at_level("WARNING", logger="niuu.domain.services.workload_identity"):
+        with pytest.raises(WorkloadIdentityError):
+            await service.exchange(token)
+
+    [record] = [r for r in caplog.records if "Workload exchange refused" in r.getMessage()]
+    line = record.getMessage()
+    assert record.levelname == "WARNING"
+    assert f"issuer={WORKLOAD_ISSUER}" in line
+    assert f"subject={WORKLOAD_SUBJECT}" in line
+    assert "HTTP Error 502" in line
+    assert token not in line
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_after_matching_is_logged_too(caplog: pytest.LogCaptureFixture) -> None:
+    """Every refusal reaches the operator, not only "no mapping matched"."""
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+
+    with caplog.at_level("WARNING", logger="niuu.domain.services.workload_identity"):
+        with pytest.raises(WorkloadIdentityError, match="not allowed: unknown"):
+            await service.exchange(_workload_token(proof_key), audiences=["unknown"])
+
+    line = next(r.getMessage() for r in caplog.records if "refused" in r.getMessage())
+    assert f"subject={WORKLOAD_SUBJECT}" in line
+    assert "not allowed: unknown" in line
+
+
+@pytest.mark.asyncio
+async def test_an_unmapped_subject_is_named_in_the_refusal() -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+    stranger = "system:serviceaccount:other:ravn"
+
+    with pytest.raises(WorkloadIdentityError) as refused:
+        await service.exchange(_workload_token(proof_key, subject=stranger))
+
+    assert f"no mapping admits subject {stranger!r} from issuer {WORKLOAD_ISSUER!r}" in str(
+        refused.value
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_proof_that_is_not_a_jwt_is_still_offered_to_every_verifier(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Pre-filtering reads the claimed issuer; a proof without one is not dropped unseen."""
+    jarnvidr = _RecordingVerifier(ValueError("not a JWT"))
+    ymir = _RecordingVerifier(ValueError("not a JWT"))
+    service = _two_cluster_service(jarnvidr, ymir)
+
+    with caplog.at_level("WARNING", logger="niuu.domain.services.workload_identity"):
+        with pytest.raises(WorkloadIdentityError, match="'k8s-ymir' refused the proof"):
+            await service.exchange("opaque-proof")
+
+    assert (jarnvidr.asked, ymir.asked) == (1, 1)
+    line = next(r.getMessage() for r in caplog.records if "refused" in r.getMessage())
+    assert "issuer=? subject=?" in line
+    assert "opaque-proof" not in line
+
+
 @pytest.mark.asyncio
 async def test_a_verifier_for_another_issuer_refuses_without_fetching_its_keys() -> None:
     """eitri's issuer timing out froze every exchange: each proof was offered to

@@ -55,6 +55,8 @@ def test_create_app_mounts_shared_identity_features_and_personas(
 
     refresh_factory = MagicMock()
     monkeypatch.setattr(niuu_main, "create_oauth_token_refresh_service", refresh_factory)
+    logging_configs: list[object] = []
+    monkeypatch.setattr(niuu_main, "configure_logging", logging_configs.append)
     monkeypatch.setattr(niuu_main, "refresh_oauth_tokens_loop", _idle_reconcile)
     monkeypatch.setattr(niuu_main, "create_git_registry", lambda _cfg: _DummyGitRegistry())
     monkeypatch.setattr(niuu_main, "database_pool", _fake_database_pool)
@@ -170,6 +172,9 @@ def test_create_app_mounts_shared_identity_features_and_personas(
             },
         ),
     )
+
+    # Without it the shared services' own log lines (exchange refusals) were dropped.
+    assert logging_configs == [app.state.settings.logging]
 
     with TestClient(app) as client:
         response = client.get("/api/v1/identity/auth/config")
