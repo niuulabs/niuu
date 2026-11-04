@@ -45,12 +45,14 @@ export function residentForRealm(
  * Prefers the explicit `realmId` link stored on the resident record at
  * deploy time (migration 000079). Falls back to the naming convention for
  * residents deployed before that link existed, or discovered residents that
- * carry no realm id at all.
+ * carry no realm id at all. A workspace adopted around a running resident
+ * names that resident (`residentId`, the dashboard's id), which is its ravn id.
  */
 export function ravnForRealm(
   ravens: Ravn[] | undefined,
   slug: string,
   realmId?: string | null,
+  residentId?: string | null,
 ): Ravn | null {
   if (!ravens) return null;
   if (realmId) {
@@ -62,6 +64,8 @@ export function ravnForRealm(
   // than managed). A ravn that IS linked to a different realm must never
   // match here just because it happens to share this realm's name/persona.
   const unlinked = ravens.filter((ravn) => !ravn.realmId);
+  const adopted = residentId ? unlinked.find((ravn) => ravn.id === residentId) : undefined;
+  if (adopted) return adopted;
   return (
     unlinked.find((ravn) => slugify(ravn.residentName ?? '') === residentNameFor(slug)) ??
     unlinked.find((ravn) => ravn.personaName === personaNameFor(slug)) ??
@@ -160,7 +164,7 @@ export function buildRealmView(input: {
 }): RealmView {
   const { realm } = input;
   const resident = residentForRealm(input.dashboard, realm.slug);
-  const ravn = ravnForRealm(input.ravens, realm.slug, realm.id);
+  const ravn = ravnForRealm(input.ravens, realm.slug, realm.id, resident?.id);
   const sessions = sessionsForRealm(input.sessions, realm.slug);
   const binding = bindingFromGrants(input.grants);
   // The create recipe always names where the workspace memory goes; adopting names none.

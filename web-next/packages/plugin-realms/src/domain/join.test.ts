@@ -155,6 +155,15 @@ describe('realm joins', () => {
     expect(ravnForRealm([unlinked], 'lexi-api', 'r1')).toBe(unlinked);
   });
 
+  it("finds an adopted workspace's ravn by the resident the dashboard names", () => {
+    // Regin runs as `regin` with a persona of its own, so no naming convention reaches it.
+    const regin = { ...ravn, id: 'regin', residentName: 'Regin', personaName: 'regin' };
+    expect(ravnForRealm([regin], 'niuu', 'r1')).toBeNull();
+    expect(ravnForRealm([regin], 'niuu', 'r1', 'regin')).toBe(regin);
+    const linkedElsewhere = { ...regin, realmId: 'r-other' };
+    expect(ravnForRealm([linkedElsewhere], 'niuu', 'r1', 'regin')).toBeNull();
+  });
+
   it('never matches a ravn linked to a different realm, even by name/persona', () => {
     const otherRealmsRavn = { ...ravn, id: 'ravn-5', residentName: 'lexi-api', realmId: 'r-other' };
     expect(ravnForRealm([otherRealmsRavn], 'lexi-api', 'r1')).toBeNull();

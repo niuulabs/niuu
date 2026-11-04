@@ -140,6 +140,7 @@ export function useRealmView(slug: string) {
     findings: findings.data ?? [],
     ticketsError: intake.error ?? findings.error ?? null,
     budget: budgetState.data ?? null,
+    budgetError: budgetState.error,
     mount,
     mountName,
     residentMemory: ownMemory,
