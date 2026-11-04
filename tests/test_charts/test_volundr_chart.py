@@ -2430,6 +2430,22 @@ class TestPresentedFilesOnACluster:
             args += ["--set", value]
         assert message in _render_failure(*args)
 
+    def test_an_openshell_forge_needs_no_projection(self):
+        """The OpenShell pod manager writes the credential into the sandbox itself."""
+        args: list[str] = []
+        pairs = list(zip(PRESENTED_FILES_ON[::2], PRESENTED_FILES_ON[1::2], strict=True))
+        for flag, value in pairs:
+            if value != "sessionCredentialProjection.enabled=true":
+                args += [flag, value]
+        args += [
+            "--set",
+            "podManager.adapter=volundr.adapters.outbound.openshell_gateway."
+            "OpenShellGatewayPodManager",
+        ]
+        config = _rendered_configmap(*args)
+        assert config["presented_files"]["enabled"] is True
+        assert "projection_adapter" not in config["forge_mcp"]["session_tokens"]
+
     def test_read_write_once_is_accepted_with_colocated_pods(self):
         args = (*PRESENTED_FILES_ON, "--set", "presentedFiles.persistence.accessMode=ReadWriteOnce")
         assert _rendered_configmap(*args)["presented_files"]["enabled"] is True

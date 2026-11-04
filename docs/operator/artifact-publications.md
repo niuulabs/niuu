@@ -137,8 +137,9 @@ session pods get it through `forge_mcp.session_tokens.projection_adapter`: one S
 per session (`forge-session-<session hex>`), mounted read-only into the session pod,
 read once at broker start (`forge_mcp.token_file`; a missing or empty file is fatal),
 re-written on every start (a restart revokes the previous launch's token) and deleted
-when the session stops. The HelmRelease values carry only the file path. OpenShell
-sessions have no session credential yet.
+when the session stops. The HelmRelease values carry only the file path. The OpenShell
+pod manager writes it into the sandbox itself (`/run/secrets/niuu-forge-session/token`,
+0600) before the broker starts, so an OpenShell Forge needs no projection.
 
 The broker's `volundr_api_url` (the Skuld chart's `volundr.apiUrl`) must reach the
 Forge that owns the session through Envoy. Without it the broker skips the upload, and
@@ -168,5 +169,6 @@ workloadIdentity:
 The chart renders the Postgres store with `root` at `presentedFiles.mountPath`
 (`/volundr/presented-files`), a PVC kept on uninstall, a Role in the session namespace
 for Secret get/create/patch/delete, and the projection kwargs. It refuses to render
-without `maxTotalBytes`, without session credentials, without the projection, or with
+without `maxTotalBytes`, without session credentials, without the projection (unless
+the pod manager delivers the credential itself: OpenShell, local process), or with
 `ReadWriteOnce` and `rollout.colocate: false`.

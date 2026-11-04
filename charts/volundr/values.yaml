@@ -598,7 +598,8 @@ artifacts: {}
 # in Forge's database, so any number of replicas (and a rolling update's two pods)
 # share one quota. Session brokers upload with their session credential, so enabling
 # this also needs session credentials delivered to session pods
-# (`sessionCredentialProjection`, and forgeMcp session_tokens on: the default when
+# (`sessionCredentialProjection`, unless the pod manager delivers it itself as
+# OpenShell does, and forgeMcp session_tokens on: the default when
 # workloadIdentity signs with signingKey.existingSecret). The chart refuses to render
 # without them. See docs/operator/artifact-publications.md ("Presented files on a
 # cluster").

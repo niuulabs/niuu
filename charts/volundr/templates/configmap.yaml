@@ -181,7 +181,10 @@ data:
     {{- if not $sessionTokens.enabled }}
     {{- fail "presentedFiles.enabled needs Forge session credentials (brokers upload with them): enable workloadIdentity with signingKey.existingSecret, or set forgeMcp.session_tokens.enabled" }}
     {{- end }}
-    {{- if not (get $sessionTokens "projection_adapter") }}
+    {{- /* These pod managers hand the broker its credential themselves
+    (delivers_forge_session_token); every other one needs the projection. */}}
+    {{- $selfDelivering := list "volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager" "volundr.adapters.outbound.local_process.LocalProcessPodManager" }}
+    {{- if and (not (get $sessionTokens "projection_adapter")) (not (has .Values.podManager.adapter $selfDelivering)) }}
     {{- fail "presentedFiles.enabled needs sessionCredentialProjection.enabled: session pods must hold their Forge credential to upload presented files" }}
     {{- end }}
     {{- end }}
