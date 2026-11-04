@@ -1,4 +1,5 @@
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { SessionChat } from '../components/SessionChat';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   formatOutcomeContent,
@@ -554,6 +555,55 @@ describe('useSkuldChat', () => {
       visibility: 'internal',
       participant: expect.objectContaining({ persona: 'council-chair' }),
     });
+  });
+
+  it('shows a coordinator reply received live as its outcome card, as history does', async () => {
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+    const coordinator = {
+      peer_id: 'flock-ticket-coordinator',
+      persona: 'ticket-coordinator',
+      participant_type: 'ravn',
+      participant_kind: 'mesh',
+    };
+    const content =
+      'Plan review is pending.\n\n---outcome---\n{"working_state":{"objectives":["Complete planning for NIU-1117."],"observations":["Plan --- awaiting the gate."]},"selected_next_action":"Wait for the operator.","next_action_timing":"operator_input"}';
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    for (const event of [
+      { type: 'room_state', participants: [coordinator] },
+      {
+        type: 'room_agent_event',
+        participantId: coordinator.peer_id,
+        frame: { type: 'tool_start', data: 'a2a_task', metadata: { input: {} } },
+      },
+      {
+        type: 'room_message',
+        participantId: coordinator.peer_id,
+        participant: coordinator,
+        content,
+        visibility: 'public',
+      },
+      { type: 'room_activity', participantId: coordinator.peer_id, activityType: 'idle' },
+    ]) {
+      act(() => wsHandlers.onMessage?.(JSON.stringify(event)));
+    }
+
+    // A room reply arrives whole, so one MarkdownContent reads the marker and object together.
+    expect(result.current.messages.at(-1)?.content).toBe(content);
+    expect(result.current.messages.at(-1)?.parts).toBeUndefined();
+    render(
+      <SessionChat
+        messages={result.current.messages}
+        participants={result.current.participants}
+        onSend={vi.fn()}
+        historyLoaded
+        connected
+      />,
+    );
+    expect(screen.getByTestId('outcome-card')).toBeInTheDocument();
+    expect(screen.getByText('Wait for the operator.')).toBeInTheDocument();
+    expect(screen.queryByText(/---outcome---|next_action_timing/)).toBeNull();
   });
 
   it('tracks participant join and leave events', async () => {

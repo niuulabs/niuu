@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { OutcomeCard, extractOutcomeBlock } from './OutcomeCard';
+import { MarkdownContent } from '../MarkdownContent';
 
 describe('OutcomeCard', () => {
   const raw = 'verdict: pass\nsummary: All checks passed\ndetails: 5/5';
@@ -258,5 +259,54 @@ after`;
       raw: 'verdict: review_submitted\nsummary: Prefer Opinion A.\npage_path: council/demo/review-b.md',
       after: '\nafter',
     });
+  });
+});
+
+describe('a JSON outcome, as a coordinator writes it', () => {
+  const coordinator =
+    '---outcome---\n{"working_state":{"objectives":["Run Ticket Planning Flow for NIU-1117."],"observations":["Started task a2a-1."],"hypotheses":[],"unknowns":["The gate is pending."]},"selected_next_action":"Await the workflow update.","next_action_timing":"external_event"}';
+
+  it('is found with no closing marker, since the object closes it', () => {
+    const block = extractOutcomeBlock(coordinator);
+    expect(block?.raw.startsWith('{"working_state"')).toBe(true);
+    expect(block?.after).toBe('');
+    expect(extractOutcomeBlock('---outcome---\nnot json and never closed')).toBeNull();
+  });
+
+  it('reads as fields: nested state read through, lists as bullets, empty ones left out', () => {
+    render(<OutcomeCard raw={extractOutcomeBlock(coordinator)!.raw} />);
+    expect(screen.getByText('objectives')).toBeInTheDocument();
+    expect(screen.getByText('Run Ticket Planning Flow for NIU-1117.')).toBeInTheDocument();
+    expect(screen.getByText('selected next action')).toBeInTheDocument();
+    expect(screen.getByText('Await the workflow update.')).toBeInTheDocument();
+    expect(screen.queryByText('hypotheses')).toBeNull();
+    expect(screen.queryByText(/working_state/)).toBeNull();
+  });
+
+  const state =
+    '{"working_state":{"observations":["Plan --- approved at the gate."]},"selected_next_action":"Wait for the operator.","next_action_timing":"operator_input"}';
+
+  it('keeps a dash run inside a JSON string as part of the outcome', () => {
+    const block = extractOutcomeBlock(`Plan review is pending.\n\n---outcome---\n${state}`);
+    expect(block).toEqual({ before: 'Plan review is pending.\n\n', raw: state, after: '' });
+  });
+
+  it('ends at the object, so prose after it stays prose', () => {
+    const block = extractOutcomeBlock(`---outcome---\n${state}\n\nReply on the Review tab.`);
+    expect(block?.raw).toBe(state);
+    expect(block?.after).toBe('\n\nReply on the Review tab.');
+  });
+
+  it('takes an end marker after the object as its close', () => {
+    const block = extractOutcomeBlock(`---outcome---\n${state}\n---end---\nAfter.`);
+    expect(block?.raw).toBe(state);
+    expect(block?.after).toBe('\nAfter.');
+  });
+
+  it('renders as a card in a message, with none of the object left as text', () => {
+    render(<MarkdownContent content={`Plan review is pending.\n\n---outcome---\n${state}`} />);
+    expect(screen.getByTestId('outcome-card')).toBeInTheDocument();
+    expect(screen.getByText('Plan --- approved at the gate.')).toBeInTheDocument();
+    expect(screen.queryByText(/---outcome---|next_action_timing|"\]\}/)).toBeNull();
   });
 });

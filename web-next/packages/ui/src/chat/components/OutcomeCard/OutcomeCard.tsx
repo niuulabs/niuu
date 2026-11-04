@@ -163,7 +163,47 @@ function normalizeOutcomeMarkers(text: string): string {
     .replace(WRAPPED_OUTCOME_END, '---end---');
 }
 
+/** An outcome written as a JSON object, as a coordinator writes its working state. */
+function parseJsonObject(raw: string): Record<string, unknown> | null {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('{')) return null;
+  try {
+    const value: unknown = JSON.parse(trimmed);
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    // Not JSON: the outcome is the usual key: value lines.
+    return null;
+  }
+}
+
+/** A JSON outcome's fields; nested objects are read through and lists become bullets. */
+function jsonFields(value: Record<string, unknown>): Record<string, string> {
+  const fields: Record<string, string> = {};
+  const add = (key: string, entry: unknown) => {
+    if (entry == null || entry === '') return;
+    if (Array.isArray(entry)) {
+      const items = entry.filter((item) => item != null && item !== '');
+      if (items.length === 0) return;
+      fields[key] = items
+        .map((item) => `- ${typeof item === 'string' ? item : JSON.stringify(item)}`)
+        .join('\n');
+      return;
+    }
+    if (typeof entry === 'object') {
+      for (const [inner, innerValue] of Object.entries(entry)) add(inner, innerValue);
+      return;
+    }
+    fields[key] = String(entry);
+  };
+  for (const [key, entry] of Object.entries(value)) add(key, entry);
+  return fields;
+}
+
 function parseFields(raw: string): Record<string, string> {
+  const json = parseJsonObject(raw);
+  if (json) return jsonFields(json);
   const normalizedRaw = normalizeSoftWrappedOutcomeRaw(raw);
   const fields: Record<string, string> = {};
   const lines = normalizedRaw.split('\n');
@@ -378,7 +418,7 @@ export function OutcomeCard({ raw }: OutcomeCardProps) {
           .filter(([k]) => k !== 'verdict' && k !== 'status' && k !== 'summary' && k !== 'result')
           .map(([k, v]) => (
             <div key={k} className="niuu-chat-outcome-field">
-              <span className="niuu-chat-outcome-field-key">{k}</span>
+              <span className="niuu-chat-outcome-field-key">{k.replace(/_/g, ' ')}</span>
               <div className="niuu-chat-outcome-field-value">
                 <MarkdownContent content={restoreInlineMarkdownBreaks(v)} />
               </div>
@@ -472,6 +512,19 @@ function extractDashedOutcomeBlock(
     contentStart += 1;
   }
 
+  // A JSON outcome ends where its object closes, so dashes inside its strings and prose
+  // after it stay where they belong. A closing marker after the object is optional.
+  const jsonEnd = text[contentStart] === '{' ? jsonObjectEnd(text, contentStart) : null;
+  const json = jsonEnd == null ? null : text.slice(contentStart, jsonEnd);
+  if (jsonEnd != null && json && parseJsonObject(json)) {
+    const closer = /^\s*---(?:end---)?(?=\s|$)/.exec(text.slice(jsonEnd));
+    return {
+      before: text.slice(0, start),
+      raw: json,
+      after: text.slice(jsonEnd + (closer?.[0].length ?? 0)),
+    };
+  }
+
   const endMarker = findDashedOutcomeEnd(lower, contentStart);
   if (endMarker == null) return null;
 
@@ -482,6 +535,27 @@ function extractDashedOutcomeBlock(
     raw,
     after: text.slice(endMarker.start + endMarker.marker.length),
   };
+}
+
+/** Index just past the object opening at `start`; braces inside strings do not count. */
+function jsonObjectEnd(text: string, start: number): number | null {
+  let depth = 0;
+  let inString = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (char === '\\') index += 1;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return index + 1;
+    }
+  }
+  return null;
 }
 
 function findDashedOutcomeEnd(
