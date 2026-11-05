@@ -433,3 +433,19 @@
   border-color: var(--brand-600);
   box-shadow: var(--shadow-sm);
 }
+
+/* Lexi's dictation: the waveform in its accent colour, filled while it listens. */
+.niuu-chat-dictate-btn {
+  color: var(--status-amber);
+}
+
+.niuu-chat-dictate-btn[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--status-amber) 18%, transparent);
+}
+
+.niuu-chat-dictation-error {
+  margin: 0;
+  padding: 0 var(--space-1);
+  font-size: 12px;
+  color: var(--color-critical);
+}

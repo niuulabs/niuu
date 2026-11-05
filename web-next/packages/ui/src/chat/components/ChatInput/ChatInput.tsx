@@ -8,10 +8,11 @@ import {
   type ChangeEvent,
   type KeyboardEvent,
 } from 'react';
-import { AlertTriangle, ArrowUp, Plus, Slash, Square, X } from 'lucide-react';
+import { AlertTriangle, ArrowUp, AudioLines, Plus, Slash, Square, X } from 'lucide-react';
 import { cn } from '../../../utils/cn';
 import { useFileAttachments, type FileAttachment } from '../../hooks/useFileAttachments';
 import { useSlashMenu } from '../../hooks/useSlashMenu';
+import { useDictation } from '../../hooks/useDictation';
 import { mentionId, useMentionMenu } from '../../hooks/useMentionMenu';
 import { SlashCommandMenu } from '../SlashCommandMenu';
 import { MentionMenu } from '../MentionMenu';
@@ -156,6 +157,10 @@ export function ChatInput({
   effortError = null,
 }: ChatInputProps) {
   const [input, setInput] = useState('');
+  // Lexi's microphone: each finished phrase lands at the end of the draft.
+  const dictation = useDictation((text) =>
+    setInput((draft) => (draft.trim() ? `${draft.replace(/\s+$/, '')} ${text}` : text)),
+  );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -484,6 +489,28 @@ export function ChatInput({
 
         <div className="niuu-chat-input-actions">
           <div className="niuu-chat-input-left-actions">
+            {!eventRouting && (
+              <>
+                <button
+                  type="button"
+                  className="niuu-chat-input-icon-btn"
+                  onClick={handleAttachClick}
+                  data-disabled={disabled || undefined}
+                  aria-label="Attach file"
+                  data-testid="attach-btn"
+                >
+                  <Plus className="niuu-chat-input-btn-icon" />
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="niuu-chat-input-hidden"
+                  accept={ACCEPTED_FILE_TYPES}
+                  onChange={handleFileChange}
+                  multiple
+                />
+              </>
+            )}
             {canBrowseCommands && (
               <button
                 type="button"
@@ -506,28 +533,6 @@ export function ChatInput({
               >
                 <Slash className="niuu-chat-input-btn-icon" />
               </button>
-            )}
-            {!eventRouting && (
-              <>
-                <button
-                  type="button"
-                  className="niuu-chat-input-icon-btn"
-                  onClick={handleAttachClick}
-                  data-disabled={disabled || undefined}
-                  aria-label="Attach file"
-                  data-testid="attach-btn"
-                >
-                  <Plus className="niuu-chat-input-btn-icon" />
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  className="niuu-chat-input-hidden"
-                  accept={ACCEPTED_FILE_TYPES}
-                  onChange={handleFileChange}
-                  multiple
-                />
-              </>
             )}
             {showModelChip && runtimeOptions && onSetRuntimeModel && (
               <ChipMenu
@@ -570,6 +575,23 @@ export function ChatInput({
           </div>
 
           <div className="niuu-chat-input-right-actions">
+            {dictation.supported && (
+              <button
+                type="button"
+                className="niuu-chat-input-icon-btn niuu-chat-dictate-btn"
+                onClick={() => {
+                  dictation.toggle();
+                  textareaRef.current?.focus();
+                }}
+                disabled={disabled}
+                aria-pressed={dictation.listening}
+                aria-label={dictation.listening ? 'Stop dictation' : 'Dictate'}
+                title={dictation.listening ? 'Stop dictation' : 'Dictate'}
+                data-testid="dictate-btn"
+              >
+                <AudioLines className="niuu-chat-input-btn-icon" />
+              </button>
+            )}
             {isLoading && (
               <button
                 type="button"
@@ -602,6 +624,11 @@ export function ChatInput({
         </div>
       </div>
 
+      {dictation.error && (
+        <p className="niuu-chat-dictation-error" role="alert" data-testid="dictation-error">
+          {dictation.error}
+        </p>
+      )}
       <div className="niuu-chat-input-hints" data-testid="chat-input-hints">
         <span>
           <kbd className="niuu-chat-kbd">↵</kbd>{' '}

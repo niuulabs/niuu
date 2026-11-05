@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, within } from '@testing-library/react';
 import { ChatInput } from './ChatInput';
 import type { SessionEffort, SessionRuntimeOptions } from '../../types';
 
@@ -599,5 +599,58 @@ describe('Lexi composer', () => {
     expect(screen.getByTestId('stop-btn')).toBeDisabled();
     rerender(<ChatInput {...defaultProps} onStop={onStop} />);
     expect(screen.queryByTestId('stop-btn')).not.toBeInTheDocument();
+  });
+
+  describe('dictation', () => {
+    class FakeRecognition {
+      static last: FakeRecognition | null = null;
+      continuous = false;
+      interimResults = true;
+      lang = '';
+      onresult: ((event: unknown) => void) | null = null;
+      onerror: ((event: { error: string }) => void) | null = null;
+      onend: (() => void) | null = null;
+      start = vi.fn();
+      stop = vi.fn(() => this.onend?.());
+      abort = vi.fn();
+      constructor() {
+        FakeRecognition.last = this;
+      }
+    }
+
+    it('offers no microphone where the browser cannot listen', () => {
+      render(<ChatInput {...defaultProps} />);
+      expect(screen.queryByTestId('dictate-btn')).not.toBeInTheDocument();
+    });
+
+    it('adds what was said to the draft, and says why when it is refused', () => {
+      vi.stubGlobal('webkitSpeechRecognition', FakeRecognition);
+      try {
+        render(<ChatInput {...defaultProps} />);
+        const textarea = screen.getByTestId('chat-textarea') as HTMLTextAreaElement;
+        fireEvent.change(textarea, { target: { value: 'Please ' } });
+        const mic = screen.getByTestId('dictate-btn');
+        fireEvent.click(mic);
+        expect(mic).toHaveAttribute('aria-pressed', 'true');
+        expect(mic).toHaveAccessibleName('Stop dictation');
+        act(() =>
+          FakeRecognition.last!.onresult?.({
+            resultIndex: 0,
+            results: [{ isFinal: true, 0: { transcript: 'ship the fix' } }],
+          }),
+        );
+        expect(textarea.value).toBe('Please ship the fix');
+        act(() => {
+          FakeRecognition.last!.onerror?.({ error: 'not-allowed' });
+          FakeRecognition.last!.onend?.();
+        });
+        expect(screen.getByTestId('dictation-error')).toHaveTextContent(
+          'Microphone access was refused',
+        );
+        expect(mic).toHaveAttribute('aria-pressed', 'false');
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
   });
 });

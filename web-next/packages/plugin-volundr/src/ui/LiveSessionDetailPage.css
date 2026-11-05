@@ -2709,3 +2709,22 @@
     overflow-x: auto;
   }
 }
+
+/* The project beside the name, as Lexi's title bar shows it. */
+.niuu-live-session__project {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--color-text-muted);
+}
+
+.niuu-live-session__project svg {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+}

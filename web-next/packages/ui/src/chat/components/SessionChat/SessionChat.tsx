@@ -688,17 +688,22 @@ export function SessionChat({
     () => new Map(messages.map((message, index) => [message.id, index])),
     [messages],
   );
+  const toolUses = (message: ChatMessage | undefined): number =>
+    message?.parts?.filter((part) => part.type === 'tool_use').length ?? 0;
   const turnToolCount = (turn: (typeof compactTurns)[number]): number => {
-    const from = turn.user ? (messageOrder.get(turn.user.id) ?? -1) + 1 : 0;
-    const last = turn.final ?? turn.intermediaries.at(-1);
+    const own = [...turn.intermediaries, ...(turn.final ? [turn.final] : [])];
+    // A question bounds its turn: everything up to the answer is that turn's work, tool-only
+    // messages included. A room fold has no question; it counts its speaker's own messages.
+    if (!turn.user) {
+      return own.reduce((count, message) => {
+        const index = messageOrder.get(message.id);
+        return count + toolUses(index === undefined ? message : messages[index]);
+      }, 0);
+    }
+    const from = (messageOrder.get(turn.user.id) ?? -1) + 1;
+    const last = own.at(-1);
     const to = last ? (messageOrder.get(last.id) ?? messages.length - 1) : messages.length - 1;
-    return messages
-      .slice(from, to + 1)
-      .reduce(
-        (count, message) =>
-          count + (message.parts?.filter((part) => part.type === 'tool_use').length ?? 0),
-        0,
-      );
+    return messages.slice(from, to + 1).reduce((count, message) => count + toolUses(message), 0);
   };
 
   // What the workers did that no transcript message carries: handoffs between them, outcomes

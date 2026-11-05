@@ -28,6 +28,7 @@ import {
   CheckCheck,
   ChevronDown,
   ChevronRight,
+  RefreshCw,
   RotateCcw,
   Square,
   FolderOpen,
@@ -1699,13 +1700,26 @@ export function SessionsPage() {
                     </div>
                   </div>
                 )}
-                <p className="forge-session-today" data-testid="sessions-today">
-                  {workToday
-                    ? workToday.sessions === 0
-                      ? 'Last 24 h · no work recorded'
-                      : `Last 24 h · ${workToday.sessions} ${workToday.sessions === 1 ? 'session' : 'sessions'} · ${workedDuration(workToday.seconds)}`
-                    : `${listedSessionCount} ${listedSessionCount === 1 ? 'session' : 'sessions'}`}
-                </p>
+                <div className="forge-session-footer-line">
+                  <p className="forge-session-today" data-testid="sessions-today">
+                    {workToday
+                      ? workToday.sessions === 0
+                        ? 'Last 24 h · no work recorded'
+                        : `Last 24 h · ${workToday.sessions} ${workToday.sessions === 1 ? 'session' : 'sessions'} · ${workedDuration(workToday.seconds)}`
+                      : `${listedSessionCount} ${listedSessionCount === 1 ? 'session' : 'sessions'}`}
+                  </p>
+                  <button
+                    type="button"
+                    className="forge-session-refresh"
+                    aria-label="Refresh sessions"
+                    title="Refresh sessions"
+                    disabled={sessionsQuery.isFetching}
+                    onClick={() => void sessionsQuery.refetch()}
+                    data-testid="sessions-refresh"
+                  >
+                    <RefreshCw size={13} aria-hidden="true" />
+                  </button>
+                </div>
               </footer>
             </div>
           )}

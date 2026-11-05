@@ -3205,6 +3205,20 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.queryByTestId('worker-of')).toBeNull();
     });
 
+    it('shows the project beside the session name', async () => {
+      mockChatState();
+      wrap(leadId, {
+        session: COORDINATOR_SESSION,
+        sessionStore: store,
+        volundr: {
+          getProjects: vi
+            .fn()
+            .mockResolvedValue([{ id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' }]),
+        },
+      });
+      expect(await screen.findByTestId('session-project')).toHaveTextContent('Lexi');
+    });
+
     it('tags a session as a coordinator when only the list says it leads workers', async () => {
       mockChatState();
       wrap(leadId, { session: RUNNING_SESSION, sessionStore: store });

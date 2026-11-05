@@ -1032,3 +1032,29 @@
 .forge-session-scroll {
   padding: 0 6px;
 }
+
+/* The footer: the day's work and a refresh, as Lexi ends its session list. */
+.forge-session-footer-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.forge-session-refresh {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--color-text-muted);
+}
+
+.forge-session-refresh:hover:not(:disabled) {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.forge-session-refresh:disabled {
+  opacity: 0.5;
+}

@@ -47,6 +47,7 @@ import {
   FileCode2,
   FileDiff,
   FilePenLine,
+  Folder,
   FolderOpen,
   GitBranch,
   GitCommitHorizontal,
@@ -3832,6 +3833,16 @@ function LiveSessionDetailPageInner({
               <div className="niuu-live-session__head-title">
                 <div className="niuu-live-session__identity">
                   <span className="niuu-live-session__title">{sessionName}</span>
+                  {sessionProjectName ? (
+                    <span
+                      className="niuu-live-session__project"
+                      data-testid="session-project"
+                      title={`Project: ${sessionProjectName}`}
+                    >
+                      <Folder aria-hidden="true" />
+                      {sessionProjectName}
+                    </span>
+                  ) : null}
                   {sessionDetail ? (
                     <span
                       className="niuu-live-session__state-pill"

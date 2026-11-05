@@ -798,6 +798,16 @@ describe('Forge session review controls', () => {
       expect(within(row).getByTitle(path)).toHaveTextContent(label);
     },
   );
+  it('refreshes the list from its footer', async () => {
+    const store = createSessionStoreWithSessions(sessions);
+    const list = vi.spyOn(store, 'listSessions');
+    wrap(store);
+    await screen.findByTestId('pod-entry-working');
+    const before = list.mock.calls.length;
+    fireEvent.click(screen.getByTestId('sessions-refresh'));
+    await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(before));
+  });
+
   it('persists keyboard resizing and collapsed groups', async () => {
     wrap(createSessionStoreWithSessions(sessions));
     await screen.findByTestId('pod-entry-working');

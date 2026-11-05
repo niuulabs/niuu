@@ -1601,6 +1601,10 @@ describe('SessionChat', () => {
       'Different thread',
     ])
       expect(screen.getByText(answer)).toBeInTheDocument();
+    // A room fold counts only its speaker's own work.
+    expect(screen.getByRole('button', { name: /^Reviewer: Worked/ })).toHaveTextContent(
+      /Worked1 step$/,
+    );
     fireEvent.click(screen.getByRole('button', { name: /^Reviewer: Worked/ }));
     expect(screen.getByText('Reviewer work')).toBeInTheDocument();
     expect(screen.queryByText('Builder work')).not.toBeInTheDocument();
