@@ -104,6 +104,12 @@ CODEX_GATEWAY_PROVIDER = "niuu"
 CODEX_GATEWAY_TOKEN_ENV = "NIUU_MODEL_GATEWAY_TOKEN"
 
 
+# Codex registers its `update_plan` tool, the only source of `turn/plan/updated`, only
+# when this is on; it defaults to off since Codex 0.152 (openai/codex#41744). The
+# session plan (Forge plan bar, Lexi plan dock) is built from those notifications.
+CODEX_PLAN_TOOL_OVERRIDE = ("tools.update_plan.enabled", "true")
+
+
 def codex_gateway_overrides(gateway_url: str) -> list[tuple[str, str]]:
     """``codex -c key=value`` pairs that point Codex at the model gateway."""
     url = gateway_url.strip().rstrip("/")
@@ -726,6 +732,7 @@ class CodexWebSocketTransport(CLITransport):
             cmd.extend(["-c", f"{key}={value}"])
         for key, value in self._gateway_overrides:
             cmd.extend(["-c", f"{key}={value}"])
+        cmd.extend(["-c", "=".join(CODEX_PLAN_TOOL_OVERRIDE)])
         if self._shell_tool_enabled is not None:
             cmd.extend(["-c", f"features.shell_tool={str(self._shell_tool_enabled).lower()}"])
         if self._multi_agent_enabled is not None:
