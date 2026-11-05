@@ -366,6 +366,17 @@ export interface VolundrMessage {
   latency?: number;
 }
 
+/**
+ * What `POST /sessions/{id}/messages` answers. `delivered` means the session's transport
+ * accepted the message (200); `pending` means Forge accepted it and is still retrying
+ * delivery (202), which is not a confirmed send.
+ */
+export interface SessionMessageDelivery {
+  status: 'delivered' | 'pending';
+  requestId: string;
+  sessionId: string;
+}
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export interface VolundrLog {

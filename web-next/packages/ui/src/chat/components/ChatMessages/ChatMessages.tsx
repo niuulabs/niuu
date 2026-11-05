@@ -5,6 +5,7 @@ import {
   Copy,
   Check,
   RefreshCw,
+  Forward,
   ChevronRight,
   ChevronDown,
   Loader2,
@@ -216,6 +217,8 @@ interface AssistantMessageProps {
   message: ChatMessage;
   onCopy?: (text: string) => void;
   onRegenerate?: (messageId: string) => void;
+  /** Hand this message to another session; the button shows only when this is given. */
+  onForward?: (message: ChatMessage) => void;
   onBookmark?: (messageId: string, bookmarked: boolean) => void;
   bookmarked?: boolean;
   showTokenUsage?: boolean;
@@ -225,6 +228,7 @@ export function AssistantMessage({
   message,
   onCopy,
   onRegenerate,
+  onForward,
   onBookmark,
   bookmarked = false,
   showTokenUsage = false,
@@ -382,6 +386,17 @@ export function AssistantMessage({
                 title="Regenerate"
               >
                 <RefreshCw className="niuu-chat-action-icon" />
+              </button>
+            )}
+            {onForward && (
+              <button
+                type="button"
+                className="niuu-chat-action-btn"
+                onClick={() => onForward(message)}
+                title="Forward…"
+                aria-label="Forward…"
+              >
+                <Forward className="niuu-chat-action-icon" />
               </button>
             )}
             {onBookmark && (

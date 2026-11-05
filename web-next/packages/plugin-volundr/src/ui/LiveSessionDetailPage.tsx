@@ -25,6 +25,7 @@ import {
   LoadingState,
   SessionChat,
   type ISessionHistoryLocator,
+  type ChatMessage,
   ChatConnectionsContext,
   ChatDisplayControls,
   type FileEntry,
@@ -103,6 +104,7 @@ import { SESSION_STATE_LABELS } from './sessions/presentation';
 import { ContextMeter } from './detail/ContextMeter';
 import { SessionMoreMenu, type MoreMenuItem } from './detail/SessionMoreMenu';
 import { Subline } from './detail/Subline';
+import { ForwardMessageDialog, type ForwardedNotice } from './detail/ForwardMessageDialog';
 import {
   contextMeterData,
   isSessionWorking,
@@ -2464,7 +2466,7 @@ function sessionPrimaryAction({
     return {
       icon: Square,
       title: 'Stop session',
-      label: 'Stop',
+      label: 'Stop session',
       tone: 'critical',
       onSelect: onStop,
     };
@@ -3156,6 +3158,8 @@ function LiveSessionDetailPageInner({
   // Why the last toolbar action was refused (a restart with no free slot, say).
   const [actionError, setActionError] = useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [forwarding, setForwarding] = useState<ChatMessage | null>(null);
+  const [forwardedNotice, setForwardedNotice] = useState<ForwardedNotice | null>(null);
   const [dismissedHumanGateIds, setDismissedHumanGateIds] = useState<Set<string>>(new Set());
   const [toolVisibility, setToolVisibility] = useForgePreference('tools', '1', ['0', '1']);
   const showInternalMessages = toolVisibility === '1';
@@ -3911,6 +3915,35 @@ function LiveSessionDetailPageInner({
           </div>
         </div>
 
+        {forwardedNotice && (
+          <div
+            role="status"
+            className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-2 niuu:text-xs niuu:text-text-secondary"
+            data-testid="session-forwarded-notice"
+          >
+            <span>Forwarded to {forwardedNotice.targetName}.</span>
+            <button
+              type="button"
+              className="niuu:text-text-muted niuu:hover:text-text-primary"
+              onClick={() => setForwardedNotice(null)}
+              aria-label="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+        <ForwardMessageDialog
+          open={forwarding !== null}
+          onOpenChange={(next) => !next && setForwarding(null)}
+          currentSessionId={sessionId}
+          currentSessionName={sessionName}
+          content={forwarding?.content ?? ''}
+          onDelivered={(notice) => {
+            setForwarding(null);
+            setForwardedNotice(notice);
+          }}
+        />
+
         {actionError || sessionRead.error ? (
           <div
             role="alert"
@@ -4010,6 +4043,7 @@ function LiveSessionDetailPageInner({
                       historyEndpoint={historyEndpoint}
                       sessionName={sessionName}
                       onSend={chat.sendMessage}
+                      onForwardMessage={setForwarding}
                       onSendDirected={chat.sendDirectedMessages}
                       onStop={chat.sendInterrupt}
                       onClear={chat.clearMessages}

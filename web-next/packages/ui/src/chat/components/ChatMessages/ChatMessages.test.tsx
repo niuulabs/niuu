@@ -110,6 +110,17 @@ describe('AssistantMessage', () => {
     expect(onRegenerate).toHaveBeenCalledWith('a1');
   });
 
+  it('shows Forward… only when onForward is given and passes the message', () => {
+    const { unmount } = render(<AssistantMessage message={assistantMsg} />);
+    expect(screen.queryByRole('button', { name: 'Forward…' })).toBeNull();
+    unmount();
+
+    const onForward = vi.fn();
+    render(<AssistantMessage message={assistantMsg} onForward={onForward} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Forward…' }));
+    expect(onForward).toHaveBeenCalledWith(assistantMsg);
+  });
+
   it('toggles reasoning section when present', () => {
     const msgWithReasoning: ChatMessage = {
       ...assistantMsg,

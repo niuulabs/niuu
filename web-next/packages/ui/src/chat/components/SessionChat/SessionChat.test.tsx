@@ -574,6 +574,25 @@ describe('SessionChat', () => {
     expect(onRegenerate).toHaveBeenCalledWith(assistantMessage.id);
   });
 
+  it('passes the assistant message to onForwardMessage and has no Forward button without it', () => {
+    const onForwardMessage = vi.fn();
+    const { rerender } = render(
+      <SessionChat {...defaultProps} messages={[userMessage, assistantMessage]} />,
+    );
+    expect(screen.queryByTitle('Forward…')).toBeNull();
+
+    rerender(
+      <SessionChat
+        {...defaultProps}
+        messages={[userMessage, assistantMessage]}
+        onForwardMessage={onForwardMessage}
+      />,
+    );
+    fireEvent.click(screen.getByTitle('Forward…'));
+    expect(onForwardMessage).toHaveBeenCalledTimes(1);
+    expect(onForwardMessage.mock.calls[0]?.[0]).toMatchObject({ id: assistantMessage.id });
+  });
+
   it.each([
     ['regular', assistantMessage],
     ['room', roomAssistantMessage],

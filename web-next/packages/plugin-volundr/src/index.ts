@@ -252,6 +252,7 @@ export type {
   SessionStatus,
   VolundrFeatures,
   VolundrMessage,
+  SessionMessageDelivery,
   VolundrLog,
   VolundrAggregatedLog,
   VolundrLogParticipant,

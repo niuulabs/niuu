@@ -143,12 +143,12 @@ describe('createMockVolundrService', () => {
     expect(session.hostname).toBe('host.example.com');
   });
 
-  it('sendMessage echoes back the content', async () => {
+  it('sendMessage reports the message delivered to the target session', async () => {
     const svc = createMockVolundrService();
-    const msg = await svc.sendMessage('sess-1', 'hello');
-    expect(msg.role).toBe('assistant');
-    expect(msg.content).toContain('hello');
-    expect(msg.sessionId).toBe('sess-1');
+    const delivery = await svc.sendMessage('sess-1', 'hello');
+    expect(delivery.status).toBe('delivered');
+    expect(delivery.sessionId).toBe('sess-1');
+    expect(delivery.requestId).toBeTruthy();
   });
 
   it('getFeatures returns a feature flags object', async () => {

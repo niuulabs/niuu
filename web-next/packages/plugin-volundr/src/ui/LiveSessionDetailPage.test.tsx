@@ -2882,6 +2882,50 @@ describe('LiveSessionDetailPage', () => {
       expect(sendSetRuntimeOptions).toHaveBeenCalledWith({ model: 'claude-opus-4-8' });
     });
 
+    it('offers Forward on the live chat and opens the forward dialog with the message', async () => {
+      mockChatState();
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+
+      await waitFor(() => expect(sessionChatProps).toHaveBeenCalled());
+      const props = sessionChatProps.mock.calls.at(-1)![0];
+      expect(props.onForwardMessage).toEqual(expect.any(Function));
+      act(() => {
+        props.onForwardMessage({
+          id: 'a1',
+          role: 'assistant',
+          content: 'Forward me',
+          createdAt: new Date(),
+        });
+      });
+      expect(await screen.findByTestId('forward-message-dialog')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Forward to session' })).toBeInTheDocument();
+    });
+
+    it('does not offer Forward on the read-only replay of a stopped session', async () => {
+      sessionChatProps.mockClear();
+      wrap('test-session-id-1234', {
+        session: STOPPED_SESSION,
+        volundr: {
+          getConversationHistory: vi.fn().mockResolvedValue({
+            turns: [
+              {
+                id: 'turn-assistant-1',
+                role: 'assistant',
+                content: 'It finished cleanly.',
+                created_at: '2026-05-15T18:00:05Z',
+              },
+            ],
+          }),
+        },
+      });
+      expect(await screen.findByText('It finished cleanly.')).toBeInTheDocument();
+      expect(sessionChatProps).toHaveBeenCalled();
+      for (const [props] of sessionChatProps.mock.calls) {
+        expect(props.onForwardMessage).toBeUndefined();
+      }
+    });
+
     it.each(['idle', 'awaiting_input', null] as const)(
       'is not working while the session is %s',
       async (activityState) => {

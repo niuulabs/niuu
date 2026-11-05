@@ -12,7 +12,7 @@ import type {
   CatalogEntry,
   VolundrSession,
   VolundrStats,
-  VolundrMessage,
+  SessionMessageDelivery,
   StoredCredential,
   FeatureModule,
   SecretType,
@@ -1552,12 +1552,10 @@ export function createMockVolundrService(): IVolundrService {
       return resolved;
     },
     getMessages: async () => [],
-    sendMessage: async (_sessionId, content): Promise<VolundrMessage> => ({
-      id: `msg-${Date.now()}`,
-      sessionId: _sessionId,
-      role: 'assistant',
-      content: `echo: ${content}`,
-      timestamp: Date.now(),
+    sendMessage: async (sessionId): Promise<SessionMessageDelivery> => ({
+      status: 'delivered',
+      requestId: `mock-request-${Date.now()}`,
+      sessionId,
     }),
     subscribeMessages: () => () => {},
 

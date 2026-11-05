@@ -1853,11 +1853,54 @@ describe('buildVolundrHttpAdapter', () => {
     expect(client.patch).toHaveBeenCalledWith('/sessions/s1/restore', undefined);
   });
 
-  it('sendMessage calls POST /sessions/:id/messages', async () => {
+  it('sendMessage posts to /sessions/:id/messages and reads a 200 as delivered', async () => {
     const client = makeClient();
-    await buildVolundrHttpAdapter(client).sendMessage('s1', 'hello');
+    client.post.mockResolvedValue({
+      status: 'delivered',
+      session_id: 's1',
+      request_id: 'req-1',
+      delivery: 'delivered',
+    });
+    const delivery = await buildVolundrHttpAdapter(client).sendMessage('s1', 'hello');
     expect(client.post).toHaveBeenCalledWith('/sessions/s1/messages', { content: 'hello' });
+    expect(delivery).toEqual({ status: 'delivered', requestId: 'req-1', sessionId: 's1' });
   });
+
+  it('sendMessage reads a 202 as pending, never as delivered', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      status: 'pending',
+      session_id: 's1',
+      request_id: 'req-2',
+      delivery: 'pending',
+    });
+    const delivery = await buildVolundrHttpAdapter(client).sendMessage('s1', 'hello');
+    expect(delivery.status).toBe('pending');
+    expect(delivery.requestId).toBe('req-2');
+  });
+
+  it('sendMessage lets a refusal carry Forge detail to the caller', async () => {
+    const client = makeClient();
+    const refusal = Object.assign(new Error('API request failed: 404'), {
+      status: 404,
+      detail: 'Session s1 has no active endpoint',
+    });
+    client.post.mockRejectedValue(refusal);
+    await expect(buildVolundrHttpAdapter(client).sendMessage('s1', 'hello')).rejects.toMatchObject({
+      detail: 'Session s1 has no active endpoint',
+    });
+  });
+
+  it.each([[{}], [{ status: 'unconfirmed', request_id: 'r' }], [{ status: 'delivered' }]])(
+    'sendMessage refuses a body that does not say delivered or pending (%j)',
+    async (body) => {
+      const client = makeClient();
+      client.post.mockResolvedValue(body);
+      await expect(buildVolundrHttpAdapter(client).sendMessage('s1', 'hello')).rejects.toThrow(
+        /Forge/,
+      );
+    },
+  );
 
   it('getMessages uses conversation history and normalizes turns', async () => {
     const client = makeClient();

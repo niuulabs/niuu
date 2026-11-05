@@ -11,6 +11,7 @@ import type {
   VolundrStats,
   VolundrRepo,
   VolundrMessage,
+  SessionMessageDelivery,
   VolundrLog,
   VolundrAggregatedLog,
   VolundrLogParticipant,
@@ -281,7 +282,11 @@ export interface IVolundrService {
     request: ResolveWorkflowGateRequest,
   ): Promise<VolundrWorkflowGate>;
   getMessages(sessionId: string): Promise<VolundrMessage[]>;
-  sendMessage(sessionId: string, content: string): Promise<VolundrMessage>;
+  /**
+   * Send a user message into a running session. Resolves `delivered` or `pending` (accepted,
+   * delivery still being retried; not confirmed); rejects with Forge's `detail` on refusal.
+   */
+  sendMessage(sessionId: string, content: string): Promise<SessionMessageDelivery>;
   subscribeMessages(sessionId: string, callback: (message: VolundrMessage) => void): () => void;
 
   // Logs

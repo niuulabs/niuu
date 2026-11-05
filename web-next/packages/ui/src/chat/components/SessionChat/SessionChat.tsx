@@ -287,6 +287,8 @@ export interface SessionChatProps {
   onRewindFiles?: () => void;
   onCopy?: (text: string) => void;
   onRegenerate?: (messageId: string) => void;
+  /** Offer "Forward…" on assistant messages; absent means no button. */
+  onForwardMessage?: (message: ChatMessage) => void;
   onBookmark?: (messageId: string, bookmarked: boolean) => void;
   onPermissionRespond?: (requestId: string, behavior: PermissionBehavior) => void;
   onInputRespond?: (requestId: string, values: (string | InputAnswer)[]) => void;
@@ -358,6 +360,7 @@ export function SessionChat({
   onRewindFiles,
   onCopy,
   onRegenerate,
+  onForwardMessage,
   onBookmark,
   onPermissionRespond,
   onInputRespond,
@@ -935,6 +938,7 @@ export function SessionChat({
         showTokenUsage={showTokenUsage}
         onCopy={handleCopy}
         onRegenerate={onRegenerate}
+        onForward={onForwardMessage}
         onBookmark={onBookmark}
         bookmarked={isBookmarked(msg.id)}
       />

@@ -26,6 +26,7 @@ import type {
   VolundrStats,
   VolundrRepo,
   VolundrMessage,
+  SessionMessageDelivery,
   VolundrLog,
   VolundrAggregatedLog,
   VolundrLogParticipant,
@@ -678,6 +679,30 @@ function normalizeStats(stats: StatsPayload): VolundrStats {
     costToday: stats.costToday ?? stats.cost_today ?? 0,
     sparklines: stats.sparklines,
   };
+}
+
+interface SessionMessageDeliveryPayload {
+  status?: string;
+  session_id?: string;
+  request_id?: string;
+}
+
+/** Forge's 200 (delivered) and 202 (pending) bodies; anything else is not an answer to a send. */
+function normalizeMessageDelivery(
+  sessionId: string,
+  payload: SessionMessageDeliveryPayload | null | undefined,
+): SessionMessageDelivery {
+  const status = payload?.status;
+  if (status !== 'delivered' && status !== 'pending') {
+    throw new Error(
+      `Forge did not say whether the message to session ${sessionId} was delivered ` +
+        `(status ${JSON.stringify(status)}); check the session before sending it again.`,
+    );
+  }
+  if (!payload?.request_id) {
+    throw new Error(`Forge accepted the message to session ${sessionId} without a request id.`);
+  }
+  return { status, requestId: payload.request_id, sessionId: payload.session_id ?? sessionId };
 }
 
 function normalizeMessageRole(role: string): VolundrMessage['role'] {
@@ -2162,8 +2187,13 @@ export function buildVolundrHttpAdapter(
       return normalizeWorkflowGate(payload as WorkflowGatePayload);
     },
     getMessages: (sessionId) => loadMessages(sessionId),
-    sendMessage: (sessionId, content) =>
-      forgeClient.post<VolundrMessage>(sessionPath(sessionId, '/messages'), { content }),
+    sendMessage: async (sessionId, content) =>
+      normalizeMessageDelivery(
+        sessionId,
+        await forgeClient.post<SessionMessageDeliveryPayload>(sessionPath(sessionId, '/messages'), {
+          content,
+        }),
+      ),
     subscribeMessages: (sessionId, callback) => {
       const connection = ensurePollingConnection(
         messageSubscribers,
