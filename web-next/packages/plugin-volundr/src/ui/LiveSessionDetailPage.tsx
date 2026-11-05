@@ -44,7 +44,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Eye,
-  EyeOff,
   FileCode2,
   FileDiff,
   FilePenLine,
@@ -3999,19 +3998,16 @@ function LiveSessionDetailPageInner({
                   }
                   cost={costValue}
                 />
+                {/* One Display options menu, as Lexi's: folding, tool calls and the rest. */}
                 {resolvedActiveTab === 'chat' && (
-                  <ChatDisplayControls className="niuu-live-session__display-controls" />
+                  <ChatDisplayControls
+                    className="niuu-live-session__display-controls"
+                    toolCalls={{
+                      shown: showInternalMessages,
+                      onToggle: handleToggleInternalMessages,
+                    }}
+                  />
                 )}
-                <SessionToolbarButton
-                  icon={showInternalMessages ? Eye : EyeOff}
-                  title={
-                    showInternalMessages
-                      ? 'Hide tool calls and results'
-                      : 'Show tool calls and results'
-                  }
-                  active={showInternalMessages}
-                  onClick={handleToggleInternalMessages}
-                />
                 {panelHasContent ? (
                   <SessionToolbarButton
                     icon={PanelRight}

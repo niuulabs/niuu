@@ -2824,3 +2824,59 @@
 .niuu-live-session__head-title .niuu-live-session__project {
   flex: 0 2 auto;
 }
+
+/* ── The title bar's controls as Lexi's: one row of same-size plain icons ── */
+@media (min-width: 761px) {
+  .niuu-live-session__head-top > .niuu-live-session__toolbar {
+    align-items: center;
+    gap: 2px;
+    padding-left: 8px;
+  }
+
+  .niuu-live-session__head-top .niuu-live-session__toolbar-button {
+    min-width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+  }
+
+  .niuu-live-session__head-top .niuu-live-session__toolbar-button:hover:not(:disabled),
+  .niuu-live-session__head-top .niuu-live-session__toolbar-button--active {
+    background: color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+    color: var(--color-text-primary);
+  }
+
+  /* A labelled control ("Needs you 2") keeps its words beside the icon. */
+  .niuu-live-session__head-top
+    .niuu-live-session__toolbar-button:has(.niuu-live-session__toolbar-label) {
+    padding: 0 8px;
+  }
+
+  .niuu-live-session__head-top .niuu-live-session__toolbar-icon {
+    width: 16px;
+    height: 16px;
+  }
+
+  .niuu-live-session__head-top .niuu-live-session__toolbar-button--critical {
+    color: var(--color-critical-fg);
+  }
+
+  .niuu-live-session__head-top .niuu-live-session__toolbar-button--critical:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-critical) 18%, transparent);
+    color: var(--color-critical-fg);
+  }
+
+  /* The views match the icons' height. */
+  .niuu-live-session__head-top > .niuu-live-session__tabs {
+    align-self: center;
+    padding: 2px;
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab {
+    height: 24px;
+    min-height: 0;
+    padding: 0 8px;
+  }
+}

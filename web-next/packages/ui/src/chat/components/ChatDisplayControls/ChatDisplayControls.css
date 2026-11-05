@@ -3,3 +3,59 @@
   align-items: center;
   gap: var(--space-2);
 }
+
+/* The menu's button: one icon the size of the toolbar's other icons. */
+.niuu-chat-display-menu .niuu-chat-preferences > summary {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  color: var(--color-text-muted);
+  list-style: none;
+}
+
+.niuu-chat-display-menu .niuu-chat-preferences > summary::-webkit-details-marker {
+  display: none;
+}
+
+.niuu-chat-display-menu .niuu-chat-preferences > summary:hover,
+.niuu-chat-display-menu .niuu-chat-preferences[open] > summary {
+  background: color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+  color: var(--color-text-primary);
+}
+
+.niuu-chat-display-menu .niuu-chat-preferences > summary .niuu-chat-control-icon {
+  width: 16px;
+  height: 16px;
+}
+
+/* A toggle in the menu reads as a row with a check, like the labels under it. */
+.niuu-chat-preferences-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.niuu-chat-preferences-toggle:hover {
+  background: color-mix(in srgb, var(--color-text-primary) 6%, transparent);
+}
+
+.niuu-chat-preferences-toggle[aria-pressed='true'] {
+  color: var(--color-text-primary);
+}
+
+.niuu-chat-preferences-toggle[aria-pressed='true']::after {
+  content: '✓';
+  margin-left: auto;
+  color: var(--color-brand);
+}

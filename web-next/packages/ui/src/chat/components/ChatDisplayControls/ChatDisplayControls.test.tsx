@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { ChatDisplayControls } from './ChatDisplayControls';
 import { useCompactUxChatPrefs, useConversationView } from '../../compactUxPrefs';
@@ -36,6 +36,26 @@ describe('ChatDisplayControls', () => {
     expect(toggle).toHaveAttribute('title', 'Compact view');
     fireEvent.click(toggle);
     expect(screen.getByTestId('reader')).toHaveTextContent('compact/always/false');
+  });
+
+  it('offers the host's tool-call visibility in the same menu', () => {
+    const onToggle = vi.fn();
+    const { rerender } = render(<ChatDisplayControls toolCalls={{ shown: true, onToggle }} />);
+    const toggle = screen.getByTestId('tool-calls-toggle');
+    expect(toggle.closest('details')).toHaveClass('niuu-chat-preferences');
+    expect(toggle).toHaveAccessibleName('Hide tool calls and results');
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(toggle);
+    expect(onToggle).toHaveBeenCalled();
+    rerender(<ChatDisplayControls toolCalls={{ shown: false, onToggle }} />);
+    expect(screen.getByTestId('tool-calls-toggle')).toHaveAccessibleName(
+      'Show tool calls and results',
+    );
+  });
+
+  it('leaves tool calls out when the host has no such switch', () => {
+    render(<ChatDisplayControls />);
+    expect(screen.queryByTestId('tool-calls-toggle')).not.toBeInTheDocument();
   });
 
   it('stores the Display preferences where every conversation reads them', () => {
