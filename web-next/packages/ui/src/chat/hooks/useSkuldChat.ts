@@ -171,6 +171,8 @@ type CliStreamEvent = {
   role?: string;
   created_at?: string;
   thread_id?: string;
+  /** Skuld's `room_message` wire name for the thread (snake_case is the history-turn name). */
+  threadId?: string;
   visibility?: 'visible' | 'internal';
   metadata?: Record<string, unknown>;
   eventType?: string;
@@ -718,57 +720,6 @@ export function meshEventsFromTurns(turns: ConversationTurn[]): MeshEvent[] {
     });
   }
   return events;
-}
-
-export function stringifyOutcomeValue(value: unknown): string {
-  if (value == null) return '';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-export function pushOutcomeField(lines: string[], key: string, value: unknown): void {
-  const text = stringifyOutcomeValue(value);
-  if (!text) return;
-  if (text.includes('\n')) {
-    lines.push(`${key}: |`);
-    for (const line of text.split('\n')) {
-      lines.push(`  ${line}`);
-    }
-    return;
-  }
-  lines.push(`${key}: ${text}`);
-}
-
-export function formatOutcomeContent(event: CliStreamEvent): string {
-  const fields =
-    event.fields && typeof event.fields === 'object'
-      ? { ...event.fields }
-      : ({} as Record<string, unknown>);
-
-  const lines: string[] = [];
-  pushOutcomeField(lines, 'verdict', event.verdict ?? fields.verdict);
-  pushOutcomeField(
-    lines,
-    'summary',
-    normalizeOutcomeSummaryText(event.summary) ?? normalizeOutcomeSummaryText(fields.summary),
-  );
-
-  for (const [key, value] of Object.entries(fields)) {
-    if (key === 'verdict' || key === 'summary' || key === 'success') continue;
-    pushOutcomeField(lines, key, value);
-  }
-
-  if (lines.length === 0 && event.eventType) {
-    pushOutcomeField(lines, 'event_type', event.eventType);
-  }
-
-  const raw = lines.join('\n');
-  return `\`\`\`outcome\n${raw}\n\`\`\``;
 }
 
 async function attachmentToWireContent(
@@ -2380,19 +2331,24 @@ export function useSkuldChat(
             if (senderId) {
               finalizeParticipantStream(senderId);
             }
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: generateId(),
-                role: event.role === 'user' ? 'user' : 'assistant',
-                content: typeof event.content === 'string' ? event.content : '',
-                createdAt: event.created_at ? new Date(event.created_at) : new Date(),
-                status: 'done',
-                participant: parseParticipantMeta(event.participant),
-                threadId: event.thread_id,
-                visibility: event.visibility,
-              },
-            ]);
+            // Skuld stamps the durable turn id on the frame; the same id comes back in history.
+            const messageId = event.id || generateId();
+            setMessages((prev) => {
+              if (prev.some((message) => message.id === messageId)) return prev;
+              return [
+                ...prev,
+                {
+                  id: messageId,
+                  role: event.role === 'user' ? 'user' : 'assistant',
+                  content: typeof event.content === 'string' ? event.content : '',
+                  createdAt: event.created_at ? new Date(event.created_at) : new Date(),
+                  status: 'done',
+                  participant: parseParticipantMeta(event.participant),
+                  threadId: event.threadId ?? event.thread_id,
+                  visibility: event.visibility,
+                },
+              ];
+            });
             break;
           }
           case 'room_activity': {
@@ -2435,19 +2391,6 @@ export function useSkuldChat(
                 fields: event.fields,
                 valid: event.valid === false ? false : true,
               },
-            ]);
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: generateId(),
-                role: 'assistant',
-                content: formatOutcomeContent(event),
-                createdAt: new Date(),
-                status: 'done',
-                participant,
-                participantId,
-                visibility: 'internal',
-              } as ChatMessage & { participantId?: string },
             ]);
             break;
           }
@@ -2527,7 +2470,7 @@ export function useSkuldChat(
                   participant,
                   participantId: peerId,
                   visibility: 'internal',
-                  threadId: event.thread_id,
+                  threadId: event.threadId ?? event.thread_id,
                 } as ChatMessage & { participantId?: string },
               ]);
             }
@@ -2593,7 +2536,11 @@ export function useSkuldChat(
                   { type: 'tool_result', tool_use_id: toolUseId, content: result },
                 ],
               }));
-            } else if (frame.type === 'text' || frame.type === 'message') {
+            } else if (
+              frame.type === 'text' ||
+              frame.type === 'message' ||
+              frame.type === 'response'
+            ) {
               const text =
                 typeof frame.data === 'string' ? frame.data : JSON.stringify(frame.data ?? '');
               appendStreamingTextPart('text', text);

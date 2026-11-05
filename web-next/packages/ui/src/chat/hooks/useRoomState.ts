@@ -33,6 +33,15 @@ function isVisibleMessage(msg: ChatMessage): boolean {
   return true;
 }
 
+/**
+ * A peer filter narrows the room's agents, never the operator's own turns: messages from the
+ * user, and messages with no participant, stay visible under any filter.
+ */
+function matchesPeerFilter(msg: ChatMessage, peerId: string): boolean {
+  if (msg.role === 'user' || !msg.participant) return true;
+  return msg.participant.peerId === peerId;
+}
+
 /** Keep prose boundaries without retaining hidden tool input or output. */
 export function hideToolParts(parts: readonly ChatMessagePart[]): ChatMessagePart[] {
   const imageIds = new Set(
@@ -103,7 +112,7 @@ export function useRoomState(
     const out: ChatMessage[] = [];
     for (const msg of messages) {
       if (isRoomMode && !showInternal && msg.visibility === 'internal') continue;
-      if (isRoomMode && activeFilter !== FILTER_ALL && msg.participant?.peerId !== activeFilter) {
+      if (isRoomMode && activeFilter !== FILTER_ALL && !matchesPeerFilter(msg, activeFilter)) {
         continue;
       }
       if (showInternal) {

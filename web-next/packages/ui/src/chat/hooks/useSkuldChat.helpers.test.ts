@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  formatOutcomeContent,
   getNumber,
   getStorageKey,
   getString,
@@ -10,7 +9,6 @@ import {
   parseEvent,
   parseParticipantMeta,
   participantsFromTurns,
-  pushOutcomeField,
   reviveAgentEvents,
   reviveMeshEvents,
   reviveMessages,
@@ -19,7 +17,6 @@ import {
   serializeAgentEvents,
   serializeMeshEvents,
   serializeMessages,
-  stringifyOutcomeValue,
   transformTurns,
 } from './useSkuldChat';
 
@@ -238,33 +235,6 @@ describe('useSkuldChat helpers', () => {
       eventType: 'outcome',
       summary: 'No explicit event type',
     });
-  });
-
-  it('formats outcome payloads for strings, JSON values, and multiline content', () => {
-    expect(stringifyOutcomeValue({ files: ['a.ts'] })).toBe('{"files":["a.ts"]}');
-    expect(stringifyOutcomeValue(undefined)).toBe('');
-    const circular: Record<string, unknown> = {};
-    circular.self = circular;
-    expect(stringifyOutcomeValue(circular)).toBe('[object Object]');
-
-    const lines: string[] = [];
-    pushOutcomeField(lines, 'summary', 'Looks good');
-    pushOutcomeField(lines, 'details', 'line one\nline two');
-    expect(lines).toEqual(['summary: Looks good', 'details: |', '  line one', '  line two']);
-
-    expect(
-      formatOutcomeContent({
-        type: 'room_outcome',
-        eventType: 'review.completed',
-        verdict: 'approved',
-        summary: 'Ship it',
-        fields: { success: true, files: ['README.md'] },
-      } as never),
-    ).toContain('files: ["README.md"]');
-
-    expect(
-      formatOutcomeContent({ type: 'room_outcome', eventType: 'fallback.event' } as never),
-    ).toContain('event_type: fallback.event');
   });
 
   it('parses websocket events with and without data prefixes', () => {
