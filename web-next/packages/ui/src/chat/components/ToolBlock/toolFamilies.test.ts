@@ -84,6 +84,19 @@ describe('toolSubject and toolTicker', () => {
     );
     expect(toolSubject(toolUse('shell', { command: ['git', 'status'] }))).toBe('git status');
     expect(toolSubject(toolUse('Edit', { file_path: 'src/gates.py' }))).toBe('src/gates.py');
+    expect(
+      toolSubject(
+        toolUse('Edit', {
+          file_path: '/volundr/sessions/d995e4a6/workspace/scratch-ui-test/notes.md',
+        }),
+      ),
+    ).toBe('scratch-ui-test/notes.md');
+    expect(toolFamilyInfo('Write')).toMatchObject({
+      family: 'edit',
+      present: 'Writing',
+      past: 'Wrote',
+    });
+    expect(toolFamilyInfo('Edit')).toMatchObject({ past: 'Edited' });
     expect(toolSubject(toolUse('Read', { path: 'a.ts' }))).toBe('a.ts');
     expect(toolSubject(toolUse('Grep', { pattern: 'resolve_gate' }))).toBe('resolve_gate');
     expect(toolSubject(toolUse('WebFetch', { url: 'https://example.com' }))).toBe(

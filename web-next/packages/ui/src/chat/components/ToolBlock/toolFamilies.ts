@@ -119,8 +119,23 @@ export function toolFamily(toolName: string): ToolFamily {
   return 'other';
 }
 
+/** Tools that create a file rather than change one: same family, their own verb. */
+const WRITE_TOOLS = new Set(['write', 'write_file', 'create_file']);
+const WRITE_INFO: ToolFamilyInfo = { ...FAMILIES.edit, present: 'Writing', past: 'Wrote' };
+
 export function toolFamilyInfo(toolName: string): ToolFamilyInfo {
+  if (WRITE_TOOLS.has(toolName.toLowerCase())) return WRITE_INFO;
   return FAMILIES[toolFamily(toolName)];
+}
+
+/**
+ * A path as the reader knows it: inside the session's workspace
+ * (`/volundr/sessions/<id>/workspace/…`), the part after the workspace; otherwise unchanged.
+ */
+export function displayPath(path: string): string {
+  const marker = '/workspace/';
+  const at = path.lastIndexOf(marker);
+  return at < 0 ? path : path.slice(at + marker.length);
 }
 
 export function familyInfo(family: ToolFamily): ToolFamilyInfo {
@@ -189,7 +204,8 @@ export function toolSubject(block: ToolUseBlock): string {
       const paths = toolFilePaths(block);
       const [first] = paths;
       if (!first) return '';
-      return paths.length > 1 ? `${first} and ${paths.length - 1} more` : first;
+      const shown = displayPath(first);
+      return paths.length > 1 ? `${shown} and ${paths.length - 1} more` : shown;
     }
     case 'search':
       return text(input.pattern) || text(input.query) || text(input.regex) || text(input.glob);
