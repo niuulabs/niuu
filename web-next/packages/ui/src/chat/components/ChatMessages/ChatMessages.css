@@ -227,6 +227,11 @@
   min-height: 26px;
 }
 
+/* The time on the left, the reply's actions at the far end, as Lexi's "…" sits. */
+.niuu-chat-assistant-footer > .niuu-chat-action-bar {
+  margin-left: auto;
+}
+
 .niuu-chat-action-bar {
   display: flex;
   align-items: center;
