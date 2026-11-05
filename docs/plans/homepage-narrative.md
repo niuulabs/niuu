@@ -25,20 +25,25 @@ The page states selling points in a line each. Detail goes to the docs;
 
 ### Building blocks
 
-Nine blocks in a connected grid, ordered so each stage fills it from the top:
-Harnesses, Execution, Memory, Runtimes, Models, Collaboration, Observability,
-Workflows, Security & governance. Each card names what it does, what it works with,
-and the products it lives in, and links to its docs. Three buttons light a stage of
-growth rather than a kind of buyer, so nobody reads themselves out of a stage:
+Eleven blocks in a connected grid of four columns, so each stage is one row:
+Harnesses, Sessions, Memory, Runtimes; then Models, Collaboration, Workspaces,
+Observability; then Workflows, Residents, Security & governance. Two columns below
+1100px, one below 780px. Each card names what it does, what it works with, and the
+products it lives in, and links to its docs. Three buttons light a stage of growth
+rather than a kind of buyer, so nobody reads themselves out of a stage:
 
 | Stage | Blocks lit |
 |---|---|
-| Day 1 | Harnesses, Execution, Memory, Runtimes |
-| Day 2 | adds Models, Collaboration, Observability |
-| Day 3 | adds Workflows, Security & governance |
+| Day 1 | Harnesses, Sessions, Memory, Runtimes |
+| Day 2 | adds Models, Collaboration, Workspaces, Observability |
+| Day 3 | adds Workflows, Residents, Security & governance |
 
 Jozef moved Memory to Day 1, because one engineer wants work to carry between
 sessions, and Workflows to Day 3, because gated processes are an organization's need.
+He then split the old Execution block: Sessions on Day 1, Workspaces with their
+scheduled jobs on Day 2, Residents on Day 3. A Workspace's jobs run through its
+resident, so the Workspaces card names the jobs and the home, and leaves the agent
+that runs them to the Residents card.
 
 Pressing a lit button again shows all nine. Without JavaScript all nine show. The
 grid is three columns, two at 900px and one below 780px. Two lines under the grid say
@@ -46,7 +51,9 @@ blocks can be replaced or extended and that the platform takes plugins.
 
 | Block | Evidence |
 |---|---|
-| Execution | Forge sessions and dispatch, cron triggers (`src/ravn/adapters/triggers`), residents. |
+| Sessions | The session gateway runs every harness behind one interface (`src/skuld/transports/`). The session page has Chat, Terminal, Diffs, Files, Chronicle and Logs tabs (`plugin-volundr` `SessionDetailPage.tsx`). Durable history and effort survive a broker restart (`history_hydration.py`, `effort.py`). Channels deliver to the browser and Telegram (`channels.py`). |
+| Workspaces | `plugin-realms`: charter, trust, budget and activity log; templates carry cron and event jobs (`domain/templates.ts`), run by the Workspace's resident. |
+| Residents | `plugin-valkyrie` and the resident runtime: mandates, triggers (`src/ravn/adapters/triggers`), Inbox, reflection and `build_tool`. |
 | Harnesses | Skuld transports: Claude Code, Codex, OpenCode, Pi, Grok Build, Muse, DeepSeek Harness; resident gateways for OpenClaw and NemoClaw (`openclaw_gateway.py`) and Hermes (`hermes_gateway.py`). |
 | Models | Bifröst: Anthropic, OpenAI-compatible, Ollama; routing strategies direct, failover, cost_optimised, round_robin, latency_optimised; `tenant_quotas` and the rules engine. |
 | Workflows | Gate, wait, subworkflow and include nodes, evidence gates, `graph.board` (`src/ting/domain/workflow_board.py`). |
@@ -71,8 +78,8 @@ get focused crops from `images/home/gallery/*-phone.webp`.
 |---|---|---|---|
 | Workflows | Workflows, Harnesses, Models | Run Flow graph with a run moving through it | Gates, Tickets, Decision |
 | Collaboration | Collaboration, Workflows | Room | Coordinator |
-| Memory | Memory, Execution | Memory map | Evidence, Inbox, Workspaces |
-| Autonomy | Execution, Collaboration, Workflows | Tool builder | Resident |
+| Memory | Memory, Workspaces | Memory map | Evidence, Inbox, Workspaces |
+| Autonomy | Residents, Collaboration, Workflows | Tool builder | Resident |
 | Scale | Runtimes, Security & governance, Observability | Observatory live map | Trace, Your hosts, Add a host |
 
 ### The graph
@@ -98,8 +105,9 @@ bottom. The page itself has one hero. Capture at 1x, or in sections.
 
 | Sixth pass | Decision | Why |
 |---|---|---|
+| One Execution block | Sessions (Day 1), Workspaces (Day 2), Residents (Day 3) | Jozef: the session gateway was undersold, and jobs, Workspaces and residents come later in growth. |
 | Gallery opened the page | Building blocks open it, gallery follows as what they make possible | The brief's composability story: fragmentation, blocks, assemble, discover. |
-| Agent act (Session, Running now) | Removed | The page could not get longer; Execution is a block and sessions appear in the Workflows act. |
+| Agent act (Session, Running now) | Removed | The page could not get longer; Sessions is a block and sessions appear in the Workflows act. |
 | Environment drawing, "In place today" and "We extend the best tools" | Merged into the blocks | They were three lists of the same parts. |
 | Scale and Environment as two acts | One Scale act, Live map leading | Same reason; the live map already carries the scale. |
 | "Toward an operating system" framing in copy and description | Removed from public copy | Brief. The docs nav still links the concept page, which is internal reading, not marketing. |

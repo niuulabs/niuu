@@ -53,15 +53,15 @@ home:
     pieces:
       - id: harnesses
         name: Harnesses
-        line: Bring the agents you already use, or NIUU's own.
+        line: Bring the agents you already use.
         uses: Claude Code, Codex, OpenCode, Pi, Grok Build, Muse, DeepSeek Harness, OpenClaw, Hermes, NemoClaw
         products: Forge · Agents
         doc: concepts/agents-and-personas/
-      - id: execution
-        name: Execution
-        line: Sessions, dispatch, scheduled jobs and persistent agents.
-        uses: Sessions, Dispatch, Scheduled jobs, Residents
-        products: Forge · Agents · Workspaces
+      - id: sessions
+        name: Sessions
+        line: Any harness, live in one place. Watch it work, step in, and pick up where it left off.
+        uses: Chat, Terminal, Files and diffs, Chronicle, Resume, Browser or Telegram
+        products: Forge
         doc: concepts/sessions-and-workspaces/
       - id: memory
         name: Memory
@@ -87,6 +87,12 @@ home:
         uses: Rooms, Agent mesh, A2A, Telegram, Review inbox
         products: Agents
         doc: concepts/workflows-and-teams/
+      - id: workspaces
+        name: Workspaces
+        line: Ongoing work gets a home, with jobs that run on a schedule or when something happens.
+        uses: Charter, Trust, Budget, Activity log, Scheduled and event jobs
+        products: Workspaces
+        doc: concepts/agents-and-personas/#mandates-and-environments
       - id: observability
         name: Observability
         line: Telemetry, traces and a live map of everything connected.
@@ -99,6 +105,12 @@ home:
         uses: Stages, Parallel branches, Gates, Waits on checks, Boards
         products: Work
         doc: concepts/workflows-and-teams/
+      - id: residents
+        name: Residents
+        line: Persistent agents that look after a workspace. They react, learn and commission the tools they lack.
+        uses: Mandates, Triggers, Inbox, Learning, Tool building
+        products: Agents · Workspaces
+        doc: concepts/agents-and-personas/#direct-agents-and-residents
       - id: security
         name: Security & governance
         line: Identity, isolation, access control and organizations.
@@ -111,16 +123,16 @@ home:
       configs:
         - id: day-1
           name: Day 1
-          line: The agent harness you already use, on your own machine, with memory that carries from one session to the next.
-          blocks: memory harnesses execution runtimes
+          line: The agent harness you already use, live on your own machine, with memory that carries from one session to the next.
+          blocks: harnesses sessions memory runtimes
         - id: day-2
           name: Day 2
-          line: Work spreads across machines and models, agents work together, and you can see all of it.
-          blocks: memory harnesses execution runtimes models collaboration observability
+          line: Work spreads across machines and models, agents work together, ongoing work gets a home with its own jobs, and you can see all of it.
+          blocks: harnesses sessions memory runtimes models collaboration workspaces observability
         - id: day-3
           name: Day 3
-          line: Work runs as a process with stages and gates, under the security and governance an organization needs.
-          blocks: memory harnesses execution runtimes models collaboration observability workflows security
+          line: Residents look after the work, processes run with stages and gates, under the security and governance an organization needs.
+          blocks: harnesses sessions memory runtimes models collaboration workspaces observability workflows residents security
       swap: Blocks talk over APIs, and many load their adapters from configuration, so you can replace or extend one without rebuilding the rest.
       plugins: Missing an integration? NIUU is an extensible platform with a plugin architecture. Bring your own tools and integrations.
   gallery:
@@ -195,7 +207,7 @@ home:
             alt: A ticket panel open beside the board, where a coordinator reports that a change waits at Code review and answers a question about it
       - id: continuity
         step: Memory
-        label: Memory · Execution
+        label: Memory · Workspaces
         title: Work doesn't start over.
         body: A model changes. A person steps away. The work is still there, and further along.
         link:
@@ -228,7 +240,7 @@ home:
             alt: The Workspaces home with three Workspaces, each kept by a resident, and a list of decisions that need you
       - id: autonomy
         step: Autonomy
-        label: Execution · Collaboration · Workflows
+        label: Residents · Collaboration · Workflows
         title: A resident commissions the work it needs.
         body: Reusing the same workflows and tooling a person can.
         link:
