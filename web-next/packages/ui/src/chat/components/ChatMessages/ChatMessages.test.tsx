@@ -138,7 +138,7 @@ describe('StreamingMessage', () => {
 
   it('shows model badge when model provided', () => {
     render(<StreamingMessage content="Streaming..." model="claude-opus-4-6" />);
-    expect(screen.getByText('claude-opus-4-6')).toBeInTheDocument();
+    expect(screen.getByText('Claude Opus 4.6')).toBeInTheDocument();
   });
 
   it('shows reasoning content when parts contain reasoning', () => {

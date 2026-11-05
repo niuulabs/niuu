@@ -17,6 +17,7 @@ import type { IPtyStream } from '../ports/IPtyStream';
 import type { IFileSystemPort } from '../ports/IFileSystemPort';
 import type { ISessionStore } from '../ports/ISessionStore';
 import type { VolundrSession } from '../models/volundr.model';
+import type { Session } from '../domain/session';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -85,6 +86,7 @@ const RUNNING_SESSION: VolundrSession = {
   name: 'test-session',
   source: { type: 'git', repo: 'niuulabs/volundr', branch: 'main' },
   status: 'running',
+  activityState: 'active',
   model: 'claude-sonnet-4-6',
   lastActive: Date.now() - 60_000,
   messageCount: 10,
@@ -509,6 +511,22 @@ function buildVolundrService(session: VolundrSession | null = RUNNING_SESSION): 
   };
 }
 
+/** The domain state the services mapping gives a raw session (apps/niuu toSessionState). */
+function domainStateOf(session: VolundrSession): Session['state'] {
+  if (session.status !== 'running') return 'terminated';
+  switch (session.activityState) {
+    case 'active':
+    case 'tool_executing':
+      return 'running';
+    case 'awaiting_input':
+      return 'awaiting_input';
+    case 'idle':
+      return 'idle';
+    default:
+      return 'ready';
+  }
+}
+
 function buildSessionStore(session: VolundrSession | null = RUNNING_SESSION): ISessionStore {
   const base = createMockSessionStore();
   return {
@@ -521,7 +539,7 @@ function buildSessionStore(session: VolundrSession | null = RUNNING_SESSION): IS
             name: session.name,
             personaName: session.name,
             templateId: 'git-default',
-            state: session.status === 'running' ? 'running' : 'terminated',
+            state: domainStateOf(session),
             clusterId: 'local',
             startedAt: new Date(Date.now() - 9_240_000).toISOString(),
             resources: {
@@ -2366,6 +2384,17 @@ describe('LiveSessionDetailPage', () => {
       });
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByRole('button', { name: /^Start session$/i })).toBeInTheDocument();
+    });
+
+    it('says a booting session is starting instead of offering Start', async () => {
+      wrap('test-session-id-1234', {
+        session: { ...STOPPED_SESSION, status: 'provisioning' },
+      });
+      await screen.findByTestId('live-session-detail-page');
+      const action = screen.getByRole('button', { name: 'The session is starting' });
+      expect(action).toBeDisabled();
+      expect(action).toHaveTextContent('Starting…');
+      expect(screen.queryByRole('button', { name: /^Start session$/i })).not.toBeInTheDocument();
     });
 
     it('resumes a failed session from the resumable fallback action', async () => {

@@ -49,7 +49,7 @@ import { buildSessionTree, groupByProject, type SessionTreeNode } from '../domai
 import { groupByState } from './sessions/groupByState';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
 import { sessionHarness, type Session, type SessionState } from '../domain/session';
-import { sessionModelLabel } from '../domain/sessionModelLabel';
+import { modelLabel as readableModel } from '@niuulabs/domain';
 import type { IVolundrService } from '../ports/IVolundrService';
 import { useForgePreference } from './useForgePreference';
 import {
@@ -267,7 +267,7 @@ function PodEntry({
   const originBadge = sessionOriginBadge(session);
   const harness = sessionHarness(session);
   const modelLabel = session.model
-    ? sessionModelLabel(session.model)
+    ? readableModel(session.model)
     : harness === 'claude'
       ? 'Claude'
       : 'Codex';

@@ -91,7 +91,7 @@ import { useSessionTabs } from './ForgeSessionSettings';
 import { useForgePreference } from './useForgePreference';
 import { SessionEnvironment } from './SessionEnvironment';
 import { SessionRuntimeVersion } from './SessionRuntimeVersion';
-import { sessionModelLabel } from '../domain/sessionModelLabel';
+import { modelLabel } from '@niuulabs/domain';
 import {
   buildAttentionItems,
   resolveChecklist,
@@ -2431,6 +2431,8 @@ interface PrimaryStateAction {
   label: string;
   tone: 'critical' | 'brand';
   onSelect: () => void;
+  /** Shown but not actionable, e.g. while the session boots. */
+  disabled?: boolean;
 }
 
 /** The one lifecycle action that stays on the header: stop a live session, bring back a stopped or archived one. */
@@ -2465,6 +2467,17 @@ function sessionPrimaryAction({
       label: 'Stop',
       tone: 'critical',
       onSelect: onStop,
+    };
+  }
+  if (isSessionBooting(status)) {
+    // A booting session cannot be started again; say what it is doing instead.
+    return {
+      icon: Play,
+      title: 'The session is starting',
+      label: 'Starting…',
+      tone: 'brand',
+      onSelect: onStart,
+      disabled: true,
     };
   }
   return { icon: Play, title: 'Start session', label: 'Start', tone: 'brand', onSelect: onStart };
@@ -3353,7 +3366,10 @@ function LiveSessionDetailPageInner({
   const sessionDetail = sessionQuery.data;
   const costValue =
     sessionDetail?.costCents != null ? formatCurrencyCents(sessionDetail.costCents) : null;
-  const sessionWorking = isSessionWorking(liveSession?.activityState);
+  // The pill, elapsed time and composer read the same pushed session, so they agree.
+  const sessionWorking = sessionDetail
+    ? sessionDetail.state === 'running'
+    : isSessionWorking(liveSession?.activityState);
   const contextMeter = contextMeterData(chat.usage);
   const sessionProjectId = liveSession?.coordination?.projectId;
   const projectsQuery = useQuery({
@@ -3384,7 +3400,7 @@ function LiveSessionDetailPageInner({
     () =>
       sessionInfoRows({
         engine: sessionModel
-          ? { model: sessionModelLabel(sessionModel), harness: sessionEngineHarness }
+          ? { model: modelLabel(sessionModel), harness: sessionEngineHarness }
           : undefined,
         host: forgeBadgeLabel,
         workspace: sessionWorkspaceLabel(sessionSource),
@@ -3764,7 +3780,7 @@ function LiveSessionDetailPageInner({
                           title={liveSession.model}
                           data-testid="session-model"
                         >
-                          {sessionModelLabel(liveSession.model)}
+                          {modelLabel(liveSession.model)}
                         </span>
                       ),
                     },
@@ -3858,7 +3874,7 @@ function LiveSessionDetailPageInner({
                     title={primaryStateAction.title}
                     label={primaryStateAction.label}
                     onClick={primaryStateAction.onSelect}
-                    disabled={actionBusy !== null}
+                    disabled={actionBusy !== null || primaryStateAction.disabled === true}
                     tone={primaryStateAction.tone}
                   />
                 ) : null}

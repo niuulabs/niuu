@@ -34,15 +34,16 @@ const user = (extra: Partial<ChatMessage> = {}): ChatMessage => ({
 
 describe('assistant header', () => {
   it.each([
-    ['claude-sonnet-5-5', 'var(--color-harness-claude)'],
-    ['gpt-5-codex', 'var(--color-harness-codex)'],
-    ['qwen3.8-27b', 'var(--color-brand)'],
-  ])('shows an engine-coloured dot and the model name for %s', (model, ink) => {
+    ['claude-sonnet-5-5', 'Claude Sonnet 5.5', 'var(--color-harness-claude)'],
+    ['gpt-6-astra', 'GPT-6 Astra', 'var(--color-harness-codex)'],
+    ['qwen3.8-27b', 'qwen3.8-27b', 'var(--color-brand)'],
+  ])('shows an engine-coloured dot and the readable name for %s', (model, label, ink) => {
     render(
       <AssistantMessage message={assistant([{ type: 'text', id: 't', text: 'Hi' }], {}, model)} />,
     );
     const speaker = screen.getByTestId('model-speaker');
-    expect(speaker).toHaveTextContent(model);
+    expect(speaker).toHaveTextContent(label);
+    expect(speaker).toHaveAttribute('title', model);
     expect(speaker.style.getPropertyValue('--niuu-chat-engine')).toBe(ink);
   });
 
@@ -52,14 +53,26 @@ describe('assistant header', () => {
   });
 
   it('keeps the avatar preference', () => {
-    localStorage.setItem('niuu.compactUx.showAgentAvatar', 'false');
-    const { container } = render(<AssistantMessage message={assistant([])} />);
+    const { container, unmount } = render(<AssistantMessage message={assistant([])} />);
     expect(container.querySelector('.niuu-chat-avatar')).toBeNull();
+    unmount();
+    localStorage.setItem('niuu.compactUx.showAgentAvatar', 'true');
+    const shown = render(<AssistantMessage message={assistant([])} />);
+    expect(shown.container.querySelector('.niuu-chat-avatar')).not.toBeNull();
+  });
+
+  it('pulses the avatar on a streaming reply only when avatars are on', () => {
+    const { container, unmount } = render(<StreamingMessage content="partial" model="gpt-5" />);
+    expect(container.querySelector('.niuu-chat-avatar--pulsing')).toBeNull();
+    unmount();
+    localStorage.setItem('niuu.compactUx.showAgentAvatar', 'true');
+    const shown = render(<StreamingMessage content="" model="gpt-5" />);
+    expect(shown.container.querySelector('.niuu-chat-avatar--pulsing')).not.toBeNull();
   });
 
   it('colours the streaming header too', () => {
     render(<StreamingMessage content="partial" model="gpt-5" />);
-    expect(screen.getByTestId('model-speaker')).toHaveTextContent('gpt-5');
+    expect(screen.getByTestId('model-speaker')).toHaveTextContent('GPT-5');
   });
 });
 

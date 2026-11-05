@@ -1,5 +1,5 @@
 /** Human-readable provider IDs without changing the selected model or guessing its version. */
-export function sessionModelLabel(model: string): string {
+export function modelLabel(model: string): string {
   const claude = /^claude-(opus|sonnet|haiku|fable)-(\d+)(?:[.-](\d{1,2}))?(?:-\d{8})?$/i.exec(
     model,
   );

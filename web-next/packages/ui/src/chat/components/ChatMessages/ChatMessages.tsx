@@ -35,7 +35,7 @@ import { ToolImageCard } from '../ToolImages';
 import { PresentedFileCard } from '../ConversationResources';
 import { isNotificationCardTool, isPresentedFileTool } from '../ToolBlock/groupContentBlocks';
 import { NotificationCard } from '../NotificationCard';
-import { isForgeNotifyCall, parseForgeNotificationPayload } from '@niuulabs/domain';
+import { isForgeNotifyCall, modelLabel, parseForgeNotificationPayload } from '@niuulabs/domain';
 
 const formatTime = (date: Date): string =>
   date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -131,9 +131,10 @@ function ModelSpeaker({ model }: { model?: string }) {
       className="niuu-chat-speaker"
       style={{ '--niuu-chat-engine': engineInk(model) } as CSSProperties}
       data-testid="model-speaker"
+      title={model}
     >
       <i className="niuu-chat-speaker-dot" aria-hidden="true" />
-      {model}
+      {modelLabel(model)}
     </span>
   );
 }
@@ -537,7 +538,17 @@ interface StreamingMessageProps {
   model?: string;
 }
 
+/** The pulsing agent avatar on an in-progress reply, shown only when avatars are on. */
+function StreamingAvatar() {
+  return (
+    <div className={cn('niuu-chat-avatar', 'niuu-chat-avatar--pulsing')}>
+      <Hammer className="niuu-chat-avatar-icon" />
+    </div>
+  );
+}
+
 export function StreamingMessage({ content, parts, model }: StreamingMessageProps) {
+  const showAvatar = useCompactUxChatPrefs().showAgentAvatar;
   const reasoningParts = (parts?.filter((p) => p.type === 'reasoning' && p.text) ?? []) as Array<{
     readonly type: 'reasoning';
     readonly text?: string;
@@ -548,9 +559,7 @@ export function StreamingMessage({ content, parts, model }: StreamingMessageProp
   if (!content && hasTools && parts) {
     return (
       <div className="niuu-chat-streaming-wrapper" data-testid="streaming-message">
-        <div className={cn('niuu-chat-avatar', 'niuu-chat-avatar--pulsing')}>
-          <Hammer className="niuu-chat-avatar-icon" />
-        </div>
+        {showAvatar && <StreamingAvatar />}
         <div className="niuu-chat-assistant-body">
           <div className="niuu-chat-assistant-header">
             <ModelSpeaker model={model} />
@@ -579,9 +588,7 @@ export function StreamingMessage({ content, parts, model }: StreamingMessageProp
   if (!content && hasReasoning) {
     return (
       <div className="niuu-chat-streaming-wrapper" data-testid="streaming-message">
-        <div className={cn('niuu-chat-avatar', 'niuu-chat-avatar--pulsing')}>
-          <Hammer className="niuu-chat-avatar-icon" />
-        </div>
+        {showAvatar && <StreamingAvatar />}
         <div className="niuu-chat-assistant-body">
           <div className="niuu-chat-assistant-header">
             <ModelSpeaker model={model} />
@@ -605,9 +612,7 @@ export function StreamingMessage({ content, parts, model }: StreamingMessageProp
   if (!content && !hasReasoning) {
     return (
       <div className="niuu-chat-streaming-wrapper" data-testid="streaming-message">
-        <div className={cn('niuu-chat-avatar', 'niuu-chat-avatar--pulsing')}>
-          <Hammer className="niuu-chat-avatar-icon" />
-        </div>
+        {showAvatar && <StreamingAvatar />}
         <div className="niuu-chat-assistant-body">
           <div className="niuu-chat-assistant-header">
             <ModelSpeaker model={model} />
@@ -628,9 +633,7 @@ export function StreamingMessage({ content, parts, model }: StreamingMessageProp
 
   return (
     <div className="niuu-chat-streaming-wrapper" data-testid="streaming-message">
-      <div className={cn('niuu-chat-avatar', 'niuu-chat-avatar--pulsing')}>
-        <Hammer className="niuu-chat-avatar-icon" />
-      </div>
+      {showAvatar && <StreamingAvatar />}
       <div className="niuu-chat-assistant-body">
         <div className="niuu-chat-assistant-header">
           <ModelSpeaker model={model} />

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Users } from 'lucide-react';
+import { modelLabel } from '@niuulabs/domain';
 import { cn } from '../../../utils/cn';
 import { ToolCallsDrawer } from '../ToolBlock/ToolCallsDrawer';
 import { toolResultText } from '../ToolBlock/toolFamilies';
@@ -35,6 +36,36 @@ function text(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
+export interface TeammateSpawn {
+  name: string;
+  type?: string;
+  model?: string;
+}
+
+/**
+ * With agent teams, Claude answers a Task call with the teammate's spawn record (JSON with
+ * its id and name), not a result: the teammate keeps working in its own pane. Any other
+ * result, including plain text that is not JSON, is not a spawn record.
+ */
+export function teammateSpawn(result: ToolResultBlock | undefined): TeammateSpawn | null {
+  const raw = toolResultText(result).trim();
+  if (!raw.startsWith('{')) return null;
+  let record: unknown;
+  try {
+    record = JSON.parse(raw);
+  } catch {
+    return null; // A result that merely starts with a brace is ordinary text.
+  }
+  if (!record || typeof record !== 'object') return null;
+  const fields = record as Record<string, unknown>;
+  const id = text(fields.agentId) || text(fields.agent_id);
+  const name = text(fields.name);
+  if (!id || !name) return null;
+  const type = text(fields.agent_type);
+  const model = text(fields.model);
+  return { name, ...(type ? { type } : {}), ...(model ? { model } : {}) };
+}
+
 /** The subagent's status from its call: no result yet, a result, or an error result. */
 export function subagentStatus(
   result: ToolResultBlock | undefined,
@@ -54,9 +85,16 @@ export function SubagentCard({ block, result, isStreaming }: SubagentCardProps) 
   const prompt = text(input.prompt);
   const title = description || kind || prompt.split('\n')[0] || 'Subagent';
   const status = subagentStatus(result, isStreaming);
-  const lines = toolResultText(result)
-    .split('\n')
-    .filter((line) => line.trim().length > 0);
+  const spawn = status === 'done' ? teammateSpawn(result) : null;
+  const lines = spawn
+    ? [
+        [`Teammate ${spawn.name}`, spawn.type, spawn.model && modelLabel(spawn.model)]
+          .filter(Boolean)
+          .join(' · '),
+      ]
+    : toolResultText(result)
+        .split('\n')
+        .filter((line) => line.trim().length > 0);
   const shown = lines.slice(0, RESULT_PREVIEW_LINES);
   const cut = lines.length - shown.length;
 
@@ -64,7 +102,7 @@ export function SubagentCard({ block, result, isStreaming }: SubagentCardProps) 
     <div
       className="niuu-chat-subagent"
       data-testid="subagent-card"
-      data-status={status ?? 'unfinished'}
+      data-status={spawn ? 'started' : (status ?? 'unfinished')}
     >
       <button
         type="button"
@@ -80,10 +118,15 @@ export function SubagentCard({ block, result, isStreaming }: SubagentCardProps) 
           {description && kind && <span className="niuu-chat-card-meta">{kind}</span>}
           {status && (
             <span
-              className={cn('niuu-chat-pill', `niuu-chat-pill--${status}`)}
+              className={cn('niuu-chat-pill', `niuu-chat-pill--${spawn ? 'running' : status}`)}
               data-testid="subagent-status"
+              title={
+                spawn
+                  ? 'The teammate works in its own pane; its result is not in this call'
+                  : undefined
+              }
             >
-              {STATUS_LABEL[status]}
+              {spawn ? 'Started' : STATUS_LABEL[status]}
             </span>
           )}
         </span>

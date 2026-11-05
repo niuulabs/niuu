@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { SubagentCard, subagentStatus } from './SubagentCard';
+import { SubagentCard, subagentStatus, teammateSpawn } from './SubagentCard';
 import { ProviderErrorCard } from './ProviderErrorCard';
 import { CompactionMarker, compactionTokens } from './CompactionMarker';
 import { formatTokenCount } from './formatTokenCount';
@@ -49,6 +49,32 @@ describe('SubagentCard', () => {
   it('does not mark a short result as cut', () => {
     render(<SubagentCard block={task} result={result([{ type: 'text', text: 'only' }])} />);
     expect(screen.getByTestId('subagent-result')).toHaveTextContent(/^only$/);
+  });
+
+  it('says a teammate started instead of dumping its spawn record', () => {
+    const spawn = JSON.stringify({
+      agentId: 'tsx-counter@session-c3a8ba72',
+      agent_id: 'tsx-counter@session-c3a8ba72',
+      agent_type: 'general-purpose',
+      is_splitpane: true,
+      model: 'claude-fable-5-1',
+      name: 'tsx-counter',
+      prompt: 'Read-only task, change no files.',
+    });
+    render(<SubagentCard block={task} result={result(spawn)} />);
+    expect(screen.getByTestId('subagent-status')).toHaveTextContent('Started');
+    expect(screen.getByTestId('subagent-card')).toHaveAttribute('data-status', 'started');
+    expect(screen.getByTestId('subagent-result')).toHaveTextContent(
+      'Teammate tsx-counter · general-purpose · Claude Fable 5.1',
+    );
+    expect(screen.getByTestId('subagent-card')).not.toHaveTextContent('Read-only task');
+  });
+
+  it('reads only a JSON record with an agent id and a name as a spawn', () => {
+    expect(teammateSpawn(result('{"name": "x"}'))).toBeNull();
+    expect(teammateSpawn(result('{not json at all'))).toBeNull();
+    expect(teammateSpawn(result('Counted 41 files.'))).toBeNull();
+    expect(teammateSpawn(result('{"agent_id": "a@s", "name": "a"}'))).toEqual({ name: 'a' });
   });
 
   it('shows a failed pill for an error result', () => {
