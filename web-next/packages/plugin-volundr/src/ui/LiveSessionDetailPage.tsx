@@ -3202,14 +3202,19 @@ function LiveSessionDetailPageInner({
   const showTokenUsage = tokenVisibility === '1';
   const [detailsPreference] = useForgePreference('details', '0', ['0', '1']);
   const showDetails = detailsPreference === '1';
-  const [panelVisibility, setPanelVisibility] = useForgePreference('panel', '1', ['0', '1']);
+  // The panel stays out of the way, as Lexi's dock does, until something needs the person
+  // ('auto'); once they open or close it themselves, that choice holds.
+  const [panelVisibility, setPanelVisibility] = useForgePreference('sidePanel', 'auto', [
+    'auto',
+    'open',
+    'closed',
+  ]);
   // Below this width the panel has no room for a column (SessionAttentionPanel.css), so it
   // starts closed and opens over the chat; the saved preference is for wide screens.
   const narrowScreen = useMediaQuery(PANEL_OVERLAY_QUERY);
   const [overlayPanelOpen, setOverlayPanelOpen] = useState(false);
-  const showPanel = narrowScreen ? overlayPanelOpen : panelVisibility === '1';
   const setPanelOpen = (open: boolean) =>
-    narrowScreen ? setOverlayPanelOpen(open) : setPanelVisibility(open ? '1' : '0');
+    narrowScreen ? setOverlayPanelOpen(open) : setPanelVisibility(open ? 'open' : 'closed');
   const review = useReviewComments();
   // Signing an AI or Git account in again without leaving the session.
   const openConnections = useContext(ChatConnectionsContext);
@@ -3517,6 +3522,9 @@ function LiveSessionDetailPageInner({
     deliverables: presentedFiles,
     info: infoRows,
   });
+  const showPanel = narrowScreen
+    ? overlayPanelOpen
+    : panelVisibility === 'open' || (panelVisibility === 'auto' && attentionItems.length > 0);
   const headerMessageCount = useMemo(() => {
     if (visibleMessageCount != null) return visibleMessageCount;
     if (canReplayTranscript) return replayMessages.length;
@@ -3824,7 +3832,6 @@ function LiveSessionDetailPageInner({
               <div className="niuu-live-session__head-title">
                 <div className="niuu-live-session__identity">
                   <span className="niuu-live-session__title">{sessionName}</span>
-                  {isCoordinator ? <CoordinatorTag /> : null}
                   {sessionDetail ? (
                     <span
                       className="niuu-live-session__state-pill"
@@ -3835,7 +3842,7 @@ function LiveSessionDetailPageInner({
                     </span>
                   ) : null}
                   {!readOnly && liveSession && (
-                    <>
+                    <span className="niuu-live-session__title-actions">
                       <RenameSession sessionId={sessionId} name={sessionName} />
                       <PinSession sessionId={sessionId} name={sessionName} />
                       <AssignSessionProject
@@ -3843,7 +3850,7 @@ function LiveSessionDetailPageInner({
                         name={sessionName}
                         instanceId={liveSession.instanceId}
                       />
-                    </>
+                    </span>
                   )}
                   {showDetails && sessionHandle ? (
                     <span className="niuu-live-session__handle" title={sessionHandle}>
@@ -3876,11 +3883,12 @@ function LiveSessionDetailPageInner({
                       id: 'host',
                       node: <span data-testid="session-host">{forgeBadgeLabel}</span>,
                     },
+                    isCoordinator && { id: 'coordinator', node: <CoordinatorTag /> },
                     sessionDetail && {
                       id: 'activity',
                       node: <SessionActivityElapsed session={sessionDetail} />,
                     },
-                    {
+                    showDetails && {
                       id: 'messages',
                       node: (
                         <span data-testid="session-message-count">
@@ -3911,10 +3919,11 @@ function LiveSessionDetailPageInner({
                         </span>
                       ),
                     },
-                    liveSession?.source && {
-                      id: 'runtime',
-                      node: <SessionRuntimeVersion session={liveSession} service={volundr} />,
-                    },
+                    showDetails &&
+                      liveSession?.source && {
+                        id: 'runtime',
+                        node: <SessionRuntimeVersion session={liveSession} service={volundr} />,
+                      },
                   ]}
                 />
                 {hasCoordinator ? (

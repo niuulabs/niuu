@@ -10,6 +10,9 @@ import {
   cn,
   Dialog,
   DialogContent,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
   Tooltip,
   TooltipProvider,
   SidebarResizer,
@@ -32,6 +35,7 @@ import {
   CircleDot,
   Download,
   FolderGit2,
+  ListFilter,
   Search,
   SquareTerminal,
   Ticket,
@@ -89,6 +93,11 @@ const SIDEBAR_MODE_LABELS: Record<SidebarMode, string> = {
   project: 'Project',
 };
 type RowAction = 'stop' | 'archive' | 'restore' | 'delete';
+const DEFAULT_FILTER: SessionFilter = 'live';
+/** The states a person checks often sit beside the search, as Lexi's Unread chip does. */
+const QUICK_FILTERS: readonly SessionFilter[] = ['unread', 'attention'];
+/** The rest are chosen from the list menu. */
+const MENU_FILTERS = SESSION_FILTERS.filter((value) => !QUICK_FILTERS.includes(value));
 type ReadChange = 'read' | 'unread';
 
 interface SessionSection {
@@ -378,9 +387,6 @@ function PodEntry({
                   data-testid={`session-unread-dot-${session.id}`}
                 />
               )}
-              <span className="forge-session-state" data-state={session.state}>
-                {SESSION_STATE_LABELS[session.state]}
-              </span>
             </div>
             {session.shortDescription ? (
               <div
@@ -435,6 +441,9 @@ function PodEntry({
                   {timeFact}
                 </span>
               )}
+              <span className="forge-session-state" data-state={session.state}>
+                {SESSION_STATE_LABELS[session.state]}
+              </span>
             </div>
             {showDetails && (
               <div className="forge-session-row__details">
@@ -799,7 +808,11 @@ export function SessionsPage() {
     'state',
     SIDEBAR_MODES,
   );
-  const [filter, setFilter] = useForgePreference<SessionFilter>('filter', 'live', SESSION_FILTERS);
+  const [filter, setFilter] = useForgePreference<SessionFilter>(
+    'filter',
+    DEFAULT_FILTER,
+    SESSION_FILTERS,
+  );
   const [details, setDetails] = useForgePreference('details', '0', ['0', '1']);
   const [tokens, setTokens] = useForgePreference('tokens', '0', ['0', '1']);
   const { width, resizer } = useResizableSidebar('niuu.forge.sidebarWidth', SIDEBAR_WIDTH);
@@ -812,6 +825,7 @@ export function SessionsPage() {
   const [selectedStoppedIds, setSelectedStoppedIds] = useState<Set<string>>(new Set());
   const [deleteStoppedOpen, setDeleteStoppedOpen] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
+  const [listMenuOpen, setListMenuOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const volundr = useService<IVolundrService>('volundr');
   const queryClient = useQueryClient();
@@ -843,6 +857,17 @@ export function SessionsPage() {
           .filter((session) => session.state === 'terminated')
           .map((session) => session.id),
       ),
+    [allSessions],
+  );
+
+  const filterCounts = useMemo(
+    () =>
+      Object.fromEntries(
+        SESSION_FILTERS.map((value) => [
+          value,
+          allSessions.filter((session) => matchesSessionFilter(session, value)).length,
+        ]),
+      ) as Record<SessionFilter, number>,
     [allSessions],
   );
 
@@ -1024,6 +1049,15 @@ export function SessionsPage() {
     // The stream shows only while no session is open.
     setSelectedSessionId(null);
     void navigate({ to: '/volundr/sessions' });
+  }
+
+  function toggleStoppedSelection() {
+    const next = !stoppedSelectionMode;
+    setStoppedSelectionMode(next);
+    if (next) {
+      setFilter('stopped');
+      setSelectedStoppedIds(new Set(stoppedSessionIds));
+    } else setSelectedStoppedIds(new Set());
   }
 
   function handleSelectSession(id: string) {
@@ -1222,14 +1256,106 @@ export function SessionsPage() {
             </div>
           ) : (
             <div className="niuu:flex niuu:h-full niuu:flex-col niuu:overflow-hidden">
-              <div className="niuu:flex niuu:items-center niuu:justify-between niuu:border-b niuu:border-white/8 niuu:px-2.5 niuu:py-2">
-                <div className="niuu:flex niuu:items-center niuu:gap-1.5">
-                  <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
-                    Sessions
-                  </h2>
-                </div>
+              <div className="forge-session-head">
+                <h2>Sessions</h2>
                 <TooltipProvider>
                   <div className="forge-session-heading-actions">
+                    <Popover open={listMenuOpen} onOpenChange={setListMenuOpen}>
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          data-testid="session-list-menu"
+                          aria-label="Filter and group sessions"
+                          title="Filter and group sessions"
+                        >
+                          <ListFilter size={18} />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent side="bottom" align="start" className="forge-session-menu">
+                        <section aria-label="Show">
+                          <h3>Show</h3>
+                          {MENU_FILTERS.map((value) => {
+                            const count = filterCounts[value];
+                            // An empty state is noise; the chosen one always shows.
+                            if (count === 0 && filter !== value) return null;
+                            return (
+                              <button
+                                key={value}
+                                type="button"
+                                aria-pressed={filter === value}
+                                data-testid={`session-filter-${value}`}
+                                data-filter={value}
+                                onClick={() => handleSelectFilter(value)}
+                              >
+                                <span>{FILTER_LABELS[value]}</span>
+                                <span>{count}</span>
+                              </button>
+                            );
+                          })}
+                        </section>
+                        <section aria-label="Group by" data-testid="pod-group-mode">
+                          <h3>Group by</h3>
+                          {SIDEBAR_MODES.map((mode) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              aria-pressed={sidebarMode === mode}
+                              data-testid={`pod-group-mode-${mode}`}
+                              onClick={() => setSidebarMode(mode)}
+                            >
+                              {SIDEBAR_MODE_LABELS[mode]}
+                            </button>
+                          ))}
+                        </section>
+                        <section aria-label="Display">
+                          <h3>Display</h3>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={details === '1'}
+                              onChange={(event) => setDetails(event.target.checked ? '1' : '0')}
+                              aria-label="Show session details"
+                            />
+                            Details
+                          </label>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={tokens === '1'}
+                              onChange={(event) => setTokens(event.target.checked ? '1' : '0')}
+                              aria-label="Show token usage"
+                            />
+                            Token usage
+                          </label>
+                        </section>
+                        {stoppedSessionCount > 0 && (
+                          <section aria-label="Manage stopped sessions">
+                            <h3>Stopped sessions · {stoppedSessionCount}</h3>
+                            <button
+                              type="button"
+                              data-testid="toggle-stopped-selection-button"
+                              aria-pressed={stoppedSelectionMode}
+                              onClick={() => {
+                                toggleStoppedSelection();
+                                setListMenuOpen(false);
+                              }}
+                            >
+                              <Check size={14} />
+                              {stoppedSelectionMode ? 'Cancel selection' : 'Select all stopped'}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={archiveBusy || deleteBusy}
+                              data-testid="archive-stopped-button"
+                              onClick={() => void handleArchiveAllStopped()}
+                            >
+                              <Archive size={14} />
+                              {archiveBusy ? 'Archiving…' : 'Archive all stopped'}
+                            </button>
+                          </section>
+                        )}
+                      </PopoverContent>
+                    </Popover>
                     <Tooltip
                       content="Launch a new session"
                       delayMs={100}
@@ -1271,70 +1397,40 @@ export function SessionsPage() {
                 </TooltipProvider>
               </div>
 
-              <p className="forge-session-today" data-testid="sessions-today">
-                {workToday
-                  ? workToday.sessions === 0
-                    ? 'Last 24 h · no work recorded'
-                    : `Last 24 h · ${workToday.sessions} ${workToday.sessions === 1 ? 'session' : 'sessions'} · ${workedDuration(workToday.seconds)}`
-                  : `${listedSessionCount} ${listedSessionCount === 1 ? 'session' : 'sessions'}`}
-              </p>
-              <div className="niuu:px-2.5 niuu:pb-1">
-                <div className="niuu:flex niuu:items-center niuu:gap-2">
-                  <div className="forge-session-search niuu:flex niuu:min-w-0 niuu:flex-1 niuu:items-center niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] niuu:focus-within:border-brand/50 niuu:focus-within:ring-1 niuu:focus-within:ring-brand/20">
-                    <Search
-                      className="niuu:h-4 niuu:w-4 niuu:flex-shrink-0 niuu:text-text-muted"
-                      aria-hidden="true"
-                    />
-                    <input
-                      type="search"
-                      placeholder="Filter sessions"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="niuu:min-w-0 niuu:flex-1 niuu:bg-transparent niuu:py-0.5 niuu:pr-1 niuu:text-[11px] niuu:text-text-primary niuu:placeholder:text-text-muted niuu:focus:outline-none"
-                      data-testid="pod-search"
-                      aria-label="Filter sessions"
-                    />
-                  </div>
+              <div className="forge-session-search-row">
+                <div className="forge-session-search">
+                  <Search aria-hidden="true" />
+                  <input
+                    type="search"
+                    placeholder="Find a session"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    data-testid="pod-search"
+                    aria-label="Filter sessions"
+                  />
                 </div>
-                <div className="forge-session-states" role="group" aria-label="Session states">
-                  {SESSION_FILTERS.map((value) => {
-                    const count = allSessions.filter((session) =>
-                      matchesSessionFilter(session, value),
-                    ).length;
-                    // An empty state is noise in a narrow list; the chosen one always shows.
-                    if (count === 0 && filter !== value) return null;
-                    return (
-                      <button
-                        key={value}
-                        type="button"
-                        aria-pressed={filter === value}
-                        data-testid={`session-filter-${value}`}
-                        data-filter={value}
-                        onClick={() => handleSelectFilter(value)}
-                      >
-                        <span>{FILTER_LABELS[value]}</span>
-                        <span>{count}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="forge-session-filters">
-                  <label className="forge-session-group-label">
-                    <span>Group</span>
-                    <select
-                      className="forge-session-group-select"
-                      data-testid="pod-group-mode"
-                      value={sidebarMode}
-                      onChange={(event) => setSidebarMode(event.target.value as SidebarMode)}
+              </div>
+              <div className="forge-session-quick" role="group" aria-label="Session states">
+                {QUICK_FILTERS.map((value) => {
+                  const count = filterCounts[value];
+                  if (count === 0 && filter !== value) return null;
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      aria-pressed={filter === value}
+                      data-testid={`session-filter-${value}`}
+                      data-filter={value}
+                      onClick={() => handleSelectFilter(filter === value ? DEFAULT_FILTER : value)}
                     >
-                      {SIDEBAR_MODES.map((mode) => (
-                        <option key={mode} value={mode} data-testid={`pod-group-mode-${mode}`}>
-                          {SIDEBAR_MODE_LABELS[mode]}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
+                      <span>{FILTER_LABELS[value]}</span>
+                      <span>{count}</span>
+                    </button>
+                  );
+                })}
+                <span className="forge-session-scope" data-testid="session-list-scope">
+                  {FILTER_LABELS[filter]} · {SIDEBAR_MODE_LABELS[sidebarMode]}
+                </span>
               </div>
 
               {connectionStates.some((source) => source.loading || source.error) && (
@@ -1447,90 +1543,52 @@ export function SessionsPage() {
                     </button>
                   </div>
                 )}
-                <div className="forge-session-footer-settings">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={details === '1'}
-                      onChange={(event) => setDetails(event.target.checked ? '1' : '0')}
-                      aria-label="Show session details"
-                    />
-                    Details
-                  </label>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={tokens === '1'}
-                      onChange={(event) => setTokens(event.target.checked ? '1' : '0')}
-                      aria-label="Show token usage"
-                    />
-                    Token usage
-                  </label>
-                </div>
-                {stoppedSessionCount > 0 && (
-                  <div className="forge-session-maintenance" aria-label="Manage stopped sessions">
-                    <span className="forge-session-maintenance-label">
-                      Manage stopped sessions · {stoppedSessionCount}
-                    </span>
+                {stoppedSelectionMode && (
+                  <div className="forge-session-maintenance" aria-label="Select stopped sessions">
                     <div className="forge-session-footer-actions">
                       <button
                         type="button"
-                        data-testid="toggle-stopped-selection-button"
-                        aria-pressed={stoppedSelectionMode}
-                        onClick={() => {
-                          const next = !stoppedSelectionMode;
-                          setStoppedSelectionMode(next);
-                          if (next) {
-                            setFilter('stopped');
-                            setSelectedStoppedIds(new Set(stoppedSessionIds));
-                          } else setSelectedStoppedIds(new Set());
-                        }}
+                        onClick={handleSelectAllVisibleStopped}
+                        disabled={filteredStoppedSessions.length === 0}
+                        data-testid="select-all-stopped-button"
                       >
-                        <Check size={14} />
-                        {stoppedSelectionMode ? 'Cancel selection' : 'Select all stopped'}
+                        Select visible ({filteredStoppedSessions.length})
                       </button>
                       <button
                         type="button"
-                        disabled={archiveBusy || deleteBusy}
-                        data-testid="archive-stopped-button"
-                        onClick={() => void handleArchiveAllStopped()}
+                        onClick={handleClearStoppedSelection}
+                        disabled={deleteSelectionCount === 0}
+                        data-testid="clear-stopped-selection-button"
                       >
-                        <Archive size={14} />
-                        {archiveBusy ? 'Archiving…' : 'Archive all stopped'}
+                        Clear
+                      </button>
+                      <button
+                        type="button"
+                        className="forge-session-delete"
+                        onClick={() => setDeleteStoppedOpen(true)}
+                        disabled={deleteSelectionCount === 0}
+                        data-testid="delete-selected-stopped-button"
+                      >
+                        <Trash2 size={14} />
+                        Delete selected ({deleteSelectionCount})
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="cancel-stopped-selection-button"
+                        onClick={toggleStoppedSelection}
+                      >
+                        Cancel
                       </button>
                     </div>
-                    {stoppedSelectionMode && (
-                      <div className="forge-session-footer-actions">
-                        <button
-                          type="button"
-                          onClick={handleSelectAllVisibleStopped}
-                          disabled={filteredStoppedSessions.length === 0}
-                          data-testid="select-all-stopped-button"
-                        >
-                          Select visible ({filteredStoppedSessions.length})
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleClearStoppedSelection}
-                          disabled={deleteSelectionCount === 0}
-                          data-testid="clear-stopped-selection-button"
-                        >
-                          Clear
-                        </button>
-                        <button
-                          type="button"
-                          className="forge-session-delete"
-                          onClick={() => setDeleteStoppedOpen(true)}
-                          disabled={deleteSelectionCount === 0}
-                          data-testid="delete-selected-stopped-button"
-                        >
-                          <Trash2 size={14} />
-                          Delete selected ({deleteSelectionCount})
-                        </button>
-                      </div>
-                    )}
                   </div>
                 )}
+                <p className="forge-session-today" data-testid="sessions-today">
+                  {workToday
+                    ? workToday.sessions === 0
+                      ? 'Last 24 h · no work recorded'
+                      : `Last 24 h · ${workToday.sessions} ${workToday.sessions === 1 ? 'session' : 'sessions'} · ${workedDuration(workToday.seconds)}`
+                    : `${listedSessionCount} ${listedSessionCount === 1 ? 'session' : 'sessions'}`}
+                </p>
               </footer>
             </div>
           )}

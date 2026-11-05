@@ -19,7 +19,7 @@ const session = (id: string, name: string, state: Session['state']): Session =>
 describe('Coordination header parts', () => {
   it('tags a coordinator', () => {
     render(<CoordinatorTag />);
-    expect(screen.getByTestId('session-coordinator-tag')).toHaveTextContent('COORDINATOR');
+    expect(screen.getByTestId('session-coordinator-tag')).toHaveTextContent('Coordinator');
   });
 
   it('names the coordinator of a worker with a link back, or says only Worker', () => {

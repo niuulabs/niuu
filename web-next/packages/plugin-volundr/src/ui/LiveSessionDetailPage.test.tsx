@@ -1819,258 +1819,291 @@ describe('LiveSessionDetailPage', () => {
     });
 
     describe('session panel', () => {
-      it('sits beside chat and answers a permission through the live chat', async () => {
-        const respondToPermission = vi.fn();
-        mockChatState({
-          respondToPermission,
-          pendingPermissions: [
-            { requestId: 'perm-1', toolName: 'Bash', description: 'Run a command', command: 'ls' },
-          ],
-        });
-        wrap('test-session-id-1234');
-
-        const panel = await screen.findByTestId('session-attention-panel');
-        fireEvent.click(within(panel).getByRole('button', { name: 'Allow Bash once' }));
-
-        expect(respondToPermission).toHaveBeenCalledWith('perm-1', 'allow_once');
-      });
-
-      it('lists a pending native gate and shows the latest task list', async () => {
-        mockChatState({
-          messages: [
-            {
-              id: 'todo',
-              role: 'assistant',
-              content: '',
-              createdAt: new Date(0),
-              parts: [
-                {
-                  type: 'tool_use',
-                  name: 'TodoWrite',
-                  input: { todos: [{ content: 'Write the fix', status: 'in_progress' }] },
-                },
-              ],
-            },
-          ],
-        });
-        wrap('test-session-id-1234', {
-          volundr: {
-            getWorkflowGates: vi.fn().mockResolvedValue([
-              {
-                id: 'gate-1',
-                label: 'PRD approval gate',
-                status: 'pending',
-                pending_behavior: 'help_needed',
-              },
-            ]),
-          },
-        });
-
-        const gate = await screen.findByTestId('attention-gate');
-        expect(gate).toHaveTextContent('PRD approval gate');
-        expect(gate).toHaveTextContent('Waiting for your approval.');
-        const plan = screen.getByRole('region', { name: 'Plan' });
-        expect(plan).toHaveTextContent('Write the fix');
-        expect(plan).toHaveTextContent('0/1');
-      });
-
-      it('leads back to chat from another tab', async () => {
-        mockChatState({
-          pendingInputRequests: [
-            { requestId: 'input-1', questions: [{ prompt: 'Which branch?', choices: [] }] },
-          ],
-        });
-        wrap('test-session-id-1234');
-        await screen.findByTestId('session-attention-panel');
-
-        fireEvent.click(screen.getByRole('tab', { name: /Logs/i }));
-        fireEvent.click(screen.getByRole('button', { name: 'Open chat' }));
-
-        expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute('aria-selected', 'true');
-      });
-
-      it('remembers being hidden, and says what waits while it is', async () => {
-        mockChatState({
-          pendingInputRequests: [
-            { requestId: 'input-1', questions: [{ prompt: 'Which branch?', choices: [] }] },
-          ],
-        });
-        wrap('test-session-id-1234');
-        const panel = await screen.findByTestId('session-attention-panel');
-
-        fireEvent.click(within(panel).getByRole('button', { name: 'Hide session panel' }));
-
-        expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
-        expect(localStorage.getItem('niuu.forge.panel')).toBe('0');
-        const show = screen.getByRole('button', { name: 'Show session panel' });
-        expect(show).toHaveTextContent('Needs you 1');
-        fireEvent.click(show);
-        expect(screen.getByTestId('session-attention-panel')).toBeInTheDocument();
-      });
-
-      it('opens over the chat on a narrow screen, closed at first and without saving', async () => {
-        vi.stubGlobal(
-          'matchMedia',
-          vi.fn((query: string) => ({
-            matches: query === '(max-width: 1100px)',
-            addEventListener: () => {},
-            removeEventListener: () => {},
-          })),
-        );
-        try {
-          mockChatState();
-          wrap('test-session-id-1234');
-          const show = await screen.findByRole('button', { name: 'Show session panel' });
-          expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
-
-          fireEvent.click(show);
-          const panel = screen.getByTestId('session-attention-panel');
-          expect(panel).toHaveClass('niuu-session-panel--overlay');
-          expect(localStorage.getItem('niuu.forge.panel')).toBeNull();
-
-          fireEvent.click(within(panel).getByRole('button', { name: 'Hide session panel' }));
-          expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
-        } finally {
-          vi.unstubAllGlobals();
-        }
-      });
-
-      it('always says what the session is, even when nothing else is waiting', async () => {
+      it('stays out of the way until something needs the person', async () => {
         mockChatState();
         wrap('test-session-id-1234');
-        const panel = await screen.findByTestId('session-attention-panel');
-
-        expect(within(panel).queryByRole('region', { name: 'Needs you' })).not.toBeInTheDocument();
-        expect(within(panel).queryByRole('region', { name: 'Plan' })).not.toBeInTheDocument();
-        expect(within(panel).queryByRole('region', { name: 'Agents' })).not.toBeInTheDocument();
-        expect(
-          within(panel).queryByRole('region', { name: 'Deliverables' }),
-        ).not.toBeInTheDocument();
-        const info = within(panel).getByRole('region', { name: 'Session' });
-        expect(info).toHaveTextContent('Engine');
-        expect(info).toHaveTextContent('Claude Sonnet 4.6');
-        expect(info).toHaveTextContent('Claude');
-        expect(info).toHaveTextContent('Guild Alpha');
-        expect(info).toHaveTextContent('niuulabs/volundr');
-        expect(info).toHaveTextContent('Started');
-        expect(within(panel).getByRole('region', { name: 'Changed files' })).toHaveTextContent(
-          '4 files changed',
-        );
+        const show = await screen.findByRole('button', { name: 'Show session panel' });
+        expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
+        expect(show).not.toHaveTextContent('Needs you');
       });
 
-      it('shows the plan frame instead of the TodoWrite list', async () => {
+      it('opens on its own while something needs the person', async () => {
         mockChatState({
-          messages: [
-            {
-              id: 'todo',
-              role: 'assistant',
-              content: '',
-              createdAt: new Date(0),
-              parts: [
-                {
-                  type: 'tool_use',
-                  name: 'TodoWrite',
-                  input: { todos: [{ content: 'Old todo item', status: 'pending' }] },
-                },
-              ],
-            },
+          pendingInputRequests: [
+            { requestId: 'input-1', questions: [{ prompt: 'Which branch?', choices: [] }] },
           ],
-          plan: {
-            tasks: [
-              { content: 'Read the gates', status: 'completed' },
-              { content: 'Write the fix', status: 'in_progress' },
-              { content: 'Run the tests', status: 'pending' },
+        });
+        wrap('test-session-id-1234');
+        expect(await screen.findByTestId('session-attention-panel')).toBeInTheDocument();
+        expect(localStorage.getItem('niuu.forge.sidePanel')).toBeNull();
+      });
+
+      describe('once opened', () => {
+        beforeEach(() => localStorage.setItem('niuu.forge.sidePanel', 'open'));
+
+        it('sits beside chat and answers a permission through the live chat', async () => {
+          const respondToPermission = vi.fn();
+          mockChatState({
+            respondToPermission,
+            pendingPermissions: [
+              {
+                requestId: 'perm-1',
+                toolName: 'Bash',
+                description: 'Run a command',
+                command: 'ls',
+              },
             ],
-            counts: { total: 3, completed: 1, in_progress: 1, pending: 1 },
-          },
+          });
+          wrap('test-session-id-1234');
+
+          const panel = await screen.findByTestId('session-attention-panel');
+          fireEvent.click(within(panel).getByRole('button', { name: 'Allow Bash once' }));
+
+          expect(respondToPermission).toHaveBeenCalledWith('perm-1', 'allow_once');
         });
-        wrap('test-session-id-1234');
 
-        const plan = await screen.findByRole('region', { name: 'Plan' });
-        expect(plan).toHaveTextContent('1/3');
-        expect(plan).toHaveTextContent('Read the gates');
-        expect(plan).toHaveTextContent('Run the tests');
-        expect(plan).not.toHaveTextContent('Old todo item');
-      });
-
-      it('does not fall back to TodoWrite once a plan frame has arrived', async () => {
-        mockChatState({
-          messages: [
-            {
-              id: 'todo',
-              role: 'assistant',
-              content: '',
-              createdAt: new Date(0),
-              parts: [
-                {
-                  type: 'tool_use',
-                  name: 'TodoWrite',
-                  input: { todos: [{ content: 'Old todo item', status: 'pending' }] },
-                },
-              ],
-            },
-          ],
-          plan: { tasks: [], counts: { total: 0 } },
-        });
-        wrap('test-session-id-1234');
-
-        await screen.findByTestId('session-attention-panel');
-        expect(screen.queryByRole('region', { name: 'Plan' })).not.toBeInTheDocument();
-        expect(screen.queryByText('Old todo item')).not.toBeInTheDocument();
-      });
-
-      it('lists the agents the session started with how long they ran', async () => {
-        mockChatState({
-          agents: [
-            {
-              id: 'agent-1',
-              kind: 'subagent',
-              name: 'Check the other gate entry points',
-              status: 'done',
-              startedAt: '2026-11-05T10:00:00.000Z',
-              endedAt: '2026-11-05T10:01:52.000Z',
-            },
-          ],
-        });
-        wrap('test-session-id-1234');
-
-        const agents = await screen.findByRole('region', { name: 'Agents' });
-        expect(agents).toHaveTextContent('Check the other gate entry points');
-        expect(agents).toHaveTextContent('done · 1m');
-      });
-
-      it('lists presented files as deliverables and opens one', async () => {
-        mockChatState({
-          messages: [
-            {
-              id: 'present',
-              role: 'assistant',
-              content: '',
-              createdAt: new Date(0),
-              parts: [
-                {
-                  type: 'tool_use',
-                  name: 'present_file',
-                  input: {
-                    file_id: 'file-1',
-                    name: 'gate-refusal-trace.md',
-                    mime: 'text/markdown',
+        it('lists a pending native gate and shows the latest task list', async () => {
+          mockChatState({
+            messages: [
+              {
+                id: 'todo',
+                role: 'assistant',
+                content: '',
+                createdAt: new Date(0),
+                parts: [
+                  {
+                    type: 'tool_use',
+                    name: 'TodoWrite',
+                    input: { todos: [{ content: 'Write the fix', status: 'in_progress' }] },
                   },
+                ],
+              },
+            ],
+          });
+          wrap('test-session-id-1234', {
+            volundr: {
+              getWorkflowGates: vi.fn().mockResolvedValue([
+                {
+                  id: 'gate-1',
+                  label: 'PRD approval gate',
+                  status: 'pending',
+                  pending_behavior: 'help_needed',
                 },
-              ],
+              ]),
             },
-          ],
+          });
+
+          const gate = await screen.findByTestId('attention-gate');
+          expect(gate).toHaveTextContent('PRD approval gate');
+          expect(gate).toHaveTextContent('Waiting for your approval.');
+          const plan = screen.getByRole('region', { name: 'Plan' });
+          expect(plan).toHaveTextContent('Write the fix');
+          expect(plan).toHaveTextContent('0/1');
         });
-        wrap('test-session-id-1234');
 
-        const deliverables = await screen.findByRole('region', { name: 'Deliverables' });
-        fireEvent.click(
-          within(deliverables).getByRole('button', { name: /gate-refusal-trace.md/ }),
-        );
+        it('leads back to chat from another tab', async () => {
+          mockChatState({
+            pendingInputRequests: [
+              { requestId: 'input-1', questions: [{ prompt: 'Which branch?', choices: [] }] },
+            ],
+          });
+          wrap('test-session-id-1234');
+          await screen.findByTestId('session-attention-panel');
 
-        expect(
-          await screen.findByRole('dialog', { name: /gate-refusal-trace.md/ }),
-        ).toBeInTheDocument();
+          fireEvent.click(screen.getByRole('tab', { name: /Logs/i }));
+          fireEvent.click(screen.getByRole('button', { name: 'Open chat' }));
+
+          expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute(
+            'aria-selected',
+            'true',
+          );
+        });
+
+        it('remembers being hidden, and says what waits while it is', async () => {
+          mockChatState({
+            pendingInputRequests: [
+              { requestId: 'input-1', questions: [{ prompt: 'Which branch?', choices: [] }] },
+            ],
+          });
+          wrap('test-session-id-1234');
+          const panel = await screen.findByTestId('session-attention-panel');
+
+          fireEvent.click(within(panel).getByRole('button', { name: 'Hide session panel' }));
+
+          expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
+          expect(localStorage.getItem('niuu.forge.sidePanel')).toBe('closed');
+          const show = screen.getByRole('button', { name: 'Show session panel' });
+          expect(show).toHaveTextContent('Needs you 1');
+          fireEvent.click(show);
+          expect(screen.getByTestId('session-attention-panel')).toBeInTheDocument();
+        });
+
+        it('opens over the chat on a narrow screen, closed at first and without saving', async () => {
+          vi.stubGlobal(
+            'matchMedia',
+            vi.fn((query: string) => ({
+              matches: query === '(max-width: 1100px)',
+              addEventListener: () => {},
+              removeEventListener: () => {},
+            })),
+          );
+          try {
+            mockChatState();
+            wrap('test-session-id-1234');
+            const show = await screen.findByRole('button', { name: 'Show session panel' });
+            expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
+
+            fireEvent.click(show);
+            const panel = screen.getByTestId('session-attention-panel');
+            expect(panel).toHaveClass('niuu-session-panel--overlay');
+            expect(localStorage.getItem('niuu.forge.sidePanel')).toBe('open');
+
+            fireEvent.click(within(panel).getByRole('button', { name: 'Hide session panel' }));
+            expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        });
+
+        it('always says what the session is, even when nothing else is waiting', async () => {
+          mockChatState();
+          wrap('test-session-id-1234');
+          const panel = await screen.findByTestId('session-attention-panel');
+
+          expect(
+            within(panel).queryByRole('region', { name: 'Needs you' }),
+          ).not.toBeInTheDocument();
+          expect(within(panel).queryByRole('region', { name: 'Plan' })).not.toBeInTheDocument();
+          expect(within(panel).queryByRole('region', { name: 'Agents' })).not.toBeInTheDocument();
+          expect(
+            within(panel).queryByRole('region', { name: 'Deliverables' }),
+          ).not.toBeInTheDocument();
+          const info = within(panel).getByRole('region', { name: 'Session' });
+          expect(info).toHaveTextContent('Engine');
+          expect(info).toHaveTextContent('Claude Sonnet 4.6');
+          expect(info).toHaveTextContent('Claude');
+          expect(info).toHaveTextContent('Guild Alpha');
+          expect(info).toHaveTextContent('niuulabs/volundr');
+          expect(info).toHaveTextContent('Started');
+          expect(within(panel).getByRole('region', { name: 'Changed files' })).toHaveTextContent(
+            '4 files changed',
+          );
+        });
+
+        it('shows the plan frame instead of the TodoWrite list', async () => {
+          mockChatState({
+            messages: [
+              {
+                id: 'todo',
+                role: 'assistant',
+                content: '',
+                createdAt: new Date(0),
+                parts: [
+                  {
+                    type: 'tool_use',
+                    name: 'TodoWrite',
+                    input: { todos: [{ content: 'Old todo item', status: 'pending' }] },
+                  },
+                ],
+              },
+            ],
+            plan: {
+              tasks: [
+                { content: 'Read the gates', status: 'completed' },
+                { content: 'Write the fix', status: 'in_progress' },
+                { content: 'Run the tests', status: 'pending' },
+              ],
+              counts: { total: 3, completed: 1, in_progress: 1, pending: 1 },
+            },
+          });
+          wrap('test-session-id-1234');
+
+          const plan = await screen.findByRole('region', { name: 'Plan' });
+          expect(plan).toHaveTextContent('1/3');
+          expect(plan).toHaveTextContent('Read the gates');
+          expect(plan).toHaveTextContent('Run the tests');
+          expect(plan).not.toHaveTextContent('Old todo item');
+        });
+
+        it('does not fall back to TodoWrite once a plan frame has arrived', async () => {
+          mockChatState({
+            messages: [
+              {
+                id: 'todo',
+                role: 'assistant',
+                content: '',
+                createdAt: new Date(0),
+                parts: [
+                  {
+                    type: 'tool_use',
+                    name: 'TodoWrite',
+                    input: { todos: [{ content: 'Old todo item', status: 'pending' }] },
+                  },
+                ],
+              },
+            ],
+            plan: { tasks: [], counts: { total: 0 } },
+          });
+          wrap('test-session-id-1234');
+
+          await screen.findByTestId('session-attention-panel');
+          expect(screen.queryByRole('region', { name: 'Plan' })).not.toBeInTheDocument();
+          expect(screen.queryByText('Old todo item')).not.toBeInTheDocument();
+        });
+
+        it('lists the agents the session started with how long they ran', async () => {
+          mockChatState({
+            agents: [
+              {
+                id: 'agent-1',
+                kind: 'subagent',
+                name: 'Check the other gate entry points',
+                status: 'done',
+                startedAt: '2026-11-05T10:00:00.000Z',
+                endedAt: '2026-11-05T10:01:52.000Z',
+              },
+            ],
+          });
+          wrap('test-session-id-1234');
+
+          const agents = await screen.findByRole('region', { name: 'Agents' });
+          expect(agents).toHaveTextContent('Check the other gate entry points');
+          expect(agents).toHaveTextContent('done · 1m');
+        });
+
+        it('lists presented files as deliverables and opens one', async () => {
+          mockChatState({
+            messages: [
+              {
+                id: 'present',
+                role: 'assistant',
+                content: '',
+                createdAt: new Date(0),
+                parts: [
+                  {
+                    type: 'tool_use',
+                    name: 'present_file',
+                    input: {
+                      file_id: 'file-1',
+                      name: 'gate-refusal-trace.md',
+                      mime: 'text/markdown',
+                    },
+                  },
+                ],
+              },
+            ],
+          });
+          wrap('test-session-id-1234');
+
+          const deliverables = await screen.findByRole('region', { name: 'Deliverables' });
+          fireEvent.click(
+            within(deliverables).getByRole('button', { name: /gate-refusal-trace.md/ }),
+          );
+
+          expect(
+            await screen.findByRole('dialog', { name: /gate-refusal-trace.md/ }),
+          ).toBeInTheDocument();
+        });
       });
     });
 
@@ -2865,7 +2898,7 @@ describe('LiveSessionDetailPage', () => {
         screen.getByRole('button', { name: /Hide tool calls and results/i }),
       );
       expect(
-        within(toolbar).getByRole('button', { name: 'Hide session panel' }),
+        within(toolbar).getByRole('button', { name: 'Show session panel' }),
       ).toBeInTheDocument();
     });
 
@@ -2988,13 +3021,15 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByTestId('session-activity-elapsed')).toBeInTheDocument();
     });
 
-    it('counts the session messages in the subline', async () => {
+    it('counts the session messages in the subline when details are on', async () => {
+      localStorage.setItem('niuu.forge.details', '1');
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByTestId('session-message-count')).toHaveTextContent(/^\d+ messages?$/);
     });
 
     it('uses the visible chat count for Msgs once chat history is loaded', async () => {
+      localStorage.setItem('niuu.forge.details', '1');
       vi.spyOn(chatHooks, 'useSkuldChat').mockReturnValue({
         messages: [
           {
@@ -3159,7 +3194,7 @@ describe('LiveSessionDetailPage', () => {
       mockChatState();
       wrap(leadId, { session: COORDINATOR_SESSION, sessionStore: store });
       await screen.findByTestId('live-session-detail-page');
-      expect(await screen.findByTestId('session-coordinator-tag')).toHaveTextContent('COORDINATOR');
+      expect(await screen.findByTestId('session-coordinator-tag')).toHaveTextContent('Coordinator');
       const strip = await screen.findByTestId('workers-strip');
       expect(within(strip).getByText('ticket-1342-gates')).toBeInTheDocument();
       fireEvent.click(within(strip).getByTestId(`worker-chip-${workerId}`));
@@ -3177,6 +3212,7 @@ describe('LiveSessionDetailPage', () => {
     });
 
     it('names a worker’s coordinator with a link back and shows its objective', async () => {
+      localStorage.setItem('niuu.forge.sidePanel', 'open');
       mockChatState();
       wrap(workerId, { session: WORKER_SESSION, sessionStore: store });
       const workerOf = await screen.findByTestId('worker-of');
@@ -3205,6 +3241,7 @@ describe('LiveSessionDetailPage', () => {
     });
 
     it('lists the coordinator’s workers in the panel, each opening its session', async () => {
+      localStorage.setItem('niuu.forge.sidePanel', 'open');
       mockChatState();
       wrap(leadId, { session: COORDINATOR_SESSION, sessionStore: store });
       const panel = await screen.findByTestId('session-attention-panel');

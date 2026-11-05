@@ -30,14 +30,20 @@
   opacity: 0.6;
 }
 
+/* The key hints are for the person typing (the composer takes focus on open, so focus alone
+   is not typing); an idle composer is one quiet bar, as in Lexi. */
 .niuu-chat-input-hints {
-  display: flex;
+  display: none;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   padding: 0 var(--space-1);
   color: var(--color-text-muted);
   font-size: 11.5px;
+}
+
+.niuu-chat-input-wrapper:has(textarea:not(:placeholder-shown)) .niuu-chat-input-hints {
+  display: flex;
 }
 
 .niuu-chat-kbd {

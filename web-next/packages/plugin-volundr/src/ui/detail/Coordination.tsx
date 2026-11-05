@@ -9,7 +9,7 @@ function sessionLabel(session: Session): string {
 export function CoordinatorTag() {
   return (
     <span className="forge-coordinator-tag" data-testid="session-coordinator-tag">
-      COORDINATOR
+      Coordinator
     </span>
   );
 }

@@ -77,6 +77,17 @@ function wrap(
   );
 }
 
+/** Filters, grouping, display and stopped-session actions live in the list menu. */
+function openListMenu() {
+  if (screen.queryByRole('region', { name: 'Group by' })) return;
+  fireEvent.click(screen.getByTestId('session-list-menu'));
+}
+
+function chooseGrouping(mode: string) {
+  openListMenu();
+  fireEvent.click(screen.getByTestId(`pod-group-mode-${mode}`));
+}
+
 function makeSession(
   overrides: Partial<Session> & Pick<Session, 'id' | 'personaName' | 'state'>,
 ): Session {
@@ -260,10 +271,10 @@ describe('SessionsPage', () => {
         .map((row) => row.dataset.testid),
     ).toEqual(['pod-entry-idle-pin', 'pod-entry-active-pin', 'pod-entry-archived-pin']);
     for (const mode of ['state', 'repo', 'forge', 'project']) {
-      fireEvent.change(screen.getByTestId('pod-group-mode'), { target: { value: mode } });
-      const states = screen.getByRole('group', { name: 'Session states' });
+      chooseGrouping(mode);
       // Empty states are hidden; every state shown is one this fixture has sessions in.
-      expect(within(states).queryByTestId('session-filter-attention')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('session-filter-attention')).not.toBeInTheDocument();
+      const states = screen.getByRole('region', { name: 'Show' });
       for (const filter of within(states)
         .getAllByRole('button')
         .map((button) => button.dataset.filter!)) {
@@ -274,7 +285,7 @@ describe('SessionsPage', () => {
     }
     fireEvent.click(within(pinned).getByRole('button', { name: /^Pinned/ }));
     expect(within(pinned).queryByTestId('pod-entry-active-pin')).not.toBeInTheDocument();
-    fireEvent.change(screen.getByTestId('pod-group-mode'), { target: { value: 'state' } });
+    chooseGrouping('state');
     expect(within(pinned).getByRole('button', { name: /^Pinned/ })).toHaveAttribute(
       'aria-expanded',
       'false',
@@ -452,8 +463,8 @@ describe('SessionsPage', () => {
     ]);
 
     wrap(store);
-    await waitFor(() => expect(screen.getByTestId('pod-group-mode-repo')).toBeInTheDocument());
-    fireEvent.change(screen.getByTestId('pod-group-mode'), { target: { value: 'repo' } });
+    await screen.findByTestId('session-list-menu');
+    chooseGrouping('repo');
 
     await waitFor(() => expect(screen.getByTestId('pod-group-alpha')).toBeInTheDocument());
     expect(screen.getByTestId('pod-group-alpha-count')).toHaveTextContent('2');
@@ -488,8 +499,8 @@ describe('SessionsPage', () => {
     ]);
 
     wrap(store);
-    await waitFor(() => expect(screen.getByTestId('pod-group-mode-forge')).toBeInTheDocument());
-    fireEvent.change(screen.getByTestId('pod-group-mode'), { target: { value: 'forge' } });
+    await screen.findByTestId('session-list-menu');
+    chooseGrouping('forge');
 
     await waitFor(() => expect(screen.getByTestId('pod-group-guild-alpha')).toBeInTheDocument());
     expect(screen.getByTestId('pod-group-guild-alpha-count')).toHaveTextContent('2');
@@ -547,7 +558,10 @@ describe('SessionsPage', () => {
     (volundr as IVolundrService).archiveStoppedSessions = archiveStoppedSessions;
 
     wrap(store, volundr);
-    await waitFor(() => expect(screen.getByTestId('archive-stopped-button')).toBeInTheDocument());
+    await waitFor(() => {
+      openListMenu();
+      expect(screen.getByTestId('archive-stopped-button')).toBeInTheDocument();
+    });
     fireEvent.click(screen.getByTestId('archive-stopped-button'));
     await waitFor(() => expect(archiveStoppedSessions).toHaveBeenCalledTimes(1));
   });
@@ -564,9 +578,10 @@ describe('SessionsPage', () => {
 
     wrap(store, volundr);
 
-    await waitFor(() =>
-      expect(screen.getByTestId('toggle-stopped-selection-button')).toBeInTheDocument(),
-    );
+    await waitFor(() => {
+      openListMenu();
+      expect(screen.getByTestId('toggle-stopped-selection-button')).toBeInTheDocument();
+    });
     fireEvent.click(screen.getByTestId('toggle-stopped-selection-button'));
     expect(screen.getByTestId('stopped-session-checkbox-stopped-1')).toBeChecked();
     expect(screen.getByTestId('stopped-session-checkbox-stopped-2')).toBeChecked();
@@ -688,9 +703,10 @@ describe('SessionsPage', () => {
 
     wrap(store, volundr);
 
-    await waitFor(() =>
-      expect(screen.getByTestId('toggle-stopped-selection-button')).toBeInTheDocument(),
-    );
+    await waitFor(() => {
+      openListMenu();
+      expect(screen.getByTestId('toggle-stopped-selection-button')).toBeInTheDocument();
+    });
     fireEvent.click(screen.getByTestId('toggle-stopped-selection-button'));
     fireEvent.click(screen.getByTestId('stopped-session-checkbox-stopped-2'));
     fireEvent.click(screen.getByTestId('delete-selected-stopped-button'));
@@ -727,7 +743,9 @@ describe('Forge session review controls', () => {
   it('defaults to live sessions, counts filters, preserves selection and composes search', async () => {
     wrap(createSessionStoreWithSessions(sessions));
     await screen.findByTestId('pod-entry-working');
+    openListMenu();
     expect(screen.getByTestId('session-filter-live')).toHaveTextContent('Live3');
+    expect(screen.getByTestId('session-list-scope')).toHaveTextContent('Live · State');
     expect(screen.queryByTestId('pod-entry-stopped')).not.toBeInTheDocument();
     expect(screen.queryByTestId('pod-entry-archived')).not.toBeInTheDocument();
     expect(screen.getByTestId('pod-entry-working')).not.toHaveTextContent('dev-user');
@@ -764,7 +782,9 @@ describe('Forge session review controls', () => {
       ]),
     );
     const row = await screen.findByTestId('pod-entry-host-row');
-    expect(row).toHaveTextContent(`Workspace reviewWorking${label}GPT-6 AstraBuild Bro`);
+    expect(row).toHaveTextContent(`Workspace review${label}GPT-6 AstraBuild Bro`);
+    // The state ends the row's last line, leaving the name the whole first line.
+    expect(row).toHaveTextContent(/Working$/);
     expect(within(row).getByTitle('Host: Build Bro')).toHaveTextContent('Build Bro');
     expect(within(row).getByTitle(path)).toHaveTextContent(label);
   });
@@ -772,15 +792,15 @@ describe('Forge session review controls', () => {
     wrap(createSessionStoreWithSessions(sessions));
     await screen.findByTestId('pod-entry-working');
     const separator = screen.getByRole('separator', { name: 'Resize session list' });
-    expect(separator).toHaveAttribute('aria-valuenow', '272');
+    expect(separator).toHaveAttribute('aria-valuenow', '340');
     fireEvent.keyDown(separator, { key: 'ArrowRight' });
-    expect(localStorage.getItem('niuu.forge.sidebarWidth')).toBe('292');
+    expect(localStorage.getItem('niuu.forge.sidebarWidth')).toBe('360');
     fireEvent.keyDown(separator, { key: 'End' });
     expect(separator).toHaveAttribute('aria-valuenow', '640');
     fireEvent.keyDown(separator, { key: 'ArrowRight' });
     expect(separator).toHaveAttribute('aria-valuenow', '640');
     fireEvent.doubleClick(separator);
-    expect(separator).toHaveAttribute('aria-valuenow', '272');
+    expect(separator).toHaveAttribute('aria-valuenow', '340');
     fireEvent.click(
       within(screen.getByTestId('pod-group-working')).getByRole('button', { expanded: true }),
     );
@@ -810,6 +830,7 @@ describe('Forge session review controls', () => {
     wrap(createSessionStoreWithSessions(sessions), service);
     fireEvent.click(await screen.findByTestId('pod-entry-working-archive'));
     await waitFor(() => expect(calls).toEqual(['stop', 'archive']));
+    openListMenu();
     fireEvent.click(screen.getByTestId('session-filter-archived'));
     fireEvent.click(screen.getByRole('button', { name: 'Restore Old session' }));
     await waitFor(() => expect(service.restoreSession).toHaveBeenCalledWith('archived'));
@@ -837,7 +858,7 @@ describe('Forge session review controls', () => {
   });
 });
 
-it('groups registered projects as a collapsible session tree and keeps settings in the footer', async () => {
+it('groups registered projects as a collapsible session tree and keeps settings in the list menu', async () => {
   const service = createMockVolundrService();
   service.getProjects = vi
     .fn()
@@ -864,16 +885,17 @@ it('groups registered projects as a collapsible session tree and keeps settings 
   wrap(createSessionStoreWithSessions(sessions), service);
   await screen.findByTestId('pod-entry-parent');
   expect(service.getProjects).not.toHaveBeenCalled();
-  fireEvent.change(screen.getByTestId('pod-group-mode'), { target: { value: 'project' } });
+  chooseGrouping('project');
   await screen.findByTestId('pod-group-lexi');
   expect(screen.getByTestId('pod-group-no-project')).toHaveTextContent('Independent');
   fireEvent.click(screen.getByRole('button', { name: 'Collapse workers of Coordinator' }));
   expect(screen.queryByTestId('pod-entry-child')).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Expand workers of Coordinator' }));
   expect(screen.getByTestId('pod-entry-child')).toBeInTheDocument();
-  const footer = screen.getByRole('group', { name: 'Session list settings' });
-  expect(within(footer).getByRole('checkbox', { name: 'Show token usage' })).not.toBeChecked();
-  fireEvent.click(within(footer).getByRole('checkbox', { name: 'Show token usage' }));
+  openListMenu();
+  const display = screen.getByRole('region', { name: 'Display' });
+  expect(within(display).getByRole('checkbox', { name: 'Show token usage' })).not.toBeChecked();
+  fireEvent.click(within(display).getByRole('checkbox', { name: 'Show token usage' }));
   expect(localStorage.getItem('niuu.forge.tokens')).toBe('1');
 });
 
@@ -924,7 +946,7 @@ describe('coordinators and their workers', () => {
       .mockResolvedValue([{ id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' }]);
     wrap(createSessionStoreWithSessions([coordinator(), worker()]), service);
     await screen.findByTestId('pod-entry-lead');
-    fireEvent.change(screen.getByTestId('pod-group-mode'), { target: { value: mode } });
+    chooseGrouping(mode);
     const group = await screen.findByTestId(`pod-group-${groupId}`);
 
     // The worker follows the coordinator into its group, whatever the worker's own state,
