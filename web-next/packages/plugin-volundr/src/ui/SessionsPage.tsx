@@ -34,6 +34,7 @@ import {
   MoreHorizontal,
   CircleDot,
   Download,
+  Folder,
   FolderGit2,
   ListFilter,
   Search,
@@ -166,6 +167,35 @@ export function toGroupTestId(label: string): string {
 
 export function sessionActivityTs(session: Session): number {
   return new Date(session.lastActivityAt ?? session.startedAt).getTime();
+}
+
+const HEADLINE_PHRASES: Record<SessionState, string> = {
+  running: 'is working',
+  idle: 'is idle',
+  ready: 'is ready',
+  awaiting_input: 'is waiting for you',
+  provisioning: 'is starting',
+  requested: 'is queued',
+  terminating: 'is stopping',
+  terminated: 'stopped',
+  failed: 'stopped with an error',
+  archived: 'was archived',
+};
+
+/** A project folder's second line: what its latest session did, as Lexi heads a folder. */
+export function projectHeadline(sessions: readonly Session[]): string {
+  const latest = [...sessions].sort((a, b) => sessionActivityTs(b) - sessionActivityTs(a))[0];
+  if (!latest) return 'No sessions yet';
+  const state = SESSION_STATE_LABELS[latest.state];
+  if (latest.shortDescription) return `${state} · ${latest.shortDescription}`;
+  const name = latest.name || latest.personaName || latest.id;
+  return `${state} · ${name} ${HEADLINE_PHRASES[latest.state]}`;
+}
+
+/** What a project folder says about all of its sessions, whatever the filters show. */
+interface ProjectFolder {
+  headline: string;
+  needsYou: number;
 }
 
 const EXTERNAL_ORIGINS = new Set(['claude', 'codex']);
@@ -565,6 +595,7 @@ const WORKER_STATUS_TEXT: Record<Worker['status'], string> = {
   working: 'Working',
   idle: 'Idle',
   error: 'Error',
+  left: 'Left',
 };
 
 /** A worker in the open session's room, under its coordinator: picking it shows only its output. */
@@ -685,7 +716,13 @@ function PodGroup({
   contextIds,
   workerCounts,
   openRoom = null,
+  folder,
+  sectionLabel = false,
 }: {
+  /** Draw the group as a project folder: name, needs-you badge, count and headline. */
+  folder?: ProjectFolder;
+  /** Draw the group as a quiet section label, as Lexi heads its independent sessions. */
+  sectionLabel?: boolean;
   contextIds?: ReadonlySet<string>;
   workerCounts?: ReadonlyMap<string, number>;
   /** The open session's room workers, listed under it in the tree. */
@@ -708,7 +745,8 @@ function PodGroup({
   readPendingIds?: ReadonlySet<string>;
 }) {
   const [folded, setFolded] = useForgePreference(`group.${groupKey ?? label}`, '0', ['0', '1']);
-  if (sessions.length === 0) return null;
+  // A project folder stays listed with nothing in it; other groups only hold sessions.
+  if (sessions.length === 0 && !folder) return null;
 
   const roomWorkerCount = (s: Session) =>
     openRoom?.sessionId === s.id ? openRoom.workers.length : 0;
@@ -744,9 +782,56 @@ function PodGroup({
   return (
     <div
       data-testid={`pod-group-${toGroupTestId(label)}`}
-      className={pinned ? 'forge-session-pinned-group' : undefined}
+      className={cn(
+        pinned && 'forge-session-pinned-group',
+        folder && 'forge-project-group',
+        sectionLabel && 'forge-session-section',
+      )}
     >
-      {!collapsed && (
+      {!collapsed && folder && (
+        <button
+          type="button"
+          className="forge-project-folder"
+          aria-expanded={folded !== '1'}
+          onClick={() => setFolded(folded === '1' ? '0' : '1')}
+        >
+          <span className="forge-project-folder__caret" aria-hidden="true">
+            {folded === '1' ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+          </span>
+          <Folder className="forge-project-folder__icon" size={15} aria-hidden="true" />
+          <span className="forge-project-folder__name">{label}</span>
+          {folder.needsYou > 0 && (
+            <span
+              className="forge-project-folder__badge"
+              title={`${folder.needsYou} waiting for you`}
+              data-testid={`pod-group-${toGroupTestId(label)}-needs-you`}
+            >
+              {folder.needsYou}
+            </span>
+          )}
+          <span
+            className="forge-project-folder__count"
+            data-testid={`pod-group-${toGroupTestId(label)}-count`}
+          >
+            {sessions.length}
+          </span>
+          <span className="forge-project-folder__headline">{folder.headline}</span>
+        </button>
+      )}
+      {!collapsed && sectionLabel && (
+        <button
+          type="button"
+          className="forge-session-section-label"
+          aria-expanded={folded !== '1'}
+          onClick={() => setFolded(folded === '1' ? '0' : '1')}
+        >
+          {label}
+        </button>
+      )}
+      {!collapsed && folder && folded !== '1' && sessions.length === 0 && (
+        <p className="forge-project-folder__empty">No sessions in this filter</p>
+      )}
+      {!collapsed && !folder && !sectionLabel && (
         <button
           type="button"
           aria-expanded={folded !== '1'}
@@ -945,7 +1030,8 @@ export function SessionsPage() {
   const sidebarGroups = useMemo<SessionSection[]>(() => {
     const roots = nesting.roots;
     const sections = ((): SessionSection[] => {
-      if (sidebarMode === 'project') return groupByProject(roots, projects.data ?? []);
+      if (sidebarMode === 'project')
+        return groupByProject(roots, projects.data ?? [], { includeEmpty: true });
       if (sidebarMode === 'repo') return groupByRepo(roots);
       if (sidebarMode === 'forge') return groupByForge(roots);
       const grouped = groupByState(roots);
@@ -959,6 +1045,31 @@ export function SessionsPage() {
       sessions: section.sessions.flatMap((root) => nesting.subtree(root)),
     }));
   }, [nesting, sidebarMode, projects.data]);
+  // Folders speak for every listed session of their project, not only the filtered ones.
+  const projectFolders = useMemo(() => {
+    const byProject = new Map<string, Session[]>();
+    for (const session of allSessions) {
+      const id = session.coordination?.projectId;
+      if (!id || session.state === 'archived') continue;
+      byProject.set(id, [...(byProject.get(id) ?? []), session]);
+    }
+    const ids = new Set([
+      ...(projects.data ?? []).map((project) => project.id),
+      ...byProject.keys(),
+    ]);
+    return new Map<string, ProjectFolder>(
+      [...ids].map((id) => {
+        const sessions = byProject.get(id) ?? [];
+        return [
+          id,
+          {
+            headline: projectHeadline(sessions),
+            needsYou: sessions.filter((session) => session.state === 'awaiting_input').length,
+          },
+        ];
+      }),
+    );
+  }, [allSessions, projects.data]);
   const requestedSessionId = typeof routeSessionId === 'string' ? routeSessionId : null;
   const resolvedSelectedSessionId = useMemo(() => {
     if (allSessions.length === 0) return null;
@@ -1500,6 +1611,10 @@ export function SessionsPage() {
                     label={g.label}
                     groupKey={g.id ?? `${sidebarMode}:${g.label}`}
                     hierarchical
+                    folder={
+                      sidebarMode === 'project' && g.id ? projectFolders.get(g.id) : undefined
+                    }
+                    sectionLabel={sidebarMode === 'project' && !g.id}
                     openRoom={openRoom}
                     contextIds={nesting.contextIds}
                     workerCounts={nesting.workerCounts}

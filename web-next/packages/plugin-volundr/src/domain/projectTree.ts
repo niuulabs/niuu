@@ -11,11 +11,22 @@ export interface ProjectSessionGroup {
   sessions: Session[];
 }
 
+/**
+ * Sessions by project. With `includeEmpty`, every active registered project gets a group
+ * even when it has no sessions, as Lexi lists a project folder before its first session.
+ */
 export function groupByProject(
   sessions: Session[],
   projects: ForgeProject[],
+  { includeEmpty = false }: { includeEmpty?: boolean } = {},
 ): ProjectSessionGroup[] {
   const groups = new Map<string, ProjectSessionGroup>();
+  if (includeEmpty) {
+    for (const project of projects) {
+      if (project.status !== 'active') continue;
+      groups.set(project.id, { id: project.id, label: project.name, sessions: [] });
+    }
+  }
   for (const session of sessions) {
     const id = session.coordination?.projectId ?? '';
     const group = groups.get(id) ?? {

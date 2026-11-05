@@ -845,3 +845,93 @@
   height: 14px;
   accent-color: var(--color-brand);
 }
+
+/* ── Project folders (Lexi's code sidebar): caret, folder, name, needs-you, count, headline ── */
+
+.forge-project-folder {
+  display: grid;
+  grid-template-columns: 14px 18px minmax(0, 1fr) auto auto;
+  column-gap: 4px;
+  align-items: center;
+  width: 100%;
+  padding: 8px 12px 6px 6px;
+  text-align: left;
+  color: var(--color-text-primary);
+}
+
+.forge-project-folder:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 60%, transparent);
+}
+
+.forge-project-folder__caret {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-muted);
+}
+
+.forge-project-folder__icon {
+  color: var(--color-text-secondary);
+}
+
+.forge-project-folder__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.forge-project-folder__badge {
+  display: grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  margin-right: 6px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--status-amber);
+  color: var(--color-bg-primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.forge-project-folder__count {
+  grid-column: 5;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+
+.forge-project-folder__headline {
+  grid-column: 3 / -1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.forge-project-folder__empty {
+  margin: 0;
+  padding: 4px 12px 8px 42px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* Rows in a folder sit under its name. */
+.forge-project-group
+  .forge-session-tree-entry
+  > .forge-session-tree-row
+  .forge-session-row__select {
+  padding-left: 28px;
+}
+
+.forge-session-section-label {
+  display: block;
+  width: 100%;
+  padding: 14px 12px 4px 14px;
+  text-align: left;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
