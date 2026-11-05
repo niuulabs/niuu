@@ -411,23 +411,37 @@
 .forge-session-footer-actions .forge-session-delete {
   color: var(--color-critical);
 }
+/* The fold chevron sits in the row's left gutter, so a coordinator lines up with its siblings. */
 .forge-session-tree-row {
+  position: relative;
   display: flex;
-  align-items: center;
 }
 .forge-session-tree-row > .forge-session-row {
   flex: 1;
   min-width: 0;
 }
 .forge-session-tree-toggle {
-  flex-shrink: 0;
-  min-width: 22px;
-  min-height: 38px;
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 13px;
+  height: 30px;
+  padding: 0;
   color: var(--color-text-muted);
 }
+.forge-session-tree-toggle:hover {
+  color: var(--color-text-primary);
+}
+/* Each level steps in by a few pixels along a guide line; the sidebar is too narrow for more. */
 .forge-session-tree-children {
-  margin-left: 14px;
+  margin-left: 10px;
   border-left: 1px solid var(--color-border-subtle);
+}
+.forge-session-tree-children .forge-session-row__select {
+  padding-left: 10px;
 }
 .forge-session-project-status {
   padding: 10px;
@@ -734,11 +748,6 @@
 }
 
 /* Workers sit under their coordinator as compact rows: name, state and time. */
-.forge-session-tree-children {
-  margin-left: 18px;
-  padding-left: 4px;
-}
-
 .forge-session-row[data-nested='true'] .forge-session-row__preview,
 .forge-session-row[data-nested='true'] .forge-session-row__details,
 .forge-session-row[data-nested='true'] .forge-session-harness,
@@ -747,17 +756,12 @@
 }
 
 /* A worker in the open session's room, listed under its coordinator. */
-.forge-room-worker__avatar {
-  display: grid;
+.forge-room-worker__dot {
   flex-shrink: 0;
-  place-items: center;
-  width: 16px;
-  height: 16px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--forge-worker-color);
-  color: var(--color-bg-primary);
-  font-size: 9.5px;
-  font-weight: 700;
 }
 
 .forge-room-worker .forge-session-row__title {
@@ -780,6 +784,8 @@
 }
 
 .forge-room-worker .forge-session-row__select {
+  gap: 6px;
   min-height: 0;
   padding-block: 7px;
+  padding-left: 3px;
 }

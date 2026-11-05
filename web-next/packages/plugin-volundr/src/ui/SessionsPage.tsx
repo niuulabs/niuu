@@ -590,9 +590,7 @@ function RoomWorkerRow({
         )}
         style={{ '--forge-worker-color': worker.color } as React.CSSProperties}
       >
-        <span className="forge-room-worker__avatar" aria-hidden="true">
-          {worker.name.charAt(0).toUpperCase()}
-        </span>
+        <span className="forge-room-worker__dot" aria-hidden="true" />
         <span className="forge-session-row__title">{worker.name}</span>
         <span className="forge-room-worker__state" data-status={worker.status}>
           {worker.latest && worker.status !== 'working'
@@ -633,7 +631,7 @@ function SessionTreeEntry({
             aria-expanded={folded !== '1'}
             onClick={() => setFolded(folded === '1' ? '0' : '1')}
           >
-            {folded === '1' ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+            {folded === '1' ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
           </button>
         )}
         {renderRow(node.session, depth)}
