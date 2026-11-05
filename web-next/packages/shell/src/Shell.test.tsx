@@ -3,13 +3,7 @@ import { useState, useSyncExternalStore } from 'react';
 import { act, render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryHistory, createRoute } from '@tanstack/react-router';
-import {
-  ConfigProvider,
-  FeatureCatalogProvider,
-  ServicesProvider,
-  definePlugin,
-  type IFeatureCatalogService,
-} from '@niuulabs/plugin-sdk';
+import { ConfigProvider, FeatureCatalogProvider, definePlugin } from '@niuulabs/plugin-sdk';
 import { Shell } from './Shell';
 import { PluginSlot } from './ShellLayout';
 

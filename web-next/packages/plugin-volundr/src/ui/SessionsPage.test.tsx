@@ -939,7 +939,7 @@ describe('coordinators and their workers', () => {
     );
   });
 
-  it('counts a coordinator\'s workers on its row; its workers are compact rows', async () => {
+  it("counts a coordinator's workers on its row; its workers are compact rows", async () => {
     wrap(
       createSessionStoreWithSessions([
         coordinator(),
