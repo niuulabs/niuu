@@ -2982,3 +2982,121 @@
   flex: 0 1000 auto;
   min-width: 18px;
 }
+
+/* ── One quiet line, as Lexi's: dot, name ⌄, project … view icons and controls ── */
+@media (min-width: 761px) {
+  .niuu-live-session__head-top,
+  .niuu-live-session__head-top:not(:has(> .niuu-live-session__return-link)) {
+    grid-template-areas: 'back dot identity views controls';
+    grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+    row-gap: 0;
+  }
+
+  .niuu-live-session__head-top:not(:has(> .niuu-live-session__return-link)) {
+    grid-template-areas: 'dot identity views controls';
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+  }
+
+  .niuu-live-session__header {
+    min-height: 44px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  /* The views are plain icons beside the controls, not a boxed switcher. */
+  .niuu-live-session__head-top > .niuu-live-session__tabs {
+    padding: 0;
+    border: 0;
+    background: none;
+    gap: 2px;
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab {
+    height: 28px;
+    padding: 0 6px;
+    color: var(--color-text-muted);
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab-icon {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+.niuu-live-session__head-title .niuu-live-session__title {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+/* The dot says the state, as Lexi's does; its name is the tooltip. */
+.niuu-live-session__status-dot[data-state='failed'] {
+  background: var(--color-critical);
+  box-shadow: none;
+}
+
+.niuu-live-session__status-dot[data-state='awaiting_input'] {
+  background: var(--status-amber);
+  box-shadow: none;
+}
+
+/* ── The name's menu: the facts, the state, rename, pin and move ── */
+.niuu-live-session__facts {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.niuu-live-session__facts > summary {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  color: var(--color-text-muted);
+  list-style: none;
+  cursor: pointer;
+}
+
+.niuu-live-session__facts > summary::-webkit-details-marker {
+  display: none;
+}
+
+.niuu-live-session__facts > summary svg {
+  width: 13px;
+  height: 13px;
+}
+
+.niuu-live-session__facts > summary:hover,
+.niuu-live-session__facts[open] > summary {
+  background: color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+  color: var(--color-text-primary);
+}
+
+.niuu-live-session__facts-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: -8px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  width: max-content;
+  max-width: min(520px, 70vw);
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 10px;
+  background: var(--color-bg-elevated);
+  box-shadow: var(--shadow-lg, 0 10px 30px rgb(0 0 0 / 35%));
+}
+
+.niuu-live-session__facts-panel .niuu-live-session__subline {
+  flex-wrap: wrap;
+  white-space: normal;
+}
+
+/* In the menu the actions are always there. */
+.niuu-live-session__facts-panel .niuu-live-session__title-actions {
+  max-width: none;
+  overflow: visible;
+  opacity: 1;
+}

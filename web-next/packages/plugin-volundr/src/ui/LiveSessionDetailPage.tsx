@@ -3133,6 +3133,8 @@ export interface RoomWorkerFocus {
   onRoomWorkers?: (workers: readonly Worker[]) => void;
   /** Opened from the unread list: the header leads back to it, as Lexi's "‹ Unread". */
   onBackToUnread?: () => void;
+  /** The host lists the workers under the coordinator, so the chat does not repeat them. */
+  workersInList?: boolean;
 }
 
 export function LiveSessionDetailPage({
@@ -3145,6 +3147,7 @@ export function LiveSessionDetailPage({
   onFocusWorker,
   onRoomWorkers,
   onBackToUnread,
+  workersInList = false,
 }: {
   sessionId: string;
   instanceId?: string;
@@ -3164,6 +3167,7 @@ export function LiveSessionDetailPage({
       onFocusWorker={onFocusWorker}
       onRoomWorkers={onRoomWorkers}
       onBackToUnread={onBackToUnread}
+      workersInList={workersInList}
     />
   );
 }
@@ -3178,6 +3182,7 @@ function LiveSessionDetailPageInner({
   onFocusWorker,
   onRoomWorkers,
   onBackToUnread,
+  workersInList = false,
 }: {
   sessionId: string;
   instanceId?: string;
@@ -3846,10 +3851,113 @@ function LiveSessionDetailPageInner({
                     : 'niuu-live-session__status-dot--disconnected',
                   sessionWorking && 'niuu-live-session__status-dot--working',
                 )}
+                data-state={sessionDetail?.state}
+                title={sessionDetail ? SESSION_STATE_LABELS[sessionDetail.state] : undefined}
               />
               <div className="niuu-live-session__head-title">
                 <div className="niuu-live-session__identity">
                   <span className="niuu-live-session__title">{sessionName}</span>
+                  {/* Lexi's title menu: the name's chevron opens the session's facts, its state
+                      and rename, pin and move, so the bar itself stays one quiet line. */}
+                  <details className="niuu-live-session__facts">
+                    <summary aria-label="Session details" title="Session details">
+                      <ChevronDown aria-hidden="true" />
+                    </summary>
+                    <div className="niuu-live-session__facts-panel">
+                      {sessionDetail ? (
+                        <span
+                          className="niuu-live-session__state-pill"
+                          data-tone={stateTone(sessionDetail.state)}
+                          data-testid="session-state-pill"
+                        >
+                          {SESSION_STATE_LABELS[sessionDetail.state]}
+                        </span>
+                      ) : null}
+                      {!readOnly && liveSession && (
+                        <span className="niuu-live-session__title-actions">
+                          <RenameSession sessionId={sessionId} name={sessionName} />
+                          <PinSession sessionId={sessionId} name={sessionName} />
+                          <AssignSessionProject
+                            sessionId={sessionId}
+                            name={sessionName}
+                            instanceId={liveSession.instanceId}
+                          />
+                        </span>
+                      )}
+                      <Subline
+                        data-testid="session-stats"
+                        items={[
+                          liveSession?.model && {
+                            id: 'model',
+                            node: (
+                              <span
+                                className="niuu-live-session__model"
+                                data-harness={sessionEngineHarness}
+                                title={liveSession.model}
+                                data-testid="session-model"
+                              >
+                                {modelLabel(liveSession.model)}
+                              </span>
+                            ),
+                          },
+                          forgeBadgeLabel && {
+                            id: 'host',
+                            node: <span data-testid="session-host">{forgeBadgeLabel}</span>,
+                          },
+                          isCoordinator && { id: 'coordinator', node: <CoordinatorTag /> },
+                          sessionTrackerIssue && {
+                            id: 'ticket',
+                            node: <TicketLink issue={sessionTrackerIssue} />,
+                          },
+                          sessionDetail && {
+                            id: 'activity',
+                            node: <SessionActivityElapsed session={sessionDetail} />,
+                          },
+                          showDetails && {
+                            id: 'messages',
+                            node: (
+                              <span data-testid="session-message-count">
+                                {formatCount(headerMessageCount)}{' '}
+                                {headerMessageCount === 1 ? 'message' : 'messages'}
+                              </span>
+                            ),
+                          },
+                          showTokenUsage && {
+                            id: 'tokens',
+                            node: <span>{formatCount(liveSession?.tokensUsed ?? 0)} tokens</span>,
+                          },
+                          liveSession?.source && {
+                            id: 'source',
+                            node: (
+                              <span className="niuu-live-session__source-line">
+                                <SourceMeta session={liveSession} />
+                                {liveSession.source.type === 'git' && liveSession.source.branch ? (
+                                  <span
+                                    className="niuu-live-session__branch"
+                                    data-testid="session-branch"
+                                    title={liveSession.source.branch}
+                                  >
+                                    <GitBranch aria-hidden="true" />
+                                    {liveSession.source.branch}
+                                  </span>
+                                ) : null}
+                              </span>
+                            ),
+                          },
+                          showDetails &&
+                            liveSession?.source && {
+                              id: 'runtime',
+                              node: (
+                                <SessionRuntimeVersion session={liveSession} service={volundr} />
+                              ),
+                            },
+                        ]}
+                      />
+                      {hasCoordinator ? (
+                        <WorkerOf coordinator={coordination.coordinator} onOpen={openSession} />
+                      ) : null}
+                    </div>
+                  </details>
                   {sessionProjectName ? (
                     <span
                       className="niuu-live-session__project"
@@ -3860,26 +3968,6 @@ function LiveSessionDetailPageInner({
                       {sessionProjectName}
                     </span>
                   ) : null}
-                  {sessionDetail ? (
-                    <span
-                      className="niuu-live-session__state-pill"
-                      data-tone={stateTone(sessionDetail.state)}
-                      data-testid="session-state-pill"
-                    >
-                      {SESSION_STATE_LABELS[sessionDetail.state]}
-                    </span>
-                  ) : null}
-                  {!readOnly && liveSession && (
-                    <span className="niuu-live-session__title-actions">
-                      <RenameSession sessionId={sessionId} name={sessionName} />
-                      <PinSession sessionId={sessionId} name={sessionName} />
-                      <AssignSessionProject
-                        sessionId={sessionId}
-                        name={sessionName}
-                        instanceId={liveSession.instanceId}
-                      />
-                    </span>
-                  )}
                   {showDetails && sessionHandle ? (
                     <span className="niuu-live-session__handle" title={sessionHandle}>
                       {sessionHandle}
@@ -3890,76 +3978,6 @@ function LiveSessionDetailPageInner({
                     <span className="niuu-live-session__archived-badge">Archived</span>
                   ) : null}
                 </div>
-                <Subline
-                  data-testid="session-stats"
-                  items={[
-                    liveSession?.model && {
-                      id: 'model',
-                      node: (
-                        <span
-                          className="niuu-live-session__model"
-                          data-harness={sessionEngineHarness}
-                          title={liveSession.model}
-                          data-testid="session-model"
-                        >
-                          {modelLabel(liveSession.model)}
-                        </span>
-                      ),
-                    },
-                    forgeBadgeLabel && {
-                      id: 'host',
-                      node: <span data-testid="session-host">{forgeBadgeLabel}</span>,
-                    },
-                    isCoordinator && { id: 'coordinator', node: <CoordinatorTag /> },
-                    sessionTrackerIssue && {
-                      id: 'ticket',
-                      node: <TicketLink issue={sessionTrackerIssue} />,
-                    },
-                    sessionDetail && {
-                      id: 'activity',
-                      node: <SessionActivityElapsed session={sessionDetail} />,
-                    },
-                    showDetails && {
-                      id: 'messages',
-                      node: (
-                        <span data-testid="session-message-count">
-                          {formatCount(headerMessageCount)}{' '}
-                          {headerMessageCount === 1 ? 'message' : 'messages'}
-                        </span>
-                      ),
-                    },
-                    showTokenUsage && {
-                      id: 'tokens',
-                      node: <span>{formatCount(liveSession?.tokensUsed ?? 0)} tokens</span>,
-                    },
-                    liveSession?.source && {
-                      id: 'source',
-                      node: (
-                        <span className="niuu-live-session__source-line">
-                          <SourceMeta session={liveSession} />
-                          {liveSession.source.type === 'git' && liveSession.source.branch ? (
-                            <span
-                              className="niuu-live-session__branch"
-                              data-testid="session-branch"
-                              title={liveSession.source.branch}
-                            >
-                              <GitBranch aria-hidden="true" />
-                              {liveSession.source.branch}
-                            </span>
-                          ) : null}
-                        </span>
-                      ),
-                    },
-                    showDetails &&
-                      liveSession?.source && {
-                        id: 'runtime',
-                        node: <SessionRuntimeVersion session={liveSession} service={volundr} />,
-                      },
-                  ]}
-                />
-                {hasCoordinator ? (
-                  <WorkerOf coordinator={coordination.coordinator} onOpen={openSession} />
-                ) : null}
               </div>
 
               {/* The views sit in the title bar as one segmented control, so the header is one
@@ -4141,6 +4159,7 @@ function LiveSessionDetailPageInner({
                         className="niuu:h-full"
                         showToolbar={false}
                         showDisplayControls={false}
+                        showWorkersStrip={!workersInList}
                         showInternalToggle={false}
                         internalVisibility={showInternalMessages}
                         showTokenUsage={showTokenUsage}
@@ -4219,6 +4238,7 @@ function LiveSessionDetailPageInner({
                       className="niuu:h-full"
                       showToolbar={false}
                       showDisplayControls={false}
+                      showWorkersStrip={!workersInList}
                       showInternalToggle={false}
                       internalVisibility={showInternalMessages}
                       showTokenUsage={showTokenUsage}

@@ -167,6 +167,12 @@ export interface SessionChatProps {
    */
   workerSessionIds?: readonly string[];
   /**
+   * Draw the workers strip and progress lane over the conversation. A host that lists the
+   * workers itself (a session list with the workers under their coordinator) leaves them out,
+   * so the chat starts with the conversation, as Lexi's does.
+   */
+  showWorkersStrip?: boolean;
+  /**
    * The room worker shown on its own, in place of the coordinator's view of everyone. Given
    * with `onFocusWorker`, the host owns it (a session list that selects workers); without
    * them the chat keeps it itself.
@@ -325,6 +331,7 @@ export function SessionChat({
   onLoadOlderHistory,
   participants = new Map(),
   workerSessionIds,
+  showWorkersStrip = true,
   focusedWorkerId,
   onFocusWorker,
   onWorkersChange,
@@ -1319,7 +1326,7 @@ export function SessionChat({
           </div>
         )}
 
-        {(hasWorkers || workerSessions.length > 0) && (
+        {showWorkersStrip && (hasWorkers || workerSessions.length > 0) && (
           <WorkersStrip
             workers={workers}
             sessions={workerSessions}
@@ -1327,7 +1334,7 @@ export function SessionChat({
             onSelect={openWorker}
           />
         )}
-        {hasWorkers && <ProgressLane stages={stages} onSelect={openWorker} />}
+        {showWorkersStrip && hasWorkers && <ProgressLane stages={stages} onSelect={openWorker} />}
         {historyError && (
           <div className="niuu-chat-history-status" role="alert">
             {historyError}{' '}

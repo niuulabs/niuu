@@ -1119,6 +1119,13 @@ describe('SessionChat', () => {
       expect(screen.getByTestId('workers-strip')).toBeInTheDocument();
     });
 
+    it('leaves the strip and lane to a host that lists the workers itself', () => {
+      renderTeam({ showWorkersStrip: false });
+      expect(screen.queryByTestId('workers-strip')).toBeNull();
+      expect(screen.queryByTestId('progress-lane')).toBeNull();
+      expect(screen.getByText('Reading the feed header.')).toBeInTheDocument();
+    });
+
     it('shows none of it when the session has no workers', () => {
       renderTeam({
         participants: new Map([[lead.peerId, lead]]),

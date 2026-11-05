@@ -3210,6 +3210,17 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.queryByTestId('worker-of')).toBeNull();
     });
 
+    it('keeps the bar to one line: the facts and state open from the name', async () => {
+      mockChatState();
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      const facts = screen.getByLabelText('Session details').closest('details') as HTMLElement;
+      expect(facts).toContainElement(screen.getByTestId('session-stats'));
+      expect(facts).toContainElement(await screen.findByTestId('session-state-pill'));
+      const dot = document.querySelector('.niuu-live-session__status-dot') as HTMLElement;
+      expect(dot).toHaveAttribute('title', screen.getByTestId('session-state-pill').textContent);
+    });
+
     it('leads back to the unread list when opened from it', async () => {
       mockChatState();
       const onBackToUnread = vi.fn();

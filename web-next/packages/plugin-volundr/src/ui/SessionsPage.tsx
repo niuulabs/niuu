@@ -1851,6 +1851,7 @@ export function SessionsPage() {
               focusedWorkerId={focusedPeerId}
               onFocusWorker={handleFocusWorker}
               onRoomWorkers={handleRoomWorkers}
+              workersInList
               onBackToUnread={
                 filter === 'unread'
                   ? () => {
