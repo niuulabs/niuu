@@ -131,15 +131,24 @@
   gap: var(--space-2);
   font-size: var(--text-sm);
   font-weight: 700;
-  color: var(--niuu-chat-engine, var(--color-brand));
+  color: var(--color-text-primary);
 }
 
-.niuu-chat-speaker-dot {
-  display: block;
-  width: 8px;
-  height: 8px;
+.niuu-chat-speaker-avatar {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
   border-radius: var(--radius-full);
-  background: var(--niuu-chat-engine, var(--color-brand));
+  background: color-mix(
+    in srgb,
+    var(--niuu-chat-engine, var(--color-brand)) 30%,
+    var(--color-bg-tertiary)
+  );
+  color: var(--color-text-primary);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
 }
 
 .niuu-chat-header-sep {

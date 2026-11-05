@@ -19,6 +19,7 @@ import {
   ChevronRight,
   ChevronDown,
   Loader2,
+  BadgeCheck,
 } from 'lucide-react';
 import { LoadingState } from '../../../data/states/LoadingState';
 import { ErrorState } from '../../../data/states/ErrorState';
@@ -38,6 +39,8 @@ import {
   SystemMessage,
   hasNativeMessageParts,
   messageRenderKey,
+  messageModel,
+  ModelSpeaker,
 } from '../ChatMessages';
 import { RoomMessage } from '../RoomMessage';
 import { ThreadGroup } from '../ThreadGroup';
@@ -296,6 +299,15 @@ function groupStartedAt(
   if (group.type === 'single') return group.message.createdAt.getTime();
   if (group.type === 'thread') return group.messages[0]!.createdAt.getTime();
   return (group.turn.intermediaries[0] ?? group.turn.final)!.createdAt.getTime();
+}
+
+/** "54s", "2m 5s", "1h 12m": how long a turn worked, as Lexi writes it. */
+function workedDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return seconds % 60 ? `${minutes}m ${seconds % 60}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
 }
 
 export function SessionChat({
@@ -671,6 +683,24 @@ export function SessionChat({
 
   const useCompact = conversationView === 'compact';
 
+  // Every tool call the transcript holds, by message, for the folded turns' "N tools".
+  const messageOrder = useMemo(
+    () => new Map(messages.map((message, index) => [message.id, index])),
+    [messages],
+  );
+  const turnToolCount = (turn: (typeof compactTurns)[number]): number => {
+    const from = turn.user ? (messageOrder.get(turn.user.id) ?? -1) + 1 : 0;
+    const last = turn.final ?? turn.intermediaries.at(-1);
+    const to = last ? (messageOrder.get(last.id) ?? messages.length - 1) : messages.length - 1;
+    return messages
+      .slice(from, to + 1)
+      .reduce(
+        (count, message) =>
+          count + (message.parts?.filter((part) => part.type === 'tool_use').length ?? 0),
+        0,
+      );
+  };
+
   // What the workers did that no transcript message carries: handoffs between them, outcomes
   // that arrived only as live events, and their calls for attention. Each stands in the
   // conversation where it happened.
@@ -1007,25 +1037,37 @@ export function SessionChat({
     const turnRunning =
       turn.final?.status === 'running' || turn.intermediaries.some((m) => m.status === 'running');
 
-    let workedLabel: string;
-    if (turnRunning) {
-      workedLabel = 'Working…';
-    } else if (turn.user && turn.final) {
-      const seconds = Math.round(
-        (turn.final.createdAt.getTime() - turn.user.createdAt.getTime()) / 1000,
-      );
-      workedLabel =
-        Number.isFinite(seconds) && seconds > 0
-          ? `Worked for ${seconds}s`
-          : `Show work (${stepCount} step${stepCount === 1 ? '' : 's'})`;
-    } else {
-      workedLabel = `Show work (${stepCount} step${stepCount === 1 ? '' : 's'})`;
-    }
+    // Lexi's "Worked · 5 tools · 54s": the tools the turn ran and how long it took. Tool
+    // calls are hidden from the folded messages, so they are counted in the transcript.
+    const toolCount = turnToolCount(turn);
+    const seconds =
+      turn.user && turn.final
+        ? Math.round((turn.final.createdAt.getTime() - turn.user.createdAt.getTime()) / 1000)
+        : NaN;
+    const workedFacts = [
+      toolCount > 0
+        ? `${toolCount} tool${toolCount === 1 ? '' : 's'}`
+        : `${stepCount} step${stepCount === 1 ? '' : 's'}`,
+      Number.isFinite(seconds) && seconds > 0 ? workedDuration(seconds) : null,
+    ].filter(Boolean);
+    const workedLabel = turnRunning ? 'Working…' : 'Worked';
+    // The answer's speaker heads the turn, above its work, as in Lexi.
+    const speakerModel = turn.final ? messageModel(turn.final) : undefined;
 
     return (
-      <div key={turn.id} className="niuu-chat-compact-turn" data-testid="compact-turn">
+      <div
+        key={turn.id}
+        className="niuu-chat-compact-turn"
+        data-testid="compact-turn"
+        data-headed={speakerModel && stepCount > 0 ? true : undefined}
+      >
         {turn.leading.map((m) => renderSingleMessage(m))}
         {turn.user && renderSingleMessage(turn.user)}
+        {speakerModel && stepCount > 0 && (
+          <div className="niuu-chat-turn-speaker">
+            <ModelSpeaker model={speakerModel} />
+          </div>
+        )}
         {stepCount > 0 && (
           <div className="niuu-chat-worked">
             <button
@@ -1035,18 +1077,27 @@ export function SessionChat({
               aria-expanded={expanded}
               data-testid="worked-toggle"
             >
-              {turnRunning ? (
-                <Loader2 className="niuu-chat-spinner-icon" aria-hidden />
-              ) : expanded ? (
+              {expanded ? (
                 <ChevronDown className="niuu-chat-control-icon" aria-hidden />
               ) : (
                 <ChevronRight className="niuu-chat-control-icon" aria-hidden />
               )}
-              <span>
+              {turnRunning ? (
+                <Loader2 className="niuu-chat-spinner-icon" aria-hidden />
+              ) : (
+                <BadgeCheck className="niuu-chat-worked-badge" aria-hidden />
+              )}
+              <span className="niuu-chat-worked-label">
                 {(isRoomMode || isRoomSession) && turn.final?.participant
                   ? `${turn.final.participant.displayName || turn.final.participant.persona}: ${workedLabel}`
                   : workedLabel}
               </span>
+              {!turnRunning &&
+                workedFacts.map((fact) => (
+                  <span key={fact} className="niuu-chat-worked-fact">
+                    {fact}
+                  </span>
+                ))}
             </button>
             {expanded && (
               <div className="niuu-chat-worked-steps" data-testid="worked-steps">

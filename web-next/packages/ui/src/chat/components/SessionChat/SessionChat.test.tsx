@@ -88,7 +88,7 @@ describe('SessionChat', () => {
     // wiring and the inline message layout, so opt those back on for the suite;
     // the product defaults (hidden actions, compact view) are unchanged.
     localStorage.setItem('niuu.compactUx.showMessageActions', '1');
-    localStorage.setItem('niuu.compactUx.conversationView', 'expanded');
+    localStorage.setItem('niuu.compactUx.conversationFold', 'expanded');
     window.HTMLElement.prototype.scrollIntoView = vi.fn();
   });
 
@@ -1273,7 +1273,7 @@ describe('SessionChat', () => {
     });
 
     it('keeps the folded view working, with handoffs and the Coordinator in it', () => {
-      localStorage.setItem('niuu.compactUx.conversationView', 'compact');
+      localStorage.setItem('niuu.compactUx.conversationFold', 'compact');
       renderTeam({ meshEvents: [handoff('h1', at(16))] });
       expect(screen.getByText('Coordinator')).toBeInTheDocument();
       expect(screen.getByTestId('handoff-row')).toBeInTheDocument();
@@ -1558,7 +1558,7 @@ describe('SessionChat', () => {
   /* ── Thread groups ── */
 
   it('folds room work per speaker and thread without hiding other answers', () => {
-    localStorage.setItem('niuu.compactUx.conversationView', 'compact');
+    localStorage.setItem('niuu.compactUx.conversationFold', 'compact');
     const message = (
       id: string,
       content: string,
@@ -1601,15 +1601,54 @@ describe('SessionChat', () => {
       'Different thread',
     ])
       expect(screen.getByText(answer)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Reviewer: Show work (1 step)' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Reviewer: Worked/ }));
     expect(screen.getByText('Reviewer work')).toBeInTheDocument();
     expect(screen.queryByText('Builder work')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('conversation-view-toggle'));
     expect(screen.getByText('Builder work')).toBeInTheDocument();
   });
 
+  it('heads a folded turn with its model and says what the work took, as Lexi does', () => {
+    localStorage.clear();
+    const asked = new Date('2026-11-05T12:00:00Z');
+    render(
+      <SessionChat
+        {...defaultProps}
+        messages={[
+          { id: 'q', role: 'user', content: 'Ship it', createdAt: asked, status: 'done' },
+          {
+            id: 'w',
+            role: 'assistant',
+            content: 'Checking the tree.',
+            createdAt: new Date(asked.getTime() + 10_000),
+            status: 'done',
+            parts: [
+              { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } },
+              { type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'pwd' } },
+            ],
+          },
+          {
+            id: 'a',
+            role: 'assistant',
+            content: 'Shipped.',
+            createdAt: new Date(asked.getTime() + 125_000),
+            status: 'done',
+            metadata: { usage: { 'claude-opus-5-5': { input_tokens: 1, output_tokens: 1 } } },
+          },
+        ]}
+      />,
+    );
+    const worked = screen.getByTestId('worked-toggle');
+    expect(worked).toHaveTextContent(/^Worked2 tools2m 5s$/);
+    expect(worked).toHaveAttribute('aria-expanded', 'false');
+    const turn = screen.getByTestId('compact-turn');
+    expect(turn).toHaveAttribute('data-headed', 'true');
+    expect(within(turn).getAllByTestId('model-speaker')[0]).toHaveTextContent('Opus 5.5');
+    expect(screen.getByText('Shipped.')).toBeInTheDocument();
+  });
+
   it('keeps failed room work visible in compact view', () => {
-    localStorage.setItem('niuu.compactUx.conversationView', 'compact');
+    localStorage.setItem('niuu.compactUx.conversationFold', 'compact');
     render(
       <SessionChat
         {...defaultProps}
@@ -1635,7 +1674,7 @@ describe('SessionChat', () => {
   it.each(['compact', 'expanded'])(
     'renders thread groups in %s room mode with internal messages',
     (view) => {
-      localStorage.setItem('niuu.compactUx.conversationView', view);
+      localStorage.setItem('niuu.compactUx.conversationFold', view);
       const participants = new Map([
         [participant.peerId, participant],
         [participant2.peerId, participant2],
@@ -1866,6 +1905,6 @@ describe('SessionChat', () => {
     expect(screen.getByTestId('conversation-view-toggle')).toBeInTheDocument();
     expect(screen.getByText('Display')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('conversation-view-toggle'));
-    expect(localStorage.getItem('niuu.compactUx.conversationView')).toBe('compact');
+    expect(localStorage.getItem('niuu.compactUx.conversationFold')).toBe('expanded');
   });
 });

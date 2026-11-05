@@ -31,8 +31,10 @@ const DEFAULTS: CompactUxChatPrefs = {
   toolRuns: 'rows',
 };
 
-const CONVERSATION_VIEW_KEY = 'conversationView';
-const CONVERSATION_VIEW_DEFAULT: ConversationView = 'expanded';
+// A new key, so a view saved while Expanded was the default does not hold it there.
+const CONVERSATION_VIEW_KEY = 'conversationFold';
+// Lexi folds a turn's work under one "Worked" row and shows the answer.
+const CONVERSATION_VIEW_DEFAULT: ConversationView = 'compact';
 const CONVERSATION_VIEW_VALUES = ['compact', 'expanded'] as const;
 
 function readBool(key: string, fallback: boolean): boolean {
@@ -65,7 +67,7 @@ export function getCompactUxChatPrefs(): CompactUxChatPrefs {
   };
 }
 
-/** Read the persisted conversation-fold view (defaults to "expanded"). */
+/** Read the persisted conversation-fold view (defaults to "compact"). */
 export function getConversationView(): ConversationView {
   return readEnum(CONVERSATION_VIEW_KEY, CONVERSATION_VIEW_VALUES, CONVERSATION_VIEW_DEFAULT);
 }

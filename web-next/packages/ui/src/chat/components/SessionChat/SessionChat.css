@@ -628,3 +628,46 @@
 .niuu-chat-history-status {
   text-align: center;
 }
+
+/* ── Lexi's turn: the speaker, then one "Worked · 5 tools · 54s" row over the turn's work ── */
+
+.niuu-chat-turn-speaker {
+  display: flex;
+  align-items: center;
+}
+
+/* The speaker already heads the turn; the answer under its work does not repeat it. */
+.niuu-chat-compact-turn[data-headed] .niuu-chat-worked ~ * .niuu-chat-speaker {
+  display: none;
+}
+
+.niuu-chat-compact-turn .niuu-chat-worked-trigger {
+  width: 100%;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+
+.niuu-chat-compact-turn .niuu-chat-worked-trigger:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 60%, transparent);
+}
+
+.niuu-chat-worked-badge {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  color: var(--color-brand);
+}
+
+.niuu-chat-worked-label {
+  font-weight: 600;
+  color: var(--color-brand);
+}
+
+.niuu-chat-worked-fact::before {
+  content: '·';
+  margin-right: 8px;
+  color: var(--color-text-faint);
+}

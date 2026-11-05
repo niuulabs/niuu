@@ -133,8 +133,16 @@ function MessageAttachments({ attachments }: Pick<ChatMessage, 'attachments'>) {
 export { formatTokenCount };
 
 /** The engine-coloured dot and model name that head an assistant message. */
-function ModelSpeaker({ model }: { model?: string }) {
+/** The model that answered, from the reply's usage record. */
+export function messageModel(message: ChatMessage): string | undefined {
+  const usage = message.metadata?.usage;
+  return usage ? Object.keys(usage)[0] : undefined;
+}
+
+/** Who answered, as Lexi heads a reply: the model's initial on its engine colour, then its name. */
+export function ModelSpeaker({ model }: { model?: string }) {
   if (!model) return null;
+  const label = modelLabel(model);
   return (
     <span
       className="niuu-chat-speaker"
@@ -142,8 +150,10 @@ function ModelSpeaker({ model }: { model?: string }) {
       data-testid="model-speaker"
       title={model}
     >
-      <i className="niuu-chat-speaker-dot" aria-hidden="true" />
-      {modelLabel(model)}
+      <i className="niuu-chat-speaker-avatar" aria-hidden="true">
+        {label.trim().charAt(0).toUpperCase()}
+      </i>
+      {label}
     </span>
   );
 }
@@ -271,7 +281,7 @@ export function AssistantMessage({
     reasoningParts.length > 0 && reasoningParts.some((p) => p.text && p.text.length > 0);
 
   const meta = message.metadata;
-  const model = meta?.usage ? Object.keys(meta.usage)[0] : undefined;
+  const model = messageModel(message);
   const tokens = meta?.usage ? extractTokens(meta.usage) : null;
 
   const handleCopy = useCallback(() => {

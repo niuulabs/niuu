@@ -27,14 +27,15 @@ describe('ChatDisplayControls', () => {
     );
     const toggle = screen.getByTestId('conversation-view-toggle');
     expect(toggle.closest('.niuu-chat-display-menu')).toHaveClass('host-toolbar');
-    expect(toggle).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByTestId('reader')).toHaveTextContent('expanded/always/false');
-    fireEvent.click(toggle);
-    expect(localStorage.getItem('niuu.compactUx.conversationView')).toBe('compact');
+    // Compact first, as Lexi folds a turn's work.
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
     expect(screen.getByTestId('reader')).toHaveTextContent('compact/always/false');
-    expect(toggle).toHaveAttribute('title', 'Expanded view');
     fireEvent.click(toggle);
+    expect(localStorage.getItem('niuu.compactUx.conversationFold')).toBe('expanded');
     expect(screen.getByTestId('reader')).toHaveTextContent('expanded/always/false');
+    expect(toggle).toHaveAttribute('title', 'Compact view');
+    fireEvent.click(toggle);
+    expect(screen.getByTestId('reader')).toHaveTextContent('compact/always/false');
   });
 
   it('stores the Display preferences where every conversation reads them', () => {
@@ -52,7 +53,7 @@ describe('ChatDisplayControls', () => {
     expect(localStorage.getItem('niuu.compactUx.toolRuns')).toBe('cards');
     fireEvent.change(screen.getByLabelText('Tool calls'), { target: { value: 'rows' } });
     expect(localStorage.getItem('niuu.compactUx.toolRuns')).toBe('rows');
-    expect(screen.getByTestId('reader')).toHaveTextContent('expanded/hover/true');
+    expect(screen.getByTestId('reader')).toHaveTextContent('compact/hover/true');
     expect(localStorage.getItem('niuu.compactUx.showMessageActions')).toBe('false');
     expect(localStorage.getItem('niuu.compactUx.copyMode')).toBe('hover');
   });
