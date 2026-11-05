@@ -10,12 +10,16 @@ const SECONDS_PER_MINUTE = 60;
 const MINUTES_PER_HOUR = 60;
 const MS_PER_SECOND = 1000;
 
-const RECOMMENDED_SUFFIX = /\s*\(recommended\)\s*$/i;
+const RECOMMENDED_SUFFIX = '(recommended)';
 
 /** "Recommended" is part of the label the agent sent; show it as a badge instead. */
 function readChoice(choice: string): { label: string; recommended: boolean } {
-  const label = choice.replace(RECOMMENDED_SUFFIX, '');
-  return { label: label || choice, recommended: RECOMMENDED_SUFFIX.test(choice) };
+  // String checks, not a regex: the label is agent text of any length.
+  const trimmed = choice.trimEnd();
+  if (!trimmed.toLowerCase().endsWith(RECOMMENDED_SUFFIX))
+    return { label: choice, recommended: false };
+  const label = trimmed.slice(0, -RECOMMENDED_SUFFIX.length).trimEnd();
+  return { label: label || choice, recommended: true };
 }
 
 /** "12s", "3m", "1h 5m". */

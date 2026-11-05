@@ -581,6 +581,8 @@ function callCard(c, open) {
     <div class="tcard-b"${open ? '' : ' hidden'}>${body}${c.fam === 'command' && !c.live ? `<div class="elide">… +212 lines · <button>View full output</button></div>` : ''}</div>
   </div>`;
 }
+/** The text of a trusted, static summary that carries <b> emphasis. */
+function plainText(html) { const span = document.createElement('span'); span.innerHTML = html; return esc(span.textContent); }
 function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
 function toolRun(id) {
@@ -864,7 +866,7 @@ function renderOverlay() {
   if (S.drawer) {
     const r = RUNS[S.drawer];
     o.innerHTML = `<div class="scrim" data-close></div><aside class="drawer" role="dialog" aria-label="Tool calls">
-      <div class="drawer-h"><div style="flex:1;min-width:0"><h4>${r.calls.length} tool calls</h4><div class="sub">${r.sum.replace(/<[^>]+>/g, '')} · ${r.time}</div></div>${wire('/tool-result/{id} lazy')}<button class="iconbtn" data-close title="Close">${ic('x')}</button></div>
+      <div class="drawer-h"><div style="flex:1;min-width:0"><h4>${r.calls.length} tool calls</h4><div class="sub">${plainText(r.sum)} · ${r.time}</div></div>${wire('/tool-result/{id} lazy')}<button class="iconbtn" data-close title="Close">${ic('x')}</button></div>
       <div class="drawer-b">${r.calls.map((c, i) => callCard(c, i === r.calls.length - 1)).join('')}</div></aside>`;
     return;
   }
