@@ -38,7 +38,7 @@ describe('ChatDisplayControls', () => {
     expect(screen.getByTestId('reader')).toHaveTextContent('compact/always/false');
   });
 
-  it('offers the host's tool-call visibility in the same menu', () => {
+  it('offers the host tool-call visibility in the same menu', () => {
     const onToggle = vi.fn();
     const { rerender } = render(<ChatDisplayControls toolCalls={{ shown: true, onToggle }} />);
     const toggle = screen.getByTestId('tool-calls-toggle');
