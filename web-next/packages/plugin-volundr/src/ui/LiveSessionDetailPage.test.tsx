@@ -2112,7 +2112,7 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.queryByText('Start the session to chat.')).not.toBeInTheDocument();
     });
 
-    it('rebuilds the outcome sidebar from a stopped session transcript', async () => {
+    it("rebuilds a stopped session's workers and their outcome from the transcript", async () => {
       wrap('test-session-id-1234', {
         session: STOPPED_SESSION,
         volundr: {
@@ -2145,11 +2145,14 @@ describe('LiveSessionDetailPage', () => {
       });
 
       await screen.findByTestId('live-session-detail-page');
-      expect(await screen.findByTestId('mesh-cascade-panel')).toBeInTheDocument();
-      expect(
-        screen.getAllByText('Review found missing telemetry coverage.').length,
-      ).toBeGreaterThan(1);
-      expect(screen.getByText('Changes Requested')).toBeInTheDocument();
+      const strip = await screen.findByTestId('workers-strip');
+      expect(within(strip).getByText('Reviewer')).toBeInTheDocument();
+      // The outcome shows once in the conversation, as a card, not in a separate column.
+      const cards = screen.getAllByTestId('outcome-card');
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toHaveTextContent('Review found missing telemetry coverage.');
+      expect(cards[0]).toHaveTextContent('Changes requested');
+      expect(screen.queryByTestId('mesh-cascade-panel')).not.toBeInTheDocument();
     });
 
     it('shows an archive-aware chronicle empty state for stopped sessions', async () => {
@@ -3086,6 +3089,149 @@ describe('LiveSessionDetailPage', () => {
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByTestId('session-host')).toHaveTextContent('Guild Alpha');
       expect(screen.queryByText('PRIMARY')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('coordinators and workers', () => {
+    const leadId = RUNNING_SESSION.id;
+    const workerId = '3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const COORDINATOR_SESSION: VolundrSession = {
+      ...RUNNING_SESSION,
+      name: 'plan-review-coordinator',
+      coordination: { projectId: 'lexi', role: 'coordinator', objective: '' },
+    };
+    const WORKER_SESSION: VolundrSession = {
+      ...RUNNING_SESSION,
+      id: workerId,
+      name: 'ticket-1342-gates',
+      coordination: {
+        projectId: 'lexi',
+        role: 'worker',
+        parent: { instanceId: 'local', sessionId: leadId },
+        objective: 'Refuse agent approval on human gates',
+      },
+    };
+
+    function listed(
+      id: string,
+      name: string,
+      state: Session['state'],
+      coordination?: Session['coordination'],
+    ): Session {
+      return {
+        id,
+        ravnId: id,
+        name,
+        personaName: name,
+        templateId: 'git-default',
+        clusterId: 'local',
+        state,
+        startedAt: new Date(Date.now() - 600_000).toISOString(),
+        lastActivityAt: new Date(Date.now() - 120_000).toISOString(),
+        resources: {
+          cpuRequest: 1,
+          cpuLimit: 1,
+          cpuUsed: 0,
+          memRequestMi: 1,
+          memLimitMi: 1,
+          memUsedMi: 0,
+          gpuCount: 0,
+        },
+        env: {},
+        events: [],
+        coordination,
+      };
+    }
+
+    const lead = listed(leadId, 'plan-review-coordinator', 'running', {
+      projectId: 'lexi',
+      role: 'coordinator',
+    });
+    const worker = listed(workerId, 'ticket-1342-gates', 'awaiting_input', {
+      projectId: 'lexi',
+      role: 'worker',
+      parent: { instanceId: 'local', sessionId: leadId },
+      objective: 'Refuse agent approval on human gates',
+    });
+    const store = { listSessions: async () => [lead, worker], listSources: undefined };
+
+    it('tags a coordinator and lists its workers under the subline; a worker opens its session', async () => {
+      mockChatState();
+      wrap(leadId, { session: COORDINATOR_SESSION, sessionStore: store });
+      await screen.findByTestId('live-session-detail-page');
+      expect(await screen.findByTestId('session-coordinator-tag')).toHaveTextContent('COORDINATOR');
+      const strip = await screen.findByTestId('workers-strip');
+      expect(within(strip).getByText('ticket-1342-gates')).toBeInTheDocument();
+      fireEvent.click(within(strip).getByTestId(`worker-chip-${workerId}`));
+      expect(navigate).toHaveBeenCalledWith({
+        to: '/volundr/sessions/$sessionId',
+        params: { sessionId: workerId },
+      });
+      expect(screen.queryByTestId('worker-of')).toBeNull();
+    });
+
+    it('tags a session as a coordinator when only the list says it leads workers', async () => {
+      mockChatState();
+      wrap(leadId, { session: RUNNING_SESSION, sessionStore: store });
+      expect(await screen.findByTestId('session-coordinator-tag')).toBeInTheDocument();
+    });
+
+    it('names a worker’s coordinator with a link back and shows its objective', async () => {
+      mockChatState();
+      wrap(workerId, { session: WORKER_SESSION, sessionStore: store });
+      const workerOf = await screen.findByTestId('worker-of');
+      await waitFor(() => expect(workerOf).toHaveTextContent('Worker of plan-review-coordinator'));
+      fireEvent.click(within(workerOf).getByRole('button', { name: /Open coordinator/ }));
+      expect(navigate).toHaveBeenCalledWith({
+        to: '/volundr/sessions/$sessionId',
+        params: { sessionId: leadId },
+      });
+      expect(screen.queryByTestId('session-coordinator-tag')).toBeNull();
+      expect(screen.queryByTestId('workers-strip')).toBeNull();
+      const panel = await screen.findByTestId('session-attention-panel');
+      expect(within(panel).getByText('Objective')).toBeInTheDocument();
+      expect(within(panel).getByText('Refuse agent approval on human gates')).toBeInTheDocument();
+    });
+
+    it('says only Worker when the list does not know the coordinator', async () => {
+      mockChatState();
+      wrap(workerId, {
+        session: WORKER_SESSION,
+        sessionStore: { listSessions: async () => [worker], listSources: undefined },
+      });
+      const workerOf = await screen.findByTestId('worker-of');
+      expect(workerOf).toHaveTextContent(/^Worker$/);
+      expect(within(workerOf).queryByRole('button')).toBeNull();
+    });
+
+    it('lists the coordinator’s workers in the panel, each opening its session', async () => {
+      mockChatState();
+      wrap(leadId, { session: COORDINATOR_SESSION, sessionStore: store });
+      const panel = await screen.findByTestId('session-attention-panel');
+      const row = await within(panel).findByTestId(`panel-worker-${workerId}`);
+      expect(row).toHaveTextContent('Needs you');
+      expect(row).toHaveTextContent('Refuse agent approval on human gates');
+      fireEvent.click(row);
+      expect(navigate).toHaveBeenCalledWith({
+        to: '/volundr/sessions/$sessionId',
+        params: { sessionId: workerId },
+      });
+    });
+
+    it('gives the conversation links to the sessions it names', async () => {
+      mockChatState({
+        messages: [
+          {
+            id: 'relay-1',
+            role: 'user',
+            content: `[Message from session ticket-1342-gates (${workerId}) on Valhalla, relayed through the Guild]\n\nReady for review.`,
+            createdAt: new Date('2026-11-05T09:31:00Z'),
+          },
+        ],
+      });
+      wrap(leadId, { session: COORDINATOR_SESSION, sessionStore: store });
+      const header = await screen.findByRole('link', { name: 'Open session ticket-1342-gates' });
+      expect(header).toHaveAttribute('href', `/volundr/sessions/${workerId}`);
     });
   });
 

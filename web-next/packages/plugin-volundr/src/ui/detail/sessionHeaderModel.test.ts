@@ -93,6 +93,26 @@ describe('formatDuration / agentDuration', () => {
   });
 });
 
+describe('sessionInfoRows objective', () => {
+  it('adds an Objective row after the project when the coordinator gave one', () => {
+    const rows = sessionInfoRows({
+      project: 'Plan review',
+      objective: 'Refuse agent approval on human gates',
+      startedAt: '2026-11-05T09:00:00Z',
+    });
+    expect(rows.map((row) => row.id)).toEqual(['project', 'objective', 'started']);
+    expect(rows[1]).toMatchObject({
+      label: 'Objective',
+      value: 'Refuse agent approval on human gates',
+    });
+  });
+
+  it('has no Objective row without one', () => {
+    expect(sessionInfoRows({ objective: '' })).toEqual([]);
+    expect(sessionInfoRows({ objective: null })).toEqual([]);
+  });
+});
+
 describe('sessionInfoRows', () => {
   it('lists only the facts the session has', () => {
     expect(sessionInfoRows({})).toEqual([]);

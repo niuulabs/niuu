@@ -67,7 +67,7 @@ export function agentDuration(agent: SessionAgent, now: number): string | null {
 const HARNESS_LABEL = { claude: 'Claude', codex: 'Codex' } as const;
 
 export interface SessionInfoRow {
-  id: 'engine' | 'host' | 'workspace' | 'project' | 'started';
+  id: 'engine' | 'host' | 'workspace' | 'project' | 'objective' | 'started';
   label: string;
   value: string;
   /** Text after the value, in the normal colour ("Claude"). */
@@ -82,6 +82,8 @@ export function sessionInfoRows(facts: {
   host?: string | null;
   workspace?: string | null;
   project?: string | null;
+  /** What the coordinator asked this worker to do. */
+  objective?: string | null;
   startedAt?: string | null;
 }): SessionInfoRow[] {
   const rows: SessionInfoRow[] = [];
@@ -100,6 +102,7 @@ export function sessionInfoRows(facts: {
     rows.push({ id: 'workspace', label: 'Workspace', value: facts.workspace, mono: true });
   }
   if (facts.project) rows.push({ id: 'project', label: 'Project', value: facts.project });
+  if (facts.objective) rows.push({ id: 'objective', label: 'Objective', value: facts.objective });
   const started = Date.parse(facts.startedAt ?? '');
   if (Number.isFinite(started)) {
     const value = new Date(started).toLocaleString([], {

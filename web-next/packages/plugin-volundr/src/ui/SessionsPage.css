@@ -719,3 +719,39 @@
   color: var(--color-text-secondary);
   text-decoration: underline;
 }
+
+/* ── Coordinators and their workers ── */
+
+.forge-session-role {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--color-brand) 35%, transparent);
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--color-brand-300);
+}
+
+.forge-session-row__leads {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* A coordinator the filters left out, listed only as the path to a matching worker. */
+.forge-session-row[data-context='true'] {
+  opacity: 0.55;
+}
+
+/* Workers sit under their coordinator as compact rows: name, state and time. */
+.forge-session-tree-children {
+  margin-left: 18px;
+  padding-left: 4px;
+}
+
+.forge-session-row[data-nested='true'] .forge-session-row__preview,
+.forge-session-row[data-nested='true'] .forge-session-row__details,
+.forge-session-row[data-nested='true'] .forge-session-harness,
+.forge-session-row[data-nested='true'] .forge-session-row__host {
+  display: none;
+}

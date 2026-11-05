@@ -185,6 +185,8 @@ export interface SessionCoordination {
   projectId: string;
   role: string;
   parent?: { instanceId: string; sessionId: string } | null;
+  /** What the coordinator asked this worker to do; Forge records it with the membership. */
+  objective?: string;
   labels?: string[];
 }
 

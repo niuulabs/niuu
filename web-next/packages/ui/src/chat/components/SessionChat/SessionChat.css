@@ -1,4 +1,4 @@
-/* ── Outer grid — sidebar | chat | right-panel ── */
+/* ── Outer grid — one column: the conversation ── */
 
 .niuu-chat-outer-grid {
   display: grid;
@@ -7,44 +7,10 @@
   flex: 1;
   min-height: 0;
   min-width: 0;
-  transition: grid-template-columns 200ms ease;
-}
-
-.niuu-chat-outer-grid[data-has-sidebar] {
-  grid-template-columns: auto 1fr;
-}
-
-.niuu-chat-outer-grid[data-has-sidebar][data-right-panel] {
-  grid-template-columns: auto 1fr 216px;
-}
-
-.niuu-chat-outer-grid[data-right-panel]:not([data-has-sidebar]) {
-  grid-template-columns: 1fr 216px;
-}
-
-.niuu-chat-outer-grid[data-has-sidebar][data-right-panel][data-right-panel-collapsed] {
-  grid-template-columns: auto 1fr 54px;
-}
-
-.niuu-chat-outer-grid[data-right-panel][data-right-panel-collapsed]:not([data-has-sidebar]) {
-  grid-template-columns: 1fr 54px;
-}
-
-/* Highlight animation for scroll-to-message from outcome click */
-.niuu-chat-outer-grid [data-highlighted] {
-  animation: niuu-chat-highlight-flash 2s ease-out;
-}
-
-@keyframes niuu-chat-highlight-flash {
-  0% {
-    background-color: color-mix(in srgb, var(--color-accent-cyan) 20%, transparent);
-  }
-  100% {
-    background-color: transparent;
-  }
 }
 
 .niuu-chat-wrapper {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -503,10 +469,6 @@
 .niuu-chat-request-button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
-}
-
-.niuu-chat-outcome-dialog {
-  width: min(1080px, calc(100vw - var(--space-8)));
 }
 
 @media (max-width: 768px) {

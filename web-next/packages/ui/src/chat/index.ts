@@ -30,7 +30,7 @@ export type { UseRoomStateReturn } from './hooks/useRoomState';
 
 /* Components */
 export { ToolBlock, ToolGroupBlock, groupContentBlocks } from './components/ToolBlock';
-export { OutcomeCard, extractOutcomeBlock } from './components/OutcomeCard';
+export { OutcomeCard, WorkerOutcomeCard, extractOutcomeBlock } from './components/OutcomeCard';
 export { MarkdownContent } from './components/MarkdownContent';
 export { RenderedContent } from './components/RenderedContent';
 export { MentionPill } from './components/MentionPill';
@@ -47,9 +47,18 @@ export { RoomMessage } from './components/RoomMessage';
 export { SessionEmptyChat } from './components/ChatEmptyStates';
 export { ParticipantFilter } from './components/ParticipantFilter';
 export { MeshEventCard } from './components/MeshEventCard';
-export { AgentDetailPanel } from './components/AgentDetailPanel';
-export { MeshCascadePanel } from './components/MeshCascadePanel';
-export { MeshSidebar } from './components/MeshSidebar';
+export { WorkersStrip } from './components/WorkersStrip';
+export type { WorkersStripProps } from './components/WorkersStrip';
+export { ProgressLane, progressSummary } from './components/ProgressLane';
+export type { ProgressLaneProps } from './components/ProgressLane';
+export { WorkerSheet } from './components/WorkerSheet';
+export type { WorkerSheetProps } from './components/WorkerSheet';
+export { HandoffRow, handoffParties } from './components/HandoffRow';
+export type { HandoffRowProps } from './components/HandoffRow';
+export { AttentionRow } from './components/AttentionRow';
+export type { AttentionRowProps } from './components/AttentionRow';
+export { VerdictPill } from './components/VerdictPill';
+export type { VerdictPillProps } from './components/VerdictPill';
 export { ChatInput } from './components/ChatInput';
 export { SessionChat } from './components/SessionChat';
 export { QuestionBand } from './components/QuestionBand';
@@ -116,3 +125,15 @@ export { ToolImagePreview } from './components/ToolImagePreview';
 export type { ToolImageResource } from './components/ConversationResources';
 export { roomWorkers, workerOutcomes, workerStages, verdictTone, verdictLabel } from './workers';
 export type { Worker, WorkerOutcome, WorkerStage, WorkerStatus, OutcomeTone } from './workers';
+
+export { ForgeSessionCard } from './components/TranscriptCards';
+export type { ForgeSessionCardProps } from './components/TranscriptCards';
+export { SessionLinksProvider, useSessionLinks, sessionOpenHandler } from './sessionLinks';
+export type {
+  SessionLink,
+  SessionLinkTone,
+  SessionLinksProviderProps,
+  SessionLinksValue,
+} from './sessionLinks';
+export { classifyRelayedTurn } from './components/ChatMessages/relayedTurn';
+export type { RelayedTurn, RelayKind } from './components/ChatMessages/relayedTurn';

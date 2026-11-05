@@ -1,5 +1,6 @@
 import { ChevronRight, ExternalLink } from 'lucide-react';
-import type { PermissionBehavior, PresentedFileRef, SessionAgent } from '@niuulabs/ui';
+import type { PermissionBehavior, PresentedFileRef, SessionAgent, Worker } from '@niuulabs/ui';
+import type { Session } from '../domain/session';
 import type { TrackerIssue } from '../models/volundr.model';
 import type { ChecklistItem, SessionAttentionItem } from '../domain/sessionAttention';
 import { PanelSection } from './detail/PanelSection';
@@ -9,6 +10,7 @@ import {
   DeliverablesSection,
   PlanSection,
   SessionInfoSection,
+  WorkersSection,
 } from './detail/PanelSections';
 import type { SessionInfoRow } from './detail/sessionHeaderModel';
 import './SessionAttentionPanel.css';
@@ -73,6 +75,8 @@ export function sessionPanelHasContent({
   agents = [],
   deliverables = [],
   info = [],
+  workerSessions = [],
+  ravnWorkers = [],
 }: {
   items: readonly SessionAttentionItem[];
   ticket?: TrackerIssue;
@@ -81,9 +85,13 @@ export function sessionPanelHasContent({
   agents?: readonly SessionAgent[];
   deliverables?: readonly PresentedFileRef[];
   info?: readonly SessionInfoRow[];
+  workerSessions?: readonly Session[];
+  ravnWorkers?: readonly Worker[];
 }): boolean {
   return (
     items.length > 0 ||
+    workerSessions.length > 0 ||
+    ravnWorkers.length > 0 ||
     Boolean(ticket) ||
     checklist.length > 0 ||
     Boolean(changedFiles) ||
@@ -107,6 +115,9 @@ export function SessionAttentionPanel({
   fileStats,
   deliverables = [],
   info = [],
+  workerSessions = [],
+  ravnWorkers = [],
+  onOpenSession,
   showOpenChat,
   onOpenChat,
   onOpenDiffs,
@@ -122,6 +133,12 @@ export function SessionAttentionPanel({
   fileStats?: { added: number; modified: number; deleted: number } | null;
   deliverables?: readonly PresentedFileRef[];
   info?: readonly SessionInfoRow[];
+  /** The sessions this coordinator leads. */
+  workerSessions?: readonly Session[];
+  /** The Ravn workers in this session's room. */
+  ravnWorkers?: readonly Worker[];
+  /** Open one of the worker sessions. */
+  onOpenSession: (id: string) => void;
   showOpenChat: boolean;
   onOpenChat: () => void;
   onOpenDiffs: () => void;
@@ -158,6 +175,11 @@ export function SessionAttentionPanel({
         </PanelSection>
       ) : null}
 
+      <WorkersSection
+        sessions={workerSessions}
+        ravnWorkers={ravnWorkers}
+        onOpenSession={onOpenSession}
+      />
       <PlanSection checklist={checklist} />
       <AgentsSection agents={agents} />
       <ChangedFilesSection count={changedFiles} stats={fileStats} onOpenDiffs={onOpenDiffs} />

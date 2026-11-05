@@ -1,9 +1,19 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { Check, Circle, CircleDot, File as FileIcon } from 'lucide-react';
-import { useConversationResources, type PresentedFileRef, type SessionAgent } from '@niuulabs/ui';
+import {
+  useConversationResources,
+  verdictLabel,
+  verdictTone,
+  type OutcomeTone,
+  type PresentedFileRef,
+  type SessionAgent,
+  type Worker,
+} from '@niuulabs/ui';
+import type { Session } from '../../domain/session';
 import type { ChecklistItem } from '../../domain/sessionAttention';
+import { SESSION_STATE_LABELS } from '../sessions/presentation';
 import { PanelSection } from './PanelSection';
-import { agentDuration, type SessionInfoRow } from './sessionHeaderModel';
+import { agentDuration, stateTone, type SessionInfoRow } from './sessionHeaderModel';
 
 const CHECKLIST_ICON = {
   completed: Check,
@@ -147,6 +157,81 @@ export function SessionInfoSection({ rows }: { rows: readonly SessionInfoRow[] }
           </div>
         ))}
       </dl>
+    </PanelSection>
+  );
+}
+
+/** A Ravn worker with no outcome yet is known by whether it is working. */
+function ravnWorkerPill(worker: Worker): { label: string; tone: OutcomeTone } | null {
+  if (worker.latest) {
+    return { label: verdictLabel(worker.latest.verdict), tone: verdictTone(worker.latest.verdict) };
+  }
+  if (worker.status === 'working') return { label: 'Working', tone: 'info' };
+  if (worker.status === 'error') return { label: 'Error', tone: 'blocked' };
+  return null;
+}
+
+/**
+ * The workers a coordinator leads: the sessions it started (each opens its session) and
+ * the Ravn workers in its room (each with the last outcome it reported).
+ */
+export function WorkersSection({
+  sessions,
+  ravnWorkers,
+  onOpenSession,
+}: {
+  sessions: readonly Session[];
+  ravnWorkers: readonly Worker[];
+  onOpenSession: (id: string) => void;
+}) {
+  const count = sessions.length + ravnWorkers.length;
+  if (count === 0) return null;
+  return (
+    <PanelSection title="Workers" count={count}>
+      <ul className="niuu-session-panel__workers">
+        {sessions.map((worker) => (
+          <li key={`session:${worker.id}`}>
+            <button
+              type="button"
+              className="niuu-session-panel__worker"
+              data-testid={`panel-worker-${worker.id}`}
+              onClick={() => onOpenSession(worker.id)}
+            >
+              <strong>{worker.name || worker.personaName || worker.id}</strong>
+              <span className="niuu-session-panel__pill" data-tone={stateTone(worker.state)}>
+                {SESSION_STATE_LABELS[worker.state]}
+              </span>
+              {worker.coordination?.objective ? (
+                <small>{worker.coordination.objective}</small>
+              ) : null}
+            </button>
+          </li>
+        ))}
+        {ravnWorkers.map((worker) => {
+          const pill = ravnWorkerPill(worker);
+          return (
+            <li key={`ravn:${worker.peerId}`}>
+              <div
+                className="niuu-session-panel__worker"
+                data-testid={`panel-ravn-${worker.peerId}`}
+              >
+                <strong
+                  className="niuu-session-panel__worker-name"
+                  style={{ '--worker-color': worker.color } as CSSProperties}
+                >
+                  {worker.name}
+                </strong>
+                {pill ? (
+                  <span className="niuu-session-panel__pill" data-tone={pill.tone}>
+                    {pill.label}
+                  </span>
+                ) : null}
+                {worker.latest?.summary ? <small>{worker.latest.summary}</small> : null}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
     </PanelSection>
   );
 }

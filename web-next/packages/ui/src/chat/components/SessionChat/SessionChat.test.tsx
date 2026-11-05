@@ -5,6 +5,8 @@ import type {
   AgentInternalEvent,
   ChatMessage,
   InputRequest,
+  MeshDelegationEvent,
+  MeshNotificationEvent,
   MeshOutcomeEvent,
   PermissionRequest,
   RoomParticipant,
@@ -27,15 +29,6 @@ const participant2: RoomParticipant = {
   displayName: 'Builder',
   color: 'cyan',
   participantType: 'ravn',
-  status: 'idle',
-};
-
-const skuldParticipant: RoomParticipant = {
-  peerId: 'skuld-1',
-  persona: 'Skuld',
-  displayName: 'Skuld',
-  color: 'indigo',
-  participantType: 'skuld',
   status: 'idle',
 };
 
@@ -65,25 +58,6 @@ const roomAssistantMessage: ChatMessage = {
   participant,
 };
 
-const roomOutcomeMessage: ChatMessage = {
-  id: 'm-outcome',
-  role: 'assistant',
-  content: `### Ravn-A
-
-\`\`\`outcome
-verdict: approve
-summary: Approved the change
-checks_passed: 12
-findings: |
-  ## Verified
-  - **Route pair count**: 26
-  - Use \`/api/v1/credentials/secrets\`
-\`\`\``,
-  createdAt: new Date('2026-04-26T12:00:04Z'),
-  status: 'done',
-  participant,
-};
-
 const systemMessage: ChatMessage = {
   id: 's1',
   role: 'system',
@@ -99,21 +73,6 @@ const runningMessage: ChatMessage = {
   createdAt: now,
   status: 'running',
 };
-
-const agentEvents = new Map<string, AgentInternalEvent[]>([
-  [
-    'peer-1',
-    [
-      {
-        id: 'evt-1',
-        participantId: 'peer-1',
-        timestamp: new Date('2026-04-26T12:00:01Z'),
-        frameType: 'thought',
-        data: 'Checking compose and runtime settings.',
-      },
-    ],
-  ],
-]);
 
 const defaultProps = {
   messages: [] as ChatMessage[],
@@ -1022,73 +981,396 @@ describe('SessionChat', () => {
     expect(screen.getByText('Second?')).toBeInTheDocument();
   });
 
-  /* ── Room mode / MeshSidebar ── */
+  /* ── A coordinator and its workers ── */
 
-  it('renders MeshSidebar when a ravn participant exists', () => {
-    render(
-      <SessionChat
-        {...defaultProps}
-        messages={[roomAssistantMessage]}
-        connected
-        participants={new Map([[participant.peerId, participant]])}
-      />,
+  describe('a coordinator with workers', () => {
+    const lead: RoomParticipant = {
+      peerId: 'lead',
+      persona: 'Lead',
+      displayName: 'Skuld',
+      participantType: 'skuld',
+      status: 'idle',
+    };
+    const coder: RoomParticipant = {
+      peerId: 'coder',
+      persona: 'coder',
+      color: '#aa5500',
+      participantType: 'ravn',
+      status: 'thinking',
+      subscribesTo: ['code.requested', 'review.changes_requested'],
+      emits: ['code.changed'],
+    };
+    const reviewer: RoomParticipant = {
+      peerId: 'rev',
+      persona: 'reviewer',
+      color: '#0055aa',
+      participantType: 'ravn',
+      status: 'idle',
+      subscribesTo: ['code.changed'],
+      emits: ['review.changes_requested'],
+    };
+    const team = new Map<string, RoomParticipant>(
+      [lead, coder, reviewer].map((member) => [member.peerId, member]),
     );
-    const outerGrid = screen.getByTestId('session-chat');
-    expect(outerGrid).toHaveAttribute('data-has-sidebar');
-  });
+    const at = (minute: number, second = 0) => new Date(Date.UTC(2026, 10, 5, 5, minute, second));
+    const said = (
+      id: string,
+      who: RoomParticipant | undefined,
+      content: string,
+      time: Date,
+    ): ChatMessage => ({
+      id,
+      role: 'assistant',
+      content,
+      createdAt: time,
+      status: 'done',
+      participant: who,
+    });
+    const handoff = (
+      id: string,
+      time: Date,
+      eventType = 'code.changed',
+      fromPersona = 'coder',
+    ): MeshDelegationEvent => ({
+      id,
+      type: 'mesh_message',
+      timestamp: time,
+      participantId: 'coder',
+      participant: {},
+      fromPersona,
+      eventType,
+      preview: 'Review the probe code',
+    });
+    const outcomeEvent = (time: Date, over: Partial<MeshOutcomeEvent> = {}): MeshOutcomeEvent => ({
+      id: 'o1',
+      type: 'outcome',
+      timestamp: time,
+      participantId: 'rev',
+      participant: {},
+      persona: 'reviewer',
+      eventType: 'review.changes_requested',
+      verdict: 'needs_changes',
+      summary: 'The probe reads the wrong timestamp.',
+      ...over,
+    });
+    const renderTeam = (props: Partial<React.ComponentProps<typeof SessionChat>> = {}) =>
+      render(
+        <SessionChat
+          {...defaultProps}
+          messages={[
+            said('m1', lead, 'Framing the spec first.', at(12)),
+            said('m2', coder, 'Reading the feed header.', at(17)),
+          ]}
+          connected
+          participants={team}
+          agentEvents={
+            new Map<string, AgentInternalEvent[]>([
+              ['coder', [{ id: 'ev1', frameType: 'thought', data: 'Use the header time.' }]],
+            ])
+          }
+          {...props}
+        />,
+      );
 
-  it('does not render sidebar when no ravn participants', () => {
-    render(
-      <SessionChat
-        {...defaultProps}
-        messages={[roomAssistantMessage]}
-        connected
-        participants={new Map([[skuldParticipant.peerId, skuldParticipant]])}
-      />,
-    );
-    const outerGrid = screen.getByTestId('session-chat');
-    expect(outerGrid).not.toHaveAttribute('data-has-sidebar');
-  });
+    it('shows one conversation column, with no peers sidebar or cascade panel', () => {
+      renderTeam({ meshEvents: [handoff('h1', at(16))] });
+      const chat = screen.getByTestId('session-chat');
+      expect(chat).not.toHaveAttribute('data-has-sidebar');
+      expect(chat).not.toHaveAttribute('data-right-panel');
+      expect(screen.queryByTestId('mesh-cascade-panel')).toBeNull();
+      expect(screen.queryByTestId('agent-detail-panel')).toBeNull();
+      expect(chat.textContent).not.toMatch(/mesh|cascade|flock|crew|peers|skuld/i);
+    });
 
-  /* ── Agent detail panel ── */
+    it('shows a Workers strip with a chip for each worker and not for the lead', () => {
+      renderTeam();
+      const strip = screen.getByTestId('workers-strip');
+      expect(within(strip).getByText('Workers')).toBeInTheDocument();
+      expect(within(strip).getByRole('button', { name: /coder/ })).toBeInTheDocument();
+      expect(within(strip).getByRole('button', { name: /reviewer/ })).toBeInTheDocument();
+      expect(within(strip).getAllByRole('button')).toHaveLength(2);
+    });
 
-  it('opens the agent detail panel from a room message', () => {
-    render(
-      <SessionChat
-        {...defaultProps}
-        messages={[roomAssistantMessage]}
-        connected
-        historyLoaded
-        participants={new Map([[participant.peerId, participant]])}
-        agentEvents={agentEvents}
-      />,
-    );
+    it('shows the progress lane in flow order with each latest verdict', () => {
+      renderTeam({ meshEvents: [outcomeEvent(at(22))] });
+      const lane = screen.getByTestId('progress-lane');
+      const names = within(lane)
+        .getAllByTestId('progress-stage')
+        .map((stage) => stage.querySelector('.niuu-chat-stage-name')!.textContent);
+      expect(names).toEqual(['coder', 'reviewer']);
+      expect(within(lane).getByText('Working')).toBeInTheDocument();
+      expect(within(lane).getByText('Changes requested')).toHaveAttribute('data-tone', 'changes');
+    });
 
-    fireEvent.click(screen.getByLabelText('View event stream for Ravn-A'));
+    it('hides the progress lane with a single worker, but keeps the strip', () => {
+      renderTeam({
+        participants: new Map([
+          [lead.peerId, lead],
+          [coder.peerId, coder],
+        ]),
+      });
+      expect(screen.queryByTestId('progress-lane')).toBeNull();
+      expect(screen.getByTestId('workers-strip')).toBeInTheDocument();
+    });
 
-    expect(screen.getByTestId('agent-detail-panel')).toBeInTheDocument();
-    expect(screen.getByText('Checking compose and runtime settings.')).toBeInTheDocument();
-  });
+    it('shows none of it when the session has no workers', () => {
+      renderTeam({ participants: new Map([[lead.peerId, lead]]) });
+      expect(screen.queryByTestId('workers-strip')).toBeNull();
+      expect(screen.queryByTestId('progress-lane')).toBeNull();
+    });
 
-  it('closes the agent detail panel', () => {
-    render(
-      <SessionChat
-        {...defaultProps}
-        messages={[roomAssistantMessage]}
-        connected
-        historyLoaded
-        participants={new Map([[participant.peerId, participant]])}
-        agentEvents={agentEvents}
-      />,
-    );
+    it('speaks as the Coordinator for the lead, and as each worker for theirs', () => {
+      renderTeam();
+      expect(screen.getByText('Coordinator')).toBeInTheDocument();
+      expect(screen.queryByText('Skuld')).toBeNull();
+      const speaker = screen.getAllByTestId('room-message')[1]!;
+      expect(speaker).toHaveTextContent('coder');
+      expect(speaker.style.getPropertyValue('--niuu-persona-color')).toBe('#aa5500');
+    });
 
-    fireEvent.click(screen.getByLabelText('View event stream for Ravn-A'));
-    expect(screen.getByTestId('agent-detail-panel')).toBeInTheDocument();
+    it('shares one header across consecutive messages from the same speaker', () => {
+      renderTeam({
+        messages: [
+          said('m1', coder, 'First thought.', at(17)),
+          said('m2', coder, 'Second thought.', at(18)),
+          said('m3', reviewer, 'Review thought.', at(19)),
+          said('m4', coder, 'Back again.', at(20)),
+        ],
+      });
+      const headers = screen
+        .getAllByTestId('room-message')
+        .map((el) => el.querySelector('.niuu-chat-room-persona-name')?.textContent ?? null);
+      expect(headers).toEqual(['coder', null, 'reviewer', 'coder']);
+    });
 
-    // Close the detail panel
-    const closeBtn = screen.getByLabelText('Close agent detail panel');
-    fireEvent.click(closeBtn);
-    expect(screen.queryByTestId('agent-detail-panel')).not.toBeInTheDocument();
+    it('starts a new header after a handoff between two messages of one speaker', () => {
+      renderTeam({
+        messages: [said('m1', coder, 'Before.', at(17)), said('m2', coder, 'After.', at(19))],
+        meshEvents: [handoff('h1', at(18))],
+      });
+      const headers = screen
+        .getAllByTestId('room-message')
+        .map((el) => el.querySelector('.niuu-chat-room-persona-name')?.textContent ?? null);
+      expect(headers).toEqual(['coder', 'coder']);
+    });
+
+    it('puts handoffs inline at their timestamp, to the workers that listen for the event', () => {
+      renderTeam({
+        messages: [said('m1', coder, 'Before.', at(17)), said('m2', reviewer, 'After.', at(21))],
+        meshEvents: [handoff('h1', at(19))],
+      });
+      const chat = screen.getByTestId('session-chat');
+      const order = Array.from(
+        chat.querySelectorAll('[data-testid="room-message"], [data-testid="handoff-row"]'),
+      ).map((el) => el.getAttribute('data-testid'));
+      expect(order).toEqual(['room-message', 'handoff-row', 'room-message']);
+      const row = screen.getByTestId('handoff-row');
+      expect(row).toHaveTextContent('coderreviewer');
+      expect(row).toHaveTextContent('Review the probe code');
+      expect(row).toHaveTextContent('code.changed');
+    });
+
+    it('opens the receiving worker from a handoff', () => {
+      renderTeam({ meshEvents: [handoff('h1', at(19))] });
+      fireEvent.click(screen.getByTestId('handoff-row'));
+      expect(screen.getByRole('dialog', { name: 'reviewer worker' })).toBeInTheDocument();
+    });
+
+    it('shows an event nobody listens for as the event only', () => {
+      renderTeam({ meshEvents: [handoff('h1', at(19), 'unheard.event')] });
+      const row = screen.getByTestId('handoff-row');
+      expect(row.tagName).toBe('DIV');
+      expect(row).toHaveTextContent('unheard.event');
+    });
+
+    it('shows an outcome once when its message and its live event are the same', () => {
+      const withBlock = said(
+        'm3',
+        reviewer,
+        '```outcome\nverdict: needs_changes\nsummary: The probe reads the wrong timestamp.\n```',
+        at(22),
+      );
+      renderTeam({
+        messages: [said('m1', coder, 'Done.', at(17)), withBlock],
+        meshEvents: [outcomeEvent(at(22, 1))],
+      });
+      expect(screen.getAllByTestId('outcome-card')).toHaveLength(1);
+      expect(screen.getAllByText('The probe reads the wrong timestamp.')).toHaveLength(1);
+      expect(screen.getByTestId('outcome-card')).toHaveTextContent('reviewer');
+    });
+
+    it('shows an outcome that arrived only as an event inline at its time', () => {
+      renderTeam({
+        messages: [said('m1', coder, 'Before.', at(17)), said('m2', coder, 'After.', at(25))],
+        meshEvents: [outcomeEvent(at(22))],
+      });
+      const chat = screen.getByTestId('session-chat');
+      const order = Array.from(
+        chat.querySelectorAll('[data-testid="room-message"], [data-testid="outcome-card"]'),
+      ).map((el) => el.getAttribute('data-testid'));
+      expect(order).toEqual(['room-message', 'outcome-card', 'room-message']);
+      const card = screen.getByTestId('outcome-card');
+      expect(card).toHaveTextContent('Outcome');
+      expect(card).toHaveTextContent('reviewer');
+      expect(card).toHaveTextContent('Changes requested');
+      expect(card).toHaveTextContent('review.changes_requested');
+    });
+
+    it('names an event-only outcome from a peer the room does not list by its persona', () => {
+      renderTeam({
+        meshEvents: [outcomeEvent(at(22), { participantId: 'ghost', persona: 'archivist' })],
+      });
+      expect(screen.getByTestId('outcome-card')).toHaveTextContent('archivist');
+    });
+
+    it('shows a call for attention from an unlisted peer as plain text', () => {
+      renderTeam({
+        meshEvents: [
+          {
+            id: 'n2',
+            type: 'notification',
+            timestamp: at(18),
+            participantId: 'ghost',
+            participant: {},
+            persona: 'archivist',
+            notificationType: 'warning',
+            summary: 'Disk is nearly full.',
+            urgency: 0.5,
+          },
+        ],
+      });
+      expect(screen.getByTestId('attention-row').tagName).toBe('DIV');
+    });
+
+    it('marks a call for attention inline, without a question UI of its own', () => {
+      const notice: MeshNotificationEvent = {
+        id: 'n1',
+        type: 'notification',
+        timestamp: at(18),
+        participantId: 'coder',
+        participant: {},
+        persona: 'coder',
+        notificationType: 'help_needed',
+        summary: 'Two retired models are pinned.',
+        urgency: 0.9,
+      };
+      renderTeam({ meshEvents: [notice] });
+      const row = screen.getByTestId('attention-row');
+      expect(row).toHaveTextContent('Two retired models are pinned.');
+      expect(row).toHaveTextContent('Help needed');
+      expect(screen.queryByRole('button', { name: /answer|reply|respond/i })).toBeNull();
+      fireEvent.click(row);
+      expect(screen.getByTestId('worker-sheet')).toBeInTheDocument();
+    });
+
+    it('keeps the folded view working, with handoffs and the Coordinator in it', () => {
+      localStorage.setItem('niuu.compactUx.conversationView', 'compact');
+      renderTeam({ meshEvents: [handoff('h1', at(16))] });
+      expect(screen.getByText('Coordinator')).toBeInTheDocument();
+      expect(screen.getByTestId('handoff-row')).toBeInTheDocument();
+      expect(screen.getAllByTestId('compact-turn').length).toBeGreaterThan(0);
+    });
+
+    describe('the worker sheet', () => {
+      it('opens from a chip, over the chat and not as a column', () => {
+        renderTeam();
+        expect(screen.queryByTestId('worker-sheet')).toBeNull();
+        fireEvent.click(
+          within(screen.getByTestId('workers-strip')).getByRole('button', { name: /coder/ }),
+        );
+        const sheet = screen.getByTestId('worker-sheet');
+        expect(sheet).toBeInTheDocument();
+        expect(screen.getByTestId('session-chat')).not.toHaveAttribute('data-right-panel');
+        expect(sheet.closest('.niuu-chat-wrapper')).not.toBeNull();
+      });
+
+      it('opens from a stage in the progress lane', () => {
+        renderTeam();
+        fireEvent.click(
+          within(screen.getByTestId('progress-lane')).getByRole('button', { name: /reviewer/ }),
+        );
+        expect(screen.getByRole('dialog', { name: 'reviewer worker' })).toBeInTheDocument();
+      });
+
+      it('opens from a speaker name in the conversation', () => {
+        renderTeam();
+        fireEvent.click(screen.getByRole('button', { name: 'Open coder' }));
+        expect(screen.getByRole('dialog', { name: 'coder worker' })).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Open Coordinator' })).toBeNull();
+      });
+
+      it('shows only that worker, with its agent events', () => {
+        renderTeam({
+          messages: [
+            said('m1', lead, 'Framing the spec first.', at(12)),
+            said('m2', coder, 'Reading the feed header.', at(17)),
+            said('m3', reviewer, 'The probe is wrong.', at(22)),
+          ],
+        });
+        fireEvent.click(
+          within(screen.getByTestId('workers-strip')).getByRole('button', { name: /coder/ }),
+        );
+        const sheet = screen.getByTestId('worker-sheet');
+        expect(within(sheet).getByText('Reading the feed header.')).toBeInTheDocument();
+        expect(within(sheet).queryByText('The probe is wrong.')).toBeNull();
+        expect(within(sheet).queryByText('Framing the spec first.')).toBeNull();
+        expect(within(sheet).getByText('Use the header time.')).toBeInTheDocument();
+        expect(within(sheet).getByText('code.requested')).toBeInTheDocument();
+      });
+
+      it('messages the worker directly', () => {
+        const onSendDirected = vi.fn();
+        renderTeam({ onSendDirected });
+        fireEvent.click(
+          within(screen.getByTestId('workers-strip')).getByRole('button', { name: /coder/ }),
+        );
+        const sheet = screen.getByTestId('worker-sheet');
+        fireEvent.change(within(sheet).getByPlaceholderText('Message coder directly…'), {
+          target: { value: 'Use the header time' },
+        });
+        fireEvent.click(within(sheet).getByRole('button', { name: 'Send to coder' }));
+        expect(onSendDirected).toHaveBeenCalledWith([coder], 'Use the header time', []);
+      });
+
+      it('has no direct composer without a way to send', () => {
+        renderTeam();
+        fireEvent.click(
+          within(screen.getByTestId('workers-strip')).getByRole('button', { name: /coder/ }),
+        );
+        expect(screen.queryByPlaceholderText('Message coder directly…')).toBeNull();
+      });
+
+      it('closes with Escape and with ×', () => {
+        renderTeam();
+        const chip = within(screen.getByTestId('workers-strip')).getByRole('button', {
+          name: /coder/,
+        });
+        fireEvent.click(chip);
+        fireEvent.keyDown(document.body, { key: 'Escape' });
+        expect(screen.queryByTestId('worker-sheet')).toBeNull();
+        fireEvent.click(chip);
+        fireEvent.click(screen.getByRole('button', { name: 'Close worker' }));
+        expect(screen.queryByTestId('worker-sheet')).toBeNull();
+      });
+
+      it('closes when the same chip is clicked again', () => {
+        renderTeam();
+        const chip = within(screen.getByTestId('workers-strip')).getByRole('button', {
+          name: /coder/,
+        });
+        fireEvent.click(chip);
+        fireEvent.click(chip);
+        expect(screen.queryByTestId('worker-sheet')).toBeNull();
+      });
+
+      it('switches to another worker', () => {
+        renderTeam();
+        const strip = screen.getByTestId('workers-strip');
+        fireEvent.click(within(strip).getByRole('button', { name: /coder/ }));
+        fireEvent.click(within(strip).getByRole('button', { name: /reviewer/ }));
+        expect(screen.getByRole('dialog', { name: 'reviewer worker' })).toBeInTheDocument();
+      });
+    });
   });
 
   /* ── Internal message toggle (room mode) ── */
@@ -1154,241 +1436,6 @@ describe('SessionChat', () => {
     expect(onSetInternalVisibility).toHaveBeenCalledWith(true);
     fireEvent.click(screen.getByTestId('internal-toggle'));
     expect(onSetInternalVisibility).not.toHaveBeenCalledWith(false);
-  });
-
-  /* ── MeshCascadePanel ── */
-
-  it('renders MeshCascadePanel when mesh events exist', () => {
-    const events: MeshOutcomeEvent[] = [
-      {
-        id: 'me-1',
-        type: 'outcome',
-        timestamp: now,
-        participantId: 'peer-1',
-        participant: { color: 'amber' },
-        persona: 'Ravn-A',
-        eventType: 'code_review',
-        verdict: 'approve',
-        summary: 'Looks good',
-      },
-    ];
-    render(
-      <SessionChat {...defaultProps} messages={[userMessage]} connected meshEvents={events} />,
-    );
-    const outerGrid = screen.getByTestId('session-chat');
-    expect(outerGrid).toHaveAttribute('data-right-panel');
-  });
-
-  it('does not render right panel when no mesh events and no detail panel', () => {
-    render(<SessionChat {...defaultProps} messages={[userMessage]} connected />);
-    const outerGrid = screen.getByTestId('session-chat');
-    expect(outerGrid).not.toHaveAttribute('data-right-panel');
-  });
-
-  /* ── handleOutcomeClick ── */
-
-  it('scrolls to the closest outcome message when the outcome card is clicked', () => {
-    const events: MeshOutcomeEvent[] = [
-      {
-        id: 'me-1',
-        type: 'outcome',
-        timestamp: new Date('2026-04-26T12:00:04Z'),
-        participantId: 'peer-1',
-        participant: { color: 'amber' },
-        persona: 'Ravn-A',
-        eventType: 'code_review',
-        verdict: 'approve',
-        summary: 'Approved the change',
-        fields: {
-          verdict: 'approve',
-          summary: 'Approved the change',
-          findings: `## Verified
-- **Route pair count**: 26
-- Use \`/api/v1/credentials/secrets\``,
-        },
-      },
-    ];
-    render(
-      <SessionChat
-        {...defaultProps}
-        messages={[roomAssistantMessage, roomOutcomeMessage]}
-        connected
-        participants={new Map([[participant.peerId, participant]])}
-        meshEvents={events}
-      />,
-    );
-    const cascadePanel = screen.getByTestId('mesh-cascade-panel');
-    const cascadeSummary = cascadePanel.querySelector('.niuu-chat-mesh-summary');
-    expect(cascadeSummary).not.toBeNull();
-    fireEvent.click(cascadeSummary!);
-    expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
-    expect(screen.queryByText('Ravn-A outcome')).not.toBeInTheDocument();
-  });
-
-  it('opens the rendered outcome dialog from Show details', () => {
-    const events: MeshOutcomeEvent[] = [
-      {
-        id: 'me-1',
-        type: 'outcome',
-        timestamp: new Date('2026-04-26T12:00:04Z'),
-        participantId: 'peer-1',
-        participant: { color: 'amber' },
-        persona: 'Ravn-A',
-        eventType: 'code_review',
-        verdict: 'approve',
-        summary: 'Approved the change',
-        fields: {
-          verdict: 'approve',
-          summary: 'Approved the change',
-          findings: `## Verified
-- **Route pair count**: 26
-- Use \`/api/v1/credentials/secrets\``,
-        },
-      },
-    ];
-    render(
-      <SessionChat
-        {...defaultProps}
-        messages={[roomAssistantMessage, roomOutcomeMessage]}
-        connected
-        participants={new Map([[participant.peerId, participant]])}
-        meshEvents={events}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('Ravn-A outcome')).toBeInTheDocument();
-    expect(within(dialog).getAllByTestId('outcome-card').length).toBeGreaterThan(0);
-    expect(within(dialog).getByText('Verified')).toBeInTheDocument();
-    expect(within(dialog).getByText('checks passed')).toBeInTheDocument();
-    expect(within(dialog).getByText('12')).toBeInTheDocument();
-    const routePairItems = within(dialog)
-      .getAllByText('Route pair count')
-      .map((element) => element.closest('li'))
-      .filter((element): element is HTMLLIElement => element instanceof HTMLLIElement);
-    expect(routePairItems.length).toBeGreaterThan(0);
-    expect(routePairItems[0]).toHaveTextContent('Route pair count: 26');
-    expect(within(dialog).getByText('/api/v1/credentials/secrets')).toBeInTheDocument();
-  });
-
-  it('builds the outcome dialog from the event when no outcome block message exists', () => {
-    // Circular reference: JSON.stringify throws -> stringifyOutcomeValue catch branch.
-    const circular: Record<string, unknown> = {};
-    circular.self = circular;
-    const events: MeshOutcomeEvent[] = [
-      {
-        id: 'me-1',
-        type: 'outcome',
-        timestamp: new Date('2026-04-26T12:00:04Z'),
-        participantId: 'peer-1',
-        participant: { color: 'amber' },
-        persona: 'Ravn-A',
-        eventType: 'code_review',
-        verdict: 'approve',
-        // No top-level summary: formatOutcomeMarkdown falls back to fields.summary.
-        fields: {
-          summary: 'Looks good',
-          count: 3, // number -> stringifyOutcomeValue String() branch
-          passed: true, // boolean -> String() branch
-          meta: { nested: 1 }, // object -> JSON.stringify branch
-          notes: 'line one\nline two', // multiline -> pushOutcomeField block branch
-          empty: null, // empty -> pushOutcomeField early-return branch
-          circular, // unserializable -> stringifyOutcomeValue catch branch
-        },
-      },
-    ];
-    // messages contains no ```outcome block, so the dialog content is produced by
-    // formatOutcomeMarkdown(event) rather than the extracted-block path.
-    render(
-      <SessionChat
-        {...defaultProps}
-        messages={[roomAssistantMessage]}
-        connected
-        participants={new Map([[participant.peerId, participant]])}
-        meshEvents={events}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('Ravn-A outcome')).toBeInTheDocument();
-  });
-
-  it('falls back to event_type when an outcome event has no verdict, summary or fields', () => {
-    const events: MeshOutcomeEvent[] = [
-      {
-        id: 'me-bare',
-        type: 'outcome',
-        timestamp: new Date('2026-04-26T12:00:04Z'),
-        participantId: 'peer-1',
-        participant: { color: 'amber' },
-        persona: 'Ravn-A',
-        eventType: 'code_review',
-        // No verdict / summary / fields: formatOutcomeMarkdown takes the
-        // lines.length === 0 branch and emits event_type instead.
-      },
-    ];
-    render(
-      <SessionChat
-        {...defaultProps}
-        messages={[roomAssistantMessage]}
-        connected
-        participants={new Map([[participant.peerId, participant]])}
-        meshEvents={events}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-  });
-
-  it('collapses and expands the mesh peers and mesh cascade sidebars', () => {
-    const events: MeshOutcomeEvent[] = [
-      {
-        id: 'me-1',
-        type: 'outcome',
-        timestamp: now,
-        participantId: 'peer-1',
-        participant: { color: 'amber' },
-        persona: 'Ravn-A',
-        eventType: 'code_review',
-        verdict: 'approve',
-        summary: 'Looks good',
-      },
-    ];
-    render(
-      <SessionChat
-        {...defaultProps}
-        messages={[roomAssistantMessage, roomOutcomeMessage]}
-        connected
-        participants={
-          new Map([
-            [participant.peerId, participant],
-            [skuldParticipant.peerId, skuldParticipant],
-          ])
-        }
-        meshEvents={events}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /collapse mesh peers sidebar/i }));
-    expect(screen.getByRole('button', { name: /expand mesh peers sidebar/i })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: /collapse mesh cascade sidebar/i }));
-    expect(
-      screen.getByRole('button', { name: /expand mesh cascade sidebar/i }),
-    ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: /expand mesh peers sidebar/i }));
-    expect(
-      screen.getByRole('button', { name: /collapse mesh peers sidebar/i }),
-    ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: /expand mesh cascade sidebar/i }));
-    expect(
-      screen.getByRole('button', { name: /collapse mesh cascade sidebar/i }),
-    ).toBeInTheDocument();
   });
 
   /* ── handleSelectAgent ── */

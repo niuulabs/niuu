@@ -135,6 +135,7 @@ type SessionPayload = {
     project_id: string;
     role: string;
     parent?: { instance_id: string; session_id: string } | null;
+    objective?: string;
     labels?: string[];
   } | null;
   id: string;
@@ -584,6 +585,9 @@ function normalizeSession(session: SessionPayload): VolundrSession {
                   sessionId: session.coordination.parent.session_id,
                 }
               : null,
+            ...(session.coordination.objective
+              ? { objective: session.coordination.objective }
+              : {}),
             labels: session.coordination.labels ?? [],
           },
         }

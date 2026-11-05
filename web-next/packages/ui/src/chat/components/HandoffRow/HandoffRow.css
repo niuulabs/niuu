@@ -1,0 +1,56 @@
+.niuu-chat-handoff {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  text-align: left;
+}
+
+button.niuu-chat-handoff {
+  cursor: pointer;
+}
+
+button.niuu-chat-handoff:hover {
+  background: var(--color-bg-secondary);
+}
+
+button.niuu-chat-handoff:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+.niuu-chat-handoff-who {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.niuu-chat-handoff-who b {
+  font-weight: 600;
+}
+
+.niuu-chat-handoff-arrow {
+  width: 13px;
+  height: 13px;
+}
+
+.niuu-chat-handoff-what {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.niuu-chat-handoff-event {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-faint);
+}

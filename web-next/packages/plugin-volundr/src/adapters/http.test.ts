@@ -2995,6 +2995,7 @@ describe('Forge project grouping contract', () => {
         project_id: 'lexi',
         role: 'worker',
         parent: { instance_id: 'thor', session_id: 'coordinator' },
+        objective: 'Remove retired models',
         labels: ['work-project:p1'],
       },
     });
@@ -3002,6 +3003,7 @@ describe('Forge project grouping contract', () => {
       projectId: 'lexi',
       role: 'worker',
       parent: { instanceId: 'thor', sessionId: 'coordinator' },
+      objective: 'Remove retired models',
       labels: ['work-project:p1'],
     });
     client.get.mockRejectedValue(new Error('host offline'));

@@ -24,6 +24,7 @@ import type { CompactionBlock } from '../ToolBlock/groupContentBlocks';
 import { isSubagentTool } from '../ToolBlock/toolFamilies';
 import {
   CompactionMarker,
+  ForgeSessionCard,
   ProviderErrorCard,
   SubagentCard,
   compactionTokens,
@@ -34,7 +35,14 @@ import { useCompactUxChatPrefs } from '../../compactUxPrefs';
 import './ChatMessages.css';
 import { ToolImageCard } from '../ToolImages';
 import { PresentedFileCard } from '../ConversationResources';
-import { isNotificationCardTool, isPresentedFileTool } from '../ToolBlock/groupContentBlocks';
+import {
+  isNotificationCardTool,
+  isPresentedFileTool,
+  isForgeSessionTool,
+} from '../ToolBlock/groupContentBlocks';
+import { useSessionLinks } from '../../sessionLinks';
+import { RelayCard } from './RelayCard';
+import { classifyRelayedTurn } from './relayedTurn';
 import { NotificationCard } from '../NotificationCard';
 import { isForgeNotifyCall, modelLabel, parseForgeNotificationPayload } from '@niuulabs/domain';
 
@@ -148,8 +156,27 @@ interface UserMessageProps {
 
 export function UserMessage({ message }: UserMessageProps) {
   const uxPrefs = useCompactUxChatPrefs();
+  const links = useSessionLinks();
   const delivery = message.delivery;
   const queued = delivery?.state === 'queued';
+  // A turn this client sent has a delivery state and is the operator's own, whatever it says.
+  const relay = useMemo(
+    () => (delivery ? null : classifyRelayedTurn(message.content)),
+    [delivery, message.content],
+  );
+  const sender = relay ? (relay.senderSessionId ?? relay.senderName) : null;
+  const sessionLink = sender && links ? links.resolve(sender) : null;
+  // "From Paris: …" is anyone's sentence; it is a relay only when Paris is a session.
+  if (relay && (!relay.needsKnownSender || sessionLink)) {
+    return (
+      <RelayCard
+        relay={relay}
+        link={sessionLink}
+        links={links}
+        time={uxPrefs.timestamp === 'never' ? null : formatTime(message.createdAt)}
+      />
+    );
+  }
   return (
     <div
       className="niuu-chat-user-wrapper"
@@ -507,6 +534,15 @@ function AssistantContentWithTools({
           )
             return (
               <ToolBlock key={`tool:${item.block.id}`} block={item.block} result={item.result} />
+            );
+          if (isForgeSessionTool(item.block.name))
+            return (
+              <ForgeSessionCard
+                key={`forge-session:${item.block.id}`}
+                block={item.block}
+                result={item.result}
+                isStreaming={isStreaming}
+              />
             );
           if (isSubagentTool(item.block.name))
             return (

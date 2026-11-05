@@ -5,3 +5,5 @@ export type { ProviderErrorCardProps } from './ProviderErrorCard';
 export { CompactionMarker, compactionTokens } from './CompactionMarker';
 export type { CompactionMarkerProps } from './CompactionMarker';
 export { formatTokenCount } from './formatTokenCount';
+export { ForgeSessionCard } from './ForgeSessionCards';
+export type { ForgeSessionCardProps } from './ForgeSessionCards';

@@ -146,3 +146,140 @@
   height: 1px;
   background: var(--color-border-subtle);
 }
+
+.niuu-chat-pill--ok {
+  color: var(--state-ok);
+}
+
+.niuu-chat-pill--warn {
+  color: var(--state-warn);
+}
+
+.niuu-chat-pill--critical {
+  color: var(--color-critical-fg);
+}
+
+.niuu-chat-pill--muted {
+  color: var(--color-text-muted);
+}
+
+/* Worker sessions a coordinator starts, messages and stops */
+
+.niuu-chat-worker {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-secondary);
+}
+
+.niuu-chat-worker--failed {
+  border-color: var(--color-critical-bo);
+  background: var(--color-critical-bg);
+}
+
+.niuu-chat-worker-icon {
+  display: grid;
+  place-items: center;
+  width: var(--space-8);
+  height: var(--space-8);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-tertiary);
+  color: var(--color-brand);
+}
+
+.niuu-chat-worker-text {
+  min-width: 0;
+}
+
+.niuu-chat-worker-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.niuu-chat-worker-name {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+
+a.niuu-chat-worker-name--link {
+  text-decoration: none;
+}
+
+a.niuu-chat-worker-name--link:hover {
+  text-decoration: underline;
+}
+
+.niuu-chat-worker-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.niuu-chat-worker-end {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.niuu-chat-worker-open,
+.niuu-chat-worker-details {
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.niuu-chat-worker-open:hover,
+.niuu-chat-worker-details:hover {
+  border-color: var(--color-brand);
+  color: var(--color-text-primary);
+}
+
+.niuu-chat-worker-open:focus-visible,
+.niuu-chat-worker-details:focus-visible,
+.niuu-chat-worker-preview:focus-visible,
+a.niuu-chat-worker-name--link:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+.niuu-chat-worker-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.niuu-chat-worker-row--failed {
+  color: var(--color-critical-fg);
+}
+
+.niuu-chat-worker-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+}

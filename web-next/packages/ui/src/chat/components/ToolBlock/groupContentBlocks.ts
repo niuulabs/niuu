@@ -170,6 +170,27 @@ export function isNotificationCardTool(name: string): boolean {
   return name === FORGE_NOTIFICATION_TOOL_NAME;
 }
 
+/** What a coordinator does to another session with the Forge MCP. */
+export type ForgeSessionAction =
+  'create_session' | 'start_session' | 'stop_session' | 'send_message';
+
+// Claude names MCP tools `mcp__<server>__<tool>`; Codex transcribes them `forge.<tool>`;
+// older brokers used the other separators. A bare `send_message` is not claimed: other
+// tools (Claude's agent teams) use that name for something else.
+const FORGE_SESSION_CALL =
+  /^(?:mcp__forge__|forge__|forge\.|forge:|forge\/)(create_session|start_session|stop_session|send_message)$/;
+
+/** The Forge session tool a call is, or null for any other tool. */
+export function forgeSessionAction(name: string): ForgeSessionAction | null {
+  const match = FORGE_SESSION_CALL.exec(name.trim().toLowerCase());
+  return (match?.[1] as ForgeSessionAction | undefined) ?? null;
+}
+
+/** The Forge MCP calls that run sessions: each renders as a worker card. */
+export function isForgeSessionTool(name: string): boolean {
+  return forgeSessionAction(name) !== null;
+}
+
 /** Standalone cards plus subagent calls: neither joins a burst of tool calls in a row. */
 function isOwnCardTool(name: string): boolean {
   return isStandaloneCardTool(name) || isSubagentTool(name);
@@ -177,5 +198,5 @@ function isOwnCardTool(name: string): boolean {
 
 /** Tool parts that render as their own card and never join a tool group. */
 export function isStandaloneCardTool(name: string): boolean {
-  return isPresentedFileTool(name) || isNotificationCardTool(name);
+  return isPresentedFileTool(name) || isNotificationCardTool(name) || isForgeSessionTool(name);
 }

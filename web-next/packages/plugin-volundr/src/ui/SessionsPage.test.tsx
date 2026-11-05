@@ -867,12 +867,168 @@ it('groups registered projects as a collapsible session tree and keeps settings 
   fireEvent.change(screen.getByTestId('pod-group-mode'), { target: { value: 'project' } });
   await screen.findByTestId('pod-group-lexi');
   expect(screen.getByTestId('pod-group-no-project')).toHaveTextContent('Independent');
-  fireEvent.click(screen.getByRole('button', { name: 'Collapse child sessions of Coordinator' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse workers of Coordinator' }));
   expect(screen.queryByTestId('pod-entry-child')).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: 'Expand child sessions of Coordinator' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Expand workers of Coordinator' }));
   expect(screen.getByTestId('pod-entry-child')).toBeInTheDocument();
   const footer = screen.getByRole('group', { name: 'Session list settings' });
   expect(within(footer).getByRole('checkbox', { name: 'Show token usage' })).not.toBeChecked();
   fireEvent.click(within(footer).getByRole('checkbox', { name: 'Show token usage' }));
   expect(localStorage.getItem('niuu.forge.tokens')).toBe('1');
+});
+
+describe('coordinators and their workers', () => {
+  const coordinator = (overrides: Partial<Session> = {}) =>
+    makeSession({
+      id: 'lead',
+      name: 'plan-review-coordinator',
+      personaName: 'Coordinator',
+      state: 'idle',
+      clusterId: 'thor',
+      clusterName: 'Thor',
+      preview: '~/work/alpha',
+      coordination: { projectId: 'lexi', role: 'coordinator' },
+      ...overrides,
+    });
+  const worker = (overrides: Partial<Session> = {}) =>
+    makeSession({
+      id: 'w1',
+      name: 'ticket-1342-gates',
+      personaName: 'Worker',
+      state: 'running',
+      clusterId: 'valhalla',
+      clusterName: 'Valhalla',
+      preview: '~/work/beta',
+      coordination: {
+        projectId: 'lexi',
+        role: 'worker',
+        parent: { instanceId: 'thor', sessionId: 'lead' },
+      },
+      ...overrides,
+    });
+
+  beforeEach(() => {
+    localStorage.clear();
+    navigate.mockClear();
+  });
+
+  it.each([
+    ['state', 'idle'],
+    ['repo', 'work-alpha'],
+    ['forge', 'thor'],
+    ['project', 'lexi'],
+  ])('nests a worker under its coordinator when grouped by %s', async (mode, groupId) => {
+    const service = createMockVolundrService();
+    service.getProjects = vi
+      .fn()
+      .mockResolvedValue([{ id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' }]);
+    wrap(createSessionStoreWithSessions([coordinator(), worker()]), service);
+    await screen.findByTestId('pod-entry-lead');
+    fireEvent.change(screen.getByTestId('pod-group-mode'), { target: { value: mode } });
+    const group = await screen.findByTestId(`pod-group-${groupId}`);
+
+    // The worker follows the coordinator into its group, whatever the worker's own state,
+    // repo or host says, and is not listed again in a group of its own.
+    expect(within(group).getByTestId('pod-entry-w1')).toBeInTheDocument();
+    expect(screen.getAllByTestId('pod-entry-w1')).toHaveLength(1);
+    const children = group.querySelector('.forge-session-tree-children');
+    expect(children).not.toBeNull();
+    expect(within(children as HTMLElement).getByTestId('pod-entry-w1')).toBeInTheDocument();
+    expect(within(group).getByTestId('pod-entry-lead').closest('.forge-session-tree-entry')).toBe(
+      children?.parentElement,
+    );
+  });
+
+  it('tags a coordinator and counts its workers; its workers are compact rows', async () => {
+    wrap(
+      createSessionStoreWithSessions([
+        coordinator(),
+        worker(),
+        worker({ id: 'w2', name: 'ticket-1339-catalog' }),
+      ]),
+    );
+    await screen.findByTestId('pod-entry-lead');
+    expect(screen.getByTestId('session-role-lead')).toHaveTextContent('COORDINATOR');
+    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent('Coordinator · 2 workers');
+    expect(screen.queryByTestId('session-role-w1')).toBeNull();
+    expect(screen.getByTestId('pod-entry-w1').closest('.forge-session-row')).toHaveAttribute(
+      'data-nested',
+      'true',
+    );
+  });
+
+  it('says one worker in the singular and a coordinator with none just Coordinator', async () => {
+    wrap(
+      createSessionStoreWithSessions([
+        coordinator(),
+        worker(),
+        coordinator({ id: 'lone', name: 'lone-lead', coordination: undefined }),
+        makeSession({
+          id: 'lone2',
+          name: 'lone2',
+          personaName: 'x',
+          state: 'idle',
+          coordination: { projectId: 'p', role: 'coordinator' },
+        }),
+      ]),
+    );
+    await screen.findByTestId('pod-entry-lead');
+    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent('Coordinator · 1 worker');
+    expect(screen.getByTestId('session-leads-lone2')).toHaveTextContent(/^Coordinator$/);
+    expect(screen.queryByTestId('session-role-lone')).toBeNull();
+  });
+
+  it('keeps a filtered-out coordinator as a dimmed path to the worker that matches', async () => {
+    localStorage.setItem('niuu.forge.filter', 'attention');
+    wrap(
+      createSessionStoreWithSessions([
+        coordinator(),
+        worker({ state: 'awaiting_input' }),
+        makeSession({ id: 'noise', name: 'noise', personaName: 'n', state: 'idle' }),
+      ]),
+    );
+    await screen.findByTestId('pod-entry-w1');
+    const lead = screen.getByTestId('pod-entry-lead');
+    expect(lead.closest('.forge-session-row')).toHaveAttribute('data-context', 'true');
+    expect(screen.getByTestId('pod-entry-w1').closest('.forge-session-row')).not.toHaveAttribute(
+      'data-context',
+    );
+    expect(lead).toHaveAttribute('title', expect.stringContaining('a worker under it matches'));
+    expect(screen.queryByTestId('pod-entry-noise')).toBeNull();
+    // The path belongs to the worker's coordinator: it sits in the coordinator's own group.
+    expect(within(screen.getByTestId('pod-group-idle')).getByTestId('pod-entry-w1')).toBeTruthy();
+  });
+
+  it('does not dim a coordinator that matches the filters itself', async () => {
+    wrap(createSessionStoreWithSessions([coordinator(), worker()]));
+    await screen.findByTestId('pod-entry-lead');
+    expect(screen.getByTestId('pod-entry-lead').closest('.forge-session-row')).not.toHaveAttribute(
+      'data-context',
+    );
+  });
+
+  it('folds and unfolds a coordinator’s workers', async () => {
+    wrap(createSessionStoreWithSessions([coordinator(), worker()]));
+    await screen.findByTestId('pod-entry-w1');
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Collapse workers of plan-review-coordinator' }),
+    );
+    expect(screen.queryByTestId('pod-entry-w1')).toBeNull();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Expand workers of plan-review-coordinator' }),
+    );
+    expect(screen.getByTestId('pod-entry-w1')).toBeInTheDocument();
+  });
+
+  it('does not list a pinned coordinator again as the path to its worker', async () => {
+    localStorage.setItem('niuu.forge.pinnedSessions', JSON.stringify(['lead']));
+    wrap(createSessionStoreWithSessions([coordinator(), worker()]));
+    await screen.findByTestId('pod-entry-w1');
+    expect(screen.getAllByTestId('pod-entry-lead')).toHaveLength(1);
+    expect(
+      within(screen.getByTestId('pod-group-pinned')).getByTestId('pod-entry-lead'),
+    ).toBeTruthy();
+    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent('Coordinator · 1 worker');
+    expect(screen.getByTestId('pod-entry-w1')).toBeInTheDocument();
+  });
 });

@@ -1,0 +1,236 @@
+/* Over the chat area, from the right; not a grid column. */
+.niuu-chat-sheet {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  width: min(440px, 100%);
+  border-left: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+  box-shadow: var(--shadow-lg);
+}
+
+.niuu-chat-sheet:focus {
+  outline: none;
+}
+
+.niuu-chat-sheet-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.niuu-chat-sheet-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.niuu-chat-sheet-avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-full);
+  background: var(--niuu-worker-color);
+  color: var(--color-bg-primary);
+  font-weight: 700;
+}
+
+.niuu-chat-sheet-who {
+  flex: 1;
+  min-width: 0;
+}
+
+.niuu-chat-sheet-who h4 {
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--text-base);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.niuu-chat-sheet-status {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.niuu-chat-sheet-close {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.niuu-chat-sheet-close:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.niuu-chat-sheet-close:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+.niuu-chat-sheet-close-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.niuu-chat-sheet-events {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.niuu-chat-sheet-event-group {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.niuu-chat-sheet-event-group code {
+  padding: 0 5px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 5px;
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+}
+
+.niuu-chat-sheet-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  padding: var(--space-3) var(--space-4);
+  overflow-y: auto;
+}
+
+.niuu-chat-sheet-empty {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.niuu-chat-sheet-message {
+  padding-left: var(--space-3);
+  border-left: 2px solid color-mix(in srgb, var(--niuu-worker-color) 45%, transparent);
+}
+
+.niuu-chat-sheet-when {
+  display: block;
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
+
+.niuu-chat-sheet-activity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.niuu-chat-sheet-thought {
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--color-border);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+}
+
+.niuu-chat-sheet-text {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+}
+
+.niuu-chat-sheet-tool {
+  padding: 7px 11px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-bg-tertiary) 55%, transparent);
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+}
+
+.niuu-chat-sheet-tool b {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.niuu-chat-sheet-tool summary {
+  cursor: pointer;
+}
+
+.niuu-chat-sheet-tool pre {
+  margin: var(--space-2) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.niuu-chat-sheet-composer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-secondary);
+}
+
+.niuu-chat-sheet-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+.niuu-chat-sheet-input:focus {
+  outline: none;
+}
+
+.niuu-chat-sheet-send {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--color-brand);
+  border-radius: var(--radius-full);
+  background: var(--color-brand);
+  color: var(--color-bg-primary);
+  cursor: pointer;
+}
+
+.niuu-chat-sheet-send:disabled {
+  border-color: var(--color-border-subtle);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-faint);
+  cursor: default;
+}
+
+.niuu-chat-sheet-send-icon {
+  width: 13px;
+  height: 13px;
+}

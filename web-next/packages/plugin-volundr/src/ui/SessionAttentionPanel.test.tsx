@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ConversationResourceProvider, type ConversationResourcePort } from '@niuulabs/ui';
+import type { Worker } from '@niuulabs/ui';
+import type { Session } from '../domain/session';
 import type { TrackerIssue } from '../models/volundr.model';
 import { SessionAttentionPanel, sessionPanelHasContent } from './SessionAttentionPanel';
 
@@ -19,6 +21,7 @@ function renderPanel(overrides: Partial<PanelProps> = {}) {
     showOpenChat: false,
     onOpenChat: vi.fn(),
     onOpenDiffs: vi.fn(),
+    onOpenSession: vi.fn(),
     onRespondPermission: vi.fn(),
     onClose: vi.fn(),
     ...overrides,
@@ -68,6 +71,126 @@ const ticket: TrackerIssue = {
   status: 'in_progress',
   url: 'https://tracker.example/NIU-142',
 };
+
+const workerSession = (
+  id: string,
+  name: string,
+  state: Session['state'],
+  objective?: string,
+): Session =>
+  ({
+    id,
+    name,
+    personaName: name,
+    clusterId: 'local',
+    state,
+    startedAt: '2026-11-05T09:00:00Z',
+    coordination: { projectId: 'lexi', role: 'worker', ...(objective ? { objective } : {}) },
+  }) as Session;
+
+const ravnWorker = (overrides: Partial<Worker> = {}): Worker => ({
+  peerId: 'peer-coder',
+  name: 'coder',
+  persona: 'coder',
+  color: 'var(--color-brand)',
+  status: 'idle',
+  consumes: [],
+  emits: [],
+  outcomes: [],
+  ...overrides,
+});
+
+describe('SessionAttentionPanel workers', () => {
+  it('lists the sessions a coordinator leads with objective and state, each opening its session', () => {
+    const props = renderPanel({
+      workerSessions: [
+        workerSession('w1', 'ticket-1342-gates', 'running', 'Refuse agent approval on human gates'),
+        workerSession('w2', 'ticket-1339-catalog', 'awaiting_input'),
+      ],
+    });
+    const section = screen.getByRole('region', { name: 'Workers' });
+    expect(section).toHaveTextContent('2');
+    const first = within(section).getByTestId('panel-worker-w1');
+    expect(first).toHaveTextContent('ticket-1342-gates');
+    expect(first).toHaveTextContent('Working');
+    expect(first).toHaveTextContent('Refuse agent approval on human gates');
+    expect(within(section).getByTestId('panel-worker-w2')).toHaveTextContent('Needs you');
+    fireEvent.click(first);
+    expect(props.onOpenSession).toHaveBeenCalledWith('w1');
+  });
+
+  it('lists the room’s Ravn workers with their last outcome as a toned verdict pill', () => {
+    renderPanel({
+      ravnWorkers: [
+        ravnWorker({
+          latest: {
+            peerId: 'peer-coder',
+            persona: 'coder',
+            eventType: 'review.changes_requested',
+            verdict: 'needs_changes',
+            summary: 'Stale-cache probe reads the wrong timestamp.',
+            fields: {},
+            at: new Date('2026-11-05T09:30:00Z'),
+            tone: 'changes',
+          },
+        }),
+        ravnWorker({ peerId: 'peer-rev', name: 'reviewer', status: 'working' }),
+        ravnWorker({ peerId: 'peer-sec', name: 'security-auditor', status: 'error' }),
+        ravnWorker({ peerId: 'peer-pub', name: 'publisher' }),
+      ],
+    });
+    const section = screen.getByRole('region', { name: 'Workers' });
+    const coder = within(section).getByTestId('panel-ravn-peer-coder');
+    expect(coder).toHaveTextContent('coder');
+    expect(coder).toHaveTextContent('Changes requested');
+    expect(coder).toHaveTextContent('Stale-cache probe reads the wrong timestamp.');
+    expect(within(coder).getByText('Changes requested')).toHaveAttribute('data-tone', 'changes');
+    expect(within(section).getByTestId('panel-ravn-peer-rev')).toHaveTextContent('Working');
+    expect(within(section).getByText('Working')).toHaveAttribute('data-tone', 'info');
+    expect(within(section).getByText('Error')).toHaveAttribute('data-tone', 'blocked');
+    // A worker that has reported nothing and is not working has no pill to show.
+    expect(within(section).getByTestId('panel-ravn-peer-pub')).toHaveTextContent(/^publisher$/);
+  });
+
+  it('shows both kinds under one count, after Needs you and before the plan', () => {
+    renderPanel({
+      items: [{ kind: 'input', id: 'i', title: 'Which branch?', detail: '' }],
+      checklist: [{ label: 'Write the fix', status: 'pending' }],
+      workerSessions: [workerSession('w1', 'a', 'idle')],
+      ravnWorkers: [ravnWorker()],
+    });
+    const regions = screen
+      .getAllByRole('region')
+      .map((region) => region.getAttribute('aria-label'));
+    expect(regions.slice(0, 3)).toEqual(['Needs you', 'Workers', 'Plan']);
+    expect(screen.getByRole('region', { name: 'Workers' })).toHaveTextContent('2');
+  });
+
+  it('draws no Workers or Agents section when there are none', () => {
+    renderPanel({ changedFiles: 1, agents: [] });
+    expect(screen.queryByRole('region', { name: 'Workers' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Agents' })).toBeNull();
+  });
+
+  it('counts workers as content', () => {
+    expect(
+      sessionPanelHasContent({
+        items: [],
+        checklist: [],
+        workerSessions: [workerSession('w1', 'a', 'idle')],
+      }),
+    ).toBe(true);
+    expect(sessionPanelHasContent({ items: [], checklist: [], ravnWorkers: [ravnWorker()] })).toBe(
+      true,
+    );
+  });
+
+  it('keeps Agents beside Workers for Claude subagents', () => {
+    renderPanel({ agents, workerSessions: [workerSession('w1', 'a', 'idle')] });
+    expect(screen.getByRole('region', { name: 'Agents' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Workers' })).toBeInTheDocument();
+  });
+});
 
 describe('SessionAttentionPanel', () => {
   it('hides empty sections and closes from its own header', () => {

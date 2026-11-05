@@ -28,6 +28,8 @@ import {
   type ChatMessage,
   ChatConnectionsContext,
   ChatDisplayControls,
+  SessionLinksProvider,
+  roomWorkers,
   type FileEntry,
   type MeshNotificationEvent,
   cn,
@@ -72,7 +74,10 @@ import type {
   VolundrSessionTraceSpan,
   VolundrSessionTraceSummary,
 } from '../models/volundr.model';
-import { useSessionDetail } from './hooks/useSessionStore';
+import { useSessionDetail, useSessionList } from './hooks/useSessionStore';
+import { coordinationOf } from '../domain/projectTree';
+import { buildSessionLinks } from './sessions/sessionLinks';
+import { CoordinatorTag, WorkerOf, WorkersStrip } from './detail/Coordination';
 import { useSessionRead } from './hooks/useSessionRead';
 import { useMediaQuery } from './hooks/useMediaQuery';
 
@@ -3188,6 +3193,7 @@ function LiveSessionDetailPageInner({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const sessionQuery = useSessionDetail(sessionId, instanceId);
+  const sessionListQuery = useSessionList();
   const sessionRead = useSessionRead();
   const liveSessionQuery = useQuery({
     queryKey: ['volundr', 'raw-session', sessionId, instanceId ?? null],
@@ -3386,6 +3392,24 @@ function LiveSessionDetailPageInner({
     : isSessionWorking(liveSession?.activityState);
   const contextMeter = contextMeterData(chat.usage);
   const sessionProjectId = liveSession?.coordination?.projectId;
+  // Who leads this session and whom it leads, read from the session list the page lists by.
+  const knownSessions = sessionListQuery.data;
+  const coordination = useMemo(
+    () => coordinationOf(knownSessions ?? [], sessionId),
+    [knownSessions, sessionId],
+  );
+  const isCoordinator =
+    liveSession?.coordination?.role === 'coordinator' || coordination.workers.length > 0;
+  const hasCoordinator = Boolean(liveSession?.coordination?.parent);
+  const openSession = useCallback(
+    (id: string) =>
+      void navigate({ to: '/volundr/sessions/$sessionId', params: { sessionId: id } }),
+    [navigate],
+  );
+  const sessionLinks = useMemo(
+    () => buildSessionLinks(knownSessions ?? [], sessionId, openSession),
+    [knownSessions, openSession, sessionId],
+  );
   const projectsQuery = useQuery({
     queryKey: ['volundr', 'projects', 'session-detail', liveSession?.instanceId ?? null],
     queryFn: ({ signal }) => volundr.getProjects({ instanceId: liveSession?.instanceId, signal }),
@@ -3419,9 +3443,11 @@ function LiveSessionDetailPageInner({
         host: forgeBadgeLabel,
         workspace: sessionWorkspaceLabel(sessionSource),
         project: sessionProjectName,
+        objective: liveSession?.coordination?.objective,
         startedAt: sessionDetail?.startedAt,
       }),
     [
+      liveSession?.coordination?.objective,
       forgeBadgeLabel,
       sessionDetail?.startedAt,
       sessionEngineHarness,
@@ -3435,7 +3461,24 @@ function LiveSessionDetailPageInner({
     diffs: fileChangeCount(sessionDetail?.files),
     chronicles: sessionDetail?.events.length ? sessionDetail.events.length : undefined,
   };
+  const ravnWorkers = useMemo(
+    () =>
+      isReady
+        ? roomWorkers(chat.participants, chat.meshEvents, chat.messages)
+        : roomWorkers(replayParticipants, replayMeshEvents, replayMessages),
+    [
+      isReady,
+      chat.participants,
+      chat.meshEvents,
+      chat.messages,
+      replayParticipants,
+      replayMeshEvents,
+      replayMessages,
+    ],
+  );
   const panelHasContent = sessionPanelHasContent({
+    workerSessions: coordination.workers,
+    ravnWorkers,
     items: attentionItems,
     ticket: sessionTrackerIssue,
     checklist,
@@ -3751,6 +3794,7 @@ function LiveSessionDetailPageInner({
               <div className="niuu-live-session__head-title">
                 <div className="niuu-live-session__identity">
                   <span className="niuu-live-session__title">{sessionName}</span>
+                  {isCoordinator ? <CoordinatorTag /> : null}
                   {sessionDetail ? (
                     <span
                       className="niuu-live-session__state-pill"
@@ -3843,6 +3887,12 @@ function LiveSessionDetailPageInner({
                     },
                   ]}
                 />
+                {isCoordinator ? (
+                  <WorkersStrip workers={coordination.workers} onOpen={openSession} />
+                ) : null}
+                {hasCoordinator ? (
+                  <WorkerOf coordinator={coordination.coordinator} onOpen={openSession} />
+                ) : null}
               </div>
 
               <div className="niuu-live-session__toolbar">
@@ -4020,9 +4070,84 @@ function LiveSessionDetailPageInner({
         <div className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:overflow-hidden">
           <div className="niuu:min-h-0 niuu:min-w-0 niuu:flex-1 niuu:overflow-hidden">
             {resolvedActiveTab === 'chat' && (
-              <div role="tabpanel" className="niuu:flex niuu:h-full niuu:min-h-0 niuu:flex-col">
-                {isReady && chatEndpoint ? (
-                  <>
+              <SessionLinksProvider value={sessionLinks}>
+                <div role="tabpanel" className="niuu:flex niuu:h-full niuu:min-h-0 niuu:flex-col">
+                  {isReady && chatEndpoint ? (
+                    <>
+                      <SessionChat
+                        className="niuu:h-full"
+                        showToolbar={false}
+                        showDisplayControls={false}
+                        showInternalToggle={false}
+                        internalVisibility={showInternalMessages}
+                        showTokenUsage={showTokenUsage}
+                        messages={chat.messages}
+                        streamingContent={chat.streamingContent}
+                        streamingParts={chat.streamingParts}
+                        streamingModel={chat.streamingModel}
+                        connected={chat.connected}
+                        historyLoaded={chat.historyLoaded}
+                        hasOlderHistory={chat.hasOlderHistory}
+                        loadingOlderHistory={chat.loadingOlderHistory}
+                        olderHistoryError={chat.olderHistoryError}
+                        onLoadOlderHistory={chat.loadOlderHistory}
+                        historyError={chat.historyError}
+                        onRetryHistory={chat.retryHistory}
+                        participants={chat.participants}
+                        meshEvents={chat.meshEvents}
+                        agentEvents={chat.agentEvents}
+                        pendingPermissions={chat.pendingPermissions}
+                        pendingInputRequests={chat.pendingInputRequests}
+                        availableCommands={chat.availableCommands}
+                        capabilities={chat.capabilities}
+                        chatEndpoint={chatEndpoint}
+                        historyEndpoint={historyEndpoint}
+                        sessionName={sessionName}
+                        onSend={chat.sendMessage}
+                        onForwardMessage={setForwarding}
+                        onSendDirected={chat.sendDirectedMessages}
+                        onStop={chat.sendInterrupt}
+                        onClear={chat.clearMessages}
+                        onSetInternalVisibility={chat.sendSetInternalVisibility}
+                        onSetModel={chat.sendSetModel}
+                        onSetThinkingTokens={chat.sendSetThinkingTokens}
+                        plan={chat.plan}
+                        agents={chat.agents}
+                        effort={chat.effort}
+                        runtimeOptions={chat.runtimeOptions}
+                        onSetEffort={chat.sendSetEffort}
+                        onSetRuntimeModel={(model) => chat.sendSetRuntimeOptions({ model })}
+                        runtimeOptionsError={chat.runtimeOptionsError}
+                        effortError={chat.effortError}
+                        working={sessionWorking}
+                        onRewindFiles={chat.sendRewindFiles}
+                        onPermissionRespond={chat.respondToPermission}
+                        onInputRespond={chat.respondToInput}
+                        onInputDismiss={chat.dismissInputRequest}
+                        onFetchFiles={fetchSessionMentionFiles}
+                        onMessageCountChange={setVisibleMessageCount}
+                        renderPermissions={permissionRenderer}
+                      />
+                    </>
+                  ) : failedBeforeStart ? (
+                    <div
+                      className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted"
+                      data-testid="failed-before-start"
+                    >
+                      This session failed before it started, so it has no transcript.
+                    </div>
+                  ) : canReplayTranscript && transcriptQuery.isLoading ? (
+                    <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                      Loading saved transcript…
+                    </div>
+                  ) : canReplayTranscript && transcriptQuery.isError ? (
+                    <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:px-6 niuu:text-center niuu:text-sm niuu:text-critical">
+                      Failed to load saved transcript:{' '}
+                      {transcriptQuery.error instanceof Error
+                        ? transcriptQuery.error.message
+                        : String(transcriptQuery.error)}
+                    </div>
+                  ) : canReplayTranscript && replayMessages.length > 0 ? (
                     <SessionChat
                       className="niuu:h-full"
                       showToolbar={false}
@@ -4030,108 +4155,35 @@ function LiveSessionDetailPageInner({
                       showInternalToggle={false}
                       internalVisibility={showInternalMessages}
                       showTokenUsage={showTokenUsage}
-                      messages={chat.messages}
-                      streamingContent={chat.streamingContent}
-                      streamingParts={chat.streamingParts}
-                      streamingModel={chat.streamingModel}
-                      connected={chat.connected}
-                      historyLoaded={chat.historyLoaded}
-                      hasOlderHistory={chat.hasOlderHistory}
-                      loadingOlderHistory={chat.loadingOlderHistory}
-                      olderHistoryError={chat.olderHistoryError}
-                      onLoadOlderHistory={chat.loadOlderHistory}
-                      historyError={chat.historyError}
-                      onRetryHistory={chat.retryHistory}
-                      participants={chat.participants}
-                      meshEvents={chat.meshEvents}
-                      agentEvents={chat.agentEvents}
-                      pendingPermissions={chat.pendingPermissions}
-                      pendingInputRequests={chat.pendingInputRequests}
-                      availableCommands={chat.availableCommands}
-                      capabilities={chat.capabilities}
+                      messages={replayMessages}
                       chatEndpoint={chatEndpoint}
-                      historyEndpoint={historyEndpoint}
-                      sessionName={sessionName}
-                      onSend={chat.sendMessage}
-                      onForwardMessage={setForwarding}
-                      onSendDirected={chat.sendDirectedMessages}
-                      onStop={chat.sendInterrupt}
-                      onClear={chat.clearMessages}
-                      onSetInternalVisibility={chat.sendSetInternalVisibility}
-                      onSetModel={chat.sendSetModel}
-                      onSetThinkingTokens={chat.sendSetThinkingTokens}
+                      connected={false}
+                      historyLoaded={!transcriptQuery.isLoading}
+                      participants={replayParticipants}
+                      meshEvents={replayMeshEvents}
                       plan={chat.plan}
                       agents={chat.agents}
-                      effort={chat.effort}
-                      runtimeOptions={chat.runtimeOptions}
-                      onSetEffort={chat.sendSetEffort}
-                      onSetRuntimeModel={(model) => chat.sendSetRuntimeOptions({ model })}
-                      runtimeOptionsError={chat.runtimeOptionsError}
-                      effortError={chat.effortError}
-                      working={sessionWorking}
-                      onRewindFiles={chat.sendRewindFiles}
-                      onPermissionRespond={chat.respondToPermission}
-                      onInputRespond={chat.respondToInput}
-                      onInputDismiss={chat.dismissInputRequest}
-                      onFetchFiles={fetchSessionMentionFiles}
+                      working={false}
+                      sessionName={sessionName}
                       onMessageCountChange={setVisibleMessageCount}
-                      renderPermissions={permissionRenderer}
+                      onSend={() => {}}
+                      onStop={() => {}}
                     />
-                  </>
-                ) : failedBeforeStart ? (
-                  <div
-                    className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted"
-                    data-testid="failed-before-start"
-                  >
-                    This session failed before it started, so it has no transcript.
-                  </div>
-                ) : canReplayTranscript && transcriptQuery.isLoading ? (
-                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                    Loading saved transcript…
-                  </div>
-                ) : canReplayTranscript && transcriptQuery.isError ? (
-                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:px-6 niuu:text-center niuu:text-sm niuu:text-critical">
-                    Failed to load saved transcript:{' '}
-                    {transcriptQuery.error instanceof Error
-                      ? transcriptQuery.error.message
-                      : String(transcriptQuery.error)}
-                  </div>
-                ) : canReplayTranscript && replayMessages.length > 0 ? (
-                  <SessionChat
-                    className="niuu:h-full"
-                    showToolbar={false}
-                    showDisplayControls={false}
-                    showInternalToggle={false}
-                    internalVisibility={showInternalMessages}
-                    showTokenUsage={showTokenUsage}
-                    messages={replayMessages}
-                    chatEndpoint={chatEndpoint}
-                    connected={false}
-                    historyLoaded={!transcriptQuery.isLoading}
-                    participants={replayParticipants}
-                    meshEvents={replayMeshEvents}
-                    plan={chat.plan}
-                    agents={chat.agents}
-                    working={false}
-                    sessionName={sessionName}
-                    onMessageCountChange={setVisibleMessageCount}
-                    onSend={() => {}}
-                    onStop={() => {}}
-                  />
-                ) : isSessionBooting(sessionStatus) ? (
-                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                    Session is starting…
-                  </div>
-                ) : canReplayTranscript ? (
-                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                    No saved transcript yet.
-                  </div>
-                ) : (
-                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                    Start the session to chat.
-                  </div>
-                )}
-              </div>
+                  ) : isSessionBooting(sessionStatus) ? (
+                    <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                      Session is starting…
+                    </div>
+                  ) : canReplayTranscript ? (
+                    <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                      No saved transcript yet.
+                    </div>
+                  ) : (
+                    <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                      Start the session to chat.
+                    </div>
+                  )}
+                </div>
+              </SessionLinksProvider>
             )}
 
             {resolvedActiveTab === 'terminal' && (
@@ -4208,6 +4260,9 @@ function LiveSessionDetailPageInner({
               fileStats={sessionDetail?.files}
               deliverables={presentedFiles}
               info={infoRows}
+              workerSessions={coordination.workers}
+              ravnWorkers={ravnWorkers}
+              onOpenSession={openSession}
               showOpenChat={resolvedActiveTab !== 'chat'}
               onOpenChat={() => openTab('chat')}
               onOpenDiffs={() => openTab('diffs')}

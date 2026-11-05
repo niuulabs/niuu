@@ -45,7 +45,13 @@ import { ImportExternalSessionsDialog } from './ImportExternalSessionsDialog';
 import { useSessionList } from './hooks/useSessionStore';
 import { useSessionRead } from './hooks/useSessionRead';
 import { UnreadStream } from './UnreadStream';
-import { buildSessionTree, groupByProject, type SessionTreeNode } from '../domain/projectTree';
+import {
+  buildSessionTree,
+  groupByProject,
+  isCoordinator,
+  nestSessions,
+  type SessionTreeNode,
+} from '../domain/projectTree';
 import { groupByState } from './sessions/groupByState';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
 import { sessionHarness, type Session, type SessionState } from '../domain/session';
@@ -244,10 +250,19 @@ function PodEntry({
   onReadChange,
   busy = false,
   readBusy = false,
+  coordinatorWorkers,
+  context = false,
+  nested = false,
 }: {
   session: Session;
   selected: boolean;
   onSelect: () => void;
+  /** Set when this session leads others: how many workers it has. */
+  coordinatorWorkers?: number;
+  /** Listed only as the path to a worker that matches the filters. */
+  context?: boolean;
+  /** A worker listed under its coordinator: a compact row. */
+  nested?: boolean;
   collapsed?: boolean;
   selectable?: boolean;
   checked?: boolean;
@@ -299,12 +314,17 @@ function PodEntry({
     <SquareTerminal size={13} />
   );
   return (
-    <div className="forge-session-row" data-actions-open={actionsOpen}>
+    <div
+      className="forge-session-row"
+      data-actions-open={actionsOpen}
+      data-context={context || undefined}
+      data-nested={nested || undefined}
+    >
       <button
         type="button"
         onClick={onSelect}
         aria-current={selected ? 'true' : undefined}
-        title={primaryLabel}
+        title={context ? `${primaryLabel}: shown because a worker under it matches` : primaryLabel}
         data-testid={`pod-entry-${session.id}`}
         className={cn(
           'forge-session-row__select niuu:flex niuu:w-full niuu:items-start niuu:gap-2 niuu:border-b niuu:border-l-2 niuu:px-3 niuu:py-1.5 niuu:text-left niuu:transition-colors',
@@ -349,6 +369,11 @@ function PodEntry({
           <div className="forge-session-row__content">
             <div className="forge-session-row__headline">
               <span className="forge-session-row__title">{primaryLabel}</span>
+              {coordinatorWorkers !== undefined && (
+                <span className="forge-session-role" data-testid={`session-role-${session.id}`}>
+                  COORDINATOR
+                </span>
+              )}
               {unread && (
                 <span
                   className="forge-session-unread-dot"
@@ -393,6 +418,16 @@ function PodEntry({
               {forgeLabel && (
                 <span className="forge-session-row__host" title={`Host: ${forgeLabel}`}>
                   {forgeLabel}
+                </span>
+              )}
+              {coordinatorWorkers !== undefined && (
+                <span
+                  className="forge-session-row__leads"
+                  data-testid={`session-leads-${session.id}`}
+                >
+                  {coordinatorWorkers === 0
+                    ? 'Coordinator'
+                    : `Coordinator · ${coordinatorWorkers} ${coordinatorWorkers === 1 ? 'worker' : 'workers'}`}
                 </span>
               )}
               {timeFact && (
@@ -522,9 +557,11 @@ function PodEntry({
 function SessionTreeEntry({
   node,
   renderRow,
+  depth = 0,
 }: {
   node: SessionTreeNode;
-  renderRow: (session: Session) => React.ReactNode;
+  renderRow: (session: Session, depth: number) => React.ReactNode;
+  depth?: number;
 }) {
   const [folded, setFolded] = useForgePreference(
     `tree.${node.session.clusterId}.${node.session.id}`,
@@ -538,19 +575,24 @@ function SessionTreeEntry({
           <button
             type="button"
             className="forge-session-tree-toggle"
-            aria-label={`${folded === '1' ? 'Expand' : 'Collapse'} child sessions of ${node.session.name ?? node.session.personaName}`}
+            aria-label={`${folded === '1' ? 'Expand' : 'Collapse'} workers of ${node.session.name ?? node.session.personaName}`}
             aria-expanded={folded !== '1'}
             onClick={() => setFolded(folded === '1' ? '0' : '1')}
           >
             {folded === '1' ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
           </button>
         )}
-        {renderRow(node.session)}
+        {renderRow(node.session, depth)}
       </div>
       {folded !== '1' && node.children.length > 0 && (
         <div className="forge-session-tree-children">
           {node.children.map((child) => (
-            <SessionTreeEntry key={child.session.id} node={child} renderRow={renderRow} />
+            <SessionTreeEntry
+              key={child.session.id}
+              node={child}
+              renderRow={renderRow}
+              depth={depth + 1}
+            />
           ))}
         </div>
       )}
@@ -575,7 +617,11 @@ function PodGroup({
   onReadChange,
   busyId,
   readPendingIds,
+  contextIds,
+  workerCounts,
 }: {
+  contextIds?: ReadonlySet<string>;
+  workerCounts?: ReadonlyMap<string, number>;
   groupKey?: string;
   pinned?: boolean;
   hierarchical?: boolean;
@@ -596,10 +642,15 @@ function PodGroup({
   const [folded, setFolded] = useForgePreference(`group.${groupKey ?? label}`, '0', ['0', '1']);
   if (sessions.length === 0) return null;
 
-  const renderRow = (s: Session) => (
+  const renderRow = (s: Session, depth = 0) => (
     <PodEntry
       key={s.id}
       session={s}
+      coordinatorWorkers={
+        workerCounts && isCoordinator(s, workerCounts) ? (workerCounts.get(s.id) ?? 0) : undefined
+      }
+      context={contextIds?.has(s.id) ?? false}
+      nested={depth > 0}
       showDetails={showDetails}
       onAction={onAction}
       onReadChange={onReadChange}
@@ -648,7 +699,7 @@ function PodGroup({
           ? buildSessionTree(sessions).map((node) => (
               <SessionTreeEntry key={node.session.id} node={node} renderRow={renderRow} />
             ))
-          : sessions.map(renderRow))}
+          : sessions.map((s) => renderRow(s)))}
     </div>
   );
 }
@@ -778,23 +829,36 @@ export function SessionsPage() {
     [allSessions],
   );
 
-  // Group by state
-  const grouped = useMemo(() => groupByState(unpinnedSessions), [unpinnedSessions]);
+  // Workers follow their coordinator into its group, in every grouping; a coordinator the
+  // filters leave out stays listed (dimmed) as the path to a worker that matches.
+  const nesting = useMemo(
+    () =>
+      nestSessions(
+        unpinnedSessions,
+        allSessions.filter((session) => !pinned.has(session.id)),
+        allSessions,
+      ),
+    [unpinnedSessions, allSessions, pinned],
+  );
 
-  // Build sidebar groups — flatten matching states per display group
+  // Build sidebar groups from the roots, then put each root's workers back under it.
   const sidebarGroups = useMemo<SessionSection[]>(() => {
-    if (sidebarMode === 'project') return groupByProject(unpinnedSessions, projects.data ?? []);
-    if (sidebarMode === 'repo') {
-      return groupByRepo(unpinnedSessions);
-    }
-    if (sidebarMode === 'forge') {
-      return groupByForge(unpinnedSessions);
-    }
-    return POD_GROUPS.map((g) => ({
-      label: g.label,
-      sessions: g.states.flatMap((st) => grouped[st]),
+    const roots = nesting.roots;
+    const sections = ((): SessionSection[] => {
+      if (sidebarMode === 'project') return groupByProject(roots, projects.data ?? []);
+      if (sidebarMode === 'repo') return groupByRepo(roots);
+      if (sidebarMode === 'forge') return groupByForge(roots);
+      const grouped = groupByState(roots);
+      return POD_GROUPS.map((g) => ({
+        label: g.label,
+        sessions: g.states.flatMap((st) => grouped[st]),
+      }));
+    })();
+    return sections.map((section) => ({
+      ...section,
+      sessions: section.sessions.flatMap((root) => nesting.subtree(root)),
     }));
-  }, [unpinnedSessions, grouped, sidebarMode, projects.data]);
+  }, [nesting, sidebarMode, projects.data]);
   const requestedSessionId = typeof routeSessionId === 'string' ? routeSessionId : null;
   const resolvedSelectedSessionId = useMemo(() => {
     if (allSessions.length === 0) return null;
@@ -1032,7 +1096,9 @@ export function SessionsPage() {
                     key={g.id ?? g.label}
                     label={g.label}
                     groupKey={g.id ?? `${sidebarMode}:${g.label}`}
-                    hierarchical={sidebarMode === 'project'}
+                    hierarchical
+                    contextIds={nesting.contextIds}
+                    workerCounts={nesting.workerCounts}
                     sessions={g.sessions}
                     selectedId={resolvedSelectedSessionId}
                     onSelect={handleSelectSession}
@@ -1195,6 +1261,7 @@ export function SessionsPage() {
                   label="Pinned"
                   groupKey="pinned"
                   pinned
+                  workerCounts={nesting.workerCounts}
                   sessions={pinnedSessions}
                   selectedId={resolvedSelectedSessionId}
                   onSelect={handleSelectSession}
@@ -1230,7 +1297,9 @@ export function SessionsPage() {
                     key={g.id ?? g.label}
                     label={g.label}
                     groupKey={g.id ?? `${sidebarMode}:${g.label}`}
-                    hierarchical={sidebarMode === 'project'}
+                    hierarchical
+                    contextIds={nesting.contextIds}
+                    workerCounts={nesting.workerCounts}
                     sessions={g.sessions}
                     selectedId={resolvedSelectedSessionId}
                     onSelect={handleSelectSession}
