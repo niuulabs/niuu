@@ -23,6 +23,7 @@ export type { ConversationTurn } from './hooks/useSkuldChat';
 export { useFileAttachments } from './hooks/useFileAttachments';
 export type { FileAttachment } from './hooks/useFileAttachments';
 export { useSlashMenu } from './hooks/useSlashMenu';
+export { useDictation, type Dictation } from './hooks/useDictation';
 export { useMentionMenu } from './hooks/useMentionMenu';
 export type { SelectedMention, MentionMenuItem } from './hooks/useMentionMenu';
 export { useRoomState } from './hooks/useRoomState';

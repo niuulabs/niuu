@@ -798,6 +798,43 @@ describe('Forge session review controls', () => {
       expect(within(row).getByTitle(path)).toHaveTextContent(label);
     },
   );
+  it('searches by voice where the browser can listen', async () => {
+    let recognition: { onresult?: (event: unknown) => void } = {};
+    vi.stubGlobal(
+      'webkitSpeechRecognition',
+      class {
+        continuous = false;
+        interimResults = true;
+        lang = '';
+        onresult: ((event: unknown) => void) | null = null;
+        onerror = null;
+        onend = null;
+        start = vi.fn();
+        stop = vi.fn();
+        abort = vi.fn();
+        constructor() {
+          recognition = this as unknown as typeof recognition;
+        }
+      },
+    );
+    try {
+      wrap(createSessionStoreWithSessions(sessions));
+      await screen.findByTestId('pod-entry-working');
+      fireEvent.click(screen.getByTestId('pod-search-voice'));
+      expect(screen.getByTestId('pod-search-voice')).toHaveAttribute('aria-pressed', 'true');
+      act(() =>
+        recognition.onresult?.({
+          resultIndex: 0,
+          results: [{ isFinal: true, 0: { transcript: 'Release review' } }],
+        }),
+      );
+      expect(screen.getByTestId('pod-search')).toHaveValue('Release review');
+      expect(screen.queryByTestId('pod-entry-idle')).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('refreshes the list from its footer', async () => {
     const store = createSessionStoreWithSessions(sessions);
     const list = vi.spyOn(store, 'listSessions');

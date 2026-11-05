@@ -46,8 +46,22 @@ import { classifyRelayedTurn } from './relayedTurn';
 import { NotificationCard } from '../NotificationCard';
 import { isForgeNotifyCall, modelLabel, parseForgeNotificationPayload } from '@niuulabs/domain';
 
-const formatTime = (date: Date): string =>
-  date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+/** "Today at 1:08 PM", "Yesterday at 9:54 AM", "Oct 31, 2026 at 9:54 AM", as Lexi dates a message. */
+export function messageTime(date: Date, now: Date = new Date()): string {
+  const time = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  const day = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const of = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  if (of === day) return `Today at ${time}`;
+  if (day - of === 24 * 60 * 60 * 1000) return `Yesterday at ${time}`;
+  const when = date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+  return `${when} at ${time}`;
+}
+
+const formatTime = (date: Date): string => messageTime(date);
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;

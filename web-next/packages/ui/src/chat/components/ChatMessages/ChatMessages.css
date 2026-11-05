@@ -2,8 +2,8 @@
 
 .niuu-chat-timestamp {
   font-size: var(--text-xs);
+  font-style: italic;
   color: var(--color-text-faint);
-  font-family: var(--font-mono);
 }
 
 .niuu-chat-msg-meta {

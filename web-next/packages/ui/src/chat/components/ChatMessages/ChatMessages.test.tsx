@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { UserMessage, AssistantMessage, StreamingMessage, SystemMessage } from './ChatMessages';
+import {
+  UserMessage,
+  AssistantMessage,
+  StreamingMessage,
+  SystemMessage,
+  messageTime,
+} from './ChatMessages';
 import type { ChatMessage } from '../../types';
 
 // The per-message action bar (copy/regenerate/bookmark) is opt-in and hidden by
@@ -377,5 +383,14 @@ describe('Forge notification turns', () => {
     );
     expect(screen.getByTestId('tool-block')).toHaveTextContent('Notification failed');
     expect(screen.getByTestId('tool-block')).toHaveTextContent('Need a decision');
+  });
+});
+
+describe('messageTime', () => {
+  const now = new Date(2026, 10, 5, 18, 0);
+  it('dates a message as Lexi does: today, yesterday, then the day', () => {
+    expect(messageTime(new Date(2026, 10, 5, 13, 8), now)).toBe('Today at 1:08 PM');
+    expect(messageTime(new Date(2026, 10, 4, 9, 54), now)).toBe('Yesterday at 9:54 AM');
+    expect(messageTime(new Date(2026, 9, 31, 9, 54), now)).toBe('Oct 31, 2026 at 9:54 AM');
   });
 });

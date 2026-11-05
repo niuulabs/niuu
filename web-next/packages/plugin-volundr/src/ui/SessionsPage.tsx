@@ -16,12 +16,14 @@ import {
   Tooltip,
   TooltipProvider,
   SidebarResizer,
+  useDictation,
   useResizableSidebar,
   verdictLabel,
 } from '@niuulabs/ui';
 import type { DotState, Worker } from '@niuulabs/ui';
 import {
   Archive,
+  AudioLines,
   Pin,
   Plus,
   Check,
@@ -887,6 +889,8 @@ export function SessionsPage() {
     null,
   );
   const [searchQuery, setSearchQuery] = useState('');
+  // Lexi's "Search by voice": what is said becomes the search.
+  const voiceSearch = useDictation((text) => setSearchQuery(text));
   const { ids: pinnedIds, pinned } = usePinnedSessions();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // Projects first, as Lexi's code sidebar: each project a folder, then the sessions in none.
@@ -1522,7 +1526,25 @@ export function SessionsPage() {
                     data-testid="pod-search"
                     aria-label="Filter sessions"
                   />
+                  {voiceSearch.supported && (
+                    <button
+                      type="button"
+                      className="forge-session-voice"
+                      aria-pressed={voiceSearch.listening}
+                      aria-label={voiceSearch.listening ? 'Stop voice search' : 'Search by voice'}
+                      title={voiceSearch.listening ? 'Stop voice search' : 'Search by voice'}
+                      onClick={voiceSearch.toggle}
+                      data-testid="pod-search-voice"
+                    >
+                      <AudioLines size={13} aria-hidden="true" />
+                    </button>
+                  )}
                 </div>
+                {voiceSearch.error && (
+                  <p className="forge-session-voice-error" role="alert">
+                    {voiceSearch.error}
+                  </p>
+                )}
               </div>
               <div className="forge-session-quick" role="group" aria-label="Session states">
                 {QUICK_FILTERS.map((value) => {
