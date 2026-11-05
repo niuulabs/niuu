@@ -2728,3 +2728,68 @@
   width: 14px;
   height: 14px;
 }
+
+/* ── The views as one segmented control in the title bar, like Lexi's Chat · Voice · Code ── */
+
+.niuu-live-session__head-top > .niuu-live-session__tabs {
+  flex: 0 0 auto;
+  overflow: visible;
+  gap: 2px;
+  margin-left: auto;
+  padding: 2px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 55%, transparent);
+}
+
+.niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab {
+  gap: 5px;
+  padding: 5px 9px;
+  border-bottom: 0;
+  border-radius: 7px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab--active {
+  background: color-mix(in srgb, var(--color-text-primary) 10%, transparent);
+  color: var(--color-text-primary);
+}
+
+.niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  font-size: 10px;
+}
+
+.niuu-live-session__head-top > .niuu-live-session__tabs + .niuu-live-session__toolbar {
+  margin-left: 0;
+  padding-left: 10px;
+}
+
+/* Only the open view names itself; the others are icons with their name for readers. */
+.niuu-live-session__head-top
+  > .niuu-live-session__tabs
+  .niuu-live-session__tab:not(.niuu-live-session__tab--active)
+  .niuu-live-session__tab-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The line under the name stays one line; it gives way at its end. */
+.niuu-live-session__head-title .niuu-live-session__subline {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  white-space: nowrap;
+}

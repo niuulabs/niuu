@@ -3945,6 +3945,32 @@ function LiveSessionDetailPageInner({
                 ) : null}
               </div>
 
+              {/* The views sit in the title bar as one segmented control, so the header is one
+                  bar as Lexi's is. */}
+              <div className="niuu-live-session__tabs" role="tablist" aria-label="Session tabs">
+                {tabs.map((tab) =>
+                  (() => {
+                    const TabIcon = tab.icon;
+                    return (
+                      <button
+                        key={tab.id}
+                        id={`tab-${tab.id}`}
+                        role="tab"
+                        aria-selected={resolvedActiveTab === tab.id}
+                        onClick={() => openTab(tab.id)}
+                        className={cn(
+                          'niuu-live-session__tab',
+                          resolvedActiveTab === tab.id && 'niuu-live-session__tab--active',
+                        )}
+                      >
+                        <TabIcon className="niuu-live-session__tab-icon" />
+                        <span className="niuu-live-session__tab-label">{tab.label}</span>
+                        <TabCountBadge count={tabCounts[tab.id]} />
+                      </button>
+                    );
+                  })(),
+                )}
+              </div>
               <div className="niuu-live-session__toolbar">
                 <ContextMeter
                   context={contextMeter}
@@ -3994,33 +4020,6 @@ function LiveSessionDetailPageInner({
                 ) : null}
                 <SessionMoreMenu items={moreMenuItems} />
               </div>
-            </div>
-          </div>
-
-          <div className="niuu-live-session__tabs-row">
-            <div className="niuu-live-session__tabs" role="tablist" aria-label="Session tabs">
-              {tabs.map((tab) =>
-                (() => {
-                  const TabIcon = tab.icon;
-                  return (
-                    <button
-                      key={tab.id}
-                      id={`tab-${tab.id}`}
-                      role="tab"
-                      aria-selected={resolvedActiveTab === tab.id}
-                      onClick={() => openTab(tab.id)}
-                      className={cn(
-                        'niuu-live-session__tab',
-                        resolvedActiveTab === tab.id && 'niuu-live-session__tab--active',
-                      )}
-                    >
-                      <TabIcon className="niuu-live-session__tab-icon" />
-                      <span>{tab.label}</span>
-                      <TabCountBadge count={tabCounts[tab.id]} />
-                    </button>
-                  );
-                })(),
-              )}
             </div>
           </div>
         </div>
