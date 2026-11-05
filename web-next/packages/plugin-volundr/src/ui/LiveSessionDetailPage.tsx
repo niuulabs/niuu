@@ -41,6 +41,7 @@ import {
   ArrowLeft,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Eye,
   EyeOff,
@@ -3131,6 +3132,8 @@ export interface RoomWorkerFocus {
   focusedWorkerId?: string | null;
   onFocusWorker?: (peerId: string | null) => void;
   onRoomWorkers?: (workers: readonly Worker[]) => void;
+  /** Opened from the unread list: the header leads back to it, as Lexi's "‹ Unread". */
+  onBackToUnread?: () => void;
 }
 
 export function LiveSessionDetailPage({
@@ -3142,6 +3145,7 @@ export function LiveSessionDetailPage({
   focusedWorkerId,
   onFocusWorker,
   onRoomWorkers,
+  onBackToUnread,
 }: {
   sessionId: string;
   instanceId?: string;
@@ -3160,6 +3164,7 @@ export function LiveSessionDetailPage({
       focusedWorkerId={focusedWorkerId}
       onFocusWorker={onFocusWorker}
       onRoomWorkers={onRoomWorkers}
+      onBackToUnread={onBackToUnread}
     />
   );
 }
@@ -3173,6 +3178,7 @@ function LiveSessionDetailPageInner({
   focusedWorkerId,
   onFocusWorker,
   onRoomWorkers,
+  onBackToUnread,
 }: {
   sessionId: string;
   instanceId?: string;
@@ -3819,6 +3825,18 @@ function LiveSessionDetailPageInner({
                 >
                   <ArrowLeft aria-hidden="true" />
                   Work
+                </button>
+              ) : null}
+              {onBackToUnread ? (
+                <button
+                  type="button"
+                  className="niuu-live-session__return-link"
+                  aria-label="Back to Unread"
+                  onClick={onBackToUnread}
+                  data-testid="back-to-unread"
+                >
+                  <ChevronLeft aria-hidden="true" />
+                  Unread
                 </button>
               ) : null}
               <span

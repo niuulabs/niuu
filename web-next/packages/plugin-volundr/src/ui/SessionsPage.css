@@ -975,7 +975,9 @@
   font-size: 11.5px;
 }
 
-.forge-session-row__metadata > :not(.forge-session-state) + :not(.forge-session-state)::before {
+.forge-session-row__metadata
+  > :not(.forge-session-state, .forge-session-new)
+  + :not(.forge-session-state, .forge-session-new)::before {
   content: '·';
   padding: 0 5px;
   color: var(--color-text-faint);
@@ -1103,4 +1105,24 @@
     border-radius: 12px;
     overflow: hidden;
   }
+}
+
+/* ── Lexi's unread list: the sessions with new replies, newest first, each saying since when ── */
+
+.forge-unread-summary {
+  margin: 0;
+  padding: 6px 12px 6px 14px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.forge-session-row__metadata .forge-session-new {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--color-brand);
 }

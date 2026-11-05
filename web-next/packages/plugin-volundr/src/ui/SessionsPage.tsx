@@ -76,7 +76,12 @@ import {
   matchesSessionFilter,
   type SessionFilter,
 } from './sessions/presentation';
-import { sessionTimeFact, useMinuteClock, workedDuration } from './sessions/timeFact';
+import {
+  compactDuration,
+  sessionTimeFact,
+  useMinuteClock,
+  workedDuration,
+} from './sessions/timeFact';
 import './SessionsPage.css';
 
 // ---------------------------------------------------------------------------
@@ -195,6 +200,17 @@ export function projectHeadline(sessions: readonly Session[]): string {
   return `${state} · ${name} ${HEADLINE_PHRASES[latest.state]}`;
 }
 
+/**
+ * An unread row's note: "New · 4h" for a reply not read yet, "Marked unread" for one the
+ * person marked. Forge counts events, not replies, so the row does not claim a number.
+ */
+export function unreadLabel(session: Session, now: number): string {
+  const read = session.readState;
+  if (read?.manuallyUnread && read.latestOutputSeq <= read.readThroughSeq) return 'Marked unread';
+  const at = Date.parse(read?.latestOutputAt ?? '');
+  return Number.isFinite(at) ? `New · ${compactDuration(Math.max(0, now - at))}` : 'New';
+}
+
 /** What a project folder says about all of its sessions, whatever the filters show. */
 interface ProjectFolder {
   headline: string;
@@ -296,7 +312,10 @@ function PodEntry({
   coordinatorWorkers,
   context = false,
   nested = false,
+  unreadNote = false,
 }: {
+  /** In the unread list the row says it is new, and since when, instead of its state. */
+  unreadNote?: boolean;
   session: Session;
   selected: boolean;
   onSelect: () => void;
@@ -462,13 +481,19 @@ function PodEntry({
                     : `Coordinator · ${coordinatorWorkers} ${coordinatorWorkers === 1 ? 'worker' : 'workers'}`}
                 </span>
               )}
-              <span
-                className="forge-session-state"
-                data-state={session.state}
-                title={timeFact ?? undefined}
-              >
-                {SESSION_STATE_LABELS[session.state]}
-              </span>
+              {unreadNote ? (
+                <span className="forge-session-new" data-testid={`session-new-${session.id}`}>
+                  {unreadLabel(session, now)}
+                </span>
+              ) : (
+                <span
+                  className="forge-session-state"
+                  data-state={session.state}
+                  title={timeFact ?? undefined}
+                >
+                  {SESSION_STATE_LABELS[session.state]}
+                </span>
+              )}
             </div>
             {showDetails && (
               <div className="forge-session-row__details">
@@ -1634,32 +1659,56 @@ export function SessionsPage() {
                       No sessions match these filters.
                     </p>
                   )}
-                {sidebarGroups.map((g) => (
-                  <PodGroup
-                    key={g.id ?? g.label}
-                    label={g.label}
-                    groupKey={g.id ?? `${sidebarMode}:${g.label}`}
-                    hierarchical
-                    folder={
-                      sidebarMode === 'project' && g.id ? projectFolders.get(g.id) : undefined
-                    }
-                    sectionLabel={sidebarMode === 'project' && !g.id}
-                    openRoom={openRoom}
-                    contextIds={nesting.contextIds}
-                    workerCounts={nesting.workerCounts}
-                    sessions={g.sessions}
-                    selectedId={resolvedSelectedSessionId}
-                    onSelect={handleSelectSession}
-                    showDetails={details === '1'}
-                    onAction={(session, action) => void handleRowAction(session, action)}
-                    onReadChange={handleReadChange}
-                    readPendingIds={sessionRead.pendingIds}
-                    busyId={rowBusyId}
-                    selectableSessionIds={stoppedSelectionMode ? filteredStoppedIds : undefined}
-                    selectedSessionIds={resolvedSelectedStoppedIds}
-                    onToggleSelection={handleToggleStoppedSelection}
-                  />
-                ))}
+                {filter === 'unread' && (
+                  <div className="forge-unread-list" data-testid="unread-list">
+                    <p className="forge-unread-summary" data-testid="unread-list-summary">
+                      {unreadSessions.length === 0
+                        ? 'Nothing unread'
+                        : `${unreadSessions.length} ${unreadSessions.length === 1 ? 'session has' : 'sessions have'} new replies`}
+                    </p>
+                    {unreadSessions.map((session) => (
+                      <PodEntry
+                        key={session.id}
+                        session={session}
+                        unreadNote
+                        selected={session.id === requestedSessionId}
+                        onSelect={() => handleSelectSession(session.id)}
+                        showDetails={details === '1'}
+                        onAction={(target, action) => void handleRowAction(target, action)}
+                        onReadChange={handleReadChange}
+                        readBusy={sessionRead.pendingIds.has(session.id)}
+                        busy={!!rowBusyId}
+                      />
+                    ))}
+                  </div>
+                )}
+                {filter !== 'unread' &&
+                  sidebarGroups.map((g) => (
+                    <PodGroup
+                      key={g.id ?? g.label}
+                      label={g.label}
+                      groupKey={g.id ?? `${sidebarMode}:${g.label}`}
+                      hierarchical
+                      folder={
+                        sidebarMode === 'project' && g.id ? projectFolders.get(g.id) : undefined
+                      }
+                      sectionLabel={sidebarMode === 'project' && !g.id}
+                      openRoom={openRoom}
+                      contextIds={nesting.contextIds}
+                      workerCounts={nesting.workerCounts}
+                      sessions={g.sessions}
+                      selectedId={resolvedSelectedSessionId}
+                      onSelect={handleSelectSession}
+                      showDetails={details === '1'}
+                      onAction={(session, action) => void handleRowAction(session, action)}
+                      onReadChange={handleReadChange}
+                      readPendingIds={sessionRead.pendingIds}
+                      busyId={rowBusyId}
+                      selectableSessionIds={stoppedSelectionMode ? filteredStoppedIds : undefined}
+                      selectedSessionIds={resolvedSelectedStoppedIds}
+                      onToggleSelection={handleToggleStoppedSelection}
+                    />
+                  ))}
               </div>
               <footer
                 role="group"
@@ -1802,6 +1851,14 @@ export function SessionsPage() {
               focusedWorkerId={focusedPeerId}
               onFocusWorker={handleFocusWorker}
               onRoomWorkers={handleRoomWorkers}
+              onBackToUnread={
+                filter === 'unread'
+                  ? () => {
+                      setSelectedSessionId(null);
+                      void navigate({ to: '/volundr/sessions' });
+                    }
+                  : undefined
+              }
             />
           )}
         </div>

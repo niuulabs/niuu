@@ -22,8 +22,21 @@ vi.mock('@tanstack/react-router', () => ({
   useParams: () => route.params,
 }));
 vi.mock('./LiveSessionDetailPage', () => ({
-  LiveSessionDetailPage: ({ sessionId }: { sessionId: string }) => (
-    <div data-testid="live-session-detail-page">{sessionId}</div>
+  LiveSessionDetailPage: ({
+    sessionId,
+    onBackToUnread,
+  }: {
+    sessionId: string;
+    onBackToUnread?: () => void;
+  }) => (
+    <div data-testid="live-session-detail-page">
+      {sessionId}
+      {onBackToUnread && (
+        <button type="button" onClick={onBackToUnread}>
+          Back to Unread
+        </button>
+      )}
+    </div>
   ),
 }));
 vi.stubGlobal(
@@ -302,6 +315,37 @@ describe('Unread filter', () => {
     setup(sessions);
     await screen.findByTestId('live-session-detail-page');
     fireEvent.click(screen.getByTestId('session-filter-unread'));
+    expect(navigate).toHaveBeenCalledWith({ to: '/volundr/sessions' });
+  });
+
+  it('turns the list into the unread sessions, newest reply first, each saying since when', async () => {
+    setup([
+      ...sessions,
+      makeSession({
+        id: 'marked',
+        name: 'marked-by-hand',
+        state: 'idle',
+        readState: readState({ manuallyUnread: true, latestOutputSeq: 3, readThroughSeq: 3 }),
+      }),
+    ]);
+    await screen.findByTestId('pod-entry-migr');
+    fireEvent.click(screen.getByTestId('session-filter-unread'));
+
+    const list = screen.getByTestId('unread-list');
+    expect(within(list).getByTestId('unread-list-summary')).toHaveTextContent(
+      '3 sessions have new replies',
+    );
+    expect(within(list).getByTestId('session-new-webux')).toHaveTextContent('New · 25m');
+    expect(within(list).getByTestId('session-new-marked')).toHaveTextContent('Marked unread');
+    // The folders and groups give way to the one list, as in Lexi.
+    expect(screen.queryByTestId('pod-group-independent-sessions')).not.toBeInTheDocument();
+  });
+
+  it('leads an opened unread session back to the unread list', async () => {
+    localStorage.setItem('niuu.forge.filter', 'unread');
+    route.params = { sessionId: 'migr' };
+    setup(sessions);
+    fireEvent.click(await screen.findByRole('button', { name: 'Back to Unread' }));
     expect(navigate).toHaveBeenCalledWith({ to: '/volundr/sessions' });
   });
 

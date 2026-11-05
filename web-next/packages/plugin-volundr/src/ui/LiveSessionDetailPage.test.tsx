@@ -569,6 +569,7 @@ function wrap(
     readOnly?: boolean;
     session?: VolundrSession | null;
     volundr?: Partial<IVolundrService>;
+    onBackToUnread?: () => void;
     sessionStore?: Partial<ISessionStore>;
     openConnections?: () => void;
   } = {},
@@ -590,7 +591,11 @@ function wrap(
         }}
       >
         <ChatConnectionsContext.Provider value={opts.openConnections}>
-          <LiveSessionDetailPage sessionId={sessionId} readOnly={opts.readOnly} />
+          <LiveSessionDetailPage
+            sessionId={sessionId}
+            readOnly={opts.readOnly}
+            onBackToUnread={opts.onBackToUnread}
+          />
         </ChatConnectionsContext.Provider>
       </ServicesProvider>
     </QueryClientProvider>,
@@ -3203,6 +3208,14 @@ describe('LiveSessionDetailPage', () => {
         params: { sessionId: workerId },
       });
       expect(screen.queryByTestId('worker-of')).toBeNull();
+    });
+
+    it('leads back to the unread list when opened from it', async () => {
+      mockChatState();
+      const onBackToUnread = vi.fn();
+      wrap('test-session-id-1234', { onBackToUnread });
+      fireEvent.click(await screen.findByTestId('back-to-unread'));
+      expect(onBackToUnread).toHaveBeenCalled();
     });
 
     it('shows the project beside the session name', async () => {
