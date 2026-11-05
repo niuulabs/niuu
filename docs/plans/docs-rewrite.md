@@ -93,7 +93,7 @@ Verdicts: **Keep** (light pass for names and voice), **Rewrite**, **Merge**,
 
 | Page | Words | Verdict | Why |
 |---|---:|---|---|
-| `index.md` | - | Rewritten | Landing page in this worktree, sixth pass: one story, with one dominant screen per capability. |
+| `index.md` | - | Rewritten | Landing page in this worktree, seventh pass: building blocks first, then a gallery of what combining them makes possible. |
 | `overview.md` | 504 | Merge | Into `get-started/introduction.md`, done. The landing page now does its selling. Redirect. |
 | `get-started/introduction.md` | 475 | Rewritten | Sample page. |
 | `get-started/install.md` | 967 | Rewrite | Lead with the path that works today. Remove the `v1.4.0` example, which does not exist. Depends on decision 1. |
@@ -258,8 +258,8 @@ When it goes live:
 
 ## Teams, tenancy, scale and security
 
-The landing page closes its gallery with these, under In place today. The pages
-above carry the detail. Write the left column as fact and the right column as direction.
+The landing page carries these as the Runtimes and Security & governance blocks
+and the Scale act. The pages above carry the detail. Write the left column as fact and the right column as direction.
 
 | Theme | Ships today | Direction, or limited |
 |---|---|---|

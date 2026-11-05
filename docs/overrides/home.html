@@ -67,62 +67,21 @@
 </header>
 {% endmacro %}
 
-{% macro env_part(entry, name) %}
-<a class="env-part" href="{{ entry.doc | url }}">
-  <span class="glyph">{{ icon(name, 18) }}</span>
-  <strong>{{ entry.name }}</strong>
-  {% if entry.line %}<small>{{ entry.line }}</small>{% endif %}
-</a>
-{% endmacro %}
-
-{% macro env_links(count) %}
-<div class="env-links" aria-hidden="true">{% for _ in range(count) %}<span></span>{% endfor %}</div>
-{% endmacro %}
-
-{# The system at scale. Every box is something that ships; what is planned stays out of the drawing. #}
-{% macro env_map(map) %}
-<div class="env" id="system">
-  <div class="env-title">
-    <h4>{{ map.title }}</h4>
-    <p>{{ map.boundary }}</p>
-  </div>
-  <div class="env-grid">
-    <div class="env-main">
-      <div class="env-tenants">
-        {% for tenant in map.tenants %}
-        <div class="tenant">
-          <div class="label">{{ tenant }}</div>
-          <div class="tenant-parts">
-            {{ env_part(map.workspaces, 'workspaces') }}
-            {{ env_part(map.agents, 'agents') }}
-            {{ env_part(map.memory, 'memory') }}
-          </div>
-        </div>
-        {% endfor %}
-      </div>
-      {{ env_links(9) }}
-      <div class="env-bands">
-        {{ env_part(map.forge, 'forge') }}
-        {{ env_part(map.platform, 'platform') }}
-      </div>
-      {{ env_links(5) }}
-      <div class="env-base">
-        <div>
-          <div class="label">{{ map.hosts_label }}</div>
-          <ul class="env-hosts">
-            {% for host in map.hosts %}<li><strong>{{ host.name }}</strong><small>{{ host.line }}</small></li>{% endfor %}
-          </ul>
-        </div>
-        <div>
-          <div class="label">{{ map.models_label }}</div>
-          <ul class="env-models">
-            {% for model in map.models %}<li>{{ model }}</li>{% endfor %}
-          </ul>
-        </div>
-      </div>
-    </div>
-    <div class="env-side">{{ env_part(map.observatory, 'observatory') }}</div>
-  </div>
+{# The building blocks. Every item names something that ships; configurations light a subset. #}
+{% macro block_map(blocks) %}
+<div class="blockmap" data-blockmap>
+  <ul class="blocks">
+    {% for item in blocks.pieces %}
+    <li class="block" data-block="{{ item.id }}">
+      <a href="{{ item.doc | url }}">
+        <span class="block-name">{{ item.name }}</span>
+        <span class="block-line">{{ item.line }}</span>
+        <span class="block-uses">{{ item.uses }}</span>
+        <span class="block-products">{{ item.products }}</span>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
 </div>
 {% endmacro %}
 
@@ -153,6 +112,40 @@
       </div>
     </section>
 
+    {% set blocks = home.blocks %}
+    <section class="section blocks-section" id="blocks">
+      <img class="wave" src="{{ field }}" alt="">
+      <div class="blocks-lead">
+        <div>
+          <div class="label">{{ blocks.label }}</div>
+          <h2>{{ blocks.title | join("<br>") }}</h2>
+        </div>
+        <p class="lede">{{ blocks.body }}</p>
+      </div>
+      <div class="blocks-intro">
+        <h3>{{ blocks.subtitle }}</h3>
+        <p>{{ blocks.intro }}</p>
+      </div>
+      {% set assemble = blocks.assemble %}
+      <div class="assemble">
+        <div class="assemble-head">
+          <h3>{{ assemble.title }}</h3>
+          <p>{{ assemble.body }}</p>
+        </div>
+        <div class="configs" role="group" aria-label="Stages of growth">
+          {% for config in assemble.configs %}
+          <button type="button" aria-pressed="false" data-config="{{ config.blocks }}" data-line="{{ config.line }}">{{ config.name }}</button>
+          {% endfor %}
+        </div>
+        <p class="config-line" aria-live="polite">{{ assemble.configs[0].line }}</p>
+      </div>
+      {{ block_map(blocks) }}
+      <div class="blocks-foot">
+        <p>{{ assemble.swap }}</p>
+        <p>{{ assemble.plugins }}</p>
+      </div>
+    </section>
+
     {% set gallery = home.gallery %}
     <section class="gallery" id="at-work">
       <div class="gallery-head">
@@ -166,23 +159,14 @@
         </ol>
       </nav>
 
-      {% set one = gallery.chapters[0] %}
-      <article class="act side right" id="{{ one.id }}" data-views>
-        <div class="side-text">
-          {{ act_head(one) }}
-          {{ show_thumbs(one) }}
-        </div>
-        {{ show_main(one) }}
-      </article>
-
-      {% set two = gallery.chapters[1] %}
+      {% set two = gallery.chapters[0] %}
       <article class="act stage" id="{{ two.id }}" data-views>
         {{ act_head(two) }}
         {{ show_main(two) }}
         {{ show_thumbs(two) }}
       </article>
 
-      {% set three = gallery.chapters[2] %}
+      {% set three = gallery.chapters[1] %}
       <article class="act side left" id="{{ three.id }}" data-views>
         {{ show_main(three) }}
         <div class="side-text">
@@ -194,7 +178,7 @@
         </div>
       </article>
 
-      {% set four = gallery.chapters[3] %}
+      {% set four = gallery.chapters[2] %}
       <article class="act continuity" id="{{ four.id }}" data-views>
         {{ act_head(four) }}
         <div class="show-split">
@@ -203,7 +187,7 @@
         </div>
       </article>
 
-      {% set auto = gallery.chapters[4] %}
+      {% set auto = gallery.chapters[3] %}
       <article class="act autonomy" id="{{ auto.id }}" data-views>
         {{ act_head(auto) }}
         <ol class="evolution">
@@ -218,54 +202,15 @@
         {{ show_thumbs(auto) }}
       </article>
 
-      {% set five = gallery.chapters[5] %}
-      <article class="act side right quiet" id="{{ five.id }}" data-views>
-        <div class="side-text">
-          {{ act_head(five) }}
-          {{ show_thumbs(five) }}
-        </div>
-        {{ show_main(five) }}
-      </article>
-
-      {% set six = gallery.chapters[6] %}
+      {% set six = gallery.chapters[4] %}
       <article class="act environment" id="{{ six.id }}" data-views>
         <img class="wave" src="{{ field }}" alt="">
         {{ act_head(six) }}
-        {{ env_map(six.map) }}
         <div class="env-show">
           {{ show_main(six) }}
           {{ show_thumbs(six) }}
         </div>
-        <div class="areas">
-          <div class="label">{{ six.areas_label }}</div>
-          <div class="cases four">
-            {% for area in six.areas %}
-            <a class="case" href="{{ area.doc | url }}">
-              <h4>{{ area.title }}</h4>
-              <p>{{ area.body }}</p>
-            </a>
-            {% endfor %}
-          </div>
-        </div>
       </article>
-    </section>
-
-    {% set built = home.environment.built %}
-    <section class="section" id="environment">
-      <div class="built">
-        <div>
-          <h2>{{ built.title }}</h2>
-          <p>{{ built.body }}</p>
-          <p>{{ built.body_more }}</p>
-        </div>
-        <div>
-          <dl class="support">
-            {% for group in built.groups %}
-            <div><dt>{{ group.name }}</dt><dd>{{ group.entries }}</dd></div>
-            {% endfor %}
-          </dl>
-        </div>
-      </div>
     </section>
 
     {% set use_cases = home.use_cases %}

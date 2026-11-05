@@ -94,6 +94,26 @@ function initFlow(home) {
   observer.observe(flow);
 }
 
+/* A configuration lights the blocks it uses; pressing it again shows them all. */
+function initBlocks(home) {
+  const map = home.querySelector("[data-blockmap]");
+  if (!map) return;
+  const buttons = [...home.querySelectorAll(".configs button")];
+  const line = home.querySelector(".config-line");
+  const blocks = [...map.querySelectorAll("[data-block]")];
+  const choose = (button) => {
+    const active = button && button.getAttribute("aria-pressed") !== "true";
+    buttons.forEach((other) => other.setAttribute("aria-pressed", String(active && other === button)));
+    map.classList.toggle("configured", active);
+    if (!active) return;
+    const used = new Set(button.dataset.config.split(" "));
+    blocks.forEach((block) => block.classList.toggle("on", used.has(block.dataset.block)));
+    line.textContent = button.dataset.line;
+  };
+  buttons.forEach((button) => button.addEventListener("click", () => choose(button)));
+  choose(buttons[0]);
+}
+
 function initHome() {
   const home = document.querySelector(".niuu-home");
   if (!home) return;
@@ -102,6 +122,7 @@ function initHome() {
   initEnlarge(home);
   initSteps(home);
   initFlow(home);
+  initBlocks(home);
 }
 
 document$.subscribe(initHome);
