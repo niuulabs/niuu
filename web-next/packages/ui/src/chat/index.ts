@@ -114,3 +114,5 @@ export { ExternalLinkPreview } from './components/ExternalLinkPreview';
 
 export { ToolImagePreview } from './components/ToolImagePreview';
 export type { ToolImageResource } from './components/ConversationResources';
+export { roomWorkers, workerOutcomes, workerStages, verdictTone, verdictLabel } from './workers';
+export type { Worker, WorkerOutcome, WorkerStage, WorkerStatus, OutcomeTone } from './workers';

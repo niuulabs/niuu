@@ -1,1 +1,1 @@
-export { OutcomeCard, extractOutcomeBlock } from './OutcomeCard';
+export { OutcomeCard, extractOutcomeBlock, parseOutcomeFields } from './OutcomeCard';

@@ -201,7 +201,8 @@ function jsonFields(value: Record<string, unknown>): Record<string, string> {
   return fields;
 }
 
-function parseFields(raw: string): Record<string, string> {
+/** An outcome block's fields, from JSON or `key: value` lines. */
+export function parseOutcomeFields(raw: string): Record<string, string> {
   const json = parseJsonObject(raw);
   if (json) return jsonFields(json);
   const normalizedRaw = normalizeSoftWrappedOutcomeRaw(raw);
@@ -389,7 +390,7 @@ interface OutcomeCardProps {
 
 export function OutcomeCard({ raw }: OutcomeCardProps) {
   const [showRaw, setShowRaw] = useState(false);
-  const fields = parseFields(raw);
+  const fields = parseOutcomeFields(raw);
   const verdict = (fields.verdict ?? fields.status ?? '') as MeshVerdict | '';
   const summary = fields.summary ?? fields.result ?? '';
   const Icon = verdict && VERDICT_ICONS[verdict] ? VERDICT_ICONS[verdict] : CheckCircle;
