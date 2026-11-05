@@ -211,8 +211,10 @@ test('a live conversation shows tool runs, the plan, a question and a queued mes
   // A message sent while the agent works stays queued until the broker says it was taken.
   const composer = page.getByRole('textbox', { name: 'Message' });
   await expect(composer).toHaveAttribute('placeholder', 'Steer this session…');
-  await expect(page.getByText('queue for after this step')).toBeVisible();
+  // The key hints wait until the person types, then say Enter queues while the agent works.
+  await expect(page.getByText('queue for after this step')).toBeHidden();
   await composer.fill('Also link NIU-1342 in the PR body.');
+  await expect(page.getByText('queue for after this step')).toBeVisible();
   await composer.press('Enter');
   await expect.poll(() => fromBrowser.find((frame) => frame.type === 'user')).toBeTruthy();
   const sent = fromBrowser.find((frame) => frame.type === 'user')!;
