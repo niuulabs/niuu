@@ -647,6 +647,39 @@ export function insertBrokerTurn(
   return [...messages.slice(0, streamingIndex), message, ...messages.slice(streamingIndex)];
 }
 
+/**
+ * The room as it is now, plus the workers who were in it and left. The live room lists only
+ * who is connected; a worker that did its part and left is still one of the session's
+ * workers, so it stays, marked `left`. Observers and people who leave are dropped.
+ */
+export function withDeparted(
+  previous: ReadonlyMap<string, RoomParticipant>,
+  current: Map<string, RoomParticipant>,
+): Map<string, RoomParticipant> {
+  const next = new Map(current);
+  for (const [peerId, participant] of previous) {
+    if (next.has(peerId) || participant.participantType !== 'ravn') continue;
+    next.set(peerId, { ...participant, status: 'left' });
+  }
+  return next;
+}
+
+/**
+ * History names only the participants who have spoken; the live room names everyone in it.
+ * History adds the speakers the room no longer lists, and never replaces the room: a worker
+ * that has not spoken yet (a reviewer waiting for code) is still in the room.
+ */
+export function withHistoryParticipants(
+  room: ReadonlyMap<string, RoomParticipant>,
+  history: ReadonlyMap<string, RoomParticipant>,
+): Map<string, RoomParticipant> {
+  const next = new Map(room);
+  for (const [peerId, participant] of history) {
+    if (!next.has(peerId)) next.set(peerId, participant);
+  }
+  return next;
+}
+
 export function participantsFromTurns(turns: ConversationTurn[]): Map<string, RoomParticipant> {
   const next = new Map<string, RoomParticipant>();
   for (const turn of turns) {
@@ -1177,9 +1210,7 @@ export function useSkuldChat(
           });
         }
         if (historyParticipants && historyParticipants.size > 0) {
-          setParticipants((prev) =>
-            sharesBoundary ? new Map([...prev, ...historyParticipants]) : historyParticipants,
-          );
+          setParticipants((prev) => withHistoryParticipants(prev, historyParticipants));
         }
         if (historyMeshEvents && historyMeshEvents.length > 0) {
           setMeshEvents((prev) => {
@@ -2116,7 +2147,7 @@ export function useSkuldChat(
               setMessages(nextMessages);
             }
             if (historyParticipants && historyParticipants.size > 0) {
-              setParticipants(historyParticipants);
+              setParticipants((prev) => withHistoryParticipants(prev, historyParticipants));
             }
             if (historyMeshEvents && historyMeshEvents.length > 0) {
               setMeshEvents(historyMeshEvents);
@@ -2310,11 +2341,9 @@ export function useSkuldChat(
           case 'participant_left': {
             const peerId = String(event.participantId ?? event.participant_id ?? '');
             if (!peerId) break;
-            setParticipants((prev) => {
-              const next = new Map(prev);
-              next.delete(peerId);
-              return next;
-            });
+            setParticipants((prev) =>
+              withDeparted(prev, new Map([...prev].filter(([id]) => id !== peerId))),
+            );
             break;
           }
           case 'room_state': {
@@ -2323,7 +2352,7 @@ export function useSkuldChat(
               const parsed = parseParticipantMeta(participant);
               if (parsed?.peerId) next.set(parsed.peerId, parsed);
             }
-            setParticipants(next);
+            setParticipants((prev) => withDeparted(prev, next));
             break;
           }
           case 'room_message': {

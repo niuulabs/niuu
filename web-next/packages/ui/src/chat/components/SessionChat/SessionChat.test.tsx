@@ -1102,6 +1102,12 @@ describe('SessionChat', () => {
       expect(within(lane).getByText('Changes requested')).toHaveAttribute('data-tone', 'changes');
     });
 
+    it('keeps a worker that spoke and then left the room', () => {
+      renderTeam({ participants: new Map([[lead.peerId, lead]]) });
+      const strip = screen.getByTestId('workers-strip');
+      expect(within(strip).getByText('coder')).toBeInTheDocument();
+    });
+
     it('hides the progress lane with a single worker, but keeps the strip', () => {
       renderTeam({
         participants: new Map([
@@ -1114,7 +1120,10 @@ describe('SessionChat', () => {
     });
 
     it('shows none of it when the session has no workers', () => {
-      renderTeam({ participants: new Map([[lead.peerId, lead]]) });
+      renderTeam({
+        participants: new Map([[lead.peerId, lead]]),
+        messages: [said('m1', lead, 'Framing the spec first.', at(12))],
+      });
       expect(screen.queryByTestId('workers-strip')).toBeNull();
       expect(screen.queryByTestId('progress-lane')).toBeNull();
     });

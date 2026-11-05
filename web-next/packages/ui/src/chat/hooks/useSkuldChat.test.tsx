@@ -648,7 +648,7 @@ describe('useSkuldChat', () => {
     expect(screen.queryByText(/---outcome---|next_action_timing/)).toBeNull();
   });
 
-  it('tracks participant join and leave events', async () => {
+  it('tracks participant join and leave events, keeping workers who left', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 
     await waitFor(() => expect(result.current.historyLoaded).toBe(true));
@@ -677,7 +677,25 @@ describe('useSkuldChat', () => {
       );
     });
 
-    expect(result.current.participants.has('peer-join')).toBe(false);
+    // A worker that leaves did its part: it stays one of the session's workers, marked left.
+    expect(result.current.participants.get('peer-join')?.status).toBe('left');
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_state',
+          participants: [{ peer_id: 'human-1', persona: 'Jozef', participant_type: 'human' }],
+        }),
+      );
+    });
+    expect(result.current.participants.get('peer-join')?.status).toBe('left');
+
+    act(() => {
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'room_state', participants: [] }));
+    });
+    // People who leave are gone; workers who left are kept.
+    expect(result.current.participants.has('human-1')).toBe(false);
+    expect(result.current.participants.has('peer-join')).toBe(true);
   });
 
   it('deduplicates user_confirmed events and ignores non-object metadata', async () => {
@@ -957,6 +975,47 @@ summary: Fetched review packet ready
       persona: 'Skuld',
       participantType: 'skuld',
     });
+  });
+
+  it('keeps the live room when history names only the workers who have spoken', async () => {
+    const { result } = renderHook(() =>
+      useSkuldChat('ws://localhost:8080/s/test/session', { historyMode: 'none' }),
+    );
+    const member = (peerId: string, persona: string) => ({
+      peer_id: peerId,
+      persona,
+      participant_type: 'ravn',
+    });
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_state',
+          participants: [member('flock-coder', 'coder'), member('flock-reviewer', 'reviewer')],
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'conversation_history',
+          turns: [
+            {
+              id: 'turn-1',
+              role: 'assistant',
+              content: 'Coded.',
+              created_at: '2026-11-05T10:18:36.889091+00:00',
+              participant_id: 'flock-coder',
+              participant_meta: member('flock-coder', 'coder'),
+            },
+          ],
+        }),
+      );
+    });
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    // The reviewer has not spoken yet; it is still in the room.
+    expect([...result.current.participants.keys()]).toEqual(
+      expect.arrayContaining(['flock-coder', 'flock-reviewer']),
+    );
   });
 
   it('hydrates assistant history with a synthesized Skuld participant when participant metadata is absent', async () => {

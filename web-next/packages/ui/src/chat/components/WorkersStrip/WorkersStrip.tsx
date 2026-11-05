@@ -13,6 +13,7 @@ export const WORKER_STATUS_LABELS: Record<WorkerStatus, string> = {
   working: 'Working',
   idle: 'Idle',
   error: 'Error',
+  left: 'Left',
 };
 
 /** The one letter a worker's avatar shows. */

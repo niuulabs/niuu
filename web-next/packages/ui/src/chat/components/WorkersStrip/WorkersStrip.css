@@ -88,3 +88,9 @@
 .niuu-chat-worker-status--error {
   background: var(--color-critical);
 }
+
+/* Took part and left the room: an empty ring, quieter than idle. */
+.niuu-chat-worker-status--left {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--color-text-faint);
+}

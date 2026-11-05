@@ -16,7 +16,9 @@ export interface StageStatus {
  */
 export function stageStatus({ worker }: WorkerStage): StageStatus {
   if (worker.status === 'working') return { label: 'Working', tone: 'working' };
-  if (!worker.latest) return { label: 'Waiting', tone: 'waiting' };
+  if (!worker.latest) {
+    return { label: worker.status === 'left' ? 'Left' : 'Waiting', tone: 'waiting' };
+  }
   return { label: verdictLabel(worker.latest.verdict), tone: worker.latest.tone };
 }
 

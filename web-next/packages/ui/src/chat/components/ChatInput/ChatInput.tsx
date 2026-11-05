@@ -72,7 +72,7 @@ function resolveInlineAgentMentions(
 ): RoomParticipant[] {
   const byPersona = new Map<string, RoomParticipant | null>();
   for (const participant of participants.values()) {
-    if (participant.participantType !== 'ravn') continue;
+    if (participant.participantType !== 'ravn' || participant.status === 'left') continue;
     for (const label of [participant.persona, participant.displayName, participant.peerId]) {
       if (!label) continue;
       const key = label.toLowerCase();

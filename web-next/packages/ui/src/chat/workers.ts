@@ -26,7 +26,8 @@ export interface WorkerOutcome {
   messageId?: string;
 }
 
-export type WorkerStatus = 'working' | 'idle' | 'error';
+/** `left`: took part in the work and is no longer in the room. */
+export type WorkerStatus = 'working' | 'idle' | 'error' | 'left';
 
 export interface Worker {
   peerId: string;
@@ -111,6 +112,8 @@ function workerStatus(status: string | undefined): WorkerStatus {
       return 'working';
     case 'error':
       return 'error';
+    case 'left':
+      return 'left';
     default:
       return 'idle';
   }
@@ -181,14 +184,46 @@ export function workerOutcomes(
   return [...fromMessages, ...fromEvents].sort((a, b) => a.at.getTime() - b.at.getTime());
 }
 
-/** The room's workers in participant order, each with its outcomes and status. */
+/**
+ * Workers who spoke or reported and are no longer in the room. The live room lists only who
+ * is connected now; a worker that finished and left still did the work, so it stays a worker.
+ */
+function departedWorkers(
+  participants: ReadonlyMap<string, RoomParticipant>,
+  meshEvents: readonly MeshEvent[],
+  messages: readonly ChatMessage[],
+): RoomParticipant[] {
+  const departed = new Map<string, RoomParticipant>();
+  for (const message of messages) {
+    const participant = message.participant;
+    if (!participant || participants.has(participant.peerId)) continue;
+    if (departed.has(participant.peerId) || !isWorker(participant)) continue;
+    departed.set(participant.peerId, { ...participant, status: 'left' });
+  }
+  for (const event of meshEvents) {
+    if (event.type !== 'outcome') continue;
+    if (participants.has(event.participantId) || departed.has(event.participantId)) continue;
+    departed.set(event.participantId, {
+      peerId: event.participantId,
+      persona: event.persona,
+      status: 'left',
+    });
+  }
+  return [...departed.values()];
+}
+
+/**
+ * The room's workers in participant order, then those who took part and left; each with its
+ * outcomes and status.
+ */
 export function roomWorkers(
   participants: ReadonlyMap<string, RoomParticipant>,
   meshEvents: readonly MeshEvent[],
   messages: readonly ChatMessage[],
 ): Worker[] {
   const outcomes = workerOutcomes(meshEvents, messages);
-  return [...participants.values()].filter(isWorker).map((participant) => {
+  const present = [...participants.values()].filter(isWorker);
+  return [...present, ...departedWorkers(participants, meshEvents, messages)].map((participant) => {
     const own = outcomes.filter((outcome) => outcome.peerId === participant.peerId);
     return {
       peerId: participant.peerId,

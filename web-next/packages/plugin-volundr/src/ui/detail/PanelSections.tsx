@@ -168,6 +168,7 @@ function ravnWorkerPill(worker: Worker): { label: string; tone: OutcomeTone } | 
   }
   if (worker.status === 'working') return { label: 'Working', tone: 'info' };
   if (worker.status === 'error') return { label: 'Error', tone: 'blocked' };
+  if (worker.status === 'left') return { label: 'Left', tone: 'info' };
   return null;
 }
 

@@ -153,6 +153,29 @@ describe('roomWorkers and workerStages', () => {
     expect(workers.find((w) => w.persona === 'capability-publisher')?.latest).toBeUndefined();
   });
 
+  it('keeps a worker that took part and left the room, marked as left', () => {
+    // The live room lists only who is connected: the reviewer and framer have gone.
+    const now = new Map([...room].filter(([id]) => !['flock-reviewer', 'flock-spec'].includes(id)));
+    const outcome: MeshEvent = {
+      type: 'outcome',
+      id: 'o1',
+      participantId: 'flock-spec',
+      participant: {},
+      persona: 'specification-framer',
+      eventType: 'code.requested',
+      verdict: 'framed',
+      timestamp: at(1),
+    };
+    const workers = roomWorkers(now, [outcome], messages);
+    expect(workers.map((w) => [w.persona, w.status])).toEqual([
+      ['coder', 'working'],
+      ['capability-publisher', 'idle'],
+      ['specification-framer', 'left'],
+      ['reviewer', 'left'],
+    ]);
+    expect(workers.find((w) => w.persona === 'reviewer')?.latest?.verdict).toBe('needs_changes');
+  });
+
   it('orders the flow by who listens for whose events, ignoring the loop back', () => {
     const stages = workerStages(roomWorkers(room, [], messages));
     expect(stages.map((s) => s.worker.persona)).toEqual([
