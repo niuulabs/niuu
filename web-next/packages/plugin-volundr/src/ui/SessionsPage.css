@@ -5,9 +5,8 @@
   position: relative;
 }
 .forge-session-row__select {
-  min-height: 68px;
-  padding-top: 10px;
-  padding-bottom: 10px;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 .forge-session-row__select--selected {
   background: color-mix(in srgb, var(--brand-600) 16%, var(--color-bg-secondary));

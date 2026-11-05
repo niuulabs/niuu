@@ -4,11 +4,10 @@
   gap: var(--space-1);
 }
 
-/* A speaker's messages carry a thin rule in their colour; consecutive ones read as one run. */
-.niuu-chat-room-message[data-speaker] {
-  padding-left: var(--space-3);
-  border-left: 2px solid
-    color-mix(in srgb, var(--niuu-persona-color, var(--color-brand)) 45%, transparent);
+/* A speaker's run is one header (initial and name, as Lexi heads an agent's reply) and its
+   messages under it, indented to the name. */
+.niuu-chat-room-message[data-speaker] > :not(.niuu-chat-room-label) {
+  padding-left: 30px;
 }
 
 .niuu-chat-room-label {
@@ -36,23 +35,27 @@
   outline-offset: 2px;
 }
 
-.niuu-chat-room-persona-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-full);
-  background: var(--niuu-persona-color, var(--color-brand));
+.niuu-chat-room-avatar {
+  display: grid;
+  place-items: center;
   flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-full);
+  background: color-mix(
+    in srgb,
+    var(--niuu-persona-color, var(--color-brand)) 30%,
+    var(--color-bg-tertiary)
+  );
+  color: var(--color-text-primary);
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .niuu-chat-room-persona-name {
   font-size: var(--text-sm);
   font-weight: 700;
   color: var(--niuu-persona-color, var(--color-text-secondary));
-}
-
-.niuu-chat-room-time {
-  font-size: var(--text-xs);
-  color: var(--color-text-faint);
 }
 
 /* Participant dots retain identity colors; names need contrast on Light surfaces. */

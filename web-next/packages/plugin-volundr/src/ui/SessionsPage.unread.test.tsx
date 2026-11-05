@@ -215,7 +215,7 @@ describe('Forge session rows', () => {
     expect(screen.queryByTestId('session-unread-dot-gates')).not.toBeInTheDocument();
   });
 
-  it('puts the workspace on the second line when the agent wrote no summary', async () => {
+  it('keeps a row to two lines when the agent wrote no summary', async () => {
     setup([
       makeSession({
         id: 'plain',
@@ -225,7 +225,8 @@ describe('Forge session rows', () => {
       }),
     ]);
     const row = await screen.findByTestId('pod-entry-plain');
-    expect(within(row).getByTestId('session-preview-plain')).toHaveTextContent('niuu @dev');
+    expect(within(row).queryByTestId('session-preview-plain')).toBeNull();
+    expect(row).not.toHaveTextContent('niuu @dev');
   });
 });
 

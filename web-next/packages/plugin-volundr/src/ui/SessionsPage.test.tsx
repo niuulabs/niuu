@@ -750,7 +750,8 @@ describe('Forge session review controls', () => {
     expect(screen.queryByTestId('pod-entry-archived')).not.toBeInTheDocument();
     expect(screen.getByTestId('pod-entry-working')).not.toHaveTextContent('dev-user');
     expect(screen.getByTestId('pod-entry-working')).toHaveTextContent('Thor');
-    expect(screen.getByTestId('pod-entry-working')).toHaveTextContent('~/repos/niuu');
+    // Two-line rows: the workspace waits for Details.
+    expect(screen.getByTestId('pod-entry-working')).not.toHaveTextContent('~/repos/niuu');
     fireEvent.click(screen.getByTestId('session-filter-all'));
     expect(screen.getByTestId('pod-entry-archived')).toBeInTheDocument();
     fireEvent.change(screen.getByTestId('pod-search'), { target: { value: 'Release review' } });
@@ -759,6 +760,7 @@ describe('Forge session review controls', () => {
     expect(navigate).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Show session details' }));
     expect(screen.getByTestId('pod-entry-working')).toHaveTextContent('Thor');
+    expect(screen.getByTestId('pod-entry-working')).toHaveTextContent('~/repos/niuu');
   });
   it.each([
     ['/home/horde/repos/niuu', '~/repos/niuu'],
@@ -768,26 +770,29 @@ describe('Forge session review controls', () => {
     ['~/repos/niuu', '~/repos/niuu'],
     ['/home', '/home'],
     ['/homebrew/niuu', '/homebrew/niuu'],
-  ])('shows the folder, model and host for %s with its full path on hover', async (path, label) => {
-    wrap(
-      createSessionStoreWithSessions([
-        makeSession({
-          id: 'host-row',
-          personaName: 'Workspace review',
-          state: 'running',
-          clusterName: 'Build Bro',
-          model: 'gpt-6-astra',
-          source: { type: 'local_mount', local_path: path },
-        }),
-      ]),
-    );
-    const row = await screen.findByTestId('pod-entry-host-row');
-    expect(row).toHaveTextContent(`Workspace review${label}GPT-6 AstraBuild Bro`);
-    // The state ends the row's last line, leaving the name the whole first line.
-    expect(row).toHaveTextContent(/Working$/);
-    expect(within(row).getByTitle('Host: Build Bro')).toHaveTextContent('Build Bro');
-    expect(within(row).getByTitle(path)).toHaveTextContent(label);
-  });
+  ])(
+    'shows the model and host, and with details the folder %s with its full path on hover',
+    async (path, label) => {
+      localStorage.setItem('niuu.forge.details', '1');
+      wrap(
+        createSessionStoreWithSessions([
+          makeSession({
+            id: 'host-row',
+            personaName: 'Workspace review',
+            state: 'running',
+            clusterName: 'Build Bro',
+            model: 'gpt-6-astra',
+            source: { type: 'local_mount', local_path: path },
+          }),
+        ]),
+      );
+      const row = await screen.findByTestId('pod-entry-host-row');
+      // Name, then model, host and the state at the end of that line; the folder under Details.
+      expect(row).toHaveTextContent(`Workspace reviewGPT-6 AstraBuild BroWorking${label}`);
+      expect(within(row).getByTitle('Host: Build Bro')).toHaveTextContent('Build Bro');
+      expect(within(row).getByTitle(path)).toHaveTextContent(label);
+    },
+  );
   it('persists keyboard resizing and collapsed groups', async () => {
     wrap(createSessionStoreWithSessions(sessions));
     await screen.findByTestId('pod-entry-working');

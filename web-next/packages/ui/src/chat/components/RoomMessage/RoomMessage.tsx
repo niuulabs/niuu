@@ -8,7 +8,7 @@ import {
 } from '../ChatMessages';
 import { OutcomeSpeakerProvider } from '../OutcomeCard/OutcomeSpeaker';
 import type { ChatMessage } from '../../types';
-import { coordinatorSpeaker, speakerFor, speakerTime, type Speaker } from './speaker';
+import { coordinatorSpeaker, speakerFor, type Speaker } from './speaker';
 import './RoomMessage.css';
 
 interface RoomMessageProps {
@@ -40,21 +40,22 @@ function plainSpeaker(participant: NonNullable<ChatMessage['participant']>): Spe
   return { ...speakerFor(participant), name: participant.persona };
 }
 
+/** The speaker's initial on their colour, then their name; each message keeps its own time. */
 function SpeakerHeader({
   speaker,
-  at,
   peerId,
   onShowDetail,
 }: {
   speaker: Speaker;
-  at: Date;
   peerId?: string;
   onShowDetail?: (peerId: string) => void;
 }) {
   const name = <span className="niuu-chat-room-persona-name">{speaker.name}</span>;
   return (
     <div className="niuu-chat-room-label">
-      <span className="niuu-chat-room-persona-dot" aria-hidden="true" />
+      <span className="niuu-chat-room-avatar" aria-hidden="true">
+        {speaker.name.trim().charAt(0).toUpperCase()}
+      </span>
       {onShowDetail && peerId ? (
         <button
           type="button"
@@ -67,9 +68,6 @@ function SpeakerHeader({
       ) : (
         name
       )}
-      <time className="niuu-chat-room-time" dateTime={at.toISOString()}>
-        {speakerTime(at)}
-      </time>
     </div>
   );
 }
@@ -122,7 +120,6 @@ export function RoomMessage({
       {speaker && showHeader && (
         <SpeakerHeader
           speaker={speaker}
-          at={message.createdAt}
           peerId={message.participant?.peerId}
           onShowDetail={onShowDetail}
         />

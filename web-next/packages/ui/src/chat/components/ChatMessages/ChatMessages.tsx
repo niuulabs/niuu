@@ -280,6 +280,7 @@ export function AssistantMessage({
   }, [message.content, onCopy, handleCopyClick]);
 
   const uxPrefs = useCompactUxChatPrefs();
+  const hasHeader = Boolean(model) || message.status === 'running' || (showTokenUsage && tokens);
 
   const compactionOnly =
     message.parts !== undefined &&
@@ -310,26 +311,25 @@ export function AssistantMessage({
         </div>
       )}
       <div className="niuu-chat-assistant-body">
-        <div className="niuu-chat-assistant-header">
-          <ModelSpeaker model={model} />
-          {uxPrefs.timestamp !== 'never' && (
-            <span className="niuu-chat-timestamp">{formatTime(message.createdAt)}</span>
-          )}
-          {message.status === 'running' && (
-            <span className="niuu-chat-generating-label">
-              <Loader2 className="niuu-chat-spinner-icon" />
-              Generating...
-            </span>
-          )}
-          {showTokenUsage && tokens && (
-            <>
-              <span className="niuu-chat-header-sep">&middot;</span>
-              <span className="niuu-chat-token-info">
-                {formatTokenCount(tokens.input)} → {formatTokenCount(tokens.output)} tokens
+        {hasHeader && (
+          <div className="niuu-chat-assistant-header">
+            <ModelSpeaker model={model} />
+            {message.status === 'running' && (
+              <span className="niuu-chat-generating-label">
+                <Loader2 className="niuu-chat-spinner-icon" />
+                Generating...
               </span>
-            </>
-          )}
-        </div>
+            )}
+            {showTokenUsage && tokens && (
+              <>
+                <span className="niuu-chat-header-sep">&middot;</span>
+                <span className="niuu-chat-token-info">
+                  {formatTokenCount(tokens.input)} → {formatTokenCount(tokens.output)} tokens
+                </span>
+              </>
+            )}
+          </div>
+        )}
 
         {(!uxPrefs.showMessageActions || uxPrefs.copyMode === 'hover') && (
           <button
@@ -389,55 +389,64 @@ export function AssistantMessage({
           )}
         </div>
 
-        {uxPrefs.showMessageActions && message.status !== 'running' && (
-          <div className="niuu-chat-action-bar">
-            {uxPrefs.copyMode === 'inline' && (
-              <button
-                type="button"
-                className="niuu-chat-action-btn"
-                onClick={handleCopy}
-                title={copied ? 'Copied' : 'Copy'}
-              >
-                {copied ? (
-                  <Check className="niuu-chat-action-icon" />
-                ) : (
-                  <Copy className="niuu-chat-action-icon" />
-                )}
-              </button>
-            )}
-            {onRegenerate && (
-              <button
-                type="button"
-                className="niuu-chat-action-btn"
-                onClick={() => onRegenerate(message.id)}
-                title="Regenerate"
-              >
-                <RefreshCw className="niuu-chat-action-icon" />
-              </button>
-            )}
-            {onForward && (
-              <button
-                type="button"
-                className="niuu-chat-action-btn"
-                onClick={() => onForward(message)}
-                title="Forward…"
-                aria-label="Forward…"
-              >
-                <Forward className="niuu-chat-action-icon" />
-              </button>
-            )}
-            {onBookmark && (
-              <button
-                type="button"
-                className={cn('niuu-chat-action-btn', bookmarked && 'niuu-chat-action-btn--active')}
-                onClick={() => onBookmark(message.id, !bookmarked)}
-                title={bookmarked ? 'Remove bookmark' : 'Bookmark'}
-              >
-                <Bookmark className="niuu-chat-action-icon" />
-              </button>
-            )}
-          </div>
-        )}
+        {/* The time sits under the answer with its actions, as in Lexi. */}
+        <div className="niuu-chat-assistant-footer">
+          {uxPrefs.timestamp !== 'never' && (
+            <span className="niuu-chat-timestamp">{formatTime(message.createdAt)}</span>
+          )}
+          {uxPrefs.showMessageActions && message.status !== 'running' && (
+            <div className="niuu-chat-action-bar">
+              {uxPrefs.copyMode === 'inline' && (
+                <button
+                  type="button"
+                  className="niuu-chat-action-btn"
+                  onClick={handleCopy}
+                  title={copied ? 'Copied' : 'Copy'}
+                >
+                  {copied ? (
+                    <Check className="niuu-chat-action-icon" />
+                  ) : (
+                    <Copy className="niuu-chat-action-icon" />
+                  )}
+                </button>
+              )}
+              {onRegenerate && (
+                <button
+                  type="button"
+                  className="niuu-chat-action-btn"
+                  onClick={() => onRegenerate(message.id)}
+                  title="Regenerate"
+                >
+                  <RefreshCw className="niuu-chat-action-icon" />
+                </button>
+              )}
+              {onForward && (
+                <button
+                  type="button"
+                  className="niuu-chat-action-btn"
+                  onClick={() => onForward(message)}
+                  title="Forward…"
+                  aria-label="Forward…"
+                >
+                  <Forward className="niuu-chat-action-icon" />
+                </button>
+              )}
+              {onBookmark && (
+                <button
+                  type="button"
+                  className={cn(
+                    'niuu-chat-action-btn',
+                    bookmarked && 'niuu-chat-action-btn--active',
+                  )}
+                  onClick={() => onBookmark(message.id, !bookmarked)}
+                  title={bookmarked ? 'Remove bookmark' : 'Bookmark'}
+                >
+                  <Bookmark className="niuu-chat-action-icon" />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

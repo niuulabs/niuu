@@ -2440,7 +2440,7 @@ function TabCountBadge({ count }: { count?: number }) {
 interface PrimaryStateAction {
   icon: typeof Play;
   title: string;
-  label: string;
+  label?: string;
   tone: 'critical' | 'brand';
   onSelect: () => void;
   /** Shown but not actionable, e.g. while the session boots. */
@@ -2475,8 +2475,8 @@ function sessionPrimaryAction({
   if (status === 'running') {
     return {
       icon: Square,
+      // A quiet icon, as Lexi keeps the header to the name and a few controls.
       title: 'Stop session',
-      label: 'Stop session',
       tone: 'critical',
       onSelect: onStop,
     };
@@ -3858,7 +3858,6 @@ function LiveSessionDetailPageInner({
                     </span>
                   ) : null}
                   {showDetails && <SessionIdChip sessionId={sessionId} />}
-                  {sessionTrackerIssue ? <TicketLink issue={sessionTrackerIssue} /> : null}
                   {readOnly && sessionDetail?.state !== 'archived' ? (
                     <span className="niuu-live-session__archived-badge">Archived</span>
                   ) : null}
@@ -3884,6 +3883,10 @@ function LiveSessionDetailPageInner({
                       node: <span data-testid="session-host">{forgeBadgeLabel}</span>,
                     },
                     isCoordinator && { id: 'coordinator', node: <CoordinatorTag /> },
+                    sessionTrackerIssue && {
+                      id: 'ticket',
+                      node: <TicketLink issue={sessionTrackerIssue} />,
+                    },
                     sessionDetail && {
                       id: 'activity',
                       node: <SessionActivityElapsed session={sessionDetail} />,

@@ -86,13 +86,14 @@ describe('RoomMessage', () => {
   });
 
   describe('speaker header', () => {
-    it('shows the dot, the name in the worker colour and the time, with a rule in that colour', () => {
+    it('heads the run with the initial and name in the worker colour; the time sits under the message', () => {
       render(<RoomMessage message={assistantMsg} workerRoom />);
       const message = screen.getByTestId('room-message');
       expect(message).toHaveAttribute('data-speaker');
       expect(message.style.getPropertyValue('--niuu-persona-color')).toBe('#123456');
       expect(screen.getByText('Odin')).toBeInTheDocument();
-      expect(screen.getByText(/05:12/)).toBeInTheDocument();
+      expect(screen.getByText('O')).toHaveClass('niuu-chat-room-avatar');
+      expect(document.querySelector('.niuu-chat-assistant-footer')).toHaveTextContent(/5:12/);
     });
 
     it('names the lead the Coordinator in a room of workers', () => {

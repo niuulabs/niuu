@@ -327,7 +327,7 @@ function PodEntry({
     <div
       className="forge-session-row"
       data-actions-open={actionsOpen}
-      data-context={context || undefined}
+      data-context={(context && !selected) || undefined}
       data-nested={nested || undefined}
     >
       <button
@@ -388,7 +388,9 @@ function PodEntry({
                 />
               )}
             </div>
-            {session.shortDescription ? (
+            {/* Two lines, as in Lexi: the workspace waits for Details; an agent's own
+                summary of the work is worth a line of its own. */}
+            {session.shortDescription && (
               <div
                 className="forge-session-row__preview"
                 title={session.shortDescription}
@@ -396,17 +398,6 @@ function PodEntry({
               >
                 {session.shortDescription}
               </div>
-            ) : (
-              sourceLabel && (
-                <div
-                  className="forge-session-row__preview forge-session-row__source"
-                  title={localPath ?? previewLabel ?? sourceLabel}
-                  data-testid={`session-preview-${session.id}`}
-                >
-                  {sourceIcon}
-                  <span>{sourceText}</span>
-                </div>
-              )
             )}
             <div className="forge-session-row__metadata">
               <span
@@ -453,8 +444,11 @@ function PodEntry({
                     {trackerLabel}
                   </span>
                 )}
-                {session.shortDescription && sourceLabel && (
-                  <span title={localPath ?? previewLabel ?? sourceLabel}>
+                {sourceLabel && (
+                  <span
+                    title={localPath ?? previewLabel ?? sourceLabel}
+                    data-testid={`session-source-${session.id}`}
+                  >
                     {sourceIcon}
                     {sourceText}
                   </span>
