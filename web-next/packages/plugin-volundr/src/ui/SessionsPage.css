@@ -1088,3 +1088,19 @@
   font-weight: 650;
   letter-spacing: -0.01em;
 }
+
+/* ── Lexi's floating panels: the list and the session sit apart, rounded, on the window ── */
+@media (min-width: 761px) {
+  .forge-sessions {
+    padding: 8px;
+    gap: 2px;
+    background: var(--color-bg-primary);
+  }
+
+  .forge-sessions .forge-session-list,
+  .forge-sessions .forge-session-detail {
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+}
