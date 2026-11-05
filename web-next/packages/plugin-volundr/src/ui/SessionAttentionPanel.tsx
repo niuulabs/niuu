@@ -112,6 +112,7 @@ export function SessionAttentionPanel({
   onOpenDiffs,
   onRespondPermission,
   onClose,
+  overlay = false,
 }: {
   items: readonly SessionAttentionItem[];
   ticket?: TrackerIssue;
@@ -126,10 +127,12 @@ export function SessionAttentionPanel({
   onOpenDiffs: () => void;
   onRespondPermission: (requestId: string, behavior: PermissionBehavior) => void;
   onClose: () => void;
+  /** Narrow screens: the panel floats over the chat instead of taking a column. */
+  overlay?: boolean;
 }) {
   return (
     <aside
-      className="niuu-session-panel"
+      className={overlay ? 'niuu-session-panel niuu-session-panel--overlay' : 'niuu-session-panel'}
       aria-label="Session overview"
       data-testid="session-attention-panel"
     >

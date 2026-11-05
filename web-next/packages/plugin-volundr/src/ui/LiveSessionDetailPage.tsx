@@ -74,6 +74,10 @@ import type {
 } from '../models/volundr.model';
 import { useSessionDetail } from './hooks/useSessionStore';
 import { useSessionRead } from './hooks/useSessionRead';
+import { useMediaQuery } from './hooks/useMediaQuery';
+
+/** Matches the width below which SessionAttentionPanel.css drops the panel's column. */
+const PANEL_OVERLAY_QUERY = '(max-width: 1100px)';
 import {
   meshEventsFromTurns,
   participantsFromTurns,
@@ -3168,7 +3172,13 @@ function LiveSessionDetailPageInner({
   const [detailsPreference] = useForgePreference('details', '0', ['0', '1']);
   const showDetails = detailsPreference === '1';
   const [panelVisibility, setPanelVisibility] = useForgePreference('panel', '1', ['0', '1']);
-  const showPanel = panelVisibility === '1';
+  // Below this width the panel has no room for a column (SessionAttentionPanel.css), so it
+  // starts closed and opens over the chat; the saved preference is for wide screens.
+  const narrowScreen = useMediaQuery(PANEL_OVERLAY_QUERY);
+  const [overlayPanelOpen, setOverlayPanelOpen] = useState(false);
+  const showPanel = narrowScreen ? overlayPanelOpen : panelVisibility === '1';
+  const setPanelOpen = (open: boolean) =>
+    narrowScreen ? setOverlayPanelOpen(open) : setPanelVisibility(open ? '1' : '0');
   const review = useReviewComments();
   // Signing an AI or Git account in again without leaving the session.
   const openConnections = useContext(ChatConnectionsContext);
@@ -3869,7 +3879,7 @@ function LiveSessionDetailPageInner({
                         ? `Needs you ${attentionItems.length}`
                         : undefined
                     }
-                    onClick={() => setPanelVisibility(showPanel ? '0' : '1')}
+                    onClick={() => setPanelOpen(!showPanel)}
                   />
                 ) : null}
                 {primaryStateAction ? (
@@ -4202,7 +4212,8 @@ function LiveSessionDetailPageInner({
               onOpenChat={() => openTab('chat')}
               onOpenDiffs={() => openTab('diffs')}
               onRespondPermission={chat.respondToPermission}
-              onClose={() => setPanelVisibility('0')}
+              onClose={() => setPanelOpen(false)}
+              overlay={narrowScreen}
             />
           ) : null}
         </div>

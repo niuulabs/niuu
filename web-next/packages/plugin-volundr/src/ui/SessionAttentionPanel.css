@@ -344,4 +344,16 @@ ul.niuu-session-panel__files {
   .niuu-session-panel {
     display: none;
   }
+
+  /* Opened on purpose at this width: float over the chat rather than squeeze it. */
+  .niuu-session-panel.niuu-session-panel--overlay {
+    display: flex;
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    width: min(320px, 100vw);
+    box-shadow: var(--niuu-panel-shadow, var(--shadow-lg));
+  }
 }

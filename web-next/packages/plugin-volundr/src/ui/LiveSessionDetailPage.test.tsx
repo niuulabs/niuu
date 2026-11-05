@@ -1908,6 +1908,33 @@ describe('LiveSessionDetailPage', () => {
         expect(screen.getByTestId('session-attention-panel')).toBeInTheDocument();
       });
 
+      it('opens over the chat on a narrow screen, closed at first and without saving', async () => {
+        vi.stubGlobal(
+          'matchMedia',
+          vi.fn((query: string) => ({
+            matches: query === '(max-width: 1100px)',
+            addEventListener: () => {},
+            removeEventListener: () => {},
+          })),
+        );
+        try {
+          mockChatState();
+          wrap('test-session-id-1234');
+          const show = await screen.findByRole('button', { name: 'Show session panel' });
+          expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
+
+          fireEvent.click(show);
+          const panel = screen.getByTestId('session-attention-panel');
+          expect(panel).toHaveClass('niuu-session-panel--overlay');
+          expect(localStorage.getItem('niuu.forge.panel')).toBeNull();
+
+          fireEvent.click(within(panel).getByRole('button', { name: 'Hide session panel' }));
+          expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
       it('always says what the session is, even when nothing else is waiting', async () => {
         mockChatState();
         wrap('test-session-id-1234');
