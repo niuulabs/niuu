@@ -51,8 +51,10 @@
     height: 24px;
     min-height: 24px;
   }
+  /* Keyboard focus only: a clicked row keeps focus, and the strip would then sit over the
+     title of the open session until something else is clicked. */
   .forge-session-row:hover .forge-session-row__actions,
-  .forge-session-row:focus-within .forge-session-row__actions {
+  .forge-session-row:has(:focus-visible) .forge-session-row__actions {
     opacity: 1;
     pointer-events: auto;
   }

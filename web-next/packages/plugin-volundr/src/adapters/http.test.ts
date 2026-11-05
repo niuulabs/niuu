@@ -1002,6 +1002,28 @@ describe('buildVolundrHttpAdapter', () => {
     expect(history.turns[0]?.visibility).toBe('internal');
   });
 
+  it('getConversationTurn calls GET /sessions/:id/conversation/turns/:turnId', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      turn: { id: 'turn/7', role: 'assistant', content: 'the reply', created_at: '2026-11-05' },
+      index: 41,
+      total_turns: 90,
+    });
+
+    const turn = await buildVolundrHttpAdapter(client).getConversationTurn('sess-1', 'turn/7');
+
+    expect(client.get).toHaveBeenCalledWith('/sessions/sess-1/conversation/turns/turn%2F7');
+    expect(turn).toMatchObject({ id: 'turn/7', role: 'assistant', content: 'the reply' });
+  });
+
+  it('getConversationTurn fails when Forge returns no turn', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({ index: null, total_turns: 0 });
+    await expect(
+      buildVolundrHttpAdapter(client).getConversationTurn('sess-1', 'gone'),
+    ).rejects.toThrow('Forge returned no turn for gone');
+  });
+
   it('getWorkflowGates calls GET /sessions/:id/workflow/gates', async () => {
     const client = makeClient();
     client.get.mockResolvedValueOnce({

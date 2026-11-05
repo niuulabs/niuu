@@ -17,22 +17,8 @@ export interface UnreadStreamProps {
   onOpen: (sessionId: string) => void;
 }
 
-/**
- * The reply a session's read state points at, or the newest public assistant reply when the
- * host names none. A named reply that is not in the history is an error, never a
- * different reply in its place.
- */
-export function latestReply(
-  turns: readonly VolundrConversationTurn[],
-  turnId: string | null | undefined,
-): VolundrConversationTurn {
-  if (turnId) {
-    const named = turns.find((turn) => turn.id === turnId);
-    if (!named) {
-      throw new Error(`The latest reply (${turnId}) is not in this session's history.`);
-    }
-    return named;
-  }
+/** The newest public assistant reply, for a session whose read state names no reply. */
+export function latestReply(turns: readonly VolundrConversationTurn[]): VolundrConversationTurn {
   const newest = turns.findLast(
     (turn) => turn.role === 'assistant' && turn.visibility !== 'internal',
   );
@@ -74,8 +60,12 @@ function UnreadBlock({
   const turnId = session.readState?.latestOutputTurnId;
   const reply = useQuery({
     queryKey: ['volundr', 'unread-reply', session.id, turnId ?? null],
+    // The read state names the reply; fetch exactly that turn, which may sit far outside
+    // the recent history page. Without a name, the newest reply in the history is it.
     queryFn: async () =>
-      latestReply((await volundr.getConversationHistory(session.id)).turns, turnId),
+      turnId
+        ? volundr.getConversationTurn(session.id, turnId)
+        : latestReply((await volundr.getConversationHistory(session.id)).turns),
     enabled: seen,
   });
   const at = Date.parse(session.readState?.latestOutputAt ?? '');

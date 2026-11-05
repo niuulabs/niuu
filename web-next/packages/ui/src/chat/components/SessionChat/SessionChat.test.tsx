@@ -1723,7 +1723,7 @@ describe('SessionChat', () => {
     localStorage.clear();
     render(<SessionChat {...defaultProps} messages={[userMessage, assistantMessage]} />);
     fireEvent.click(screen.getByLabelText('Agent avatars'));
-    expect(localStorage.getItem('niuu.compactUx.showAgentAvatar')).toBe('false');
+    expect(localStorage.getItem('niuu.compactUx.showAgentAvatar')).toBe('true');
     fireEvent.change(screen.getByLabelText('Timestamps'), { target: { value: 'never' } });
     expect(screen.getByTestId('assistant-message')).toHaveAttribute('data-timestamp', 'never');
     // Copy starts in the row under the reply; the hover control is the compact option.

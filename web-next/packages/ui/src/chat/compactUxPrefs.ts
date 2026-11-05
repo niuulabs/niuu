@@ -2,8 +2,9 @@ import { useSyncExternalStore } from 'react';
 
 // niuu:ux: compact-chat preferences.
 //
-// Defaults follow the Forge review layout: the agent avatar, timestamps and an
-// inline copy row under each reply, with every turn expanded. The Display menu
+// Defaults follow the Forge review layout: timestamps and an inline copy row under each
+// reply, with every turn expanded. The speaker is the engine-coloured model name, so the
+// agent avatar is off unless chosen. The Display menu
 // (and localStorage keys `niuu.compactUx.<key>`) switch to the compact,
 // Codex-style view: hidden actions and avatar, hover timestamps, folded turns.
 export interface CompactUxChatPrefs {
@@ -24,7 +25,7 @@ export type ConversationView = 'compact' | 'expanded';
 
 const DEFAULTS: CompactUxChatPrefs = {
   showMessageActions: true,
-  showAgentAvatar: true,
+  showAgentAvatar: false,
   timestamp: 'always',
   copyMode: 'inline',
   toolRuns: 'rows',

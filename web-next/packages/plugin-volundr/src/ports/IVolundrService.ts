@@ -272,6 +272,8 @@ export interface IVolundrService {
 
   // Messaging
   getConversationHistory(sessionId: string): Promise<VolundrConversationHistory>;
+  /** One turn in full (`GET /sessions/{id}/conversation/turns/{turnId}`), wherever it sits. */
+  getConversationTurn(sessionId: string, turnId: string): Promise<VolundrConversationTurn>;
   getWorkflowGates(sessionId: string): Promise<VolundrWorkflowGate[]>;
   resolveWorkflowGate(
     sessionId: string,

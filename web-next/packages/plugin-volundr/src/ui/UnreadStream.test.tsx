@@ -92,8 +92,9 @@ function setup(
 ) {
   const volundr = {
     ...createMockVolundrService(),
+    getConversationTurn: vi.fn(async () => reply('turn-1', 'Done. **All green.**')),
     getConversationHistory: vi.fn(async () => ({
-      turns: [reply('turn-1', 'Done. **All green.**')],
+      turns: [reply('turn-0', 'Older reply'), reply('turn-1', 'Newest reply')],
     })),
     changeSessionReadState: vi.fn(async () => state({ isUnread: false })),
     ...service,
@@ -117,17 +118,11 @@ describe('latestReply', () => {
     reply('t2', 'internal note', { visibility: 'internal' }),
     { id: 't3', role: 'user', content: 'question', created_at: minutesAgo(2) },
   ];
-  it('finds the reply the read state names', () => {
-    expect(latestReply(turns, 't1').content).toBe('first');
-  });
-  it('takes the newest public assistant reply when none is named', () => {
-    expect(latestReply(turns, null).content).toBe('first');
-  });
-  it('fails when the named reply is missing rather than showing another', () => {
-    expect(() => latestReply(turns, 'gone')).toThrow('(gone) is not in this session');
+  it('takes the newest public assistant reply', () => {
+    expect(latestReply(turns).content).toBe('first');
   });
   it('fails when there is no assistant reply at all', () => {
-    expect(() => latestReply([turns[2]!], undefined)).toThrow('no assistant reply');
+    expect(() => latestReply([turns[2]!])).toThrow('no assistant reply');
   });
 });
 
@@ -153,25 +148,27 @@ describe('UnreadStream', () => {
 
   it('fetches a reply only for the sessions that reach the screen', async () => {
     const { volundr } = setup([session('a'), session('b')]);
-    expect(volundr.getConversationHistory).not.toHaveBeenCalled();
+    expect(volundr.getConversationTurn).not.toHaveBeenCalled();
 
     scrollIntoView('unread-block-b');
-    await waitFor(() => expect(volundr.getConversationHistory).toHaveBeenCalledTimes(1));
-    expect(volundr.getConversationHistory).toHaveBeenCalledWith('b');
+    await waitFor(() => expect(volundr.getConversationTurn).toHaveBeenCalledTimes(1));
+    // The named reply is fetched on its own: it may sit outside the recent history page.
+    expect(volundr.getConversationTurn).toHaveBeenCalledWith('b', 'turn-1');
+    expect(volundr.getConversationHistory).not.toHaveBeenCalled();
   });
 
   it('shows a loading state while the reply is fetched', () => {
-    setup([session('a')], { getConversationHistory: () => new Promise(() => {}) });
+    setup([session('a')], { getConversationTurn: () => new Promise(() => {}) });
     showEverything();
     expect(screen.getByRole('status', { name: 'Loading latest reply…' })).toBeInTheDocument();
   });
 
   it('shows the failure and fetches again on retry', async () => {
-    const getConversationHistory = vi
+    const getConversationTurn = vi
       .fn()
       .mockRejectedValueOnce(new Error('Host unreachable'))
-      .mockResolvedValue({ turns: [reply('turn-1', 'Recovered')] });
-    setup([session('a')], { getConversationHistory });
+      .mockResolvedValue(reply('turn-1', 'Recovered'));
+    setup([session('a')], { getConversationTurn });
     showEverything();
 
     expect(await screen.findByText('Could not load the latest reply')).toBeInTheDocument();
@@ -180,12 +177,11 @@ describe('UnreadStream', () => {
     expect(await screen.findByText('Recovered')).toBeInTheDocument();
   });
 
-  it('reports a reply that the history does not hold', async () => {
-    setup([session('a')], {
-      getConversationHistory: async () => ({ turns: [reply('other', 'x')] }),
-    });
+  it('shows the newest reply in the history when the read state names none', async () => {
+    const { volundr } = setup([session('a', { readState: state({ latestOutputTurnId: null }) })]);
     showEverything();
-    expect(await screen.findByText(/\(turn-1\) is not in this session/)).toBeInTheDocument();
+    expect(await screen.findByText('Newest reply')).toBeInTheDocument();
+    expect(volundr.getConversationTurn).not.toHaveBeenCalled();
   });
 
   it('opens the session', () => {

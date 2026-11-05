@@ -2123,6 +2123,16 @@ export function buildVolundrHttpAdapter(
       forgeClient
         .get<ConversationPayload>(sessionPath(sessionId, '/conversation'))
         .then(normalizeConversationHistory),
+    getConversationTurn: async (sessionId, turnId) => {
+      const payload = await forgeClient.get<{ turn?: ConversationPayload['turns'][number] }>(
+        sessionPath(sessionId, `/conversation/turns/${encodeURIComponent(turnId)}`),
+      );
+      const [turn] = payload.turn
+        ? normalizeConversationHistory({ turns: [payload.turn] }).turns
+        : [];
+      if (!turn) throw new Error(`Forge returned no turn for ${turnId}`);
+      return turn;
+    },
     getWorkflowGates: async (sessionId) => {
       const payload = await forgeClient.get<WorkflowGateListPayload>(
         sessionPath(sessionId, '/workflow/gates'),

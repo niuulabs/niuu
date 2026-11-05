@@ -1505,6 +1505,9 @@ export function createMockVolundrService(): IVolundrService {
     },
 
     getConversationHistory: async () => ({ turns: [] }),
+    getConversationTurn: async (_sessionId, turnId) => {
+      throw new Error(`The mock conversation has no turn ${turnId}`);
+    },
     getWorkflowGates: async (sessionId) => workflowGates.get(sessionId) ?? [],
     resolveWorkflowGate: async (
       sessionId: string,
