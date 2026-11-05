@@ -53,6 +53,8 @@ const FAMILY_BY_NAME: Readonly<Record<string, ToolFamily>> = {
   shell: 'command',
   shell_command: 'command',
   exec_command: 'command',
+  // Codex code mode: a JavaScript script in `input.input` that drives the tools.
+  exec: 'command',
   write_stdin: 'command',
   'container.exec': 'command',
   run_shell: 'command',
@@ -159,7 +161,7 @@ function fileChanges(input: Record<string, unknown>): FileChange[] {
 }
 
 function commandText(input: Record<string, unknown>): string {
-  const command = input.command ?? input.cmd;
+  const command = input.command ?? input.cmd ?? input.input;
   if (Array.isArray(command)) return command.map(String).join(' ');
   return text(command);
 }

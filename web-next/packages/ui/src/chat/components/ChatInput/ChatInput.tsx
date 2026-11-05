@@ -577,12 +577,14 @@ export function ChatInput({
                 onClick={onStop}
                 disabled={stopDisabled}
                 title={
-                  stopDisabled ? 'Interrupt not supported by this transport' : 'Stop generation'
+                  stopDisabled
+                    ? 'Interrupt not supported by this transport'
+                    : 'Stop the current turn; the session keeps running'
                 }
                 data-testid="stop-btn"
               >
                 <Square className="niuu-chat-stop-icon" />
-                <span>Stop</span>
+                <span>Stop turn</span>
               </button>
             )}
             <button

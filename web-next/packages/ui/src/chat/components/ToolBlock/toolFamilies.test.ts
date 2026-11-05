@@ -26,6 +26,7 @@ describe('toolFamily', () => {
     ['Bash', 'command'],
     ['shell', 'command'],
     ['exec_command', 'command'],
+    ['exec', 'command'],
     ['container.exec', 'command'],
     ['Edit', 'edit'],
     ['MultiEdit', 'edit'],
@@ -78,6 +79,9 @@ describe('toolSubject and toolTicker', () => {
       'pytest tests/',
     );
     expect(toolSubject(toolUse('exec_command', { cmd: 'ls -la' }))).toBe('ls -la');
+    expect(toolSubject(toolUse('exec', { input: 'text(await tools.list());\nreturn 1;' }))).toBe(
+      'text(await tools.list());',
+    );
     expect(toolSubject(toolUse('shell', { command: ['git', 'status'] }))).toBe('git status');
     expect(toolSubject(toolUse('Edit', { file_path: 'src/gates.py' }))).toBe('src/gates.py');
     expect(toolSubject(toolUse('Read', { path: 'a.ts' }))).toBe('a.ts');

@@ -823,19 +823,24 @@ export function SessionsPage() {
         : allSessions.find((session) => session.id === resolvedSelectedSessionId),
     [allSessions, resolvedSelectedSessionId, showUnreadStream],
   );
-  // Opening an unread session reads it. Once per opening: a session the person marks unread
-  // while it stays open must not be read again behind their back.
+  // Opening an unread session reads it, but only one the person opened (a click or a link):
+  // the session shown by default when the page loads has not been read. Once per opening: a
+  // session the person marks unread while it stays open must not be read again behind their back.
+  const chosenSession =
+    openSession && (openSession.id === requestedSessionId || openSession.id === selectedSessionId)
+      ? openSession
+      : undefined;
   const openedSessionId = useRef<string | null>(null);
   const { markRead: markSessionRead } = sessionRead;
   useEffect(() => {
-    if (!openSession) {
+    if (!chosenSession) {
       openedSessionId.current = null;
       return;
     }
-    if (openedSessionId.current === openSession.id) return;
-    openedSessionId.current = openSession.id;
-    if (openSession.readState?.isUnread) void markSessionRead(openSession);
-  }, [openSession, markSessionRead]);
+    if (openedSessionId.current === chosenSession.id) return;
+    openedSessionId.current = chosenSession.id;
+    if (chosenSession.readState?.isUnread) void markSessionRead(chosenSession);
+  }, [chosenSession, markSessionRead]);
 
   function handleReadChange(session: Session, change: ReadChange) {
     void (change === 'read' ? sessionRead.markRead(session) : sessionRead.markUnread(session));

@@ -386,6 +386,17 @@ describe('Opening a session', () => {
     expect(changeSessionReadState).toHaveBeenCalledTimes(1);
   });
 
+  it('does not read the session shown by default when the page opens', async () => {
+    route.params = {};
+    const unreadFirst = sessions.map((session) =>
+      session.id === 'migr' ? session : { ...session, state: 'idle' as const },
+    );
+    const { changeSessionReadState } = setup(unreadFirst);
+    await screen.findByTestId('pod-entry-migr');
+    await screen.findByTestId('live-session-detail-page');
+    expect(changeSessionReadState).not.toHaveBeenCalled();
+  });
+
   it('leaves a read session alone', async () => {
     route.params = { sessionId: 'gates' };
     const { changeSessionReadState } = setup(sessions);
