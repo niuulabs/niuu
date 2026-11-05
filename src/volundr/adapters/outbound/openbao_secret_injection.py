@@ -36,6 +36,14 @@ from volundr.domain.ports import SecretInjectionPort
 logger = logging.getLogger(__name__)
 
 _ENV_FILE_PATH = "/run/secrets/env.sh"
+#: Where the agent's JWT auth reads the pod's ServiceAccount token, and where the
+#: injector looks for a ServiceAccount token mount to give the agent containers.
+_SERVICE_ACCOUNT_TOKEN_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+#: The projected token a resident workload gets for the agent: its own ServiceAccount
+#: does not automount one (charts/skuld/templates/serviceaccount.yaml).
+_WORKLOAD_TOKEN_VOLUME = "openbao-agent-sa-token"
+#: The shortest projected ServiceAccount token Kubernetes issues.
+_MIN_PROJECTED_TOKEN_SECONDS = 600
 
 _ANNOTATION_PREFIX = "vault.hashicorp.com"
 _INJECT_ANNOTATION = f"{_ANNOTATION_PREFIX}/agent-inject"
@@ -81,6 +89,7 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
         role_ttl: str = "1h",
         oauth_mount_path: str = "",
         refresh_interval_seconds: int = 30,
+        workload_token_expiration_seconds: int = 3600,
         **_extra: object,
     ) -> None:
         self._openbao_url = openbao_url.rstrip("/")
@@ -101,6 +110,12 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
             raise ValueError("oauth_mount_path must be a literal OpenBao mount path")
         if refresh_interval_seconds <= 0:
             raise ValueError("refresh_interval_seconds must be positive")
+        if workload_token_expiration_seconds < _MIN_PROJECTED_TOKEN_SECONDS:
+            raise ValueError(
+                "workload_token_expiration_seconds must be at least "
+                f"{_MIN_PROJECTED_TOKEN_SECONDS}, the shortest token Kubernetes projects"
+            )
+        self._workload_token_expiration = workload_token_expiration_seconds
         self._oauth_mount = oauth_mount_path
         self._refresh_interval = refresh_interval_seconds
         self._admin = OpenBaoAdminClient(
@@ -227,7 +242,33 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
                 configmap_name=configmap_name,
                 inject_containers=inject_containers,
                 pre_populate_only=True,
-            )
+            ),
+            # The agent proves the workload's identity with its ServiceAccount token,
+            # bound to the audience the JWT role accepts. A workload's own SA mounts
+            # none, and without one the injector refuses the pod.
+            volumes=(
+                {
+                    "name": _WORKLOAD_TOKEN_VOLUME,
+                    "projected": {
+                        "sources": [
+                            {
+                                "serviceAccountToken": {
+                                    "path": "token",
+                                    "audience": self._audience,
+                                    "expirationSeconds": self._workload_token_expiration,
+                                }
+                            }
+                        ]
+                    },
+                },
+            ),
+            volume_mounts=(
+                {
+                    "name": _WORKLOAD_TOKEN_VOLUME,
+                    "mountPath": _SERVICE_ACCOUNT_TOKEN_DIR,
+                    "readOnly": True,
+                },
+            ),
         )
 
     async def cleanup_workload(self, workload_id: str) -> None:
@@ -389,7 +430,7 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
             '  method "jwt" {',
             f'    mount_path = "{self._auth_mount_path()}"',
             "    config = {",
-            '      path = "/var/run/secrets/kubernetes.io/serviceaccount/token"',
+            f'      path = "{_SERVICE_ACCOUNT_TOKEN_DIR}/token"',
             f'      role = "{role_name}"',
             "      remove_jwt_after_reading = false",
             "    }",

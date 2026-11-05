@@ -931,6 +931,29 @@ class ResidentRuntimeController(ABC):
     def supports(self, profile: ResidentDeploymentProfile) -> bool:
         """Return whether this controller implements the complete profile."""
 
+    def planned_backend_ref(self, runtime: ResidentRuntime) -> dict[str, Any]:
+        """The backend reference a deploy will create for ``runtime``, before it exists.
+
+        The deploy runs in the background, so the create response carries this: the
+        platform records the resident's workload delegation from it at create. A
+        controller whose reference is only known once its backend creates it has none.
+        """
+        return {}
+
+    async def bind_integrations(
+        self,
+        owner_id: str,
+        profile: ResidentDeploymentProfile,
+    ) -> dict[str, str]:
+        """Bind each integration the profile's declared credentials name to an owner credential.
+
+        Called at create, inside the owner's request, because reading the owner's
+        connections may need their bearer; the result (``{slug: credential name}``) is
+        persisted on the resident and every later render reuses it. Declared but
+        unbindable raises. A controller that injects no declared credentials binds none.
+        """
+        return {}
+
     @abstractmethod
     async def deploy(
         self,

@@ -486,6 +486,47 @@ class TestWorkloadInjection:
         assert additions.annotations["vault.hashicorp.com/agent-pre-populate-only"] == "true"
         assert adapter.supports_workloads
 
+    async def test_gives_the_agent_a_service_account_token_where_its_config_reads_it(self, adapter):
+        # A resident's own ServiceAccount automounts no token, and the injector refuses
+        # a pod with no ServiceAccount token mount.
+        with (
+            patch.object(adapter, "_create_or_update_configmap", new=AsyncMock()) as mock_cm,
+            patch.object(adapter._admin, "ensure_policy", new=AsyncMock()),
+            patch.object(adapter._admin, "ensure_jwt_role", new=AsyncMock()) as mock_role,
+        ):
+            additions = await adapter.workload_pod_spec_additions(
+                "alice",
+                self._MAPPINGS,
+                workload_id="res-1",
+                service_account_name="resident-res-1",
+                inject_containers="ravn",
+            )
+
+        [volume] = additions.volumes
+        [source] = volume["projected"]["sources"]
+        assert source["serviceAccountToken"] == {
+            "path": "token",
+            "audience": "https://k8s-issuer.valhalla.asgard.niuu.world",
+            "expirationSeconds": 3600,
+        }
+        assert mock_role.await_args.args[0].bound_audiences == (
+            "https://k8s-issuer.valhalla.asgard.niuu.world",
+        )
+        [mount] = additions.volume_mounts
+        assert mount == {
+            "name": volume["name"],
+            "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+            "readOnly": True,
+        }
+        config = mock_cm.await_args.kwargs["data"]["config.hcl"]
+        assert 'path = "/var/run/secrets/kubernetes.io/serviceaccount/token"' in config
+
+    def test_workload_token_lifetime_is_configurable_within_kubernetes_bounds(self):
+        adapter = OpenBaoAgentInjectionAdapter(workload_token_expiration_seconds=900)
+        assert adapter._workload_token_expiration == 900
+        with pytest.raises(ValueError, match="at least 600"):
+            OpenBaoAgentInjectionAdapter(workload_token_expiration_seconds=599)
+
     @pytest.mark.parametrize(
         ("mappings", "service_account", "message"),
         [

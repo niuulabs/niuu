@@ -1736,6 +1736,10 @@ class ResidentRuntime(BaseModel):
     flock_role: str = Field(default="", max_length=100)
     flock_peer_id: str = Field(default="", max_length=255)
     realm_id: UUID | None = None
+    #: Which of the owner's credentials each integration the profile declares was bound
+    #: to (``{slug: credential name}``), resolved at create while the owner's bearer
+    #: can read their connections; every later render reuses it.
+    integration_bindings: dict[str, str] = Field(default_factory=dict)
     desired_state: ResidentDesiredState = ResidentDesiredState.RUNNING
     observed_state: ResidentObservedState = ResidentObservedState.PENDING
     backend_ref: dict[str, Any] = Field(default_factory=dict)

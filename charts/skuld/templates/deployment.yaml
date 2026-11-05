@@ -568,6 +568,9 @@ spec:
               mountPath: /var/run/secrets/niuu-workload
               readOnly: true
             {{- end }}
+            {{- range .Values.resident.extraVolumeMounts }}
+            - {{- toYaml . | nindent 14 }}
+            {{- end }}
         {{- end }}
         {{- range .Values.extraContainers }}
         {{- $container := deepCopy . }}

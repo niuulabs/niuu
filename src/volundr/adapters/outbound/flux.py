@@ -36,6 +36,7 @@ from volundr.domain.models import (
     LABEL_MANAGED_BY,
     LABEL_PVC_TYPE,
     CredentialMapping,
+    PodSpecAdditions,
     ResidentBackend,
     ResidentCondition,
     ResidentConditionStatus,
@@ -584,6 +585,10 @@ class FluxPodManager(
             return {}
         return {"serviceAccountName": self._resident_release_name(runtime)}
 
+    def planned_backend_ref(self, runtime: ResidentRuntime) -> dict[str, Any]:
+        """The resident's HelmRelease, which names its workload identity, before it exists."""
+        return self._backend_ref(runtime)
+
     def _backend_ref(self, runtime: ResidentRuntime) -> dict[str, Any]:
         release_name = self._resident_release_name(runtime)
         return {
@@ -803,12 +808,12 @@ class FluxPodManager(
         self._integrations = integrations
         self._credential_store = credential_store
 
-    async def _resident_credential_annotations(
+    async def _resident_credential_additions(
         self,
         runtime: ResidentRuntime,
         profile: ResidentDeploymentProfile,
         bound: Mapping[str, str],
-    ) -> tuple[dict[str, str], dict[str, str]]:
+    ) -> tuple[PodSpecAdditions, dict[str, str]]:
         """Inject the owner's credentials a profile declares, bound to the resident's own SA.
 
         ``deployment.credentials`` lists ``{integration: <slug>}`` (the owner's one enabled
@@ -816,13 +821,16 @@ class FluxPodManager(
         mapping a path under /run/secrets/ to a credential field. They render into the
         ravn container. Declared but impossible is fatal.
 
-        An integration already in ``bound`` keeps that credential; any other is read
-        from the owner's connections. Returns the annotations and every integration's
-        credential, for the release to record (``ANNOTATION_RESIDENT_INTEGRATIONS``).
+        An integration already in ``bound`` (bound at create, or recorded by the
+        release) keeps that credential; any other is read from the owner's
+        connections, which needs the owner's request bearer. Returns the pod
+        additions (annotations, and the ServiceAccount token the agent authenticates
+        with) and every integration's credential, for the release to record
+        (``ANNOTATION_RESIDENT_INTEGRATIONS``).
         """
         declared = profile.deployment.get("credentials") or []
         if not declared:
-            return {}, {}
+            return PodSpecAdditions(), {}
         if not isinstance(declared, list):
             raise ValueError(f"Resident profile {profile.id} deployment.credentials must be a list")
         injection = self._secret_injection
@@ -854,7 +862,7 @@ class FluxPodManager(
             inject_containers=RESIDENT_CREDENTIAL_CONTAINERS,
             tenant_id=runtime.tenant_id,
         )
-        return dict(additions.annotations), integrations
+        return additions, integrations
 
     async def _resident_credential_mapping(
         self,
@@ -880,7 +888,7 @@ class FluxPodManager(
                 )
         if integration:
             credential = bound.get(integration) or await self._owner_integration_credential(
-                runtime, where, integration
+                runtime.owner_id, where, integration
             )
         if self._credential_store is None:
             raise ValueError(f"{where} needs a credential store to check the owner's credentials")
@@ -895,14 +903,30 @@ class FluxPodManager(
             file_mappings={str(path): str(field) for path, field in files.items()},
         )
 
-    async def _owner_integration_credential(
-        self, runtime: ResidentRuntime, where: str, slug: str
-    ) -> str:
+    async def bind_integrations(
+        self,
+        owner_id: str,
+        profile: ResidentDeploymentProfile,
+    ) -> dict[str, str]:
+        """The owner's credential behind each integration the profile's credentials name."""
+        declared = profile.deployment.get("credentials") or []
+        if not isinstance(declared, list):
+            raise ValueError(f"Resident profile {profile.id} deployment.credentials must be a list")
+        where = f"Resident profile {profile.id} deployment.credentials"
+        return {
+            str(item["integration"]): await self._owner_integration_credential(
+                owner_id, where, str(item["integration"])
+            )
+            for item in declared
+            if isinstance(item, dict) and item.get("integration")
+        }
+
+    async def _owner_integration_credential(self, owner_id: str, where: str, slug: str) -> str:
         if self._integrations is None:
             raise ValueError(f"{where} names integration {slug!r} but no integrations are wired")
         connections = [
             connection
-            for connection in await self._integrations.list_connections(runtime.owner_id)
+            for connection in await self._integrations.list_connections(owner_id)
             if connection.slug == slug and connection.enabled
         ]
         if len(connections) != 1:
@@ -1197,7 +1221,9 @@ class FluxPodManager(
         profile: ResidentDeploymentProfile,
     ) -> ResidentRuntimeObservation:
         release_name = self._resident_release_name(runtime)
-        rendered = await self._render_resident_values(runtime, profile)
+        rendered = await self._render_resident_values(
+            runtime, profile, bound_integrations=runtime.integration_bindings
+        )
         values = rendered.values
         version = self._platform_version(values)
         await self._ensure_resident_claims(runtime, self._resident_claims(runtime, profile))
@@ -1282,7 +1308,7 @@ class FluxPodManager(
         runtime_id = str(runtime.id)
         try:
             rendered = await self._render_resident_values(
-                runtime, profile, bound_integrations=_release_integrations(helmrelease)
+                runtime, profile, bound_integrations=_bound_integrations(runtime, helmrelease)
             )
         except Exception:
             # Deploy reports a profile or realm that does not render; reconcile
@@ -1339,11 +1365,20 @@ class FluxPodManager(
     ) -> RenderedResident:
         """The resident's values; ``bound_integrations`` are those its release recorded."""
         values = self._resident_values(runtime, profile, await self._resolve_realm_slug(runtime))
-        annotations, integrations = await self._resident_credential_annotations(
+        additions, integrations = await self._resident_credential_additions(
             runtime, profile, bound_integrations or {}
         )
-        if annotations:
-            values.setdefault("podAnnotations", {}).update(annotations)
+        if additions.annotations:
+            values.setdefault("podAnnotations", {}).update(additions.annotations)
+        if additions.volumes:
+            values["extraVolumes"] = [*values.get("extraVolumes", []), *additions.volumes]
+        if additions.volume_mounts:
+            # Into the ravn container, which the credentials are injected into.
+            resident = values.setdefault("resident", {})
+            resident["extraVolumeMounts"] = [
+                *resident.get("extraVolumeMounts", []),
+                *additions.volume_mounts,
+            ]
         return RenderedResident(values=values, integrations=integrations)
 
     def _platform_version(self, values: dict[str, Any]) -> str:
@@ -1441,7 +1476,7 @@ class FluxPodManager(
         if helmrelease is None:
             return await self.deploy(runtime, profile)
         rendered = await self._render_resident_values(
-            runtime, profile, bound_integrations=_release_integrations(helmrelease)
+            runtime, profile, bound_integrations=_bound_integrations(runtime, helmrelease)
         )
         if pod_annotations:
             rendered.values.setdefault("podAnnotations", {}).update(pod_annotations)
@@ -1864,6 +1899,11 @@ def _integrations_annotation(integrations: Mapping[str, str]) -> dict[str, str]:
     if not integrations:
         return {}
     return {ANNOTATION_RESIDENT_INTEGRATIONS: json.dumps(dict(sorted(integrations.items())))}
+
+
+def _bound_integrations(runtime: ResidentRuntime, helmrelease: dict[str, Any]) -> dict[str, str]:
+    """What the resident was bound to at create, with what its release recorded on top."""
+    return {**runtime.integration_bindings, **_release_integrations(helmrelease)}
 
 
 def _release_integrations(helmrelease: dict[str, Any]) -> dict[str, str]:

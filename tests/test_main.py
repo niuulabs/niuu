@@ -19,6 +19,7 @@ from volundr.main import (
     _log_bifrost_catalog_task_failure,
     _reconcile_active_loop,
     _reconcile_resident_runtimes_loop,
+    _refresh_bifrost_catalog,
     create_app,
 )
 
@@ -732,6 +733,9 @@ class TestLifespan:
         assert captured["settings"].notifications.dispatcher.enabled is True
 
 
+_RETRY = {"retry_initial_seconds": 0.1, "retry_max_seconds": 0.4}
+
+
 class TestBifrostCatalogLoading:
     """Tests for background Bifrost catalog refresh behavior."""
 
@@ -749,7 +753,7 @@ class TestBifrostCatalogLoading:
             },
         )()
 
-        await _load_bifrost_catalog(provider, catalog)
+        await _load_bifrost_catalog(provider, catalog, **_RETRY)
 
         assert [model.id for model in provider.list_models()] == ["gpt-5"]
 
@@ -776,7 +780,7 @@ class TestBifrostCatalogLoading:
             sleep_calls.append(delay)
 
         with patch("volundr.main.asyncio.sleep", side_effect=fake_sleep):
-            await _load_bifrost_catalog(provider, catalog)
+            await _load_bifrost_catalog(provider, catalog, **_RETRY)
 
         assert sleep_calls == [0.1]
         assert [model.id for model in provider.list_models()] == ["gpt-5.5"]
@@ -799,14 +803,16 @@ class TestBifrostCatalogLoading:
         )()
 
         with patch("volundr.main.asyncio.sleep", new=AsyncMock()) as sleep:
-            await _load_bifrost_catalog(provider, catalog)
+            await _load_bifrost_catalog(provider, catalog, **_RETRY)
 
         assert sleep.await_count == 1
         assert [model.id for model in provider.list_models()] == ["gpt-5.5"]
 
     @pytest.mark.asyncio
-    async def test_load_bifrost_catalog_raises_on_non_connect_error(self):
-        """A reachable catalog that answers badly is a misconfiguration, not 'not ready'."""
+    async def test_load_bifrost_catalog_retries_every_error_loudly_with_capped_backoff(
+        self, caplog
+    ):
+        """A catalog that answers badly is retried (and logged at error), never given up on."""
         provider = HardcodedPricingProvider()
         request = httpx.Request("GET", "http://guild.test/api/v1/bifrost/models")
         response = httpx.Response(401, request=request)
@@ -816,19 +822,91 @@ class TestBifrostCatalogLoading:
             (),
             {
                 "_base_url": "http://guild.test",
-                "list_models": AsyncMock(side_effect=error),
+                "list_models": AsyncMock(
+                    side_effect=[
+                        error,
+                        ValueError("bad payload"),
+                        error,
+                        error,
+                        [ManagedModel(id="gpt-5.5", name="GPT-5.5", vendor="openai")],
+                    ]
+                ),
+            },
+        )()
+
+        sleep_calls: list[float] = []
+
+        async def fake_sleep(delay: float) -> None:
+            sleep_calls.append(delay)
+
+        with (
+            patch("volundr.main.asyncio.sleep", side_effect=fake_sleep),
+            caplog.at_level("ERROR", logger="volundr.main"),
+        ):
+            await _load_bifrost_catalog(provider, catalog, **_RETRY)
+
+        assert sleep_calls == [0.1, 0.2, 0.4, 0.4]
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) == 4
+        assert all("bifrost.url" in r.getMessage() for r in errors)
+        assert [model.id for model in provider.list_models()] == ["gpt-5.5"]
+
+    @pytest.mark.asyncio
+    async def test_refresh_failure_keeps_last_good_catalog(self):
+        provider = HardcodedPricingProvider()
+        provider.replace_models([ManagedModel(id="gpt-5", name="GPT-5", vendor="openai")])
+        seen_during_failure: list[list[str]] = []
+
+        async def fake_sleep(_delay: float) -> None:
+            seen_during_failure.append([model.id for model in provider.list_models()])
+
+        catalog = type(
+            "FakeCatalog",
+            (),
+            {
+                "_base_url": "http://guild.test",
+                "list_models": AsyncMock(
+                    side_effect=[
+                        RuntimeError("catalog broke"),
+                        [ManagedModel(id="gpt-5.5", name="GPT-5.5", vendor="openai")],
+                    ]
+                ),
+            },
+        )()
+
+        with patch("volundr.main.asyncio.sleep", side_effect=fake_sleep):
+            await _load_bifrost_catalog(provider, catalog, **_RETRY)
+
+        assert seen_during_failure == [["gpt-5"]]
+        assert [model.id for model in provider.list_models()] == ["gpt-5.5"]
+
+    @pytest.mark.asyncio
+    async def test_refresh_task_survives_failures_after_a_good_load(self):
+        provider = HardcodedPricingProvider()
+        catalog = type(
+            "FakeCatalog",
+            (),
+            {
+                "_base_url": "http://guild.test",
+                "list_models": AsyncMock(
+                    side_effect=[
+                        [ManagedModel(id="gpt-5", name="GPT-5", vendor="openai")],
+                        RuntimeError("catalog broke"),
+                        [ManagedModel(id="gpt-5.5", name="GPT-5.5", vendor="openai")],
+                        asyncio.CancelledError(),
+                    ]
+                ),
             },
         )()
 
         with (
-            patch("volundr.main.asyncio.sleep", new=AsyncMock()) as sleep,
-            pytest.raises(httpx.HTTPStatusError),
+            patch("volundr.main.asyncio.sleep", new=AsyncMock()),
+            pytest.raises(asyncio.CancelledError),
         ):
-            await _load_bifrost_catalog(provider, catalog)
+            await _refresh_bifrost_catalog(provider, catalog, interval_seconds=60.0, **_RETRY)
 
-        assert sleep.await_count == 0
-        assert catalog.list_models.await_count == 1
-        assert provider.list_models() == []
+        assert catalog.list_models.await_count == 4
+        assert [model.id for model in provider.list_models()] == ["gpt-5.5"]
 
     @pytest.mark.asyncio
     async def test_catalog_task_failure_is_logged_at_error_with_remedy(self, caplog):
@@ -842,7 +920,7 @@ class TestBifrostCatalogLoading:
             await asyncio.sleep(0)
 
         [record] = [r for r in caplog.records if r.levelname == "ERROR"]
-        assert "bifrost.url" in record.getMessage()
+        assert "Restart Volundr" in record.getMessage()
         assert record.exc_info is not None
 
     @pytest.mark.asyncio

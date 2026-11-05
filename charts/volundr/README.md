@@ -511,6 +511,9 @@ secretInjection:
     mount_path: "volundr"
     auth_path: "jwt-example"
     audience: "https://kubernetes.default.svc.cluster.local"
+    # Lifetime of the projected ServiceAccount token a resident that declares
+    # deployment.credentials gets for the agent (its own SA automounts none).
+    workload_token_expiration_seconds: 3600
 ```
 
 </details>

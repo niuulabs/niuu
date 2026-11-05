@@ -231,18 +231,26 @@ BROADCAST_INTERVAL = 30
 logger = logging.getLogger(__name__)
 
 
-# Only "could not reach Bifrost" is retried: in mini mode the catalog is served by
-# this same process and is not listening yet when the lifespan starts. Any other
-# failure (HTTP error, bad payload, bad auth) means a reachable catalog answered
-# wrongly, which is a misconfiguration and must surface instead of being retried.
+# "Could not reach Bifrost" is the expected startup state in mini mode: the catalog is
+# served by this same process and is not listening yet when the lifespan starts.
 _BIFROST_NOT_READY_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout)
 
 
 async def _load_bifrost_catalog(
     pricing_provider: HardcodedPricingProvider,
     bifrost_catalog: HttpBifrostCatalogAdapter,
+    *,
+    retry_initial_seconds: float,
+    retry_max_seconds: float,
 ) -> None:
-    delay_seconds = 0.1
+    """Load the catalog, retrying every failure with capped backoff until it succeeds.
+
+    A failed attempt never replaces the models already loaded, so a refresh that
+    fails keeps serving the last good catalog. Every failure is logged: "not ready"
+    at warning, anything else (HTTP error, bad payload, bad auth) at error with the
+    knobs to fix, because Volundr serves no resident profiles until a load succeeds.
+    """
+    delay_seconds = retry_initial_seconds
     while True:
         try:
             models = await bifrost_catalog.list_models()
@@ -253,12 +261,22 @@ async def _load_bifrost_catalog(
                 exc,
                 delay_seconds,
             )
-            await asyncio.sleep(delay_seconds)
-            delay_seconds = min(delay_seconds * 2, 5.0)
-            continue
-        pricing_provider.replace_models(models)
-        logger.info("Loaded %s model(s) from configured Bifrost catalog", len(models))
-        return
+        except Exception as exc:
+            logger.error(
+                "Bifrost catalog load from %s failed: %s; retrying in %.1fs. Fix the catalog "
+                "at bifrost.url (and bifrost.auth); until a load succeeds Volundr keeps the "
+                "last loaded catalog (none at startup, so no resident profiles resolve)",
+                bifrost_catalog._base_url,  # noqa: SLF001
+                exc,
+                delay_seconds,
+                exc_info=exc,
+            )
+        else:
+            pricing_provider.replace_models(models)
+            logger.info("Loaded %s model(s) from configured Bifrost catalog", len(models))
+            return
+        await asyncio.sleep(delay_seconds)
+        delay_seconds = min(delay_seconds * 2, retry_max_seconds)
 
 
 def _log_bifrost_catalog_task_failure(task: asyncio.Task[None]) -> None:
@@ -269,8 +287,8 @@ def _log_bifrost_catalog_task_failure(task: asyncio.Task[None]) -> None:
     if exc is None:
         return
     logger.error(
-        "Bifrost catalog refresh stopped: %s. Fix the catalog at bifrost.url (and bifrost.auth) "
-        "and restart Volundr; the model catalog will not refresh until then",
+        "Bifrost catalog refresh stopped unexpectedly: %s. Restart Volundr; the model "
+        "catalog will not refresh until then",
         exc,
         exc_info=exc,
     )
@@ -281,9 +299,16 @@ async def _refresh_bifrost_catalog(
     bifrost_catalog: HttpBifrostCatalogAdapter,
     *,
     interval_seconds: float,
+    retry_initial_seconds: float,
+    retry_max_seconds: float,
 ) -> None:
     while True:
-        await _load_bifrost_catalog(pricing_provider, bifrost_catalog)
+        await _load_bifrost_catalog(
+            pricing_provider,
+            bifrost_catalog,
+            retry_initial_seconds=retry_initial_seconds,
+            retry_max_seconds=retry_max_seconds,
+        )
         await asyncio.sleep(interval_seconds)
 
 
@@ -957,6 +982,8 @@ def create_app(
                     pricing_provider,
                     bifrost_catalog,
                     interval_seconds=settings.bifrost.catalog_refresh_interval_seconds,
+                    retry_initial_seconds=settings.bifrost.catalog_retry_initial_seconds,
+                    retry_max_seconds=settings.bifrost.catalog_retry_max_seconds,
                 )
             )
             bifrost_catalog_task.add_done_callback(_log_bifrost_catalog_task_failure)

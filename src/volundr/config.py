@@ -3248,6 +3248,20 @@ class VolundrBifrostConfig(BifrostConfig):
         gt=0,
         description="Interval between successful Bifrost catalog refreshes.",
     )
+    catalog_retry_initial_seconds: float = Field(
+        default=0.1,
+        gt=0,
+        description=(
+            "First delay before retrying a failed Bifrost catalog load. Every failure is "
+            "retried (doubling up to catalog_retry_max_seconds) and logged; the last good "
+            "catalog stays in use meanwhile."
+        ),
+    )
+    catalog_retry_max_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description="Longest delay between retries of a failed Bifrost catalog load.",
+    )
     session_gateway_url: str = Field(
         default="",
         description=(

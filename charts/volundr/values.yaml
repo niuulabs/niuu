@@ -339,6 +339,10 @@ bifrost:
   timeoutSeconds: 10.0
   # -- Interval between successful model catalog refreshes
   catalogRefreshIntervalSeconds: 60.0
+  # -- First delay before retrying a failed catalog load; every failure is retried and logged
+  catalogRetryInitialSeconds: 0.1
+  # -- Longest delay between retries of a failed catalog load (backoff doubles up to this)
+  catalogRetryMaxSeconds: 5.0
   auth:
     # -- Fully-qualified outbound auth adapter class
     adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"

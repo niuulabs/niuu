@@ -142,11 +142,18 @@ class ResidentRuntimeService:
     ) -> ResidentRuntime:
         """Persist one resident and provision its backend asynchronously."""
         profile = self._require_profile(profile_id)
-        if isinstance(self._require_controller(profile), ResidentDiscoverySource):
+        controller = self._require_controller(profile)
+        if isinstance(controller, ResidentDiscoverySource):
             raise ResidentRuntimeValidationError(
                 f"Resident profile {profile_id} is for residents the Forge discovers; it "
                 "deploys none"
             )
+        # Bound here, inside the owner's request: the deploy runs in the background and
+        # the reconciler has no caller, and reading the owner's connections may need one.
+        try:
+            integration_bindings = await controller.bind_integrations(principal.user_id, profile)
+        except ValueError as exc:
+            raise ResidentRuntimeValidationError(str(exc)) from exc
         runtime = await self.create_record(
             principal,
             name=name,
@@ -158,10 +165,12 @@ class ResidentRuntimeService:
             flock_role=flock_role,
             flock_peer_id=flock_peer_id,
             realm_id=realm_id,
+            integration_bindings=integration_bindings,
         )
         deploying = runtime.model_copy(
             update={
                 "observed_state": ResidentObservedState.DEPLOYING,
+                "backend_ref": controller.planned_backend_ref(runtime),
                 "conditions": [
                     ResidentCondition(
                         type="BackendReady",
@@ -182,8 +191,7 @@ class ResidentRuntimeService:
         runtime: ResidentRuntime,
         profile: ResidentDeploymentProfile,
     ) -> None:
-        existing = self._deployment_tasks.get(runtime.id)
-        if existing is not None and not existing.done():
+        if self._deployment_in_flight(runtime.id):
             return
         task = asyncio.create_task(
             self._deploy_background(runtime, profile),
@@ -248,8 +256,13 @@ class ResidentRuntimeService:
         flock_role: str = "",
         flock_peer_id: str = "",
         realm_id: UUID | None = None,
+        integration_bindings: dict[str, str] | None = None,
     ) -> ResidentRuntime:
-        """Create the durable record used by a real deployment adapter."""
+        """Create the durable record used by a real deployment adapter.
+
+        ``integration_bindings`` are the owner credentials the controller bound the
+        profile's declared integrations to (``ResidentRuntimeController.bind_integrations``).
+        """
         self._require_write_role(principal)
         profile = self._require_profile(profile_id)
 
@@ -292,6 +305,7 @@ class ResidentRuntimeService:
             flock_role=flock_role.strip(),
             flock_peer_id=flock_peer_id.strip(),
             realm_id=realm_id,
+            integration_bindings=integration_bindings or {},
             capabilities=profile.capabilities,
         )
         try:
@@ -383,6 +397,10 @@ class ResidentRuntimeService:
         try:
             profile = self._require_profile(runtime.profile_id)
             controller = self._require_controller(profile)
+            if self._deployment_in_flight(runtime.id):
+                # The create carries the planned backend ref, so the record no longer
+                # says "not deployed yet"; reconciling now would deploy it a second time.
+                return runtime
             if self._awaits_deployment(runtime):
                 self._schedule_deployment(runtime, profile)
                 return runtime
@@ -399,6 +417,10 @@ class ResidentRuntimeService:
         if self._awaits_deployment(reconciled):
             self._schedule_deployment(reconciled, profile)
         return reconciled
+
+    def _deployment_in_flight(self, runtime_id: UUID) -> bool:
+        task = self._deployment_tasks.get(runtime_id)
+        return task is not None and not task.done()
 
     @staticmethod
     def _awaits_deployment(runtime: ResidentRuntime) -> bool:
