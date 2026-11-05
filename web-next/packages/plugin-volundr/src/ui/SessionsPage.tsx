@@ -797,9 +797,11 @@ export function SessionsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const { ids: pinnedIds, pinned } = usePinnedSessions();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Projects first, as Lexi's code sidebar: each project a folder, then the sessions in none.
+  // A new key, so a grouping saved while State was the default does not hold the list there.
   const [sidebarMode, setSidebarMode] = useForgePreference<SidebarMode>(
-    'grouping',
-    'state',
+    'sessionGrouping',
+    'project',
     SIDEBAR_MODES,
   );
   const [filter, setFilter] = useForgePreference<SessionFilter>(

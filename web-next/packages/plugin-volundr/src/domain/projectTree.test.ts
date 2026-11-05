@@ -35,7 +35,7 @@ describe('project session hierarchy', () => {
     const groups = groupByProject(sessions, [
       { id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' },
     ]);
-    expect(groups.map((group) => group.label)).toEqual(['Lexi', 'unknown', 'No project']);
+    expect(groups.map((group) => group.label)).toEqual(['Lexi', 'unknown', 'Independent sessions']);
     expect(groups[0]?.sessions.map((s) => s.id)).toEqual(['a', 'b']);
   });
   it('nests workers under their parent and promotes filtered or missing parents to the root', () => {

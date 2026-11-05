@@ -20,7 +20,7 @@ export function groupByProject(
     const id = session.coordination?.projectId ?? '';
     const group = groups.get(id) ?? {
       id,
-      label: projects.find((project) => project.id === id)?.name ?? (id || 'No project'),
+      label: projects.find((project) => project.id === id)?.name ?? (id || 'Independent sessions'),
       sessions: [],
     };
     group.sessions.push(session);

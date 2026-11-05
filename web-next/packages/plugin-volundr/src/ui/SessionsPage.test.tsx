@@ -154,6 +154,8 @@ function createSessionStoreWithSessions(sessions: Session[]): ISessionStore {
 describe('SessionsPage', () => {
   beforeEach(() => {
     localStorage.clear();
+    // These cases read the list by state; the default grouping (projects) has its own case.
+    localStorage.setItem('niuu.forge.sessionGrouping', 'state');
     navigate.mockClear();
   });
 
@@ -724,6 +726,8 @@ describe('SessionsPage', () => {
 describe('Forge session review controls', () => {
   beforeEach(() => {
     localStorage.clear();
+    // These cases read the list by state; the default grouping (projects) has its own case.
+    localStorage.setItem('niuu.forge.sessionGrouping', 'state');
     navigate.mockClear();
   });
   const sessions = [
@@ -863,7 +867,8 @@ describe('Forge session review controls', () => {
   });
 });
 
-it('groups registered projects as a collapsible session tree and keeps settings in the list menu', async () => {
+it('groups by project by default, as a collapsible session tree, and keeps settings in the list menu', async () => {
+  localStorage.clear();
   const service = createMockVolundrService();
   service.getProjects = vi
     .fn()
@@ -888,11 +893,10 @@ it('groups registered projects as a collapsible session tree and keeps settings 
     makeSession({ id: 'other', personaName: 'Independent', state: 'idle' }),
   ];
   wrap(createSessionStoreWithSessions(sessions), service);
-  await screen.findByTestId('pod-entry-parent');
-  expect(service.getProjects).not.toHaveBeenCalled();
-  chooseGrouping('project');
   await screen.findByTestId('pod-group-lexi');
-  expect(screen.getByTestId('pod-group-no-project')).toHaveTextContent('Independent');
+  expect(screen.getByTestId('session-list-scope')).toHaveTextContent('Live · Project');
+  // Sessions in no project close the list, as Lexi's independent sessions do.
+  expect(screen.getByTestId('pod-group-independent-sessions')).toHaveTextContent('Independent');
   fireEvent.click(screen.getByRole('button', { name: 'Collapse workers of Coordinator' }));
   expect(screen.queryByTestId('pod-entry-child')).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Expand workers of Coordinator' }));
@@ -936,6 +940,8 @@ describe('coordinators and their workers', () => {
 
   beforeEach(() => {
     localStorage.clear();
+    // These cases read the list by state; the default grouping (projects) has its own case.
+    localStorage.setItem('niuu.forge.sessionGrouping', 'state');
     navigate.mockClear();
   });
 
