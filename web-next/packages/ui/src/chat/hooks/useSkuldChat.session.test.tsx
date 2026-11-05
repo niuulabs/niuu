@@ -409,6 +409,81 @@ describe('useSkuldChat session frames', () => {
     });
   });
 
+  describe('Claude interactive tool calls', () => {
+    const hook = { source: 'claude_hook', hook_event_name: 'PreToolUse' };
+    const toolUse = (id: string, command: string) => ({
+      type: 'assistant',
+      message: {
+        model: 'interactive',
+        content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }],
+      },
+      metadata: hook,
+    });
+    const toolResult = (id: string, content: string) => ({
+      type: 'user',
+      message: { content: [{ type: 'tool_result', tool_use_id: id, content }] },
+    });
+    const text = (value: string) => ({
+      type: 'assistant',
+      message: { model: 'claude-fable-5-1', content: [{ type: 'text', text: value }] },
+    });
+
+    it('keeps the hook-reported calls and the closing text in the reply in progress', async () => {
+      const { result } = await connect();
+      // The frame order recorded from a live tmux session on valhalla.
+      frame(text('Running the commands.'));
+      frame(toolUse('c1', 'pwd'));
+      frame(toolResult('c1', '/workspace'));
+      frame(toolUse('c2', 'ls scratch-ui-test'));
+      frame(toolResult('c2', 'notes.md'));
+      frame(text('done'));
+      frame({ type: 'result' });
+
+      const replies = result.current.messages.filter((message) => message.role === 'assistant');
+      expect(replies).toHaveLength(1);
+      expect(replies[0]!.parts?.map((part) => [part.type, part.id ?? part.tool_use_id])).toEqual([
+        ['text', undefined],
+        ['tool_use', 'c1'],
+        ['tool_result', 'c1'],
+        ['tool_use', 'c2'],
+        ['tool_result', 'c2'],
+        ['text', undefined],
+      ]);
+      expect(replies[0]!.status).toBe('done');
+    });
+
+    it('names the model from the reply text, not the hook placeholder', async () => {
+      const { result } = await connect();
+      frame(toolUse('c1', 'date'));
+      frame(text('ok'));
+      frame({ type: 'result' });
+      const reply = result.current.messages.find((message) => message.role === 'assistant');
+      expect(Object.keys(reply!.metadata?.usage ?? {})).toEqual(['claude-fable-5-1']);
+    });
+
+    it('starts the reply when a hook-reported call comes first', async () => {
+      const { result } = await connect();
+      frame(toolUse('c1', 'date'));
+      frame(toolResult('c1', 'Thu Nov  5'));
+      frame(text('ok'));
+      frame({ type: 'result' });
+
+      const replies = result.current.messages.filter((message) => message.role === 'assistant');
+      expect(replies).toHaveLength(1);
+      expect(replies[0]!.parts?.filter((part) => part.type === 'tool_use')).toHaveLength(1);
+      expect(replies[0]!.content).toContain('ok');
+    });
+
+    it('leaves calls from other transports on their existing path', async () => {
+      const { result } = await connect();
+      frame(text('First.'));
+      frame({ ...toolUse('c9', 'ls'), metadata: undefined });
+      const replies = result.current.messages.filter((message) => message.role === 'assistant');
+      // Without the hook source the frame still starts a new reply, as before.
+      expect(replies).toHaveLength(2);
+    });
+  });
+
   describe('message delivery', () => {
     async function sendOne(text = 'hello') {
       const hook = await connect();

@@ -291,6 +291,8 @@ interface UseSkuldChatResult {
 }
 
 const SINGLE_PARTICIPANT_ID = 'skuld-primary';
+// Frames Claude's interactive transport derives from its native hooks (metadata.source).
+const CLAUDE_HOOK_SOURCE = 'claude_hook';
 // Skuld's correlated rejections of an answer (skuld/control_errors.py): the question is
 // still pending natively, so its card must come back.
 const ANSWER_REJECTION_CODES = new Set(['question_answer_rejected', 'question_recovery_required']);
@@ -1744,6 +1746,70 @@ export function useSkuldChat(
               });
               setStreamingParts([...streamingPartsRef.current]);
               syncStreamingMessage();
+              break;
+            }
+            // Claude's interactive (tmux) transport reports each tool call from its PreToolUse
+            // hook as an assistant frame with no turn id. The call belongs to the reply in
+            // progress; closing that reply here dropped the call until the page reloaded history.
+            if (
+              !event.turn_id &&
+              event.metadata?.source === CLAUDE_HOOK_SOURCE &&
+              blocks?.length &&
+              blocks.every((block) => block.type === 'tool_use' && block.id)
+            ) {
+              if (!streamingMessageIdRef.current) {
+                const id = generateId();
+                streamingMessageIdRef.current = id;
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id,
+                    role: 'assistant',
+                    content: '',
+                    createdAt: new Date(),
+                    status: 'running',
+                    participant: explicitParticipant ?? getDefaultAssistantParticipant(),
+                  },
+                ]);
+              }
+              // The hook frame's model can be the transport's "interactive" placeholder;
+              // the reply's own frames name the model.
+              for (const block of blocks) {
+                streamingPartsRef.current = upsertToolPart(streamingPartsRef.current, {
+                  type: 'tool_use',
+                  id: block.id,
+                  id_source: CLAUDE_HOOK_SOURCE,
+                  name: block.name,
+                  input: block.input ?? {},
+                });
+              }
+              setStreamingParts([...streamingPartsRef.current]);
+              syncStreamingMessage();
+              break;
+            }
+            // The reply's text that follows those hook-reported calls is the same reply.
+            const hookReply = streamingPartsRef.current.some(
+              (part) => part.id_source === CLAUDE_HOOK_SOURCE,
+            );
+            if (
+              streamingMessageIdRef.current &&
+              hookReply &&
+              !event.turn_id &&
+              blocks?.length &&
+              blocks.every((block) => block.type === 'text')
+            ) {
+              const text = blocks.map((block) => block.text ?? '').join('');
+              if (!streamingModelRef.current && event.message?.model) {
+                streamingModelRef.current = event.message.model;
+                setStreamingModel(streamingModelRef.current);
+              }
+              if (text) {
+                streamingTextRef.current += text;
+                streamingPartsRef.current = [...streamingPartsRef.current, { type: 'text', text }];
+                setStreamingContent(streamingTextRef.current);
+                setStreamingParts([...streamingPartsRef.current]);
+                syncStreamingMessage();
+              }
               break;
             }
             if (streamingMessageIdRef.current) finalizeStreaming();

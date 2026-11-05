@@ -36,18 +36,19 @@ function text(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-export interface TeammateSpawn {
-  name: string;
+export interface SubagentSpawn {
+  /** Set for an agent-teams teammate; a background subagent has none. */
+  name?: string;
   type?: string;
   model?: string;
 }
 
 /**
- * With agent teams, Claude answers a Task call with the teammate's spawn record (JSON with
- * its id and name), not a result: the teammate keeps working in its own pane. Any other
- * result, including plain text that is not JSON, is not a spawn record.
+ * Claude answers a Task call that starts a teammate (agent teams) or a background subagent
+ * with its spawn record, JSON carrying the agent's id, not a result: the agent keeps working
+ * on its own. Any other result, including plain text that is not JSON, is not a spawn record.
  */
-export function teammateSpawn(result: ToolResultBlock | undefined): TeammateSpawn | null {
+export function subagentSpawn(result: ToolResultBlock | undefined): SubagentSpawn | null {
   const raw = toolResultText(result).trim();
   if (!raw.startsWith('{')) return null;
   let record: unknown;
@@ -59,11 +60,15 @@ export function teammateSpawn(result: ToolResultBlock | undefined): TeammateSpaw
   if (!record || typeof record !== 'object') return null;
   const fields = record as Record<string, unknown>;
   const id = text(fields.agentId) || text(fields.agent_id);
+  if (!id) return null;
   const name = text(fields.name);
-  if (!id || !name) return null;
   const type = text(fields.agent_type);
   const model = text(fields.model);
-  return { name, ...(type ? { type } : {}), ...(model ? { model } : {}) };
+  return {
+    ...(name ? { name } : {}),
+    ...(type ? { type } : {}),
+    ...(model ? { model } : {}),
+  };
 }
 
 /** The subagent's status from its call: no result yet, a result, or an error result. */
@@ -85,10 +90,14 @@ export function SubagentCard({ block, result, isStreaming }: SubagentCardProps) 
   const prompt = text(input.prompt);
   const title = description || kind || prompt.split('\n')[0] || 'Subagent';
   const status = subagentStatus(result, isStreaming);
-  const spawn = status === 'done' ? teammateSpawn(result) : null;
+  const spawn = status === 'done' ? subagentSpawn(result) : null;
   const lines = spawn
     ? [
-        [`Teammate ${spawn.name}`, spawn.type, spawn.model && modelLabel(spawn.model)]
+        [
+          spawn.name ? `Teammate ${spawn.name}` : 'Running in the background',
+          spawn.type,
+          spawn.model && modelLabel(spawn.model),
+        ]
           .filter(Boolean)
           .join(' · '),
       ]
@@ -121,9 +130,7 @@ export function SubagentCard({ block, result, isStreaming }: SubagentCardProps) 
               className={cn('niuu-chat-pill', `niuu-chat-pill--${spawn ? 'running' : status}`)}
               data-testid="subagent-status"
               title={
-                spawn
-                  ? 'The teammate works in its own pane; its result is not in this call'
-                  : undefined
+                spawn ? 'The agent works on its own; its result is not in this call' : undefined
               }
             >
               {spawn ? 'Started' : STATUS_LABEL[status]}

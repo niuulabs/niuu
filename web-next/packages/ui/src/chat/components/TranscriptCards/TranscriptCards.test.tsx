@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { SubagentCard, subagentStatus, teammateSpawn } from './SubagentCard';
+import { SubagentCard, subagentStatus, subagentSpawn } from './SubagentCard';
 import { ProviderErrorCard } from './ProviderErrorCard';
 import { CompactionMarker, compactionTokens } from './CompactionMarker';
 import { formatTokenCount } from './formatTokenCount';
@@ -70,11 +70,24 @@ describe('SubagentCard', () => {
     expect(screen.getByTestId('subagent-card')).not.toHaveTextContent('Read-only task');
   });
 
-  it('reads only a JSON record with an agent id and a name as a spawn', () => {
-    expect(teammateSpawn(result('{"name": "x"}'))).toBeNull();
-    expect(teammateSpawn(result('{not json at all'))).toBeNull();
-    expect(teammateSpawn(result('Counted 41 files.'))).toBeNull();
-    expect(teammateSpawn(result('{"agent_id": "a@s", "name": "a"}'))).toEqual({ name: 'a' });
+  it('says a background subagent started instead of dumping its spawn record', () => {
+    render(
+      <SubagentCard
+        block={task}
+        result={result('{"agentId": "a366", "canContinueAgent": true, "canReadOutputFile": true}')}
+      />,
+    );
+    expect(screen.getByTestId('subagent-status')).toHaveTextContent('Started');
+    expect(screen.getByTestId('subagent-result')).toHaveTextContent('Running in the background');
+    expect(screen.getByTestId('subagent-card')).not.toHaveTextContent('canContinueAgent');
+  });
+
+  it('reads only a JSON record with an agent id as a spawn', () => {
+    expect(subagentSpawn(result('{"name": "x"}'))).toBeNull();
+    expect(subagentSpawn(result('{"agentId": "a366", "canContinueAgent": true}'))).toEqual({});
+    expect(subagentSpawn(result('{not json at all'))).toBeNull();
+    expect(subagentSpawn(result('Counted 41 files.'))).toBeNull();
+    expect(subagentSpawn(result('{"agent_id": "a@s", "name": "a"}'))).toEqual({ name: 'a' });
   });
 
   it('shows a failed pill for an error result', () => {
