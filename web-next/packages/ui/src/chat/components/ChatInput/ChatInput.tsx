@@ -8,7 +8,7 @@ import {
   type ChangeEvent,
   type KeyboardEvent,
 } from 'react';
-import { ArrowUp, Plus, Slash, Square, X } from 'lucide-react';
+import { AlertTriangle, ArrowUp, Plus, Slash, Square, X } from 'lucide-react';
 import { cn } from '../../../utils/cn';
 import { useFileAttachments, type FileAttachment } from '../../hooks/useFileAttachments';
 import { useSlashMenu } from '../../hooks/useSlashMenu';
@@ -125,6 +125,10 @@ interface ChatInputProps {
   runtimeOptions?: SessionRuntimeOptions | null;
   onSetEffort?: (effort: string) => void;
   onSetRuntimeModel?: (model: string) => void;
+  /** Why the runtime refused to list its models; shown on the model chip in its place. */
+  runtimeOptionsError?: string | null;
+  /** Why the runtime refused to report its effort levels; shown on the effort chip. */
+  effortError?: string | null;
 }
 
 export function ChatInput({
@@ -148,6 +152,8 @@ export function ChatInput({
   runtimeOptions = null,
   onSetEffort,
   onSetRuntimeModel,
+  runtimeOptionsError = null,
+  effortError = null,
 }: ChatInputProps) {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -539,6 +545,12 @@ export function ChatInput({
                 <span>{currentModel?.name ?? runtimeOptions.current.model}</span>
               </ChipMenu>
             )}
+            {!runtimeOptions && runtimeOptionsError && onSetRuntimeModel && (
+              <UnavailableChip name="Model" reason={runtimeOptionsError} />
+            )}
+            {!effort && effortError && onSetEffort && (
+              <UnavailableChip name="Effort" reason={effortError} />
+            )}
             {showEffortChip && effort && onSetEffort && (
               <ChipMenu
                 name="Effort"
@@ -601,5 +613,20 @@ export function ChatInput({
         </span>
       </div>
     </div>
+  );
+}
+
+/** A composer control the runtime could not offer, with its reason on hover and to readers. */
+function UnavailableChip({ name, reason }: { name: string; reason: string }) {
+  return (
+    <span
+      className="niuu-chat-chip niuu-chat-chip--unavailable"
+      title={reason}
+      aria-label={`${name} unavailable: ${reason}`}
+      data-testid={`${name.toLowerCase()}-chip-unavailable`}
+    >
+      <AlertTriangle className="niuu-chat-chip-chevron" aria-hidden="true" />
+      <span>{name} unavailable</span>
+    </span>
   );
 }

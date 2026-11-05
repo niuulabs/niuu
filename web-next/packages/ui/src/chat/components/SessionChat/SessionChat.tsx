@@ -279,6 +279,10 @@ export interface SessionChatProps {
   onSetEffort?: (effort: string) => void;
   /** Change the model from the composer chip (a runtime-options model id). */
   onSetRuntimeModel?: (model: string) => void;
+  /** Why the runtime refused to list its models (shown on the composer's model chip). */
+  runtimeOptionsError?: string | null;
+  /** Why the runtime refused to report its effort levels (shown on the effort chip). */
+  effortError?: string | null;
   onSetThinkingTokens?: (tokens: number) => void;
   onRewindFiles?: () => void;
   onCopy?: (text: string) => void;
@@ -348,6 +352,8 @@ export function SessionChat({
   onSetModel,
   onSetEffort,
   onSetRuntimeModel,
+  runtimeOptionsError,
+  effortError,
   onSetThinkingTokens,
   onRewindFiles,
   onCopy,
@@ -1313,6 +1319,8 @@ export function SessionChat({
               runtimeOptions={runtimeOptions}
               onSetEffort={onSetEffort}
               onSetRuntimeModel={onSetRuntimeModel}
+              runtimeOptionsError={runtimeOptionsError}
+              effortError={effortError}
               sessionHost={sessionHost}
               chatEndpoint={chatEndpoint}
               availableCommands={availableCommands}

@@ -284,6 +284,12 @@
   color: var(--color-text-primary);
 }
 
+.niuu-chat-chip--unavailable {
+  cursor: help;
+  color: var(--state-warn);
+  border-color: color-mix(in srgb, var(--state-warn) 35%, transparent);
+}
+
 .niuu-chat-chip:disabled {
   cursor: not-allowed;
   opacity: 0.5;

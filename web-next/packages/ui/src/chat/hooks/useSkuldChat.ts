@@ -41,6 +41,7 @@ import { reconcileHistoryMessages } from './historyReconciliation';
 import {
   advanceDelivery,
   deliveryFromSteeringState,
+  effortFromRuntimeOptions,
   parseAgentUpdate,
   parseDeliveryFrame,
   parseEffortFrame,
@@ -261,6 +262,10 @@ interface UseSkuldChatResult {
   runtimeOptions: SessionRuntimeOptions | null;
   /** Token use reported by the runtime (`session_usage`). */
   usage: SessionUsage | null;
+  /** Why the runtime could not report its effort levels, when it refused to. */
+  effortError: string | null;
+  /** Why the runtime could not report its model choices, when it refused to. */
+  runtimeOptionsError: string | null;
   sendMessage: (text: string, attachments: FileAttachment[]) => void;
   sendDirectedMessages: (
     participants: RoomParticipant[],
@@ -313,12 +318,23 @@ type SessionLiveState = {
   effort: SessionEffort | null;
   runtimeOptions: SessionRuntimeOptions | null;
   usage: SessionUsage | null;
+  effortError: string | null;
+  runtimeOptionsError: string | null;
 };
 
 const EMPTY_AGENTS: SessionAgent[] = [];
 
 function emptyLiveState(url: string | null): SessionLiveState {
-  return { url, plan: null, agents: EMPTY_AGENTS, effort: null, runtimeOptions: null, usage: null };
+  return {
+    url,
+    plan: null,
+    agents: EMPTY_AGENTS,
+    effort: null,
+    runtimeOptions: null,
+    usage: null,
+    effortError: null,
+    runtimeOptionsError: null,
+  };
 }
 
 type InternalParticipantStream = {
@@ -847,6 +863,9 @@ export function useSkuldChat(
   // Answered but not yet resolved by Skuld: a rejected answer restores its card, so the
   // question stays answerable instead of vanishing while the agent still waits on it.
   const answeredInputRequestsRef = useRef(new Map<string, InputRequest>());
+  // Request ids of the effort reads sent on connect, so a refusal can be shown on the
+  // composer's effort chip instead of in the conversation.
+  const controlReadsRef = useRef(new Map<string, 'effort'>());
   const pendingInputRequestsRef = useRef<InputRequest[]>([]);
   useEffect(() => {
     pendingInputRequestsRef.current = pendingInputRequests;
@@ -1900,6 +1919,16 @@ export function useSkuldChat(
                 ? event.error
                 : (event.error?.message ??
                   (typeof event.content === 'string' ? event.content : 'Unknown error'));
+            const controlRead = event.request_id
+              ? controlReadsRef.current.get(event.request_id)
+              : undefined;
+            if (controlRead && event.request_id) {
+              controlReadsRef.current.delete(event.request_id);
+              // The runtime could not describe its choices (a Codex thread that is not
+              // attached yet, a model gateway). The composer control shows why.
+              updateLive(() => ({ effortError: errorMessage }));
+              break;
+            }
             if (event.code && event.request_id) {
               optimisticUserMessagesRef.current.delete(event.request_id);
               const answered = answeredInputRequestsRef.current.get(event.request_id);
@@ -2003,13 +2032,13 @@ export function useSkuldChat(
           case 'effort_status': {
             const effort = parseEffortFrame(event);
             if (!effort) break;
-            updateLive(() => ({ effort }));
+            updateLive(() => ({ effort, effortError: null }));
             break;
           }
           case 'runtime_options': {
             const runtimeOptions = parseRuntimeOptionsFrame(event);
             if (!runtimeOptions) break;
-            updateLive(() => ({ runtimeOptions }));
+            updateLive(() => ({ runtimeOptions, runtimeOptionsError: null }));
             break;
           }
           case 'session_usage': {
@@ -2621,14 +2650,62 @@ export function useSkuldChat(
     url,
   ]);
 
-  // The broker answers these with an effort_status / runtime_options frame; a refusal comes
-  // back as an error frame carrying the request id and is shown by the error handler.
+  // The model catalog is read over the broker's HTTP route, never the socket: a refused socket
+  // request becomes an error turn in the session's durable history, and an idle Codex thread
+  // refuses until its next turn. A refusal here is kept as runtimeOptionsError for the
+  // composer's model chip. Runtimes with a catalog carry their effort levels in it.
   useEffect(() => {
-    if (!connected) return;
-    if (capabilities.set_effort) sendJson({ type: 'get_effort', request_id: generateId() });
-    if (capabilities.runtime_options) {
-      sendJson({ type: 'get_runtime_options', request_id: generateId() });
-    }
+    if (!connected || !capabilities.runtime_options) return;
+    const httpBase = url ? wsUrlToHttpBase(url) : null;
+    const controller = new AbortController();
+    void Promise.resolve()
+      .then(() => {
+        if (!httpBase) throw new Error('The session has no broker address');
+        const requestUrl = new URL(
+          'api/runtime-options',
+          httpBase.endsWith('/') ? httpBase : `${httpBase}/`,
+        );
+        return fetch(requestUrl.toString(), {
+          headers: getAuthHeaders(),
+          signal: controller.signal,
+        });
+      })
+      .then(async (response) => {
+        const body: unknown = await response.json().catch(() => null);
+        if (!response.ok) {
+          const detail =
+            body && typeof body === 'object' && 'detail' in body
+              ? String((body as { detail: unknown }).detail)
+              : `The broker answered ${response.status}`;
+          updateLive(() => ({ runtimeOptionsError: detail }));
+          return;
+        }
+        const runtimeOptions =
+          body && typeof body === 'object' ? parseRuntimeOptionsFrame(body as never) : null;
+        updateLive(() =>
+          runtimeOptions
+            ? { runtimeOptions, runtimeOptionsError: null }
+            : { runtimeOptionsError: 'The broker returned a model list this page cannot read' },
+        );
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        const reason = error instanceof Error ? error.message : String(error);
+        // fetch() rejects with a bare "Failed to fetch" for network and CORS refusals alike.
+        const where = httpBase ? new URL(httpBase).host : 'the broker';
+        updateLive(() => ({
+          runtimeOptionsError: `Could not reach ${where} for the model list (${reason})`,
+        }));
+      });
+    return () => controller.abort();
+  }, [capabilities.runtime_options, connected, connectionVersion, updateLive, url]);
+
+  // Runtimes without a model catalog report effort over the socket (effort_status).
+  useEffect(() => {
+    if (!connected || !capabilities.set_effort || capabilities.runtime_options) return;
+    const requestId = generateId();
+    controlReadsRef.current.set(requestId, 'effort');
+    sendJson({ type: 'get_effort', request_id: requestId });
   }, [
     capabilities.runtime_options,
     capabilities.set_effort,
@@ -2874,9 +2951,11 @@ export function useSkuldChat(
     capabilities,
     plan: live.plan,
     agents: live.agents,
-    effort: live.effort,
+    effort: live.effort ?? effortFromRuntimeOptions(live.runtimeOptions),
     runtimeOptions: live.runtimeOptions,
     usage: live.usage,
+    effortError: live.effortError,
+    runtimeOptionsError: live.runtimeOptionsError,
     sendMessage,
     sendDirectedMessages,
     publishEvent,

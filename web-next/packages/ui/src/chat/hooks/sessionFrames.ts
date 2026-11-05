@@ -157,6 +157,24 @@ export function parseRuntimeOptionsFrame(frame: Frame): SessionRuntimeOptions | 
   };
 }
 
+/**
+ * A runtime with a model catalog lists each model's effort levels, so the effort control
+ * reads them from the current model instead of asking over the socket.
+ */
+export function effortFromRuntimeOptions(
+  options: SessionRuntimeOptions | null,
+): SessionEffort | null {
+  if (!options) return null;
+  const model = options.models.find((entry) => entry.model === options.current.model);
+  if (!model || model.effortLevels.length === 0) return null;
+  return {
+    current: options.current.effort ?? null,
+    levels: model.effortLevels,
+    mutable: true,
+    ...(options.appliesTo ? { appliesTo: options.appliesTo } : {}),
+  };
+}
+
 /** Codex splits an input counter into fresh input, cache reads and cache writes. */
 function tokensIn(raw: unknown): number | undefined {
   if (!isRecord(raw)) return undefined;

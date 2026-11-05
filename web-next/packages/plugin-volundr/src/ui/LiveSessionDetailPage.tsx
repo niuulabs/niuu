@@ -4006,6 +4006,8 @@ function LiveSessionDetailPageInner({
                       runtimeOptions={chat.runtimeOptions}
                       onSetEffort={chat.sendSetEffort}
                       onSetRuntimeModel={(model) => chat.sendSetRuntimeOptions({ model })}
+                      runtimeOptionsError={chat.runtimeOptionsError}
+                      effortError={chat.effortError}
                       working={sessionWorking}
                       onRewindFiles={chat.sendRewindFiles}
                       onPermissionRespond={chat.respondToPermission}

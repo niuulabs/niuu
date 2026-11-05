@@ -205,7 +205,7 @@ describe('useSkuldChat session frames', () => {
       expect(result.current.runtimeOptions).toBeNull();
     });
 
-    it('asks for effort and runtime options only when the capabilities say they exist', async () => {
+    it('asks for effort over the socket only for runtimes without a model catalog', async () => {
       await connect();
       sendJson.mockClear();
       frame({ type: 'capabilities', set_effort: true });
@@ -213,16 +213,66 @@ describe('useSkuldChat session frames', () => {
         type: 'get_effort',
         request_id: expect.any(String),
       });
-      expect(sendJson).not.toHaveBeenCalledWith(
-        expect.objectContaining({ type: 'get_runtime_options' }),
-      );
 
       sendJson.mockClear();
       frame({ type: 'capabilities', set_effort: true, runtime_options: true });
-      expect(sendJson).toHaveBeenCalledWith({
-        type: 'get_runtime_options',
-        request_id: expect.any(String),
+      // Never over the socket: a refused socket request is written into the session history.
+      expect(sendJson).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'get_runtime_options' }),
+      );
+      expect(sendJson).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'get_effort' }));
+    });
+
+    it('reads the model catalog over the broker HTTP route and takes effort from it', async () => {
+      const fetchMock = vi.fn(async (input: string) =>
+        String(input).endsWith('/api/runtime-options')
+          ? { ok: true, status: 200, json: async () => runtimeOptions }
+          : { ok: true, status: 200, json: async () => ({ turns: [] }) },
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      const { result } = await connect();
+      frame({ type: 'capabilities', set_effort: true, runtime_options: true });
+
+      await waitFor(() => expect(result.current.runtimeOptions?.current.model).toBe('m1'));
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/s\/test\/api\/runtime-options$/),
+        expect.objectContaining({ headers: expect.anything() }),
+      );
+      expect(result.current.effort).toEqual({
+        current: 'high',
+        levels: ['low', 'high'],
+        mutable: true,
+        appliesTo: 'next_turn',
       });
+      expect(result.current.runtimeOptionsError).toBeNull();
+    });
+
+    it('keeps a refused catalog read on the model chip, not in the conversation', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: string) =>
+          String(input).endsWith('/api/runtime-options')
+            ? {
+                ok: false,
+                status: 502,
+                json: async () => ({
+                  detail: 'Codex runtime options require a connected native thread',
+                }),
+              }
+            : { ok: true, status: 200, json: async () => ({ turns: [] }) },
+        ),
+      );
+      const { result } = await connect();
+      const before = result.current.messages.length;
+      frame({ type: 'capabilities', runtime_options: true });
+
+      await waitFor(() =>
+        expect(result.current.runtimeOptionsError).toBe(
+          'Codex runtime options require a connected native thread',
+        ),
+      );
+      expect(result.current.messages).toHaveLength(before);
+      expect(result.current.runtimeOptions).toBeNull();
     });
 
     it('does not ask a session that supports neither', async () => {
@@ -293,6 +343,42 @@ describe('useSkuldChat session frames', () => {
         status: 'error',
         content: 'Effort turbo is not one of low, medium, high',
       });
+    });
+
+    it('names the broker it could not reach when the catalog request fails outright', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: string) => {
+          if (String(input).endsWith('/api/runtime-options'))
+            throw new TypeError('Failed to fetch');
+          return { ok: true, status: 200, json: async () => ({ turns: [] }) };
+        }),
+      );
+      const { result } = await connect();
+      frame({ type: 'capabilities', runtime_options: true });
+      await waitFor(() =>
+        expect(result.current.runtimeOptionsError).toMatch(
+          /^Could not reach .+ for the model list \(Failed to fetch\)$/,
+        ),
+      );
+    });
+
+    it('keeps a refused effort read on the effort chip, not in the conversation', async () => {
+      const { result } = await connect();
+      sendJson.mockClear();
+      frame({ type: 'capabilities', set_effort: true });
+      const requestId = sendJson.mock.calls.at(-1)?.[0]?.request_id as string;
+      const before = result.current.messages.length;
+      frame({
+        type: 'error',
+        request_id: requestId,
+        content: 'This harness does not expose an effort control',
+      });
+      expect(result.current.messages).toHaveLength(before);
+      expect(result.current.effortError).toBe('This harness does not expose an effort control');
+
+      frame({ type: 'effort_status', current: 'low', levels: ['low'], mutable: true });
+      expect(result.current.effortError).toBeNull();
     });
   });
 

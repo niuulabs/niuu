@@ -480,6 +480,25 @@ describe('Lexi composer', () => {
     expect(screen.queryByTestId('effort-chip')).not.toBeInTheDocument();
   });
 
+  it('says why the runtime could not offer its model or effort choices', () => {
+    render(
+      <ChatInput
+        {...defaultProps}
+        onSetRuntimeModel={vi.fn()}
+        onSetEffort={vi.fn()}
+        runtimeOptionsError="Codex runtime options require a connected native thread"
+        effortError="This harness does not expose an effort control"
+      />,
+    );
+    expect(screen.getByTestId('model-chip-unavailable')).toHaveAttribute(
+      'title',
+      'Codex runtime options require a connected native thread',
+    );
+    expect(screen.getByTestId('effort-chip-unavailable')).toHaveAccessibleName(
+      'Effort unavailable: This harness does not expose an effort control',
+    );
+  });
+
   it('shows the current model and lists only visible models with the current one checked', () => {
     const onSetRuntimeModel = vi.fn();
     render(
