@@ -83,6 +83,18 @@ export function ChatDisplayControls({ className }: ChatDisplayControlsProps) {
               <option value="inline">Always</option>
             </select>
           </label>
+          <label>
+            Tool calls{' '}
+            <select
+              value={chatPrefs.toolRuns}
+              onChange={(event) =>
+                setCompactUxChatPref('toolRuns', event.target.value as 'rows' | 'cards')
+              }
+            >
+              <option value="rows">One row per burst</option>
+              <option value="cards">Every call</option>
+            </select>
+          </label>
         </div>
       </details>
     </div>

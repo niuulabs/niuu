@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
@@ -21,12 +21,14 @@ import {
   Pin,
   Plus,
   Check,
+  CheckCheck,
   ChevronDown,
   ChevronRight,
   RotateCcw,
   Square,
   FolderOpen,
   MoreHorizontal,
+  CircleDot,
   Download,
   FolderGit2,
   Search,
@@ -35,17 +37,19 @@ import {
   Trash2,
 } from 'lucide-react';
 import { LaunchWizard } from './LaunchWizard';
-import { SessionActivityElapsed } from './SessionActivityElapsed';
 import { RenameSession } from './RenameSession';
 import { AssignSessionProject } from './AssignSessionProject';
 import { PinSession } from './PinSession';
 import { usePinnedSessions } from './usePinnedSessions';
 import { ImportExternalSessionsDialog } from './ImportExternalSessionsDialog';
 import { useSessionList } from './hooks/useSessionStore';
+import { useSessionRead } from './hooks/useSessionRead';
+import { UnreadStream } from './UnreadStream';
 import { buildSessionTree, groupByProject, type SessionTreeNode } from '../domain/projectTree';
 import { groupByState } from './sessions/groupByState';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
 import { sessionHarness, type Session, type SessionState } from '../domain/session';
+import { sessionModelLabel } from '../domain/sessionModelLabel';
 import type { IVolundrService } from '../ports/IVolundrService';
 import { useForgePreference } from './useForgePreference';
 import {
@@ -57,6 +61,7 @@ import {
   matchesSessionFilter,
   type SessionFilter,
 } from './sessions/presentation';
+import { sessionTimeFact, useMinuteClock, workedDuration } from './sessions/timeFact';
 import './SessionsPage.css';
 
 // ---------------------------------------------------------------------------
@@ -77,6 +82,7 @@ const SIDEBAR_MODE_LABELS: Record<SidebarMode, string> = {
   project: 'Project',
 };
 type RowAction = 'stop' | 'archive' | 'restore' | 'delete';
+type ReadChange = 'read' | 'unread';
 
 interface SessionSection {
   id?: string;
@@ -155,6 +161,12 @@ export function sessionOriginBadge(session: Pick<Session, 'origin'>): string | n
   return session.origin;
 }
 
+/** When the session's latest reply arrived; sessions with no timestamp sort last. */
+function latestOutputTs(session: Session): number {
+  const at = Date.parse(session.readState?.latestOutputAt ?? '');
+  return Number.isFinite(at) ? at : 0;
+}
+
 export function compareSessionsByActivity(a: Session, b: Session): number {
   return sessionActivityTs(b) - sessionActivityTs(a);
 }
@@ -229,7 +241,9 @@ function PodEntry({
   onToggleSelection,
   showDetails = false,
   onAction,
+  onReadChange,
   busy = false,
+  readBusy = false,
 }: {
   session: Session;
   selected: boolean;
@@ -240,17 +254,26 @@ function PodEntry({
   onToggleSelection?: () => void;
   showDetails?: boolean;
   onAction?: (session: Session, action: RowAction) => void;
+  onReadChange?: (session: Session, change: ReadChange) => void;
   busy?: boolean;
+  readBusy?: boolean;
 }) {
   const primaryLabel = session.name || session.personaName || session.id;
   const trackerLabel = session.sagaId ?? session.runId ?? session.trackerIssue?.identifier;
   const previewLabel = session.preview;
   const sourceParts =
     previewLabel && looksLikeRepoLabel(previewLabel) ? compactSourceParts(previewLabel) : null;
-  const showPreviewFallback = previewLabel && !sourceParts;
   const forgeLabel = session.clusterName ?? session.clusterId;
   const originBadge = sessionOriginBadge(session);
   const harness = sessionHarness(session);
+  const modelLabel = session.model
+    ? sessionModelLabel(session.model)
+    : harness === 'claude'
+      ? 'Claude'
+      : 'Codex';
+  const unread = session.readState?.isUnread === true;
+  const now = useMinuteClock();
+  const timeFact = sessionTimeFact(session, now);
   const [actionsOpen, setActionsOpen] = useState(false);
   const localPath =
     session.source?.type === 'local_mount'
@@ -267,6 +290,14 @@ function PodEntry({
     session.source?.type === 'local_mount' ||
     sourceLabel?.startsWith('/') ||
     sourceLabel?.startsWith('~/');
+  const sourceText = sourceLabel?.replace(/^\/home\/[^/]+(?:\/|$)/, '~/');
+  const sourceIcon = isLocal ? (
+    <FolderOpen size={13} />
+  ) : sourceParts || session.source?.type === 'git' ? (
+    <FolderGit2 size={13} />
+  ) : (
+    <SquareTerminal size={13} />
+  );
   return (
     <div className="forge-session-row" data-actions-open={actionsOpen}>
       <button
@@ -318,44 +349,61 @@ function PodEntry({
           <div className="forge-session-row__content">
             <div className="forge-session-row__headline">
               <span className="forge-session-row__title">{primaryLabel}</span>
+              {unread && (
+                <span
+                  className="forge-session-unread-dot"
+                  role="img"
+                  aria-label="Unread"
+                  data-testid={`session-unread-dot-${session.id}`}
+                />
+              )}
               <span className="forge-session-state" data-state={session.state}>
                 {SESSION_STATE_LABELS[session.state]}
               </span>
             </div>
-            <div className="forge-session-row__metadata">
-              {harness && (
-                <span
-                  className="forge-session-harness"
-                  data-harness={harness}
-                  title={originBadge ? `Imported from ${originBadge}` : session.model}
-                  data-testid={originBadge ? `session-origin-badge-${session.id}` : undefined}
+            {session.shortDescription ? (
+              <div
+                className="forge-session-row__preview"
+                title={session.shortDescription}
+                data-testid={`session-preview-${session.id}`}
+              >
+                {session.shortDescription}
+              </div>
+            ) : (
+              sourceLabel && (
+                <div
+                  className="forge-session-row__preview forge-session-row__source"
+                  title={localPath ?? previewLabel ?? sourceLabel}
+                  data-testid={`session-preview-${session.id}`}
                 >
-                  {harness === 'claude' ? 'Claude' : 'Codex'}
-                </span>
-              )}
+                  {sourceIcon}
+                  <span>{sourceText}</span>
+                </div>
+              )
+            )}
+            <div className="forge-session-row__metadata">
+              <span
+                className="forge-session-harness"
+                data-harness={harness}
+                title={originBadge ? `Imported from ${originBadge}` : session.model}
+                data-testid={originBadge ? `session-origin-badge-${session.id}` : undefined}
+              >
+                {modelLabel}
+              </span>
               {forgeLabel && (
                 <span className="forge-session-row__host" title={`Host: ${forgeLabel}`}>
                   {forgeLabel}
                 </span>
               )}
-              {sourceLabel && (
+              {timeFact && (
                 <span
-                  className="forge-session-row__source"
-                  title={localPath ?? previewLabel ?? sourceLabel}
+                  className="forge-session-row__age"
+                  title={timeFact}
+                  data-testid={`session-time-fact-${session.id}`}
                 >
-                  {isLocal ? (
-                    <FolderOpen size={13} />
-                  ) : sourceParts || session.source?.type === 'git' ? (
-                    <FolderGit2 size={13} />
-                  ) : (
-                    <SquareTerminal size={13} />
-                  )}
-                  <span>{sourceLabel.replace(/^\/home\/[^/]+(?:\/|$)/, '~/')}</span>
+                  {timeFact}
                 </span>
               )}
-              <span className="forge-session-row__age">
-                <SessionActivityElapsed session={session} />
-              </span>
             </div>
             {showDetails && (
               <div className="forge-session-row__details">
@@ -365,7 +413,12 @@ function PodEntry({
                     {trackerLabel}
                   </span>
                 )}
-                {showPreviewFallback && <span>{previewLabel}</span>}
+                {session.shortDescription && sourceLabel && (
+                  <span title={localPath ?? previewLabel ?? sourceLabel}>
+                    {sourceIcon}
+                    {sourceText}
+                  </span>
+                )}
               </div>
             )}
           </div>
@@ -391,6 +444,18 @@ function PodEntry({
         >
           <RenameSession sessionId={session.id} name={primaryLabel} disabled={busy} />
           <PinSession sessionId={session.id} name={primaryLabel} />
+          {session.readState && onReadChange && (
+            <button
+              type="button"
+              disabled={readBusy}
+              title={unread ? 'Mark as read' : 'Mark as unread'}
+              aria-label={`${unread ? 'Mark as read' : 'Mark as unread'}: ${primaryLabel}`}
+              data-testid={`pod-entry-${session.id}-read-toggle`}
+              onClick={() => onReadChange(session, unread ? 'read' : 'unread')}
+            >
+              {unread ? <CheckCheck /> : <CircleDot />}
+            </button>
+          )}
           <AssignSessionProject
             sessionId={session.id}
             name={primaryLabel}
@@ -507,7 +572,9 @@ function PodGroup({
   onToggleSelection,
   showDetails = false,
   onAction,
+  onReadChange,
   busyId,
+  readPendingIds,
 }: {
   groupKey?: string;
   pinned?: boolean;
@@ -522,7 +589,9 @@ function PodGroup({
   onToggleSelection?: (id: string) => void;
   showDetails?: boolean;
   onAction?: (session: Session, action: RowAction) => void;
+  onReadChange?: (session: Session, change: ReadChange) => void;
   busyId?: string;
+  readPendingIds?: ReadonlySet<string>;
 }) {
   const [folded, setFolded] = useForgePreference(`group.${groupKey ?? label}`, '0', ['0', '1']);
   if (sessions.length === 0) return null;
@@ -533,7 +602,9 @@ function PodGroup({
       session={s}
       showDetails={showDetails}
       onAction={onAction}
+      onReadChange={onReadChange}
       busy={!!busyId}
+      readBusy={readPendingIds?.has(s.id) ?? false}
       selected={s.id === selectedId}
       onSelect={() => onSelect(s.id)}
       collapsed={collapsed}
@@ -614,6 +685,7 @@ export function SessionsPage() {
   const [importOpen, setImportOpen] = useState(false);
   const volundr = useService<IVolundrService>('volundr');
   const queryClient = useQueryClient();
+  const sessionRead = useSessionRead();
   const projects = useQuery({
     queryKey: ['volundr', 'projects'],
     queryFn: () => volundr.getProjects(),
@@ -682,6 +754,30 @@ export function SessionsPage() {
     [filteredStoppedSessions],
   );
 
+  // The stream reads newest output first.
+  const unreadSessions = useMemo(
+    () =>
+      filteredSessions
+        .filter((session) => session.readState?.isUnread === true)
+        .sort((a, b) => latestOutputTs(b) - latestOutputTs(a)),
+    [filteredSessions],
+  );
+
+  // The 24-hour work total exists only where a host records turn spans; never guess the rest.
+  const workToday = useMemo(() => {
+    const reported = allSessions.filter((session) => typeof session.workedSeconds24h === 'number');
+    if (reported.length === 0) return null;
+    const worked = reported.filter((session) => (session.workedSeconds24h ?? 0) > 0);
+    return {
+      sessions: worked.length,
+      seconds: worked.reduce((total, session) => total + (session.workedSeconds24h ?? 0), 0),
+    };
+  }, [allSessions]);
+  const listedSessionCount = useMemo(
+    () => allSessions.filter((session) => session.state !== 'archived').length,
+    [allSessions],
+  );
+
   // Group by state
   const grouped = useMemo(() => groupByState(unpinnedSessions), [unpinnedSessions]);
 
@@ -717,6 +813,41 @@ export function SessionsPage() {
     () => new Set([...selectedStoppedIds].filter((id) => stoppedSessionIds.has(id))),
     [selectedStoppedIds, stoppedSessionIds],
   );
+
+  // The unread stream stands in for the detail while that filter is on and no session is open.
+  const showUnreadStream = filter === 'unread' && !requestedSessionId;
+  const openSession = useMemo(
+    () =>
+      showUnreadStream
+        ? undefined
+        : allSessions.find((session) => session.id === resolvedSelectedSessionId),
+    [allSessions, resolvedSelectedSessionId, showUnreadStream],
+  );
+  // Opening an unread session reads it. Once per opening: a session the person marks unread
+  // while it stays open must not be read again behind their back.
+  const openedSessionId = useRef<string | null>(null);
+  const { markRead: markSessionRead } = sessionRead;
+  useEffect(() => {
+    if (!openSession) {
+      openedSessionId.current = null;
+      return;
+    }
+    if (openedSessionId.current === openSession.id) return;
+    openedSessionId.current = openSession.id;
+    if (openSession.readState?.isUnread) void markSessionRead(openSession);
+  }, [openSession, markSessionRead]);
+
+  function handleReadChange(session: Session, change: ReadChange) {
+    void (change === 'read' ? sessionRead.markRead(session) : sessionRead.markUnread(session));
+  }
+
+  function handleSelectFilter(value: SessionFilter) {
+    setFilter(value);
+    if (value !== 'unread' || !requestedSessionId) return;
+    // The stream shows only while no session is open.
+    setSelectedSessionId(null);
+    void navigate({ to: '/volundr/sessions' });
+  }
 
   function handleSelectSession(id: string) {
     setSelectedSessionId(id);
@@ -959,6 +1090,13 @@ export function SessionsPage() {
                 </TooltipProvider>
               </div>
 
+              <p className="forge-session-today" data-testid="sessions-today">
+                {workToday
+                  ? workToday.sessions === 0
+                    ? 'Last 24 h · no work recorded'
+                    : `Last 24 h · ${workToday.sessions} ${workToday.sessions === 1 ? 'session' : 'sessions'} · ${workedDuration(workToday.seconds)}`
+                  : `${listedSessionCount} ${listedSessionCount === 1 ? 'session' : 'sessions'}`}
+              </p>
               <div className="niuu:px-2.5 niuu:pb-1">
                 <div className="niuu:flex niuu:items-center niuu:gap-2">
                   <div className="forge-session-search niuu:flex niuu:min-w-0 niuu:flex-1 niuu:items-center niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] niuu:focus-within:border-brand/50 niuu:focus-within:ring-1 niuu:focus-within:ring-brand/20">
@@ -991,7 +1129,7 @@ export function SessionsPage() {
                         aria-pressed={filter === value}
                         data-testid={`session-filter-${value}`}
                         data-filter={value}
-                        onClick={() => setFilter(value)}
+                        onClick={() => handleSelectFilter(value)}
                       >
                         <span>{FILTER_LABELS[value]}</span>
                         <span>{count}</span>
@@ -1057,6 +1195,8 @@ export function SessionsPage() {
                   onSelect={handleSelectSession}
                   showDetails={details === '1'}
                   onAction={(session, action) => void handleRowAction(session, action)}
+                  onReadChange={handleReadChange}
+                  readPendingIds={sessionRead.pendingIds}
                   busyId={rowBusyId}
                   selectableSessionIds={stoppedSelectionMode ? filteredStoppedIds : undefined}
                   selectedSessionIds={resolvedSelectedStoppedIds}
@@ -1091,6 +1231,8 @@ export function SessionsPage() {
                     onSelect={handleSelectSession}
                     showDetails={details === '1'}
                     onAction={(session, action) => void handleRowAction(session, action)}
+                    onReadChange={handleReadChange}
+                    readPendingIds={sessionRead.pendingIds}
                     busyId={rowBusyId}
                     selectableSessionIds={stoppedSelectionMode ? filteredStoppedIds : undefined}
                     selectedSessionIds={resolvedSelectedStoppedIds}
@@ -1106,6 +1248,18 @@ export function SessionsPage() {
                 {actionError && (
                   <div role="alert" className="niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-critical">
                     {actionError}
+                  </div>
+                )}
+                {sessionRead.error && (
+                  <div
+                    role="alert"
+                    className="forge-session-read-error niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-critical"
+                    data-testid="session-read-error"
+                  >
+                    <span>{sessionRead.error}</span>
+                    <button type="button" onClick={sessionRead.clearError}>
+                      Dismiss
+                    </button>
                   </div>
                 )}
                 <div className="forge-session-footer-settings">
@@ -1226,13 +1380,18 @@ export function SessionsPage() {
               }
             />
           )}
+          {sessionsQuery.data && showUnreadStream && (
+            <UnreadStream sessions={unreadSessions} onOpen={handleSelectSession} />
+          )}
           {sessionsQuery.data &&
+            !showUnreadStream &&
             !resolvedSelectedSessionId &&
             requestedSessionId &&
             connectionStates.some((source) => source.loading) && (
               <LoadingState label="Loading selected session…" />
             )}
           {sessionsQuery.data &&
+            !showUnreadStream &&
             !resolvedSelectedSessionId &&
             !(requestedSessionId && connectionStates.some((source) => source.loading)) && (
               <EmptyState
@@ -1240,7 +1399,7 @@ export function SessionsPage() {
                 description="Select a session from the sidebar."
               />
             )}
-          {sessionsQuery.data && resolvedSelectedSessionId && (
+          {sessionsQuery.data && !showUnreadStream && resolvedSelectedSessionId && (
             <LiveSessionDetailPage
               key={resolvedSelectedSessionId}
               sessionId={resolvedSelectedSessionId}

@@ -294,6 +294,49 @@ describe('QuickLaunch', () => {
   });
 });
 
+describe('QuickLaunch Forge tools', () => {
+  it('offers both grants off and sends none unless one is switched on', async () => {
+    const { startSession } = setup();
+    await ready();
+    expect(
+      screen.getByRole('heading', { name: 'Forge tools for this session' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: /Manage sessions/ })).not.toBeChecked();
+    expect(screen.getByRole('switch', { name: /Message sessions/ })).not.toBeChecked();
+    expect(screen.getByText(/default grants apply/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Launch Claude' }));
+    await waitFor(() => expect(startSession).toHaveBeenCalledOnce());
+    expect(startSession.mock.calls[0]?.[0]).not.toHaveProperty('forgeMcp');
+  });
+
+  it('sends the grants that are switched on, in a fixed order', async () => {
+    const { startSession } = setup();
+    await ready();
+    fireEvent.click(screen.getByRole('switch', { name: /Message sessions/ }));
+    fireEvent.click(screen.getByRole('switch', { name: /Manage sessions/ }));
+    expect(screen.getByRole('switch', { name: /Manage sessions/ })).toBeChecked();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Launch Claude' }));
+    await waitFor(() =>
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({ forgeMcp: { grants: ['lifecycle', 'message'] } }),
+      ),
+    );
+  });
+
+  it('sends nothing again once a grant is switched back off', async () => {
+    const { startSession } = setup();
+    await ready();
+    fireEvent.click(screen.getByRole('switch', { name: /Message sessions/ }));
+    fireEvent.click(screen.getByRole('switch', { name: /Message sessions/ }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Launch Claude' }));
+    await waitFor(() => expect(startSession).toHaveBeenCalledOnce());
+    expect(startSession.mock.calls[0]?.[0]).not.toHaveProperty('forgeMcp');
+  });
+});
+
 describe('launch policy helpers', () => {
   it('resolves effort from advertised metadata and folders from host configuration', () => {
     expect(selectedEffort(undefined, 'xhigh')).toBe('');

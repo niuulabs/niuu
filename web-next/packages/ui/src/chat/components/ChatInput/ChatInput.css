@@ -1,31 +1,56 @@
 .niuu-chat-input-wrapper {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
+  display: flex;
+  flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
+  min-width: 0;
+}
+
+.niuu-chat-input-box {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 10px 10px 8px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 22px;
   background-color: var(--color-bg-secondary);
   transition: border-color var(--transition-fast);
 }
 
-.niuu-chat-input-wrapper:focus-within {
-  border-color: var(--color-border);
+.niuu-chat-input-box:focus-within {
+  border-color: color-mix(in srgb, var(--color-brand) 55%, var(--color-border));
 }
 
-.niuu-chat-input-wrapper[data-drag-over] {
+.niuu-chat-input-wrapper[data-drag-over] .niuu-chat-input-box {
   border-color: color-mix(in srgb, var(--color-brand) 50%, transparent);
   background-color: color-mix(in srgb, var(--color-brand) 5%, transparent);
 }
 
-.niuu-chat-input-wrapper[data-disabled] {
+.niuu-chat-input-wrapper[data-disabled] .niuu-chat-input-box {
   opacity: 0.6;
 }
 
+.niuu-chat-input-hints {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 0 var(--space-1);
+  color: var(--color-text-muted);
+  font-size: 11.5px;
+}
+
+.niuu-chat-kbd {
+  padding: 0 4px;
+  border: 1px solid var(--color-border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
 .niuu-chat-input-attachments {
-  grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
@@ -87,7 +112,6 @@
 
 .niuu-chat-input-area {
   min-width: 0;
-  align-self: center;
 }
 
 .niuu-chat-textarea {
@@ -99,12 +123,12 @@
   border: none;
   background: transparent;
   color: var(--color-text-primary);
-  font-size: var(--text-sm);
+  font-size: 15px;
   font-family: var(--font-sans);
   line-height: 1.5;
   outline: none;
   min-height: 24px;
-  max-height: 200px;
+  max-height: 160px;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--color-bg-elevated) transparent;
@@ -124,14 +148,18 @@
 
 .niuu-chat-input-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
 }
 
 .niuu-chat-input-left-actions {
   display: flex;
+  flex: 1;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-1);
+  gap: 6px;
+  min-width: 0;
 }
 
 .niuu-chat-input-right-actions {
@@ -146,8 +174,8 @@
   justify-content: center;
   width: 28px;
   height: 28px;
-  border: none;
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-full);
   background-color: transparent;
   color: var(--color-text-muted);
   cursor: pointer;
@@ -174,19 +202,21 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--color-accent-red) 40%, transparent);
-  border-radius: var(--radius-sm);
-  background-color: color-mix(in srgb, var(--color-accent-red) 10%, transparent);
-  color: var(--color-accent-red);
-  font-size: var(--text-xs);
+  height: 32px;
+  padding: 0 var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--color-critical) 40%, transparent);
+  border-radius: var(--radius-full);
+  background-color: color-mix(in srgb, var(--color-critical) 8%, transparent);
+  color: var(--color-critical);
+  font-size: 12.5px;
+  font-weight: 600;
   font-family: var(--font-sans);
   cursor: pointer;
   transition: all var(--transition-fast);
 }
 
 .niuu-chat-stop-btn:hover:not(:disabled) {
-  background-color: color-mix(in srgb, var(--color-accent-red) 20%, transparent);
+  background-color: color-mix(in srgb, var(--color-critical) 18%, transparent);
 }
 
 .niuu-chat-stop-btn:disabled {
@@ -228,13 +258,115 @@
   height: 16px;
 }
 
+/* ── Model / effort chips ── */
+
+.niuu-chat-chip-root {
+  position: relative;
+}
+
+.niuu-chat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-full);
+  background-color: var(--color-panel-quiet, var(--color-bg-primary));
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.niuu-chat-chip:hover:not(:disabled) {
+  border-color: var(--color-border);
+  color: var(--color-text-primary);
+}
+
+.niuu-chat-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.niuu-chat-chip-chevron {
+  width: 13px;
+  height: 13px;
+}
+
+.niuu-chat-chip-menu {
+  position: absolute;
+  bottom: calc(100% + var(--space-2));
+  left: 0;
+  z-index: 30;
+  min-width: 220px;
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-bg-secondary);
+  box-shadow: 0 28px 85px rgb(0 0 0 / 0.4);
+}
+
+.niuu-chat-chip-menu-heading {
+  padding: 6px 10px 4px;
+  color: var(--color-text-faint);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.niuu-chat-chip-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.niuu-chat-chip-menu-item:hover {
+  background-color: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.niuu-chat-chip-menu-check {
+  display: inline-flex;
+  width: 13px;
+  flex-shrink: 0;
+}
+
+.niuu-chat-chip-menu-check-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.niuu-chat-chip-menu-detail {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-size: 11.5px;
+}
+
+.niuu-chat-chip:focus-visible,
+.niuu-chat-chip-menu-item:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
 :is(
     [data-theme='xteo'],
     [data-theme='midnight-blue'],
     [data-theme='deep-blue'],
     [data-theme='dark-blue']
   )
-  .niuu-chat-input-wrapper {
+  .niuu-chat-input-box {
   background: var(--color-panel-quiet);
   box-shadow: none;
   border-color: var(--color-border-quiet);
@@ -245,7 +377,7 @@
     [data-theme='deep-blue'],
     [data-theme='dark-blue']
   )
-  .niuu-chat-input-wrapper:focus-within {
+  .niuu-chat-input-box:focus-within {
   border-color: var(--color-border-subtle);
 }
 :is(

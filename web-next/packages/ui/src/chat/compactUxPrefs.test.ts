@@ -7,6 +7,7 @@ const FORGE_DEFAULTS = {
   showAgentAvatar: true,
   timestamp: 'always',
   copyMode: 'inline',
+  toolRuns: 'rows',
 };
 
 describe('compactUxPrefs — chat prefs', () => {
@@ -23,17 +24,21 @@ describe('compactUxPrefs — chat prefs', () => {
     localStorage.setItem(`${NS}showAgentAvatar`, 'false');
     localStorage.setItem(`${NS}timestamp`, 'hover');
     localStorage.setItem(`${NS}copyMode`, 'hover');
+    localStorage.setItem(`${NS}toolRuns`, 'cards');
     expect(getCompactUxChatPrefs()).toEqual({
       showMessageActions: false,
       showAgentAvatar: false,
       timestamp: 'hover',
       copyMode: 'hover',
+      toolRuns: 'cards',
     });
   });
 
   it('falls back to the default for an out-of-range enum value', () => {
     localStorage.setItem(`${NS}timestamp`, 'bogus');
     expect(getCompactUxChatPrefs().timestamp).toBe('always');
+    localStorage.setItem(`${NS}toolRuns`, 'bogus');
+    expect(getCompactUxChatPrefs().toolRuns).toBe('rows');
   });
 });
 

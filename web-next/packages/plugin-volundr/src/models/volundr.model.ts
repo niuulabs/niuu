@@ -230,14 +230,46 @@ export interface VolundrSession {
   instanceId?: string;
   instanceName?: string;
   /** The caller's inbox state for the session's latest final reply, when reported. */
-  readState?: SessionInboxReadState;
+  readState?: SessionReadState;
+  /** The agent's own one-line summary of what the session is doing, when it wrote one. */
+  shortDescription?: string;
+  /**
+   * Seconds Forge worked on the session in the last 24 hours. Only the session list reports
+   * it, and only a host that records turn spans.
+   */
+  workedSeconds24h?: number;
 }
 
-export interface SessionInboxReadState {
+/**
+ * The caller's read state for one session. `latestOutputSeq` and `readThroughSeq` are positions
+ * in the session's event log, not counts of replies.
+ */
+export interface SessionReadState {
   isUnread: boolean;
   latestOutputSeq: number;
+  latestOutputTurnId?: string | null;
+  latestOutputAt?: string | null;
   readThroughSeq: number;
+  manuallyUnread?: boolean;
   revision: number;
+}
+
+/** The earlier name of the read state a session response embeds. */
+export type SessionInboxReadState = SessionReadState;
+
+/** A read or unread action. `throughSeq` is the output the caller actually saw. */
+export interface SessionReadStateChange {
+  state: 'read' | 'unread';
+  expectedRevision: number;
+  throughSeq: number;
+}
+
+/** Operator grants that let a session act on other sessions through the Forge MCP. */
+export type ForgeMcpGrant = 'message' | 'lifecycle';
+
+/** Forge MCP options for a new session (`forge_mcp` on session create). */
+export interface ForgeMcpSessionOptions {
+  grants: ForgeMcpGrant[];
 }
 
 // ---------------------------------------------------------------------------

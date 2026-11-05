@@ -61,6 +61,8 @@
 @import './chat/components/MeshEventCard/MeshEventCard.css';
 @import './chat/components/MeshSidebar/MeshSidebar.css';
 @import './chat/components/OutcomeCard/OutcomeCard.css';
+@import './chat/components/PlanDock/PlanDock.css';
+@import './chat/components/QuestionBand/QuestionBand.css';
 @import './chat/components/ParticipantFilter/ParticipantFilter.css';
 @import './chat/components/RenderedContent/RenderedContent.css';
 @import './chat/components/RoomMessage/RoomMessage.css';

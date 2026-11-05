@@ -52,8 +52,19 @@ export { MeshCascadePanel } from './components/MeshCascadePanel';
 export { MeshSidebar } from './components/MeshSidebar';
 export { ChatInput } from './components/ChatInput';
 export { SessionChat } from './components/SessionChat';
+export { QuestionBand } from './components/QuestionBand';
+export type { QuestionBandProps } from './components/QuestionBand';
+export { PlanDock } from './components/PlanDock';
+export type { PlanDockProps } from './components/PlanDock';
 export { ChatDisplayControls } from './components/ChatDisplayControls';
 export type { ChatDisplayControlsProps } from './components/ChatDisplayControls';
+export { SubagentCard, ProviderErrorCard, CompactionMarker } from './components/TranscriptCards';
+export type {
+  SubagentCardProps,
+  ProviderErrorCardProps,
+  CompactionMarkerProps,
+} from './components/TranscriptCards';
+export { engineInk, engineOf } from './utils/engineInk';
 export type { SessionChatProps } from './components/SessionChat';
 
 export { repairCanonicalText } from './hooks/canonicalTextRepair';

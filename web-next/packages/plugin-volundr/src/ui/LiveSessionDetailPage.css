@@ -137,19 +137,11 @@
   padding: 0 20px;
 }
 
-.niuu-live-session__title-group,
-.niuu-live-session__metrics-row,
 .niuu-live-session__tabs,
 .niuu-live-session__toolbar {
   display: flex;
   align-items: center;
   min-width: 0;
-}
-
-.niuu-live-session__title-group {
-  gap: 10px;
-  flex: 1 1 auto;
-  overflow: hidden;
 }
 
 .niuu-live-session__return-link {
@@ -180,12 +172,6 @@
   align-items: center;
   gap: 9px;
   min-width: 0;
-}
-
-.niuu-live-session__metrics-row {
-  margin-left: auto;
-  flex: 0 0 auto;
-  gap: 12px;
 }
 
 .niuu-live-session__status-dot {
@@ -225,13 +211,6 @@
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
-}
-
-.niuu-live-session__divider {
-  width: 1px;
-  height: 15px;
-  flex-shrink: 0;
-  background: color-mix(in srgb, var(--color-text-faint) 38%, transparent);
 }
 
 .niuu-live-session__ticket,
@@ -348,59 +327,6 @@
 
 .niuu-live-session__branch-button:hover {
   color: var(--color-text-primary);
-}
-
-.niuu-live-session__forge-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 4px 10px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--color-bg-elevated) 96%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-border-subtle) 94%, transparent);
-  font-family: var(--font-mono);
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-
-.niuu-live-session__forge-badge-label {
-  color: var(--color-text-primary);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.niuu-live-session__forge-badge-tone {
-  color: var(--color-text-faint);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  line-height: 1;
-  text-transform: uppercase;
-}
-
-.niuu-live-session__metric {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-family: var(--font-mono);
-  white-space: nowrap;
-}
-
-.niuu-live-session__metric-label {
-  color: var(--color-text-faint);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.18em;
-  line-height: 1;
-  text-transform: uppercase;
-}
-
-.niuu-live-session__metric-value {
-  color: var(--color-text-primary);
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
 }
 
 .niuu-live-session__tabs {
@@ -2126,21 +2052,6 @@
     gap: 12px;
   }
 
-  .niuu-live-session__header {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .niuu-live-session__metrics-row {
-    margin-left: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .niuu-live-session__metrics-row::-webkit-scrollbar {
-    display: none;
-  }
-
   .niuu-live-telemetry {
     padding: 12px;
   }
@@ -2324,43 +2235,9 @@
   font-family: var(--font-sans);
   font-size: 12px;
 }
-.niuu-live-session__handle,
-.niuu-live-session__metric-label,
-.niuu-live-session__forge-badge-label {
+.niuu-live-session__handle {
   font-size: 11px;
   letter-spacing: 0;
-}
-@container (max-width: 760px) {
-  .niuu-live-session__header {
-    flex-direction: column;
-    align-items: stretch;
-    padding-top: var(--space-2);
-    padding-bottom: var(--space-2);
-  }
-  .niuu-live-session__title-group {
-    flex-wrap: wrap;
-    row-gap: var(--space-2);
-  }
-  .niuu-live-session__identity {
-    flex: 1 1 calc(100% - 20px);
-    max-width: calc(100% - 20px);
-    overflow: hidden;
-  }
-  .niuu-live-session__title-group > .niuu-live-session__divider {
-    display: none;
-  }
-  .niuu-live-session__metrics-row {
-    margin-left: 0;
-  }
-  .niuu-live-session__tabs {
-    flex-basis: 100%;
-  }
-  .niuu-live-session__toolbar {
-    width: 100%;
-    margin-left: 0;
-    justify-content: flex-end;
-    border-top: 1px solid var(--color-border-subtle);
-  }
 }
 @media (max-width: 760px) {
   .niuu-live-session__header,
@@ -2666,5 +2543,149 @@
 @media (max-width: 720px) {
   [data-theme='light'] .niuu-live-telemetry__metric-card {
     border-top: 1px solid var(--color-border);
+  }
+}
+
+/* Lexi header: identity and subline on the left, meter and actions on the right. */
+.niuu-live-session__header {
+  display: block;
+  min-height: 0;
+  padding: 12px 20px 10px;
+  border-bottom: 0;
+  overflow: visible;
+}
+
+.niuu-live-session__head-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.niuu-live-session__head-title {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.niuu-live-session__head-top > .niuu-live-session__toolbar {
+  margin-left: auto;
+  padding: 0 0 0 12px;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.niuu-live-session__status-dot--working {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-green) 25%, transparent);
+}
+
+.niuu-live-session__identity {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+.niuu-live-session__title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.niuu-live-session__state-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border: 0.5px solid color-mix(in srgb, var(--pill) 32%, transparent);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--pill) 16%, transparent);
+  color: var(--pill);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  --pill: var(--color-text-muted);
+}
+
+.niuu-live-session__state-pill[data-tone='working'] {
+  --pill: var(--status-green);
+}
+
+.niuu-live-session__state-pill[data-tone='attention'] {
+  --pill: var(--status-amber);
+}
+
+.niuu-live-session__state-pill[data-tone='critical'] {
+  --pill: var(--color-critical-fg);
+}
+
+.niuu-live-session__subline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.niuu-live-session__sep {
+  color: var(--color-text-faint);
+}
+
+.niuu-live-session__model {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+
+.niuu-live-session__model[data-harness='claude'] {
+  color: var(--color-harness-claude);
+}
+
+.niuu-live-session__model[data-harness='codex'] {
+  color: var(--color-harness-codex);
+}
+
+.niuu-live-session__source-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.niuu-live-session__branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 240px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.niuu-live-session__branch svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 760px) {
+  .niuu-live-session__header {
+    padding: 10px 12px 8px;
+  }
+
+  .niuu-live-session__head-top {
+    flex-wrap: wrap;
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__toolbar {
+    width: 100%;
+    margin-left: 0;
+    padding-left: 0;
+    justify-content: flex-end;
+    overflow-x: auto;
   }
 }

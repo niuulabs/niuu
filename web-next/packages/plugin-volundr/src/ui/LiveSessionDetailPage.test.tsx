@@ -24,6 +24,20 @@ import type { VolundrSession } from '../models/volundr.model';
 
 const navigate = vi.fn();
 
+const sessionChatProps = vi.hoisted(() => vi.fn());
+
+// The real SessionChat still renders; the spy only records the props the page hands it.
+vi.mock('@niuulabs/ui', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@niuulabs/ui')>();
+  return {
+    ...actual,
+    SessionChat: (props: React.ComponentProps<typeof actual.SessionChat>) => {
+      sessionChatProps(props);
+      return <actual.SessionChat {...props} />;
+    },
+  };
+});
+
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => navigate,
 }));
@@ -565,6 +579,12 @@ function wrap(
   );
 }
 
+/** Opens the header's More menu and returns one of its items. */
+function moreItem(name: string) {
+  fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+  return screen.getByRole('button', { name });
+}
+
 function mockChatState(overrides: Partial<ReturnType<typeof chatHooks.useSkuldChat>> = {}) {
   vi.spyOn(chatHooks, 'useSkuldChat').mockReturnValue({
     messages: [],
@@ -589,6 +609,13 @@ function mockChatState(overrides: Partial<ReturnType<typeof chatHooks.useSkuldCh
     sendRewindFiles: vi.fn(),
     sendSetInternalVisibility: vi.fn(),
     clearMessages: vi.fn(),
+    plan: null,
+    agents: [],
+    effort: null,
+    runtimeOptions: null,
+    usage: null,
+    sendSetEffort: vi.fn(),
+    sendSetRuntimeOptions: vi.fn(),
     ...overrides,
   });
 }
@@ -881,9 +908,8 @@ describe('LiveSessionDetailPage', () => {
 
     wrap('test-session-id-1234');
 
-    const resendButton = await screen.findByRole('button', {
-      name: 'Resend prompt to flock',
-    });
+    await screen.findByTestId('live-session-detail-page');
+    const resendButton = moreItem('Resend prompt to flock');
     expect(resendButton).toBeEnabled();
 
     fireEvent.click(resendButton);
@@ -896,6 +922,8 @@ describe('LiveSessionDetailPage', () => {
     wrap('test-session-id-1234');
 
     await screen.findByTestId('live-session-detail-page');
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    expect(screen.getByRole('button', { name: 'Archive session' })).toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Resend prompt to flock' }),
     ).not.toBeInTheDocument();
@@ -937,9 +965,12 @@ describe('LiveSessionDetailPage', () => {
     it('shows repo and branch for git source', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByText('niuulabs/volundr')).toBeInTheDocument();
+      expect(
+        within(screen.getByTestId('session-stats')).getByText('niuulabs/volundr'),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId('session-branch')).toHaveTextContent('main');
       fireEvent.click(screen.getByRole('button', { name: 'Session workspace details' }));
-      expect(screen.getByText('main')).toBeInTheDocument();
+      expect(within(screen.getByRole('dialog')).getByText('main')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Copy session ID' })).toBeInTheDocument();
     });
 
@@ -1069,6 +1100,13 @@ describe('LiveSessionDetailPage', () => {
         sendRewindFiles: vi.fn(),
         sendSetInternalVisibility: vi.fn(),
         clearMessages: vi.fn(),
+        plan: null,
+        agents: [],
+        effort: null,
+        runtimeOptions: null,
+        usage: null,
+        sendSetEffort: vi.fn(),
+        sendSetRuntimeOptions: vi.fn(),
       });
 
       wrap('test-session-id-1234');
@@ -1813,9 +1851,9 @@ describe('LiveSessionDetailPage', () => {
         const gate = await screen.findByTestId('attention-gate');
         expect(gate).toHaveTextContent('PRD approval gate');
         expect(gate).toHaveTextContent('Waiting for your approval.');
-        expect(screen.getByRole('region', { name: 'Tasks (0/1)' })).toHaveTextContent(
-          'Write the fix',
-        );
+        const plan = screen.getByRole('region', { name: 'Plan' });
+        expect(plan).toHaveTextContent('Write the fix');
+        expect(plan).toHaveTextContent('0/1');
       });
 
       it('leads back to chat from another tab', async () => {
@@ -1852,21 +1890,142 @@ describe('LiveSessionDetailPage', () => {
         expect(screen.getByTestId('session-attention-panel')).toBeInTheDocument();
       });
 
-      it('gives the columns the space when the panel has nothing of its own', async () => {
+      it('always says what the session is, even when nothing else is waiting', async () => {
         mockChatState();
-        const store = buildSessionStore(RUNNING_SESSION);
-        const unchanged = await store.getSession!('test-session-id-1234');
-        wrap('test-session-id-1234', {
-          sessionStore: {
-            getSession: vi
-              .fn()
-              .mockResolvedValue(unchanged ? { ...unchanged, files: undefined } : null),
+        wrap('test-session-id-1234');
+        const panel = await screen.findByTestId('session-attention-panel');
+
+        expect(within(panel).queryByRole('region', { name: 'Needs you' })).not.toBeInTheDocument();
+        expect(within(panel).queryByRole('region', { name: 'Plan' })).not.toBeInTheDocument();
+        expect(within(panel).queryByRole('region', { name: 'Agents' })).not.toBeInTheDocument();
+        expect(
+          within(panel).queryByRole('region', { name: 'Deliverables' }),
+        ).not.toBeInTheDocument();
+        const info = within(panel).getByRole('region', { name: 'Session' });
+        expect(info).toHaveTextContent('Engine');
+        expect(info).toHaveTextContent('Claude Sonnet 4.6');
+        expect(info).toHaveTextContent('Claude');
+        expect(info).toHaveTextContent('Guild Alpha');
+        expect(info).toHaveTextContent('niuulabs/volundr');
+        expect(info).toHaveTextContent('Started');
+        expect(within(panel).getByRole('region', { name: 'Changed files' })).toHaveTextContent(
+          '4 files changed',
+        );
+      });
+
+      it('shows the plan frame instead of the TodoWrite list', async () => {
+        mockChatState({
+          messages: [
+            {
+              id: 'todo',
+              role: 'assistant',
+              content: '',
+              createdAt: new Date(0),
+              parts: [
+                {
+                  type: 'tool_use',
+                  name: 'TodoWrite',
+                  input: { todos: [{ content: 'Old todo item', status: 'pending' }] },
+                },
+              ],
+            },
+          ],
+          plan: {
+            tasks: [
+              { content: 'Read the gates', status: 'completed' },
+              { content: 'Write the fix', status: 'in_progress' },
+              { content: 'Run the tests', status: 'pending' },
+            ],
+            counts: { total: 3, completed: 1, in_progress: 1, pending: 1 },
           },
         });
-        await screen.findByTestId('live-session-detail-page');
+        wrap('test-session-id-1234');
 
-        expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
-        expect(screen.queryByRole('button', { name: /session panel/ })).not.toBeInTheDocument();
+        const plan = await screen.findByRole('region', { name: 'Plan' });
+        expect(plan).toHaveTextContent('1/3');
+        expect(plan).toHaveTextContent('Read the gates');
+        expect(plan).toHaveTextContent('Run the tests');
+        expect(plan).not.toHaveTextContent('Old todo item');
+      });
+
+      it('does not fall back to TodoWrite once a plan frame has arrived', async () => {
+        mockChatState({
+          messages: [
+            {
+              id: 'todo',
+              role: 'assistant',
+              content: '',
+              createdAt: new Date(0),
+              parts: [
+                {
+                  type: 'tool_use',
+                  name: 'TodoWrite',
+                  input: { todos: [{ content: 'Old todo item', status: 'pending' }] },
+                },
+              ],
+            },
+          ],
+          plan: { tasks: [], counts: { total: 0 } },
+        });
+        wrap('test-session-id-1234');
+
+        await screen.findByTestId('session-attention-panel');
+        expect(screen.queryByRole('region', { name: 'Plan' })).not.toBeInTheDocument();
+        expect(screen.queryByText('Old todo item')).not.toBeInTheDocument();
+      });
+
+      it('lists the agents the session started with how long they ran', async () => {
+        mockChatState({
+          agents: [
+            {
+              id: 'agent-1',
+              kind: 'subagent',
+              name: 'Check the other gate entry points',
+              status: 'done',
+              startedAt: '2026-11-05T10:00:00.000Z',
+              endedAt: '2026-11-05T10:01:52.000Z',
+            },
+          ],
+        });
+        wrap('test-session-id-1234');
+
+        const agents = await screen.findByRole('region', { name: 'Agents' });
+        expect(agents).toHaveTextContent('Check the other gate entry points');
+        expect(agents).toHaveTextContent('done · 1m');
+      });
+
+      it('lists presented files as deliverables and opens one', async () => {
+        mockChatState({
+          messages: [
+            {
+              id: 'present',
+              role: 'assistant',
+              content: '',
+              createdAt: new Date(0),
+              parts: [
+                {
+                  type: 'tool_use',
+                  name: 'present_file',
+                  input: {
+                    file_id: 'file-1',
+                    name: 'gate-refusal-trace.md',
+                    mime: 'text/markdown',
+                  },
+                },
+              ],
+            },
+          ],
+        });
+        wrap('test-session-id-1234');
+
+        const deliverables = await screen.findByRole('region', { name: 'Deliverables' });
+        fireEvent.click(
+          within(deliverables).getByRole('button', { name: /gate-refusal-trace.md/ }),
+        );
+
+        expect(
+          await screen.findByRole('dialog', { name: /gate-refusal-trace.md/ }),
+        ).toBeInTheDocument();
       });
     });
 
@@ -2189,7 +2348,7 @@ describe('LiveSessionDetailPage', () => {
     it('shows Archive button for running session', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByRole('button', { name: /Archive session/i })).toBeInTheDocument();
+      expect(moreItem('Archive session')).toBeInTheDocument();
     });
 
     it('shows Start button for stopped session', async () => {
@@ -2288,15 +2447,14 @@ describe('LiveSessionDetailPage', () => {
     it('shows delete button', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByTitle(/Delete/i)).toBeInTheDocument();
+      expect(moreItem('Delete session')).toBeInTheDocument();
     });
 
     it('hides session action buttons in read-only mode', async () => {
       wrap('test-session-id-1234', { readOnly: true });
       await screen.findByTestId('live-session-detail-page');
       expect(screen.queryByTitle(/Stop session/i)).not.toBeInTheDocument();
-      expect(screen.queryByTitle(/Archive session/i)).not.toBeInTheDocument();
-      expect(screen.queryByTitle(/Delete session/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'More actions' })).not.toBeInTheDocument();
     });
 
     it('stops a running session when stop is clicked', async () => {
@@ -2334,7 +2492,7 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234', { volundr: service });
 
       await screen.findByTestId('live-session-detail-page');
-      fireEvent.click(screen.getByTitle(/Archive session/i));
+      fireEvent.click(moreItem('Archive session'));
 
       await waitFor(() => {
         expect(service.archiveSession).toHaveBeenCalledWith('test-session-id-1234');
@@ -2386,7 +2544,7 @@ describe('LiveSessionDetailPage', () => {
       );
 
       await screen.findByTestId('live-session-detail-page');
-      fireEvent.click(screen.getByTitle(/Delete session/i));
+      fireEvent.click(moreItem('Delete session'));
 
       const dialog = screen.getByRole('dialog');
       expect(dialog).toBeInTheDocument();
@@ -2418,7 +2576,7 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234', { volundr: service });
 
       await screen.findByTestId('live-session-detail-page');
-      fireEvent.click(screen.getByTitle(/Delete session/i));
+      fireEvent.click(moreItem('Delete session'));
       expect(screen.getByRole('dialog')).toBeInTheDocument();
 
       fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
@@ -2450,7 +2608,7 @@ describe('LiveSessionDetailPage', () => {
       );
 
       await screen.findByTestId('live-session-detail-page');
-      fireEvent.click(screen.getByTitle(/Delete session/i));
+      fireEvent.click(moreItem('Delete session'));
       fireEvent.click(screen.getByTestId('cleanup-workspace_storage'));
       expect(screen.getByTestId('cleanup-workspace_storage')).toBeChecked();
 
@@ -2472,7 +2630,7 @@ describe('LiveSessionDetailPage', () => {
       );
 
       await screen.findByTestId('live-session-detail-page');
-      fireEvent.click(screen.getByTitle(/Delete session/i));
+      fireEvent.click(moreItem('Delete session'));
       expect(screen.getByTestId('cleanup-workspace_storage')).not.toBeChecked();
       expect(screen.getByTestId('cleanup-chronicles')).not.toBeChecked();
     });
@@ -2534,7 +2692,188 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234', { session: localSession });
       await screen.findByTestId('live-session-detail-page');
       fireEvent.click(screen.getByRole('button', { name: 'Session workspace details' }));
-      expect(screen.getByText('/home/user/project')).toBeInTheDocument();
+      expect(
+        within(screen.getByRole('dialog')).getByText('/home/user/project'),
+      ).toBeInTheDocument();
+    });
+  });
+
+  describe('lexi header', () => {
+    const storedSession = (extra: Record<string, unknown> = {}) => ({
+      id: RUNNING_SESSION.id,
+      ravnId: 's-4912',
+      name: RUNNING_SESSION.name,
+      personaName: RUNNING_SESSION.name,
+      templateId: 'git-default',
+      state: 'running',
+      clusterId: 'local',
+      startedAt: new Date(Date.now() - 9_240_000).toISOString(),
+      resources: {
+        cpuRequest: 2,
+        cpuLimit: 4,
+        cpuUsed: 1.5,
+        memRequestMi: 4096,
+        memLimitMi: 8192,
+        memUsedMi: 2048,
+        gpuCount: 0,
+      },
+      env: {},
+      events: [],
+      ...extra,
+    });
+
+    it('names the state, the engine in its colour, the host and the branch', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+
+      expect(screen.getByTestId('session-state-pill')).toHaveTextContent('Working');
+      expect(screen.getByTestId('session-model')).toHaveAttribute('data-harness', 'claude');
+      const subline = screen.getByTestId('session-stats');
+      expect(subline).toHaveTextContent('Claude Sonnet 4.6');
+      expect(subline).toHaveTextContent('Guild Alpha');
+      expect(within(subline).getByTestId('session-activity-elapsed')).toHaveTextContent('Working');
+      expect(subline).toHaveTextContent('main');
+    });
+
+    it('draws no meter until the runtime or Forge reports something for it', async () => {
+      mockChatState();
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+
+      expect(screen.queryByTestId('session-meter')).not.toBeInTheDocument();
+    });
+
+    it('draws the context ring from reported tokens and window', async () => {
+      mockChatState({ usage: { contextTokens: 62_000, window: 200_000 } });
+      wrap('test-session-id-1234');
+
+      const meter = await screen.findByTestId('session-meter');
+      expect(within(meter).getByTestId('session-context-percent')).toHaveTextContent('31%');
+      expect(meter).toHaveAttribute('title', '62k of 200k context used');
+      expect(within(meter).queryByTestId('session-cost')).not.toBeInTheDocument();
+    });
+
+    it('draws no ring when the runtime reports tokens without a window', async () => {
+      mockChatState({ usage: { contextTokens: 62_000 } });
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+
+      expect(screen.queryByTestId('session-meter')).not.toBeInTheDocument();
+    });
+
+    it('shows the cost alone when there is no context data', async () => {
+      mockChatState();
+      wrap('test-session-id-1234', {
+        sessionStore: { getSession: vi.fn().mockResolvedValue(storedSession({ costCents: 184 })) },
+      });
+
+      const meter = await screen.findByTestId('session-meter');
+      expect(within(meter).getByTestId('session-cost')).toHaveTextContent('$1.84');
+      expect(within(meter).queryByTestId('session-context-ring')).not.toBeInTheDocument();
+    });
+
+    it('shows ring and cost together', async () => {
+      mockChatState({ usage: { contextTokens: 170_000, window: 200_000 } });
+      wrap('test-session-id-1234', {
+        sessionStore: { getSession: vi.fn().mockResolvedValue(storedSession({ costCents: 41 })) },
+      });
+
+      const meter = await screen.findByTestId('session-meter');
+      expect(meter).toHaveTextContent('85%');
+      expect(meter).toHaveTextContent('$0.41');
+      expect(meter.querySelector('.forge-meter__fill--warn')).not.toBeNull();
+    });
+
+    it('keeps the primary state action on the header and the rest in More', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+
+      expect(screen.getByRole('button', { name: 'Stop session' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+      expect(screen.getByRole('button', { name: 'Archive session' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Delete session' })).toBeInTheDocument();
+      expect(screen.getAllByRole('button', { name: 'Stop session' })).toHaveLength(1);
+    });
+
+    it('leaves the display, tool visibility and panel controls on the header', async () => {
+      mockChatState();
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+
+      const toolbar = document.querySelector('.niuu-live-session__toolbar') as HTMLElement;
+      expect(toolbar).toContainElement(screen.getByTestId('conversation-view-toggle'));
+      expect(toolbar).toContainElement(
+        screen.getByRole('button', { name: /Hide tool calls and results/i }),
+      );
+      expect(
+        within(toolbar).getByRole('button', { name: 'Hide session panel' }),
+      ).toBeInTheDocument();
+    });
+
+    it('closes the More menu after an action runs', async () => {
+      const service = buildVolundrService();
+      service.archiveSession = vi.fn().mockResolvedValue(undefined);
+      wrap('test-session-id-1234', { volundr: service });
+      await screen.findByTestId('live-session-detail-page');
+
+      fireEvent.click(moreItem('Archive session'));
+
+      await waitFor(() => expect(service.archiveSession).toHaveBeenCalled());
+      expect(screen.queryByRole('button', { name: 'Archive session' })).not.toBeInTheDocument();
+    });
+
+    it('hands the chat the plan, agents, effort, runtime options and a working flag', async () => {
+      const sendSetEffort = vi.fn();
+      const sendSetRuntimeOptions = vi.fn();
+      const plan = {
+        tasks: [{ content: 'Write the fix', status: 'in_progress' }],
+        counts: { total: 1, in_progress: 1 },
+      };
+      const agents = [{ id: 'a1', kind: 'subagent', name: 'Checker', status: 'running' }];
+      const effort = { current: 'high', levels: ['low', 'high'], mutable: true };
+      const runtimeOptions = {
+        current: { model: 'claude-sonnet-4-6' },
+        models: [],
+      };
+      mockChatState({ plan, agents, effort, runtimeOptions, sendSetEffort, sendSetRuntimeOptions });
+      wrap('test-session-id-1234', {
+        session: { ...RUNNING_SESSION, activityState: 'tool_executing' },
+      });
+      await screen.findByTestId('live-session-detail-page');
+
+      await waitFor(() => expect(sessionChatProps).toHaveBeenCalled());
+      const props = sessionChatProps.mock.calls.at(-1)![0];
+      expect(props.plan).toBe(plan);
+      expect(props.agents).toBe(agents);
+      expect(props.effort).toBe(effort);
+      expect(props.runtimeOptions).toBe(runtimeOptions);
+      expect(props.working).toBe(true);
+      expect(props.onSetEffort).toBe(sendSetEffort);
+      props.onSetRuntimeModel('claude-opus-4-8');
+      expect(sendSetRuntimeOptions).toHaveBeenCalledWith({ model: 'claude-opus-4-8' });
+    });
+
+    it.each(['idle', 'awaiting_input', null] as const)(
+      'is not working while the session is %s',
+      async (activityState) => {
+        mockChatState();
+        wrap('test-session-id-1234', {
+          session: { ...RUNNING_SESSION, activityState },
+        });
+        await screen.findByTestId('live-session-detail-page');
+
+        await waitFor(() => expect(sessionChatProps).toHaveBeenCalled());
+        expect(sessionChatProps.mock.calls.at(-1)![0].working).toBe(false);
+      },
+    );
+
+    it('keeps a stopped session readable and offers to start it', async () => {
+      wrap('test-session-id-1234', { session: STOPPED_SESSION });
+      await screen.findByTestId('live-session-detail-page');
+
+      expect(screen.getByRole('button', { name: 'Start session' })).toBeInTheDocument();
+      expect(screen.getByTestId('session-state-pill')).toBeInTheDocument();
+      expect(screen.queryByTestId('session-meter')).not.toBeInTheDocument();
     });
   });
 
@@ -2546,10 +2885,10 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByTestId('session-activity-elapsed')).toBeInTheDocument();
     });
 
-    it('shows Msgs metric', async () => {
+    it('counts the session messages in the subline', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByText('Msgs')).toBeInTheDocument();
+      expect(screen.getByTestId('session-message-count')).toHaveTextContent(/^\d+ messages?$/);
     });
 
     it('uses the visible chat count for Msgs once chat history is loaded', async () => {
@@ -2591,12 +2930,19 @@ describe('LiveSessionDetailPage', () => {
         sendRewindFiles: vi.fn(),
         sendSetInternalVisibility: vi.fn(),
         clearMessages: vi.fn(),
+        plan: null,
+        agents: [],
+        effort: null,
+        runtimeOptions: null,
+        usage: null,
+        sendSetEffort: vi.fn(),
+        sendSetRuntimeOptions: vi.fn(),
       });
 
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       await waitFor(() => {
-        expect(screen.getByTestId('session-stats')).toHaveTextContent('Msgs2');
+        expect(screen.getByTestId('session-stats')).toHaveTextContent('2 messages');
       });
     });
 
@@ -2605,7 +2951,7 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234', { openConnections });
       await screen.findByTestId('live-session-detail-page');
       const toolbar = document.querySelector('.niuu-live-session__toolbar') as HTMLElement;
-      fireEvent.click(screen.getByRole('button', { name: 'Reconnect account' }));
+      fireEvent.click(moreItem('Reconnect account'));
       expect(openConnections).toHaveBeenCalledOnce();
       expect(toolbar).toContainElement(screen.getByTestId('conversation-view-toggle'));
       // The conversation keeps his layout: no second row of display controls.
@@ -2615,6 +2961,8 @@ describe('LiveSessionDetailPage', () => {
     it('offers no reconnect without a reconnect flow or on an archived session', async () => {
       const first = wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+      expect(screen.getByRole('button', { name: 'Archive session' })).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Reconnect account' })).toBeNull();
       first.unmount();
       wrap('test-session-id-1234', { readOnly: true, openConnections: vi.fn() });
@@ -2625,19 +2973,19 @@ describe('LiveSessionDetailPage', () => {
     it('hides Tokens by default and shows the metric when enabled in settings', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.queryByText('Tokens')).not.toBeInTheDocument();
+      expect(screen.getByTestId('session-stats')).not.toHaveTextContent('tokens');
       act(() => {
         localStorage.setItem('niuu.forge.tokens', '1');
         window.dispatchEvent(new Event('storage'));
       });
-      expect(screen.getByText('Tokens')).toBeInTheDocument();
+      expect(screen.getByTestId('session-stats')).toHaveTextContent('5.0k tokens');
     });
 
-    it('shows the forge badge with the instance name', async () => {
+    it('names the host in the subline', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByText('Guild Alpha')).toBeInTheDocument();
-      expect(screen.getByText('PRIMARY')).toBeInTheDocument();
+      expect(screen.getByTestId('session-host')).toHaveTextContent('Guild Alpha');
+      expect(screen.queryByText('PRIMARY')).not.toBeInTheDocument();
     });
   });
 

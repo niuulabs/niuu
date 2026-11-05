@@ -1025,3 +1025,43 @@ describe('mock Forge projects', () => {
     ).rejects.toThrow('Project not found');
   });
 });
+
+describe('mock session read state', () => {
+  it('marks a session unread and read, advancing the revision each time', async () => {
+    const service = createMockVolundrService();
+    const first = await service.getSessionReadState('sess-1');
+    expect(first).toMatchObject({ isUnread: false, revision: 0 });
+
+    const unread = await service.changeSessionReadState('sess-1', {
+      state: 'unread',
+      expectedRevision: 0,
+      throughSeq: 0,
+    });
+    expect(unread).toMatchObject({ isUnread: true, manuallyUnread: true, revision: 1 });
+    expect(await service.getSessionReadState('sess-1')).toMatchObject({ isUnread: true });
+
+    const read = await service.changeSessionReadState('sess-1', {
+      state: 'read',
+      expectedRevision: 1,
+      throughSeq: 0,
+    });
+    expect(read).toMatchObject({ isUnread: false, manuallyUnread: false, revision: 2 });
+  });
+
+  it('refuses a change made against an old revision', async () => {
+    const service = createMockVolundrService();
+    await expect(
+      service.changeSessionReadState('sess-1', {
+        state: 'read',
+        expectedRevision: 5,
+        throughSeq: 0,
+      }),
+    ).rejects.toThrow('marked read or unread elsewhere');
+  });
+
+  it('refuses a session it does not hold', async () => {
+    await expect(createMockVolundrService().getSessionReadState('nope')).rejects.toThrow(
+      'Session not found',
+    );
+  });
+});

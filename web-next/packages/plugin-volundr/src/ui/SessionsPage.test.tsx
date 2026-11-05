@@ -750,27 +750,24 @@ describe('Forge session review controls', () => {
     ['~/repos/niuu', '~/repos/niuu'],
     ['/home', '/home'],
     ['/homebrew/niuu', '/homebrew/niuu'],
-  ])(
-    'shows the agent, host and compact folder for %s with its full path on hover',
-    async (path, label) => {
-      wrap(
-        createSessionStoreWithSessions([
-          makeSession({
-            id: 'host-row',
-            personaName: 'Workspace review',
-            state: 'running',
-            clusterName: 'Build Bro',
-            model: 'gpt-6-astra',
-            source: { type: 'local_mount', local_path: path },
-          }),
-        ]),
-      );
-      const row = await screen.findByTestId('pod-entry-host-row');
-      expect(row).toHaveTextContent(`CodexBuild Bro${label}`);
-      expect(within(row).getByTitle('Host: Build Bro')).toHaveTextContent('Build Bro');
-      expect(within(row).getByTitle(path)).toHaveTextContent(label);
-    },
-  );
+  ])('shows the folder, model and host for %s with its full path on hover', async (path, label) => {
+    wrap(
+      createSessionStoreWithSessions([
+        makeSession({
+          id: 'host-row',
+          personaName: 'Workspace review',
+          state: 'running',
+          clusterName: 'Build Bro',
+          model: 'gpt-6-astra',
+          source: { type: 'local_mount', local_path: path },
+        }),
+      ]),
+    );
+    const row = await screen.findByTestId('pod-entry-host-row');
+    expect(row).toHaveTextContent(`Workspace reviewWorking${label}GPT-6 AstraBuild Bro`);
+    expect(within(row).getByTitle('Host: Build Bro')).toHaveTextContent('Build Bro');
+    expect(within(row).getByTitle(path)).toHaveTextContent(label);
+  });
   it('persists keyboard resizing and collapsed groups', async () => {
     wrap(createSessionStoreWithSessions(sessions));
     await screen.findByTestId('pod-entry-working');

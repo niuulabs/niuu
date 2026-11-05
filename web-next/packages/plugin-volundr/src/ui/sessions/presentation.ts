@@ -1,6 +1,7 @@
 import type { Session, SessionState } from '../../domain/session';
 
 export const SESSION_FILTERS = [
+  'unread',
   'live',
   'active',
   'idle',
@@ -12,6 +13,7 @@ export const SESSION_FILTERS = [
 ] as const;
 export type SessionFilter = (typeof SESSION_FILTERS)[number];
 export const FILTER_LABELS: Record<SessionFilter, string> = {
+  unread: 'Unread',
   live: 'Live',
   all: 'All',
   active: 'Working',
@@ -44,6 +46,8 @@ export const STOPPABLE_STATES = new Set<SessionState>([
 
 export function matchesSessionFilter(session: Session, filter: SessionFilter): boolean {
   switch (filter) {
+    case 'unread':
+      return session.readState?.isUnread === true;
     case 'all':
       return true;
     case 'live':

@@ -653,3 +653,67 @@
   color: var(--color-brand);
   cursor: pointer;
 }
+
+/* Lexi-style rows: title and state, the agent's own summary, then model · host and time. */
+.forge-session-row__headline {
+  justify-content: flex-start;
+  gap: 6px;
+}
+.forge-session-row__headline .forge-session-row__title {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.forge-session-row__headline .forge-session-state {
+  margin-left: auto;
+}
+.forge-session-unread-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-brand);
+}
+.forge-session-row__preview {
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+.forge-session-row__preview.forge-session-row__source {
+  display: flex;
+  min-width: 0;
+}
+.forge-session-row__metadata {
+  margin-top: 1px;
+}
+.forge-session-row__metadata .forge-session-harness {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.forge-session-today {
+  margin: 0;
+  padding: 0 10px 6px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+.forge-session-states button[data-filter='unread'] span:last-child {
+  color: var(--color-brand);
+}
+.forge-session-read-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.forge-session-read-error button {
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+  text-decoration: underline;
+}

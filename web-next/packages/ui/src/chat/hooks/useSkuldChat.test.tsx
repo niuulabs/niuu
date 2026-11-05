@@ -1236,6 +1236,7 @@ page_path: council/demo/opinion-b.md
     expect(result.current.pendingInputRequests).toEqual([
       {
         requestId: 'input-1',
+        receivedAt: expect.any(String),
         questions: [
           { prompt: 'Choose the target environment', choices: ['Staging', 'Production'] },
           { prompt: 'Which region?', choices: ['Canada', 'Europe'] },
@@ -1282,6 +1283,7 @@ page_path: council/demo/opinion-b.md
     expect(result.current.pendingInputRequests).toEqual([
       {
         requestId: 'muse-1',
+        receivedAt: expect.any(String),
         questions: [
           {
             prompt: 'Which platforms?',
@@ -1340,6 +1342,7 @@ page_path: council/demo/opinion-b.md
     expect(result.current.pendingInputRequests).toEqual([
       {
         requestId: 'tty-1-abc',
+        receivedAt: expect.any(String),
         questions: [{ prompt: 'Deliver how?', choices: ['Folio', 'Tar'] }],
         // LEX-1502: the card that comes back says why the answer was refused.
         error: 'The live Claude menu does not match the pending question state',
@@ -1464,6 +1467,7 @@ page_path: council/demo/opinion-b.md
     expect(result.current.pendingInputRequests).toEqual([
       {
         requestId: 'input-clear',
+        receivedAt: expect.any(String),
         questions: [{ prompt: 'Provide a release note', choices: [] }],
       },
     ]);
@@ -2600,6 +2604,9 @@ page_path: council/demo/opinion-b.md
     });
     expect(result.current.capabilities).toEqual({
       interrupt: true,
+      steer: false,
+      set_effort: false,
+      runtime_options: false,
       set_model: true,
       set_thinking_tokens: true,
       rewind_files: true,

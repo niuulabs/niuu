@@ -26,9 +26,10 @@ import type {
   VolundrWorkspace,
   VolundrWorkflowGate,
   ExternalSession,
+  SessionReadState,
 } from '../models/volundr.model';
 import type { Cluster } from '../domain/cluster';
-import type { Session } from '../domain/session';
+import { SessionReadStateConflictError, type Session } from '../domain/session';
 
 // ---------------------------------------------------------------------------
 // Seed data
@@ -1245,6 +1246,22 @@ export function createMockVolundrService(): IVolundrService {
   const credentials = new Map(SEED_CREDENTIALS.map((credential) => [credential.name, credential]));
   const launchSpecs = [...SEED_LAUNCH_SPECS];
   const workflowGates = new Map<string, VolundrWorkflowGate[]>();
+  const readStates = new Map<string, SessionReadState>();
+  const readStateOf = (id: string): SessionReadState => {
+    const stored = readStates.get(id);
+    if (stored) return stored;
+    const session = sessions.find((item) => item.id === id);
+    if (!session) throw new Error('Session not found');
+    return (
+      session.readState ?? {
+        isUnread: false,
+        latestOutputSeq: 0,
+        readThroughSeq: 0,
+        manuallyUnread: false,
+        revision: 0,
+      }
+    );
+  };
 
   return {
     getFeatures: async () => ({
@@ -1260,6 +1277,25 @@ export function createMockVolundrService(): IVolundrService {
     getSession: async (id) => sessions.find((s) => s.id === id) ?? null,
     getRuntimeVersion: async () => ({ state: 'unknown', current: null, available: null }),
 
+    getSessionReadState: async (id) => ({ ...readStateOf(id) }),
+    changeSessionReadState: async (id, change) => {
+      const current = readStateOf(id);
+      if (change.expectedRevision !== current.revision) throw new SessionReadStateConflictError();
+      const readThroughSeq =
+        change.state === 'read'
+          ? Math.max(current.readThroughSeq, change.throughSeq)
+          : current.readThroughSeq;
+      const manuallyUnread = change.state === 'unread';
+      const next: SessionReadState = {
+        ...current,
+        readThroughSeq,
+        manuallyUnread,
+        isUnread: manuallyUnread || current.latestOutputSeq > readThroughSeq,
+        revision: current.revision + 1,
+      };
+      readStates.set(id, next);
+      return { ...next };
+    },
     getActiveSessions: async () =>
       sessions.filter((s) => ['starting', 'provisioning', 'running'].includes(s.status)),
 

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { ChatInput } from './ChatInput';
+import type { SessionEffort, SessionRuntimeOptions } from '../../types';
 
 describe('ChatInput', () => {
   const defaultProps = {
@@ -418,5 +419,166 @@ describe('mesh ordinary chat', () => {
     fireEvent.change(textarea, { target: { value: '@resident-codex hello' } });
     fireEvent.click(screen.getByTestId('send-btn'));
     expect(onSendDirected.mock.calls[1]?.[0]).toEqual([bragi]);
+  });
+});
+
+describe('Lexi composer', () => {
+  const defaultProps = { onSend: vi.fn(), isLoading: false, onStop: vi.fn() };
+
+  const runtimeOptions: SessionRuntimeOptions = {
+    current: { model: 'gpt-5', effort: 'high' },
+    models: [
+      { id: 'gpt-5', model: 'gpt-5', name: 'GPT-5', effortLevels: ['low', 'high'] },
+      { id: 'gpt-5-mini', model: 'gpt-5-mini', name: 'GPT-5 mini', effortLevels: ['low'] },
+      { id: 'old', model: 'old', name: 'Old model', hidden: true, effortLevels: [] },
+    ],
+  };
+  const effort: SessionEffort = {
+    current: 'xhigh',
+    levels: ['low', 'high', 'xhigh'],
+    mutable: true,
+  };
+
+  it('invites steering and hints at the keys', () => {
+    render(<ChatInput {...defaultProps} />);
+    expect(screen.getByPlaceholderText('Steer this session…')).toBeInTheDocument();
+    const hints = screen.getByTestId('chat-input-hints');
+    expect(hints).toHaveTextContent('↵ send');
+    expect(hints).toHaveTextContent('/ commands');
+    expect(hints).toHaveTextContent('@ files');
+  });
+
+  it('hints that a message is queued while the agent works and steering is supported', () => {
+    const { rerender } = render(
+      <ChatInput {...defaultProps} isLoading capabilities={{ steer: true }} />,
+    );
+    expect(screen.getByTestId('chat-input-hints')).toHaveTextContent('↵ queue for after this step');
+    rerender(<ChatInput {...defaultProps} isLoading capabilities={{ steer: false }} />);
+    expect(screen.getByTestId('chat-input-hints')).toHaveTextContent('↵ send');
+    rerender(<ChatInput {...defaultProps} capabilities={{ steer: true }} />);
+    expect(screen.getByTestId('chat-input-hints')).toHaveTextContent('↵ send');
+  });
+
+  it('shows no chips without the data and a handler for them', () => {
+    const { rerender } = render(<ChatInput {...defaultProps} />);
+    expect(screen.queryByTestId('model-chip')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('effort-chip')).not.toBeInTheDocument();
+
+    rerender(<ChatInput {...defaultProps} runtimeOptions={runtimeOptions} effort={effort} />);
+    expect(screen.queryByTestId('model-chip')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('effort-chip')).not.toBeInTheDocument();
+
+    rerender(
+      <ChatInput
+        {...defaultProps}
+        onSetRuntimeModel={vi.fn()}
+        onSetEffort={vi.fn()}
+        effort={{ ...effort, mutable: false }}
+      />,
+    );
+    expect(screen.queryByTestId('model-chip')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('effort-chip')).not.toBeInTheDocument();
+  });
+
+  it('shows the current model and lists only visible models with the current one checked', () => {
+    const onSetRuntimeModel = vi.fn();
+    render(
+      <ChatInput
+        {...defaultProps}
+        runtimeOptions={runtimeOptions}
+        onSetRuntimeModel={onSetRuntimeModel}
+      />,
+    );
+    const chip = screen.getByRole('button', { name: 'Model' });
+    expect(chip).toHaveTextContent('GPT-5');
+    fireEvent.click(chip);
+    const menu = screen.getByRole('menu', { name: 'Model · next turn' });
+    const items = within(menu).getAllByRole('menuitemradio');
+    expect(items.map((item) => item.textContent)).toEqual(['GPT-5', 'GPT-5 mini']);
+    expect(items[0]).toHaveAttribute('aria-checked', 'true');
+    expect(items[1]).toHaveAttribute('aria-checked', 'false');
+
+    fireEvent.click(items[1]!);
+    expect(onSetRuntimeModel).toHaveBeenCalledWith('gpt-5-mini');
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+
+  it('names a current model the catalog does not list', () => {
+    render(
+      <ChatInput
+        {...defaultProps}
+        runtimeOptions={{ ...runtimeOptions, current: { model: 'custom-1' } }}
+        onSetRuntimeModel={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Model' })).toHaveTextContent('custom-1');
+  });
+
+  it('shows the effort and offers its levels', () => {
+    const onSetEffort = vi.fn();
+    render(<ChatInput {...defaultProps} effort={effort} onSetEffort={onSetEffort} />);
+    const chip = screen.getByRole('button', { name: 'Effort' });
+    expect(chip).toHaveTextContent('Effort · Extra high');
+    fireEvent.click(chip);
+    const items = within(screen.getByRole('menu', { name: 'Reasoning effort' })).getAllByRole(
+      'menuitemradio',
+    );
+    expect(items.map((item) => item.textContent)).toEqual(['Low', 'High', 'Extra high']);
+    expect(items[2]).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(items[0]!);
+    expect(onSetEffort).toHaveBeenCalledWith('low');
+  });
+
+  it('says when no effort is set', () => {
+    render(
+      <ChatInput {...defaultProps} effort={{ ...effort, current: null }} onSetEffort={vi.fn()} />,
+    );
+    expect(screen.getByRole('button', { name: 'Effort' })).toHaveTextContent('not set');
+  });
+
+  it('closes a menu on Escape, on an outside press, and on opening it again', () => {
+    render(<ChatInput {...defaultProps} effort={effort} onSetEffort={vi.fn()} />);
+    const chip = screen.getByRole('button', { name: 'Effort' });
+    fireEvent.click(chip);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+
+    fireEvent.click(chip);
+    fireEvent.keyDown(document, { key: 'a' });
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    fireEvent.pointerDown(screen.getByRole('menu'));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+
+    fireEvent.click(chip);
+    fireEvent.click(chip);
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+
+  it('disables the chips while the session is not connected', () => {
+    render(
+      <ChatInput
+        {...defaultProps}
+        disabled
+        effort={effort}
+        onSetEffort={vi.fn()}
+        runtimeOptions={runtimeOptions}
+        onSetRuntimeModel={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Model' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Effort' })).toBeDisabled();
+  });
+
+  it('keeps Stop for the working turn only, disabled when interrupt is unsupported', () => {
+    const onStop = vi.fn();
+    const { rerender } = render(<ChatInput {...defaultProps} onStop={onStop} isLoading />);
+    fireEvent.click(screen.getByTestId('stop-btn'));
+    expect(onStop).toHaveBeenCalledTimes(1);
+    rerender(<ChatInput {...defaultProps} onStop={onStop} isLoading stopDisabled />);
+    expect(screen.getByTestId('stop-btn')).toBeDisabled();
+    rerender(<ChatInput {...defaultProps} onStop={onStop} />);
+    expect(screen.queryByTestId('stop-btn')).not.toBeInTheDocument();
   });
 });

@@ -57,6 +57,9 @@ import type {
   VolundrSessionTrace,
   VolundrSessionTraceSummary,
   ExternalSession,
+  SessionReadState,
+  SessionReadStateChange,
+  ForgeMcpSessionOptions,
 } from '../models/volundr.model';
 
 export interface VolundrConversationTurn {
@@ -157,6 +160,17 @@ export interface IVolundrService {
     options: SessionChangesReadOptions,
   ): Promise<VolundrSessionChanges>;
   getActiveSessions(): Promise<VolundrSession[]>;
+  /** The caller's read state for a session's latest reply. */
+  getSessionReadState(sessionId: string, options?: SessionReadOptions): Promise<SessionReadState>;
+  /**
+   * Marks the session read or unread. Rejects with `SessionReadStateConflictError` when a newer
+   * action won; the caller reads the state again before deciding.
+   */
+  changeSessionReadState(
+    sessionId: string,
+    change: SessionReadStateChange,
+    options?: SessionReadOptions,
+  ): Promise<SessionReadState>;
   getStats(options?: SessionReadOptions): Promise<VolundrStats>;
   getRepos(): Promise<VolundrRepo[]>;
   getTargets(): Promise<VolundrTarget[]>;
@@ -225,6 +239,8 @@ export interface IVolundrService {
     /** What the session runs: an ordinary coding session (default) or `ravn_flock`. */
     workloadType?: 'session' | 'ravn_flock';
     workloadConfig?: Record<string, unknown>;
+    /** Forge MCP grants for the session; the node's defaults and role grants apply on top. */
+    forgeMcp?: ForgeMcpSessionOptions;
   }): Promise<VolundrSession>;
   evaluatePermissionAutoApproval(
     sessionId: string,

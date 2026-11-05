@@ -1,5 +1,6 @@
 import { FORGE_NOTIFICATION_TOOL_NAME } from '@niuulabs/domain';
 import { toolImages, type ToolImage } from '../../toolImages';
+import { isSubagentTool } from './toolFamilies';
 export interface ToolUseBlock {
   type: 'tool_use';
   id: string;
@@ -31,11 +32,19 @@ export interface TextBlock {
   complete?: boolean;
 }
 
-export type ContentBlock = ToolUseBlock | ToolResultBlock | TextBlock | { type: string };
+/** A context-compaction boundary; the runtime may attach token figures (Muse: tokensBefore/After). */
+export interface CompactionBlock {
+  type: 'compaction';
+  [field: string]: unknown;
+}
+
+export type ContentBlock =
+  ToolUseBlock | ToolResultBlock | TextBlock | CompactionBlock | { type: string };
 
 export type GroupedContent =
   | { kind: 'image'; image: ToolImage }
   | { kind: 'separator'; id?: string }
+  | { kind: 'compaction'; part: CompactionBlock }
   | ({ kind: 'text' } & Omit<TextBlock, 'type'>)
   | { kind: 'single'; block: ToolUseBlock; result?: ToolResultBlock }
   | {
@@ -75,6 +84,12 @@ export function groupContentBlocks(blocks: ContentBlock[], hierarchical = false)
 
     if (block.type === 'tool_separator') {
       result.push({ kind: 'separator', id: (block as { id?: string }).id });
+      i++;
+      continue;
+    }
+
+    if (block.type === 'compaction') {
+      result.push({ kind: 'compaction', part: block as CompactionBlock });
       i++;
       continue;
     }
@@ -127,8 +142,8 @@ export function groupContentBlocks(blocks: ContentBlock[], hierarchical = false)
       if (blk.type !== 'tool_use') break;
       if (images.get((blk as ToolUseBlock).id)?.length) break;
       if (!hierarchical && (blk as ToolUseBlock).name !== toolName) break;
-      if (j !== i && isStandaloneCardTool((blk as ToolUseBlock).name)) break;
-      if (j !== i && isStandaloneCardTool(toolName)) break;
+      if (j !== i && isOwnCardTool((blk as ToolUseBlock).name)) break;
+      if (j !== i && isOwnCardTool(toolName)) break;
       const tb = blk as ToolUseBlock;
       group.push({ block: tb, result: resultMap.get(tb.id) });
       j++;
@@ -153,6 +168,11 @@ export function isPresentedFileTool(name: string): boolean {
 /** The broker's inline notification part (contract §1), rendered as a card. */
 export function isNotificationCardTool(name: string): boolean {
   return name === FORGE_NOTIFICATION_TOOL_NAME;
+}
+
+/** Standalone cards plus subagent calls: neither joins a burst of tool calls in a row. */
+function isOwnCardTool(name: string): boolean {
+  return isStandaloneCardTool(name) || isSubagentTool(name);
 }
 
 /** Tool parts that render as their own card and never join a tool group. */

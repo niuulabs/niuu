@@ -44,8 +44,11 @@ import {
   FileDiff,
   FilePenLine,
   FolderOpen,
+  GitBranch,
   GitCommitHorizontal,
   KeyRound,
+  Mail,
+  MailOpen,
   MessageCircleReply,
   MessageSquareText,
   PanelRight,
@@ -69,6 +72,7 @@ import type {
   VolundrSessionTraceSummary,
 } from '../models/volundr.model';
 import { useSessionDetail } from './hooks/useSessionStore';
+import { useSessionRead } from './hooks/useSessionRead';
 import {
   meshEventsFromTurns,
   participantsFromTurns,
@@ -90,10 +94,21 @@ import { SessionRuntimeVersion } from './SessionRuntimeVersion';
 import { sessionModelLabel } from '../domain/sessionModelLabel';
 import {
   buildAttentionItems,
-  latestChecklist,
+  resolveChecklist,
   type SessionGateSummary,
 } from '../domain/sessionAttention';
+import { sessionHarness } from '../domain/session';
 import { SessionAttentionPanel, sessionPanelHasContent } from './SessionAttentionPanel';
+import { SESSION_STATE_LABELS } from './sessions/presentation';
+import { ContextMeter } from './detail/ContextMeter';
+import { SessionMoreMenu, type MoreMenuItem } from './detail/SessionMoreMenu';
+import { Subline } from './detail/Subline';
+import {
+  contextMeterData,
+  isSessionWorking,
+  sessionInfoRows,
+  stateTone,
+} from './detail/sessionHeaderModel';
 
 export type LiveSessionTab =
   'chat' | 'terminal' | 'diffs' | 'files' | 'chronicles' | 'telemetry' | 'logs';
@@ -2332,6 +2347,13 @@ export function formatRepoLabel(repo: string): string {
   }
 }
 
+/** Where the session works: its repository, or the folder it mounts. */
+function sessionWorkspaceLabel(source: VolundrSession['source'] | null | undefined): string | null {
+  if (!source) return null;
+  if (source.type === 'git') return source.repo ? formatRepoLabel(source.repo) : null;
+  return source.local_path ?? source.path ?? source.paths?.[0]?.host_path ?? null;
+}
+
 export function truncateMiddle(value: string, maxLength = 30): string {
   if (value.length <= maxLength) return value;
   const start = Math.ceil((maxLength - 3) * 0.6);
@@ -2360,19 +2382,6 @@ function SourceMeta({ session }: { session: VolundrSession | null | undefined })
       repoLabel={session.source.type === 'git' ? formatRepoLabel(session.source.repo) : undefined}
     />
   );
-}
-
-function HeaderMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="niuu-live-session__metric">
-      <span className="niuu-live-session__metric-label">{label}</span>
-      <span className="niuu-live-session__metric-value">{value}</span>
-    </div>
-  );
-}
-
-function HeaderDivider() {
-  return <span className="niuu-live-session__divider" aria-hidden="true" />;
 }
 
 function HeaderActionButton({
@@ -2414,6 +2423,51 @@ function HeaderActionButton({
 function TabCountBadge({ count }: { count?: number }) {
   if (count == null || count <= 0) return null;
   return <span className="niuu-live-session__tab-count">{formatCount(count)}</span>;
+}
+
+interface PrimaryStateAction {
+  icon: typeof Play;
+  title: string;
+  label: string;
+  tone: 'critical' | 'brand';
+  onSelect: () => void;
+}
+
+/** The one lifecycle action that stays on the header: stop a live session, bring back a stopped or archived one. */
+function sessionPrimaryAction({
+  status,
+  readOnly,
+  onStop,
+  onStart,
+  onRestore,
+}: {
+  status: VolundrSession['status'] | undefined;
+  readOnly: boolean;
+  onStop: () => void;
+  onStart: () => void;
+  onRestore: () => void;
+}): PrimaryStateAction | null {
+  if (!status) return null;
+  if (status === 'archived') {
+    return {
+      icon: RotateCcw,
+      title: 'Restore archived session',
+      label: 'Restore',
+      tone: 'brand',
+      onSelect: onRestore,
+    };
+  }
+  if (readOnly) return null;
+  if (status === 'running') {
+    return {
+      icon: Square,
+      title: 'Stop session',
+      label: 'Stop',
+      tone: 'critical',
+      onSelect: onStop,
+    };
+  }
+  return { icon: Play, title: 'Start session', label: 'Start', tone: 'brand', onSelect: onStart };
 }
 
 function SessionToolbarButton({
@@ -2492,15 +2546,6 @@ function TicketLink({ issue }: { issue: VolundrSession['trackerIssue'] }) {
   return (
     <span className="niuu-live-session__ticket">
       <ConversationLink href={issue.url}>{issue.identifier}</ConversationLink>
-    </span>
-  );
-}
-
-function SessionForgeBadge({ label, tone }: { label: string; tone?: string }) {
-  return (
-    <span className="niuu-live-session__forge-badge">
-      <span className="niuu-live-session__forge-badge-label">{label}</span>
-      <span className="niuu-live-session__forge-badge-tone">{tone ?? 'PRIMARY'}</span>
     </span>
   );
 }
@@ -3116,6 +3161,7 @@ function LiveSessionDetailPageInner({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const sessionQuery = useSessionDetail(sessionId, instanceId);
+  const sessionRead = useSessionRead();
   const liveSessionQuery = useQuery({
     queryKey: ['volundr', 'raw-session', sessionId, instanceId ?? null],
     queryFn: ({ signal }) => volundr.getSession(sessionId, { instanceId, signal }),
@@ -3300,19 +3346,60 @@ function LiveSessionDetailPageInner({
     dismissedHumanGateIds,
     workflowGates,
   ]);
-  const checklist = useMemo(() => latestChecklist(chat.messages), [chat.messages]);
+  const checklist = useMemo(
+    () => resolveChecklist(chat.plan, chat.messages),
+    [chat.plan, chat.messages],
+  );
   const sessionDetail = sessionQuery.data;
   const costValue =
     sessionDetail?.costCents != null ? formatCurrencyCents(sessionDetail.costCents) : null;
-  const trailingMetric = useMemo(() => {
-    if (costValue) {
-      return { label: 'Cost', value: costValue };
-    }
-    if (forgeBadgeLabel) {
-      return null;
-    }
-    return { label: 'Host', value: sessionForgeLabel(liveSession) };
-  }, [costValue, forgeBadgeLabel, liveSession]);
+  const sessionWorking = isSessionWorking(liveSession?.activityState);
+  const contextMeter = contextMeterData(chat.usage);
+  const sessionProjectId = liveSession?.coordination?.projectId;
+  const projectsQuery = useQuery({
+    queryKey: ['volundr', 'projects', 'session-detail', liveSession?.instanceId ?? null],
+    queryFn: ({ signal }) => volundr.getProjects({ instanceId: liveSession?.instanceId, signal }),
+    enabled: Boolean(sessionProjectId),
+    retry: false,
+  });
+  const sessionProjectName = projectsQuery.data?.find(
+    (project) => project.id === sessionProjectId,
+  )?.name;
+  const sessionModel = liveSession?.model;
+  const sessionSessionDefinition = liveSession?.sessionDefinition;
+  const sessionOrigin = liveSession?.origin;
+  const sessionEngineHarness = useMemo(
+    () =>
+      sessionModel
+        ? sessionHarness({
+            model: sessionModel,
+            sessionDefinition: sessionSessionDefinition,
+            origin: sessionOrigin,
+          })
+        : undefined,
+    [sessionModel, sessionOrigin, sessionSessionDefinition],
+  );
+  const sessionSource = liveSession?.source;
+  const infoRows = useMemo(
+    () =>
+      sessionInfoRows({
+        engine: sessionModel
+          ? { model: sessionModelLabel(sessionModel), harness: sessionEngineHarness }
+          : undefined,
+        host: forgeBadgeLabel,
+        workspace: sessionWorkspaceLabel(sessionSource),
+        project: sessionProjectName,
+        startedAt: sessionDetail?.startedAt,
+      }),
+    [
+      forgeBadgeLabel,
+      sessionDetail?.startedAt,
+      sessionEngineHarness,
+      sessionModel,
+      sessionProjectName,
+      sessionSource,
+    ],
+  );
   const tabCounts: Partial<Record<SessionTab, number>> = {
     chat: liveSession?.messageCount || replayMessages.length || undefined,
     diffs: fileChangeCount(sessionDetail?.files),
@@ -3323,6 +3410,9 @@ function LiveSessionDetailPageInner({
     ticket: sessionTrackerIssue,
     checklist,
     changedFiles: tabCounts.diffs,
+    agents: chat.agents,
+    deliverables: presentedFiles,
+    info: infoRows,
   });
   const headerMessageCount = useMemo(() => {
     if (visibleMessageCount != null) return visibleMessageCount;
@@ -3519,6 +3609,64 @@ function LiveSessionDetailPageInner({
     }
   }
 
+  const primaryStateAction = sessionPrimaryAction({
+    status: liveSession?.status,
+    readOnly: Boolean(readOnly),
+    onStop: () => void handleStopSession(),
+    onStart: () => void handleResumeSession(),
+    onRestore: () => void handleRestoreSession(),
+  });
+  const moreMenuItems: MoreMenuItem[] = [];
+  const readTarget = sessionQuery.data;
+  if (readTarget?.readState) {
+    const unread = readTarget.readState.isUnread;
+    moreMenuItems.push({
+      id: 'read-state',
+      label: unread ? 'Mark as read' : 'Mark as unread',
+      icon: unread ? MailOpen : Mail,
+      onSelect: () =>
+        void (unread ? sessionRead.markRead(readTarget) : sessionRead.markUnread(readTarget)),
+      disabled: sessionRead.pendingIds.has(readTarget.id),
+    });
+  }
+  if (!readOnly && openConnections) {
+    moreMenuItems.push({
+      id: 'reconnect',
+      label: 'Reconnect account',
+      icon: KeyRound,
+      onSelect: openConnections,
+    });
+  }
+  if (canShowResendPromptToFlock) {
+    moreMenuItems.push({
+      id: 'resend',
+      label: 'Resend prompt to flock',
+      icon: MessageCircleReply,
+      onSelect: chat.sendResendPrompt,
+      disabled: !canResendPromptToFlock,
+    });
+  }
+  if (!readOnly && liveSession && liveSession.status !== 'archived') {
+    moreMenuItems.push({
+      id: 'archive',
+      label: 'Archive session',
+      icon: Archive,
+      onSelect: () => void handleArchiveSession(),
+      disabled: actionBusy !== null,
+    });
+  }
+  if (!readOnly) {
+    moreMenuItems.push({
+      id: 'delete',
+      label: 'Delete session',
+      icon: Trash2,
+      onSelect: () => setDeleteDialogOpen(true),
+      disabled: actionBusy !== null,
+      tone: 'critical',
+      separated: moreMenuItems.length > 0,
+    });
+  }
+
   if (sessionQuery.isLoading || liveSessionQuery.isLoading) {
     return <LoadingState className="forge-session-loading" label="Loading session…" />;
   }
@@ -3549,7 +3697,7 @@ function LiveSessionDetailPageInner({
       <div className="niuu:flex niuu:h-full niuu:flex-col" data-testid="live-session-detail-page">
         <div className="niuu-live-session__chrome">
           <div className="niuu-live-session__header">
-            <div className="niuu-live-session__title-group">
+            <div className="niuu-live-session__head-top">
               {returnTo ? (
                 <button
                   type="button"
@@ -3567,84 +3715,155 @@ function LiveSessionDetailPageInner({
                   isSessionConnected
                     ? 'niuu-live-session__status-dot--connected'
                     : 'niuu-live-session__status-dot--disconnected',
+                  sessionWorking && 'niuu-live-session__status-dot--working',
                 )}
               />
-              <div className="niuu-live-session__identity">
-                <span className="niuu-live-session__title">{sessionName}</span>
-                {!readOnly && liveSession && (
-                  <>
-                    <RenameSession sessionId={sessionId} name={sessionName} />
-                    <PinSession sessionId={sessionId} name={sessionName} />
-                    <AssignSessionProject
-                      sessionId={sessionId}
-                      name={sessionName}
-                      instanceId={liveSession.instanceId}
-                    />
-                  </>
-                )}
-                {showDetails && sessionHandle ? (
-                  <span className="niuu-live-session__handle" title={sessionHandle}>
-                    {sessionHandle}
-                  </span>
-                ) : null}
-                {showDetails && <SessionIdChip sessionId={sessionId} />}
+              <div className="niuu-live-session__head-title">
+                <div className="niuu-live-session__identity">
+                  <span className="niuu-live-session__title">{sessionName}</span>
+                  {sessionDetail ? (
+                    <span
+                      className="niuu-live-session__state-pill"
+                      data-tone={stateTone(sessionDetail.state)}
+                      data-testid="session-state-pill"
+                    >
+                      {SESSION_STATE_LABELS[sessionDetail.state]}
+                    </span>
+                  ) : null}
+                  {!readOnly && liveSession && (
+                    <>
+                      <RenameSession sessionId={sessionId} name={sessionName} />
+                      <PinSession sessionId={sessionId} name={sessionName} />
+                      <AssignSessionProject
+                        sessionId={sessionId}
+                        name={sessionName}
+                        instanceId={liveSession.instanceId}
+                      />
+                    </>
+                  )}
+                  {showDetails && sessionHandle ? (
+                    <span className="niuu-live-session__handle" title={sessionHandle}>
+                      {sessionHandle}
+                    </span>
+                  ) : null}
+                  {showDetails && <SessionIdChip sessionId={sessionId} />}
+                  {sessionTrackerIssue ? <TicketLink issue={sessionTrackerIssue} /> : null}
+                  {readOnly && sessionDetail?.state !== 'archived' ? (
+                    <span className="niuu-live-session__archived-badge">Archived</span>
+                  ) : null}
+                </div>
+                <Subline
+                  data-testid="session-stats"
+                  items={[
+                    liveSession?.model && {
+                      id: 'model',
+                      node: (
+                        <span
+                          className="niuu-live-session__model"
+                          data-harness={sessionEngineHarness}
+                          title={liveSession.model}
+                          data-testid="session-model"
+                        >
+                          {sessionModelLabel(liveSession.model)}
+                        </span>
+                      ),
+                    },
+                    forgeBadgeLabel && {
+                      id: 'host',
+                      node: <span data-testid="session-host">{forgeBadgeLabel}</span>,
+                    },
+                    sessionDetail && {
+                      id: 'activity',
+                      node: <SessionActivityElapsed session={sessionDetail} />,
+                    },
+                    {
+                      id: 'messages',
+                      node: (
+                        <span data-testid="session-message-count">
+                          {formatCount(headerMessageCount)}{' '}
+                          {headerMessageCount === 1 ? 'message' : 'messages'}
+                        </span>
+                      ),
+                    },
+                    showTokenUsage && {
+                      id: 'tokens',
+                      node: <span>{formatCount(liveSession?.tokensUsed ?? 0)} tokens</span>,
+                    },
+                    liveSession?.source && {
+                      id: 'source',
+                      node: (
+                        <span className="niuu-live-session__source-line">
+                          <SourceMeta session={liveSession} />
+                          {liveSession.source.type === 'git' && liveSession.source.branch ? (
+                            <span
+                              className="niuu-live-session__branch"
+                              data-testid="session-branch"
+                              title={liveSession.source.branch}
+                            >
+                              <GitBranch aria-hidden="true" />
+                              {liveSession.source.branch}
+                            </span>
+                          ) : null}
+                        </span>
+                      ),
+                    },
+                    liveSession?.source && {
+                      id: 'runtime',
+                      node: <SessionRuntimeVersion session={liveSession} service={volundr} />,
+                    },
+                  ]}
+                />
               </div>
-              {sessionTrackerIssue ? (
-                <>
-                  <HeaderDivider />
-                  <TicketLink issue={sessionTrackerIssue} />
-                </>
-              ) : null}
-              {liveSession?.source ? (
-                <>
-                  <HeaderDivider />
-                  <SourceMeta session={liveSession} />
-                  {liveSession && <SessionRuntimeVersion session={liveSession} service={volundr} />}
-                </>
-              ) : null}
-              {forgeBadgeLabel ? (
-                <>
-                  <HeaderDivider />
-                  <SessionForgeBadge label={forgeBadgeLabel} />
-                </>
-              ) : null}
-              {liveSession?.model && (
-                <>
-                  <HeaderDivider />
-                  <span
-                    className="niuu-live-session__model"
-                    title={liveSession.model}
-                    data-testid="session-model"
-                  >
-                    <Sparkles size={14} />
-                    {sessionModelLabel(liveSession.model)}
-                  </span>
-                </>
-              )}
-              {readOnly ? (
-                <>
-                  <HeaderDivider />
-                  <span className="niuu-live-session__archived-badge">Archived</span>
-                </>
-              ) : null}
-            </div>
 
-            <div className="niuu-live-session__metrics-row" data-testid="session-stats">
-              {sessionDetail && <SessionActivityElapsed session={sessionDetail} />}
-              <HeaderDivider />
-              <HeaderMetric label="Msgs" value={formatCount(headerMessageCount)} />
-              {showTokenUsage && (
-                <>
-                  <HeaderDivider />
-                  <HeaderMetric label="Tokens" value={formatCount(liveSession?.tokensUsed ?? 0)} />
-                </>
-              )}
-              {trailingMetric ? (
-                <>
-                  <HeaderDivider />
-                  <HeaderMetric label={trailingMetric.label} value={trailingMetric.value} />
-                </>
-              ) : null}
+              <div className="niuu-live-session__toolbar">
+                <ContextMeter
+                  context={contextMeter}
+                  title={
+                    contextMeter
+                      ? `${formatCount(contextMeter.used)} of ${formatCount(contextMeter.window)} context used`
+                      : undefined
+                  }
+                  cost={costValue}
+                />
+                {resolvedActiveTab === 'chat' && (
+                  <ChatDisplayControls className="niuu-live-session__display-controls" />
+                )}
+                <SessionToolbarButton
+                  icon={showInternalMessages ? Eye : EyeOff}
+                  title={
+                    showInternalMessages
+                      ? 'Hide tool calls and results'
+                      : 'Show tool calls and results'
+                  }
+                  active={showInternalMessages}
+                  onClick={handleToggleInternalMessages}
+                />
+                {panelHasContent ? (
+                  <SessionToolbarButton
+                    icon={PanelRight}
+                    title={showPanel ? 'Hide session panel' : 'Show session panel'}
+                    active={showPanel}
+                    tone={!showPanel && attentionItems.length > 0 ? 'brand' : 'neutral'}
+                    label={
+                      !showPanel && attentionItems.length > 0
+                        ? `Needs you ${attentionItems.length}`
+                        : undefined
+                    }
+                    onClick={() => setPanelVisibility(showPanel ? '0' : '1')}
+                  />
+                ) : null}
+                {primaryStateAction ? (
+                  <SessionToolbarButton
+                    icon={primaryStateAction.icon}
+                    title={primaryStateAction.title}
+                    label={primaryStateAction.label}
+                    onClick={primaryStateAction.onSelect}
+                    disabled={actionBusy !== null}
+                    tone={primaryStateAction.tone}
+                  />
+                ) : null}
+                <SessionMoreMenu items={moreMenuItems} />
+              </div>
             </div>
           </div>
 
@@ -3673,113 +3892,16 @@ function LiveSessionDetailPageInner({
                 })(),
               )}
             </div>
-            <div className="niuu-live-session__toolbar">
-              {!readOnly && openConnections && (
-                <SessionToolbarButton
-                  icon={KeyRound}
-                  title="Reconnect account"
-                  onClick={openConnections}
-                />
-              )}
-              {resolvedActiveTab === 'chat' && (
-                <ChatDisplayControls className="niuu-live-session__display-controls" />
-              )}
-              <SessionToolbarButton
-                icon={showInternalMessages ? Eye : EyeOff}
-                title={
-                  showInternalMessages
-                    ? 'Hide tool calls and results'
-                    : 'Show tool calls and results'
-                }
-                active={showInternalMessages}
-                onClick={handleToggleInternalMessages}
-              />
-              {panelHasContent ? (
-                <SessionToolbarButton
-                  icon={PanelRight}
-                  title={showPanel ? 'Hide session panel' : 'Show session panel'}
-                  active={showPanel}
-                  tone={!showPanel && attentionItems.length > 0 ? 'brand' : 'neutral'}
-                  label={
-                    !showPanel && attentionItems.length > 0
-                      ? `Needs you ${attentionItems.length}`
-                      : undefined
-                  }
-                  onClick={() => setPanelVisibility(showPanel ? '0' : '1')}
-                />
-              ) : null}
-              {canShowResendPromptToFlock && (
-                <SessionToolbarButton
-                  icon={MessageCircleReply}
-                  title="Resend prompt to flock"
-                  onClick={chat.sendResendPrompt}
-                  disabled={!canResendPromptToFlock}
-                />
-              )}
-              {liveSession &&
-                !readOnly &&
-                (liveSession.status === 'running' ? (
-                  <SessionToolbarButton
-                    icon={Square}
-                    title="Stop session"
-                    onClick={() => void handleStopSession()}
-                    disabled={actionBusy !== null}
-                    tone="critical"
-                  />
-                ) : liveSession.status === 'stopped' ? (
-                  <SessionToolbarButton
-                    icon={Play}
-                    title="Start session"
-                    onClick={() => void handleResumeSession()}
-                    disabled={actionBusy !== null}
-                    tone="brand"
-                  />
-                ) : liveSession.status === 'archived' ? null : (
-                  <SessionToolbarButton
-                    icon={Play}
-                    title="Start session"
-                    onClick={() => void handleResumeSession()}
-                    disabled={actionBusy !== null}
-                    tone="brand"
-                  />
-                ))}
-              {!readOnly && liveSession && liveSession.status !== 'archived' && (
-                <SessionToolbarButton
-                  icon={Archive}
-                  title="Archive session"
-                  onClick={() => void handleArchiveSession()}
-                  disabled={actionBusy !== null}
-                />
-              )}
-              {liveSession?.status === 'archived' ? (
-                <SessionToolbarButton
-                  icon={RotateCcw}
-                  title="Restore archived session"
-                  onClick={() => void handleRestoreSession()}
-                  disabled={actionBusy !== null}
-                  tone="brand"
-                />
-              ) : null}
-              {!readOnly && (
-                <SessionToolbarButton
-                  icon={Trash2}
-                  title="Delete session"
-                  onClick={() => setDeleteDialogOpen(true)}
-                  disabled={actionBusy !== null}
-                  tone="critical"
-                />
-              )}
-            </div>
           </div>
         </div>
 
-        {actionError ? (
+        {actionError || sessionRead.error ? (
           <div
             role="alert"
             className="niuu:border-b niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-2 niuu:text-xs niuu:text-critical"
             data-testid="session-action-error"
           >
-            <LinkedText text={actionError} />
+            <LinkedText text={actionError ?? sessionRead.error ?? ''} />
           </div>
         ) : liveSession?.error && (sessionStatus === 'failed' || sessionStatus === 'error') ? (
           <div
@@ -3878,6 +4000,13 @@ function LiveSessionDetailPageInner({
                       onSetInternalVisibility={chat.sendSetInternalVisibility}
                       onSetModel={chat.sendSetModel}
                       onSetThinkingTokens={chat.sendSetThinkingTokens}
+                      plan={chat.plan}
+                      agents={chat.agents}
+                      effort={chat.effort}
+                      runtimeOptions={chat.runtimeOptions}
+                      onSetEffort={chat.sendSetEffort}
+                      onSetRuntimeModel={(model) => chat.sendSetRuntimeOptions({ model })}
+                      working={sessionWorking}
                       onRewindFiles={chat.sendRewindFiles}
                       onPermissionRespond={chat.respondToPermission}
                       onInputRespond={chat.respondToInput}
@@ -3919,6 +4048,9 @@ function LiveSessionDetailPageInner({
                     historyLoaded={!transcriptQuery.isLoading}
                     participants={replayParticipants}
                     meshEvents={replayMeshEvents}
+                    plan={chat.plan}
+                    agents={chat.agents}
+                    working={false}
                     sessionName={sessionName}
                     onMessageCountChange={setVisibleMessageCount}
                     onSend={() => {}}
@@ -4009,7 +4141,11 @@ function LiveSessionDetailPageInner({
               items={attentionItems}
               ticket={sessionTrackerIssue}
               checklist={checklist}
+              agents={chat.agents}
               changedFiles={tabCounts.diffs}
+              fileStats={sessionDetail?.files}
+              deliverables={presentedFiles}
+              info={infoRows}
               showOpenChat={resolvedActiveTab !== 'chat'}
               onOpenChat={() => openTab('chat')}
               onOpenDiffs={() => openTab('diffs')}

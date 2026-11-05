@@ -150,14 +150,14 @@ describe('StreamingMessage', () => {
   it('renders tool blocks when parts contain tool_use', () => {
     const parts = [{ type: 'tool_use' as const, id: 't1', name: 'Bash', input: { command: 'ls' } }];
     render(<StreamingMessage content="partial" parts={parts} />);
-    expect(screen.getByTestId('tool-block')).toBeInTheDocument();
+    expect(screen.getByTestId('tool-group-block')).toBeInTheDocument();
   });
 
   it('renders tool blocks while streaming before text content arrives', () => {
     const parts = [{ type: 'tool_use' as const, id: 't1', name: 'Bash', input: { command: 'ls' } }];
     render(<StreamingMessage content="" parts={parts} />);
     expect(screen.getByText('Using tools...')).toBeInTheDocument();
-    expect(screen.getByTestId('tool-block')).toBeInTheDocument();
+    expect(screen.getByTestId('tool-group-block')).toBeInTheDocument();
   });
 });
 
@@ -170,7 +170,7 @@ describe('AssistantMessage — extended', () => {
       ],
     };
     render(<AssistantMessage message={msg} />);
-    expect(screen.getByTestId('tool-block')).toBeInTheDocument();
+    expect(screen.getByTestId('tool-group-block')).toBeInTheDocument();
   });
 
   it('calls onBookmark when bookmark button clicked', () => {

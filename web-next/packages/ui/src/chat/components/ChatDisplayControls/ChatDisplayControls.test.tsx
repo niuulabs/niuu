@@ -48,6 +48,10 @@ describe('ChatDisplayControls', () => {
     fireEvent.change(screen.getByLabelText('Timestamps'), { target: { value: 'hover' } });
     fireEvent.click(screen.getByLabelText('Message actions'));
     fireEvent.change(screen.getByLabelText('Copy button'), { target: { value: 'hover' } });
+    fireEvent.change(screen.getByLabelText('Tool calls'), { target: { value: 'cards' } });
+    expect(localStorage.getItem('niuu.compactUx.toolRuns')).toBe('cards');
+    fireEvent.change(screen.getByLabelText('Tool calls'), { target: { value: 'rows' } });
+    expect(localStorage.getItem('niuu.compactUx.toolRuns')).toBe('rows');
     expect(screen.getByTestId('reader')).toHaveTextContent('expanded/hover/false');
     expect(localStorage.getItem('niuu.compactUx.showMessageActions')).toBe('false');
     expect(localStorage.getItem('niuu.compactUx.copyMode')).toBe('hover');

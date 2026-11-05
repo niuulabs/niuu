@@ -8,7 +8,7 @@ import {
   type ChangeEvent,
   type KeyboardEvent,
 } from 'react';
-import { ArrowUp, Paperclip, Slash, Square, X } from 'lucide-react';
+import { ArrowUp, Plus, Slash, Square, X } from 'lucide-react';
 import { cn } from '../../../utils/cn';
 import { useFileAttachments, type FileAttachment } from '../../hooks/useFileAttachments';
 import { useSlashMenu } from '../../hooks/useSlashMenu';
@@ -16,12 +16,27 @@ import { mentionId, useMentionMenu } from '../../hooks/useMentionMenu';
 import { SlashCommandMenu } from '../SlashCommandMenu';
 import { MentionMenu } from '../MentionMenu';
 import { MentionPill } from '../MentionPill';
-import type { AgentEventTarget, RoomParticipant, FileEntry } from '../../types';
+import { ChipMenu } from './ChipMenu';
+import type {
+  AgentEventTarget,
+  RoomParticipant,
+  FileEntry,
+  SessionCapabilities,
+  SessionEffort,
+  SessionRuntimeOptions,
+} from '../../types';
 import type { SlashCommand } from '../../utils/slashCommands';
 import type { SelectedMention } from '../../hooks/useMentionMenu';
 import './ChatInput.css';
 
 const EMPTY_PARTICIPANTS: ReadonlyMap<string, RoomParticipant> = new Map();
+
+/** Effort levels whose wire name is not how people say it. */
+const EFFORT_LABELS: Record<string, string> = { xhigh: 'Extra high' };
+
+function effortLabel(level: string): string {
+  return EFFORT_LABELS[level] ?? `${level.charAt(0).toUpperCase()}${level.slice(1)}`;
+}
 
 const ACCEPTED_FILE_TYPES = [
   'image/*',
@@ -102,6 +117,14 @@ interface ChatInputProps {
   availableCommands?: readonly SlashCommand[];
   participants?: ReadonlyMap<string, RoomParticipant>;
   onFetchFiles?: (path: string, apiBase: string) => Promise<FileEntry[]>;
+  /** What the session's transport supports; `steer` changes the send hint while working. */
+  capabilities?: SessionCapabilities;
+  /** Reasoning effort choices; the chip is shown when `mutable` and `onSetEffort` is given. */
+  effort?: SessionEffort | null;
+  /** Model catalog and current choice; the chip is shown when `onSetRuntimeModel` is given. */
+  runtimeOptions?: SessionRuntimeOptions | null;
+  onSetEffort?: (effort: string) => void;
+  onSetRuntimeModel?: (model: string) => void;
 }
 
 export function ChatInput({
@@ -120,6 +143,11 @@ export function ChatInput({
   availableCommands,
   participants = EMPTY_PARTICIPANTS,
   onFetchFiles,
+  capabilities,
+  effort = null,
+  runtimeOptions = null,
+  onSetEffort,
+  onSetRuntimeModel,
 }: ChatInputProps) {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -333,6 +361,14 @@ export function ChatInput({
     [addFiles],
   );
 
+  const queueWhileWorking = isLoading && capabilities?.steer === true;
+  const models = (runtimeOptions?.models ?? []).filter((model) => !model.hidden);
+  const currentModel = runtimeOptions?.models.find(
+    (model) => model.model === runtimeOptions.current.model,
+  );
+  const showModelChip = Boolean(runtimeOptions && onSetRuntimeModel);
+  const showEffortChip = Boolean(effort?.mutable && onSetEffort);
+
   return (
     <div
       className={cn('niuu-chat-input-wrapper', className)}
@@ -344,176 +380,225 @@ export function ChatInput({
       onPaste={eventRouting ? undefined : handlePaste}
       data-testid="chat-input"
     >
-      {(fileAttachmentsList.length > 0 || mentionMenu.mentions.length > 0) && (
-        <div className="niuu-chat-input-attachments">
-          {mentionMenu.mentions.map((mention) => (
-            <MentionPill
-              key={mentionId(mention)}
-              mention={mention}
-              onRemove={mentionMenu.removeMention}
+      <div className="niuu-chat-input-box">
+        {(fileAttachmentsList.length > 0 || mentionMenu.mentions.length > 0) && (
+          <div className="niuu-chat-input-attachments">
+            {mentionMenu.mentions.map((mention) => (
+              <MentionPill
+                key={mentionId(mention)}
+                mention={mention}
+                onRemove={mentionMenu.removeMention}
+              />
+            ))}
+            {fileAttachmentsList.map((attachment) => (
+              <span key={attachment.id} className="niuu-chat-attachment-chip">
+                {attachment.previewUrl && (
+                  <img
+                    src={attachment.previewUrl}
+                    alt={attachment.name}
+                    className="niuu-chat-attachment-thumbnail"
+                  />
+                )}
+                <span className="niuu-chat-attachment-chip-name">{attachment.name}</span>
+                <button
+                  type="button"
+                  className="niuu-chat-attachment-remove"
+                  onClick={() => removeAttachment(attachment.id)}
+                  aria-label={`Remove ${attachment.name}`}
+                >
+                  <X className="niuu-chat-attachment-remove-icon" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div className="niuu-chat-input-area">
+          {slashMenu.isOpen && (
+            <SlashCommandMenu
+              id={slashMenuId}
+              selectedIndex={slashMenu.selectedIndex}
+              commands={slashMenu.filteredCommands}
+              onSelect={(cmd) => {
+                const newInput = slashMenu.selectCommand(cmd);
+                setInput(newInput);
+                textareaRef.current?.focus();
+              }}
             />
-          ))}
-          {fileAttachmentsList.map((attachment) => (
-            <span key={attachment.id} className="niuu-chat-attachment-chip">
-              {attachment.previewUrl && (
-                <img
-                  src={attachment.previewUrl}
-                  alt={attachment.name}
-                  className="niuu-chat-attachment-thumbnail"
-                />
-              )}
-              <span className="niuu-chat-attachment-chip-name">{attachment.name}</span>
-              <button
-                type="button"
-                className="niuu-chat-attachment-remove"
-                onClick={() => removeAttachment(attachment.id)}
-                aria-label={`Remove ${attachment.name}`}
-              >
-                <X className="niuu-chat-attachment-remove-icon" />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-
-      <div className="niuu-chat-input-area">
-        {slashMenu.isOpen && (
-          <SlashCommandMenu
-            id={slashMenuId}
-            selectedIndex={slashMenu.selectedIndex}
-            commands={slashMenu.filteredCommands}
-            onSelect={(cmd) => {
-              const newInput = slashMenu.selectCommand(cmd);
-              setInput(newInput);
-              textareaRef.current?.focus();
-            }}
-          />
-        )}
-        {mentionMenu.isOpen && !slashMenu.isOpen && (
-          <MentionMenu
-            items={mentionMenu.items}
-            selectedIndex={mentionMenu.selectedIndex}
-            loading={mentionMenu.loading}
-            onSelect={(item) => {
-              const selectedLabel = mentionMenu.selectItem(item);
-              const textarea = textareaRef.current;
-              if (textarea) {
-                const cursorPos = textarea.selectionStart;
-                const before = input.slice(0, cursorPos);
-                const atIndex = before.lastIndexOf('@');
-                if (atIndex !== -1) {
-                  const after = input.slice(cursorPos);
-                  setInput(before.slice(0, atIndex) + '@' + selectedLabel + ' ' + after);
-                }
-              }
-              textareaRef.current?.focus();
-            }}
-            onExpand={(item) => {
-              mentionMenu.expandDirectory(item);
-              textareaRef.current?.focus();
-            }}
-          />
-        )}
-        <textarea
-          ref={textareaRef}
-          className="niuu-chat-textarea"
-          value={input}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          placeholder={
-            disabled
-              ? 'Start session to chat...'
-              : eventRouting
-                ? 'Message the room, or select a participant with @...'
-                : 'Message...'
-          }
-          disabled={disabled}
-          aria-label="Message"
-          aria-autocomplete={canBrowseCommands ? 'list' : undefined}
-          aria-controls={slashMenu.isOpen ? slashMenuId : undefined}
-          aria-activedescendant={
-            slashMenu.isOpen ? `${slashMenuId}-${slashMenu.selectedIndex}` : undefined
-          }
-          rows={1}
-          data-testid="chat-textarea"
-        />
-      </div>
-
-      <div className="niuu-chat-input-actions">
-        <div className="niuu-chat-input-left-actions">
-          {canBrowseCommands && (
-            <button
-              type="button"
-              className="niuu-chat-input-icon-btn"
-              aria-label="Slash commands"
-              aria-expanded={slashMenu.isOpen}
-              aria-controls={slashMenu.isOpen ? slashMenuId : undefined}
-              title="Slash commands · type / to browse"
-              disabled={disabled || (input.length > 0 && !/^\/\S*$/.test(input))}
-              onClick={() => {
-                if (slashMenu.isOpen) {
-                  slashMenu.close();
-                } else {
-                  const value = input || '/';
-                  setInput(value);
-                  slashMenu.handleChange(value);
+          )}
+          {mentionMenu.isOpen && !slashMenu.isOpen && (
+            <MentionMenu
+              items={mentionMenu.items}
+              selectedIndex={mentionMenu.selectedIndex}
+              loading={mentionMenu.loading}
+              onSelect={(item) => {
+                const selectedLabel = mentionMenu.selectItem(item);
+                const textarea = textareaRef.current;
+                if (textarea) {
+                  const cursorPos = textarea.selectionStart;
+                  const before = input.slice(0, cursorPos);
+                  const atIndex = before.lastIndexOf('@');
+                  if (atIndex !== -1) {
+                    const after = input.slice(cursorPos);
+                    setInput(before.slice(0, atIndex) + '@' + selectedLabel + ' ' + after);
+                  }
                 }
                 textareaRef.current?.focus();
               }}
-            >
-              <Slash className="niuu-chat-input-btn-icon" />
-            </button>
+              onExpand={(item) => {
+                mentionMenu.expandDirectory(item);
+                textareaRef.current?.focus();
+              }}
+            />
           )}
-          {!eventRouting && (
-            <>
+          <textarea
+            ref={textareaRef}
+            className="niuu-chat-textarea"
+            value={input}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            placeholder={
+              disabled
+                ? 'Start session to chat...'
+                : eventRouting
+                  ? 'Message the room, or select a participant with @...'
+                  : 'Steer this session…'
+            }
+            disabled={disabled}
+            aria-label="Message"
+            aria-autocomplete={canBrowseCommands ? 'list' : undefined}
+            aria-controls={slashMenu.isOpen ? slashMenuId : undefined}
+            aria-activedescendant={
+              slashMenu.isOpen ? `${slashMenuId}-${slashMenu.selectedIndex}` : undefined
+            }
+            rows={1}
+            data-testid="chat-textarea"
+          />
+        </div>
+
+        <div className="niuu-chat-input-actions">
+          <div className="niuu-chat-input-left-actions">
+            {canBrowseCommands && (
               <button
                 type="button"
                 className="niuu-chat-input-icon-btn"
-                onClick={handleAttachClick}
-                data-disabled={disabled || undefined}
-                aria-label="Attach file"
-                data-testid="attach-btn"
+                aria-label="Slash commands"
+                aria-expanded={slashMenu.isOpen}
+                aria-controls={slashMenu.isOpen ? slashMenuId : undefined}
+                title="Slash commands · type / to browse"
+                disabled={disabled || (input.length > 0 && !/^\/\S*$/.test(input))}
+                onClick={() => {
+                  if (slashMenu.isOpen) {
+                    slashMenu.close();
+                  } else {
+                    const value = input || '/';
+                    setInput(value);
+                    slashMenu.handleChange(value);
+                  }
+                  textareaRef.current?.focus();
+                }}
               >
-                <Paperclip className="niuu-chat-input-btn-icon" />
+                <Slash className="niuu-chat-input-btn-icon" />
               </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                className="niuu-chat-input-hidden"
-                accept={ACCEPTED_FILE_TYPES}
-                onChange={handleFileChange}
-                multiple
-              />
-            </>
-          )}
-        </div>
+            )}
+            {!eventRouting && (
+              <>
+                <button
+                  type="button"
+                  className="niuu-chat-input-icon-btn"
+                  onClick={handleAttachClick}
+                  data-disabled={disabled || undefined}
+                  aria-label="Attach file"
+                  data-testid="attach-btn"
+                >
+                  <Plus className="niuu-chat-input-btn-icon" />
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="niuu-chat-input-hidden"
+                  accept={ACCEPTED_FILE_TYPES}
+                  onChange={handleFileChange}
+                  multiple
+                />
+              </>
+            )}
+            {showModelChip && runtimeOptions && onSetRuntimeModel && (
+              <ChipMenu
+                name="Model"
+                heading="Model · next turn"
+                disabled={disabled}
+                testId="model-chip"
+                items={models.map((model) => ({
+                  value: model.model,
+                  label: model.name,
+                  checked: model.model === runtimeOptions.current.model,
+                }))}
+                onSelect={onSetRuntimeModel}
+              >
+                <span>{currentModel?.name ?? runtimeOptions.current.model}</span>
+              </ChipMenu>
+            )}
+            {showEffortChip && effort && onSetEffort && (
+              <ChipMenu
+                name="Effort"
+                heading="Reasoning effort"
+                disabled={disabled}
+                testId="effort-chip"
+                items={effort.levels.map((level) => ({
+                  value: level,
+                  label: effortLabel(level),
+                  checked: level === effort.current,
+                }))}
+                onSelect={onSetEffort}
+              >
+                <span>Effort · {effort.current ? effortLabel(effort.current) : 'not set'}</span>
+              </ChipMenu>
+            )}
+          </div>
 
-        <div className="niuu-chat-input-right-actions">
-          {isLoading && (
+          <div className="niuu-chat-input-right-actions">
+            {isLoading && (
+              <button
+                type="button"
+                className="niuu-chat-stop-btn"
+                onClick={onStop}
+                disabled={stopDisabled}
+                title={
+                  stopDisabled ? 'Interrupt not supported by this transport' : 'Stop generation'
+                }
+                data-testid="stop-btn"
+              >
+                <Square className="niuu-chat-stop-icon" />
+                <span>Stop</span>
+              </button>
+            )}
             <button
               type="button"
-              className="niuu-chat-stop-btn"
-              onClick={onStop}
-              disabled={stopDisabled}
-              title={stopDisabled ? 'Interrupt not supported by this transport' : 'Stop generation'}
-              data-testid="stop-btn"
+              className="niuu-chat-send-btn"
+              data-active={(canSend && !disabled) || undefined}
+              onClick={handleSend}
+              disabled={!canSend || disabled}
+              aria-label="Send message"
+              data-testid="send-btn"
             >
-              <Square className="niuu-chat-stop-icon" />
-              <span>Stop</span>
+              <ArrowUp className="niuu-chat-send-icon" />
             </button>
-          )}
-          <button
-            type="button"
-            className="niuu-chat-send-btn"
-            data-active={(canSend && !disabled) || undefined}
-            onClick={handleSend}
-            disabled={!canSend || disabled}
-            aria-label="Send message"
-            data-testid="send-btn"
-          >
-            <ArrowUp className="niuu-chat-send-icon" />
-          </button>
+          </div>
         </div>
+      </div>
+
+      <div className="niuu-chat-input-hints" data-testid="chat-input-hints">
+        <span>
+          <kbd className="niuu-chat-kbd">↵</kbd>{' '}
+          {queueWhileWorking ? 'queue for after this step' : 'send'}
+        </span>
+        <span>
+          <kbd className="niuu-chat-kbd">/</kbd> commands
+        </span>
+        <span>
+          <kbd className="niuu-chat-kbd">@</kbd> files
+        </span>
       </div>
     </div>
   );

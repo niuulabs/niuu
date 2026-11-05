@@ -7,12 +7,14 @@ import { LoadingState, RepoSelect, type RepoRecord } from '@niuulabs/ui';
 import type { IVolundrService } from '../ports/IVolundrService';
 import {
   FORGE_STANDARDS,
+  FORGE_TOOL_GRANTS,
   forgeErrorMessage,
   EFFORT_LABELS,
   hostDefaultFolder,
   selectedEffort,
   type ForgeStandardId,
 } from './quickLaunchModel';
+import type { ForgeMcpGrant } from '../models/volundr.model';
 import { slugifySessionName, validateSessionName } from './launchWizardModel';
 import {
   availableEngines,
@@ -111,6 +113,7 @@ export function QuickLaunch({
     queryKey: ['volundr', 'integration-catalog'],
     queryFn: () => volundr.getIntegrationCatalog(),
   });
+  const [grants, setGrants] = useState<ReadonlySet<ForgeMcpGrant>>(new Set());
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
   const [launching, setLaunching] = useState(false);
@@ -182,6 +185,13 @@ export function QuickLaunch({
               }
             : { type: 'git', repo: repo.trim(), branch: branch.trim() },
         ...(effort ? { workloadConfig: { reasoningEffort: effort } } : {}),
+        ...(grants.size
+          ? {
+              forgeMcp: {
+                grants: FORGE_TOOL_GRANTS.map(({ grant }) => grant).filter((g) => grants.has(g)),
+              },
+            }
+          : {}),
         ...(prompt.trim() ? { initialPrompt: prompt.trim() } : {}),
       });
       setPreferredHost(host.id);
@@ -372,6 +382,32 @@ export function QuickLaunch({
             </p>
           )}
           <p>Host defaults apply. Resources, MCP servers and rules are optional.</p>
+        </section>
+        <section className="vol-quick__section" aria-labelledby="quick-launch-forge-tools">
+          <h2 id="quick-launch-forge-tools">Forge tools for this session</h2>
+          {FORGE_TOOL_GRANTS.map(({ grant, label, description }) => (
+            <label key={grant} className="vol-quick__toggle">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={grants.has(grant)}
+                onChange={(e) => {
+                  const next = new Set(grants);
+                  if (e.target.checked) next.add(grant);
+                  else next.delete(grant);
+                  setGrants(next);
+                }}
+              />
+              <span>
+                {label}
+                <small>{description}</small>
+              </span>
+            </label>
+          ))}
+          <small>
+            Reading sessions and notifying are always on. The host&apos;s own default grants apply
+            on top of these.
+          </small>
         </section>
         <details>
           <summary>Session details · optional</summary>

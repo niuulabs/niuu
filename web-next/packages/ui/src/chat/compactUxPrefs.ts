@@ -15,6 +15,8 @@ export interface CompactUxChatPrefs {
   timestamp: 'hover' | 'always' | 'never';
   /** copy affordance: a hover control near the message, or the inline row */
   copyMode: 'hover' | 'inline';
+  /** a burst of tool calls: one summary row that opens a sheet, or every call inline */
+  toolRuns: 'rows' | 'cards';
 }
 
 /** Codex-style conversation fold: question → "Worked" disclosure → answer. */
@@ -25,6 +27,7 @@ const DEFAULTS: CompactUxChatPrefs = {
   showAgentAvatar: true,
   timestamp: 'always',
   copyMode: 'inline',
+  toolRuns: 'rows',
 };
 
 const CONVERSATION_VIEW_KEY = 'conversationView';
@@ -57,6 +60,7 @@ export function getCompactUxChatPrefs(): CompactUxChatPrefs {
     showAgentAvatar: readBool('showAgentAvatar', DEFAULTS.showAgentAvatar),
     timestamp: readEnum('timestamp', ['hover', 'always', 'never'] as const, DEFAULTS.timestamp),
     copyMode: readEnum('copyMode', ['hover', 'inline'] as const, DEFAULTS.copyMode),
+    toolRuns: readEnum('toolRuns', ['rows', 'cards'] as const, DEFAULTS.toolRuns),
   };
 }
 

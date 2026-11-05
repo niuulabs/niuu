@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, type CSSProperties } from 'react';
 import { useCopyFeedback } from '../../hooks/useCopyFeedback';
 import {
   Hammer,
@@ -11,19 +11,31 @@ import {
   Terminal,
   Paperclip,
   Bookmark,
+  AlertTriangle,
+  AlertCircle,
 } from 'lucide-react';
 import { cn } from '../../../utils/cn';
 import { MarkdownContent } from '../MarkdownContent';
 import { ToolBlock, ToolGroupBlock, groupContentBlocks } from '../ToolBlock';
 import type { ChatMessage, ChatMessagePart } from '../../types';
 import type { ContentBlock as ToolContentBlock } from '../ToolBlock';
+import type { CompactionBlock } from '../ToolBlock/groupContentBlocks';
+import { isSubagentTool } from '../ToolBlock/toolFamilies';
+import {
+  CompactionMarker,
+  ProviderErrorCard,
+  SubagentCard,
+  compactionTokens,
+  formatTokenCount,
+} from '../TranscriptCards';
+import { engineInk } from '../../utils/engineInk';
 import { useCompactUxChatPrefs } from '../../compactUxPrefs';
 import './ChatMessages.css';
 import { ToolImageCard } from '../ToolImages';
 import { PresentedFileCard } from '../ConversationResources';
 import { isNotificationCardTool, isPresentedFileTool } from '../ToolBlock/groupContentBlocks';
 import { NotificationCard } from '../NotificationCard';
-import { parseForgeNotificationPayload } from '@niuulabs/domain';
+import { isForgeNotifyCall, parseForgeNotificationPayload } from '@niuulabs/domain';
 
 const formatTime = (date: Date): string =>
   date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -61,6 +73,8 @@ function partsToContentBlocks(parts: readonly ChatMessagePart[]): ToolContentBlo
       blocks.push({ type: 'tool_use', id: part.id, name: part.name, input: part.input });
     } else if (part.type === 'tool_result' && part.tool_use_id) {
       blocks.push(part as ToolContentBlock);
+    } else if (part.type === 'compaction') {
+      blocks.push({ ...part, type: 'compaction' } as CompactionBlock);
     }
   }
   return blocks;
@@ -107,15 +121,21 @@ function MessageAttachments({ attachments }: Pick<ChatMessage, 'attachments'>) {
   );
 }
 
-/** Compact, rounded counts keep the conversation header quiet. */
-export function formatTokenCount(count: number): string {
-  if (!Number.isFinite(count) || count < 0) return '0';
-  return new Intl.NumberFormat('en-US', {
-    notation: 'compact',
-    maximumFractionDigits: 0,
-  })
-    .format(count)
-    .toLowerCase();
+export { formatTokenCount };
+
+/** The engine-coloured dot and model name that head an assistant message. */
+function ModelSpeaker({ model }: { model?: string }) {
+  if (!model) return null;
+  return (
+    <span
+      className="niuu-chat-speaker"
+      style={{ '--niuu-chat-engine': engineInk(model) } as CSSProperties}
+      data-testid="model-speaker"
+    >
+      <i className="niuu-chat-speaker-dot" aria-hidden="true" />
+      {model}
+    </span>
+  );
 }
 
 /* ── UserMessage ── */
@@ -126,19 +146,40 @@ interface UserMessageProps {
 
 export function UserMessage({ message }: UserMessageProps) {
   const uxPrefs = useCompactUxChatPrefs();
+  const delivery = message.delivery;
+  const queued = delivery?.state === 'queued';
   return (
     <div
       className="niuu-chat-user-wrapper"
       data-testid="user-message"
       data-timestamp={uxPrefs.timestamp}
+      data-delivery={delivery?.state}
     >
-      <div className="niuu-chat-user-bubble">
+      <div className={cn('niuu-chat-user-bubble', queued && 'niuu-chat-user-bubble--queued')}>
         <div className="niuu-chat-user-text">
           <MarkdownContent content={message.content} />
         </div>
         <MessageAttachments attachments={message.attachments} />
       </div>
       <div className="niuu-chat-msg-meta">
+        {queued && (
+          <span className="niuu-chat-delivery niuu-chat-delivery--queued" role="status">
+            <span className="niuu-chat-delivery-pulse" aria-hidden="true" />
+            Queued · waiting for the agent to take it
+          </span>
+        )}
+        {delivery?.state === 'unconfirmed' && (
+          <span className="niuu-chat-delivery niuu-chat-delivery--unconfirmed" role="status">
+            <AlertTriangle className="niuu-chat-delivery-icon" aria-hidden="true" />
+            Delivery not confirmed{delivery.error ? ` · ${delivery.error}` : ''}
+          </span>
+        )}
+        {delivery?.state === 'failed' && (
+          <span className="niuu-chat-delivery niuu-chat-delivery--failed" role="alert">
+            <AlertCircle className="niuu-chat-delivery-icon" aria-hidden="true" />
+            Not delivered{delivery.error ? ` · ${delivery.error}` : ''}
+          </span>
+        )}
         {uxPrefs.timestamp !== 'never' && (
           <span className="niuu-chat-timestamp">{formatTime(message.createdAt)}</span>
         )}
@@ -208,6 +249,23 @@ export function AssistantMessage({
 
   const uxPrefs = useCompactUxChatPrefs();
 
+  const compactionOnly =
+    message.parts !== undefined &&
+    message.parts.length > 0 &&
+    message.parts.every((part) => part.type === 'compaction');
+  if (compactionOnly && message.parts) {
+    return (
+      <div className="niuu-chat-compaction-row" data-testid="compaction-message">
+        {message.parts.map((part, i) => (
+          <CompactionMarker
+            key={part.id ?? i}
+            {...compactionTokens(part as unknown as Record<string, unknown>)}
+          />
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div
       className="niuu-chat-assistant-wrapper"
@@ -221,7 +279,7 @@ export function AssistantMessage({
       )}
       <div className="niuu-chat-assistant-body">
         <div className="niuu-chat-assistant-header">
-          {model && <span className="niuu-chat-model-badge">{model}</span>}
+          <ModelSpeaker model={model} />
           {uxPrefs.timestamp !== 'never' && (
             <span className="niuu-chat-timestamp">{formatTime(message.createdAt)}</span>
           )}
@@ -286,7 +344,9 @@ export function AssistantMessage({
         <div className="niuu-chat-assistant-content">
           {message.parts &&
           (hasToolParts(message.parts) ||
-            message.parts.some((part) => part.type === 'text' && part.id)) ? (
+            message.parts.some(
+              (part) => part.type === 'compaction' || (part.type === 'text' && part.id),
+            )) ? (
             <AssistantContentWithTools
               parts={message.parts}
               fallbackContent={message.content}
@@ -382,13 +442,30 @@ function AssistantContentWithTools({
             />
           );
         }
+        if (item.kind === 'compaction') {
+          return <CompactionMarker key={`compaction:${i}`} {...compactionTokens(item.part)} />;
+        }
         if (item.kind === 'text') {
           if (!item.text.trim()) return null;
           const key = item.id
             ? `text:${JSON.stringify([item.thread_id ?? '', item.turn_id ?? '', item.id])}`
             : `legacy-text:${i}`;
+          // `phase` comes from the runtime (Codex: commentary / final_answer); runtimes that
+          // send none render as plain text. The FINAL tag only helps when work precedes it.
+          const commentary = item.phase === 'commentary';
+          const final = item.phase === 'final_answer' && i > 0;
           return (
-            <div key={key} data-text-id={item.id} data-text-phase={item.phase}>
+            <div
+              key={key}
+              data-text-id={item.id}
+              data-text-phase={item.phase}
+              className={cn(commentary && 'niuu-chat-commentary')}
+            >
+              {final && (
+                <span className="niuu-chat-final-tag" data-testid="final-tag">
+                  FINAL
+                </span>
+              )}
               <MarkdownContent
                 content={item.text}
                 isStreaming={isStreaming && item.complete !== true && i === grouped.length - 1}
@@ -406,8 +483,31 @@ function AssistantContentWithTools({
             return (
               <NotificationCard key={`notification:${item.block.id}`} notification={notification} />
             );
+          // The raw notify call stays a quiet, expandable line beside its notification card,
+          // and a notification whose payload cannot be read stays visible as a raw call.
+          if (
+            isNotificationCardTool(item.block.name) ||
+            isForgeNotifyCall(item.block.name, item.block.input)
+          )
+            return (
+              <ToolBlock key={`tool:${item.block.id}`} block={item.block} result={item.result} />
+            );
+          if (isSubagentTool(item.block.name))
+            return (
+              <SubagentCard
+                key={`subagent:${item.block.id}`}
+                block={item.block}
+                result={item.result}
+                isStreaming={isStreaming}
+              />
+            );
           return (
-            <ToolBlock key={`tool:${item.block.id}`} block={item.block} result={item.result} />
+            <ToolGroupBlock
+              key={`tools:${item.block.id}`}
+              toolName={item.block.name}
+              blocks={[{ block: item.block, result: item.result }]}
+              isStreaming={isStreaming}
+            />
           );
         }
         if (item.kind === 'group') {
@@ -416,6 +516,7 @@ function AssistantContentWithTools({
               key={`tools:${item.blocks[0]?.block.id ?? i}`}
               toolName={item.toolName}
               blocks={item.blocks}
+              isStreaming={isStreaming}
             />
           );
         }
@@ -452,7 +553,7 @@ export function StreamingMessage({ content, parts, model }: StreamingMessageProp
         </div>
         <div className="niuu-chat-assistant-body">
           <div className="niuu-chat-assistant-header">
-            {model && <span className="niuu-chat-model-badge">{model}</span>}
+            <ModelSpeaker model={model} />
             <span className="niuu-chat-generating-label">
               <Loader2 className="niuu-chat-spinner-icon" />
               Using tools...
@@ -483,7 +584,7 @@ export function StreamingMessage({ content, parts, model }: StreamingMessageProp
         </div>
         <div className="niuu-chat-assistant-body">
           <div className="niuu-chat-assistant-header">
-            {model && <span className="niuu-chat-model-badge">{model}</span>}
+            <ModelSpeaker model={model} />
             <span className="niuu-chat-generating-label">
               <Loader2 className="niuu-chat-spinner-icon" />
               Thinking...
@@ -509,7 +610,7 @@ export function StreamingMessage({ content, parts, model }: StreamingMessageProp
         </div>
         <div className="niuu-chat-assistant-body">
           <div className="niuu-chat-assistant-header">
-            {model && <span className="niuu-chat-model-badge">{model}</span>}
+            <ModelSpeaker model={model} />
             <span className="niuu-chat-generating-label">
               <Loader2 className="niuu-chat-spinner-icon" />
               Thinking...
@@ -532,7 +633,7 @@ export function StreamingMessage({ content, parts, model }: StreamingMessageProp
       </div>
       <div className="niuu-chat-assistant-body">
         <div className="niuu-chat-assistant-header">
-          {model && <span className="niuu-chat-model-badge">{model}</span>}
+          <ModelSpeaker model={model} />
           <span className="niuu-chat-generating-label">
             <Loader2 className="niuu-chat-spinner-icon" />
             Generating...
@@ -557,6 +658,7 @@ interface SystemMessageProps {
 }
 
 export function SystemMessage({ message }: SystemMessageProps) {
+  if (message.status === 'error') return <ProviderErrorCard message={message.content} />;
   return (
     <div className="niuu-chat-system-message" data-testid="system-message">
       <Terminal className="niuu-chat-system-icon" />

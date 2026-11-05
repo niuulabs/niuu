@@ -248,6 +248,8 @@ export interface InputRequest {
   answerable?: boolean;
   /** Why the last answer was refused (the broker's message); shown on the card. */
   error?: string;
+  /** When this client first received the question (ISO 8601); drives the "waiting" timer. */
+  receivedAt?: string;
 }
 
 /** One structured answer, in the shape Skuld's ``ask_user_answer`` accepts. */

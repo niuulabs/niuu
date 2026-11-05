@@ -5,6 +5,7 @@
  * structurally compatible with `createApiClient(baseUrl)` from @niuulabs/query.
  */
 import {
+  ApiClientError,
   createApiClient,
   getAuthHeaders,
   openEventStream,
@@ -67,7 +68,9 @@ import type {
   VolundrSessionTraceSpan,
   VolundrSessionTraceSummary,
   ExternalSession,
+  SessionReadState,
 } from '../models/volundr.model';
+import { SessionReadStateConflictError } from '../domain/session';
 
 /** Minimal HTTP client — structurally compatible with ApiClient from @niuulabs/query. */
 export interface HttpClient {
@@ -183,12 +186,19 @@ type SessionPayload = {
   instance_id?: string | null;
   instanceName?: string | null;
   instance_name?: string | null;
-  read_state?: {
-    is_unread?: boolean;
-    latest_output_seq?: number;
-    read_through_seq?: number;
-    revision?: number;
-  } | null;
+  read_state?: ReadStatePayload | null;
+  short_description?: string | null;
+  worked_seconds_24h?: number | null;
+};
+
+type ReadStatePayload = {
+  is_unread?: boolean;
+  latest_output_seq?: number;
+  latest_output_turn_id?: string | null;
+  latest_output_at?: string | null;
+  read_through_seq?: number;
+  manually_unread?: boolean;
+  revision?: number;
 };
 
 type ExternalSessionPayload = {
@@ -501,6 +511,8 @@ function buildStartSessionBody(
     workload_config: config.workloadConfig ?? {},
     issue_id: config.trackerIssue?.id,
     issue_url: config.trackerIssue?.url,
+    // Only a grant the operator asked for is sent; the node's defaults apply regardless.
+    forge_mcp: config.forgeMcp?.grants.length ? { grants: config.forgeMcp.grants } : undefined,
   };
 
   for (const [key, value] of Object.entries(body)) {
@@ -604,16 +616,23 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     tenantId: session.tenantId ?? session.tenant_id ?? undefined,
     instanceId: session.instanceId ?? session.instance_id ?? undefined,
     instanceName: session.instanceName ?? session.instance_name ?? undefined,
-    ...(session.read_state
-      ? {
-          readState: {
-            isUnread: session.read_state.is_unread === true,
-            latestOutputSeq: session.read_state.latest_output_seq ?? 0,
-            readThroughSeq: session.read_state.read_through_seq ?? 0,
-            revision: session.read_state.revision ?? 0,
-          },
-        }
+    ...(session.read_state ? { readState: normalizeReadState(session.read_state) } : {}),
+    ...(session.short_description ? { shortDescription: session.short_description } : {}),
+    ...(typeof session.worked_seconds_24h === 'number'
+      ? { workedSeconds24h: session.worked_seconds_24h }
       : {}),
+  };
+}
+
+function normalizeReadState(payload: ReadStatePayload): SessionReadState {
+  return {
+    isUnread: payload.is_unread === true,
+    latestOutputSeq: payload.latest_output_seq ?? 0,
+    latestOutputTurnId: payload.latest_output_turn_id ?? null,
+    latestOutputAt: payload.latest_output_at ?? null,
+    readThroughSeq: payload.read_through_seq ?? 0,
+    manuallyUnread: payload.manually_unread === true,
+    revision: payload.revision ?? 0,
   };
 }
 
@@ -1383,6 +1402,22 @@ export function buildVolundrHttpAdapter(
     };
   }
 
+  /**
+   * A stream event is broadcast, not read for this caller: it carries neither the caller's read
+   * state nor the 24-hour work total the list adds. Keep what the cache already knows.
+   */
+  function keepListOnlyFields(fresh: VolundrSession): VolundrSession {
+    const prior = sessionCache.get(fresh.id);
+    if (!prior || prior.instanceId !== fresh.instanceId) return fresh;
+    const readState = fresh.readState ?? prior.readState;
+    const workedSeconds24h = fresh.workedSeconds24h ?? prior.workedSeconds24h;
+    return {
+      ...fresh,
+      ...(readState ? { readState } : {}),
+      ...(workedSeconds24h !== undefined ? { workedSeconds24h } : {}),
+    };
+  }
+
   function updateSessionCache(sessions: VolundrSession[]): void {
     sessionCache.clear();
     for (const session of sessions) sessionCache.set(session.id, session);
@@ -1687,8 +1722,8 @@ export function buildVolundrHttpAdapter(
             return;
           }
           if (eventType === 'session_created' || eventType === 'session_updated') {
-            const session = keepNewerActivity(
-              withGateVerdict(normalizeSession(payload as SessionPayload)),
+            const session = keepListOnlyFields(
+              keepNewerActivity(withGateVerdict(normalizeSession(payload as SessionPayload))),
             );
             sessionCache.set(session.id, session);
             publishSessions();
@@ -1843,6 +1878,37 @@ export function buildVolundrHttpAdapter(
       return forgeClient.get(`/sessions/${encodeURIComponent(id)}/runtime-version${suffix}`);
     },
     getActiveSessions: () => loadSessions('/sessions?active=true'),
+    getSessionReadState: async (id, options) =>
+      normalizeReadState(
+        await forgeClient.get<ReadStatePayload>(
+          sessionPath(id, '/read-state', options?.instanceId),
+          { signal: options?.signal },
+        ),
+      ),
+    changeSessionReadState: async (id, change, options) => {
+      let payload: ReadStatePayload;
+      try {
+        payload = await forgeClient.patch<ReadStatePayload>(
+          sessionPath(id, '/read-state', options?.instanceId),
+          {
+            state: change.state,
+            expected_revision: change.expectedRevision,
+            through_seq: change.throughSeq,
+          },
+        );
+      } catch (error) {
+        if (error instanceof ApiClientError && error.status === 409)
+          throw new SessionReadStateConflictError(error.detail || undefined);
+        throw error;
+      }
+      const readState = normalizeReadState(payload);
+      const cached = sessionCache.get(id);
+      if (cached) {
+        sessionCache.set(id, { ...cached, readState });
+        publishSessions();
+      }
+      return readState;
+    },
     getStats: (options) =>
       options?.instanceId
         ? forgeClient

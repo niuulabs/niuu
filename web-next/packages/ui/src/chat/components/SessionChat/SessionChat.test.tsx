@@ -727,7 +727,7 @@ describe('SessionChat', () => {
     );
 
     expect(screen.getByRole('region', { name: 'Pending input requests' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Which environment should be deployed?')).toBeInTheDocument();
+    expect(screen.getByText('Which environment should be deployed?')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Production' }));
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
     expect(onInputRespond).toHaveBeenCalledWith('input-1', [
@@ -882,6 +882,9 @@ describe('SessionChat', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('does not match');
     fireEvent.click(screen.getByRole('button', { name: 'Folio' }));
+    expect(screen.queryByLabelText('Deliver how?')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Something else…' }));
+    expect(screen.getByRole('button', { name: 'Folio' })).toHaveAttribute('aria-pressed', 'false');
     fireEvent.change(screen.getByLabelText('Deliver how?'), { target: { value: 'Zip' } });
     expect(screen.getByRole('button', { name: 'Folio' })).toHaveAttribute('aria-pressed', 'false');
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
@@ -905,6 +908,99 @@ describe('SessionChat', () => {
       />,
     );
     expect(screen.getByRole('alert')).toHaveTextContent('survived in history');
+  });
+
+  it('shows the plan above the composer and counts running agents on it', () => {
+    render(
+      <SessionChat
+        {...defaultProps}
+        connected
+        plan={{
+          tasks: [
+            { content: 'Read', status: 'completed' },
+            { content: 'Write', status: 'in_progress', activeForm: 'Writing' },
+          ],
+          counts: { total: 2 },
+        }}
+        agents={[{ id: 'a', kind: 'subagent', name: 'explorer', status: 'running' }]}
+      />,
+    );
+    const dock = screen.getByRole('button', { expanded: false });
+    expect(dock).toHaveTextContent('1/2 · Writing');
+    expect(dock).toHaveTextContent('1 agent running');
+    const composer = screen.getByTestId('chat-input');
+    expect(dock.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows no plan dock without a plan', () => {
+    render(<SessionChat {...defaultProps} connected />);
+    expect(screen.queryByText(/agents? running/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { expanded: false })).not.toBeInTheDocument();
+  });
+
+  it('shows Stop only while the session is working', () => {
+    const { rerender } = render(
+      <SessionChat {...defaultProps} connected capabilities={{ interrupt: true }} />,
+    );
+    expect(screen.queryByTestId('stop-btn')).not.toBeInTheDocument();
+    const onStop = vi.fn();
+    rerender(
+      <SessionChat
+        {...defaultProps}
+        connected
+        working
+        onStop={onStop}
+        capabilities={{ interrupt: true, steer: true }}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('stop-btn'));
+    expect(onStop).toHaveBeenCalled();
+    expect(screen.getByTestId('chat-input-hints')).toHaveTextContent('queue for after this step');
+    rerender(<SessionChat {...defaultProps} connected working capabilities={{}} />);
+    expect(screen.getByTestId('stop-btn')).toBeDisabled();
+  });
+
+  it('wires the model and effort chips into the composer', () => {
+    const onSetEffort = vi.fn();
+    const onSetRuntimeModel = vi.fn();
+    render(
+      <SessionChat
+        {...defaultProps}
+        connected
+        effort={{ current: 'low', levels: ['low', 'high'], mutable: true }}
+        runtimeOptions={{
+          current: { model: 'm1' },
+          models: [
+            { id: 'm1', model: 'm1', name: 'Model One', effortLevels: [] },
+            { id: 'm2', model: 'm2', name: 'Model Two', effortLevels: [] },
+          ],
+        }}
+        onSetEffort={onSetEffort}
+        onSetRuntimeModel={onSetRuntimeModel}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Effort' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'High' }));
+    expect(onSetEffort).toHaveBeenCalledWith('high');
+    fireEvent.click(screen.getByRole('button', { name: 'Model' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Model Two' }));
+    expect(onSetRuntimeModel).toHaveBeenCalledWith('m2');
+  });
+
+  it('shows each pending question as its own band and lets one be minimised', () => {
+    render(
+      <SessionChat
+        {...defaultProps}
+        pendingInputRequests={[
+          { requestId: 'a', questions: [{ prompt: 'First?', choices: ['Yes'] }] },
+          { requestId: 'b', questions: [{ prompt: 'Second?', choices: ['No'] }] },
+        ]}
+      />,
+    );
+    expect(screen.getAllByText('The agent needs your input')).toHaveLength(2);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Minimise' })[0]!);
+    expect(screen.getByRole('button', { name: /1 question waiting · Show/ })).toBeInTheDocument();
+    expect(screen.getByText('Second?')).toBeInTheDocument();
   });
 
   /* ── Room mode / MeshSidebar ── */
