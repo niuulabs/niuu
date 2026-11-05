@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
@@ -14,8 +14,9 @@ import {
   TooltipProvider,
   SidebarResizer,
   useResizableSidebar,
+  verdictLabel,
 } from '@niuulabs/ui';
-import type { DotState } from '@niuulabs/ui';
+import type { DotState, Worker } from '@niuulabs/ui';
 import {
   Archive,
   Pin,
@@ -369,11 +370,6 @@ function PodEntry({
           <div className="forge-session-row__content">
             <div className="forge-session-row__headline">
               <span className="forge-session-row__title">{primaryLabel}</span>
-              {coordinatorWorkers !== undefined && (
-                <span className="forge-session-role" data-testid={`session-role-${session.id}`}>
-                  COORDINATOR
-                </span>
-              )}
               {unread && (
                 <span
                   className="forge-session-unread-dot"
@@ -554,15 +550,73 @@ function PodEntry({
 // PodGroup — a state section with label + session entries
 // ---------------------------------------------------------------------------
 
+/** The open session's room: its workers, the one the chat shows alone, and how to pick one. */
+interface OpenRoom {
+  sessionId: string;
+  workers: readonly Worker[];
+  focusedPeerId: string | null;
+  onSelect: (sessionId: string, peerId: string) => void;
+}
+
+const WORKER_STATUS_TEXT: Record<Worker['status'], string> = {
+  working: 'Working',
+  idle: 'Idle',
+  error: 'Error',
+};
+
+/** A worker in the open session's room, under its coordinator: picking it shows only its output. */
+function RoomWorkerRow({
+  worker,
+  selected,
+  onSelect,
+}: {
+  worker: Worker;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <div className="forge-session-row forge-room-worker" data-nested="true">
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-current={selected ? 'true' : undefined}
+        title={`${worker.name}: show only this worker`}
+        data-testid={`room-worker-${worker.peerId}`}
+        className={cn(
+          'forge-session-row__select niuu:flex niuu:w-full niuu:items-center niuu:gap-2 niuu:border-b niuu:border-l-2 niuu:px-3 niuu:py-1.5 niuu:text-left niuu:transition-colors',
+          selected
+            ? 'niuu:border-brand niuu:border-b-white/10 forge-session-row__select--selected'
+            : 'niuu:border-transparent niuu:border-b-white/6 niuu:hover:bg-bg-tertiary',
+        )}
+        style={{ '--forge-worker-color': worker.color } as React.CSSProperties}
+      >
+        <span className="forge-room-worker__avatar" aria-hidden="true">
+          {worker.name.charAt(0).toUpperCase()}
+        </span>
+        <span className="forge-session-row__title">{worker.name}</span>
+        <span className="forge-room-worker__state" data-status={worker.status}>
+          {worker.latest && worker.status !== 'working'
+            ? verdictLabel(worker.latest.verdict)
+            : WORKER_STATUS_TEXT[worker.status]}
+        </span>
+      </button>
+    </div>
+  );
+}
+
 function SessionTreeEntry({
   node,
   renderRow,
   depth = 0,
+  openRoom,
 }: {
   node: SessionTreeNode;
   renderRow: (session: Session, depth: number) => React.ReactNode;
   depth?: number;
+  openRoom?: OpenRoom | null;
 }) {
+  const roomWorkers = openRoom?.sessionId === node.session.id ? openRoom.workers : [];
+  const hasChildren = node.children.length > 0 || roomWorkers.length > 0;
   const [folded, setFolded] = useForgePreference(
     `tree.${node.session.clusterId}.${node.session.id}`,
     '0',
@@ -571,7 +625,7 @@ function SessionTreeEntry({
   return (
     <div className="forge-session-tree-entry">
       <div className="forge-session-tree-row">
-        {node.children.length > 0 && (
+        {hasChildren && (
           <button
             type="button"
             className="forge-session-tree-toggle"
@@ -584,14 +638,24 @@ function SessionTreeEntry({
         )}
         {renderRow(node.session, depth)}
       </div>
-      {folded !== '1' && node.children.length > 0 && (
+      {folded !== '1' && hasChildren && (
         <div className="forge-session-tree-children">
+          {openRoom &&
+            roomWorkers.map((worker) => (
+              <RoomWorkerRow
+                key={worker.peerId}
+                worker={worker}
+                selected={openRoom.focusedPeerId === worker.peerId}
+                onSelect={() => openRoom.onSelect(node.session.id, worker.peerId)}
+              />
+            ))}
           {node.children.map((child) => (
             <SessionTreeEntry
               key={child.session.id}
               node={child}
               renderRow={renderRow}
               depth={depth + 1}
+              openRoom={openRoom}
             />
           ))}
         </div>
@@ -619,9 +683,12 @@ function PodGroup({
   readPendingIds,
   contextIds,
   workerCounts,
+  openRoom = null,
 }: {
   contextIds?: ReadonlySet<string>;
   workerCounts?: ReadonlyMap<string, number>;
+  /** The open session's room workers, listed under it in the tree. */
+  openRoom?: OpenRoom | null;
   groupKey?: string;
   pinned?: boolean;
   hierarchical?: boolean;
@@ -642,12 +709,16 @@ function PodGroup({
   const [folded, setFolded] = useForgePreference(`group.${groupKey ?? label}`, '0', ['0', '1']);
   if (sessions.length === 0) return null;
 
+  const roomWorkerCount = (s: Session) =>
+    openRoom?.sessionId === s.id ? openRoom.workers.length : 0;
   const renderRow = (s: Session, depth = 0) => (
     <PodEntry
       key={s.id}
       session={s}
       coordinatorWorkers={
-        workerCounts && isCoordinator(s, workerCounts) ? (workerCounts.get(s.id) ?? 0) : undefined
+        (workerCounts && isCoordinator(s, workerCounts)) || roomWorkerCount(s) > 0
+          ? (workerCounts?.get(s.id) ?? 0) + roomWorkerCount(s)
+          : undefined
       }
       context={contextIds?.has(s.id) ?? false}
       nested={depth > 0}
@@ -656,7 +727,7 @@ function PodGroup({
       onReadChange={onReadChange}
       busy={!!busyId}
       readBusy={readPendingIds?.has(s.id) ?? false}
-      selected={s.id === selectedId}
+      selected={s.id === selectedId && !(openRoom?.sessionId === s.id && openRoom.focusedPeerId)}
       onSelect={() => onSelect(s.id)}
       collapsed={collapsed}
       selectable={selectableSessionIds?.has(s.id) ?? false}
@@ -697,7 +768,12 @@ function PodGroup({
       {(collapsed || folded !== '1') &&
         (hierarchical && !collapsed
           ? buildSessionTree(sessions).map((node) => (
-              <SessionTreeEntry key={node.session.id} node={node} renderRow={renderRow} />
+              <SessionTreeEntry
+                key={node.session.id}
+                node={node}
+                renderRow={renderRow}
+                openRoom={openRoom}
+              />
             ))
           : sessions.map((s) => renderRow(s)))}
     </div>
@@ -712,6 +788,11 @@ export function SessionsPage() {
   const navigate = useNavigate();
   const { sessionId: routeSessionId } = useParams({ strict: false });
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  // The open session's room workers, heard from its chat, and the one it shows on its own.
+  const [room, setRoom] = useState<{ sessionId: string; workers: readonly Worker[] } | null>(null);
+  const [focusedWorker, setFocusedWorker] = useState<{ sessionId: string; peerId: string } | null>(
+    null,
+  );
   const [searchQuery, setSearchQuery] = useState('');
   const { ids: pinnedIds, pinned } = usePinnedSessions();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -873,6 +954,35 @@ export function SessionsPage() {
     const running = allSessions.find((session) => session.state === 'running');
     return running?.id ?? allSessions[0]?.id ?? null;
   }, [allSessions, requestedSessionId, selectedSessionId]);
+  const handleRoomWorkers = useCallback(
+    (workers: readonly Worker[]) => {
+      if (resolvedSelectedSessionId) setRoom({ sessionId: resolvedSelectedSessionId, workers });
+    },
+    [resolvedSelectedSessionId],
+  );
+  const focusedPeerId =
+    focusedWorker?.sessionId === resolvedSelectedSessionId ? focusedWorker.peerId : null;
+  const handleFocusWorker = useCallback(
+    (peerId: string | null) =>
+      setFocusedWorker(
+        peerId && resolvedSelectedSessionId
+          ? { sessionId: resolvedSelectedSessionId, peerId }
+          : null,
+      ),
+    [resolvedSelectedSessionId],
+  );
+  const openRoom = useMemo<OpenRoom | null>(
+    () =>
+      room && room.sessionId === resolvedSelectedSessionId && room.workers.length > 0
+        ? {
+            sessionId: room.sessionId,
+            workers: room.workers,
+            focusedPeerId,
+            onSelect: (sessionId, peerId) => setFocusedWorker({ sessionId, peerId }),
+          }
+        : null,
+    [room, resolvedSelectedSessionId, focusedPeerId],
+  );
   const resolvedSelectedStoppedIds = useMemo(
     () => new Set([...selectedStoppedIds].filter((id) => stoppedSessionIds.has(id))),
     [selectedStoppedIds, stoppedSessionIds],
@@ -919,6 +1029,7 @@ export function SessionsPage() {
   }
 
   function handleSelectSession(id: string) {
+    setFocusedWorker(null);
     setSelectedSessionId(id);
     void navigate({
       to: '/volundr/sessions/$sessionId',
@@ -1097,6 +1208,7 @@ export function SessionsPage() {
                     label={g.label}
                     groupKey={g.id ?? `${sidebarMode}:${g.label}`}
                     hierarchical
+                    openRoom={openRoom}
                     contextIds={nesting.contextIds}
                     workerCounts={nesting.workerCounts}
                     sessions={g.sessions}
@@ -1298,6 +1410,7 @@ export function SessionsPage() {
                     label={g.label}
                     groupKey={g.id ?? `${sidebarMode}:${g.label}`}
                     hierarchical
+                    openRoom={openRoom}
                     contextIds={nesting.contextIds}
                     workerCounts={nesting.workerCounts}
                     sessions={g.sessions}
@@ -1477,6 +1590,9 @@ export function SessionsPage() {
             <LiveSessionDetailPage
               key={resolvedSelectedSessionId}
               sessionId={resolvedSelectedSessionId}
+              focusedWorkerId={focusedPeerId}
+              onFocusWorker={handleFocusWorker}
+              onRoomWorkers={handleRoomWorkers}
             />
           )}
         </div>

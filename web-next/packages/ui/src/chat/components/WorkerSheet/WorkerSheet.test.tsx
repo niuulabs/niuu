@@ -197,11 +197,38 @@ describe('WorkerSheet', () => {
     expect(body.scrollTop).toBe(650);
   });
 
-  it('closes with the × button', () => {
+  it('goes back to the coordinator with its back button', () => {
     const onClose = vi.fn();
     renderSheet({ onClose });
-    fireEvent.click(screen.getByRole('button', { name: 'Close worker' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Back to the coordinator' }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('puts timed activity where it happened among the messages', () => {
+    renderSheet({
+      messages: [
+        {
+          id: 'late',
+          role: 'assistant',
+          content: 'Second reply.',
+          createdAt: new Date(Date.UTC(2026, 10, 5, 5, 30)),
+          participant: { peerId: worker.peerId, persona: 'coder' },
+        },
+      ],
+      events: [
+        {
+          id: 'early',
+          frameType: 'thought',
+          data: 'Thinking first.',
+          timestamp: new Date(Date.UTC(2026, 10, 5, 5, 10)),
+        },
+        { id: 'untimed', frameType: 'thought', data: 'No time given.' },
+      ],
+    });
+    const body = screen.getByTestId('worker-sheet').querySelector('.niuu-chat-sheet-body')!;
+    const text = body.textContent ?? '';
+    expect(text.indexOf('Thinking first.')).toBeLessThan(text.indexOf('Second reply.'));
+    expect(text.indexOf('Second reply.')).toBeLessThan(text.indexOf('No time given.'));
   });
 
   it('closes on Escape, including from its own composer', () => {

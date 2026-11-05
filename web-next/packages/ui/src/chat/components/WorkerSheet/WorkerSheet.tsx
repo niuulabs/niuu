@@ -8,13 +8,12 @@ import {
   type FormEvent,
   type ReactNode,
 } from 'react';
-import { ArrowUp, X } from 'lucide-react';
+import { ArrowLeft, ArrowUp } from 'lucide-react';
 import { verdictLabel, type Worker } from '../../workers';
 import type { AgentInternalEvent, ChatMessage, RoomParticipant } from '../../types';
 import type { FileAttachment } from '../../hooks/useFileAttachments';
 import { AssistantMessage } from '../ChatMessages';
 import { OutcomeSpeakerProvider, WorkerOutcomeCard } from '../OutcomeCard';
-import { speakerTime } from '../RoomMessage/speaker';
 import { VerdictPill } from '../VerdictPill';
 import { WORKER_STATUS_LABELS, workerInitial } from '../WorkersStrip';
 import './WorkerSheet.css';
@@ -26,6 +25,7 @@ export interface WorkerSheetProps {
   messages: readonly ChatMessage[];
   /** The worker's own agent events (thoughts, tool calls and results). */
   events: readonly AgentInternalEvent[];
+  /** Back to the coordinator's view of the whole room. */
   onClose: () => void;
   /** Send to this worker alone; without it the sheet has no composer. */
   onSendDirected?: (
@@ -103,8 +103,9 @@ interface TimelineItem {
 }
 
 /**
- * One worker, close up, over the conversation: what it listens for and emits, only its
- * own messages, outcomes and agent events, and a way to message it directly.
+ * One worker, close up, in place of the room's conversation: what it listens for and emits,
+ * only its own messages, outcomes and agent events in the order they happened, and a way to
+ * message it directly. Going back shows the coordinator's view of everyone again.
  */
 export function WorkerSheet({
   worker,
@@ -133,9 +134,6 @@ export function WorkerSheet({
         at: message.createdAt,
         node: (
           <div className="niuu-chat-sheet-message" data-testid="sheet-message">
-            <time className="niuu-chat-sheet-when" dateTime={message.createdAt.toISOString()}>
-              {speakerTime(message.createdAt)}
-            </time>
             <AssistantMessage message={message} />
           </div>
         ),
@@ -148,8 +146,14 @@ export function WorkerSheet({
         at: outcome.at,
         node: <WorkerOutcomeCard outcome={outcome} speaker={speaker} />,
       }));
-    return [...own, ...liveOutcomes].sort((a, b) => a.at.getTime() - b.at.getTime());
-  }, [messages, worker, speaker]);
+    // Activity with a time stands where it happened; activity without one follows the rest.
+    const activity = events.map<TimelineItem>((event, index) => ({
+      key: `event-${event.id}-${index}`,
+      at: event.timestamp ?? new Date(8.64e15),
+      node: <AgentEventRow event={event} />,
+    }));
+    return [...own, ...liveOutcomes, ...activity].sort((a, b) => a.at.getTime() - b.at.getTime());
+  }, [messages, worker, speaker, events]);
 
   useEffect(() => {
     sheetRef.current?.focus();
@@ -172,7 +176,7 @@ export function WorkerSheet({
   useLayoutEffect(() => {
     const body = bodyRef.current;
     if (body && followRef.current) body.scrollTop = body.scrollHeight;
-  }, [timeline.length, events.length]);
+  }, [timeline.length]);
 
   const onScroll = () => {
     const body = bodyRef.current;
@@ -190,19 +194,28 @@ export function WorkerSheet({
   };
 
   const latest = worker.latest;
-  const empty = timeline.length === 0 && events.length === 0;
+  const empty = timeline.length === 0;
 
   return (
     <aside
       ref={sheetRef}
       className="niuu-chat-sheet"
       style={{ '--niuu-worker-color': worker.color } as CSSProperties}
-      role="dialog"
+      role="region"
       aria-label={`${worker.name} worker`}
       tabIndex={-1}
       data-testid="worker-sheet"
     >
       <header className="niuu-chat-sheet-head">
+        <button
+          type="button"
+          className="niuu-chat-sheet-back"
+          onClick={onClose}
+          aria-label="Back to the coordinator"
+        >
+          <ArrowLeft className="niuu-chat-sheet-back-icon" aria-hidden="true" />
+          Coordinator
+        </button>
         <div className="niuu-chat-sheet-title">
           <span className="niuu-chat-sheet-avatar" aria-hidden="true">
             {workerInitial(worker)}
@@ -214,14 +227,6 @@ export function WorkerSheet({
             </div>
           </div>
           {latest && <VerdictPill label={verdictLabel(latest.verdict)} tone={latest.tone} />}
-          <button
-            type="button"
-            className="niuu-chat-sheet-close"
-            onClick={onClose}
-            aria-label="Close worker"
-          >
-            <X className="niuu-chat-sheet-close-icon" />
-          </button>
         </div>
         {(worker.consumes.length > 0 || worker.emits.length > 0) && (
           <div className="niuu-chat-sheet-events">
@@ -252,13 +257,6 @@ export function WorkerSheet({
             <div key={item.key}>{item.node}</div>
           ))}
         </OutcomeSpeakerProvider>
-        {events.length > 0 && (
-          <section className="niuu-chat-sheet-activity" aria-label="Activity">
-            {events.map((event) => (
-              <AgentEventRow key={event.id} event={event} />
-            ))}
-          </section>
-        )}
       </div>
 
       {onSendDirected && (

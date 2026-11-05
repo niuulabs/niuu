@@ -939,7 +939,7 @@ describe('coordinators and their workers', () => {
     );
   });
 
-  it('tags a coordinator and counts its workers; its workers are compact rows', async () => {
+  it('counts a coordinator\'s workers on its row; its workers are compact rows', async () => {
     wrap(
       createSessionStoreWithSessions([
         coordinator(),
@@ -948,9 +948,8 @@ describe('coordinators and their workers', () => {
       ]),
     );
     await screen.findByTestId('pod-entry-lead');
-    expect(screen.getByTestId('session-role-lead')).toHaveTextContent('COORDINATOR');
     expect(screen.getByTestId('session-leads-lead')).toHaveTextContent('Coordinator · 2 workers');
-    expect(screen.queryByTestId('session-role-w1')).toBeNull();
+    expect(screen.queryByTestId('session-leads-w1')).toBeNull();
     expect(screen.getByTestId('pod-entry-w1').closest('.forge-session-row')).toHaveAttribute(
       'data-nested',
       'true',
@@ -975,7 +974,7 @@ describe('coordinators and their workers', () => {
     await screen.findByTestId('pod-entry-lead');
     expect(screen.getByTestId('session-leads-lead')).toHaveTextContent('Coordinator · 1 worker');
     expect(screen.getByTestId('session-leads-lone2')).toHaveTextContent(/^Coordinator$/);
-    expect(screen.queryByTestId('session-role-lone')).toBeNull();
+    expect(screen.queryByTestId('session-leads-lone')).toBeNull();
   });
 
   it('keeps a filtered-out coordinator as a dimmed path to the worker that matches', async () => {

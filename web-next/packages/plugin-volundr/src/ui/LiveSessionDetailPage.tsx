@@ -32,6 +32,7 @@ import {
   roomWorkers,
   type FileEntry,
   type MeshNotificationEvent,
+  type Worker,
   cn,
 } from '@niuulabs/ui';
 import {
@@ -77,7 +78,7 @@ import type {
 import { useSessionDetail, useSessionList } from './hooks/useSessionStore';
 import { coordinationOf } from '../domain/projectTree';
 import { buildSessionLinks } from './sessions/sessionLinks';
-import { CoordinatorTag, WorkerOf, WorkersStrip } from './detail/Coordination';
+import { CoordinatorTag, WorkerOf } from './detail/Coordination';
 import { useSessionRead } from './hooks/useSessionRead';
 import { useMediaQuery } from './hooks/useMediaQuery';
 
@@ -3121,19 +3122,32 @@ export async function fetchSessionMentionFiles(
   );
 }
 
+/**
+ * A session list that shows a room's workers under the session selects them: it says which
+ * worker the chat shows on its own, and hears who the workers are.
+ */
+export interface RoomWorkerFocus {
+  focusedWorkerId?: string | null;
+  onFocusWorker?: (peerId: string | null) => void;
+  onRoomWorkers?: (workers: readonly Worker[]) => void;
+}
+
 export function LiveSessionDetailPage({
   sessionId,
   instanceId,
   returnTo,
   readOnly = false,
   initialTab = 'chat',
+  focusedWorkerId,
+  onFocusWorker,
+  onRoomWorkers,
 }: {
   sessionId: string;
   instanceId?: string;
   returnTo?: string;
   readOnly?: boolean;
   initialTab?: SessionTab;
-}) {
+} & RoomWorkerFocus) {
   return (
     <LiveSessionDetailPageInner
       key={`${instanceId ?? ''}:${sessionId}`}
@@ -3142,6 +3156,9 @@ export function LiveSessionDetailPage({
       returnTo={normalizeWorkReturnTo(returnTo)}
       readOnly={readOnly}
       initialTab={initialTab}
+      focusedWorkerId={focusedWorkerId}
+      onFocusWorker={onFocusWorker}
+      onRoomWorkers={onRoomWorkers}
     />
   );
 }
@@ -3152,14 +3169,23 @@ function LiveSessionDetailPageInner({
   returnTo,
   readOnly = false,
   initialTab = 'chat',
+  focusedWorkerId,
+  onFocusWorker,
+  onRoomWorkers,
 }: {
   sessionId: string;
   instanceId?: string;
   returnTo: string | null;
   readOnly?: boolean;
   initialTab?: SessionTab;
-}) {
+} & RoomWorkerFocus) {
   const [activeTab, setActiveTab] = useState<SessionTab>(initialTab);
+  // A worker picked in the list is shown in the chat, whichever tab was open.
+  const [shownFocus, setShownFocus] = useState(focusedWorkerId);
+  if (focusedWorkerId !== shownFocus) {
+    setShownFocus(focusedWorkerId);
+    if (focusedWorkerId) setActiveTab('chat');
+  }
   const [tabWasManuallySelected, setTabWasManuallySelected] = useState(false);
   const [actionBusy, setActionBusy] = useState<
     'start' | 'stop' | 'archive' | 'restore' | 'delete' | null
@@ -3409,6 +3435,10 @@ function LiveSessionDetailPageInner({
   const sessionLinks = useMemo(
     () => buildSessionLinks(knownSessions ?? [], sessionId, openSession),
     [knownSessions, openSession, sessionId],
+  );
+  const workerSessionIds = useMemo(
+    () => coordination.workers.map((worker) => worker.id),
+    [coordination.workers],
   );
   const projectsQuery = useQuery({
     queryKey: ['volundr', 'projects', 'session-detail', liveSession?.instanceId ?? null],
@@ -3887,9 +3917,6 @@ function LiveSessionDetailPageInner({
                     },
                   ]}
                 />
-                {isCoordinator ? (
-                  <WorkersStrip workers={coordination.workers} onOpen={openSession} />
-                ) : null}
                 {hasCoordinator ? (
                   <WorkerOf coordinator={coordination.coordinator} onOpen={openSession} />
                 ) : null}
@@ -4094,6 +4121,10 @@ function LiveSessionDetailPageInner({
                         historyError={chat.historyError}
                         onRetryHistory={chat.retryHistory}
                         participants={chat.participants}
+                        workerSessionIds={workerSessionIds}
+                        focusedWorkerId={focusedWorkerId}
+                        onFocusWorker={onFocusWorker}
+                        onWorkersChange={onRoomWorkers}
                         meshEvents={chat.meshEvents}
                         agentEvents={chat.agentEvents}
                         pendingPermissions={chat.pendingPermissions}
@@ -4160,6 +4191,10 @@ function LiveSessionDetailPageInner({
                       connected={false}
                       historyLoaded={!transcriptQuery.isLoading}
                       participants={replayParticipants}
+                      workerSessionIds={workerSessionIds}
+                      focusedWorkerId={focusedWorkerId}
+                      onFocusWorker={onFocusWorker}
+                      onWorkersChange={onRoomWorkers}
                       meshEvents={replayMeshEvents}
                       plan={chat.plan}
                       agents={chat.agents}

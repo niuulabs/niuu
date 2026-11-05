@@ -722,20 +722,10 @@
 
 /* ── Coordinators and their workers ── */
 
-.forge-session-role {
-  flex: none;
-  padding: 0 5px;
-  border: 1px solid color-mix(in srgb, var(--color-brand) 35%, transparent);
-  border-radius: 5px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--color-brand-300);
-}
-
 .forge-session-row__leads {
   flex: none;
   white-space: nowrap;
+  color: var(--color-brand-300);
 }
 
 /* A coordinator the filters left out, listed only as the path to a matching worker. */
@@ -754,4 +744,42 @@
 .forge-session-row[data-nested='true'] .forge-session-harness,
 .forge-session-row[data-nested='true'] .forge-session-row__host {
   display: none;
+}
+
+/* A worker in the open session's room, listed under its coordinator. */
+.forge-room-worker__avatar {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--forge-worker-color);
+  color: var(--color-bg-primary);
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
+.forge-room-worker .forge-session-row__title {
+  flex: 1;
+  min-width: 0;
+}
+
+.forge-room-worker__state {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--color-text-faint);
+}
+
+.forge-room-worker__state[data-status='working'] {
+  color: var(--state-ok);
+}
+
+.forge-room-worker__state[data-status='error'] {
+  color: var(--color-critical);
+}
+
+.forge-room-worker .forge-session-row__select {
+  min-height: 0;
+  padding-block: 7px;
 }

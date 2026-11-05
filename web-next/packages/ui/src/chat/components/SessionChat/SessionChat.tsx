@@ -24,7 +24,13 @@ import { LoadingState } from '../../../data/states/LoadingState';
 import { ErrorState } from '../../../data/states/ErrorState';
 import { cn } from '../../../utils/cn';
 import { hideToolParts, useRoomState } from '../../hooks/useRoomState';
-import { roomWorkers, workerOutcomes, workerStages, type WorkerOutcome } from '../../workers';
+import {
+  roomWorkers,
+  workerOutcomes,
+  workerStages,
+  type Worker,
+  type WorkerOutcome,
+} from '../../workers';
 import {
   UserMessage,
   AssistantMessage,
@@ -36,6 +42,7 @@ import {
 import { RoomMessage } from '../RoomMessage';
 import { ThreadGroup } from '../ThreadGroup';
 import { WorkersStrip } from '../WorkersStrip';
+import { useSessionLinks, type SessionLink } from '../../sessionLinks';
 import { ProgressLane } from '../ProgressLane';
 import { WorkerSheet } from '../WorkerSheet';
 import { HandoffRow, handoffParties } from '../HandoffRow';
@@ -151,6 +158,20 @@ export interface SessionChatProps {
   onLoadOlderHistory?: () => Promise<void>;
   /** Room participants map (peerId → meta) */
   participants?: ReadonlyMap<string, RoomParticipant>;
+  /**
+   * Ids of the worker sessions this session coordinates. They join the room's agents in the
+   * Workers strip, resolved through the page's session links.
+   */
+  workerSessionIds?: readonly string[];
+  /**
+   * The room worker shown on its own, in place of the coordinator's view of everyone. Given
+   * with `onFocusWorker`, the host owns it (a session list that selects workers); without
+   * them the chat keeps it itself.
+   */
+  focusedWorkerId?: string | null;
+  onFocusWorker?: (peerId: string | null) => void;
+  /** The room's workers whenever who they are or what they are doing changes. */
+  onWorkersChange?: (workers: readonly Worker[]) => void;
   /** Mesh events for the cascade panel */
   meshEvents?: readonly MeshEvent[];
   /** Per-agent internal event frames */
@@ -291,6 +312,10 @@ export function SessionChat({
   olderHistoryError,
   onLoadOlderHistory,
   participants = new Map(),
+  workerSessionIds,
+  focusedWorkerId,
+  onFocusWorker,
+  onWorkersChange,
   meshEvents = [],
   agentEvents = new Map(),
   pendingPermissions = [],
@@ -433,16 +458,43 @@ export function SessionChat({
   );
   const stages = useMemo(() => workerStages(workers), [workers]);
   const hasWorkers = workers.length > 0;
+  const sessionLinks = useSessionLinks();
+  const workerSessions = useMemo(
+    () =>
+      (workerSessionIds ?? []).flatMap((id): SessionLink[] => {
+        const link = sessionLinks?.resolve(id);
+        return link ? [link] : [];
+      }),
+    [sessionLinks, workerSessionIds],
+  );
   const roomView = isRoomMode || isRoomSession || hasWorkers;
-  const [sheetPeerId, setSheetPeerId] = useState<string | null>(null);
+  const [ownFocus, setOwnFocus] = useState<string | null>(null);
+  const focusControlled = focusedWorkerId !== undefined && onFocusWorker !== undefined;
+  const sheetPeerId = focusControlled ? focusedWorkerId : ownFocus;
+  const focusWorker = focusControlled ? onFocusWorker : setOwnFocus;
   const sheetWorker = workers.find((worker) => worker.peerId === sheetPeerId);
   const sheetParticipant = sheetPeerId ? participantsMap.get(sheetPeerId) : undefined;
   const workerIds = useMemo(() => new Set(workers.map((worker) => worker.peerId)), [workers]);
 
-  const openWorker = useCallback((peerId: string) => {
-    setSheetPeerId((current) => (current === peerId ? null : peerId));
-  }, []);
-  const closeWorker = useCallback(() => setSheetPeerId(null), []);
+  const openWorker = useCallback(
+    (peerId: string) => focusWorker(sheetPeerId === peerId ? null : peerId),
+    [focusWorker, sheetPeerId],
+  );
+  const closeWorker = useCallback(() => focusWorker(null), [focusWorker]);
+
+  // Tell the host who the workers are only when that changes, not on every message.
+  const workersKey = workers
+    .map(
+      (worker) =>
+        `${worker.peerId}:${worker.name}:${worker.status}:${worker.latest?.verdict ?? ''}`,
+    )
+    .join('|');
+  const reportedWorkersKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!onWorkersChange || reportedWorkersKey.current === workersKey) return;
+    reportedWorkersKey.current = workersKey;
+    onWorkersChange(workers);
+  }, [workers, workersKey, onWorkersChange]);
 
   const hasConversation = useMemo(
     () =>
@@ -1211,12 +1263,15 @@ export function SessionChat({
           </div>
         )}
 
-        {hasWorkers && (
-          <>
-            <WorkersStrip workers={workers} activePeerId={sheetPeerId} onSelect={openWorker} />
-            <ProgressLane stages={stages} onSelect={openWorker} />
-          </>
+        {(hasWorkers || workerSessions.length > 0) && (
+          <WorkersStrip
+            workers={workers}
+            sessions={workerSessions}
+            activePeerId={sheetPeerId}
+            onSelect={openWorker}
+          />
         )}
+        {hasWorkers && <ProgressLane stages={stages} onSelect={openWorker} />}
         {historyError && (
           <div className="niuu-chat-history-status" role="alert">
             {historyError}{' '}

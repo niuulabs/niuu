@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { WorkersStrip, workerInitial } from './WorkersStrip';
+import { SessionLinksProvider, type SessionLink } from '../../sessionLinks';
 import type { Worker } from '../../workers';
 
 const worker = (peerId: string, name: string, status: Worker['status'], color: string): Worker => ({
@@ -61,5 +62,40 @@ describe('WorkersStrip', () => {
       'true',
     );
     expect(screen.getByRole('button', { name: /coder/ })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('lists worker sessions first, each a link that opens its session', () => {
+    const open = vi.fn();
+    const sessions: SessionLink[] = [
+      {
+        id: 'w1',
+        name: 'ticket-1342-gates',
+        stateLabel: 'Needs you',
+        tone: 'warn',
+        href: '/volundr/sessions/w1',
+      },
+    ];
+    render(
+      <SessionLinksProvider value={{ resolve: () => null, open }}>
+        <WorkersStrip workers={workers} sessions={sessions} onSelect={vi.fn()} />
+      </SessionLinksProvider>,
+    );
+    const link = screen.getByRole('link', { name: 'Open worker ticket-1342-gates, Needs you' });
+    expect(link).toHaveAttribute('href', '/volundr/sessions/w1');
+    expect(link).toHaveTextContent('Needs you');
+    expect(link.querySelector('.niuu-chat-worker-status--waiting')).not.toBeNull();
+    fireEvent.click(link);
+    expect(open).toHaveBeenCalledWith('w1');
+  });
+
+  it('shows no session chips without session links to open them', () => {
+    render(
+      <WorkersStrip
+        workers={workers}
+        sessions={[{ id: 'w1', name: 'w', stateLabel: 'Idle', tone: 'muted', href: '/w1' }]}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('link')).toBeNull();
   });
 });

@@ -28,6 +28,16 @@
   cursor: pointer;
 }
 
+.niuu-chat-worker-chip--session {
+  padding: 0 9px 0 9px;
+  text-decoration: none;
+}
+
+.niuu-chat-worker-state {
+  font-size: 11px;
+  color: var(--color-text-faint);
+}
+
 .niuu-chat-worker-chip:hover {
   border-color: var(--color-border);
   color: var(--color-text-primary);
@@ -69,6 +79,10 @@
 
 .niuu-chat-worker-status--idle {
   background: var(--color-text-faint);
+}
+
+.niuu-chat-worker-status--waiting {
+  background: var(--state-warn);
 }
 
 .niuu-chat-worker-status--error {

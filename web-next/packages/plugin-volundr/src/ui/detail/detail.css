@@ -113,70 +113,9 @@
   color: var(--color-brand-300);
 }
 
-.forge-workers-strip {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-}
-
-.forge-workers-strip__label {
-  margin-right: 4px;
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--color-text-faint);
-}
-
-.forge-workers-strip__chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 9px 0 8px;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-full);
-  background: var(--color-bg-secondary);
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.forge-workers-strip__chip:hover {
-  border-color: var(--color-border);
-  color: var(--color-text-primary);
-}
-
-.forge-workers-strip__chip:focus-visible,
 .forge-worker-of__link:focus-visible {
   outline: 2px solid var(--color-brand);
   outline-offset: 2px;
-}
-
-.forge-workers-strip__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-text-faint);
-}
-
-.forge-workers-strip__chip[data-tone='working'] .forge-workers-strip__dot {
-  background: var(--state-ok);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--state-ok) 25%, transparent);
-}
-
-.forge-workers-strip__chip[data-tone='attention'] .forge-workers-strip__dot {
-  background: var(--state-warn);
-}
-
-.forge-workers-strip__chip[data-tone='critical'] .forge-workers-strip__dot {
-  background: var(--color-critical);
-}
-
-.forge-workers-strip__time {
-  font-size: 11px;
-  color: var(--color-text-faint);
 }
 
 .forge-worker-of {

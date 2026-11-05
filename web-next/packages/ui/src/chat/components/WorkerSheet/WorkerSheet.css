@@ -1,16 +1,11 @@
-/* Over the chat area, from the right; not a grid column. */
+/* One worker's view: it takes the whole chat area until the operator goes back. */
 .niuu-chat-sheet {
   position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   z-index: 20;
   display: flex;
   flex-direction: column;
-  width: min(440px, 100%);
-  border-left: 1px solid var(--color-border);
-  background: var(--color-bg-secondary);
-  box-shadow: var(--shadow-lg);
+  background: var(--color-bg-primary);
 }
 
 .niuu-chat-sheet:focus {
@@ -21,8 +16,39 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-4) var(--space-3);
   border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-secondary);
+}
+
+.niuu-chat-sheet-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  height: 24px;
+  padding: 0 8px 0 4px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.niuu-chat-sheet-back:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.niuu-chat-sheet-back:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+.niuu-chat-sheet-back-icon {
+  width: 14px;
+  height: 14px;
 }
 
 .niuu-chat-sheet-title {
@@ -61,33 +87,6 @@
   color: var(--color-text-muted);
 }
 
-.niuu-chat-sheet-close {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--radius-md);
-  background: none;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-}
-
-.niuu-chat-sheet-close:hover {
-  background: var(--color-bg-tertiary);
-}
-
-.niuu-chat-sheet-close:focus-visible {
-  outline: 2px solid var(--color-brand);
-  outline-offset: 2px;
-}
-
-.niuu-chat-sheet-close-icon {
-  width: 15px;
-  height: 15px;
-}
-
 .niuu-chat-sheet-events {
   display: flex;
   flex-wrap: wrap;
@@ -117,7 +116,7 @@
   flex-direction: column;
   gap: var(--space-3);
   min-height: 0;
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-4) max(var(--space-4), calc((100% - 860px) / 2));
   overflow-y: auto;
 }
 
@@ -129,18 +128,6 @@
 .niuu-chat-sheet-message {
   padding-left: var(--space-3);
   border-left: 2px solid color-mix(in srgb, var(--niuu-worker-color) 45%, transparent);
-}
-
-.niuu-chat-sheet-when {
-  display: block;
-  font-size: var(--text-xs);
-  color: var(--color-text-faint);
-}
-
-.niuu-chat-sheet-activity {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
 }
 
 .niuu-chat-sheet-thought {
@@ -189,7 +176,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin: var(--space-3) var(--space-4);
+  width: min(860px, calc(100% - 2 * var(--space-4)));
+  margin: var(--space-3) auto;
   padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-xl);

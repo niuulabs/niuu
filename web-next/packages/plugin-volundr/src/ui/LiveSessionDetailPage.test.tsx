@@ -3155,7 +3155,7 @@ describe('LiveSessionDetailPage', () => {
     });
     const store = { listSessions: async () => [lead, worker], listSources: undefined };
 
-    it('tags a coordinator and lists its workers under the subline; a worker opens its session', async () => {
+    it('tags a coordinator and lists its worker sessions in the Workers strip; a worker opens its session', async () => {
       mockChatState();
       wrap(leadId, { session: COORDINATOR_SESSION, sessionStore: store });
       await screen.findByTestId('live-session-detail-page');

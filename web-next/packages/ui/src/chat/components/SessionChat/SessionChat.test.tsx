@@ -1173,7 +1173,7 @@ describe('SessionChat', () => {
     it('opens the receiving worker from a handoff', () => {
       renderTeam({ meshEvents: [handoff('h1', at(19))] });
       fireEvent.click(screen.getByTestId('handoff-row'));
-      expect(screen.getByRole('dialog', { name: 'reviewer worker' })).toBeInTheDocument();
+      expect(screen.getByRole('region', { name: 'reviewer worker' })).toBeInTheDocument();
     });
 
     it('shows an event nobody listens for as the event only', () => {
@@ -1289,13 +1289,13 @@ describe('SessionChat', () => {
         fireEvent.click(
           within(screen.getByTestId('progress-lane')).getByRole('button', { name: /reviewer/ }),
         );
-        expect(screen.getByRole('dialog', { name: 'reviewer worker' })).toBeInTheDocument();
+        expect(screen.getByRole('region', { name: 'reviewer worker' })).toBeInTheDocument();
       });
 
       it('opens from a speaker name in the conversation', () => {
         renderTeam();
         fireEvent.click(screen.getByRole('button', { name: 'Open coder' }));
-        expect(screen.getByRole('dialog', { name: 'coder worker' })).toBeInTheDocument();
+        expect(screen.getByRole('region', { name: 'coder worker' })).toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Open Coordinator' })).toBeNull();
       });
 
@@ -1340,7 +1340,7 @@ describe('SessionChat', () => {
         expect(screen.queryByPlaceholderText('Message coder directly…')).toBeNull();
       });
 
-      it('closes with Escape and with ×', () => {
+      it('closes with Escape and with the back button', () => {
         renderTeam();
         const chip = within(screen.getByTestId('workers-strip')).getByRole('button', {
           name: /coder/,
@@ -1349,7 +1349,7 @@ describe('SessionChat', () => {
         fireEvent.keyDown(document.body, { key: 'Escape' });
         expect(screen.queryByTestId('worker-sheet')).toBeNull();
         fireEvent.click(chip);
-        fireEvent.click(screen.getByRole('button', { name: 'Close worker' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Back to the coordinator' }));
         expect(screen.queryByTestId('worker-sheet')).toBeNull();
       });
 
@@ -1363,12 +1363,47 @@ describe('SessionChat', () => {
         expect(screen.queryByTestId('worker-sheet')).toBeNull();
       });
 
+      it('lets the host choose the worker shown, and tells it who the workers are', () => {
+        const onFocusWorker = vi.fn();
+        const onWorkersChange = vi.fn();
+        const { rerender } = renderTeam({
+          focusedWorkerId: 'rev',
+          onFocusWorker,
+          onWorkersChange,
+        });
+        expect(screen.getByRole('region', { name: 'reviewer worker' })).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Back to the coordinator' }));
+        expect(onFocusWorker).toHaveBeenLastCalledWith(null);
+        fireEvent.click(
+          within(screen.getByTestId('workers-strip')).getByRole('button', { name: /coder/ }),
+        );
+        expect(onFocusWorker).toHaveBeenLastCalledWith('coder');
+        expect(onWorkersChange).toHaveBeenCalledTimes(1);
+        expect(onWorkersChange.mock.calls[0]![0].map((w: { name: string }) => w.name)).toEqual([
+          'coder',
+          'reviewer',
+        ]);
+        rerender(
+          <SessionChat
+            {...defaultProps}
+            messages={[said('m1', lead, 'Framing the spec first.', at(12))]}
+            connected
+            participants={team}
+            focusedWorkerId={null}
+            onFocusWorker={onFocusWorker}
+            onWorkersChange={onWorkersChange}
+          />,
+        );
+        expect(screen.queryByTestId('worker-sheet')).toBeNull();
+        expect(onWorkersChange).toHaveBeenCalledTimes(1);
+      });
+
       it('switches to another worker', () => {
         renderTeam();
         const strip = screen.getByTestId('workers-strip');
         fireEvent.click(within(strip).getByRole('button', { name: /coder/ }));
         fireEvent.click(within(strip).getByRole('button', { name: /reviewer/ }));
-        expect(screen.getByRole('dialog', { name: 'reviewer worker' })).toBeInTheDocument();
+        expect(screen.getByRole('region', { name: 'reviewer worker' })).toBeInTheDocument();
       });
     });
   });
