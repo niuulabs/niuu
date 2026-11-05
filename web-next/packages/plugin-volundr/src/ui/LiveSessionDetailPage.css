@@ -2793,3 +2793,34 @@
   overflow: hidden;
   white-space: nowrap;
 }
+
+/* In the title bar Display is an icon, as Lexi's display options are. */
+.niuu-live-session__display-controls .niuu-chat-preferences-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The title row stays one line: the name gives way, its state and project stay. */
+.niuu-live-session__head-title .niuu-live-session__identity {
+  flex-wrap: nowrap;
+  max-width: 100%;
+}
+
+.niuu-live-session__head-title .niuu-live-session__title {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: none;
+  white-space: nowrap;
+}
+
+.niuu-live-session__head-title .niuu-live-session__state-pill {
+  flex-shrink: 0;
+}
+
+.niuu-live-session__head-title .niuu-live-session__project {
+  flex: 0 2 auto;
+}

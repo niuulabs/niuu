@@ -1081,3 +1081,10 @@
   font-size: 12px;
   color: var(--color-critical);
 }
+
+/* "Sessions" sized as Lexi's list title. */
+.forge-session-head h2 {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}

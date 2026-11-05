@@ -1,4 +1,4 @@
-import { ListCollapse } from 'lucide-react';
+import { ListCollapse, SlidersHorizontal } from 'lucide-react';
 import { cn } from '../../../utils/cn';
 import {
   setCompactUxChatPref,
@@ -37,7 +37,10 @@ export function ChatDisplayControls({ className }: ChatDisplayControlsProps) {
         <ListCollapse className="niuu-chat-control-icon" />
       </button>
       <details className="niuu-chat-preferences">
-        <summary>Display</summary>
+        <summary title="Display options">
+          <SlidersHorizontal className="niuu-chat-control-icon" aria-hidden="true" />
+          <span className="niuu-chat-preferences-label">Display</span>
+        </summary>
         <div className="niuu-chat-preferences-panel">
           <label>
             <input

@@ -524,6 +524,9 @@
   font-size: var(--text-xs);
 }
 .niuu-chat-preferences summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   cursor: pointer;
 }
 .niuu-chat-preferences-panel {
