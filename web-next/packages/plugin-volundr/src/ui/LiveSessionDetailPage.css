@@ -182,7 +182,10 @@
 }
 
 @media (hover: hover) {
+  /* Hidden, they take no room, so the name gets the line until they are wanted. */
   .niuu-live-session__title-actions {
+    max-width: 0;
+    overflow: hidden;
     opacity: 0;
     transition: opacity 120ms ease;
   }
@@ -190,6 +193,8 @@
   .niuu-live-session__identity:hover .niuu-live-session__title-actions,
   .niuu-live-session__title-actions:focus-within,
   .niuu-live-session__title-actions:has([aria-expanded='true']) {
+    max-width: none;
+    overflow: visible;
     opacity: 1;
   }
 }
@@ -2879,4 +2884,101 @@
     min-height: 0;
     padding: 0 8px;
   }
+}
+
+/* ── Lexi's title bar: name, project and state on one line with the controls; the session's
+      facts in one quiet line under it, across the whole width ── */
+@media (min-width: 761px) {
+  .niuu-live-session__head-top {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'back dot identity views controls'
+      '. . meta meta meta'
+      '. . worker worker worker';
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 1px;
+  }
+
+  .niuu-live-session__head-top:not(:has(> .niuu-live-session__return-link)) {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'dot identity views controls'
+      '. meta meta meta'
+      '. worker worker worker';
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__return-link {
+    grid-area: back;
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__status-dot {
+    grid-area: dot;
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__head-title {
+    display: contents;
+  }
+
+  .niuu-live-session__head-title > .niuu-live-session__identity {
+    grid-area: identity;
+    min-width: 0;
+  }
+
+  .niuu-live-session__head-title > .niuu-live-session__subline {
+    grid-area: meta;
+    min-width: 0;
+  }
+
+  .niuu-live-session__head-title > .forge-worker-of {
+    grid-area: worker;
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__tabs {
+    grid-area: views;
+    margin-left: 0;
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__toolbar {
+    grid-area: controls;
+    margin-left: 0;
+    padding-left: 0;
+  }
+
+  /* The views are icons, as Lexi's title bar holds only icons; their names stay for readers. */
+  .niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .niuu-live-session__head-top > .niuu-live-session__tabs .niuu-live-session__tab {
+    padding: 0 7px;
+  }
+}
+
+/* In the facts line the ticket is a quiet link, not a pill. */
+.niuu-live-session__subline .niuu-live-session__ticket {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: var(--font-sans);
+  font-size: inherit;
+  font-weight: 600;
+  color: var(--color-brand-300, var(--color-brand));
+}
+
+.niuu-live-session__subline .niuu-live-session__ticket:hover {
+  background: none;
+  text-decoration: underline;
+}
+
+/* The name keeps its room; the project gives way first. */
+.niuu-live-session__head-title .niuu-live-session__project {
+  flex: 0 1000 auto;
+  min-width: 18px;
 }
