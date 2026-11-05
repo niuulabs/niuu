@@ -193,7 +193,8 @@ afterEach(() => {
 });
 
 describe('Forge session rows', () => {
-  it('shows title, unread dot and state, then the agent summary, then model, host and time', async () => {
+  it('shows title, unread dot and state, then the agent summary, then host and model; time with details', async () => {
+    localStorage.setItem('niuu.forge.details', '1');
     setup(sessions);
     const row = await screen.findByTestId('pod-entry-migr');
 

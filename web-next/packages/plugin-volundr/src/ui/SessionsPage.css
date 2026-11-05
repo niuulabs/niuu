@@ -47,12 +47,17 @@
     height: 24px;
     min-height: 24px;
   }
-  /* Keyboard focus only: a clicked row keeps focus, and the strip would then sit over the
-     title of the open session until something else is clicked. */
-  .forge-session-row:hover .forge-session-row__actions,
-  .forge-session-row:has(:focus-visible) .forge-session-row__actions {
+  /* Hovering shows only the "…" button, as Lexi keeps a row to its name; the actions open
+     from it, so they never sit over the name a person is about to click. */
+  .forge-session-row:hover .forge-session-row__more,
+  .forge-session-row:has(:focus-visible) .forge-session-row__more,
+  .forge-session-row[data-actions-open='true'] .forge-session-row__more {
+    display: grid;
+  }
+  .forge-session-row[data-actions-open='true'] .forge-session-row__actions {
     opacity: 1;
     pointer-events: auto;
+    right: 40px;
   }
 }
 .forge-session-row__actions button {
@@ -934,4 +939,96 @@
   font-size: 11.5px;
   font-weight: 600;
   color: var(--color-text-muted);
+}
+
+/* ── Lexi rows: a state dot, the name, then host · model · role in one muted line ── */
+
+.forge-session-row__dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-faint);
+}
+
+.forge-session-row__dot[data-state='running'] {
+  background: var(--status-green);
+}
+
+.forge-session-row__dot[data-state='awaiting_input'] {
+  background: var(--status-amber);
+}
+
+.forge-session-row__dot[data-state='failed'] {
+  background: var(--color-critical);
+}
+
+.forge-session-row__title {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.forge-session-row__metadata {
+  gap: 0;
+  padding-left: 12px;
+  font-size: 11.5px;
+}
+
+.forge-session-row__metadata > :not(.forge-session-state) + :not(.forge-session-state)::before {
+  content: '·';
+  padding: 0 5px;
+  color: var(--color-text-faint);
+}
+
+.forge-session-row__metadata .forge-session-harness,
+.forge-session-row__metadata .forge-session-row__host,
+.forge-session-row__metadata .forge-session-row__leads {
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
+.forge-session-row__metadata .forge-session-state {
+  padding: 0 0 0 8px;
+  background: none;
+  font-size: 11.5px;
+}
+
+.forge-session-row__preview,
+.forge-session-row__details {
+  padding-left: 12px;
+}
+
+/* The model keeps its name; a long role line gives way first. */
+.forge-session-row__metadata .forge-session-harness {
+  flex-shrink: 0;
+}
+
+.forge-session-row__metadata .forge-session-row__leads {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The open session is a rounded fill, as Lexi marks it, not an edge. */
+.forge-sessions .forge-session-list .forge-session-row__select {
+  border-left-color: transparent;
+  border-bottom-color: transparent;
+  border-radius: 8px;
+}
+
+.forge-sessions .forge-session-list .forge-session-row__select--selected {
+  background: color-mix(in srgb, var(--color-text-primary) 9%, transparent);
+  box-shadow: none;
+}
+
+.forge-sessions
+  .forge-session-list
+  .forge-session-row__select:not(.forge-session-row__select--selected):hover {
+  background: color-mix(in srgb, var(--color-text-primary) 4%, transparent);
+}
+
+.forge-session-scroll {
+  padding: 0 6px;
 }

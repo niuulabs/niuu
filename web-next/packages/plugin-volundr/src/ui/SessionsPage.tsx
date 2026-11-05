@@ -408,6 +408,11 @@ function PodEntry({
         ) : (
           <div className="forge-session-row__content">
             <div className="forge-session-row__headline">
+              <span
+                className="forge-session-row__dot"
+                data-state={session.state}
+                aria-hidden="true"
+              />
               <span className="forge-session-row__title">{primaryLabel}</span>
               {unread && (
                 <span
@@ -429,7 +434,13 @@ function PodEntry({
                 {session.shortDescription}
               </div>
             )}
+            {/* Lexi's second line: host · model · role, then the state on the right. */}
             <div className="forge-session-row__metadata">
+              {forgeLabel && (
+                <span className="forge-session-row__host" title={`Host: ${forgeLabel}`}>
+                  {forgeLabel}
+                </span>
+              )}
               <span
                 className="forge-session-harness"
                 data-harness={harness}
@@ -438,11 +449,6 @@ function PodEntry({
               >
                 {modelLabel}
               </span>
-              {forgeLabel && (
-                <span className="forge-session-row__host" title={`Host: ${forgeLabel}`}>
-                  {forgeLabel}
-                </span>
-              )}
               {coordinatorWorkers !== undefined && (
                 <span
                   className="forge-session-row__leads"
@@ -453,21 +459,21 @@ function PodEntry({
                     : `Coordinator · ${coordinatorWorkers} ${coordinatorWorkers === 1 ? 'worker' : 'workers'}`}
                 </span>
               )}
-              {timeFact && (
-                <span
-                  className="forge-session-row__age"
-                  title={timeFact}
-                  data-testid={`session-time-fact-${session.id}`}
-                >
-                  {timeFact}
-                </span>
-              )}
-              <span className="forge-session-state" data-state={session.state}>
+              <span
+                className="forge-session-state"
+                data-state={session.state}
+                title={timeFact ?? undefined}
+              >
                 {SESSION_STATE_LABELS[session.state]}
               </span>
             </div>
             {showDetails && (
               <div className="forge-session-row__details">
+                {timeFact && (
+                  <span title={timeFact} data-testid={`session-time-fact-${session.id}`}>
+                    {timeFact}
+                  </span>
+                )}
                 {trackerLabel && (
                   <span title={trackerLabel}>
                     <Ticket size={12} />

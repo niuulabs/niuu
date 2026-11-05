@@ -147,7 +147,8 @@ test('session list shows Lexi rows, the unread filter and the unread stream', as
   await expect(row).toContainText('plan-review-gates');
   await expect(row).toContainText('Running the workflow gate tests');
   await expect(row).toContainText('Claude Fable 5.1');
-  await expect(row).toContainText('running 2m');
+  // The row keeps to Lexi's two lines; how long it has run is the state's tooltip.
+  await expect(row.locator('.forge-session-state')).toHaveAttribute('title', 'running 2m');
   await expect(page.getByTestId('pod-entry-catalog')).toContainText('GPT-6 Sol');
 
   const unread = page.getByTestId('session-filter-unread');

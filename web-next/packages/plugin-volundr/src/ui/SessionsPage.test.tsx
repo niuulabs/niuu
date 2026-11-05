@@ -792,7 +792,8 @@ describe('Forge session review controls', () => {
       );
       const row = await screen.findByTestId('pod-entry-host-row');
       // Name, then model, host and the state at the end of that line; the folder under Details.
-      expect(row).toHaveTextContent(`Workspace reviewGPT-6 AstraBuild BroWorking${label}`);
+      expect(row).toHaveTextContent(`Workspace reviewBuild BroGPT-6 AstraWorking`);
+      expect(row).toHaveTextContent(label);
       expect(within(row).getByTitle('Host: Build Bro')).toHaveTextContent('Build Bro');
       expect(within(row).getByTitle(path)).toHaveTextContent(label);
     },
