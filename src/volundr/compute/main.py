@@ -12,6 +12,7 @@ import asyncio
 import copy
 import inspect
 import json
+import typing
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -128,11 +129,51 @@ def build_runtime(
         else DynamicAdapterConfig.model_validate(dict(config))
     )
     kwargs = resolve_secret_kwargs(parsed.kwargs, parsed.secret_kwargs_env)
-    composed = {name: _runtime_value(value, importer=importer) for name, value in kwargs.items()}
-    runtime = importer(parsed.adapter)(**composed)
+    runtime_class = importer(parsed.adapter)
+    nested = _runtime_parameters(runtime_class, kwargs)
+    composed = {
+        name: _runtime_value(value, importer=importer) if name in nested else value
+        for name, value in kwargs.items()
+    }
+    runtime = runtime_class(**composed)
     if not isinstance(runtime, VmRuntime):
         raise TypeError("Configured compute runtime must implement VmRuntime")
     return runtime
+
+
+def _runtime_parameters(runtime_class: type, kwargs: Mapping[str, object]) -> set[str]:
+    """The kwargs whose adapter configs are nested runtimes to build here.
+
+    Only parameters the constructor types as runtimes (``default: VmRuntime``,
+    ``profiles: Mapping[str, VmRuntime]``). Any other adapter-shaped mapping is data
+    the runtime passes on, such as Skuld's ``preview.router_auth`` for the guest.
+    """
+    if not any(_has_adapter_config(value) for value in kwargs.values()):
+        return set()
+    from volundr.domain.vm_runtime import VmRuntime
+
+    try:
+        hints = typing.get_type_hints(runtime_class.__init__)
+    except NameError as exc:
+        raise TypeError(
+            f"Compute runtime {runtime_class.__qualname__} has constructor annotations that "
+            f"do not resolve ({exc}); nested runtime configs need resolvable types"
+        ) from exc
+    return {name for name in kwargs if _holds_runtime(hints.get(name), VmRuntime)}
+
+
+def _has_adapter_config(value) -> bool:
+    if isinstance(value, Mapping):
+        return "adapter" in value or any(_has_adapter_config(item) for item in value.values())
+    if isinstance(value, list | tuple):
+        return any(_has_adapter_config(item) for item in value)
+    return False
+
+
+def _holds_runtime(annotation, runtime_type: type) -> bool:
+    if isinstance(annotation, type) and issubclass(annotation, runtime_type):
+        return True
+    return any(_holds_runtime(arg, runtime_type) for arg in typing.get_args(annotation))
 
 
 def _runtime_value(value, *, importer: Callable[[str], type]):
