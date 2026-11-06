@@ -576,3 +576,182 @@ async def test_adapters_without_workload_support_say_so():
         )
     with pytest.raises(NotImplementedError, match="resident workload"):
         await adapter.cleanup_workload("w")
+
+
+class TestGuestAgentInjection:
+    """VM sessions run the OpenBao agent as explicit containers, not injector annotations."""
+
+    _FILE_MAPPING = CredentialMapping(
+        credential_name="git",
+        env_mappings={"GIT_TOKEN": "token"},
+        file_mappings={"/run/secrets/git/token": "token"},
+    )
+
+    @staticmethod
+    def _adapter(**kwargs) -> OpenBaoAgentInjectionAdapter:
+        return OpenBaoAgentInjectionAdapter(
+            openbao_url="https://openbao.example.com",
+            auth_path="jwt-valhalla",
+            audience="https://k8s.example.com",
+            workload_token_expiration_seconds=1800,
+            guest_agent_image="openbao/openbao:2.5.3",
+            **kwargs,
+        )
+
+    def test_port_default_has_no_guest_agents(self):
+        from volundr.domain.ports import SecretInjectionPort
+
+        assert SecretInjectionPort.supports_guest_agents.fget(object()) is False
+
+    @pytest.mark.asyncio()
+    async def test_port_default_names_the_adapter(self):
+        from volundr.domain.ports import SecretInjectionPort
+
+        with pytest.raises(NotImplementedError, match="OpenBaoAgentInjectionAdapter"):
+            await SecretInjectionPort.guest_agent_pod_spec_additions(
+                self._adapter(), "alice", "s1", []
+            )
+
+    def test_adapter_supports_guest_agents(self):
+        assert self._adapter().supports_guest_agents is True
+
+    @pytest.mark.asyncio()
+    async def test_produces_init_container_and_volumes(self):
+        adapter = self._adapter()
+        result = await adapter.guest_agent_pod_spec_additions(
+            "alice", "session-123", [self._FILE_MAPPING]
+        )
+
+        assert result.service_account == "openbao-session-session-123"
+        assert result.annotations == {}
+        assert result.volumes == (
+            {"name": "openbao-secrets", "emptyDir": {}},
+            {"name": "openbao-agent-home", "emptyDir": {}},
+            {
+                "name": "openbao-agent-sa-token",
+                "projected": {
+                    "sources": [
+                        {
+                            "serviceAccountToken": {
+                                "path": "token",
+                                "audience": "https://k8s.example.com",
+                                "expirationSeconds": 1800,
+                            }
+                        }
+                    ]
+                },
+            },
+        )
+        assert result.volume_mounts == (
+            {"name": "openbao-secrets", "mountPath": "/run/secrets", "readOnly": True},
+        )
+        assert result.extra_containers == ()
+
+        (init,) = result.init_containers
+        assert init["name"] == "openbao-agent-init"
+        assert init["image"] == "openbao/openbao:2.5.3"
+        assert init["command"] == [
+            "/bin/sh",
+            "-ec",
+            'printf "%s" "$BAO_AGENT_CONFIG" > /home/vault/config.hcl'
+            " && exec bao agent -config=/home/vault/config.hcl",
+        ]
+        assert init["volumeMounts"] == [
+            {"name": "openbao-secrets", "mountPath": "/run/secrets"},
+            {"name": "openbao-agent-home", "mountPath": "/home/vault"},
+            {
+                "name": "openbao-agent-sa-token",
+                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "readOnly": True,
+            },
+        ]
+        assert init["securityContext"] == {"runAsUser": 100, "runAsGroup": 1000}
+        (env,) = init["env"]
+        assert env["name"] == "BAO_AGENT_CONFIG"
+        assert "exit_after_auth = true" in env["value"]
+        assert 'role = "volundr-session-session-123"' in env["value"]
+        assert 'destination = "/run/secrets/git/token"' in env["value"]
+        assert 'destination = "/run/secrets/env.sh"' in env["value"]
+
+    @pytest.mark.asyncio()
+    async def test_token_sink_stays_in_agent_home_not_the_session_volume(self):
+        result = await self._adapter().guest_agent_pod_spec_additions(
+            "alice", "s1", [self._FILE_MAPPING]
+        )
+
+        config = result.init_containers[0]["env"][0]["value"]
+        assert 'path = "/home/vault/.vault-token"' in config
+        assert "/run/secrets/.vault-token" not in config
+        session_mounts = [m["name"] for m in result.volume_mounts]
+        assert "openbao-agent-home" not in session_mounts
+        assert "openbao-agent-sa-token" not in session_mounts
+
+    @pytest.mark.asyncio()
+    async def test_uses_configured_binary_user_and_group(self):
+        adapter = self._adapter(
+            guest_agent_binary="/usr/bin/bao", guest_agent_user=200, guest_agent_group=300
+        )
+        result = await adapter.guest_agent_pod_spec_additions("alice", "s1", [self._FILE_MAPPING])
+
+        init = result.init_containers[0]
+        assert init["command"][2].endswith("exec /usr/bin/bao agent -config=/home/vault/config.hcl")
+        assert init["securityContext"] == {"runAsUser": 200, "runAsGroup": 300}
+
+    @pytest.mark.asyncio()
+    async def test_sidecar_only_with_managed_oauth(self):
+        mapping = CredentialMapping(
+            credential_name="gitlab",
+            oauth_tenant_id="tenant-a",
+            oauth_token_field="token",
+            file_mappings={"/run/secrets/mcp/token": "token"},
+            oauth_token_documents=("/run/secrets/mcp/token",),
+        )
+        adapter = self._adapter(oauth_mount_path="oauthapp")
+        result = await adapter.guest_agent_pod_spec_additions("alice", "s1", [mapping])
+
+        (init,) = result.init_containers
+        (sidecar,) = result.extra_containers
+        assert init["name"] == "openbao-agent-init"
+        assert "exit_after_auth = true" in init["env"][0]["value"]
+        assert sidecar["name"] == "openbao-agent"
+        assert sidecar["image"] == init["image"]
+        assert sidecar["command"] == init["command"]
+        assert sidecar["volumeMounts"] == init["volumeMounts"]
+        assert sidecar["securityContext"] == init["securityContext"]
+        assert "exit_after_auth = false" in sidecar["env"][0]["value"]
+        assert 'static_secret_render_interval = "30s"' in sidecar["env"][0]["value"]
+
+    @pytest.mark.asyncio()
+    async def test_missing_image_is_refused_naming_the_knob(self):
+        adapter = OpenBaoAgentInjectionAdapter(agent_image="openbao/openbao:2.5.3")
+
+        with pytest.raises(ValueError, match="guest_agent_image"):
+            await adapter.guest_agent_pod_spec_additions("alice", "s1", [self._FILE_MAPPING])
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize(
+        "destination",
+        [
+            "/home/volundr/.ssh/id_rsa",
+            "/run/secretsx/token",
+            "/run/secrets/../etc/token",
+            "/run/secrets",
+            "run/secrets/token",
+        ],
+    )
+    async def test_destination_outside_secrets_dir_is_refused(self, destination):
+        mapping = CredentialMapping(credential_name="ssh", file_mappings={destination: "key"})
+
+        with pytest.raises(ValueError, match="VM sessions") as excinfo:
+            await self._adapter().guest_agent_pod_spec_additions("alice", "s1", [mapping])
+
+        assert destination in str(excinfo.value)
+        assert "/run/secrets" in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"guest_agent_binary": ""}, {"guest_agent_user": -1}, {"guest_agent_group": -1}],
+    )
+    def test_invalid_guest_agent_knobs_are_refused(self, kwargs):
+        with pytest.raises(ValueError, match="guest_agent"):
+            self._adapter(**kwargs)

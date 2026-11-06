@@ -456,6 +456,8 @@ def _materialize_local_mimir_config(
 #: ``forge_mcp.grants``). Skuld scrubs the token from every agent process it spawns.
 FORGE_MCP_TOKEN_ENV = "SKULD__FORGE_MCP__TOKEN"
 FORGE_MCP_GRANTS_ENV = "SKULD__FORGE_MCP__GRANTS"
+#: The broker setting naming a file that holds the credential (``forge_mcp.token_file``).
+FORGE_MCP_TOKEN_FILE_ENV = "SKULD__FORGE_MCP__TOKEN_FILE"
 
 
 def _apply_forge_session_env(env: dict[str, str], spec: SessionSpec) -> None:

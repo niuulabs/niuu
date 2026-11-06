@@ -15,15 +15,21 @@ import re
 import shlex
 import tempfile
 from pathlib import Path, PurePosixPath
+from uuid import UUID
 
 import httpx
 
+from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.brokered_credentials import (
     DEFAULT_CODEX_AUTH_ADAPTER,
     BrokeredCredentialPodManager,
 )
-from volundr.adapters.outbound.local_process import LocalProcessPodManager
+from volundr.adapters.outbound.local_process import (
+    FORGE_MCP_GRANTS_ENV,
+    FORGE_MCP_TOKEN_FILE_ENV,
+    LocalProcessPodManager,
+)
 from volundr.adapters.outbound.ssh_guest_access import (
     HOST_KEY_CONFIG_PATH,
     HOST_KEY_PATH,
@@ -31,6 +37,7 @@ from volundr.adapters.outbound.ssh_guest_access import (
 )
 from volundr.domain.compute import BootstrapFile, ComputeLease, MachineBootstrap
 from volundr.domain.guest_access import GuestAccess
+from volundr.domain.guest_credentials import GuestCredentialDelivery, GuestCredentialPlan
 from volundr.domain.models import Session, SessionSpec
 from volundr.domain.vm_runtime import VmRuntime
 
@@ -39,22 +46,75 @@ _HOST_KEY = HOST_KEY_PATH
 _HOST_KEY_CONFIG = HOST_KEY_CONFIG_PATH
 _LAUNCH = "/etc/niuu/session-launch.json"
 _REMOTE_DATA = "/var/lib/niuu/session"
+_SECRETS = "/etc/niuu/session-secrets/"
+# Pod volumes Kubernetes would keep in memory: guest tmpfs, gone on reboot and
+# recreated on every start.
+_VOLUMES = "/run/niuu/session/volumes"
+_TOKENS = "/run/niuu/session/tokens"
+# The Forge session credential of the current launch, outside archived data.
+_FORGE_SESSION_DIR = "/etc/niuu/forge-session"
+_FORGE_SESSION_TARGET = "/var/run/niuu/forge-session"
+_FORGE_SESSION_FILE = "token"
+_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,40}[a-z0-9])?")
+_CONTAINER_KEYS = {"name", "image", "command", "args", "env", "volumeMounts", "securityContext"}
+_MOUNT_KEYS = {"name", "mountPath", "readOnly"}
 
 # Passed as a fixed program; session-controlled values arrive as JSON on stdin.
+# Init containers run to completion and sidecars start before Skuld, in the
+# order a kubelet uses, on every start (their volumes live on guest tmpfs).
 _START = r"""
 import json, os, pathlib, subprocess, sys
 p=json.load(sys.stdin)
 root=pathlib.Path('/var/lib/niuu/session')
 marker=root/'.allocation'
 name='niuu-skuld'
-def run(*args, **kwargs):
-    return subprocess.run(args,check=True,stdout=subprocess.DEVNULL,**kwargs)
-existing=subprocess.run(['docker','container','inspect',name],capture_output=True,text=True)
-if existing.returncode == 0:
-    info=json.loads(existing.stdout)[0]
+label='compute.niuu.io/allocation='+p['allocation_id']
+def run(*args, env=None):
+    return subprocess.run(args,check=True,stdout=subprocess.DEVNULL,
+        env={**os.environ,**(env or {})})
+def owned(container):
+    r=subprocess.run(['docker','container','inspect',container],capture_output=True,text=True)
+    if r.returncode:
+        return False
+    info=json.loads(r.stdout)[0]
     if info['Config'].get('Labels',{}).get('compute.niuu.io/allocation') != p['allocation_id']:
         raise RuntimeError('Container ownership mismatch')
-    run('docker','start',name)
+    return True
+def binds(mounts):
+    return [arg for m in mounts for arg in
+        ('--mount','type=bind,src='+m['source']+',dst='+m['target']
+         +(',readonly' if m.get('readonly',True) else ''))]
+def container(c):
+    args=['--network','host','--label',label]
+    if c.get('user'):
+        args+=['--user',c['user']]
+    args+=[a for key in c['environment'] for a in ('--env',key)]
+    args+=binds(c['mounts'])
+    if c['command']:
+        args+=['--entrypoint',c['command'][0]]
+    return [*args,c['image'],*c['command'][1:],*c['args']]
+for directory in p.get('directories',[]):
+    path=pathlib.Path(directory['path'])
+    path.mkdir(parents=True,exist_ok=True)
+    path.chmod(int(directory['mode'],8))
+address=p.get('metadata_address')
+if address:
+    # The link-local address the guest agent serves credentials on.
+    shown=subprocess.run(['ip','-o','addr','show','dev','lo'],check=True,capture_output=True,text=True)
+    if ' '+address+'/' not in shown.stdout:
+        run('ip','addr','add',address+'/32','dev','lo')
+for c in p.get('init_containers',[]):
+    run('docker','run','--rm',*container(c),env=c['environment'])
+for c in p.get('sidecars',[]):
+    sidecar='niuu-sidecar-'+c['name']
+    if owned(sidecar):
+        run('docker','start',sidecar)
+        continue
+    run('docker','run','--detach','--init','--restart','unless-stopped','--name',sidecar,
+        *container(c),env=c['environment'])
+if owned(name):
+    # A new launch replaced the Forge session credential the running broker read.
+    run('docker','restart' if p.get('relaunch') else 'start',name)
     sys.exit(0)
 if not marker.exists():
     raise RuntimeError('Session storage was not prepared')
@@ -72,15 +132,13 @@ if p['repo'] and not (workspace/'.git').exists():
     run(*args)
 run('chown','-R','1000:1000',str(root))
 env_args=[arg for key in p['environment'] for arg in ('--env',key)]
-secret_mounts=[arg for mount in p.get('secret_mounts',[]) for arg in
-    ('--mount','type=bind,src='+mount['source']+',dst='+mount['target']+',readonly')]
 run('docker','pull',p['image'])
 run('docker','run','--detach','--init','--name',name,'--network','host',
-    '--label','compute.niuu.io/allocation='+p['allocation_id'],
-    *env_args,*secret_mounts,
+    '--label',label,
+    *env_args,*binds(p.get('secret_mounts',[])),*binds(p.get('volume_mounts',[])),
     '--mount','type=bind,src='+str(workspace)+',dst=/workspace',
     '--mount','type=bind,src='+str(home)+',dst=/home/skuld',p['image'],
-    env={**os.environ,**p['environment']})
+    env=p['environment'])
 """
 
 _PREPARE = r"""
@@ -125,6 +183,36 @@ for item in json.load(sys.stdin):
         if os.path.exists(name): os.unlink(name)
 """
 
+# Credentials refreshed while the session runs: each lands by rename in a
+# directory bind-mounted read-only, so containers see the new file at once.
+_REFRESHED_FILES = r"""
+import json, os, pathlib, sys, tempfile
+items=json.load(sys.stdin)
+for item in items:
+    directory=pathlib.Path(item['directory'])
+    directory.mkdir(parents=True,exist_ok=True)
+    directory.chmod(0o755)
+    path=directory/item['name']
+    path.parent.mkdir(parents=True,exist_ok=True)
+    fd, name=tempfile.mkstemp(dir=path.parent)
+    try:
+        with os.fdopen(fd,'w') as f:
+            os.fchmod(f.fileno(),0o644)
+            f.write(item['content'])
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(name,path)
+    finally:
+        if os.path.exists(name): os.unlink(name)
+"""
+
+# Exit 43: the controller no longer holds this launch's credential and the guest
+# never received it, so the broker cannot start.
+_REQUIRE_FILE = r"""
+import pathlib,sys
+sys.exit(0 if pathlib.Path(sys.argv[1]).is_file() else 43)
+"""
+
 _STOP = r"""
 import json,pathlib,subprocess,sys
 allocation=sys.argv[1]
@@ -133,15 +221,25 @@ if not marker.exists():
     sys.exit(42)
 if marker.read_text()!=allocation:
     raise RuntimeError('Workspace allocation mismatch')
+def sidecars():
+    # Sidecars of this allocation, stopped after Skuld so it can still flush.
+    listed=subprocess.run(
+        ['docker','ps','-aq','--filter','label=compute.niuu.io/allocation='+allocation],
+        capture_output=True,text=True,check=True)
+    for container in listed.stdout.split():
+        subprocess.run(['docker','stop','--time',sys.argv[2],container],check=True,
+            stdout=subprocess.DEVNULL)
 r=subprocess.run(['docker','container','inspect','niuu-skuld'],capture_output=True,text=True)
 if r.returncode:
     # Confirm Docker is reachable; missing container is expected after partial startup.
     subprocess.run(['docker','info'],check=True,stdout=subprocess.DEVNULL)
+    sidecars()
     sys.exit(0)
 info=json.loads(r.stdout)[0]
 if info['Config'].get('Labels',{}).get('compute.niuu.io/allocation') != allocation:
     raise RuntimeError('Container ownership mismatch')
 subprocess.run(['docker','stop','--time',sys.argv[2],'niuu-skuld'],check=True,stdout=subprocess.DEVNULL)
+sidecars()
 """
 
 
@@ -172,6 +270,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         machine_commands: list[list[str]] | tuple[tuple[str, ...], ...] = (),
         guest_access: GuestAccess | None = None,
         host_prepared: bool = False,
+        default_service_account: str = "",
     ):
         if not skuld_image or not ssh_user or ssh_user.startswith("-"):
             raise ValueError("Configure a Skuld image and SSH user")
@@ -263,6 +362,48 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         self._bootstrap_delivery = bootstrap_delivery
         self._machine_commands = ()
         self._host_prepared = host_prepared
+        self._default_service_account = default_service_account
+        self._credential_delivery: GuestCredentialDelivery | None = None
+
+    def configure_credential_delivery(self, delivery: GuestCredentialDelivery) -> None:
+        """Attach the configured delivery of ServiceAccount and Forge session credentials."""
+        self._credential_delivery = delivery
+
+    @property
+    def delivers_forge_session_token(self) -> bool:
+        """The broker reads its launch credential from a file the delivery provides."""
+        delivery = self._credential_delivery
+        return delivery is not None and delivery.delivers_forge_session_token
+
+    #: Whether the guest runs the pod's init containers and sidecars next to Skuld.
+    _runs_pod_containers = True
+
+    def stage_forge_session(self, session_id: UUID, credential: IssuedForgeSessionToken) -> None:
+        """Hand over the credential the next start of ``session_id`` delivers."""
+        if self._credential_delivery is not None:
+            self._credential_delivery.stage_forge_session(session_id, credential)
+
+    def discard_forge_session(self, session_id: UUID) -> None:
+        if self._credential_delivery is not None:
+            self._credential_delivery.discard_forge_session(session_id)
+
+    async def write_files(
+        self, lease: ComputeLease, bootstrap: MachineBootstrap, items: list[dict]
+    ) -> None:
+        await self._guest_access.execute(
+            lease, bootstrap, self._python(_REFRESHED_FILES), data=json.dumps(items).encode()
+        )
+
+    async def file_exists(
+        self, lease: ComputeLease, bootstrap: MachineBootstrap, path: str
+    ) -> bool:
+        result = await self._guest_access.execute(
+            lease,
+            bootstrap,
+            self._python(_REQUIRE_FILE, path),
+            expected_exit_codes=(0, 43),
+        )
+        return result.exit_code == 0
 
     def _ssh_subprocess_environment(self) -> dict[str, str] | None:
         """Retained compatibility hook; SSH access owns process identity setup."""
@@ -279,17 +420,6 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         self, session: Session, spec: SessionSpec, machine: MachineBootstrap
     ) -> MachineBootstrap:
         pod = spec.pod_spec
-        if any(
-            (
-                pod.service_account,
-                pod.init_containers,
-                pod.extra_containers,
-            )
-        ):
-            raise ValueError(
-                "SSH VM sessions require local-disk storage; "
-                "Kubernetes service accounts and sidecars are unsupported"
-            )
         if session.source.type != "git":
             raise ValueError(
                 "SSH VM sessions accept Git or an empty workspace, not host-path mounts"
@@ -298,7 +428,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             raise ValueError(
                 "SSH VM runtime cannot silently replace configured storage or flock topology"
             )
-        secret_files, secret_mounts = self._secret_files(spec)
+        layout = self._pod_layout(spec)
         brokered = self._with_brokered_credentials(spec)
         env = LocalProcessPodManager._session_env(brokered, Path("/workspace"))
         env.update(self._brokered_credential_environment(brokered))
@@ -323,6 +453,12 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 "HOME": "/home/skuld",
             }
         )
+        if spec.forge_session is not None:
+            # The token itself is written at start, never into the stored bootstrap.
+            env[FORGE_MCP_TOKEN_FILE_ENV] = f"{_FORGE_SESSION_TARGET}/{_FORGE_SESSION_FILE}"
+            layout["volume_mounts"].append(
+                {"source": _FORGE_SESSION_DIR, "target": _FORGE_SESSION_TARGET, "readonly": True}
+            )
         for source, target in [
             ("systemPrompt", "SYSTEM_PROMPT"),
             ("initialPrompt", "INITIAL_PROMPT"),
@@ -334,21 +470,45 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             raise ValueError("SSH VM environment cannot contain NUL values")
         if any(not k or "=" in k or any(c.isspace() for c in k) or "\x00" in k for k in env):
             raise ValueError("Invalid VM environment variable name")
-        payload = json.dumps(
-            {
-                "image": self._image,
-                "environment": env,
-                "repo": session.source.repo,
-                "branch": session.source.branch,
-                "secret_mounts": secret_mounts,
-            }
-        )
+        launch = {
+            "image": self._image,
+            "environment": env,
+            "repo": session.source.repo,
+            "branch": session.source.branch,
+            "secret_mounts": layout["secret_mounts"],
+            "volume_mounts": layout["volume_mounts"],
+            "directories": layout["directories"],
+            "init_containers": layout["init_containers"],
+            "sidecars": layout["sidecars"],
+            "service_account": layout["service_account"],
+            "token_volumes": layout["token_volumes"],
+            "forge_session": spec.forge_session is not None,
+            "forge_session_directory": _FORGE_SESSION_DIR,
+            "forge_session_file": _FORGE_SESSION_FILE,
+        }
+        plan = GuestCredentialPlan.from_launch(launch)
+        if not plan.empty:
+            if self._credential_delivery is None:
+                raise ValueError(
+                    "This VM session needs delivered credentials; configure "
+                    "compute.credential_delivery"
+                )
+            added = self._credential_delivery.session_containers(plan, image=self._image)
+            # Delivery containers run first: the others read what they deliver.
+            launch["init_containers"] = [*added.init_containers, *launch["init_containers"]]
+            launch["sidecars"] = [*added.sidecars, *launch["sidecars"]]
+            launch["directories"] = [
+                *({"path": path, "mode": "0755"} for path in added.directories),
+                *launch["directories"],
+            ]
+            launch.update(added.launch)
+        payload = json.dumps(launch)
         return machine.model_copy(
             update={
                 "files": (
                     *machine.files,
                     BootstrapFile(path=_LAUNCH, content=payload),
-                    *secret_files,
+                    *layout["files"],
                 )
             }
         )
@@ -359,7 +519,10 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             for f in defaults.files
         ):
             raise ValueError("Default bootstrap conflicts with VM runtime files")
-        return self._guest_access.machine_bootstrap(defaults)
+        machine = self._guest_access.machine_bootstrap(defaults)
+        if self._credential_delivery is not None:
+            machine = self._credential_delivery.machine_bootstrap(machine)
+        return machine
 
     async def warm(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
         await self.prepare(lease, bootstrap)
@@ -369,47 +532,210 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             shlex.join(["sudo", "-n", "docker", "pull", self._image]),
         )
 
-    @staticmethod
-    def _secret_files(spec: SessionSpec) -> tuple[list[BootstrapFile], list[dict[str, str]]]:
-        """Carry the existing injector's read-only files to guest Docker binds.
+    def _pod_layout(self, spec: SessionSpec) -> dict:
+        """Translate the session's pod volumes and containers into guest Docker.
 
-        Credentials stay outside archived workspace/home, and use Skuld's normal
-        env.sh/file readers. Kubernetes agent injection cannot be snapshotted.
+        The subset a guest can honour without Kubernetes: read-only hostPath files
+        (copied in the bootstrap), emptyDir (guest tmpfs), projected ServiceAccount
+        tokens (issued and refreshed by this controller), and init/sidecar
+        containers with literal env. Anything else is refused rather than dropped.
         """
-        volumes = {v.get("name"): v for v in spec.pod_spec.volumes}
-        if len(volumes) != len(spec.pod_spec.volumes):
+        pod = spec.pod_spec
+        volumes = {v.get("name"): v for v in pod.volumes}
+        if len(volumes) != len(pod.volumes):
             raise ValueError("Duplicate VM volume names")
-        files, mounts, used = [], [], set()
-        for mount in spec.pod_spec.volume_mounts:
-            name = mount.get("name")
-            volume = volumes.get(name, {})
-            host = volume.get("hostPath", {})
-            target = str(mount.get("mountPath", ""))
-            if (
-                not mount.get("readOnly")
-                or mount.get("subPath")
-                or mount.get("subPathExpr")
-                or host.get("type") != "File"
-                or not target.startswith("/")
-                or target == "/"
-                or ".." in PurePosixPath(target).parts
-                or any(char in target for char in (",", "\x00"))
-            ):
+        files: list[BootstrapFile] = []
+        sources: dict[str, tuple[str, str]] = {}
+        directories: list[dict] = []
+        token_volumes: list[dict] = []
+        for name, volume in volumes.items():
+            if not isinstance(name, str) or not _NAME.fullmatch(name):
+                raise ValueError(f"VM volume names must be DNS labels: {name!r}")
+            kinds = set(volume) - {"name"}
+            if kinds == {"hostPath"}:
+                sources[name] = ("file", "")
+            elif kinds == {"emptyDir"}:
+                sources[name] = ("directory", f"{_VOLUMES}/{name}")
+                # The mode Kubernetes gives an emptyDir: any container user may write.
+                directories.append({"path": f"{_VOLUMES}/{name}", "mode": "0777"})
+            elif kinds == {"projected"}:
+                token_volumes.append(self._token_volume(name, volume["projected"]))
+                sources[name] = ("token", f"{_TOKENS}/{name}")
+            else:
                 raise ValueError(
-                    "VM secret mounts require read-only hostPath files and absolute targets"
+                    f"VM sessions cannot provide volume {name!r} ({', '.join(sorted(kinds))}); "
+                    "they support read-only hostPath files, emptyDir and projected "
+                    "serviceAccountToken volumes"
                 )
-            source = Path(host["path"]).expanduser()
-            if not source.is_file():
-                raise ValueError("VM secret source is not an existing file")
-            guest = f"/etc/niuu/session-secrets/{len(files)}"
-            files.append(BootstrapFile(path=guest, content=source.read_text(), permissions="0644"))
-            mounts.append({"source": guest, "target": target})
-            used.add(name)
+        if not self._runs_pod_containers and (
+            directories or token_volumes or pod.init_containers or pod.extra_containers
+        ):
+            raise ValueError(
+                f"{type(self).__name__} runs no pod sidecars, emptyDir or "
+                "ServiceAccount token volumes"
+            )
+        used: set[str] = set()
+
+        def mounts(entries, *, owner: str) -> tuple[list[dict], list[dict]]:
+            secret, volume = [], []
+            for mount in entries:
+                name = mount.get("name")
+                target = str(mount.get("mountPath", ""))
+                if (
+                    set(mount) - _MOUNT_KEYS
+                    or name not in sources
+                    or not target.startswith("/")
+                    or target == "/"
+                    or ".." in PurePosixPath(target).parts
+                    or any(char in target for char in (",", "\x00"))
+                ):
+                    raise ValueError(
+                        f"VM mounts of {owner} need a declared volume, an absolute target "
+                        "and no subPath"
+                    )
+                kind, guest = sources[name]
+                used.add(name)
+                if kind == "file":
+                    host = volumes[name]["hostPath"]
+                    if not mount.get("readOnly") or host.get("type") != "File":
+                        raise ValueError(
+                            "VM secret mounts require read-only hostPath files and absolute targets"
+                        )
+                    source = Path(host["path"]).expanduser()
+                    if not source.is_file():
+                        raise ValueError("VM secret source is not an existing file")
+                    guest = f"{_SECRETS}{len(files)}"
+                    files.append(
+                        BootstrapFile(path=guest, content=source.read_text(), permissions="0644")
+                    )
+                    secret.append({"source": guest, "target": target})
+                    continue
+                volume.append(
+                    {
+                        "source": guest,
+                        "target": target,
+                        "readonly": kind == "token" or bool(mount.get("readOnly")),
+                    }
+                )
+            targets = [m["target"] for m in (*secret, *volume)]
+            if len(set(targets)) != len(targets):
+                raise ValueError(f"Duplicate VM mount targets in {owner}")
+            return secret, volume
+
+        secret_mounts, volume_mounts = mounts(pod.volume_mounts, owner="the session")
+        containers: dict[str, list[dict]] = {"init_containers": [], "sidecars": []}
+        names: set[str] = set()
+        for key, declared in (
+            ("init_containers", pod.init_containers),
+            ("sidecars", pod.extra_containers),
+        ):
+            for container in declared:
+                translated = self._container(container, mounts)
+                if translated["name"] in names:
+                    raise ValueError(f"Duplicate VM container name {translated['name']!r}")
+                names.add(translated["name"])
+                containers[key].append(translated)
         if used != set(volumes):
             raise ValueError("VM runtime cannot ignore unmounted or unsupported volumes")
-        if len({m["target"] for m in mounts}) != len(mounts):
-            raise ValueError("Duplicate VM secret mount targets")
-        return files, mounts
+        service_account = pod.service_account or self._default_service_account
+        if token_volumes and self._credential_delivery is None:
+            raise ValueError(
+                "This VM session needs ServiceAccount tokens; configure compute.credential_delivery"
+            )
+        if token_volumes and not service_account:
+            raise ValueError(
+                "This VM session needs ServiceAccount tokens but names no ServiceAccount; "
+                "set compute.runtime.kwargs.default_service_account"
+            )
+        return {
+            "files": files,
+            "secret_mounts": secret_mounts,
+            "volume_mounts": volume_mounts,
+            "directories": directories,
+            "token_volumes": token_volumes,
+            "service_account": service_account or "",
+            **containers,
+        }
+
+    @staticmethod
+    def _token_volume(name: str, projected: dict) -> dict:
+        tokens = []
+        if set(projected) - {"sources", "defaultMode"} or not projected.get("sources"):
+            raise ValueError(f"Projected VM volume {name!r} must list serviceAccountToken sources")
+        for entry in projected["sources"]:
+            source = (
+                entry.get("serviceAccountToken") if set(entry) == {"serviceAccountToken"} else None
+            )
+            if not isinstance(source, dict):
+                raise ValueError(
+                    f"Projected VM volume {name!r} may hold only serviceAccountToken sources"
+                )
+            path = PurePosixPath(str(source.get("path", "")))
+            audience = str(source.get("audience", ""))
+            if (
+                set(source) - {"path", "audience", "expirationSeconds"}
+                or not path.parts
+                or path.is_absolute()
+                or ".." in path.parts
+                or not audience
+            ):
+                raise ValueError(
+                    f"ServiceAccount tokens in VM volume {name!r} need a relative path "
+                    "and an explicit audience"
+                )
+            tokens.append(
+                {
+                    "path": str(path),
+                    "audience": audience,
+                    # The kubelet's default lifetime for a projected token.
+                    "expiration_seconds": int(source.get("expirationSeconds", 3600)),
+                }
+            )
+        return {"volume": name, "directory": f"{_TOKENS}/{name}", "tokens": tokens}
+
+    @staticmethod
+    def _container(container: dict, mounts) -> dict:
+        name = container.get("name")
+        if (
+            set(container) - _CONTAINER_KEYS
+            or not isinstance(name, str)
+            or not _NAME.fullmatch(name)
+        ):
+            raise ValueError(
+                f"VM pod containers take a DNS-label name and only "
+                f"{', '.join(sorted(_CONTAINER_KEYS))}: {name!r}"
+            )
+        if not container.get("image"):
+            raise ValueError(f"VM container {name!r} needs an image")
+        environment = {}
+        for entry in container.get("env", ()):
+            if set(entry) != {"name", "value"} or not entry["name"]:
+                raise ValueError(
+                    f"VM container {name!r} env must contain literal name/value entries"
+                )
+            environment[str(entry["name"])] = str(entry["value"])
+        security = container.get("securityContext") or {}
+        if set(security) - {"runAsUser", "runAsGroup"}:
+            raise ValueError(
+                f"VM container {name!r} securityContext takes runAsUser/runAsGroup only"
+            )
+        user = ""
+        if "runAsUser" in security:
+            user = str(int(security["runAsUser"]))
+            if "runAsGroup" in security:
+                user += f":{int(security['runAsGroup'])}"
+        elif "runAsGroup" in security:
+            raise ValueError(f"VM container {name!r} sets runAsGroup without runAsUser")
+        secret, volume = mounts(container.get("volumeMounts", ()), owner=f"container {name!r}")
+        return {
+            "name": name,
+            "image": str(container["image"]),
+            "command": [str(part) for part in container.get("command", ())],
+            "args": [str(part) for part in container.get("args", ())],
+            "environment": environment,
+            "user": user,
+            "mounts": [{**m, "readonly": True} for m in secret] + volume,
+        }
 
     def _ssh(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> list[str]:
         if not isinstance(self._guest_access, SshGuestAccess):
@@ -486,7 +812,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         return result.exit_code
 
     async def target(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> SessionProxyTarget:
-        return await self._guest_access.open_tunnel(
+        target = await self._guest_access.open_tunnel(
             lease,
             bootstrap,
             remote_port=self._broker_port,
@@ -495,6 +821,21 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             controller_host=self._platform_host,
             controller_port=self._platform_port,
         )
+        await self._resume_delivery(lease, bootstrap)
+        return target
+
+    @staticmethod
+    def _launch(bootstrap: MachineBootstrap) -> dict | None:
+        launch = next((f.content for f in bootstrap.files if f.path == _LAUNCH), None)
+        return json.loads(launch) if launch is not None else None
+
+    async def _resume_delivery(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+        launch = self._launch(bootstrap)
+        if self._credential_delivery is None or lease.session_id is None or launch is None:
+            return
+        plan = GuestCredentialPlan.from_launch(launch)
+        if not plan.empty:
+            await self._credential_delivery.resume(lease, bootstrap, plan, self)
 
     def _tunnel_options(self, port: int) -> list[str]:
         return [
@@ -536,6 +877,17 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         await self.target(lease, bootstrap)
         payload = json.loads(next(f.content for f in bootstrap.files if f.path == _LAUNCH))
         payload["allocation_id"] = str(lease.id)
+        plan = GuestCredentialPlan.from_launch(payload)
+        if not plan.empty:
+            if self._credential_delivery is None:
+                raise ValueError(
+                    "This VM session needs delivered credentials; configure "
+                    "compute.credential_delivery"
+                )
+            await self._credential_delivery.start(lease, bootstrap, plan, payload, self)
+            grants = payload.pop("forge_session_grants", None)
+            if grants is not None:
+                payload["environment"][FORGE_MCP_GRANTS_ENV] = ",".join(grants)
         await self._guest_access.execute(
             lease,
             bootstrap,
@@ -578,6 +930,8 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             self._python(_STOP, str(lease.id), str(self._stop_timeout)),
             expected_exit_codes=(0, 42),
         )
+        if self._credential_delivery is not None and lease.session_id is not None:
+            await self._credential_delivery.stop(lease, bootstrap)
         if result.exit_code == 42:
             # Cancelled before storage restore: retain any previous local archive.
             await self._close_tunnel(str(lease.id))

@@ -353,6 +353,26 @@ bifrost:
 
 compute: null
 
+# VM guest metadata endpoint (POST /api/v1/internal/compute/metadata/credentials). A VM
+# session's guest agent pulls its ServiceAccount tokens and Forge session credential
+# there, authenticated by the guest identity configured under `compute` (an Ed25519
+# host-key signature or a SPIFFE JWT-SVID), never by a bearer Keycloak/workload JWT.
+guestMetadata:
+  # -- Serve the endpoint. Renders the Envoy bypass for exactly that route (JWT and
+  # Cedar admission are skipped; the route authenticates the guest itself) and a Role
+  # letting Forge request ServiceAccount tokens (serviceaccounts/token create).
+  enabled: false
+  # -- Namespace of the ServiceAccounts VM sessions run as, where Forge may request
+  # their tokens. Must equal the token issuer's `namespace` kwarg. Empty:
+  # podManager.kwargs.namespace, else the release namespace.
+  serviceAccountNamespace: ""
+  # -- Grant the ServiceAccount-token Role without serving the endpoint, for
+  # SshPushCredentialDelivery (the controller writes tokens over SSH).
+  issueServiceAccountTokens: false
+  # -- Let Forge manage SPIRE ClusterStaticEntry registrations for VM guests
+  # (SpiffeGuestIdentity); requires spire-controller-manager.
+  spiffeRegistration: false
+
 podManager:
   # -- Explicit contributor backend identity; set vm for VmPodManager
   runtimeBackend: ""

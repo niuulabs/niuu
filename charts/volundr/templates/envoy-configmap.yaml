@@ -1,4 +1,13 @@
 {{- if .Values.envoy.enabled }}
+{{- /*
+VM guest metadata: the guest agent authenticates with a host-key signature or a SPIFFE
+JWT-SVID verified inside the route (volundr.domain.services.guest_metadata), so Envoy
+must neither demand a Keycloak/workload JWT nor run Cedar admission for it. Exactly this
+route and method, as an anchored regex: never a prefix, which would also exempt sibling
+routes that must stay JWT-gated. tests/test_charts pins the regex to
+volundr.domain.guest_credentials.METADATA_CREDENTIALS_PATH.
+*/ -}}
+{{- $guestMetadataPath := "^/api/v1/internal/compute/metadata/credentials$" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -44,6 +53,21 @@ data:
                             {{- range .Values.envoy.jwt.bypassPrefixes }}
                             - match:
                                 path: {{ . | quote }}
+                              route:
+                                cluster: local_service
+                              typed_per_filter_config:
+                                envoy.filters.http.ext_authz:
+                                  "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                                  disabled: true
+                            {{- end }}
+                            {{- if .Values.guestMetadata.enabled }}
+                            - match:
+                                safe_regex:
+                                  google_re2: {}
+                                  regex: {{ $guestMetadataPath | quote }}
+                                headers:
+                                  - name: ":method"
+                                    exact_match: "POST"
                               route:
                                 cluster: local_service
                               typed_per_filter_config:
@@ -182,6 +206,15 @@ data:
                             {{- range .Values.envoy.jwt.bypassPrefixes }}
                             - match:
                                 prefix: {{ . | quote }}
+                            {{- end }}
+                            {{- if .Values.guestMetadata.enabled }}
+                            - match:
+                                safe_regex:
+                                  google_re2: {}
+                                  regex: {{ $guestMetadataPath | quote }}
+                                headers:
+                                  - name: ":method"
+                                    exact_match: "POST"
                             {{- end }}
                             - match:
                                 prefix: "/"

@@ -325,18 +325,136 @@ For the tested dev image, the live proof used 2 CPUs, 4096 MiB and 16 GiB disk.
 Keep enough disk space for the image, workspace and Docker extraction.
 
 The runtime accepts an empty workspace or Git source and literal session
-environment settings. It also carries read-only hostPath **files** from the
-existing session secret injector into guest Docker binds at the same paths.
-Skuld consumes `/run/secrets/env.sh` and credential files normally. Credential
-files live outside the archived workspace/home and are deleted with the VM.
-Directories, writable mounts, Kubernetes volumes, projected service-account
-identity, sidecars and workspace host-path sources are rejected. The built-in
-workload-identity and storage contributors recognize the VM backend and do not
-emit projected tokens or PVC settings; explicitly configured contributors still
-need to produce VM-compatible file mounts. The development proof uses the
-existing development identity adapter. Production sessions must use a
-VM-compatible credential-injection adapter; the local development proof does not
-establish production authentication.
+environment settings. Of the session's pod spec it runs the subset a guest can
+honour, and refuses the rest by name:
+
+- read-only hostPath **files** (the session file injector's output), copied into
+  the bootstrap and bound read-only at the same paths;
+- `emptyDir` volumes, created on guest tmpfs (`/run/niuu/session/volumes`, mode 0777);
+- projected volumes of `serviceAccountToken` sources only (relative `path`, explicit
+  `audience`, optional `expirationSeconds`), delivered as described below;
+- init containers and sidecars with `name`, `image`, `command`, `args`, literal `env`,
+  `volumeMounts` (`name`, `mountPath`, `readOnly`) and `securityContext`
+  `runAsUser`/`runAsGroup`. Init containers run to completion, then sidecars start,
+  then Skuld, on every start; all run with host networking and the label
+  `compute.niuu.io/allocation=<allocation id>`, and stop with the session.
+
+Credential files live outside the archived workspace/home and are deleted with the
+VM. PVCs, ConfigMap/Secret volumes, `valueFrom` env and workspace host-path sources
+are rejected. The storage contributor emits no PVC settings for VMs.
+
+## VM session credentials
+
+A session pod gets its ServiceAccount's tokens from the kubelet and its Forge
+session credential from a projection. A VM session gets the same credentials from
+the configured **credential delivery**, so the same contributors serve both:
+
+- the workload-identity contributor declares its projected `volundr-api` token, and
+  Skuld exchanges it as in a pod;
+- `OpenBaoAgentInjectionAdapter` with `guest_agent_image` set emits an OpenBao agent
+  init container (and, with `oauth_mount_path`, a re-rendering sidecar) that logs in
+  with the session ServiceAccount token and renders `/run/secrets` exactly as the
+  injector would. Every template destination must lie under `/run/secrets`;
+- the Forge session credential (`SKULD__FORGE_MCP__TOKEN_FILE`) is a file under
+  `/var/run/niuu/forge-session` in the session container. It is minted per launch
+  and never stored with the allocation's bootstrap.
+
+All three pieces are dynamic adapters under `compute`; none switches to another at
+runtime:
+
+```yaml
+compute:
+  service_account_tokens:            # who issues ServiceAccount tokens
+    adapter: volundr.adapters.outbound.k8s_service_account_tokens.KubernetesServiceAccountTokenIssuer
+    kwargs: {namespace: forge-vm-sessions}
+  credential_delivery:               # how they reach the guest
+    adapter: volundr.adapters.outbound.guest_credential_delivery.MetadataCredentialDelivery
+    kwargs: {metadata_url: "https://forge-vm.example.com"}
+  guest_identity:                    # how a guest proves itself (metadata only)
+    adapter: volundr.adapters.outbound.guest_identity_host_key.HostKeyGuestIdentity
+    kwargs: {clock_skew_seconds: 30}
+  runtime:
+    adapter: volundr.adapters.outbound.ssh_vm_runtime.SshContainerVmRuntime
+    kwargs:
+      default_service_account: skuld-session   # when the pod names none
+      # … SSH and Skuld settings as above
+```
+
+The issuer calls the Kubernetes TokenRequest API for the session ServiceAccount, as
+a kubelet does: Forge needs `create` on `serviceaccounts/token` in that namespace
+(chart: `guestMetadata.enabled` or `guestMetadata.issueServiceAccountTokens`, with
+`guestMetadata.serviceAccountNamespace`). Sessions carrying tokens or a Forge session
+credential fail to launch, naming the missing setting, when no delivery is configured.
+
+### Choosing a delivery
+
+| Delivery | Guest needs | Refresh |
+| --- | --- | --- |
+| `SshPushCredentialDelivery` (`refresh_fraction` 0.8, `retry_seconds` 10) | nothing beyond the pinned SSH channel | the controller re-issues each token at `refresh_fraction` of its lifetime and rewrites it over SSH |
+| `MetadataCredentialDelivery` | network reach to `metadata_url` (HTTPS) | the guest agent re-fetches at `refresh_fraction`; it survives controller restarts and serves any controller |
+
+Use metadata delivery where guests can reach Forge (Harvester VLANs routed to the
+cluster ingress); use SSH push for backends whose guests are isolated from it.
+
+**SSH push.** A failed refresh is logged at error, counted on
+`volundr.compute.token_refresh.errors`, and retried every `retry_seconds` until it
+succeeds; the session loses its identity only when the last token expires. The
+launch credential is held in controller memory: a controller restarted mid-start
+refuses that start ("restart the session") rather than starting a broker without it.
+
+**Metadata.** The runtime adds `169.254.169.254/32` to the guest's `lo` and runs the
+guest agent from the Skuld image (`python -m volundr.guest_agent`), first as the
+init container `niuu-guest-agent-init` (`once`: fetch and write every file, so the
+OpenBao agent finds its token) and then as the sidecar `niuu-guest-agent` (`serve`).
+The sidecar refreshes the files and serves the last answer on
+`http://169.254.169.254/niuu/v1/credentials` to guest processes that send
+`Niuu-Metadata: true` (other requests get 403, against request forwarding), plus
+`/niuu/v1/health`. Delivery kwargs: `metadata_url` (https, reachable from guests),
+`refresh_fraction`, `retry_seconds`, `request_timeout_seconds`, `ca_file` (guest
+path of a private CA), `listen_port` (80), `agent_command`.
+
+The agent calls `POST /api/v1/internal/compute/metadata/credentials`. Forge answers
+only for the session currently bound to the calling allocation (READY/BUSY, not
+stopping), minting fresh ServiceAccount tokens and a Forge session credential for
+the session's **current** launch. Every authentication failure is the same 401; an
+authenticated allocation without a running session is 409. The chart's
+`guestMetadata.enabled` renders the Envoy bypass for exactly that route (JWT and
+Cedar are skipped; the route authenticates the guest itself). Check that Forge's
+NetworkPolicy and ingress admit guest traffic.
+
+### Guest identity for the metadata endpoint
+
+`HostKeyGuestIdentity` (works on every provider that delivers private bootstrap):
+the agent signs `METHOD\nPATH\nTIMESTAMP_MS\nSHA256(body)` with the guest's Ed25519
+SSH host key, which the controller generates and the provider delivers, and Forge
+verifies it against the allocation's pinned public key. Timestamps must strictly
+increase per allocation (an atomic watermark, migration 000104) within
+`clock_skew_seconds`. See the "VM guest metadata identities" exception in
+`.claude/rules/architecture.md`.
+
+`SpiffeGuestIdentity` (where SPIRE is available): the agent presents a JWT-SVID for
+the configured `audience`, fetched from the guest's SPIRE agent
+(`spire-agent api fetch jwt`), and Forge verifies it against SPIRE's JWKS
+(`issuer`, `jwks_uri`, `ca_cert_path`). The subject must match `spiffe_id_template`
+(default `spiffe://{trust_domain}/forge-vm/{pool_id}/{allocation_id}`). When a
+session starts Forge registers a spire-controller-manager `ClusterStaticEntry`
+for the allocation with `selector_templates` (default
+`docker:label:compute.niuu.io/allocation:{allocation_id}`), and deletes it when the
+session stops (chart: `guestMetadata.spiffeRegistration`). Node attestation is
+provider specific:
+
+- `node_attestation: x509pop` (default): Forge generates a node key and a certificate
+  signed by the operator CA (`node_ca_cert_file`, `node_ca_key_file`,
+  `node_certificate_ttl_seconds`) with a random node id as CN, and installs a
+  `spire-agent` config and systemd unit through the bootstrap. The image must ship
+  `spire-agent` at `spire_agent_binary`. The SPIRE server needs the `x509pop` node
+  attestor in `external_pki` mode with that CA bundle and
+  `agent_path_template = "/{{ .PluginName }}/{{ .Subject.CommonName }}"` (or set
+  `x509pop_agent_id: fingerprint`), and its agent port reachable from guests
+  (`server_address`, `server_port`); the guest trusts the server through
+  `trust_bundle_file` or `trust_bundle_url`.
+- `node_attestation: provider`: the image or provider runs an already attested agent
+  (a cloud attestor such as AWS IID); set `parent_id_template` to its agent id.
 
 Providers that cannot deliver cloud-init or user-data may set
 `runtime.kwargs.bootstrap_delivery: ssh`. The provider must arrange for the

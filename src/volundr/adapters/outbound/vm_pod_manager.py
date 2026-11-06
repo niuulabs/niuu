@@ -33,6 +33,7 @@ from volundr.domain.ports import PodManager, PodStartResult, SessionCapacity
 from volundr.domain.services.compute_leases import ComputeLeaseService
 from volundr.domain.services.execution_catalog import ExecutionPlanResolver
 from volundr.domain.vm_runtime import (
+    ForgeSessionVmRuntime,
     ProfileAwareVmRuntime,
     VmRuntime,
     VmRuntimeStageError,
@@ -94,6 +95,21 @@ class VmPodManager(PodManager):
         self._owns_runtime = True
         self._locks: dict[UUID, asyncio.Lock] = {}
         self._recoveries: dict[UUID, asyncio.Task] = {}
+
+    def _runtimes(self) -> tuple[VmRuntime, ...]:
+        return (
+            *((self._runtime,) if self._runtime is not None else ()),
+            *self._execution_runtimes.values(),
+        )
+
+    @property
+    def delivers_forge_session_token(self) -> bool:
+        """Every configured runtime writes the launch credential into its guest."""
+        runtimes = self._runtimes()
+        return bool(runtimes) and all(
+            isinstance(runtime, ForgeSessionVmRuntime) and runtime.delivers_forge_session_token
+            for runtime in runtimes
+        )
 
     def configure_compute(
         self,
@@ -363,6 +379,12 @@ class VmPodManager(PodManager):
     async def start(self, session: Session, spec: SessionSpec) -> PodStartResult:
         service, repository, legacy_runtime = self._configured()
         async with self._locks.setdefault(session.id, asyncio.Lock()):
+            if spec.forge_session is not None:
+                # Held per launch, never in the lease bootstrap: the next start
+                # mints a new credential and revokes this one.
+                for runtime in self._runtimes():
+                    if isinstance(runtime, ForgeSessionVmRuntime):
+                        runtime.stage_forge_session(session.id, spec.forge_session)
             lease = await repository.active_for_session(self._pool_id, session.id)
             if (
                 self._execution_resolver is not None
@@ -812,6 +834,9 @@ class VmPodManager(PodManager):
     async def stop(self, session: Session) -> bool:
         service, repository, _ = self._configured()
         self._wait_reasons.pop(session.id, None)
+        for runtime in self._runtimes():
+            if isinstance(runtime, ForgeSessionVmRuntime):
+                runtime.discard_forge_session(session.id)
         async with self._locks.setdefault(session.id, asyncio.Lock()):
             lease = await repository.active_for_session(self._pool_id, session.id)
             if lease is None:
@@ -884,10 +909,7 @@ class VmPodManager(PodManager):
         if not self._owns_runtime:
             return
         seen: set[int] = set()
-        for runtime in (
-            *((self._runtime,) if self._runtime is not None else ()),
-            *self._execution_runtimes.values(),
-        ):
+        for runtime in self._runtimes():
             if id(runtime) in seen:
                 continue
             seen.add(id(runtime))
