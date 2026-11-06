@@ -72,14 +72,15 @@ RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.102.0.tar.gz -O /tmp
         -o /out/gh ./cmd/gh
 
 # ---------------------------------------------------------------------------
-# glab v1.124.0 (the latest release) ships binaries built with Go 1.27.2
-# (GO-2026-6809). Build the same release with Go 1.27.3; the module proxy
-# download is verified against sum.golang.org. Return to the release .deb once
-# one is built with a patched Go.
+# glab v1.128.0 is the first release with brotli 1.2.7 (GO-2026-6888). Its
+# release binaries may predate Go 1.27.3 (GO-2026-6809), so build the same
+# release from source with Go 1.27.3; the module proxy download is verified
+# against sum.golang.org. Return to the release .deb once one is built with a
+# patched Go.
 # ---------------------------------------------------------------------------
 FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS glab-build
 ARG TARGETARCH
-ARG GLAB_VERSION=1.124.0
+ARG GLAB_VERSION=1.128.0
 RUN cd "$(go mod download -json gitlab.com/gitlab-org/cli@v${GLAB_VERSION} | sed -n 's/.*"Dir": "\(.*\)".*/\1/p')" \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath \
         -ldflags "-s -w -X main.version=${GLAB_VERSION}-niuu.1" \
