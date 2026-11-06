@@ -557,6 +557,70 @@ class TestRbacTemplate:
 
         assert self._secret_verbs(role) == [["get", "list", "watch"]]
 
+    @staticmethod
+    def _namespaced_role(*overrides: str) -> dict:
+        documents = TestRbacTemplate._render_rbac("--set", "rbac.clusterWide=false", *overrides)
+        assert not [doc for doc in documents if doc.get("kind") == "ClusterRole"]
+        return next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "Role" and doc["metadata"]["name"] == "test-volundr"
+        )
+
+    @staticmethod
+    def _verbs_for(document: dict, resource: str) -> list[list[str]]:
+        return [rule["verbs"] for rule in document["rules"] if resource in rule["resources"]]
+
+    def test_namespaced_role_grants_openbao_session_resources(self):
+        """OpenBao injection creates a ServiceAccount and an agent ConfigMap per
+        session; a namespaced release must be allowed to write both."""
+        role = self._namespaced_role(
+            "--set",
+            "secretInjection.adapter="
+            "volundr.adapters.outbound.openbao_secret_injection.OpenBaoAgentInjectionAdapter",
+        )
+
+        writes = ["get", "list", "watch", "create", "update", "patch", "delete"]
+        assert self._verbs_for(role, "serviceaccounts") == [writes]
+        assert self._verbs_for(role, "configmaps") == [writes]
+
+    def test_namespaced_role_grants_infisical_configmaps_only(self):
+        role = self._namespaced_role(
+            "--set",
+            "secretInjection.adapter="
+            "volundr.adapters.outbound.infisical_secret_injection.InfisicalAgentInjectionAdapter",
+        )
+
+        assert self._verbs_for(role, "serviceaccounts") == []
+        assert self._verbs_for(role, "configmaps") == [
+            ["get", "list", "watch", "create", "update", "patch", "delete"]
+        ]
+
+    def test_namespaced_role_reads_only_without_agent_injection(self):
+        role = self._namespaced_role()
+
+        assert self._verbs_for(role, "serviceaccounts") == []
+        assert self._verbs_for(role, "configmaps") == [["get", "list", "watch"]]
+
+    def test_cluster_wide_openbao_keeps_writes_on_the_cluster_role(self):
+        documents = self._render_rbac(
+            "--set",
+            "secretInjection.adapter="
+            "volundr.adapters.outbound.openbao_secret_injection.OpenBaoAgentInjectionAdapter",
+        )
+        role = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "Role" and doc["metadata"]["name"] == "test-volundr"
+        )
+        cluster_role = next(doc for doc in documents if doc.get("kind") == "ClusterRole")
+
+        assert self._verbs_for(role, "serviceaccounts") == []
+        assert self._verbs_for(role, "configmaps") == [["get", "list", "watch"]]
+        assert self._verbs_for(cluster_role, "serviceaccounts") == [
+            ["get", "list", "watch", "create", "update", "patch", "delete"]
+        ]
+
 
 class TestConfigMapTemplate:
     """Tests for configmap.yaml template."""

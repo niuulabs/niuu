@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import httpx
 from PIL import Image
@@ -71,6 +72,7 @@ async def test_present_file_image_reaches_readers_through_every_layer():
         env.store.feed,
         HttpNotificationImageFetcher(
             session_lookup=env.sessions.get,
+            broker_target=AsyncMock(return_value=None),
             gateway_url="http://gateway.invalid",
             timeout_seconds=5,
             max_redirects=0,

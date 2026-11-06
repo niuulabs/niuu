@@ -4,6 +4,7 @@
 {{- $hasFluxController = true -}}
 {{- end -}}
 {{- end -}}
+{{- $hasAgentInjector := or (contains "InfisicalAgent" .Values.secretInjection.adapter) (contains "OpenBaoAgentInjectionAdapter" .Values.secretInjection.adapter) -}}
 {{- if .Values.rbac.create -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -59,7 +60,24 @@ rules:
   # Access to configmaps
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "list", "watch"]
+    verbs:
+      - get
+      - list
+      - watch
+      {{- if and $hasAgentInjector (not .Values.rbac.clusterWide) }}
+      # Agent injectors write each session's agent config as a ConfigMap
+      - create
+      - update
+      - patch
+      - delete
+      {{- end }}
+  {{- if and (contains "OpenBaoAgentInjectionAdapter" .Values.secretInjection.adapter) (not .Values.rbac.clusterWide) }}
+  # OpenBao session injection creates a dedicated ServiceAccount per session
+  # NOTE: If sessions run in a different namespace, enable rbac.clusterWide
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- end }}
   # Access to events for monitoring
   - apiGroups: [""]
     resources: ["events"]
@@ -119,7 +137,7 @@ rules:
     resources: ["pods/exec"]
     verbs: ["get", "create"]
   {{- end }}
-  {{- if or (contains "InfisicalAgent" .Values.secretInjection.adapter) (contains "OpenBaoAgentInjectionAdapter" .Values.secretInjection.adapter) }}
+  {{- if $hasAgentInjector }}
   # Cluster-wide access to injector coordination resources in the session namespace
   - apiGroups: [""]
     resources: ["configmaps"]
