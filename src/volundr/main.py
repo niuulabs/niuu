@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import logging
 import os
+import urllib.parse
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
@@ -25,6 +26,7 @@ from niuu.adapters.outbound.git_registry import create_provenance_verifier
 from niuu.adapters.postgres_credential_refresh_lock import PostgresCredentialRefreshLock
 from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.build_identity import build_identity
+from niuu.config_models import SessionPreviewConfig
 from niuu.cors import apply_cors_middleware
 from niuu.domain.guild_membership import GuildInstance
 from niuu.domain.services.realm import RealmService
@@ -229,6 +231,9 @@ from volundr.push_composition import create_push_gateway
 BROADCAST_INTERVAL = 30
 
 logger = logging.getLogger(__name__)
+
+#: Workload name on the credentials Forge's live-preview router presents to Skuld.
+PREVIEW_ROUTER_WORKLOAD = "forge-preview-router"
 
 
 # "Could not reach Bifrost" is the expected startup state in mini mode: the catalog is
@@ -791,6 +796,29 @@ def _build_otel_event_sink(otel_cfg):
         service_name=otel_cfg.service_name,
         provider_name=otel_cfg.provider_name,
     )
+
+
+def _preview_origin_template(
+    standalone: SessionPreviewConfig, *, public_origin: str, embedded: bool
+) -> str:
+    """The origin of one live preview, with ``{port}`` and ``{session_id}`` to fill.
+
+    Standalone, previews are served on the configured preview domain over HTTPS.
+    Embedded in the local host (mini mode), the host serves them on
+    ``*.localhost`` at its own port (niuu ``host.session_preview``).
+    """
+    if not embedded:
+        if not standalone.enabled:
+            return ""
+        return f"https://{{port}}--{{session_id}}.{standalone.domain}"
+    from niuu.config import NiuuSettings
+
+    local = NiuuSettings().host.session_preview
+    if not local.enabled:
+        return ""
+    origin = urllib.parse.urlsplit(public_origin)
+    port = f":{origin.port}" if origin.port else ""
+    return f"{origin.scheme or 'http'}://{{port}}--{{session_id}}.{local.domain}{port}"
 
 
 def create_app(
@@ -1481,6 +1509,41 @@ def create_app(
                     return await resident_runtime_service.proxy_target(resource_id)
 
                 skuld_reg.set_target_resolver(_resolve_session_proxy_target)
+
+            if skuld_reg is not None and workload_identity_service.enabled:
+                from niuu.domain.models import Principal
+                from niuu.domain.services.token_scope import (
+                    FORGE_SESSION_PREVIEW_SCOPE,
+                    VALKYRIE_BUILD_TOKEN_USE,
+                )
+
+                preview_settings = settings.session_preview
+
+                async def _mint_preview_credential(session_id: str, owner: Principal) -> str:
+                    """The router credential for one live-preview request (niuu.preview_proxy).
+
+                    Bound to the one session and carrying the issuer-only
+                    forge:session:preview scope, which the session's Skuld requires.
+                    """
+                    return workload_identity_service.issue_token(
+                        principal=owner,
+                        workload_subject=PREVIEW_ROUTER_WORKLOAD,
+                        workload_name=PREVIEW_ROUTER_WORKLOAD,
+                        audiences=[preview_settings.credential_audience],
+                        token_use=VALKYRIE_BUILD_TOKEN_USE,
+                        claims={
+                            "scopes": [FORGE_SESSION_PREVIEW_SCOPE],
+                            "session_id": session_id,
+                        },
+                        ttl_seconds=preview_settings.credential_ttl_seconds,
+                    ).token
+
+                skuld_reg.set_preview_credential_issuer(_mint_preview_credential)
+
+            if skuld_registry is None and settings.session_preview.enabled:
+                from niuu.preview_proxy import PreviewRouter
+
+                app.state.preview_router = PreviewRouter(skuld_reg, settings.session_preview)
 
             # Enforce session ownership at the WS proxy (the browser's
             # termination point). The broker's ws_auth is defense-in-depth for
@@ -2301,6 +2364,9 @@ def create_app(
                         await controller.close()
                 if hasattr(gateway_adapter, "close"):
                     await gateway_adapter.close()
+                preview_router = getattr(app.state, "preview_router", None)
+                if preview_router is not None:
+                    await preview_router.aclose()
                 await git_registry.close()
                 if hasattr(integration_repo, "close"):
                     await integration_repo.close()
@@ -2323,6 +2389,34 @@ def create_app(
     # Verifies forge_session bearers in every identity mode and confines them to
     # their route allow-list (volundr.adapters.inbound.forge_session_auth).
     app.add_middleware(ForgeSessionAuthMiddleware)
+    if skuld_registry is None and settings.session_preview.enabled:
+        # Standalone Forge serves live previews itself (mini mode's root app does
+        # it there). Outermost: an app's traffic meets none of Forge's own
+        # middleware. The router is built in the lifespan, once the session
+        # registry has its ownership guard and credential issuer.
+        from niuu.preview_proxy import PreviewRouterMiddleware
+
+        app.add_middleware(
+            PreviewRouterMiddleware,
+            domain=settings.session_preview.domain,
+            router_provider=lambda: getattr(app.state, "preview_router", None),
+        )
+
+    preview_origin_template = _preview_origin_template(
+        settings.session_preview, public_origin=public_origin, embedded=skuld_registry is not None
+    )
+
+    @app.get("/api/v1/forge/preview", tags=["Sessions"])
+    async def live_preview_config() -> dict[str, Any]:
+        """Where a session's live previews open, for the web UI.
+
+        ``origin_template`` holds ``{port}`` and ``{session_id}``; it is empty
+        when this platform serves no live previews.
+        """
+        return {
+            "enabled": bool(preview_origin_template),
+            "origin_template": preview_origin_template,
+        }
 
     @app.get("/health", tags=["Health"])
     @app.get("/api/v1/forge/health", include_in_schema=False)

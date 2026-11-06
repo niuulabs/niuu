@@ -541,6 +541,17 @@ data:
     {{- end }}
     {{- end }}
 
+    {{- if .Values.sessionPreview.enabled }}
+    {{- if not .Values.workloadIdentity.enabled }}
+    {{- fail "sessionPreview.enabled needs workloadIdentity.enabled: the preview router presents a workload credential to each session's Skuld" }}
+    {{- end }}
+    session_preview:
+      enabled: true
+      domain: {{ include "volundr.sessionPreview.domain" . | quote }}
+      credential_ttl_seconds: {{ .Values.sessionPreview.credentialTtlSeconds }}
+      credential_audience: {{ .Values.sessionPreview.credentialAudience | quote }}
+    {{- end }}
+
     workload_identity:
       enabled: {{ .Values.workloadIdentity.enabled | default false }}
       issuer: {{ .Values.workloadIdentity.issuer | default "" | quote }}

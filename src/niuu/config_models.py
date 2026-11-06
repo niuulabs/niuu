@@ -503,3 +503,62 @@ class GuildMembershipConfig(BaseModel):
             else None
         )
         return GuildMembership(guild_url=self.url, instance=instance)
+
+
+class SessionPreviewConfig(BaseModel):
+    """Live preview: one origin per port a Forge session listens on.
+
+    A preview is served at ``<port>--<session-id>.<domain>`` (``niuu.preview_proxy``).
+    The domain needs a wildcard DNS record and certificate, and sign-in on it
+    (an OIDC gateway policy); mini mode uses ``localhost``, which browsers resolve
+    to loopback for every subdomain with no DNS at all.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Serve live previews of session ports on the preview domain.",
+    )
+    domain: str = Field(
+        default="",
+        description=(
+            "Preview domain: <port>--<session-id>.<domain> opens that session's port. "
+            "Required when enabled."
+        ),
+    )
+    upstream_connect_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Seconds to wait for the session's Skuld to accept a connection. Only "
+            "connecting is bounded: an app's own response or WebSocket may stream "
+            "for as long as the browser keeps it open."
+        ),
+    )
+    credential_ttl_seconds: int = Field(
+        default=60,
+        ge=10,
+        le=900,
+        description=(
+            "Lifetime of the router credential minted for each forwarded request. "
+            "Skuld checks it when the request (or WebSocket) arrives, so it only "
+            "needs to outlive one hop."
+        ),
+    )
+    credential_audience: str = Field(
+        default="volundr-api",
+        description=(
+            "Audience of the router credential; one the session's Skuld (and its "
+            "pod's Envoy workload provider) accepts."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _domain_when_enabled(self) -> SessionPreviewConfig:
+        self.domain = self.domain.strip().strip(".").lower()
+        if self.enabled and not self.domain:
+            raise ValueError(
+                "session_preview.enabled is true but session_preview.domain is empty: set "
+                "the preview domain (e.g. preview.example.com), or disable live preview"
+            )
+        return self

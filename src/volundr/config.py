@@ -43,6 +43,7 @@ from niuu.config_models import (
     DatabaseConfig,
     GuildMembershipConfig,
     SessionDefinitionConfig,
+    SessionPreviewConfig,
     WorkloadIdentityConfig,
     default_session_definitions,
 )
@@ -3747,6 +3748,14 @@ class Settings(BaseSettings):
     linear: LinearConfig = Field(default_factory=LinearConfig)
     pat: PATConfig = Field(default_factory=PATConfig)
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
+    session_preview: SessionPreviewConfig = Field(
+        default_factory=SessionPreviewConfig,
+        description=(
+            "Live preview served by this Forge (standalone deployments). In mini mode "
+            "the local host serves previews (niuu host.session_preview) and only the "
+            "credential settings here apply."
+        ),
+    )
     guild: GuildMembershipConfig = Field(
         default_factory=GuildMembershipConfig,
         description=(

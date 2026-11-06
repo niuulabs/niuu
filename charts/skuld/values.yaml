@@ -962,6 +962,25 @@ wsAuth:
   # override wsAuth.room_role_remote.adapter/kwargs/secret_kwargs_env here
   # (or via RoomRoleSourceContributor's per-session values) to change them.
 
+# Live preview (skuld.preview): a port the session listens on opens at
+# <port>--<session-id>.<preview domain> through Forge's preview router, which
+# forwards to /preview/<port>/ here. Skuld admits only the router's workload
+# credential, checked against envoy.jwt.workload's issuer and JWKS (required).
+preview:
+  # -- Discover the pod's listening ports and serve them to Forge's preview router
+  enabled: false
+  # -- Seconds between scans of the pod's listening sockets
+  portScanIntervalSeconds: 2
+  # -- Audience of the router credential (Forge's session_preview.credential_audience)
+  routerAudience: "volundr-api"
+  # -- Ports never offered as previews. The pod's own infrastructure ports
+  # (nginx, broker, Envoy, authz, terminal, mesh, resident shim) are excluded
+  # automatically; 5432 is the devrunner's Postgres.
+  excludedPorts: [5432]
+  # -- How long nginx keeps an idle preview stream (hot-reload WebSocket, SSE)
+  # open. Past it the dev server's client reconnects (Vite reloads the page).
+  streamIdleTimeout: "3600s"
+
 # Limit pod ingress to the authenticated gateway, including direct pod-IP traffic.
 # Add explicit peer selectors/ports for direct Flokk mesh deployments.
 networkPolicy:

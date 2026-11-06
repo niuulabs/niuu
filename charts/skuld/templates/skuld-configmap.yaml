@@ -129,6 +129,28 @@ data:
     {{- end }}
     service_user_id: {{ .Values.volundr.serviceUserId | default "skuld-broker" | quote }}
     service_tenant_id: {{ .Values.volundr.serviceTenantId | default "default" | quote }}
+    {{- if .Values.preview.enabled }}
+    {{- $workload := .Values.envoy.jwt.workload }}
+    {{- if not (and $workload.issuer $workload.jwksUri) }}
+    {{- fail "preview.enabled needs envoy.jwt.workload.issuer and envoy.jwt.workload.jwksUri: the router credential is a workload JWT Skuld verifies against them" }}
+    {{- end }}
+
+    # Live preview: this pod is the session, so every listener in its network
+    # namespace is offered except the pod's own infrastructure.
+    preview:
+      enabled: true
+      port_scan_interval_seconds: {{ .Values.preview.portScanIntervalSeconds }}
+      port_scanner:
+        adapter: skuld.preview_adapters.ProcNetListeningPortScanner
+        kwargs:
+          excluded_ports: {{ include "skuld.previewExcludedPorts" . }}
+      router_auth:
+        adapter: skuld.preview_adapters.WorkloadJwtRouterAuth
+        kwargs:
+          issuer: {{ $workload.issuer | quote }}
+          audience: {{ .Values.preview.routerAudience | quote }}
+          jwks_uri: {{ $workload.jwksUri | quote }}
+    {{- end }}
     {{- if .Values.forgeMcp.tokenFile }}
 
     # The session-bound Forge credential, mounted by Forge from a per-session Secret

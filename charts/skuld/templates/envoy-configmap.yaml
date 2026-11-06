@@ -64,6 +64,16 @@ data:
                                   "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
                                   disabled: true
                             {{- end }}
+                            {{- if .Values.preview.enabled }}
+                            # Live preview: an app's responses and hot-reload
+                            # sockets stream for as long as the browser holds them.
+                            - match:
+                                prefix: "/preview/"
+                              route:
+                                cluster: {{ $upstream }}
+                                timeout: 0s
+                                idle_timeout: {{ .Values.preview.streamIdleTimeout }}
+                            {{- end }}
                             - match:
                                 prefix: "/"
                               route:

@@ -45,6 +45,14 @@ data:
       owner_id: {{ .Values.session.ownerId | quote }}
       tenant_id: {{ .Values.session.tenantId | quote }}
     routes:
+      {{- if .Values.preview.enabled }}
+      # Forge's preview router: its workload credential carries this scope and
+      # is admitted nowhere else in the pod.
+      - path: /preview/
+        prefix: true
+        methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]
+        required_scope: forge:session:preview
+      {{- end }}
       - path: /
         prefix: true
         methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]

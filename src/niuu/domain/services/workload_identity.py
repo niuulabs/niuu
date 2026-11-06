@@ -22,9 +22,9 @@ from cryptography.hazmat.primitives.serialization import (
 
 from niuu.domain.models import Principal, WorkloadDelegation
 from niuu.domain.services.token_scope import (
+    EXCHANGE_GRANTABLE_SCOPES,
     NOTIFICATION_DELIVERY_SCOPES,
     NOTIFICATION_DELIVERY_TOKEN_USE,
-    VALKYRIE_BUILD_SCOPES,
     VALKYRIE_BUILD_TOKEN_USE,
     bound_workload_scopes,
 )
@@ -250,7 +250,7 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         privileged = sorted({s for s in scopes or [] if s in NOTIFICATION_DELIVERY_SCOPES})
         build_scopes = bound_workload_scopes(
             [s for s in scopes or [] if s not in NOTIFICATION_DELIVERY_SCOPES],
-            allowed=VALKYRIE_BUILD_SCOPES,
+            allowed=EXCHANGE_GRANTABLE_SCOPES,
         )
         if privileged and build_scopes:
             raise WorkloadIdentityError(

@@ -699,6 +699,20 @@ def build_root_app(
 
     if "skuld-proxy" in active_mounts:
         register_session_proxy_routes(root, skuld_reg)
+        preview_config = NiuuSettings().host.session_preview
+        if preview_config.enabled:
+            # Outermost (added last): <port>--<session>.localhost:<host port> is a
+            # session's live preview, and none of the host's own middleware
+            # (gzip, CORS) touches an app's traffic. Ownership and the router
+            # credential come from the registry, wired by the embedded Forge.
+            from niuu.preview_proxy import PreviewRouter, PreviewRouterMiddleware
+
+            preview_router = PreviewRouter(skuld_reg, preview_config)
+            root.add_middleware(
+                PreviewRouterMiddleware,
+                domain=preview_config.domain,
+                router_provider=lambda: preview_router,
+            )
 
     live_config_template: str | None = None
 
