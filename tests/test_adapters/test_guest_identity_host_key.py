@@ -242,6 +242,7 @@ async def test_an_allocation_without_a_stored_host_key_is_rejected():
         "ssh-ed25519 AAAA",
         openssh_public(generate_private_key(public_exponent=65537, key_size=2048)),
     ],
+    ids=["not-ssh", "truncated-ed25519", "rsa"],
 )
 async def test_a_stored_key_that_is_not_ed25519_is_rejected(public):
     guest = Guest()

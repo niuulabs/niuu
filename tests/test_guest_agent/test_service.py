@@ -4,13 +4,12 @@ import asyncio
 import os
 import signal
 import socket
-from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 import pytest
 
-from tests.test_guest_agent.conftest import credentials_body
+from tests.test_guest_agent.conftest import NOW, credentials_body
 from tests.test_guest_agent.test_agent import StaticSigner, make_agent
 from volundr.guest_agent.agent import GuestAgent
 from volundr.guest_agent.config import parse_config
@@ -34,27 +33,32 @@ async def get(port: int, path: str, *headers: str) -> tuple[int, bytes]:
     return int(head.split()[1]), body
 
 
+async def wait_until_serving(task: asyncio.Task, port: int) -> tuple[int, bytes]:
+    """Poll health until the listener answers; surface serve's error if it exits."""
+    async with asyncio.timeout(10):
+        while True:
+            if task.done():
+                task.result()
+                raise AssertionError("serve returned before it listened")
+            try:
+                return await get(port, "/niuu/v1/health")
+            except OSError:
+                await asyncio.sleep(0.02)
+
+
 async def test_serve_writes_serves_and_stops_cleanly(make_config, tmp_path: Path) -> None:
     port = free_port()
     config = parse_config(make_config(listen={"address": "127.0.0.1", "port": port}))
-    body = credentials_body(token="served-token")
+    body = credentials_body(token="served-token", now=NOW)
     agent = GuestAgent(
         config,
         StaticSigner(),
         transport=httpx.MockTransport(lambda request: httpx.Response(200, json=body)),
-        clock=lambda: datetime.now(UTC),
+        clock=lambda: NOW,
     )
     stop = asyncio.Event()
     task = asyncio.create_task(serve(agent, stop))
-    for _ in range(100):
-        if task.done():
-            break
-        try:
-            status, served = await get(port, "/niuu/v1/health")
-        except OSError:
-            await asyncio.sleep(0.02)
-            continue
-        break
+    status, _ = await wait_until_serving(task, port)
 
     assert status == 200
     assert (tmp_path / "tokens" / "identity" / "token").read_text() == "served-token"
