@@ -35,7 +35,12 @@ describe('previewUrl', () => {
 
 describe('preview_ports frames', () => {
   it('recognises the frame and keeps only real ports, sorted and unique', () => {
-    const frame = { type: 'preview_ports', ports: [8080, 5173, 5173, 0, 1.5], opened: [], closed: [] };
+    const frame = {
+      type: 'preview_ports',
+      ports: [8080, 5173, 5173, 0, 1.5],
+      opened: [],
+      closed: [],
+    };
     expect(isPreviewPortsFrame(frame)).toBe(true);
     expect(portsFromFrame(frame as never)).toEqual([5173, 8080]);
     expect(isPreviewPortsFrame({ type: 'assistant' })).toBe(false);

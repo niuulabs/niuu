@@ -60,6 +60,7 @@ import {
   FolderOpen,
   GitBranch,
   GitCommitHorizontal,
+  Globe,
   KeyRound,
   Mail,
   MailOpen,
@@ -100,6 +101,8 @@ import {
 } from './detail/dockPanes';
 import { TerminalDock } from './detail/TerminalDock';
 import { FilePreviewPane } from './detail/FilePreviewPane';
+import { LivePreviewPane } from './detail/LivePreviewPane';
+import { LIVE_PREVIEW_DISABLED, findLocalUrls } from '../domain/livePreview';
 import { SideChatPane, sideChatLabel } from './detail/SideChatPane';
 import { compactDuration, useMinuteClock } from './sessions/timeFact';
 import { useElementHeight, useElementWidth } from './detail/useElementWidth';
@@ -3350,6 +3353,12 @@ function LiveSessionDetailPageInner({
     [chatEndpoint, historyLocator],
   );
   const chat = useSkuldChat(chatEndpoint, { historyEndpoint });
+  const livePreviewQuery = useQuery({
+    queryKey: ['volundr', 'live-preview-config'],
+    queryFn: () => volundr.getLivePreviewConfig(),
+    staleTime: Infinity,
+  });
+  const livePreview = livePreviewQuery.data ?? LIVE_PREVIEW_DISABLED;
   const workflowGatesQuery = useQuery({
     queryKey: ['volundr', 'workflow-gates', sessionId, instanceId ?? null],
     queryFn: () => volundr.getWorkflowGates(sessionId),
@@ -3776,6 +3785,26 @@ function LiveSessionDetailPageInner({
     return [...touchedPaths, ...changed, ...listed];
   }, [quickOpenChangesQuery.data, quickOpenTreeQuery.data, touchedPaths]);
   const openFilePane = useCallback((path: string) => openPane({ kind: 'file', path }), [openPane]);
+  // Live preview: the ports the session listens on, from its Skuld's preview_ports frames.
+  const previewPorts = useMemo(
+    () => (livePreview.enabled && isRunning ? (chat.previewPorts ?? []) : []),
+    [chat.previewPorts, isRunning, livePreview.enabled],
+  );
+  const openPreviewPane = useCallback(
+    (port: number | null, path = '/') => openPane({ kind: 'preview', port, path }),
+    [openPane],
+  );
+  // A loopback URL in the transcript (http://localhost:5173/docs) opens in the live preview.
+  const openLoopbackLink = useCallback(
+    (href: string) => {
+      if (!livePreview.enabled || !isRunning) return false;
+      const match = findLocalUrls(href).find((found) => found.text.length >= href.length - 1);
+      if (!match) return false;
+      openPreviewPane(match.port, match.path);
+      return true;
+    },
+    [isRunning, livePreview.enabled, openPreviewPane],
+  );
 
   // "New chat" in the side chat opens the launch flow in this session's repository and branch.
   const sideNewChat = useMemo(() => {
@@ -3808,6 +3837,10 @@ function LiveSessionDetailPageInner({
         };
       case 'side':
         return { id, label: sideChatLabel(sessionName), icon: CornerDownRight };
+      case 'preview': {
+        const port = pane.port ?? previewPorts[0];
+        return { id, label: port ? `Preview :${port}` : 'Live preview', icon: Globe };
+      }
     }
   });
   const dockAddItems: MoreMenuItem[] = [
@@ -3831,6 +3864,13 @@ function LiveSessionDetailPageInner({
       icon: CornerDownRight,
       disabled: !liveSession,
       onSelect: () => openPane({ kind: 'side', childId: null }),
+    },
+    {
+      id: 'preview',
+      label: 'Live preview',
+      icon: Globe,
+      disabled: !isRunning || !livePreview.enabled,
+      onSelect: () => openPreviewPane(previewPorts[0] ?? null),
     },
     {
       id: 'files',
@@ -4101,6 +4141,7 @@ function LiveSessionDetailPageInner({
       presented={presentedFiles}
       filesReadable={isRunning}
       onOpenWorkspaceFile={openFilePane}
+      onOpenExternalLink={openLoopbackLink}
     >
       <div className="niuu:flex niuu:h-full niuu:flex-col" data-testid="live-session-detail-page">
         <div className="niuu-live-session__chrome">
@@ -4293,6 +4334,18 @@ function LiveSessionDetailPageInner({
                 )}
               </div>
               <div className="niuu-live-session__toolbar">
+                {previewPorts.map((port) => (
+                  <button
+                    key={port}
+                    type="button"
+                    className="niuu-live-session__preview-chip"
+                    title={`Open port ${port} in the live preview`}
+                    onClick={() => openPreviewPane(port)}
+                  >
+                    <Globe aria-hidden="true" />
+                    Preview :{port}
+                  </button>
+                ))}
                 <ContextMeter
                   context={contextMeter}
                   title={
@@ -4649,6 +4702,16 @@ function LiveSessionDetailPageInner({
                       setFilesFocus(shownPane.path);
                       openPane({ kind: 'files' });
                     }}
+                  />
+                ) : shownPane.kind === 'preview' ? (
+                  <LivePreviewPane
+                    key={`${shownPane.port ?? ''}:${shownPane.path}`}
+                    sessionId={sessionId}
+                    config={livePreview}
+                    ports={previewPorts}
+                    port={shownPane.port}
+                    initialPath={shownPane.path}
+                    onSelectPort={(port) => openPreviewPane(port)}
                   />
                 ) : liveSession ? (
                   <SideChatPane

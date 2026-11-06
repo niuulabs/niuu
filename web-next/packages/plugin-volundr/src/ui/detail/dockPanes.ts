@@ -1,14 +1,16 @@
 /**
  * The right dock's open panes, as Lexi's: tabs the person opens from "+", one shown at a time,
- * each closable. Changes and Files are two of its kinds; a previewed file and a side chat are
- * the others. Live preview is left out until a session port has a safe browser route.
+ * each closable. Changes and Files are two of its kinds; a previewed file, a side chat and a
+ * live preview of a port the session listens on are the others.
  */
 export type DockPane =
   | { kind: 'changes' }
   | { kind: 'files' }
   | { kind: 'file'; path: string }
   /** A side chat: empty until forked or started, then the child session it shows. */
-  | { kind: 'side'; childId: string | null };
+  | { kind: 'side'; childId: string | null }
+  /** A dev server the session runs, on its own origin; null shows the first open port. */
+  | { kind: 'preview'; port: number | null; path: string };
 
 export type DockPaneKind = DockPane['kind'];
 
@@ -41,8 +43,14 @@ export function dockReducer(state: DockState, action: DockAction): DockState {
       const id = dockPaneId(action.pane);
       const present = state.panes.some((pane) => dockPaneId(pane) === id);
       // Opening an open side chat shows it as it is, rather than forgetting its session.
+      // Opening the live preview again points it at the port and path asked for.
+      const panes = present
+        ? state.panes.map((pane) =>
+            action.pane.kind === 'preview' && dockPaneId(pane) === id ? action.pane : pane,
+          )
+        : [...state.panes, action.pane];
       return {
-        panes: present ? state.panes : [...state.panes, action.pane],
+        panes,
         active: id,
         open: true,
       };

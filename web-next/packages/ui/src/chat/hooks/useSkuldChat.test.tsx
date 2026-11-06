@@ -113,6 +113,33 @@ describe('useSkuldChat', () => {
     expect(parseEvent('not-json')).toBeNull();
   });
 
+  it("keeps the session's open ports from its latest preview_ports frame", async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/api/session'));
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    expect(result.current.previewPorts).toBeNull();
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'preview_ports',
+          ports: [8080, 5173, 5173, 0, 'x'],
+          opened: [5173],
+        }),
+      );
+    });
+    expect(result.current.previewPorts).toEqual([5173, 8080]);
+
+    act(() => {
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'preview_ports', ports: 'broken' }));
+    });
+    expect(result.current.previewPorts).toEqual([5173, 8080]);
+
+    act(() => {
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'preview_ports', ports: [], closed: [5173] }));
+    });
+    expect(result.current.previewPorts).toEqual([]);
+  });
+
   it('discovers and stores slash commands reported by the active session', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/api/session'));
 

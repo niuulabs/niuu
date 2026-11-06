@@ -310,6 +310,28 @@ describe('links to files a stopped or presenting session wrote', () => {
     expect(filesystem.downloadFile).not.toHaveBeenCalled();
   });
 
+  it('lets the host open an external link itself, and falls back to the dialog when it does not', () => {
+    const filesystem = { ...fileSystemStub(), downloadFile: vi.fn() };
+    const onOpenExternalLink = vi.fn((href: string) => href.includes('localhost'));
+    render(
+      <SessionResources
+        sessionId="session-1"
+        filesystem={filesystem}
+        onOpenExternalLink={onOpenExternalLink}
+      >
+        <MarkdownContent content="[dev](http://localhost:5173/docs) and [site](https://example.com/a)" />
+      </SessionResources>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'dev' }));
+    expect(onOpenExternalLink).toHaveBeenCalledWith('http://localhost:5173/docs');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'site' }));
+    expect(onOpenExternalLink).toHaveBeenCalledWith('https://example.com/a');
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
   it("keeps a stopped session's file in the dialog, which says it is gone", async () => {
     const onOpenWorkspaceFile = vi.fn();
     render2({ markdown: '[notes](notes.md)', filesReadable: false, onOpenWorkspaceFile });

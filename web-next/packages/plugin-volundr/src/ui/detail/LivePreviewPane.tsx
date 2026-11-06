@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useState, type FormEvent } from 'react';
 import { ExternalLink, RotateCw } from 'lucide-react';
 import { previewUrl, type LivePreviewConfig } from '../../domain/livePreview';
 import './LivePreviewPane.css';
@@ -14,6 +14,7 @@ export function LivePreviewPane({
   config,
   ports,
   port,
+  initialPath = '/',
   onSelectPort,
 }: {
   sessionId: string;
@@ -22,20 +23,16 @@ export function LivePreviewPane({
   ports: readonly number[];
   /** The port shown; null until one is chosen or opens. */
   port: number | null;
+  /** Where to open: a path the transcript linked to, say. Key the pane to open another. */
+  initialPath?: string;
   onSelectPort: (port: number) => void;
 }) {
-  const [path, setPath] = useState('/');
-  const [draft, setDraft] = useState('/');
+  const [path, setPath] = useState(initialPath);
+  const [draft, setDraft] = useState(initialPath);
   const [reloads, setReloads] = useState(0);
   const shown = port ?? ports[0] ?? null;
   const open = shown !== null && ports.includes(shown);
   const url = shown === null ? null : previewUrl(config, sessionId, shown, path);
-
-  // A different port starts at its own root.
-  useEffect(() => {
-    setPath('/');
-    setDraft('/');
-  }, [shown]);
 
   const go = (event: FormEvent) => {
     event.preventDefault();

@@ -1270,6 +1270,11 @@ export function createMockVolundrService(): IVolundrService {
       miniMode: false,
     }),
 
+    getLivePreviewConfig: async () => ({
+      enabled: true,
+      originTemplate: 'http://{port}--{session_id}.localhost:8080',
+    }),
+
     getSessionDefinitions: async () => [...SEED_SESSION_DEFINITIONS],
 
     getSessions: async () => sessions,
