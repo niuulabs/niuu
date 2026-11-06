@@ -50,6 +50,8 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
   const diffAbortRef = useRef<AbortController | null>(null);
   const [files, setFiles] = useState<SessionDiffFile[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
+  // A failed load is said, never shown as an empty list that reads as "nothing changed".
+  const [filesError, setFilesError] = useState<string | null>(null);
   const [diff, setDiff] = useState<DiffData | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<Error | null>(null);
@@ -77,6 +79,7 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
     const controller = new AbortController();
     filesAbortRef.current = controller;
     setFilesLoading(true);
+    setFilesError(null);
     try {
       const params = new URLSearchParams({ base: diffBase });
       const response = await fetch(`${apiBase}/api/diff/files?${params}`, {
@@ -93,6 +96,9 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
       if (!mountedRef.current || filesAbortRef.current !== controller) return;
       setFiles([]);
+      setFilesError(
+        `The changed files could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
+      );
     } finally {
       if (mountedRef.current && filesAbortRef.current === controller) {
         filesAbortRef.current = null;
@@ -157,6 +163,7 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
   return {
     files,
     filesLoading,
+    filesError,
     diff,
     diffLoading,
     diffError,
@@ -366,6 +373,7 @@ export function SessionDiffs({
   const {
     files,
     filesLoading,
+    filesError,
     diff,
     diffLoading,
     diffError,
@@ -405,6 +413,23 @@ export function SessionDiffs({
           <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:font-mono niuu:text-sm niuu:text-text-muted">
             Loading files...
           </div>
+        ) : filesError ? (
+          <p
+            role="alert"
+            className="niuu:m-0 niuu:px-4 niuu:py-3 niuu:text-xs niuu:text-critical"
+            data-testid="diff-files-error"
+          >
+            {filesError}
+          </p>
+        ) : files.length === 0 ? (
+          <p
+            className="niuu:m-0 niuu:px-4 niuu:py-3 niuu:text-xs niuu:text-text-muted"
+            data-testid="diff-files-empty"
+          >
+            {diffBase === 'last-commit'
+              ? 'No changes since the last commit.'
+              : 'No changes against the default branch.'}
+          </p>
         ) : (
           <DiffFileList
             files={files}

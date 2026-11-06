@@ -1412,6 +1412,32 @@ describe('LiveSessionDetailPage', () => {
       });
     });
 
+    it('says there are no changes rather than showing an empty list', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+      expect(await screen.findByTestId('diff-files-empty')).toHaveTextContent(
+        'No changes since the last commit.',
+      );
+    });
+
+    it('says the changed files could not be loaded instead of showing none', async () => {
+      const working = global.fetch;
+      global.fetch = vi.fn(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.includes('/api/diff/files')) return new Response('nope', { status: 502 });
+        return working(input);
+      }) as typeof fetch;
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+      expect(await screen.findByTestId('diff-files-error')).toHaveTextContent(
+        'The changed files could not be loaded: Failed to fetch diff files: 502',
+      );
+      expect(screen.queryByTestId('diff-files-empty')).not.toBeInTheDocument();
+    });
+
     it('shows a starting message in the terminal tab while a session boots', async () => {
       wrap('test-session-id-1234', { session: STARTING_SESSION });
       await screen.findByTestId('live-session-detail-page');
