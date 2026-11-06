@@ -749,14 +749,7 @@ def _session_target_url(
 
 def _session_http_connect_url(target: SessionProxyTarget, path: str) -> tuple[str, str]:
     """Return the gateway URL and Host header for an HTTP session request."""
-    service = urllib.parse.urlsplit(target.service_url)
-    scheme = "https" if target.connect_secure else "http"
-    host = target.connect_host
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
-    netloc = f"{host}:{target.connect_port}"
-    url = urllib.parse.urlunsplit((scheme, netloc, path, "", ""))
-    return url, service.netloc
+    return target.http_url(path)
 
 
 def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) -> None:

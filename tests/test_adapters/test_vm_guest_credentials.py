@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -118,6 +119,10 @@ def _credential():
 
 @pytest.fixture
 def runtime(tmp_path):
+    return _runtime(tmp_path)
+
+
+def _runtime(tmp_path, **kwargs):
     key = Ed25519PrivateKey.generate()
     private, public = tmp_path / "key", tmp_path / "key.pub"
     private.write_bytes(
@@ -138,6 +143,7 @@ def runtime(tmp_path):
         data_dir=str(tmp_path / "data"),
         skuld_image="test/skuld:dev",
         default_service_account="skuld-session",
+        **kwargs,
     )
 
 
@@ -244,6 +250,88 @@ def test_pod_layout_translates_sidecars_empty_dirs_and_token_volumes(runtime, se
         },
     ]
     assert [c["name"] for c in launch["sidecars"]] == ["openbao-agent"]
+
+
+def _with_workload_identity(pod: PodSpecAdditions) -> PodSpecAdditions:
+    """The OpenBao guest pod plus WorkloadIdentityContributor's token, as on forge-vm."""
+    return replace(
+        pod,
+        volumes=(*pod.volumes, TOKEN_VOLUME),
+        volume_mounts=(
+            *pod.volume_mounts,
+            {
+                "name": "niuu-workload-identity",
+                "mountPath": "/var/run/secrets/niuu-workload",
+                "readOnly": True,
+            },
+        ),
+    )
+
+
+def test_a_token_inside_the_read_only_secrets_bind_gets_its_mountpoint(runtime, session):
+    """In the Skuld image /var/run is /run, so the workload token's target lies inside the
+    read-only /run/secrets bind, where runc cannot create a mountpoint (exit 125 on
+    forge-vm). The guest creates it in the secrets volume first; both binds stay read-only."""
+    runtime.configure_credential_delivery(
+        SshPushCredentialDelivery(service_account_tokens=FakeTokens())
+    )
+    spec = SessionSpec(values={}, pod_spec=_with_workload_identity(_agent_pod()))
+    launch = _launch(runtime.bootstrap(session, spec, MachineBootstrap()))
+
+    assert launch["directories"] == [
+        {"path": f"{module._VOLUMES}/openbao-secrets", "mode": "0777"},
+        {"path": f"{module._VOLUMES}/openbao-secrets/niuu-workload", "mode": "0755"},
+    ]
+    assert launch["volume_mounts"] == [
+        {
+            "source": f"{module._VOLUMES}/openbao-secrets",
+            "target": "/run/secrets",
+            "readonly": True,
+        },
+        {
+            "source": f"{module._TOKENS}/niuu-workload-identity",
+            "target": "/var/run/secrets/niuu-workload",
+            "readonly": True,
+        },
+    ]
+
+
+def test_image_path_links_decide_what_nests(tmp_path, session):
+    runtime = _runtime(tmp_path, image_path_links={})
+    runtime.configure_credential_delivery(
+        SshPushCredentialDelivery(service_account_tokens=FakeTokens())
+    )
+    spec = SessionSpec(values={}, pod_spec=_with_workload_identity(_agent_pod()))
+    launch = _launch(runtime.bootstrap(session, spec, MachineBootstrap()))
+
+    # An image without the /var/run link keeps the token outside /run/secrets.
+    assert launch["directories"] == [{"path": f"{module._VOLUMES}/openbao-secrets", "mode": "0777"}]
+
+
+@pytest.mark.parametrize("links", [{"var/run": "/run"}, {"/var/run": "../run"}])
+def test_image_path_links_must_be_absolute(links):
+    with pytest.raises(ValueError, match="image_path_links"):
+        SshContainerVmRuntime(
+            guest_access=MagicMock(), skuld_image="test/skuld:dev", image_path_links=links
+        )
+
+
+def test_a_mount_inside_a_secret_file_is_refused(runtime, session, tmp_path):
+    secret = tmp_path / "token"
+    secret.write_text("value")
+    pod = PodSpecAdditions(
+        volumes=(
+            {"name": "secret-file", "hostPath": {"path": str(secret), "type": "File"}},
+            {"name": "scratch", "emptyDir": {}},
+        ),
+        volume_mounts=(
+            {"name": "secret-file", "mountPath": "/run/secret", "readOnly": True},
+            {"name": "scratch", "mountPath": "/var/run/secret/scratch"},
+        ),
+    )
+
+    with pytest.raises(ValueError, match="inside the secret file mounted at '/run/secret'"):
+        runtime.bootstrap(session, SessionSpec(values={}, pod_spec=pod), MachineBootstrap())
 
 
 @pytest.mark.parametrize(

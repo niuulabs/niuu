@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from niuu.domain.notifications import NotificationImageRef
+from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.notification_image_fetcher import (
     HttpNotificationImageFetcher,
     resolve_host,
@@ -34,6 +35,10 @@ def _pending(ref: dict, session_id=None) -> PendingNotificationImage:
     )
 
 
+async def _at_chat_endpoint(_session):
+    return None
+
+
 def _fetcher(
     handler, *, sessions=None, addresses=None, **overrides
 ) -> HttpNotificationImageFetcher:
@@ -49,6 +54,7 @@ def _fetcher(
 
     values = {
         "session_lookup": lookup,
+        "broker_target": _at_chat_endpoint,
         "gateway_url": GATEWAY,
         "timeout_seconds": 5,
         "max_redirects": 2,
@@ -95,6 +101,35 @@ class TestPresentedFile:
         )
         assert str(seen[0].url) == f"{GATEWAY}/s/abc/api/files/presented/{FILE_ID}"
         assert seen[0].headers["host"] == "forge-1--skuld.openshell.localhost:8080"
+
+    async def test_vm_brokers_are_read_at_the_pod_managers_broker_target(self):
+        """A VM chat endpoint is Forge's own public session proxy; the image is read
+        through the tunnel that proxy dials, never through the ingress."""
+        session = Session(name="s", chat_endpoint="wss://forge.example.test/s/abc/session")
+        seen: list[httpx.Request] = []
+
+        async def broker_target(_session):
+            return SessionProxyTarget("http://skuld.internal", "127.0.0.1", 40123)
+
+        def handler(request):
+            seen.append(request)
+            return _image(request)
+
+        await _fetcher(handler, sessions={session.id: session}, broker_target=broker_target).fetch(
+            _pending({"file_id": FILE_ID}, session.id)
+        )
+        assert str(seen[0].url) == f"http://127.0.0.1:40123/api/files/presented/{FILE_ID}"
+        assert seen[0].headers["host"] == "skuld.internal"
+
+    async def test_a_vm_without_a_ready_broker_is_a_named_refusal(self):
+        session = Session(name="s", chat_endpoint="wss://forge.example.test/s/abc/session")
+
+        async def broker_target(_session):
+            raise ValueError("no ready VM broker")
+
+        fetcher = _fetcher(_image, sessions={session.id: session}, broker_target=broker_target)
+        with pytest.raises(NotificationImageError, match="no ready VM broker"):
+            await fetcher.fetch(_pending({"file_id": FILE_ID}, session.id))
 
     async def test_follows_broker_redirects(self):
         session = Session(name="s", chat_endpoint="ws://broker:1/session")

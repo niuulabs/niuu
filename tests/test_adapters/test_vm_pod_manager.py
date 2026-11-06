@@ -713,3 +713,30 @@ async def test_a_lease_expiring_while_the_runtime_is_unprepared_still_names_it(s
 def test_runtime_wait_reporting_counts_must_be_positive():
     with pytest.raises(ValueError, match="reporting counts"):
         VmPodManager(profile="small", pool_id="pool", max_machines=1, runtime_wait_log_every=0)
+
+
+async def test_broker_target_is_the_session_proxy_target_of_a_ready_session(setup):
+    manager, _, _, _, _, _, session = setup
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    assert await manager.wait_for_ready(session, 0.2) == SessionStatus.RUNNING
+
+    target = await manager.broker_target(session)
+
+    assert target == SessionProxyTarget("http://127.0.0.1:9000", "127.0.0.1", 9000)
+
+
+async def test_broker_target_refuses_a_session_without_a_ready_vm(setup):
+    manager, _, _, _, _, _, session = setup
+
+    with pytest.raises(ValueError, match="no ready VM broker"):
+        await manager.broker_target(session)
+
+
+async def test_broker_target_names_an_unreachable_guest(setup):
+    manager, _, _, _, runtime, _, session = setup
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    assert await manager.wait_for_ready(session, 0.2) == SessionStatus.RUNNING
+    runtime.target.side_effect = VmRuntimeUnavailableError("tunnel refused")
+
+    with pytest.raises(ValueError, match="VM broker is unreachable: tunnel refused"):
+        await manager.broker_target(session)

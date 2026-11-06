@@ -341,7 +341,11 @@ honour, and refuses the rest by name:
 
 Credential files live outside the archived workspace/home and are deleted with the
 VM. PVCs, ConfigMap/Secret volumes, `valueFrom` env and workspace host-path sources
-are rejected. The storage contributor emits no PVC settings for VMs.
+are rejected. The storage contributor emits no PVC settings for VMs, and session
+definitions drop their `homeVolume`/`persistence` pod defaults (the chart's built-in
+definitions carry them), so a VM release needs no override for them. A definition
+that names an `existingClaim`, and any template or profile that sets pod storage,
+is still refused.
 
 ## VM session credentials
 
@@ -690,6 +694,17 @@ configured exclusions fail loudly. Allocation completion markers are never
 restored from an archive, so a partial extraction cannot masquerade as a completed
 restore. A failed session can be stopped through the normal Forge API to preserve
 its data and release its machine before retrying.
+
+## Mounts inside read-only mounts
+
+A container cannot create a mountpoint inside a read-only bind. The workload
+identity token (`/var/run/secrets/niuu-workload`) lands inside the OpenBao
+secrets volume (`/run/secrets`, read-only on Skuld), because `/var/run` is `/run`
+in the Skuld image. `SshContainerVmRuntime` therefore creates each such mountpoint
+in the parent volume's guest directory before the containers start, and the
+parent stays read-only. It resolves targets through `image_path_links`, a map of
+directory symlinks in the session images (default `{"/var/run": "/run"}`); set it
+when an image links other directories. A mount inside a secret file is refused.
 
 ## OpenShell on managed VMs
 

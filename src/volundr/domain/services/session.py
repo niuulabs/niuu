@@ -84,6 +84,7 @@ from volundr.domain.session_read_state import SessionReadState, SessionReadState
 from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjectionPort
 
 if TYPE_CHECKING:
+    from niuu.ports.session_proxy import SessionProxyTarget
     from niuu.ports.user_integration import UserIntegrationPort
     from sleipnir.ports.audit import AuditRepository
     from volundr.adapters.outbound.git_registry import GitProviderRegistry
@@ -409,6 +410,10 @@ class SessionService:
     async def get_session(self, session_id: UUID) -> Session | None:
         """Get a session by ID."""
         return await self._repository.get(session_id)
+
+    async def broker_target(self, session: Session) -> SessionProxyTarget | None:
+        """Where Forge reaches the session's broker, when not at its chat endpoint."""
+        return await self._pod_manager.broker_target(session)
 
     async def get_many_sessions(self, session_ids: list[UUID]) -> dict[UUID, Session]:
         """Batch-fetch sessions by ID. Returns only the ones that exist."""
