@@ -24,6 +24,7 @@ export function SessionResources({
   presented = NO_PRESENTED,
   filesReadable = true,
   onOpenWorkspaceFile,
+  onOpenExternalLink,
   children,
 }: {
   sessionId: string;
@@ -38,6 +39,12 @@ export function SessionResources({
    * dock pane beside the chat, instead of this dialog. Used only while the files are readable.
    */
   onOpenWorkspaceFile?: (path: string) => void;
+  /**
+   * Offered every external link the conversation opens first. Returns true when the host
+   * opened it itself (a session's `localhost:<port>` in its live preview, say), so the link
+   * preview dialog stays closed.
+   */
+  onOpenExternalLink?: (href: string) => boolean;
   children: ReactNode;
 }) {
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -74,6 +81,7 @@ export function SessionResources({
         onOpenWorkspaceFile(resource.path);
         return;
       }
+      if (resource.kind === 'external' && onOpenExternalLink?.(resource.path)) return;
       if (!isOpen.current) {
         returnFocus.current =
           document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -83,7 +91,7 @@ export function SessionResources({
       setError(undefined);
       setSelected(resource);
     },
-    [filesReadable, onOpenWorkspaceFile],
+    [filesReadable, onOpenWorkspaceFile, onOpenExternalLink],
   );
   const port = useMemo(
     () => ({
