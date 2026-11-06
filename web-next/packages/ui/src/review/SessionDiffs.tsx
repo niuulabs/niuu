@@ -34,6 +34,7 @@ interface DiffData {
   hunks: DiffHunk[];
 }
 
+/** Skuld's diff bases; `default-branch` is its name for the branch the session started from. */
 type DiffBase = 'last-commit' | 'default-branch';
 
 function authHeaders(): Record<string, string> {
@@ -418,7 +419,7 @@ export function SessionDiffs({
                 aria-pressed={diffBase === base}
                 onClick={() => setDiffBase(base)}
               >
-                {base === 'last-commit' ? 'Since last commit' : 'Against default branch'}
+                {base === 'last-commit' ? 'Since last commit' : 'Against base branch'}
               </button>
             ))}
           </div>
@@ -437,7 +438,7 @@ export function SessionDiffs({
           <p className="niuu-diffs-dock__note" data-testid="diff-files-empty">
             {diffBase === 'last-commit'
               ? 'No changes since the last commit.'
-              : 'No changes against the default branch.'}
+              : 'No changes against the base branch.'}
           </p>
         ) : (
           <>
@@ -496,7 +497,7 @@ export function SessionDiffs({
                     : 'niuu:border-border-subtle niuu:text-text-muted niuu:hover:text-text-secondary',
                 )}
               >
-                {base === 'last-commit' ? 'last commit' : 'default branch'}
+                {base === 'last-commit' ? 'last commit' : 'base branch'}
               </button>
             ))}
           </div>
@@ -520,7 +521,7 @@ export function SessionDiffs({
           >
             {diffBase === 'last-commit'
               ? 'No changes since the last commit.'
-              : 'No changes against the default branch.'}
+              : 'No changes against the base branch.'}
           </p>
         ) : (
           <DiffFileList

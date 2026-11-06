@@ -1,5 +1,6 @@
 """Tests for the Skuld broker /api/diff endpoint."""
 
+import subprocess
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -75,14 +76,45 @@ class TestParseDiffOutput:
         assert lines[2]["newLine"] == 7
 
 
+def _git(cwd, *args):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+@pytest.fixture
+def repo(tmp_path):
+    """A workspace on ``feature``, started from ``dev`` (recorded as niuu.baseBranch)."""
+    _git(tmp_path, "init", "-b", "dev")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _git(tmp_path, "config", "user.name", "Test")
+    (tmp_path / ".gitignore").write_text("build/\n")
+    (tmp_path / "app.py").write_text("a\nb\nc\n")
+    (tmp_path / "old.py").write_text("gone\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "base")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/dev", "HEAD")
+    _git(tmp_path, "config", "niuu.baseBranch", "dev")
+    _git(tmp_path, "checkout", "-b", "feature")
+    (tmp_path / "committed.py").write_text("one\ntwo\n")
+    _git(tmp_path, "add", "committed.py")
+    _git(tmp_path, "commit", "-m", "feature work")
+    # Uncommitted: an edit, a deletion, a new file, a new binary file and an ignored file.
+    (tmp_path / "app.py").write_text("a\nB\nc\nd\n")
+    (tmp_path / "old.py").unlink()
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "guide.md").write_text("# Guide\n\nno trailing newline")
+    (tmp_path / "logo.png").write_bytes(b"\x89PNG\x00\x01")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "out.js").write_text("ignored\n")
+    return tmp_path
+
+
 class TestDiffEndpoint:
-    """Tests for GET /api/diff."""
+    """Tests for GET /api/diff and GET /api/diff/files."""
 
     @pytest.fixture(autouse=True)
     def _setup_workspace(self, tmp_path):
         self._original_workspace = broker.workspace_dir
         broker.workspace_dir = str(tmp_path)
-        self.workspace = tmp_path
         self.client = TestClient(
             app, raise_server_exceptions=False, headers={"x-niuu-room-role": "owner"}
         )
@@ -94,10 +126,12 @@ class TestDiffEndpoint:
         response = self.client.get("/api/diff")
         assert response.status_code == 422
 
-    def test_invalid_base_returns_400(self):
+    def test_invalid_base_returns_400(self, repo):
         response = self.client.get("/api/diff", params={"file": "main.py", "base": "invalid"})
         assert response.status_code == 400
         assert "Invalid base" in response.json()["detail"]
+        response = self.client.get("/api/diff/files", params={"base": "invalid"})
+        assert response.status_code == 400
 
     def test_path_traversal_blocked(self):
         response = self.client.get(
@@ -107,55 +141,74 @@ class TestDiffEndpoint:
         assert response.status_code == 400
         assert "Path traversal" in response.json()["detail"]
 
-    @patch("skuld.broker.asyncio.create_subprocess_exec", new_callable=AsyncMock)
-    def test_successful_diff(self, mock_create_subprocess_exec):
-        diff_output = "@@ -1,2 +1,3 @@\n line1\n+added\n line2\n"
+    def test_lists_new_deleted_and_modified_files_since_the_last_commit(self, repo):
+        response = self.client.get("/api/diff/files", params={"base": "last-commit"})
+        assert response.status_code == 200
+        files = {f["path"]: f for f in response.json()["files"]}
+        assert files == {
+            "app.py": {"path": "app.py", "status": "mod", "ins": 2, "del": 1},
+            "old.py": {"path": "old.py", "status": "del", "ins": 0, "del": 1},
+            "docs/guide.md": {"path": "docs/guide.md", "status": "new", "ins": 3, "del": 0},
+            "logo.png": {"path": "logo.png", "status": "new", "ins": 0, "del": 0},
+        }
 
-        mock_proc = AsyncMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate = AsyncMock(return_value=(diff_output.encode(), b""))
-
-        mock_create_subprocess_exec.return_value = mock_proc
+    def test_against_the_base_branch_includes_committed_work(self, repo):
+        response = self.client.get("/api/diff/files", params={"base": "default-branch"})
+        assert response.status_code == 200
+        files = {f["path"]: f["status"] for f in response.json()["files"]}
+        assert files == {
+            "app.py": "mod",
+            "committed.py": "new",
+            "old.py": "del",
+            "docs/guide.md": "new",
+            "logo.png": "new",
+        }
 
         response = self.client.get(
-            "/api/diff",
-            params={"file": "src/main.py", "base": "last-commit"},
+            "/api/diff", params={"file": "committed.py", "base": "default-branch"}
+        )
+        lines = response.json()["hunks"][0]["lines"]
+        assert [line["content"] for line in lines] == ["one", "two"]
+        assert {line["type"] for line in lines} == {"add"}
+
+    def test_a_new_file_diffs_as_all_additions(self, repo):
+        response = self.client.get(
+            "/api/diff", params={"file": "docs/guide.md", "base": "last-commit"}
         )
         assert response.status_code == 200
-        data = response.json()
-        assert data["filePath"] == "src/main.py"
-        assert len(data["hunks"]) == 1
+        lines = response.json()["hunks"][0]["lines"]
+        assert [line["content"] for line in lines] == ["# Guide", "", "no trailing newline"]
+        assert {line["type"] for line in lines} == {"add"}
+
+    def test_a_tracked_file_diffs_against_the_last_commit(self, repo):
+        response = self.client.get("/api/diff", params={"file": "app.py", "base": "last-commit"})
+        types = [(line["type"], line["content"]) for line in response.json()["hunks"][0]["lines"]]
+        assert ("remove", "b") in types
+        assert ("add", "B") in types
+        assert ("add", "d") in types
+
+    def test_says_when_the_workspace_recorded_no_base_branch(self, repo):
+        _git(repo, "config", "--unset", "niuu.baseBranch")
+        response = self.client.get("/api/diff/files", params={"base": "default-branch"})
+        assert response.status_code == 409
+        assert "niuu.baseBranch" in response.json()["detail"]
 
     @patch("skuld.broker.asyncio.create_subprocess_exec", new_callable=AsyncMock)
-    def test_git_diff_failure_returns_502(self, mock_create_subprocess_exec):
+    def test_git_failure_returns_502(self, mock_create_subprocess_exec):
         mock_proc = AsyncMock()
         mock_proc.returncode = 128
         mock_proc.communicate = AsyncMock(return_value=(b"", b"fatal: bad object"))
-
         mock_create_subprocess_exec.return_value = mock_proc
 
-        response = self.client.get(
-            "/api/diff",
-            params={"file": "src/main.py", "base": "last-commit"},
-        )
+        response = self.client.get("/api/diff/files", params={"base": "last-commit"})
         assert response.status_code == 502
-        assert "git diff failed" in response.json()["detail"]
+        assert "fatal: bad object" in response.json()["detail"]
 
     @patch("skuld.broker.asyncio.create_subprocess_exec", new_callable=AsyncMock)
-    def test_default_branch_diff_command(self, mock_create_subprocess_exec):
+    def test_git_timeout_returns_504(self, mock_create_subprocess_exec):
         mock_proc = AsyncMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-
+        mock_proc.communicate = AsyncMock(side_effect=TimeoutError)
         mock_create_subprocess_exec.return_value = mock_proc
-
-        response = self.client.get(
-            "/api/diff",
-            params={"file": "src/main.py", "base": "default-branch"},
-        )
-        assert response.status_code == 200
-
-        # Verify the command used main...HEAD
-        call_args = mock_create_subprocess_exec.call_args
-        cmd = call_args[0]
-        assert "main...HEAD" in cmd
+        response = self.client.get("/api/diff", params={"file": "app.py"})
+        assert response.status_code == 504
+        assert "timed out" in response.json()["detail"]

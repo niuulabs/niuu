@@ -947,6 +947,7 @@ class LocalProcessPodManager(PodManager):
             error_msg = re.sub(r"://[^@]+@", "://***@", error_msg)
             raise RuntimeError(f"Git clone failed: {error_msg}")
 
+        started_from = ""
         if branch:
             checkout_ok = await self._checkout_tracking_branch(repo_dir, branch)
             if not checkout_ok:
@@ -955,6 +956,15 @@ class LocalProcessPodManager(PodManager):
                     fallback_ok = await self._checkout_tracking_branch(repo_dir, fallback_branch)
                     if fallback_ok:
                         await self._create_branch(repo_dir, branch)
+                        started_from = fallback_branch
+        # Record where this branch started, so the session's changes can be shown against it.
+        started_from = started_from or base_branch or await self._remote_head_branch(repo_dir)
+        if started_from:
+            code, _, stderr = await self._run_git(
+                repo_dir, "config", "niuu.baseBranch", started_from
+            )
+            if code != 0:
+                raise RuntimeError(f"Could not record the workspace's base branch: {stderr}")
 
         if repo_url:
             await self._run_git(repo_dir, "remote", "set-url", "origin", repo_url)

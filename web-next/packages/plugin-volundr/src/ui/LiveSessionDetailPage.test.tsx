@@ -1807,12 +1807,12 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByText('console.log("old");')).toBeInTheDocument();
       expect(screen.getByText('console.log("new");')).toBeInTheDocument();
 
-      fireEvent.click(screen.getByRole('button', { name: /default branch/i }));
+      fireEvent.click(screen.getByRole('button', { name: /base branch/i }));
 
       await waitFor(() => {
         expect(screen.getByTestId('diff-summary')).toHaveTextContent('1 file changed−4');
       });
-      expect(screen.getByRole('button', { name: /default branch/i })).toHaveAttribute(
+      expect(screen.getByRole('button', { name: /base branch/i })).toHaveAttribute(
         'aria-pressed',
         'true',
       );

@@ -4925,6 +4925,9 @@ git -C "$WORKSPACE" config user.email >/dev/null 2>&1 || \
   git -C "$WORKSPACE" config user.email {shlex.quote(str(git_cfg.get("userEmail") or ""))}
 if git -C "$WORKSPACE" rev-parse --verify HEAD >/dev/null 2>&1; then
   echo "Workspace already contains a git repository, skipping clone"
+  if [ -n "$BASE_BRANCH" ] && ! git -C "$WORKSPACE" config --get niuu.baseBranch >/dev/null; then
+    git -C "$WORKSPACE" config niuu.baseBranch "$BASE_BRANCH"
+  fi
   exit 0
 fi
 attempt=1
@@ -4951,6 +4954,19 @@ else
   if [ -n "$BRANCH" ] && [ "$BRANCH" != "$FALLBACK" ]; then
     git -C "$WORKSPACE" checkout -b "$BRANCH"
   fi
+fi
+# Record where this branch started, so the session's changes can be shown against it.
+RECORDED_BASE="${{FALLBACK:-}}"
+if [ -z "$RECORDED_BASE" ]; then
+  if [ -n "$BASE_BRANCH" ] && \
+    git -C "$WORKSPACE" rev-parse --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
+    RECORDED_BASE="$BASE_BRANCH"
+  else
+    RECORDED_BASE=$(git -C "$WORKSPACE" remote show origin | sed -n 's/.*HEAD branch: //p')
+  fi
+fi
+if [ -n "$RECORDED_BASE" ]; then
+  git -C "$WORKSPACE" config niuu.baseBranch "$RECORDED_BASE"
 fi
 git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
 echo "Workspace ready at $WORKSPACE"
