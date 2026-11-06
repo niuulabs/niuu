@@ -491,6 +491,7 @@ class TestShim:
             assert "the user declined" in failed.stderr and failed.stdout == ""
         finally:
             server.shutdown()
+            server.server_close()
             thread.join(timeout=5)
 
 
