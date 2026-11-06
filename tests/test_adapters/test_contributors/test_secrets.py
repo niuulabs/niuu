@@ -500,6 +500,83 @@ class TestSecretInjectionContributor:
             await c.contribute(session, ctx)
         adapter.pod_spec_additions.assert_not_called()
 
+    async def test_vm_session_gets_guest_agent_containers_instead_of_annotations(self, session):
+        pod_spec = PodSpecAdditions(service_account="openbao-session-x")
+        adapter = AsyncMock()
+        adapter.supports_guest_agents = True
+        adapter.guest_agent_pod_spec_additions.return_value = pod_spec
+        adapter.ensure_secret_provider_class.return_value = None
+
+        ctx = SessionContext(
+            runtime_backend="vm",
+            integration_connections=(_connection("my-cred", "test"),),
+        )
+        c = SecretInjectionContributor(secret_injection=adapter)
+        result = await c.contribute(session, ctx)
+
+        assert result.pod_spec is pod_spec
+        mappings = adapter.ensure_secret_provider_class.call_args[0][1]
+        adapter.ensure_secret_provider_class.assert_called_once()
+        adapter.guest_agent_pod_spec_additions.assert_called_once_with(
+            "user-1", str(session.id), mappings
+        )
+        adapter.pod_spec_additions.assert_not_called()
+
+    async def test_vm_session_ensures_access_before_describing_agents(self, session):
+        order: list[str] = []
+        adapter = AsyncMock()
+        adapter.supports_guest_agents = True
+        adapter.ensure_secret_provider_class.side_effect = lambda *a, **k: order.append("ensure")
+        adapter.guest_agent_pod_spec_additions.side_effect = lambda *a, **k: (
+            order.append("agents") or PodSpecAdditions()
+        )
+
+        ctx = SessionContext(
+            runtime_backend="vm", integration_connections=(_connection("my-cred", "test"),)
+        )
+        await SecretInjectionContributor(secret_injection=adapter).contribute(session, ctx)
+
+        assert order == ["ensure", "agents"]
+
+    async def test_vm_session_uses_the_regular_path_when_adapter_runs_no_guest_agents(
+        self, session
+    ):
+        pod_spec = PodSpecAdditions(annotations={"x": "y"})
+        adapter = AsyncMock()
+        adapter.supports_guest_agents = False
+        adapter.pod_spec_additions.return_value = pod_spec
+
+        ctx = SessionContext(
+            runtime_backend="vm", integration_connections=(_connection("my-cred", "test"),)
+        )
+        result = await SecretInjectionContributor(secret_injection=adapter).contribute(session, ctx)
+
+        assert result.pod_spec is pod_spec
+        adapter.guest_agent_pod_spec_additions.assert_not_called()
+
+    async def test_kubernetes_session_ignores_guest_agent_support(self, session):
+        pod_spec = PodSpecAdditions(annotations={"x": "y"})
+        adapter = AsyncMock()
+        adapter.supports_guest_agents = True
+        adapter.pod_spec_additions.return_value = pod_spec
+
+        ctx = SessionContext(integration_connections=(_connection("my-cred", "test"),))
+        result = await SecretInjectionContributor(secret_injection=adapter).contribute(session, ctx)
+
+        assert result.pod_spec is pod_spec
+        adapter.guest_agent_pod_spec_additions.assert_not_called()
+
+    async def test_vm_guest_agent_failure_stops_the_launch(self, session):
+        adapter = AsyncMock()
+        adapter.supports_guest_agents = True
+        adapter.guest_agent_pod_spec_additions.side_effect = ValueError("guest_agent_image")
+
+        ctx = SessionContext(
+            runtime_backend="vm", integration_connections=(_connection("my-cred", "test"),)
+        )
+        with pytest.raises(ValueError, match="guest_agent_image"):
+            await SecretInjectionContributor(secret_injection=adapter).contribute(session, ctx)
+
     async def test_cleanup_calls_adapter(self, session):
         adapter = AsyncMock()
         c = SecretInjectionContributor(secret_injection=adapter)

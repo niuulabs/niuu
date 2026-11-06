@@ -8,12 +8,20 @@ pool and one Forge API/UI lifecycle.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from uuid import UUID
 
+from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.compute import ComputeLease, MachineBootstrap
+from volundr.domain.guest_credentials import GuestCredentialDelivery
 from volundr.domain.models import Session, SessionSpec
-from volundr.domain.vm_runtime import CredentialAwareVmRuntime, VmRuntime
+from volundr.domain.vm_runtime import (
+    CredentialAwareVmRuntime,
+    CredentialDeliveryVmRuntime,
+    ForgeSessionVmRuntime,
+    VmRuntime,
+)
 
 
 class ProfiledVmRuntime(VmRuntime):
@@ -45,6 +53,31 @@ class ProfiledVmRuntime(VmRuntime):
         if not profile and self._default_profile is not None:
             profile = self._default_profile
         return self._for_profile(profile)
+
+    def _all(self) -> tuple[VmRuntime, ...]:
+        return (self._default, *self._profiles.values())
+
+    @property
+    def delivers_forge_session_token(self) -> bool:
+        return all(
+            isinstance(runtime, ForgeSessionVmRuntime) and runtime.delivers_forge_session_token
+            for runtime in self._all()
+        )
+
+    def stage_forge_session(self, session_id: UUID, credential: IssuedForgeSessionToken) -> None:
+        for runtime in self._all():
+            if isinstance(runtime, ForgeSessionVmRuntime):
+                runtime.stage_forge_session(session_id, credential)
+
+    def discard_forge_session(self, session_id: UUID) -> None:
+        for runtime in self._all():
+            if isinstance(runtime, ForgeSessionVmRuntime):
+                runtime.discard_forge_session(session_id)
+
+    def configure_credential_delivery(self, delivery: GuestCredentialDelivery) -> None:
+        for runtime in self._all():
+            if isinstance(runtime, CredentialDeliveryVmRuntime):
+                runtime.configure_credential_delivery(delivery)
 
     def configure_credentials(self, credential_store: CredentialStorePort) -> None:
         for runtime in (self._default, *self._profiles.values()):

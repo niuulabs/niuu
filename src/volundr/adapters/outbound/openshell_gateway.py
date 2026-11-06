@@ -52,6 +52,7 @@ from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPod
 from volundr.adapters.outbound.k8s_storage_adapter import _storage_bytes
 from volundr.adapters.outbound.local_process import (
     FORGE_MCP_GRANTS_ENV,
+    FORGE_MCP_TOKEN_FILE_ENV,
     LocalProcessPodManager,
 )
 from volundr.adapters.outbound.openshell_contract import (
@@ -229,7 +230,6 @@ PLATFORM_ACCESS_TOKEN_ENV = "NIUU_VOLUNDR_ACCESS_TOKEN"
 #: a private file (0600) written before the broker starts. A session sandbox has no
 #: /run/secrets. Only the path travels in the broker's env, never the token.
 FORGE_SESSION_TOKEN_FILE = ".volundr/forge-session/token"
-FORGE_MCP_TOKEN_FILE_ENV = "SKULD__FORGE_MCP__TOKEN_FILE"
 DEFAULT_CREDENTIAL_TOKEN_ENDPOINT = (
     "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
 )
