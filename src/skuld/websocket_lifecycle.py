@@ -27,6 +27,7 @@ from skuld.conversation_snapshot import (
     prepare_history_page,
     prepare_recent_snapshot,
 )
+from skuld.preview import PREVIEW_PORTS_FRAME
 from skuld.room_role_port import RoomRoleResolutionError
 from skuld.websocket_auth import (
     _decode_jwt_claims,
@@ -433,6 +434,23 @@ class WebSocketLifecycleMixin:
                 if not await self._safe_send_broker_frame_to(websocket, caps):
                     return
                 logger.debug("handle_websocket: capabilities sent")
+
+            # Live preview: the ports open now, so a page that connects late still
+            # shows them (later changes arrive as ordinary preview_ports frames).
+            preview_watcher = getattr(self, "preview_watcher", None)
+            if preview_watcher is not None:
+                ports = preview_watcher.snapshot()["ports"]
+                if not await self._safe_send_broker_frame_to(
+                    websocket,
+                    {
+                        "type": PREVIEW_PORTS_FRAME,
+                        "ports": ports,
+                        "opened": [],
+                        "closed": [],
+                        PER_CONNECT_MARKER: True,
+                    },
+                ):
+                    return
 
             # Protocol2 readers wait for a coherent state, without locking or
             # delaying writers. Register only AFTER synchronous capture so events
