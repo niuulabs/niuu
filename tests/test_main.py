@@ -463,6 +463,10 @@ class TestLifespan:
 
         mock_pool = AsyncMock()
         mock_pool.get_max_size = MagicMock(return_value=10)
+        # The pod manager resolves sessions it can route to (Flux: the pod's
+        # Service), so the proxy looks the id up: this one does not exist.
+        mock_pool.fetchrow = AsyncMock(return_value=None)
+        mock_pool.fetch = AsyncMock(return_value=[])
 
         @asynccontextmanager
         async def _mock_db_pool(_config):
