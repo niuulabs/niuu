@@ -97,7 +97,10 @@ from volundr.adapters.outbound.config_resident_profiles import (
 from volundr.adapters.outbound.git_registry import create_git_registry
 from volundr.adapters.outbound.linear import LinearAdapter
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
-from volundr.adapters.outbound.notification_image_fetcher import SessionLookup
+from volundr.adapters.outbound.notification_image_fetcher import (
+    BrokerTargetLookup,
+    SessionLookup,
+)
 from volundr.adapters.outbound.odin_review_notification_relay import OdinReviewNotificationRelay
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.pg_message_delivery import PostgresMessageDelivery
@@ -405,6 +408,7 @@ def _create_notification_service(
     broadcaster: InMemoryEventBroadcaster,
     integration_repository: PostgresIntegrationRepository,
     session_lookup: SessionLookup,
+    broker_target: BrokerTargetLookup,
     guild_instance: GuildInstance | None = None,
 ) -> tuple[NotificationService, NotificationImageWorker] | None:
     """Compose the notification feed, rules, outbox and image worker
@@ -426,6 +430,7 @@ def _create_notification_service(
         notifications=repository,
         images=images,
         session_lookup=session_lookup,
+        broker_target=broker_target,
         broadcaster=broadcaster,
         guild_instance=guild_instance,
     )
@@ -1338,6 +1343,7 @@ def create_app(
                 integration_repository=integration_repo,
                 guild_instance=guild_membership.instance if guild_membership else None,
                 session_lookup=repository.get,
+                broker_target=pod_manager.broker_target,
             )
             notification_service, notification_image_worker = notification_feed or (None, None)
             app.state.notification_service = notification_service

@@ -2,8 +2,9 @@
 
 * ``file_id`` — read through the session's Skuld broker at its presented-file route
   (``GET {broker}/api/files/presented/{file_id}``), resolved exactly like Forge's
-  presented-file proxy (:mod:`volundr.domain.session_broker`). The broker is a
-  target Forge already trusts, so redirects are followed as the proxy does.
+  presented-file proxy (:mod:`volundr.domain.session_broker`): at the pod manager's
+  broker target when it names one (VM sessions), otherwise at the chat endpoint. The
+  broker is a target Forge already trusts, so redirects are followed as the proxy does.
 * ``url`` — an ``https://`` GET. Every hop (redirects are followed by hand, up to
   ``max_redirects``) must be https and, unless ``allow_private_networks`` is set,
   resolve only to public addresses, so an agent cannot point Forge at its own
@@ -26,6 +27,7 @@ from uuid import UUID
 import httpx
 
 from niuu.domain.notifications import MAX_IMAGE_BYTES, NOTIFICATION_IMAGE_MIME_TYPES
+from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.models import Session
 from volundr.domain.notification_ports import NotificationImageFetcher
 from volundr.domain.notifications import (
@@ -34,12 +36,17 @@ from volundr.domain.notifications import (
     PendingNotificationImage,
 )
 from volundr.domain.session_broker import (
+    BROKER_API_SEGMENT,
+    PRESENTED_FILE_ROUTE,
     broker_base_url,
+    broker_target_request,
     presented_file_url,
     server_side_http_proxy_target,
 )
 
 SessionLookup = Callable[[UUID], Awaitable[Session | None]]
+#: ``PodManager.broker_target``: None means the broker is at the chat endpoint.
+BrokerTargetLookup = Callable[[Session], Awaitable[SessionProxyTarget | None]]
 HostResolver = Callable[[str, int], Awaitable[list[str]]]
 
 _HTTPS = "https"
@@ -73,6 +80,7 @@ class HttpNotificationImageFetcher(NotificationImageFetcher):
         self,
         *,
         session_lookup: SessionLookup,
+        broker_target: BrokerTargetLookup,
         gateway_url: str,
         timeout_seconds: float,
         max_redirects: int,
@@ -86,6 +94,7 @@ class HttpNotificationImageFetcher(NotificationImageFetcher):
         if max_redirects < 0:
             raise ValueError("max_redirects must not be negative")
         self._session_lookup = session_lookup
+        self._broker_target = broker_target
         self._gateway_url = gateway_url
         self._timeout = timeout_seconds
         self._max_redirects = max_redirects
@@ -119,10 +128,7 @@ class HttpNotificationImageFetcher(NotificationImageFetcher):
             raise NotificationImageError(
                 f"session {session_id} is not running, so its presented file cannot be read"
             )
-        url, headers = server_side_http_proxy_target(
-            presented_file_url(broker_base_url(session.chat_endpoint), file_id),
-            gateway_url=self._gateway_url,
-        )
+        url, headers = await self._presented_file_request(session, file_id)
         try:
             async with self._client(follow_redirects=True) as client:
                 async with client.stream("GET", url, headers=headers) as response:
@@ -131,6 +137,22 @@ class HttpNotificationImageFetcher(NotificationImageFetcher):
             raise NotificationImageError(
                 f"could not reach {_BROKER_SOURCE} ({type(exc).__name__})"
             ) from exc
+
+    async def _presented_file_request(
+        self, session: Session, file_id: str
+    ) -> tuple[str, dict[str, str]]:
+        try:
+            target = await self._broker_target(session)
+        except ValueError as exc:
+            raise NotificationImageError(
+                f"could not reach {_BROKER_SOURCE} of session {session.id}: {exc}"
+            ) from exc
+        if target is not None:
+            return broker_target_request(target, BROKER_API_SEGMENT, *PRESENTED_FILE_ROUTE, file_id)
+        return server_side_http_proxy_target(
+            presented_file_url(broker_base_url(session.chat_endpoint), file_id),
+            gateway_url=self._gateway_url,
+        )
 
     # -- url: public https ----------------------------------------------------
 
