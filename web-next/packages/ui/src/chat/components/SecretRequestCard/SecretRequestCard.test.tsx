@@ -67,6 +67,21 @@ describe('SecretRequestCard', () => {
     expect(screen.getByText('Never shown to the agent')).toBeInTheDocument();
   });
 
+  it('marks the chosen lifetime on its pill, since the reset hides the native radio', async () => {
+    await renderCard(makePort());
+    const session = screen.getByLabelText('This session only');
+    const saved = screen.getByLabelText('Save to my credentials');
+    expect(session).toHaveClass('niuu:sr-only');
+    expect(session.closest('label')).toHaveClass('niuu:border-brand');
+    expect(saved.closest('label')).not.toHaveClass('niuu:border-brand');
+
+    fireEvent.click(saved);
+
+    expect(saved).toBeChecked();
+    expect(saved.closest('label')).toHaveClass('niuu:border-brand');
+    expect(session.closest('label')).not.toHaveClass('niuu:border-brand');
+  });
+
   it('omits the target line when there is no target', async () => {
     const port = makePort({ get: vi.fn(async () => state({ target: null })) });
     render(

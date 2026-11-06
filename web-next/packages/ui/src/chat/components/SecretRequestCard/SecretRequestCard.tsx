@@ -24,6 +24,60 @@ export interface SecretRequestCardProps {
   className?: string;
 }
 
+/**
+ * One "keep it for" choice. The global form reset strips the native radio's
+ * appearance, so the radio stays for semantics and keyboard use while the pill
+ * and its dot show which one is chosen.
+ */
+function KeepChoice({
+  name,
+  value,
+  keep,
+  onChoose,
+  disabled,
+  children,
+}: {
+  name: string;
+  value: SecretKeep;
+  keep: SecretKeep;
+  onChoose: (value: SecretKeep) => void;
+  disabled: boolean;
+  children: string;
+}) {
+  const chosen = keep === value;
+  return (
+    <label
+      className={cn(
+        'niuu:flex niuu:cursor-pointer niuu:items-center niuu:gap-2 niuu:rounded-md niuu:border niuu:border-solid niuu:px-3 niuu:py-1.5 niuu:text-sm niuu:focus-within:border-brand',
+        chosen
+          ? 'niuu:border-brand niuu:bg-brand/10 niuu:text-text-primary'
+          : 'niuu:border-border-subtle niuu:text-text-secondary',
+        disabled && 'niuu:cursor-not-allowed niuu:opacity-60',
+      )}
+    >
+      <input
+        type="radio"
+        name={name}
+        value={value}
+        checked={chosen}
+        onChange={() => onChoose(value)}
+        disabled={disabled}
+        className="niuu:sr-only"
+      />
+      <span
+        aria-hidden="true"
+        className={cn(
+          'niuu:flex niuu:h-3.5 niuu:w-3.5 niuu:shrink-0 niuu:items-center niuu:justify-center niuu:rounded-full niuu:border niuu:border-solid',
+          chosen ? 'niuu:border-brand' : 'niuu:border-border-subtle',
+        )}
+      >
+        {chosen && <span className="niuu:h-1.5 niuu:w-1.5 niuu:rounded-full niuu:bg-brand" />}
+      </span>
+      {children}
+    </label>
+  );
+}
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -166,32 +220,28 @@ function SecretForm({
         </div>
       </Field>
 
-      <fieldset className="niuu:m-0 niuu:flex niuu:flex-col niuu:gap-1 niuu:border-0 niuu:p-0">
+      <fieldset className="niuu:m-0 niuu:flex niuu:flex-wrap niuu:gap-2 niuu:border-0 niuu:p-0">
         <legend className="niuu:mb-1 niuu:p-0 niuu:text-xs niuu:text-text-muted">
           Keep it for
         </legend>
-        <label className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-primary">
-          <input
-            type="radio"
-            name={`${baseId}-keep`}
-            value="session"
-            checked={keep === 'session'}
-            onChange={() => setKeep('session')}
-            disabled={busy}
-          />
+        <KeepChoice
+          name={`${baseId}-keep`}
+          value="session"
+          keep={keep}
+          onChoose={setKeep}
+          disabled={busy}
+        >
           This session only
-        </label>
-        <label className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-primary">
-          <input
-            type="radio"
-            name={`${baseId}-keep`}
-            value="saved"
-            checked={keep === 'saved'}
-            onChange={() => setKeep('saved')}
-            disabled={busy}
-          />
+        </KeepChoice>
+        <KeepChoice
+          name={`${baseId}-keep`}
+          value="saved"
+          keep={keep}
+          onChoose={setKeep}
+          disabled={busy}
+        >
           Save to my credentials
-        </label>
+        </KeepChoice>
       </fieldset>
 
       {actionError && (
