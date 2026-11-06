@@ -163,9 +163,32 @@
 }
 
 .niuu-files-pane__preview {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow: auto;
+}
+
+/* An image's viewer takes the column's whole height, its actions as icons on one row. */
+.niuu-files-pane__preview > .niuu-image-preview {
+  flex: 1 1 auto;
+}
+
+.niuu-files-pane__preview .niuu-image-preview-toolbar {
+  flex-wrap: nowrap;
+  gap: 4px;
+  padding: 4px 8px;
+}
+
+.niuu-files-pane__preview .niuu-image-preview-toolbar :is(button, a) {
+  min-height: 30px;
+  padding: 4px 7px;
+}
+
+.niuu-files-pane__preview .niuu-image-preview-actions :is(button, a) {
+  gap: 0;
+  font-size: 0;
 }
 
 .niuu-files-pane__hint,
