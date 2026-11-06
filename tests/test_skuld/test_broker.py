@@ -5471,6 +5471,43 @@ class TestHandleWebSocket:
         mock_transport.send_message.assert_called_once_with("hello", msg_id=ANY, request_id=None)
 
     @pytest.mark.asyncio
+    async def test_handle_websocket_sends_the_open_preview_ports(self, test_broker):
+        """A browser that connects late still sees the ports open now (live preview)."""
+        from niuu.domain.transcript_reducer import PER_CONNECT_MARKER
+        from skuld.preview import PreviewPortWatcher
+        from skuld.preview_port import ListeningPort, ListeningPortScanner
+
+        class _Scanner(ListeningPortScanner):
+            async def scan(self):
+                return {ListeningPort(5173), ListeningPort(3000)}
+
+        watcher = PreviewPortWatcher(_Scanner(), interval_seconds=1, emit=AsyncMock())
+        await watcher.scan_once()
+        test_broker.preview_watcher = watcher
+        mock_transport = AsyncMock()
+        mock_transport.is_alive = True
+        mock_transport.capabilities = TransportCapabilities(interrupt=True)
+        test_broker._transport = mock_transport
+        mock_ws = AsyncMock()
+        mock_ws.headers = {}
+        mock_ws.query_params = {}
+        mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
+
+        await test_broker.handle_websocket(mock_ws)
+
+        frames = [c[0][0] for c in mock_ws.send_json.call_args_list]
+        preview = [f for f in frames if f.get("type") == "preview_ports"]
+        assert preview == [
+            {
+                "type": "preview_ports",
+                "ports": [3000, 5173],
+                "opened": [],
+                "closed": [],
+                PER_CONNECT_MARKER: True,
+            }
+        ]
+
+    @pytest.mark.asyncio
     async def test_handle_websocket_sends_capabilities(self, test_broker):
         """Browser receives a capabilities message after welcome, before history."""
         mock_transport = AsyncMock()
