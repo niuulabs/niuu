@@ -1439,6 +1439,16 @@ describe('buildVolundrHttpAdapter', () => {
     expect(client.get).toHaveBeenCalledWith('/settings/live-preview');
   });
 
+  it('getLivePreviewConfig asks the Forge host that runs the session', async () => {
+    const client = makeClient();
+    vi.mocked(client.get).mockResolvedValue({ enabled: false, origin_template: '' });
+    expect(await buildVolundrHttpAdapter(client).getLivePreviewConfig('host/a')).toEqual({
+      enabled: false,
+      originTemplate: '',
+    });
+    expect(client.get).toHaveBeenCalledWith('/settings/live-preview?instance_id=host%2Fa');
+  });
+
   it('getCredentials forwards the optional secret type and applies the fallback type', async () => {
     const client = makeClientWithBase('http://localhost:8080/api/v1');
     const service = buildVolundrHttpAdapter(client);

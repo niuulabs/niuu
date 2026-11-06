@@ -1792,6 +1792,25 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByTestId('right-dock-tab-preview')).toHaveTextContent('Preview :5173');
     });
 
+    it("opens previews on the preview domain of the session's own Forge host", async () => {
+      mockChatState({ previewPorts: [5173] });
+      const getLivePreviewConfig = vi.fn().mockResolvedValue({
+        enabled: true,
+        originTemplate: 'https://{port}--{session_id}.preview.valhalla.test',
+      });
+      wrap('test-session-id-1234', {
+        session: { ...RUNNING_SESSION, instanceId: 'valhalla' },
+        volundr: { getLivePreviewConfig },
+      });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(await screen.findByRole('button', { name: /Preview :5173/ }));
+      expect(await screen.findByTitle('Live preview of port 5173')).toHaveAttribute(
+        'src',
+        'https://5173--test-session-id-1234.preview.valhalla.test/',
+      );
+      expect(getLivePreviewConfig).toHaveBeenCalledWith('valhalla');
+    });
+
     it('opens a localhost link from the transcript in the live preview, at its path', async () => {
       mockChatState({
         previewPorts: [5173],

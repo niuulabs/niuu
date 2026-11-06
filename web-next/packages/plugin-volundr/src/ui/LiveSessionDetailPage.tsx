@@ -3355,9 +3355,12 @@ function LiveSessionDetailPageInner({
     [chatEndpoint, historyLocator],
   );
   const chat = useSkuldChat(chatEndpoint, { historyEndpoint });
+  // Each Forge host has its own preview domain: ask the one that runs this session.
+  const previewInstanceId = liveSession?.instanceId ?? instanceId;
   const livePreviewQuery = useQuery({
-    queryKey: ['volundr', 'live-preview-config'],
-    queryFn: () => volundr.getLivePreviewConfig(),
+    queryKey: ['volundr', 'live-preview-config', previewInstanceId ?? null],
+    queryFn: () => volundr.getLivePreviewConfig(previewInstanceId),
+    enabled: Boolean(liveSession),
     staleTime: Infinity,
   });
   const livePreview = livePreviewQuery.data ?? LIVE_PREVIEW_DISABLED;
