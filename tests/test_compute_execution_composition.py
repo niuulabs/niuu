@@ -1,6 +1,7 @@
 """File-configured execution adapters are composed through their actual ports."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -55,6 +56,73 @@ def test_runtime_factory_composes_nested_profile_runtimes() -> None:
     assert isinstance(runtime._default, RecordingRuntime)
     assert runtime._default.name == "docker"
     assert runtime._profiles["openshell"].name == "openshell"
+
+
+def test_runtime_factory_passes_adapter_configs_for_the_guest_through(tmp_path) -> None:
+    # Skuld's preview.router_auth is an adapter config for the guest, not a runtime:
+    # building it here failed startup with "must implement VmRuntime".
+    from tests.test_adapters.test_ssh_vm_runtime import (
+        _ROUTER_AUTH,
+        _launch_environment,
+        _preview_runtime,
+    )
+
+    template = _preview_runtime(tmp_path)
+    config = DynamicAdapterConfig(
+        adapter="volundr.adapters.outbound.ssh_vm_runtime.SshContainerVmRuntime",
+        kwargs={
+            "ssh_private_key_file": str(tmp_path / "preview-key"),
+            "ssh_public_key_file": str(tmp_path / "preview-key.pub"),
+            "data_dir": str(tmp_path / "preview-data"),
+            "skuld_image": "test/skuld:dev",
+            "preview_router_auth": _ROUTER_AUTH,
+        },
+    )
+
+    runtime = module.build_runtime(config)
+
+    assert type(runtime) is type(template)
+    environment = _launch_environment(runtime)
+    assert environment["SKULD__PREVIEW__ENABLED"] == "true"
+    assert json.loads(environment["SKULD__PREVIEW__ROUTER_AUTH"]) == _ROUTER_AUTH
+
+
+def test_runtime_factory_builds_runtimes_only_where_the_constructor_takes_them() -> None:
+    class Wrapping(RecordingRuntime):
+        def __init__(self, *, inner: VmRuntime, settings: dict) -> None:
+            super().__init__(name="wrapping")
+            self.inner = inner
+            self.settings = settings
+
+    inner = {"adapter": "tests.test_adapters.test_profiled_vm_runtime.RecordingRuntime"}
+    settings = {"adapter": "somewhere.else.Adapter", "kwargs": {"x": 1}}
+    importer = Mock(
+        side_effect=lambda name: Wrapping if name == "wrapping" else module.import_class(name)
+    )
+
+    runtime = module.build_runtime(
+        {
+            "adapter": "wrapping",
+            "kwargs": {"inner": {**inner, "kwargs": {"name": "docker"}}, "settings": settings},
+        },
+        importer=importer,
+    )
+
+    assert isinstance(runtime.inner, RecordingRuntime)
+    assert runtime.inner.name == "docker"
+    assert runtime.settings == settings
+
+
+def test_runtime_factory_refuses_nested_configs_it_cannot_type() -> None:
+    class Unresolvable(RecordingRuntime):
+        def __init__(self, *, inner: "NotImported") -> None:  # noqa: F821
+            super().__init__(name="unresolvable")
+
+    with pytest.raises(TypeError, match="do not resolve"):
+        module.build_runtime(
+            {"adapter": "unresolvable", "kwargs": {"inner": {"adapter": "x.Y"}}},
+            importer=lambda name: Unresolvable,
+        )
 
 
 async def test_composes_each_plan_with_shared_access_and_resolved_secret(tmp_path, monkeypatch):
