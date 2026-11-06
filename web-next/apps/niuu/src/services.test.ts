@@ -1139,6 +1139,53 @@ describe('buildServices', () => {
     );
   });
 
+  it('reads and changes session read state on the Forge host and carries it into the list', async () => {
+    const services = buildServices({
+      demoMode: true,
+      theme: 'ice',
+      plugins: {},
+      services: {
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
+      },
+    } as any);
+    const forgeVolundr = volundrMocks.buildVolundrHttpAdapter.mock.results[0]?.value;
+    const readState = {
+      isUnread: true,
+      latestOutputSeq: 14,
+      readThroughSeq: 9,
+      revision: 3,
+    };
+    forgeVolundr.getSessionReadState = vi.fn().mockResolvedValue(readState);
+    forgeVolundr.changeSessionReadState = vi.fn().mockResolvedValue({ ...readState, revision: 4 });
+    const volundr = services.volundr as any;
+
+    await expect(volundr.getSessionReadState('s1', { instanceId: 'thor' })).resolves.toBe(
+      readState,
+    );
+    expect(forgeVolundr.getSessionReadState).toHaveBeenCalledWith('s1', { instanceId: 'thor' });
+    const change = { state: 'read', expectedRevision: 3, throughSeq: 14 };
+    await expect(volundr.changeSessionReadState('s1', change)).resolves.toMatchObject({
+      revision: 4,
+    });
+    expect(forgeVolundr.changeSessionReadState).toHaveBeenCalledWith('s1', change, undefined);
+
+    forgeVolundr.getSession.mockResolvedValue({
+      id: 's1',
+      name: 'alpha',
+      status: 'running',
+      source: { type: 'git', repo: 'r', branch: 'main' },
+      readState,
+      shortDescription: 'Tests next',
+      workedSeconds24h: 120,
+    });
+    await expect((services.sessionStore as any).getSession('s1')).resolves.toMatchObject({
+      readState,
+      shortDescription: 'Tests next',
+      workedSeconds24h: 120,
+    });
+  });
+
   it('prefers an explicit filesystem base over the derived Volundr route', () => {
     const services = buildServices({
       demoMode: true,

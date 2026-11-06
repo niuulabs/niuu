@@ -2,8 +2,8 @@
 
 .niuu-chat-timestamp {
   font-size: var(--text-xs);
+  font-style: italic;
   color: var(--color-text-faint);
-  font-family: var(--font-mono);
 }
 
 .niuu-chat-msg-meta {
@@ -124,14 +124,35 @@
   flex-wrap: wrap;
 }
 
-.niuu-chat-model-badge {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-  background: var(--color-bg-tertiary);
-  padding: 1px var(--space-2);
+/* Engine-coloured dot + model name (Claude, Codex, or the brand colour). */
+.niuu-chat-speaker {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.niuu-chat-speaker-avatar {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
   border-radius: var(--radius-full);
-  border: 1px solid var(--color-border-subtle);
+  background: color-mix(
+    in srgb,
+    var(--niuu-chat-engine, var(--color-brand)) 30%,
+    var(--color-bg-tertiary)
+  );
+  color: var(--color-text-primary);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.niuu-chat-speaker-avatar::before {
+  content: attr(data-initial);
 }
 
 .niuu-chat-header-sep {
@@ -202,6 +223,18 @@
 }
 
 /* ── Action Bar ─────────────────────────────────────────── */
+
+.niuu-chat-assistant-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 26px;
+}
+
+/* The time on the left, the reply's actions at the far end, as Lexi's "…" sits. */
+.niuu-chat-assistant-footer > .niuu-chat-action-bar {
+  margin-left: auto;
+}
 
 .niuu-chat-action-bar {
   display: flex;
@@ -418,16 +451,6 @@
     [data-theme='deep-blue'],
     [data-theme='dark-blue']
   )
-  .niuu-chat-model-badge {
-  border-radius: 6px;
-  color: var(--color-text-secondary);
-}
-:is(
-    [data-theme='xteo'],
-    [data-theme='midnight-blue'],
-    [data-theme='deep-blue'],
-    [data-theme='dark-blue']
-  )
   .niuu-chat-user-bubble {
   background: var(--color-sent-surface);
   box-shadow: var(--shadow-sm);
@@ -439,4 +462,90 @@
   border-top: 1px solid var(--color-border-subtle);
   margin: 16px 0;
   width: 100%;
+}
+
+/* ── Commentary vs final answer ─────────────────────────── */
+
+/* Narration between tool calls reads quieter than the answer. */
+.niuu-chat-commentary {
+  color: color-mix(in srgb, var(--color-text-primary) 82%, var(--color-bg-primary));
+}
+
+.niuu-chat-final-tag {
+  display: inline-block;
+  margin-bottom: var(--space-1);
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+/* ── User message delivery ──────────────────────────────── */
+
+.niuu-chat-user-bubble--queued {
+  background: color-mix(
+    in srgb,
+    var(--color-sent-surface, var(--color-bg-tertiary)) 50%,
+    transparent
+  );
+  border: 1px dashed var(--color-border);
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+
+.niuu-chat-delivery {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+}
+
+.niuu-chat-delivery--queued,
+.niuu-chat-delivery--unconfirmed {
+  color: var(--state-warn);
+}
+
+.niuu-chat-delivery--failed {
+  color: var(--color-critical-fg);
+}
+
+.niuu-chat-delivery-icon {
+  width: var(--space-3);
+  height: var(--space-3);
+  flex: none;
+}
+
+.niuu-chat-delivery-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--state-warn);
+  animation: niuu-chat-delivery-pulse 1.4s ease-out infinite;
+}
+
+@keyframes niuu-chat-delivery-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--state-warn) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+/* ── Compaction ─────────────────────────────────────────── */
+
+.niuu-chat-compaction-row {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .niuu-chat-delivery-pulse {
+    animation: none;
+  }
 }

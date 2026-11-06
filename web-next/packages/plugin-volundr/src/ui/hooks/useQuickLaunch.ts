@@ -4,6 +4,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { useService } from '@niuulabs/plugin-sdk';
 import type { IVolundrService } from '../../ports/IVolundrService';
 import type {
+  ForgeMcpSessionOptions,
   SessionDefinition,
   SessionSource,
   VolundrSession,
@@ -53,6 +54,8 @@ export interface QuickLaunchRequest {
   model?: string;
   /** Credentials and integrations to attach; omitted means the server's default set. */
   integrationIds?: string[];
+  /** Forge MCP grants for the session; omitted means none beyond the host's defaults. */
+  forgeMcp?: ForgeMcpSessionOptions;
 }
 
 export interface QuickLaunchOptions {
@@ -91,6 +94,7 @@ export function useQuickLaunch() {
         initialPrompt: request.initialPrompt?.trim() || undefined,
         personaName: request.personaName?.trim() || undefined,
         integrationIds: request.integrationIds,
+        forgeMcp: request.forgeMcp,
         terminalRestricted: false,
         workloadConfig: {},
       });

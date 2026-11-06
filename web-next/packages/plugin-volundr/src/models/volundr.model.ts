@@ -166,14 +166,22 @@ export interface ForgeProject {
   instance_id?: string;
   instance_name?: string;
   workspace_path?: string;
+  description?: string;
   brief?: string;
   repo_url?: string;
   revision?: number;
 }
+/**
+ * What `PATCH /projects/{id}` accepts besides the revision. Connecting a checkout is a
+ * change of `workspace_path`: Forge reads the folder's Git remote and sets `repo_url`.
+ */
 export interface ForgeProjectChanges {
   name?: string;
+  description?: string;
   brief?: string;
+  status?: 'active' | 'archived';
   repo_url?: string;
+  workspace_path?: string;
 }
 export interface SessionProjectMembership {
   sessionId: string;
@@ -185,6 +193,8 @@ export interface SessionCoordination {
   projectId: string;
   role: string;
   parent?: { instanceId: string; sessionId: string } | null;
+  /** What the coordinator asked this worker to do; Forge records it with the membership. */
+  objective?: string;
   labels?: string[];
 }
 
@@ -230,14 +240,46 @@ export interface VolundrSession {
   instanceId?: string;
   instanceName?: string;
   /** The caller's inbox state for the session's latest final reply, when reported. */
-  readState?: SessionInboxReadState;
+  readState?: SessionReadState;
+  /** The agent's own one-line summary of what the session is doing, when it wrote one. */
+  shortDescription?: string;
+  /**
+   * Seconds Forge worked on the session in the last 24 hours. Only the session list reports
+   * it, and only a host that records turn spans.
+   */
+  workedSeconds24h?: number;
 }
 
-export interface SessionInboxReadState {
+/**
+ * The caller's read state for one session. `latestOutputSeq` and `readThroughSeq` are positions
+ * in the session's event log, not counts of replies.
+ */
+export interface SessionReadState {
   isUnread: boolean;
   latestOutputSeq: number;
+  latestOutputTurnId?: string | null;
+  latestOutputAt?: string | null;
   readThroughSeq: number;
+  manuallyUnread?: boolean;
   revision: number;
+}
+
+/** The earlier name of the read state a session response embeds. */
+export type SessionInboxReadState = SessionReadState;
+
+/** A read or unread action. `throughSeq` is the output the caller actually saw. */
+export interface SessionReadStateChange {
+  state: 'read' | 'unread';
+  expectedRevision: number;
+  throughSeq: number;
+}
+
+/** Operator grants that let a session act on other sessions through the Forge MCP. */
+export type ForgeMcpGrant = 'message' | 'lifecycle';
+
+/** Forge MCP options for a new session (`forge_mcp` on session create). */
+export interface ForgeMcpSessionOptions {
+  grants: ForgeMcpGrant[];
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +374,17 @@ export interface VolundrMessage {
   tokensIn?: number;
   tokensOut?: number;
   latency?: number;
+}
+
+/**
+ * What `POST /sessions/{id}/messages` answers. `delivered` means the session's transport
+ * accepted the message (200); `pending` means Forge accepted it and is still retrying
+ * delivery (202), which is not a confirmed send.
+ */
+export interface SessionMessageDelivery {
+  status: 'delivered' | 'pending';
+  requestId: string;
+  sessionId: string;
 }
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';

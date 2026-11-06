@@ -25,7 +25,7 @@ describe('public text and tool chronology', () => {
     expect(screen.getByText(before)).toBeInTheDocument();
     expect(screen.getByText(after)).toBeInTheDocument();
     expect(screen.getAllByText(before)).toHaveLength(1);
-    expect(screen.getByTestId('tool-block')).toBeInTheDocument();
+    expect(screen.getByTestId('tool-group-block')).toBeInTheDocument();
   });
 
   it('preserves the same legacy prose while streaming', () => {
@@ -43,7 +43,7 @@ describe('public text and tool chronology', () => {
     const { container, rerender } = render(<AssistantMessage message={message(parts)} />);
     const commentary = container.querySelector('[data-text-id="commentary-a"]');
     const answer = container.querySelector('[data-text-id="answer-a"]');
-    const command = screen.getByTestId('tool-block');
+    const command = screen.getByTestId('tool-group-block');
     expect(commentary).not.toBeNull();
     expect(answer).toHaveAttribute('data-text-phase', 'final_answer');
     expect(
@@ -55,7 +55,7 @@ describe('public text and tool chronology', () => {
     rerender(<AssistantMessage message={message(parts.map((part) => ({ ...part })))} />);
     expect(container.querySelector('[data-text-id="commentary-a"]')).toBe(commentary);
     expect(container.querySelector('[data-text-id="answer-a"]')).toBe(answer);
-    expect(screen.getByTestId('tool-block')).toBe(command);
+    expect(screen.getByTestId('tool-group-block')).toBe(command);
     expect(screen.getAllByText(before)).toHaveLength(1);
     expect(screen.getAllByText(after)).toHaveLength(1);
   });

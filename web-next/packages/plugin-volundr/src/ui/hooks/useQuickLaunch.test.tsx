@@ -156,6 +156,18 @@ describe('useQuickLaunch', () => {
     });
   });
 
+  it('passes the Forge tool grants to the session it starts', async () => {
+    const volundr = createMockVolundrService();
+    const startSession = vi.fn(volundr.startSession);
+    volundr.startSession = startSession;
+
+    renderHarness(volundr, { ...GIT_REQUEST, forgeMcp: { grants: ['message'] } });
+    screen.getByRole('button', { name: 'launch' }).click();
+
+    await waitFor(() => expect(startSession).toHaveBeenCalledTimes(1));
+    expect(startSession.mock.calls[0]![0]).toMatchObject({ forgeMcp: { grants: ['message'] } });
+  });
+
   it('navigates back to the caller when one was given', async () => {
     const volundr = createMockVolundrService();
     renderHarness(volundr, GIT_REQUEST, { returnTo: '/realms/orders' });

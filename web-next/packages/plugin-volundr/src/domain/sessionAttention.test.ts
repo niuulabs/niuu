@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage, RoomParticipant } from '@niuulabs/ui';
-import { buildAttentionItems, latestChecklist, runningPeers } from './sessionAttention';
+import {
+  buildAttentionItems,
+  latestChecklist,
+  resolveChecklist,
+  runningPeers,
+} from './sessionAttention';
 
 function todoMessage(id: string, todos: unknown): ChatMessage {
   return {
@@ -77,6 +82,39 @@ describe('latestChecklist', () => {
   it('returns nothing without a task list', () => {
     expect(latestChecklist([])).toEqual([]);
     expect(latestChecklist([todoMessage('bad', 'not a list')])).toEqual([]);
+  });
+});
+
+describe('resolveChecklist', () => {
+  const messages = [todoMessage('m1', [{ content: 'From TodoWrite', status: 'pending' }])];
+
+  it('reads the TodoWrite calls when the runtime sent no plan', () => {
+    expect(resolveChecklist(null, messages)).toEqual([
+      { label: 'From TodoWrite', status: 'pending' },
+    ]);
+    expect(resolveChecklist(undefined, messages)).toEqual(latestChecklist(messages));
+  });
+
+  it('lets a plan supersede the TodoWrite list', () => {
+    const plan = {
+      tasks: [
+        { content: 'Read the gates', status: 'completed' },
+        { content: 'Write the fix', status: 'in_progress', activeForm: 'Writing the fix' },
+        { content: 'Run the tests', status: 'something-new' },
+        { content: '   ', status: 'pending' },
+      ],
+      counts: { total: 4 },
+    };
+
+    expect(resolveChecklist(plan, messages)).toEqual([
+      { label: 'Read the gates', status: 'completed' },
+      { label: 'Write the fix', status: 'in_progress' },
+      { label: 'Run the tests', status: 'pending' },
+    ]);
+  });
+
+  it('keeps an empty plan empty instead of falling back', () => {
+    expect(resolveChecklist({ tasks: [], counts: { total: 0 } }, messages)).toEqual([]);
   });
 });
 

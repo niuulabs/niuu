@@ -17,12 +17,27 @@ import type { IPtyStream } from '../ports/IPtyStream';
 import type { IFileSystemPort } from '../ports/IFileSystemPort';
 import type { ISessionStore } from '../ports/ISessionStore';
 import type { VolundrSession } from '../models/volundr.model';
+import type { Session } from '../domain/session';
 
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
 
 const navigate = vi.fn();
+
+const sessionChatProps = vi.hoisted(() => vi.fn());
+
+// The real SessionChat still renders; the spy only records the props the page hands it.
+vi.mock('@niuulabs/ui', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@niuulabs/ui')>();
+  return {
+    ...actual,
+    SessionChat: (props: React.ComponentProps<typeof actual.SessionChat>) => {
+      sessionChatProps(props);
+      return <actual.SessionChat {...props} />;
+    },
+  };
+});
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => navigate,
@@ -55,7 +70,11 @@ vi.mock('shiki', () => ({
   codeToHtml: vi.fn().mockResolvedValue('<pre><code>highlighted</code></pre>'),
 }));
 
+const resizeCallbacks: ResizeObserverCallback[] = [];
 class ResizeObserverStub {
+  constructor(callback: ResizeObserverCallback) {
+    resizeCallbacks.push(callback);
+  }
   observe = vi.fn();
   disconnect = vi.fn();
   unobserve = vi.fn();
@@ -71,6 +90,7 @@ const RUNNING_SESSION: VolundrSession = {
   name: 'test-session',
   source: { type: 'git', repo: 'niuulabs/volundr', branch: 'main' },
   status: 'running',
+  activityState: 'active',
   model: 'claude-sonnet-4-6',
   lastActive: Date.now() - 60_000,
   messageCount: 10,
@@ -495,6 +515,22 @@ function buildVolundrService(session: VolundrSession | null = RUNNING_SESSION): 
   };
 }
 
+/** The domain state the services mapping gives a raw session (apps/niuu toSessionState). */
+function domainStateOf(session: VolundrSession): Session['state'] {
+  if (session.status !== 'running') return 'terminated';
+  switch (session.activityState) {
+    case 'active':
+    case 'tool_executing':
+      return 'running';
+    case 'awaiting_input':
+      return 'awaiting_input';
+    case 'idle':
+      return 'idle';
+    default:
+      return 'ready';
+  }
+}
+
 function buildSessionStore(session: VolundrSession | null = RUNNING_SESSION): ISessionStore {
   const base = createMockSessionStore();
   return {
@@ -507,7 +543,7 @@ function buildSessionStore(session: VolundrSession | null = RUNNING_SESSION): IS
             name: session.name,
             personaName: session.name,
             templateId: 'git-default',
-            state: session.status === 'running' ? 'running' : 'terminated',
+            state: domainStateOf(session),
             clusterId: 'local',
             startedAt: new Date(Date.now() - 9_240_000).toISOString(),
             resources: {
@@ -537,6 +573,7 @@ function wrap(
     readOnly?: boolean;
     session?: VolundrSession | null;
     volundr?: Partial<IVolundrService>;
+    onBackToUnread?: () => void;
     sessionStore?: Partial<ISessionStore>;
     openConnections?: () => void;
   } = {},
@@ -558,11 +595,21 @@ function wrap(
         }}
       >
         <ChatConnectionsContext.Provider value={opts.openConnections}>
-          <LiveSessionDetailPage sessionId={sessionId} readOnly={opts.readOnly} />
+          <LiveSessionDetailPage
+            sessionId={sessionId}
+            readOnly={opts.readOnly}
+            onBackToUnread={opts.onBackToUnread}
+          />
         </ChatConnectionsContext.Provider>
       </ServicesProvider>
     </QueryClientProvider>,
   );
+}
+
+/** Opens the header's More menu and returns one of its items. */
+function moreItem(name: string) {
+  fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+  return screen.getByRole('button', { name });
 }
 
 function mockChatState(overrides: Partial<ReturnType<typeof chatHooks.useSkuldChat>> = {}) {
@@ -589,6 +636,13 @@ function mockChatState(overrides: Partial<ReturnType<typeof chatHooks.useSkuldCh
     sendRewindFiles: vi.fn(),
     sendSetInternalVisibility: vi.fn(),
     clearMessages: vi.fn(),
+    plan: null,
+    agents: [],
+    effort: null,
+    runtimeOptions: null,
+    usage: null,
+    sendSetEffort: vi.fn(),
+    sendSetRuntimeOptions: vi.fn(),
     ...overrides,
   });
 }
@@ -597,8 +651,18 @@ function mockChatState(overrides: Partial<ReturnType<typeof chatHooks.useSkuldCh
 // Tests
 // ---------------------------------------------------------------------------
 
+/** Resize every observed element to `width`, as a window resize would. */
+function resizeTo(width: number) {
+  act(() => {
+    for (const callback of resizeCallbacks) {
+      callback([{ contentRect: { width } } as ResizeObserverEntry], {} as ResizeObserver);
+    }
+  });
+}
+
 describe('LiveSessionDetailPage', () => {
   beforeEach(() => {
+    resizeCallbacks.length = 0;
     localStorage.clear();
     localStorage.setItem(
       'niuu.forge.sessionTabs',
@@ -709,13 +773,17 @@ describe('LiveSessionDetailPage', () => {
     });
 
     await screen.findByTestId('live-session-detail-page');
-    await screen.findByText('Human Gate Requested');
+    // The decision waits by the composer as a strip and opens in place.
+    const strip = await screen.findByTestId('decision-strip');
+    expect(strip).toHaveTextContent('1 decision waiting');
+    expect(strip).toHaveTextContent('PRD approval gate');
+    fireEvent.click(within(strip).getByRole('button', { name: /Show the decision/ }));
+    expect(screen.getByTestId('decision-card')).toHaveTextContent('Your decision');
     expect(
       within(screen.getByRole('region', { name: 'PRD approval gate' })).getByText(
         /Please approve or request changes on the PRD/,
       ),
     ).toBeInTheDocument();
-    expect(screen.getByTestId('attention-gate')).toHaveTextContent('PRD approval gate');
 
     fireEvent.change(screen.getByLabelText('Reply Notes'), {
       target: { value: 'The scope is right; proceed.' },
@@ -730,8 +798,9 @@ describe('LiveSessionDetailPage', () => {
       });
     });
     await waitFor(() => {
-      expect(screen.queryByText('Human Gate Requested')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('decision-card')).not.toBeInTheDocument();
     });
+    expect(screen.queryByTestId('decision-strip')).not.toBeInTheDocument();
   });
 
   it('hides the gate card once the latest gate verdict is already resolved', async () => {
@@ -766,7 +835,7 @@ describe('LiveSessionDetailPage', () => {
     });
 
     await screen.findByTestId('live-session-detail-page');
-    expect(screen.queryByText('Human Gate Requested')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('decision-strip')).not.toBeInTheDocument();
   });
 
   it('shows a pending agent question and sends the chosen answer', async () => {
@@ -787,9 +856,11 @@ describe('LiveSessionDetailPage', () => {
 
     const chatPanel = await screen.findByRole('tabpanel');
     expect(await within(chatPanel).findByText('Which accent colour do you prefer?')).toBeVisible();
-    expect(
-      within(screen.getByTestId('attention-input')).getByText('Which accent colour do you prefer?'),
-    ).toBeInTheDocument();
+    // The question is answered by the composer; the closed panel only says something waits.
+    expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show session panel' })).toHaveTextContent(
+      'Needs you 1',
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Teal' }));
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
     expect(respondToInput).toHaveBeenCalledWith('tty-1-6f17f32f', [
@@ -832,7 +903,8 @@ describe('LiveSessionDetailPage', () => {
     wrap('test-session-id-1234');
 
     await screen.findByTestId('live-session-detail-page');
-    expect(await screen.findByText('Human Gate Requested')).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /Show the decision/ }));
+    expect(screen.getByTestId('decision-card')).toHaveTextContent('Your decision');
     expect(screen.getAllByText('reviewer').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Please tighten the telemetry review.').length).toBeGreaterThan(0);
     expect(screen.getByText('A human review is required.')).toBeInTheDocument();
@@ -881,9 +953,8 @@ describe('LiveSessionDetailPage', () => {
 
     wrap('test-session-id-1234');
 
-    const resendButton = await screen.findByRole('button', {
-      name: 'Resend prompt to flock',
-    });
+    await screen.findByTestId('live-session-detail-page');
+    const resendButton = moreItem('Resend prompt to flock');
     expect(resendButton).toBeEnabled();
 
     fireEvent.click(resendButton);
@@ -896,6 +967,8 @@ describe('LiveSessionDetailPage', () => {
     wrap('test-session-id-1234');
 
     await screen.findByTestId('live-session-detail-page');
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    expect(screen.getByRole('button', { name: 'Archive session' })).toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Resend prompt to flock' }),
     ).not.toBeInTheDocument();
@@ -937,9 +1010,12 @@ describe('LiveSessionDetailPage', () => {
     it('shows repo and branch for git source', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByText('niuulabs/volundr')).toBeInTheDocument();
+      expect(
+        within(screen.getByTestId('session-stats')).getByText('niuulabs/volundr'),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId('session-branch')).toHaveTextContent('main');
       fireEvent.click(screen.getByRole('button', { name: 'Session workspace details' }));
-      expect(screen.getByText('main')).toBeInTheDocument();
+      expect(within(screen.getByRole('dialog')).getByText('main')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Copy session ID' })).toBeInTheDocument();
     });
 
@@ -1069,6 +1145,13 @@ describe('LiveSessionDetailPage', () => {
         sendRewindFiles: vi.fn(),
         sendSetInternalVisibility: vi.fn(),
         clearMessages: vi.fn(),
+        plan: null,
+        agents: [],
+        effort: null,
+        runtimeOptions: null,
+        usage: null,
+        sendSetEffort: vi.fn(),
+        sendSetRuntimeOptions: vi.fn(),
       });
 
       wrap('test-session-id-1234');
@@ -1351,6 +1434,93 @@ describe('LiveSessionDetailPage', () => {
       });
     });
 
+    it('keeps Changes and Files in one dock beside the chat, with quick open on ⌥⌘O', async () => {
+      mockChatState({
+        messages: [
+          {
+            id: 'edit',
+            role: 'assistant',
+            content: '',
+            createdAt: new Date(0),
+            parts: [
+              { type: 'tool_use', name: 'Edit', input: { file_path: '/workspace/src/app.ts' } },
+              { type: 'tool_use', name: 'Read', input: { path: '/workspace/README.md' } },
+            ],
+          },
+        ],
+      });
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      const diffs = screen.getByRole('tab', { name: /Diffs/i });
+      fireEvent.click(diffs);
+      expect(diffs).toHaveAttribute('aria-selected', 'true');
+      // The chat stays the main view while the dock is open.
+      expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute('aria-selected', 'true');
+      fireEvent.click(diffs);
+      expect(screen.queryByTestId('right-dock')).not.toBeInTheDocument();
+
+      fireEvent.keyDown(window, { key: 'o', code: 'KeyO', altKey: true, metaKey: true });
+      expect(await screen.findByTestId('files-pane')).toBeInTheDocument();
+      const quickOpen = await screen.findByTestId('quick-open');
+      // The files the agent touched come first.
+      expect(within(quickOpen).getAllByRole('option')[0]).toHaveTextContent('app.ts');
+      expect(within(quickOpen).getAllByRole('option')[1]).toHaveTextContent('README.md');
+      fireEvent.keyDown(within(quickOpen).getByLabelText('Find a file'), { key: 'Escape' });
+
+      // Opening the session panel closes the dock: they share the right side.
+      fireEvent.click(screen.getByRole('button', { name: 'Show session panel' }));
+      expect(screen.queryByTestId('right-dock')).not.toBeInTheDocument();
+    });
+
+    it('steps the dock aside rather than cover a narrow conversation, and brings it back', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      const diffs = screen.getByRole('tab', { name: /Diffs/i });
+      fireEvent.click(diffs);
+      expect(screen.getByTestId('right-dock')).toBeInTheDocument();
+      resizeTo(700);
+      // Still chosen, but 700px cannot hold the conversation's 480 and the dock's 340.
+      expect(diffs).toHaveAttribute('aria-selected', 'true');
+      expect(screen.queryByTestId('right-dock')).not.toBeInTheDocument();
+
+      resizeTo(1000);
+      // The dock narrows to what is left beside the conversation.
+      expect(screen.getByTestId('right-dock')).toHaveStyle({ width: '520px' });
+      expect(screen.getByRole('separator', { name: 'Resize the dock' })).toHaveAttribute(
+        'aria-valuenow',
+        '520',
+      );
+
+      resizeTo(1600);
+      expect(screen.getByTestId('right-dock')).toHaveStyle({ width: '560px' });
+    });
+
+    it('says there are no changes rather than showing an empty list', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+      expect(await screen.findByTestId('diff-files-empty')).toHaveTextContent(
+        'No changes since the last commit.',
+      );
+    });
+
+    it('says the changed files could not be loaded instead of showing none', async () => {
+      const working = global.fetch;
+      global.fetch = vi.fn(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.includes('/api/diff/files')) return new Response('nope', { status: 502 });
+        return working(input);
+      }) as typeof fetch;
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
+      expect(await screen.findByTestId('diff-files-error')).toHaveTextContent(
+        'The changed files could not be loaded: Failed to fetch diff files: 502',
+      );
+      expect(screen.queryByTestId('diff-files-empty')).not.toBeInTheDocument();
+    });
+
     it('shows a starting message in the terminal tab while a session boots', async () => {
       wrap('test-session-id-1234', { session: STARTING_SESSION });
       await screen.findByTestId('live-session-detail-page');
@@ -1441,6 +1611,9 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       fireEvent.click(screen.getByRole('tab', { name: /Files/i }));
+      // Files open in the dock; the full manager is one step away.
+      expect(await screen.findByTestId('files-pane')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /Upload, new folder, delete/ }));
 
       await waitFor(() => {
         expect(screen.getByTestId('session-files-workspace')).toBeInTheDocument();
@@ -1522,11 +1695,13 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
-      const fileButton = await screen.findByText('README.md');
-      expect(screen.getByText('+2')).toBeInTheDocument();
-      expect(screen.getByText('-1')).toBeInTheDocument();
-
-      fireEvent.click(fileButton);
+      // Changes open in the dock beside the chat, on the first changed file.
+      expect(screen.getByTestId('right-dock')).toBeInTheDocument();
+      const files = await screen.findByRole('tablist', { name: 'Changed files' });
+      expect(within(files).getByRole('tab', { name: /README\.md/ })).toHaveTextContent(
+        'README.md+2−1',
+      );
+      expect(screen.getByTestId('diff-summary')).toHaveTextContent('1 file changed+2−1');
 
       await waitFor(() => {
         expect(screen.getByText('No changes in this file')).toBeInTheDocument();
@@ -1563,7 +1738,7 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
-      fireEvent.click(await screen.findByText('README.md'));
+      await screen.findByRole('tablist', { name: 'Changed files' });
 
       await waitFor(() => {
         expect(
@@ -1625,7 +1800,6 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
-      fireEvent.click(await screen.findByText('src/app.ts'));
 
       await waitFor(() => {
         expect(screen.getByText('@@ -1,2 +1,3 @@')).toBeInTheDocument();
@@ -1633,12 +1807,15 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByText('console.log("old");')).toBeInTheDocument();
       expect(screen.getByText('console.log("new");')).toBeInTheDocument();
 
-      fireEvent.click(screen.getByRole('button', { name: /default branch/i }));
+      fireEvent.click(screen.getByRole('button', { name: /base branch/i }));
 
       await waitFor(() => {
-        expect(screen.getByText('Select a file to view changes')).toBeInTheDocument();
+        expect(screen.getByTestId('diff-summary')).toHaveTextContent('1 file changed−4');
       });
-      expect(screen.getByText('-4')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /base branch/i })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      );
     });
 
     it('shows the empty diff state when a session has no live endpoint', async () => {
@@ -1646,11 +1823,11 @@ describe('LiveSessionDetailPage', () => {
       await screen.findByTestId('live-session-detail-page');
       fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
 
-      await waitFor(() => {
-        expect(screen.getByText('Select a file to view changes')).toBeInTheDocument();
-      });
-      expect(screen.getAllByText('changed files').length).toBeGreaterThanOrEqual(1);
-      expect(screen.queryByText('Loading files...')).not.toBeInTheDocument();
+      // Without a live workspace the dock says so, never "no changes".
+      expect(await screen.findByTestId('diff-unavailable')).toHaveTextContent(
+        "Changes show while the session's workspace is live.",
+      );
+      expect(screen.queryByTestId('diff-files-empty')).not.toBeInTheDocument();
     });
 
     describe('review comments', () => {
@@ -1763,110 +1940,293 @@ describe('LiveSessionDetailPage', () => {
     });
 
     describe('session panel', () => {
-      it('sits beside chat and answers a permission through the live chat', async () => {
-        const respondToPermission = vi.fn();
-        mockChatState({
-          respondToPermission,
-          pendingPermissions: [
-            { requestId: 'perm-1', toolName: 'Bash', description: 'Run a command', command: 'ls' },
-          ],
-        });
-        wrap('test-session-id-1234');
-
-        const panel = await screen.findByTestId('session-attention-panel');
-        fireEvent.click(within(panel).getByRole('button', { name: 'Allow Bash once' }));
-
-        expect(respondToPermission).toHaveBeenCalledWith('perm-1', 'allow_once');
-      });
-
-      it('lists a pending native gate and shows the latest task list', async () => {
-        mockChatState({
-          messages: [
-            {
-              id: 'todo',
-              role: 'assistant',
-              content: '',
-              createdAt: new Date(0),
-              parts: [
-                {
-                  type: 'tool_use',
-                  name: 'TodoWrite',
-                  input: { todos: [{ content: 'Write the fix', status: 'in_progress' }] },
-                },
-              ],
-            },
-          ],
-        });
-        wrap('test-session-id-1234', {
-          volundr: {
-            getWorkflowGates: vi.fn().mockResolvedValue([
-              {
-                id: 'gate-1',
-                label: 'PRD approval gate',
-                status: 'pending',
-                pending_behavior: 'help_needed',
-              },
-            ]),
-          },
-        });
-
-        const gate = await screen.findByTestId('attention-gate');
-        expect(gate).toHaveTextContent('PRD approval gate');
-        expect(gate).toHaveTextContent('Waiting for your approval.');
-        expect(screen.getByRole('region', { name: 'Tasks (0/1)' })).toHaveTextContent(
-          'Write the fix',
-        );
-      });
-
-      it('leads back to chat from another tab', async () => {
-        mockChatState({
-          pendingInputRequests: [
-            { requestId: 'input-1', questions: [{ prompt: 'Which branch?', choices: [] }] },
-          ],
-        });
-        wrap('test-session-id-1234');
-        await screen.findByTestId('session-attention-panel');
-
-        fireEvent.click(screen.getByRole('tab', { name: /Logs/i }));
-        fireEvent.click(screen.getByRole('button', { name: 'Open chat' }));
-
-        expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute('aria-selected', 'true');
-      });
-
-      it('remembers being hidden, and says what waits while it is', async () => {
-        mockChatState({
-          pendingInputRequests: [
-            { requestId: 'input-1', questions: [{ prompt: 'Which branch?', choices: [] }] },
-          ],
-        });
-        wrap('test-session-id-1234');
-        const panel = await screen.findByTestId('session-attention-panel');
-
-        fireEvent.click(within(panel).getByRole('button', { name: 'Hide session panel' }));
-
-        expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
-        expect(localStorage.getItem('niuu.forge.panel')).toBe('0');
-        const show = screen.getByRole('button', { name: 'Show session panel' });
-        expect(show).toHaveTextContent('Needs you 1');
-        fireEvent.click(show);
-        expect(screen.getByTestId('session-attention-panel')).toBeInTheDocument();
-      });
-
-      it('gives the columns the space when the panel has nothing of its own', async () => {
+      it('stays out of the way until something needs the person', async () => {
         mockChatState();
-        const store = buildSessionStore(RUNNING_SESSION);
-        const unchanged = await store.getSession!('test-session-id-1234');
-        wrap('test-session-id-1234', {
-          sessionStore: {
-            getSession: vi
-              .fn()
-              .mockResolvedValue(unchanged ? { ...unchanged, files: undefined } : null),
-          },
-        });
-        await screen.findByTestId('live-session-detail-page');
-
+        wrap('test-session-id-1234');
+        const show = await screen.findByRole('button', { name: 'Show session panel' });
         expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
-        expect(screen.queryByRole('button', { name: /session panel/ })).not.toBeInTheDocument();
+        expect(show).not.toHaveTextContent('Needs you');
+      });
+
+      it('stays closed while something needs the person, and its button says so', async () => {
+        mockChatState({
+          pendingInputRequests: [
+            { requestId: 'input-1', questions: [{ prompt: 'Which branch?', choices: [] }] },
+          ],
+        });
+        wrap('test-session-id-1234');
+        const show = await screen.findByRole('button', { name: 'Show session panel' });
+        expect(show).toHaveTextContent('Needs you 1');
+        expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
+        expect(localStorage.getItem('niuu.forge.sidePanel')).toBeNull();
+      });
+
+      describe('once opened', () => {
+        beforeEach(() => localStorage.setItem('niuu.forge.sidePanel', 'open'));
+
+        it('sits beside chat and answers a permission through the live chat', async () => {
+          const respondToPermission = vi.fn();
+          mockChatState({
+            respondToPermission,
+            pendingPermissions: [
+              {
+                requestId: 'perm-1',
+                toolName: 'Bash',
+                description: 'Run a command',
+                command: 'ls',
+              },
+            ],
+          });
+          wrap('test-session-id-1234');
+
+          const panel = await screen.findByTestId('session-attention-panel');
+          fireEvent.click(within(panel).getByRole('button', { name: 'Allow Bash once' }));
+
+          expect(respondToPermission).toHaveBeenCalledWith('perm-1', 'allow_once');
+        });
+
+        it('lists a pending native gate and shows the latest task list', async () => {
+          mockChatState({
+            messages: [
+              {
+                id: 'todo',
+                role: 'assistant',
+                content: '',
+                createdAt: new Date(0),
+                parts: [
+                  {
+                    type: 'tool_use',
+                    name: 'TodoWrite',
+                    input: { todos: [{ content: 'Write the fix', status: 'in_progress' }] },
+                  },
+                ],
+              },
+            ],
+          });
+          wrap('test-session-id-1234', {
+            volundr: {
+              getWorkflowGates: vi.fn().mockResolvedValue([
+                {
+                  id: 'gate-1',
+                  label: 'PRD approval gate',
+                  status: 'pending',
+                  pending_behavior: 'help_needed',
+                },
+              ]),
+            },
+          });
+
+          const gate = await screen.findByTestId('attention-gate');
+          expect(gate).toHaveTextContent('PRD approval gate');
+          expect(gate).toHaveTextContent('Waiting for your approval.');
+          const plan = screen.getByRole('region', { name: 'Plan' });
+          expect(plan).toHaveTextContent('Write the fix');
+          expect(plan).toHaveTextContent('0/1');
+        });
+
+        it('leads back to chat from another tab', async () => {
+          mockChatState({
+            pendingInputRequests: [
+              { requestId: 'input-1', questions: [{ prompt: 'Which branch?', choices: [] }] },
+            ],
+          });
+          wrap('test-session-id-1234');
+          await screen.findByTestId('session-attention-panel');
+
+          fireEvent.click(screen.getByRole('tab', { name: /Logs/i }));
+          fireEvent.click(screen.getByRole('button', { name: 'Open chat' }));
+
+          expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute(
+            'aria-selected',
+            'true',
+          );
+        });
+
+        it('remembers being hidden, and says what waits while it is', async () => {
+          mockChatState({
+            pendingInputRequests: [
+              { requestId: 'input-1', questions: [{ prompt: 'Which branch?', choices: [] }] },
+            ],
+          });
+          wrap('test-session-id-1234');
+          const panel = await screen.findByTestId('session-attention-panel');
+
+          fireEvent.click(within(panel).getByRole('button', { name: 'Hide session panel' }));
+
+          expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
+          expect(localStorage.getItem('niuu.forge.sidePanel')).toBe('closed');
+          const show = screen.getByRole('button', { name: 'Show session panel' });
+          expect(show).toHaveTextContent('Needs you 1');
+          fireEvent.click(show);
+          expect(screen.getByTestId('session-attention-panel')).toBeInTheDocument();
+        });
+
+        it('opens over the chat on a narrow screen, closed at first and without saving', async () => {
+          vi.stubGlobal(
+            'matchMedia',
+            vi.fn((query: string) => ({
+              matches: query === '(max-width: 1100px)',
+              addEventListener: () => {},
+              removeEventListener: () => {},
+            })),
+          );
+          try {
+            mockChatState();
+            wrap('test-session-id-1234');
+            const show = await screen.findByRole('button', { name: 'Show session panel' });
+            expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
+
+            fireEvent.click(show);
+            const panel = screen.getByTestId('session-attention-panel');
+            expect(panel).toHaveClass('niuu-session-panel--overlay');
+            expect(localStorage.getItem('niuu.forge.sidePanel')).toBe('open');
+
+            fireEvent.click(within(panel).getByRole('button', { name: 'Hide session panel' }));
+            expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        });
+
+        it('always says what the session is, even when nothing else is waiting', async () => {
+          mockChatState();
+          wrap('test-session-id-1234');
+          const panel = await screen.findByTestId('session-attention-panel');
+
+          expect(
+            within(panel).queryByRole('region', { name: 'Needs you' }),
+          ).not.toBeInTheDocument();
+          expect(within(panel).queryByRole('region', { name: 'Plan' })).not.toBeInTheDocument();
+          expect(within(panel).queryByRole('region', { name: 'Agents' })).not.toBeInTheDocument();
+          expect(
+            within(panel).queryByRole('region', { name: 'Deliverables' }),
+          ).not.toBeInTheDocument();
+          const info = within(panel).getByRole('region', { name: 'Session' });
+          expect(info).toHaveTextContent('Engine');
+          expect(info).toHaveTextContent('Claude Sonnet 4.6');
+          expect(info).toHaveTextContent('Claude');
+          expect(info).toHaveTextContent('Guild Alpha');
+          expect(info).toHaveTextContent('niuulabs/volundr');
+          expect(info).toHaveTextContent('Started');
+          expect(within(panel).getByRole('region', { name: 'Changed files' })).toHaveTextContent(
+            '4 files changed',
+          );
+        });
+
+        it('shows the plan frame instead of the TodoWrite list', async () => {
+          mockChatState({
+            messages: [
+              {
+                id: 'todo',
+                role: 'assistant',
+                content: '',
+                createdAt: new Date(0),
+                parts: [
+                  {
+                    type: 'tool_use',
+                    name: 'TodoWrite',
+                    input: { todos: [{ content: 'Old todo item', status: 'pending' }] },
+                  },
+                ],
+              },
+            ],
+            plan: {
+              tasks: [
+                { content: 'Read the gates', status: 'completed' },
+                { content: 'Write the fix', status: 'in_progress' },
+                { content: 'Run the tests', status: 'pending' },
+              ],
+              counts: { total: 3, completed: 1, in_progress: 1, pending: 1 },
+            },
+          });
+          wrap('test-session-id-1234');
+
+          const plan = await screen.findByRole('region', { name: 'Plan' });
+          expect(plan).toHaveTextContent('1/3');
+          expect(plan).toHaveTextContent('Read the gates');
+          expect(plan).toHaveTextContent('Run the tests');
+          expect(plan).not.toHaveTextContent('Old todo item');
+        });
+
+        it('does not fall back to TodoWrite once a plan frame has arrived', async () => {
+          mockChatState({
+            messages: [
+              {
+                id: 'todo',
+                role: 'assistant',
+                content: '',
+                createdAt: new Date(0),
+                parts: [
+                  {
+                    type: 'tool_use',
+                    name: 'TodoWrite',
+                    input: { todos: [{ content: 'Old todo item', status: 'pending' }] },
+                  },
+                ],
+              },
+            ],
+            plan: { tasks: [], counts: { total: 0 } },
+          });
+          wrap('test-session-id-1234');
+
+          await screen.findByTestId('session-attention-panel');
+          expect(screen.queryByRole('region', { name: 'Plan' })).not.toBeInTheDocument();
+          expect(screen.queryByText('Old todo item')).not.toBeInTheDocument();
+        });
+
+        it('lists the agents the session started with how long they ran', async () => {
+          mockChatState({
+            agents: [
+              {
+                id: 'agent-1',
+                kind: 'subagent',
+                name: 'Check the other gate entry points',
+                status: 'done',
+                startedAt: '2026-11-05T10:00:00.000Z',
+                endedAt: '2026-11-05T10:01:52.000Z',
+              },
+            ],
+          });
+          wrap('test-session-id-1234');
+
+          const agents = await screen.findByRole('region', { name: 'Agents' });
+          expect(agents).toHaveTextContent('Check the other gate entry points');
+          expect(agents).toHaveTextContent('done · 1m');
+        });
+
+        it('lists presented files as deliverables and opens one', async () => {
+          mockChatState({
+            messages: [
+              {
+                id: 'present',
+                role: 'assistant',
+                content: '',
+                createdAt: new Date(0),
+                parts: [
+                  {
+                    type: 'tool_use',
+                    name: 'present_file',
+                    input: {
+                      file_id: 'file-1',
+                      name: 'gate-refusal-trace.md',
+                      mime: 'text/markdown',
+                    },
+                  },
+                ],
+              },
+            ],
+          });
+          wrap('test-session-id-1234');
+
+          const deliverables = await screen.findByRole('region', { name: 'Deliverables' });
+          fireEvent.click(
+            within(deliverables).getByRole('button', { name: /gate-refusal-trace.md/ }),
+          );
+
+          expect(
+            await screen.findByRole('dialog', { name: /gate-refusal-trace.md/ }),
+          ).toBeInTheDocument();
+        });
       });
     });
 
@@ -1908,7 +2268,7 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.queryByText('Start the session to chat.')).not.toBeInTheDocument();
     });
 
-    it('rebuilds the outcome sidebar from a stopped session transcript', async () => {
+    it("rebuilds a stopped session's workers and their outcome from the transcript", async () => {
       wrap('test-session-id-1234', {
         session: STOPPED_SESSION,
         volundr: {
@@ -1941,11 +2301,14 @@ describe('LiveSessionDetailPage', () => {
       });
 
       await screen.findByTestId('live-session-detail-page');
-      expect(await screen.findByTestId('mesh-cascade-panel')).toBeInTheDocument();
-      expect(
-        screen.getAllByText('Review found missing telemetry coverage.').length,
-      ).toBeGreaterThan(1);
-      expect(screen.getByText('Changes Requested')).toBeInTheDocument();
+      const strip = await screen.findByTestId('workers-strip');
+      expect(within(strip).getByText('Reviewer')).toBeInTheDocument();
+      // The outcome shows once in the conversation, as a card, not in a separate column.
+      const cards = screen.getAllByTestId('outcome-card');
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toHaveTextContent('Review found missing telemetry coverage.');
+      expect(cards[0]).toHaveTextContent('Changes requested');
+      expect(screen.queryByTestId('mesh-cascade-panel')).not.toBeInTheDocument();
     });
 
     it('shows an archive-aware chronicle empty state for stopped sessions', async () => {
@@ -2189,7 +2552,7 @@ describe('LiveSessionDetailPage', () => {
     it('shows Archive button for running session', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByRole('button', { name: /Archive session/i })).toBeInTheDocument();
+      expect(moreItem('Archive session')).toBeInTheDocument();
     });
 
     it('shows Start button for stopped session', async () => {
@@ -2207,6 +2570,17 @@ describe('LiveSessionDetailPage', () => {
       });
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByRole('button', { name: /^Start session$/i })).toBeInTheDocument();
+    });
+
+    it('says a booting session is starting instead of offering Start', async () => {
+      wrap('test-session-id-1234', {
+        session: { ...STOPPED_SESSION, status: 'provisioning' },
+      });
+      await screen.findByTestId('live-session-detail-page');
+      const action = screen.getByRole('button', { name: 'The session is starting' });
+      expect(action).toBeDisabled();
+      expect(action).toHaveTextContent('Starting…');
+      expect(screen.queryByRole('button', { name: /^Start session$/i })).not.toBeInTheDocument();
     });
 
     it('resumes a failed session from the resumable fallback action', async () => {
@@ -2288,15 +2662,14 @@ describe('LiveSessionDetailPage', () => {
     it('shows delete button', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByTitle(/Delete/i)).toBeInTheDocument();
+      expect(moreItem('Delete session')).toBeInTheDocument();
     });
 
     it('hides session action buttons in read-only mode', async () => {
       wrap('test-session-id-1234', { readOnly: true });
       await screen.findByTestId('live-session-detail-page');
       expect(screen.queryByTitle(/Stop session/i)).not.toBeInTheDocument();
-      expect(screen.queryByTitle(/Archive session/i)).not.toBeInTheDocument();
-      expect(screen.queryByTitle(/Delete session/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'More actions' })).not.toBeInTheDocument();
     });
 
     it('stops a running session when stop is clicked', async () => {
@@ -2334,7 +2707,7 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234', { volundr: service });
 
       await screen.findByTestId('live-session-detail-page');
-      fireEvent.click(screen.getByTitle(/Archive session/i));
+      fireEvent.click(moreItem('Archive session'));
 
       await waitFor(() => {
         expect(service.archiveSession).toHaveBeenCalledWith('test-session-id-1234');
@@ -2386,7 +2759,7 @@ describe('LiveSessionDetailPage', () => {
       );
 
       await screen.findByTestId('live-session-detail-page');
-      fireEvent.click(screen.getByTitle(/Delete session/i));
+      fireEvent.click(moreItem('Delete session'));
 
       const dialog = screen.getByRole('dialog');
       expect(dialog).toBeInTheDocument();
@@ -2418,7 +2791,7 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234', { volundr: service });
 
       await screen.findByTestId('live-session-detail-page');
-      fireEvent.click(screen.getByTitle(/Delete session/i));
+      fireEvent.click(moreItem('Delete session'));
       expect(screen.getByRole('dialog')).toBeInTheDocument();
 
       fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
@@ -2450,7 +2823,7 @@ describe('LiveSessionDetailPage', () => {
       );
 
       await screen.findByTestId('live-session-detail-page');
-      fireEvent.click(screen.getByTitle(/Delete session/i));
+      fireEvent.click(moreItem('Delete session'));
       fireEvent.click(screen.getByTestId('cleanup-workspace_storage'));
       expect(screen.getByTestId('cleanup-workspace_storage')).toBeChecked();
 
@@ -2472,7 +2845,7 @@ describe('LiveSessionDetailPage', () => {
       );
 
       await screen.findByTestId('live-session-detail-page');
-      fireEvent.click(screen.getByTitle(/Delete session/i));
+      fireEvent.click(moreItem('Delete session'));
       expect(screen.getByTestId('cleanup-workspace_storage')).not.toBeChecked();
       expect(screen.getByTestId('cleanup-chronicles')).not.toBeChecked();
     });
@@ -2534,7 +2907,232 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234', { session: localSession });
       await screen.findByTestId('live-session-detail-page');
       fireEvent.click(screen.getByRole('button', { name: 'Session workspace details' }));
-      expect(screen.getByText('/home/user/project')).toBeInTheDocument();
+      expect(
+        within(screen.getByRole('dialog')).getByText('/home/user/project'),
+      ).toBeInTheDocument();
+    });
+  });
+
+  describe('lexi header', () => {
+    const storedSession = (extra: Record<string, unknown> = {}) => ({
+      id: RUNNING_SESSION.id,
+      ravnId: 's-4912',
+      name: RUNNING_SESSION.name,
+      personaName: RUNNING_SESSION.name,
+      templateId: 'git-default',
+      state: 'running',
+      clusterId: 'local',
+      startedAt: new Date(Date.now() - 9_240_000).toISOString(),
+      resources: {
+        cpuRequest: 2,
+        cpuLimit: 4,
+        cpuUsed: 1.5,
+        memRequestMi: 4096,
+        memLimitMi: 8192,
+        memUsedMi: 2048,
+        gpuCount: 0,
+      },
+      env: {},
+      events: [],
+      ...extra,
+    });
+
+    it('names the state, the engine in its colour, the host and the branch', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+
+      expect(screen.getByTestId('session-state-pill')).toHaveTextContent('Working');
+      expect(screen.getByTestId('session-model')).toHaveAttribute('data-harness', 'claude');
+      const subline = screen.getByTestId('session-stats');
+      expect(subline).toHaveTextContent('Claude Sonnet 4.6');
+      expect(subline).toHaveTextContent('Guild Alpha');
+      expect(within(subline).getByTestId('session-activity-elapsed')).toHaveTextContent('Working');
+      expect(subline).toHaveTextContent('main');
+    });
+
+    it('draws no meter until the runtime or Forge reports something for it', async () => {
+      mockChatState();
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+
+      expect(screen.queryByTestId('session-meter')).not.toBeInTheDocument();
+    });
+
+    it('draws the context ring from reported tokens and window', async () => {
+      mockChatState({ usage: { contextTokens: 62_000, window: 200_000 } });
+      wrap('test-session-id-1234');
+
+      const meter = await screen.findByTestId('session-meter');
+      expect(within(meter).getByTestId('session-context-percent')).toHaveTextContent('31%');
+      expect(meter).toHaveAttribute('title', '62k of 200k context used');
+      expect(within(meter).queryByTestId('session-cost')).not.toBeInTheDocument();
+    });
+
+    it('draws no ring when the runtime reports tokens without a window', async () => {
+      mockChatState({ usage: { contextTokens: 62_000 } });
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+
+      expect(screen.queryByTestId('session-meter')).not.toBeInTheDocument();
+    });
+
+    it('shows the cost alone when there is no context data', async () => {
+      mockChatState();
+      wrap('test-session-id-1234', {
+        sessionStore: { getSession: vi.fn().mockResolvedValue(storedSession({ costCents: 184 })) },
+      });
+
+      const meter = await screen.findByTestId('session-meter');
+      expect(within(meter).getByTestId('session-cost')).toHaveTextContent('$1.84');
+      expect(within(meter).queryByTestId('session-context-ring')).not.toBeInTheDocument();
+    });
+
+    it('shows ring and cost together', async () => {
+      mockChatState({ usage: { contextTokens: 170_000, window: 200_000 } });
+      wrap('test-session-id-1234', {
+        sessionStore: { getSession: vi.fn().mockResolvedValue(storedSession({ costCents: 41 })) },
+      });
+
+      const meter = await screen.findByTestId('session-meter');
+      expect(meter).toHaveTextContent('85%');
+      expect(meter).toHaveTextContent('$0.41');
+      expect(meter.querySelector('.forge-meter__fill--warn')).not.toBeNull();
+    });
+
+    it('keeps the primary state action on the header and the rest in More', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+
+      expect(screen.getByRole('button', { name: 'Stop session' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+      expect(screen.getByRole('button', { name: 'Archive session' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Delete session' })).toBeInTheDocument();
+      expect(screen.getAllByRole('button', { name: 'Stop session' })).toHaveLength(1);
+    });
+
+    it('leaves the display, tool visibility and panel controls on the header', async () => {
+      mockChatState();
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+
+      const toolbar = document.querySelector('.niuu-live-session__toolbar') as HTMLElement;
+      expect(toolbar).toContainElement(screen.getByTestId('conversation-view-toggle'));
+      expect(toolbar).toContainElement(
+        screen.getByRole('button', { name: /Hide tool calls and results/i }),
+      );
+      expect(
+        within(toolbar).getByRole('button', { name: 'Show session panel' }),
+      ).toBeInTheDocument();
+    });
+
+    it('closes the More menu after an action runs', async () => {
+      const service = buildVolundrService();
+      service.archiveSession = vi.fn().mockResolvedValue(undefined);
+      wrap('test-session-id-1234', { volundr: service });
+      await screen.findByTestId('live-session-detail-page');
+
+      fireEvent.click(moreItem('Archive session'));
+
+      await waitFor(() => expect(service.archiveSession).toHaveBeenCalled());
+      expect(screen.queryByRole('button', { name: 'Archive session' })).not.toBeInTheDocument();
+    });
+
+    it('hands the chat the plan, agents, effort, runtime options and a working flag', async () => {
+      const sendSetEffort = vi.fn();
+      const sendSetRuntimeOptions = vi.fn();
+      const plan = {
+        tasks: [{ content: 'Write the fix', status: 'in_progress' }],
+        counts: { total: 1, in_progress: 1 },
+      };
+      const agents = [{ id: 'a1', kind: 'subagent', name: 'Checker', status: 'running' }];
+      const effort = { current: 'high', levels: ['low', 'high'], mutable: true };
+      const runtimeOptions = {
+        current: { model: 'claude-sonnet-4-6' },
+        models: [],
+      };
+      mockChatState({ plan, agents, effort, runtimeOptions, sendSetEffort, sendSetRuntimeOptions });
+      wrap('test-session-id-1234', {
+        session: { ...RUNNING_SESSION, activityState: 'tool_executing' },
+      });
+      await screen.findByTestId('live-session-detail-page');
+
+      await waitFor(() => expect(sessionChatProps).toHaveBeenCalled());
+      const props = sessionChatProps.mock.calls.at(-1)![0];
+      expect(props.plan).toBe(plan);
+      expect(props.agents).toBe(agents);
+      expect(props.effort).toBe(effort);
+      expect(props.runtimeOptions).toBe(runtimeOptions);
+      expect(props.working).toBe(true);
+      expect(props.onSetEffort).toBe(sendSetEffort);
+      props.onSetRuntimeModel('claude-opus-4-8');
+      expect(sendSetRuntimeOptions).toHaveBeenCalledWith({ model: 'claude-opus-4-8' });
+    });
+
+    it('offers Forward on the live chat and opens the forward dialog with the message', async () => {
+      mockChatState();
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+
+      await waitFor(() => expect(sessionChatProps).toHaveBeenCalled());
+      const props = sessionChatProps.mock.calls.at(-1)![0];
+      expect(props.onForwardMessage).toEqual(expect.any(Function));
+      act(() => {
+        props.onForwardMessage({
+          id: 'a1',
+          role: 'assistant',
+          content: 'Forward me',
+          createdAt: new Date(),
+        });
+      });
+      expect(await screen.findByTestId('forward-message-dialog')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Forward to session' })).toBeInTheDocument();
+    });
+
+    it('does not offer Forward on the read-only replay of a stopped session', async () => {
+      sessionChatProps.mockClear();
+      wrap('test-session-id-1234', {
+        session: STOPPED_SESSION,
+        volundr: {
+          getConversationHistory: vi.fn().mockResolvedValue({
+            turns: [
+              {
+                id: 'turn-assistant-1',
+                role: 'assistant',
+                content: 'It finished cleanly.',
+                created_at: '2026-05-15T18:00:05Z',
+              },
+            ],
+          }),
+        },
+      });
+      expect(await screen.findByText('It finished cleanly.')).toBeInTheDocument();
+      expect(sessionChatProps).toHaveBeenCalled();
+      for (const [props] of sessionChatProps.mock.calls) {
+        expect(props.onForwardMessage).toBeUndefined();
+      }
+    });
+
+    it.each(['idle', 'awaiting_input', null] as const)(
+      'is not working while the session is %s',
+      async (activityState) => {
+        mockChatState();
+        wrap('test-session-id-1234', {
+          session: { ...RUNNING_SESSION, activityState },
+        });
+        await screen.findByTestId('live-session-detail-page');
+
+        await waitFor(() => expect(sessionChatProps).toHaveBeenCalled());
+        expect(sessionChatProps.mock.calls.at(-1)![0].working).toBe(false);
+      },
+    );
+
+    it('keeps a stopped session readable and offers to start it', async () => {
+      wrap('test-session-id-1234', { session: STOPPED_SESSION });
+      await screen.findByTestId('live-session-detail-page');
+
+      expect(screen.getByRole('button', { name: 'Start session' })).toBeInTheDocument();
+      expect(screen.getByTestId('session-state-pill')).toBeInTheDocument();
+      expect(screen.queryByTestId('session-meter')).not.toBeInTheDocument();
     });
   });
 
@@ -2546,13 +3144,15 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByTestId('session-activity-elapsed')).toBeInTheDocument();
     });
 
-    it('shows Msgs metric', async () => {
+    it('counts the session messages in the subline when details are on', async () => {
+      localStorage.setItem('niuu.forge.details', '1');
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByText('Msgs')).toBeInTheDocument();
+      expect(screen.getByTestId('session-message-count')).toHaveTextContent(/^\d+ messages?$/);
     });
 
     it('uses the visible chat count for Msgs once chat history is loaded', async () => {
+      localStorage.setItem('niuu.forge.details', '1');
       vi.spyOn(chatHooks, 'useSkuldChat').mockReturnValue({
         messages: [
           {
@@ -2591,12 +3191,19 @@ describe('LiveSessionDetailPage', () => {
         sendRewindFiles: vi.fn(),
         sendSetInternalVisibility: vi.fn(),
         clearMessages: vi.fn(),
+        plan: null,
+        agents: [],
+        effort: null,
+        runtimeOptions: null,
+        usage: null,
+        sendSetEffort: vi.fn(),
+        sendSetRuntimeOptions: vi.fn(),
       });
 
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       await waitFor(() => {
-        expect(screen.getByTestId('session-stats')).toHaveTextContent('Msgs2');
+        expect(screen.getByTestId('session-stats')).toHaveTextContent('2 messages');
       });
     });
 
@@ -2605,7 +3212,7 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234', { openConnections });
       await screen.findByTestId('live-session-detail-page');
       const toolbar = document.querySelector('.niuu-live-session__toolbar') as HTMLElement;
-      fireEvent.click(screen.getByRole('button', { name: 'Reconnect account' }));
+      fireEvent.click(moreItem('Reconnect account'));
       expect(openConnections).toHaveBeenCalledOnce();
       expect(toolbar).toContainElement(screen.getByTestId('conversation-view-toggle'));
       // The conversation keeps his layout: no second row of display controls.
@@ -2615,6 +3222,8 @@ describe('LiveSessionDetailPage', () => {
     it('offers no reconnect without a reconnect flow or on an archived session', async () => {
       const first = wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+      expect(screen.getByRole('button', { name: 'Archive session' })).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Reconnect account' })).toBeNull();
       first.unmount();
       wrap('test-session-id-1234', { readOnly: true, openConnections: vi.fn() });
@@ -2625,19 +3234,197 @@ describe('LiveSessionDetailPage', () => {
     it('hides Tokens by default and shows the metric when enabled in settings', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.queryByText('Tokens')).not.toBeInTheDocument();
+      expect(screen.getByTestId('session-stats')).not.toHaveTextContent('tokens');
       act(() => {
         localStorage.setItem('niuu.forge.tokens', '1');
         window.dispatchEvent(new Event('storage'));
       });
-      expect(screen.getByText('Tokens')).toBeInTheDocument();
+      expect(screen.getByTestId('session-stats')).toHaveTextContent('5.0k tokens');
     });
 
-    it('shows the forge badge with the instance name', async () => {
+    it('names the host in the subline', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByText('Guild Alpha')).toBeInTheDocument();
-      expect(screen.getByText('PRIMARY')).toBeInTheDocument();
+      expect(screen.getByTestId('session-host')).toHaveTextContent('Guild Alpha');
+      expect(screen.queryByText('PRIMARY')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('coordinators and workers', () => {
+    const leadId = RUNNING_SESSION.id;
+    const workerId = '3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const COORDINATOR_SESSION: VolundrSession = {
+      ...RUNNING_SESSION,
+      name: 'plan-review-coordinator',
+      coordination: { projectId: 'lexi', role: 'coordinator', objective: '' },
+    };
+    const WORKER_SESSION: VolundrSession = {
+      ...RUNNING_SESSION,
+      id: workerId,
+      name: 'ticket-1342-gates',
+      coordination: {
+        projectId: 'lexi',
+        role: 'worker',
+        parent: { instanceId: 'local', sessionId: leadId },
+        objective: 'Refuse agent approval on human gates',
+      },
+    };
+
+    function listed(
+      id: string,
+      name: string,
+      state: Session['state'],
+      coordination?: Session['coordination'],
+    ): Session {
+      return {
+        id,
+        ravnId: id,
+        name,
+        personaName: name,
+        templateId: 'git-default',
+        clusterId: 'local',
+        state,
+        startedAt: new Date(Date.now() - 600_000).toISOString(),
+        lastActivityAt: new Date(Date.now() - 120_000).toISOString(),
+        resources: {
+          cpuRequest: 1,
+          cpuLimit: 1,
+          cpuUsed: 0,
+          memRequestMi: 1,
+          memLimitMi: 1,
+          memUsedMi: 0,
+          gpuCount: 0,
+        },
+        env: {},
+        events: [],
+        coordination,
+      };
+    }
+
+    const lead = listed(leadId, 'plan-review-coordinator', 'running', {
+      projectId: 'lexi',
+      role: 'coordinator',
+    });
+    const worker = listed(workerId, 'ticket-1342-gates', 'awaiting_input', {
+      projectId: 'lexi',
+      role: 'worker',
+      parent: { instanceId: 'local', sessionId: leadId },
+      objective: 'Refuse agent approval on human gates',
+    });
+    const store = { listSessions: async () => [lead, worker], listSources: undefined };
+
+    it('tags a coordinator and lists its worker sessions in the Workers strip; a worker opens its session', async () => {
+      mockChatState();
+      wrap(leadId, { session: COORDINATOR_SESSION, sessionStore: store });
+      await screen.findByTestId('live-session-detail-page');
+      expect(await screen.findByTestId('session-coordinator-tag')).toHaveTextContent('Coordinator');
+      const strip = await screen.findByTestId('workers-strip');
+      expect(within(strip).getByText('ticket-1342-gates')).toBeInTheDocument();
+      fireEvent.click(within(strip).getByTestId(`worker-chip-${workerId}`));
+      expect(navigate).toHaveBeenCalledWith({
+        to: '/volundr/sessions/$sessionId',
+        params: { sessionId: workerId },
+      });
+      expect(screen.queryByTestId('worker-of')).toBeNull();
+    });
+
+    it('keeps the bar to one line: the facts and state open from the name', async () => {
+      mockChatState();
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      const facts = screen.getByLabelText('Session details').closest('details') as HTMLElement;
+      expect(facts).toContainElement(screen.getByTestId('session-stats'));
+      expect(facts).toContainElement(await screen.findByTestId('session-state-pill'));
+      const dot = document.querySelector('.niuu-live-session__status-dot') as HTMLElement;
+      expect(dot).toHaveAttribute('title', screen.getByTestId('session-state-pill').textContent);
+    });
+
+    it('leads back to the unread list when opened from it', async () => {
+      mockChatState();
+      const onBackToUnread = vi.fn();
+      wrap('test-session-id-1234', { onBackToUnread });
+      fireEvent.click(await screen.findByTestId('back-to-unread'));
+      expect(onBackToUnread).toHaveBeenCalled();
+    });
+
+    it('shows the project beside the session name', async () => {
+      mockChatState();
+      wrap(leadId, {
+        session: COORDINATOR_SESSION,
+        sessionStore: store,
+        volundr: {
+          getProjects: vi
+            .fn()
+            .mockResolvedValue([{ id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' }]),
+        },
+      });
+      expect(await screen.findByTestId('session-project')).toHaveTextContent('Lexi');
+    });
+
+    it('tags a session as a coordinator when only the list says it leads workers', async () => {
+      mockChatState();
+      wrap(leadId, { session: RUNNING_SESSION, sessionStore: store });
+      expect(await screen.findByTestId('session-coordinator-tag')).toBeInTheDocument();
+    });
+
+    it('names a worker’s coordinator with a link back and shows its objective', async () => {
+      localStorage.setItem('niuu.forge.sidePanel', 'open');
+      mockChatState();
+      wrap(workerId, { session: WORKER_SESSION, sessionStore: store });
+      const workerOf = await screen.findByTestId('worker-of');
+      await waitFor(() => expect(workerOf).toHaveTextContent('Worker of plan-review-coordinator'));
+      fireEvent.click(within(workerOf).getByRole('button', { name: /Open coordinator/ }));
+      expect(navigate).toHaveBeenCalledWith({
+        to: '/volundr/sessions/$sessionId',
+        params: { sessionId: leadId },
+      });
+      expect(screen.queryByTestId('session-coordinator-tag')).toBeNull();
+      expect(screen.queryByTestId('workers-strip')).toBeNull();
+      const panel = await screen.findByTestId('session-attention-panel');
+      expect(within(panel).getByText('Objective')).toBeInTheDocument();
+      expect(within(panel).getByText('Refuse agent approval on human gates')).toBeInTheDocument();
+    });
+
+    it('says only Worker when the list does not know the coordinator', async () => {
+      mockChatState();
+      wrap(workerId, {
+        session: WORKER_SESSION,
+        sessionStore: { listSessions: async () => [worker], listSources: undefined },
+      });
+      const workerOf = await screen.findByTestId('worker-of');
+      expect(workerOf).toHaveTextContent(/^Worker$/);
+      expect(within(workerOf).queryByRole('button')).toBeNull();
+    });
+
+    it('lists the coordinator’s workers in the panel, each opening its session', async () => {
+      localStorage.setItem('niuu.forge.sidePanel', 'open');
+      mockChatState();
+      wrap(leadId, { session: COORDINATOR_SESSION, sessionStore: store });
+      const panel = await screen.findByTestId('session-attention-panel');
+      const row = await within(panel).findByTestId(`panel-worker-${workerId}`);
+      expect(row).toHaveTextContent('Needs you');
+      expect(row).toHaveTextContent('Refuse agent approval on human gates');
+      fireEvent.click(row);
+      expect(navigate).toHaveBeenCalledWith({
+        to: '/volundr/sessions/$sessionId',
+        params: { sessionId: workerId },
+      });
+    });
+
+    it('gives the conversation links to the sessions it names', async () => {
+      mockChatState({
+        messages: [
+          {
+            id: 'relay-1',
+            role: 'user',
+            content: `[Message from session ticket-1342-gates (${workerId}) on Valhalla, relayed through the Guild]\n\nReady for review.`,
+            createdAt: new Date('2026-11-05T09:31:00Z'),
+          },
+        ],
+      });
+      wrap(leadId, { session: COORDINATOR_SESSION, sessionStore: store });
+      const header = await screen.findByRole('link', { name: 'Open session ticket-1342-gates' });
+      expect(header).toHaveAttribute('href', `/volundr/sessions/${workerId}`);
     });
   });
 

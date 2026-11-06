@@ -966,6 +966,9 @@ function toDomainSession(session: VolundrSession): Session {
     trackerIssue: session.trackerIssue,
     origin: session.origin,
     error: session.error,
+    readState: session.readState,
+    shortDescription: session.shortDescription,
+    workedSeconds24h: session.workedSeconds24h,
   };
 }
 
@@ -980,6 +983,9 @@ function buildSplitVolundrService(
     getSession: (id, options) => forge.getSession(id, options),
     getSessionChanges: forge.getSessionChanges?.bind(forge),
     getActiveSessions: () => forge.getActiveSessions(),
+    getSessionReadState: (id, options) => forge.getSessionReadState(id, options),
+    changeSessionReadState: (id, change, options) =>
+      forge.changeSessionReadState(id, change, options),
     getStats: (options) => forge.getStats(options),
     getRepos: () => forge.getRepos(),
     getProjects: (options) => forge.getProjects(options),

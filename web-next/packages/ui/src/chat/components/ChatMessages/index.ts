@@ -5,4 +5,6 @@ export {
   SystemMessage,
   hasNativeMessageParts,
   messageRenderKey,
+  messageModel,
+  ModelSpeaker,
 } from './ChatMessages';

@@ -1,0 +1,107 @@
+.unread-stream {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 18px 28px 40px;
+  color: var(--color-text-primary);
+}
+.unread-stream__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+.unread-stream__error {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--color-critical-fg);
+}
+.unread-stream__block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.unread-stream__block-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.unread-stream__name {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 700;
+}
+.unread-stream__marked {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--status-amber);
+}
+.unread-stream__ago {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+.unread-stream__reply {
+  min-width: 0;
+}
+.unread-stream__placeholder {
+  min-height: 56px;
+}
+/* The whole reply stays readable; a long one scrolls inside its block instead of being cut. */
+.unread-stream__excerpt {
+  max-height: var(--unread-stream-excerpt-max-height, 28rem);
+  overflow-y: auto;
+  font-size: 14px;
+}
+.unread-stream__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.unread-stream button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.unread-stream button:hover:not(:disabled) {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+.unread-stream button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.unread-stream button:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+.unread-stream .unread-stream__mark {
+  margin-left: auto;
+  color: var(--color-brand);
+}
+.unread-stream__top .unread-stream__mark {
+  margin-left: 0;
+}

@@ -200,6 +200,53 @@ it('keeps same-id session details source-qualified and forwards cancellation', a
   expect(cache.getQueryData(['volundr', 'domain-session', 'shared-id', 'thor'])).toBeUndefined();
 });
 
+it('applies pushed activity to an open session detail at once, from its host only', async () => {
+  let emit!: (sessions: Session[]) => void;
+  const unsubscribe = vi.fn();
+  store.subscribe = (callback) => {
+    emit = callback;
+    return unsubscribe;
+  };
+  store.getSession = vi.fn(async () => ({ ...row('s1'), clusterId: 'build', state: 'running' }));
+  const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { result, unmount } = renderHook(() => useSessionDetail('s1', 'build'), {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={cache}>{children}</QueryClientProvider>
+    ),
+  });
+  await waitFor(() => expect(result.current.data?.state).toBe('running'));
+
+  act(() => emit([{ ...row('s1'), clusterId: 'other-host', state: 'idle' }]));
+  expect(result.current.data?.state).toBe('running');
+
+  act(() => emit([{ ...row('s1'), clusterId: 'build', state: 'idle' }]));
+  await waitFor(() => expect(result.current.data?.state).toBe('idle'));
+  expect(store.getSession).toHaveBeenCalledTimes(1);
+  unmount();
+  expect(unsubscribe).toHaveBeenCalledOnce();
+});
+
+it('patches an open detail from the list subscription despite its instance key part', async () => {
+  let emit!: (sessions: Session[]) => void;
+  store.subscribe = (callback) => {
+    emit = callback;
+    return () => {};
+  };
+  store.listSessions = async (filter) =>
+    filter?.archivedOnly ? [] : [{ ...row('s1'), clusterId: 'thor', state: 'running' }];
+  const { cache, result } = mount();
+  await waitFor(() => expect(result.current.data).toHaveLength(1));
+  cache.setQueryData(['volundr', 'domain-session', 's1', 'thor'], {
+    ...row('s1'),
+    clusterId: 'thor',
+    state: 'running',
+  });
+  act(() => emit([{ ...row('s1'), clusterId: 'thor', state: 'awaiting_input' }]));
+  expect(cache.getQueryData<Session>(['volundr', 'domain-session', 's1', 'thor'])?.state).toBe(
+    'awaiting_input',
+  );
+});
+
 it('prefers live data over an older cached archived copy of a restored session', async () => {
   store.listSources = async () => [{ id: 'thor', name: 'Thor' }];
   store.listSessions = async (filters) => [

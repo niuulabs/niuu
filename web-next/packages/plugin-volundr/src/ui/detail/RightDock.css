@@ -1,0 +1,92 @@
+/* ── The right dock: Changes or Files beside the conversation ── */
+
+.forge-right-dock {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  flex: 0 0 auto;
+  min-height: 0;
+  border-left: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-secondary);
+}
+
+/* The resizer sits over the dock's edge line, so the dock's width is all it takes. */
+.forge-right-dock > .niuu-sidebar-resizer {
+  position: absolute;
+  inset: 0 auto 0 -4px;
+  z-index: 1;
+  width: 7px;
+  background: transparent;
+}
+
+.forge-right-dock > .niuu-sidebar-resizer:hover,
+.forge-right-dock > .niuu-sidebar-resizer:focus-visible {
+  background: var(--color-brand);
+}
+
+.forge-right-dock__tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 40px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.forge-right-dock__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.forge-right-dock__tab svg {
+  width: 13px;
+  height: 13px;
+}
+
+.forge-right-dock__tab:hover {
+  color: var(--color-text-primary);
+}
+
+.forge-right-dock__tab[aria-selected='true'] {
+  background: color-mix(in srgb, var(--color-text-primary) 10%, transparent);
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.forge-right-dock__close {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.forge-right-dock__close:hover {
+  background: color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+  color: var(--color-text-primary);
+}
+
+.forge-right-dock__close svg {
+  width: 14px;
+  height: 14px;
+}
+
+.forge-right-dock__body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}

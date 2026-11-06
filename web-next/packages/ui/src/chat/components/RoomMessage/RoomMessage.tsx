@@ -1,6 +1,4 @@
-import { ExternalLink } from 'lucide-react';
-import { cn } from '../../../utils/cn';
-import { resolveParticipantColor } from '../../utils/participantColor';
+import type { CSSProperties } from 'react';
 import {
   UserMessage,
   AssistantMessage,
@@ -8,55 +6,69 @@ import {
   SystemMessage,
   hasNativeMessageParts,
 } from '../ChatMessages';
+import { OutcomeSpeakerProvider } from '../OutcomeCard/OutcomeSpeaker';
 import type { ChatMessage } from '../../types';
+import { coordinatorSpeaker, speakerFor, type Speaker } from './speaker';
 import './RoomMessage.css';
 
 interface RoomMessageProps {
   message: ChatMessage;
-  onSelectAgent?: (peerId: string) => void;
-  selectedAgentId?: string | null;
+  /** Open the sheet of the worker who spoke; the speaker's name is a button only with this. */
+  onShowDetail?: (peerId: string) => void;
   onCopy?: (text: string) => void;
   onRegenerate?: (messageId: string) => void;
   onBookmark?: (messageId: string, bookmarked: boolean) => void;
   bookmarked?: boolean;
-  onShowDetail?: (peerId: string) => void;
+  /**
+   * The room has workers: the session's own voice (the lead, or an assistant message
+   * with no participant) speaks as the Coordinator.
+   */
+  workerRoom?: boolean;
+  /** Show the speaker header. Consecutive messages from one speaker share the first one's. */
+  showHeader?: boolean;
 }
 
-function ParticipantLabel({
-  message,
-  onSelectAgent,
-  selectedAgentId,
-  onShowDetail,
-}: Pick<RoomMessageProps, 'message' | 'onSelectAgent' | 'selectedAgentId' | 'onShowDetail'>) {
+function messageSpeaker(message: ChatMessage, workerRoom: boolean): Speaker | null {
   const { participant } = message;
-  if (!participant) return null;
+  if (participant) return workerRoom ? speakerFor(participant) : plainSpeaker(participant);
+  if (workerRoom && message.role === 'assistant') return coordinatorSpeaker();
+  return null;
+}
 
-  const color = resolveParticipantColor(participant.peerId, participant.color);
-  const isSelected = selectedAgentId === participant.peerId;
+/** Outside a room of workers the participant keeps its persona label. */
+function plainSpeaker(participant: NonNullable<ChatMessage['participant']>): Speaker {
+  return { ...speakerFor(participant), name: participant.persona };
+}
 
+/** The speaker's initial on their colour, then their name; each message keeps its own time. */
+function SpeakerHeader({
+  speaker,
+  peerId,
+  onShowDetail,
+}: {
+  speaker: Speaker;
+  peerId?: string;
+  onShowDetail?: (peerId: string) => void;
+}) {
+  const name = <span className="niuu-chat-room-persona-name">{speaker.name}</span>;
   return (
     <div className="niuu-chat-room-label">
-      <button
-        type="button"
-        className={cn(
-          'niuu-chat-room-persona-btn',
-          isSelected && 'niuu-chat-room-persona-btn--selected',
-        )}
-        onClick={() => onSelectAgent?.(participant.peerId)}
-        style={{ '--niuu-persona-color': color } as React.CSSProperties}
-      >
-        <span className="niuu-chat-room-persona-dot" />
-        <span className="niuu-chat-room-persona-name">{participant.persona}</span>
-      </button>
-      {onShowDetail && (
+      <span
+        className="niuu-chat-room-avatar"
+        aria-hidden="true"
+        data-initial={speaker.name.trim().charAt(0).toUpperCase()}
+      />
+      {onShowDetail && peerId ? (
         <button
           type="button"
-          className="niuu-chat-room-detail-btn"
-          onClick={() => onShowDetail(participant.peerId)}
-          aria-label={`View event stream for ${participant.persona}`}
+          className="niuu-chat-room-persona-btn"
+          onClick={() => onShowDetail(peerId)}
+          aria-label={`Open ${speaker.name}`}
         >
-          <ExternalLink className="niuu-chat-room-detail-icon" />
+          {name}
         </button>
+      ) : (
+        name
       )}
     </div>
   );
@@ -64,22 +76,18 @@ function ParticipantLabel({
 
 export function RoomMessage({
   message,
-  onSelectAgent,
-  selectedAgentId,
+  onShowDetail,
   onCopy,
   onRegenerate,
   onBookmark,
   bookmarked,
-  onShowDetail,
+  workerRoom = false,
+  showHeader = true,
 }: RoomMessageProps) {
-  return (
-    <div className="niuu-chat-room-message" data-testid="room-message">
-      <ParticipantLabel
-        message={message}
-        onSelectAgent={onSelectAgent}
-        selectedAgentId={selectedAgentId}
-        onShowDetail={onShowDetail}
-      />
+  const speaker = messageSpeaker(message, workerRoom);
+  const style = speaker ? ({ '--niuu-persona-color': speaker.color } as CSSProperties) : undefined;
+  const body = (
+    <>
       {message.metadata?.messageType === 'system' && <SystemMessage message={message} />}
       {message.metadata?.messageType !== 'system' && message.role === 'user' && (
         <UserMessage message={message} />
@@ -101,6 +109,30 @@ export function RoomMessage({
             bookmarked={bookmarked}
           />
         )}
+    </>
+  );
+
+  return (
+    <div
+      className="niuu-chat-room-message"
+      data-testid="room-message"
+      data-speaker={speaker ? true : undefined}
+      style={style}
+    >
+      {speaker && showHeader && (
+        <SpeakerHeader
+          speaker={speaker}
+          peerId={message.participant?.peerId}
+          onShowDetail={onShowDetail}
+        />
+      )}
+      {speaker ? (
+        <OutcomeSpeakerProvider value={{ name: speaker.name, color: speaker.color }}>
+          {body}
+        </OutcomeSpeakerProvider>
+      ) : (
+        body
+      )}
     </div>
   );
 }

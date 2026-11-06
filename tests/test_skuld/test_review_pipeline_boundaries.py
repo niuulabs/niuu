@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import json
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -220,26 +221,32 @@ def endpoint_module(tmp_path, monkeypatch):
     return module
 
 
+def _git(cwd, *args):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
 @pytest.mark.parametrize("base", ["last-commit", "default-branch"])
-async def test_diff_file_counts_include_binary_and_unicode_paths(
-    endpoint_module, monkeypatch, base
-):
-    proc = SimpleNamespace(
-        returncode=0,
-        communicate=AsyncMock(
-            return_value=("2\t3\tsrc/α.py\n-\t-\timage.png\ninvalid\n".encode(), b"")
-        ),
-    )
-    spawn = AsyncMock(return_value=proc)
-    monkeypatch.setattr(endpoint_module.asyncio, "create_subprocess_exec", spawn)
+async def test_diff_file_counts_include_binary_and_unicode_paths(tmp_path, endpoint_module, base):
+    _git(tmp_path, "init", "-b", "dev")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _git(tmp_path, "config", "user.name", "Test")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "α.py").write_text("a\nb\nc\n")
+    (tmp_path / "image.png").write_bytes(b"\x89PNG\x00one")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "base")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/dev", "HEAD")
+    _git(tmp_path, "config", "niuu.baseBranch", "dev")
+    (tmp_path / "src" / "α.py").write_text("A\nB\nc\n")
+    (tmp_path / "image.png").write_bytes(b"\x89PNG\x00two")
+
     result = await endpoint_module.get_diff_files(base)
-    assert result == {
-        "files": [
-            {"path": "src/α.py", "status": "mod", "ins": 2, "del": 3},
-            {"path": "image.png", "status": "mod", "ins": 0, "del": 0},
-        ]
-    }
-    assert spawn.call_args.args[2] == ("HEAD" if base == "last-commit" else "main...HEAD")
+
+    # The Unicode path arrives unquoted, and a binary file counts no lines.
+    assert sorted(result["files"], key=lambda f: f["path"]) == [
+        {"path": "image.png", "status": "mod", "ins": 0, "del": 0},
+        {"path": "src/α.py", "status": "mod", "ins": 2, "del": 2},
+    ]
 
 
 @pytest.mark.parametrize("failure,status", [("base", 400), ("timeout", 504), ("git", 502)])

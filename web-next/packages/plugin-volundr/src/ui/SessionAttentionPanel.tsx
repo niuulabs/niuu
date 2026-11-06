@@ -1,14 +1,19 @@
-import { Check, ChevronRight, Circle, CircleDot, ExternalLink, FileDiff } from 'lucide-react';
-import type { PermissionBehavior } from '@niuulabs/ui';
+import { ChevronRight, ExternalLink } from 'lucide-react';
+import type { PermissionBehavior, PresentedFileRef, SessionAgent, Worker } from '@niuulabs/ui';
+import type { Session } from '../domain/session';
 import type { TrackerIssue } from '../models/volundr.model';
 import type { ChecklistItem, SessionAttentionItem } from '../domain/sessionAttention';
+import { PanelSection } from './detail/PanelSection';
+import {
+  AgentsSection,
+  ChangedFilesSection,
+  DeliverablesSection,
+  PlanSection,
+  SessionInfoSection,
+  WorkersSection,
+} from './detail/PanelSections';
+import type { SessionInfoRow } from './detail/sessionHeaderModel';
 import './SessionAttentionPanel.css';
-
-const CHECKLIST_ICON = {
-  completed: Check,
-  in_progress: CircleDot,
-  pending: Circle,
-} as const;
 
 const ITEM_LABEL: Record<SessionAttentionItem['kind'], string> = {
   gate: 'Your decision',
@@ -61,66 +66,101 @@ function AttentionRow({
   );
 }
 
-function PanelSection({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="niuu-session-panel__section" aria-label={title}>
-      <h2>{title}</h2>
-      {children}
-    </section>
-  );
-}
-
 /** Whether the panel has anything the session's other columns do not already show. */
 export function sessionPanelHasContent({
   items,
   ticket,
   checklist,
   changedFiles,
+  agents = [],
+  deliverables = [],
+  info = [],
+  workerSessions = [],
+  ravnWorkers = [],
 }: {
   items: readonly SessionAttentionItem[];
   ticket?: TrackerIssue;
   checklist: readonly ChecklistItem[];
   changedFiles?: number;
+  agents?: readonly SessionAgent[];
+  deliverables?: readonly PresentedFileRef[];
+  info?: readonly SessionInfoRow[];
+  workerSessions?: readonly Session[];
+  ravnWorkers?: readonly Worker[];
 }): boolean {
-  return items.length > 0 || Boolean(ticket) || checklist.length > 0 || Boolean(changedFiles);
+  return (
+    items.length > 0 ||
+    workerSessions.length > 0 ||
+    ravnWorkers.length > 0 ||
+    Boolean(ticket) ||
+    checklist.length > 0 ||
+    Boolean(changedFiles) ||
+    agents.length > 0 ||
+    deliverables.length > 0 ||
+    info.length > 0
+  );
 }
 
+/**
+ * The session's side panel: what needs the operator, then the plan, the agents, the
+ * changes, the deliverables and the facts about the session. A section with nothing to
+ * show is not drawn.
+ */
 export function SessionAttentionPanel({
   items,
   ticket,
   checklist,
+  agents = [],
   changedFiles,
+  fileStats,
+  deliverables = [],
+  info = [],
+  workerSessions = [],
+  ravnWorkers = [],
+  onOpenSession,
   showOpenChat,
   onOpenChat,
   onOpenDiffs,
   onRespondPermission,
   onClose,
+  overlay = false,
 }: {
   items: readonly SessionAttentionItem[];
   ticket?: TrackerIssue;
   checklist: readonly ChecklistItem[];
+  agents?: readonly SessionAgent[];
   changedFiles?: number;
+  fileStats?: { added: number; modified: number; deleted: number } | null;
+  deliverables?: readonly PresentedFileRef[];
+  info?: readonly SessionInfoRow[];
+  /** The sessions this coordinator leads. */
+  workerSessions?: readonly Session[];
+  /** The Ravn workers in this session's room. */
+  ravnWorkers?: readonly Worker[];
+  /** Open one of the worker sessions. */
+  onOpenSession: (id: string) => void;
   showOpenChat: boolean;
   onOpenChat: () => void;
   onOpenDiffs: () => void;
   onRespondPermission: (requestId: string, behavior: PermissionBehavior) => void;
   onClose: () => void;
+  /** Narrow screens: the panel floats over the chat instead of taking a column. */
+  overlay?: boolean;
 }) {
-  const doneCount = checklist.filter((item) => item.status === 'completed').length;
   return (
     <aside
-      className="niuu-session-panel"
+      className={overlay ? 'niuu-session-panel niuu-session-panel--overlay' : 'niuu-session-panel'}
       aria-label="Session overview"
       data-testid="session-attention-panel"
     >
       <div className="niuu-session-panel__head">
-        <span>{items.length > 0 ? `Needs you (${items.length})` : 'Overview'}</span>
+        <span>Overview</span>
         <button type="button" aria-label="Hide session panel" title="Hide" onClick={onClose}>
           <ChevronRight aria-hidden="true" />
         </button>
       </div>
       {items.length > 0 ? (
-        <PanelSection title="Waiting on you">
+        <PanelSection title="Needs you" count={items.length}>
           <ul>
             {items.map((item) => (
               <AttentionRow
@@ -134,6 +174,17 @@ export function SessionAttentionPanel({
           </ul>
         </PanelSection>
       ) : null}
+
+      <WorkersSection
+        sessions={workerSessions}
+        ravnWorkers={ravnWorkers}
+        onOpenSession={onOpenSession}
+      />
+      <PlanSection checklist={checklist} />
+      <AgentsSection agents={agents} />
+      <ChangedFilesSection count={changedFiles} stats={fileStats} onOpenDiffs={onOpenDiffs} />
+      <DeliverablesSection files={deliverables} />
+      <SessionInfoSection rows={info} />
 
       {ticket ? (
         <PanelSection title="Ticket">
@@ -149,31 +200,6 @@ export function SessionAttentionPanel({
             <strong>{ticket.title}</strong>
             <small>{ticket.status}</small>
           </div>
-        </PanelSection>
-      ) : null}
-
-      {checklist.length > 0 ? (
-        <PanelSection title={`Tasks (${doneCount}/${checklist.length})`}>
-          <ul className="niuu-session-panel__checklist">
-            {checklist.map((item, index) => {
-              const Icon = CHECKLIST_ICON[item.status];
-              return (
-                <li key={`${index}:${item.label}`} data-status={item.status}>
-                  <Icon aria-hidden="true" />
-                  <span>{item.label}</span>
-                </li>
-              );
-            })}
-          </ul>
-        </PanelSection>
-      ) : null}
-
-      {changedFiles ? (
-        <PanelSection title="Changes">
-          <button type="button" className="niuu-session-panel__link" onClick={onOpenDiffs}>
-            <FileDiff aria-hidden="true" />
-            {changedFiles} file{changedFiles === 1 ? '' : 's'} changed
-          </button>
         </PanelSection>
       ) : null}
     </aside>

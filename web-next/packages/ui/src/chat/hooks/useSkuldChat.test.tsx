@@ -2,20 +2,17 @@ import { act, render, renderHook, screen, waitFor } from '@testing-library/react
 import { SessionChat } from '../components/SessionChat';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  formatOutcomeContent,
   getStorageKey,
   insertBrokerTurn,
   isNotificationTurn,
   parseEvent,
   parseParticipantMeta,
-  pushOutcomeField,
   reviveAgentEvents,
   reviveMessages,
   reviveMeshEvents,
   serializeAgentEvents,
   serializeMessages,
   serializeMeshEvents,
-  stringifyOutcomeValue,
   transformTurns,
   useSkuldChat,
 } from './useSkuldChat';
@@ -322,38 +319,6 @@ describe('useSkuldChat', () => {
     });
   });
 
-  it('formats outcome blocks and multiline field payloads for chat rendering', () => {
-    const lines: string[] = [];
-    pushOutcomeField(lines, 'notes', 'line one\nline two');
-    pushOutcomeField(lines, 'empty', '');
-    expect(lines).toEqual(['notes: |', '  line one', '  line two']);
-
-    expect(stringifyOutcomeValue(null)).toBe('');
-    expect(stringifyOutcomeValue(false)).toBe('false');
-    expect(stringifyOutcomeValue({ reason: 'details' })).toBe('{"reason":"details"}');
-
-    expect(
-      formatOutcomeContent({
-        type: 'room_outcome',
-        eventType: 'review.completed',
-        summary: 'Needs_changes,please_retry',
-        fields: {
-          verdict: 'needs_changes',
-          summary: 'Needs_changes,please_retry',
-          success: true,
-          reasons: ['missing tests'],
-        },
-      }),
-    ).toContain('summary: Needs_changes, please_retry');
-
-    expect(
-      formatOutcomeContent({
-        type: 'room_outcome',
-        eventType: 'research.completed',
-      }),
-    ).toContain('event_type: research.completed');
-  });
-
   it('updates participant status on room_activity after room_state', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 
@@ -557,6 +522,83 @@ describe('useSkuldChat', () => {
     });
   });
 
+  it("threads a live room_message by Skuld's camelCase threadId", async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_message',
+          id: 'turn-1',
+          participantId: 'peer-chair',
+          participant: {
+            peer_id: 'peer-chair',
+            persona: 'council-chair',
+            participant_type: 'ravn',
+          },
+          content: 'Opinion A is ready.',
+          visibility: 'internal',
+          threadId: 'thread-camel',
+        }),
+      );
+    });
+
+    expect(result.current.messages[0]).toMatchObject({ threadId: 'thread-camel' });
+  });
+
+  it('uses the room_message id as the chat message id and does not repeat a known message', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    const frame = JSON.stringify({
+      type: 'room_message',
+      id: 'turn-stable',
+      participantId: 'peer-chair',
+      participant: { peer_id: 'peer-chair', persona: 'council-chair', participant_type: 'ravn' },
+      content: 'Same message.',
+    });
+
+    act(() => wsHandlers.onMessage?.(frame));
+    act(() => wsHandlers.onMessage?.(frame));
+
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0]?.id).toBe('turn-stable');
+  });
+
+  it('streams a room_agent_event response frame like text', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_state',
+          participants: [{ peer_id: 'peer-r', persona: 'worker', participant_type: 'ravn' }],
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_agent_event',
+          participantId: 'peer-r',
+          frame: { type: 'response', data: 'Working on ' },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_agent_event',
+          participantId: 'peer-r',
+          frame: { type: 'response', data: 'it.' },
+        }),
+      );
+    });
+
+    expect(result.current.messages.at(-1)).toMatchObject({
+      status: 'running',
+      content: 'Working on it.',
+      parts: [{ type: 'text', text: 'Working on it.' }],
+    });
+  });
+
   it('shows a coordinator reply received live as its outcome card, as history does', async () => {
     window.HTMLElement.prototype.scrollIntoView = vi.fn();
     const coordinator = {
@@ -606,7 +648,7 @@ describe('useSkuldChat', () => {
     expect(screen.queryByText(/---outcome---|next_action_timing/)).toBeNull();
   });
 
-  it('tracks participant join and leave events', async () => {
+  it('tracks participant join and leave events, keeping workers who left', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 
     await waitFor(() => expect(result.current.historyLoaded).toBe(true));
@@ -635,7 +677,25 @@ describe('useSkuldChat', () => {
       );
     });
 
-    expect(result.current.participants.has('peer-join')).toBe(false);
+    // A worker that leaves did its part: it stays one of the session's workers, marked left.
+    expect(result.current.participants.get('peer-join')?.status).toBe('left');
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_state',
+          participants: [{ peer_id: 'human-1', persona: 'Jozef', participant_type: 'human' }],
+        }),
+      );
+    });
+    expect(result.current.participants.get('peer-join')?.status).toBe('left');
+
+    act(() => {
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'room_state', participants: [] }));
+    });
+    // People who leave are gone; workers who left are kept.
+    expect(result.current.participants.has('human-1')).toBe(false);
+    expect(result.current.participants.has('peer-join')).toBe(true);
   });
 
   it('deduplicates user_confirmed events and ignores non-object metadata', async () => {
@@ -915,6 +975,47 @@ summary: Fetched review packet ready
       persona: 'Skuld',
       participantType: 'skuld',
     });
+  });
+
+  it('keeps the live room when history names only the workers who have spoken', async () => {
+    const { result } = renderHook(() =>
+      useSkuldChat('ws://localhost:8080/s/test/session', { historyMode: 'none' }),
+    );
+    const member = (peerId: string, persona: string) => ({
+      peer_id: peerId,
+      persona,
+      participant_type: 'ravn',
+    });
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_state',
+          participants: [member('flock-coder', 'coder'), member('flock-reviewer', 'reviewer')],
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'conversation_history',
+          turns: [
+            {
+              id: 'turn-1',
+              role: 'assistant',
+              content: 'Coded.',
+              created_at: '2026-11-05T10:18:36.889091+00:00',
+              participant_id: 'flock-coder',
+              participant_meta: member('flock-coder', 'coder'),
+            },
+          ],
+        }),
+      );
+    });
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    // The reviewer has not spoken yet; it is still in the room.
+    expect([...result.current.participants.keys()]).toEqual(
+      expect.arrayContaining(['flock-coder', 'flock-reviewer']),
+    );
   });
 
   it('hydrates assistant history with a synthesized Skuld participant when participant metadata is absent', async () => {
@@ -1236,6 +1337,7 @@ page_path: council/demo/opinion-b.md
     expect(result.current.pendingInputRequests).toEqual([
       {
         requestId: 'input-1',
+        receivedAt: expect.any(String),
         questions: [
           { prompt: 'Choose the target environment', choices: ['Staging', 'Production'] },
           { prompt: 'Which region?', choices: ['Canada', 'Europe'] },
@@ -1282,6 +1384,7 @@ page_path: council/demo/opinion-b.md
     expect(result.current.pendingInputRequests).toEqual([
       {
         requestId: 'muse-1',
+        receivedAt: expect.any(String),
         questions: [
           {
             prompt: 'Which platforms?',
@@ -1340,6 +1443,7 @@ page_path: council/demo/opinion-b.md
     expect(result.current.pendingInputRequests).toEqual([
       {
         requestId: 'tty-1-abc',
+        receivedAt: expect.any(String),
         questions: [{ prompt: 'Deliver how?', choices: ['Folio', 'Tar'] }],
         // LEX-1502: the card that comes back says why the answer was refused.
         error: 'The live Claude menu does not match the pending question state',
@@ -1464,6 +1568,7 @@ page_path: council/demo/opinion-b.md
     expect(result.current.pendingInputRequests).toEqual([
       {
         requestId: 'input-clear',
+        receivedAt: expect.any(String),
         questions: [{ prompt: 'Provide a release note', choices: [] }],
       },
     ]);
@@ -1874,7 +1979,7 @@ page_path: council/demo/opinion-b.md
     expect(result.current.messages).toHaveLength(0);
   });
 
-  it('renders successful room_outcome events as outcome messages', async () => {
+  it('records a successful room_outcome as a mesh event only, not a second chat message', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 
     await waitFor(() => expect(result.current.historyLoaded).toBe(true));
@@ -1900,13 +2005,21 @@ page_path: council/demo/opinion-b.md
     });
 
     expect(result.current.meshEvents).toHaveLength(1);
-    expect(result.current.messages).toHaveLength(1);
-    expect(result.current.messages[0]?.participant?.persona).toBe('reviewer');
-    expect(result.current.messages[0]?.content).toContain('```outcome');
-    expect(result.current.messages[0]?.content).toContain('verdict: needs_changes');
-    expect(result.current.messages[0]?.content).toContain('summary: Found two regressions.');
-    expect(result.current.messages[0]?.content).toContain('findings_count: 2');
-    expect(result.current.messages[0]?.content).toContain('files: ["README.md","docs/api.md"]');
+    expect(result.current.meshEvents[0]).toMatchObject({
+      type: 'outcome',
+      participantId: 'peer-1',
+      persona: 'reviewer',
+      eventType: 'review.completed',
+      verdict: 'needs_changes',
+      summary: 'Found two regressions.',
+      fields: expect.objectContaining({
+        findings_count: 2,
+        files: ['README.md', 'docs/api.md'],
+      }),
+    });
+    // The reply that carries the outcome block is the only chat message; the event must not
+    // add an internal duplicate of it.
+    expect(result.current.messages).toHaveLength(0);
   });
 
   it('falls back to outcome field summaries and preserves invalid verdict markers', async () => {
@@ -1936,7 +2049,6 @@ page_path: council/demo/opinion-b.md
       summary: 'Fallback summary from fields.',
       valid: false,
     });
-    expect(result.current.messages[0]?.content).toContain('summary: Fallback summary from fields.');
   });
 
   it('captures room mesh message review packets', async () => {
@@ -1998,40 +2110,6 @@ page_path: council/demo/opinion-b.md
     expect(result.current.meshEvents[0]).toMatchObject({
       summary: 'Wrote opinion for low-confidence, high-risk, or bootstrap/test cases.',
     });
-    expect(result.current.messages[0]?.content).toContain(
-      'summary: Wrote opinion for low-confidence, high-risk, or bootstrap/test cases.',
-    );
-  });
-
-  it('serializes multiline room_outcome fields as yaml block scalars', async () => {
-    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
-
-    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
-
-    act(() => {
-      wsHandlers.onMessage?.(
-        JSON.stringify({
-          type: 'room_outcome',
-          participantId: 'peer-1',
-          participant: { peer_id: 'peer-1', persona: 'reviewer', participant_type: 'ravn' },
-          persona: 'reviewer',
-          eventType: 'review.completed',
-          verdict: 'conditional',
-          summary: 'Needs a closer look.',
-          fields: {
-            verdict: 'conditional',
-            summary: 'Needs a closer look.',
-            findings:
-              '## Verified\n- **Route pair count**: 26\n- Use `/api/v1/credentials/secrets`',
-          },
-        }),
-      );
-    });
-
-    expect(result.current.messages).toHaveLength(1);
-    expect(result.current.messages[0]?.content).toContain('findings: |');
-    expect(result.current.messages[0]?.content).toContain('  ## Verified');
-    expect(result.current.messages[0]?.content).toContain('  - **Route pair count**: 26');
   });
 
   it('captures room_agent_event frames per participant', async () => {
@@ -2600,6 +2678,9 @@ page_path: council/demo/opinion-b.md
     });
     expect(result.current.capabilities).toEqual({
       interrupt: true,
+      steer: false,
+      set_effort: false,
+      runtime_options: false,
       set_model: true,
       set_thinking_tokens: true,
       rewind_files: true,

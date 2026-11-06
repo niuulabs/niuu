@@ -171,6 +171,7 @@ export function ImagePreview({
             type="button"
             disabled={busy || imageFailed || transferDisabled}
             onClick={() => void transfer('copy')}
+            title="Copy image"
           >
             <Copy size={16} />
             Copy image
@@ -179,6 +180,7 @@ export function ImagePreview({
             type="button"
             disabled={busy || transferDisabled}
             onClick={() => void transfer('download')}
+            title="Download"
           >
             <Download size={16} />
             Download
@@ -189,6 +191,7 @@ export function ImagePreview({
               target="_blank"
               rel="noreferrer"
               aria-label="Open original image"
+              title="Open in new tab"
             >
               <ExternalLink size={16} />
               Open in new tab

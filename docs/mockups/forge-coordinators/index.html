@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Forge Coordinators</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: session list with nested sub-sessions · one conversation with a crew strip and progress lane · one right panel. niuu theme tokens. */
+:root {
+  color-scheme: dark;
+  --bg: #071019; --bg2: #10212d; --bg3: #182b38; --bg-el: #2b4351; --quiet: #0b1722; --code: #050c13;
+  --fg: #edf4f7; --fg2: #a5b7c1; --muted: #78909d; --faint: #648090;
+  --border: #2b4351; --border-subtle: #182b38;
+  --brand: #86d0e8; --brand-300: #a8e7f4; --brand-600: #3a8baa; --on-brand: #0b2937;
+  --ok: #76bfa7; --warn: #e4bd7e; --crit: #e78d94; --violet: #b9a8f0;
+  --claude: #fb923c; --codex: #60a5fa;
+  /* persona hues, assigned as a set (Lexi RoomPalette) */
+  --p1: #8fd3b4; --p2: #f2b880; --p3: #a8b8ff; --p4: #f19bb5; --p5: #9fd6f0; --p6: #d8c98a;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--font-sans); -webkit-font-smoothing: antialiased; overflow: hidden; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+button:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.mono { font-family: var(--font-mono); }
+.tnum { font-variant-numeric: tabular-nums; }
+svg.i { width: 15px; height: 15px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+svg.i.sm { width: 13px; height: 13px; }
+
+.mockbar { height: 40px; display: flex; align-items: center; gap: 14px; padding: 0 16px; background: repeating-linear-gradient(135deg, #0b1722 0 10px, #0d1b27 10px 20px); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+.mockbar .tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--brand); }
+.mockbar nav { display: flex; gap: 4px; }
+.mockbar nav button { padding: 4px 10px; border-radius: 99px; color: var(--fg2); }
+.mockbar nav button[aria-pressed="true"] { background: var(--bg3); color: var(--fg); }
+.mockbar .sp { flex: 1; }
+.mockbar .note { font-size: 11.5px; }
+
+.app { height: calc(100% - 40px); display: grid; grid-template-columns: 300px minmax(0, 1fr) 300px; }
+.app.nopanel { grid-template-columns: 300px minmax(0, 1fr) 0; }
+
+/* ---- list ---- */
+.side { border-right: 1px solid var(--border-subtle); display: flex; flex-direction: column; min-height: 0; }
+.side-head { padding: 14px 14px 8px; display: flex; flex-direction: column; gap: 10px; }
+.side-head h1 { margin: 0; font-size: 20px; font-weight: 700; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { height: 24px; padding: 0 9px; border-radius: 99px; border: 1px solid var(--border-subtle); background: var(--bg2); font-size: 11.5px; font-weight: 600; color: var(--fg2); display: inline-flex; align-items: center; gap: 5px; }
+.chip.on { background: var(--brand); color: var(--on-brand); border-color: var(--brand); }
+.list { flex: 1; overflow-y: auto; padding: 2px 8px 12px; }
+.grp { display: flex; align-items: center; gap: 6px; padding: 10px 6px 4px; font-size: 11.5px; font-weight: 600; color: var(--muted); }
+.row { width: 100%; text-align: left; display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; column-gap: 8px; row-gap: 1px; padding: 8px 10px; border-radius: 11px; align-items: center; }
+.row:hover { background: var(--bg2); }
+.row.sel { background: var(--bg3); }
+.row .dot { width: 7px; height: 7px; border-radius: 50%; justify-self: center; }
+.row .title { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; gap: 6px; align-items: center; }
+.row .meta { grid-column: 2 / 3; font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .fact { grid-column: 3; font-size: 11.5px; color: var(--muted); text-align: right; }
+.role { font-size: 10px; font-weight: 600; letter-spacing: .04em; color: var(--brand-300); border: 1px solid color-mix(in srgb, var(--brand) 35%, transparent); border-radius: 5px; padding: 0 5px; }
+.subs { margin: 0 0 4px 18px; padding-left: 10px; border-left: 1px solid var(--border); display: flex; flex-direction: column; }
+.sub { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 5px 8px; border-radius: 9px; text-align: left; width: 100%; }
+.sub:hover { background: var(--bg2); }
+.sub .pd { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.sub .nm { font-size: 12.5px; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sub .nm b { color: var(--c); font-weight: 600; }
+.verdict { font-size: 10.5px; font-weight: 600; padding: 0 7px; height: 18px; display: inline-flex; align-items: center; border-radius: 99px; color: var(--c); background: color-mix(in srgb, var(--c) 15%, transparent); white-space: nowrap; }
+.pill { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 99px; font-size: 10.5px; font-weight: 600; color: var(--c); background: color-mix(in srgb, var(--c) 16%, transparent); border: .5px solid color-mix(in srgb, var(--c) 32%, transparent); white-space: nowrap; }
+
+/* ---- main ---- */
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+.head { padding: 12px 20px 0; border-bottom: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 9px; }
+.head-top { display: flex; align-items: center; gap: 10px; }
+.head h2 { margin: 0; font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.subline { font-size: 12.5px; color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.subline .eng { font-weight: 600; }
+.sp { flex: 1; }
+.iconbtn { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; color: var(--fg2); }
+.iconbtn:hover { background: var(--bg3); }
+.crew { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.crew .lbl { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); margin-right: 4px; }
+.mem { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px 0 6px; border-radius: 99px; border: 1px solid var(--border-subtle); background: var(--bg2); font-size: 12px; color: var(--fg2); }
+.mem:hover { border-color: var(--border); color: var(--fg); }
+.mem.on { border-color: var(--c); color: var(--fg); background: color-mix(in srgb, var(--c) 10%, var(--bg2)); }
+.mem .av { width: 16px; height: 16px; border-radius: 50%; background: var(--c); color: #0b1722; font-size: 9.5px; font-weight: 700; display: grid; place-items: center; }
+.mem .st { width: 6px; height: 6px; border-radius: 50%; }
+.st.work { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
+.st.idle { background: var(--faint); }
+.st.need { background: var(--warn); }
+.tabs { display: flex; gap: 2px; margin-bottom: -1px; }
+.tabs button { padding: 7px 12px; font-size: 12.5px; color: var(--muted); border-bottom: 2px solid transparent; }
+.tabs button.on { color: var(--fg); border-bottom-color: var(--brand); }
+
+/* progress lane */
+.lane { margin: 14px 20px 0; padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 14px; background: var(--quiet); display: flex; flex-direction: column; gap: 8px; }
+.lane-h { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.lane-h b { color: var(--fg); font-weight: 600; }
+.stages { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.stage { position: relative; text-align: left; padding: 8px 10px; border-radius: 10px; background: var(--bg2); border: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.stage:hover { border-color: var(--border); }
+.stage.cur { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+.stage .sn { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stage .sn i { width: 7px; height: 7px; border-radius: 50%; background: var(--c); flex: none; }
+.stage .sv { font-size: 11.5px; color: var(--muted); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.stage .loops { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); }
+
+.scroll { flex: 1; overflow-y: auto; min-height: 0; }
+.transcript { max-width: 820px; margin: 0 auto; padding: 18px 24px 24px; display: flex; flex-direction: column; gap: 12px; }
+.capsule { align-self: center; font-size: 11.5px; color: var(--muted); padding: 2px 12px; border-radius: 99px; background: var(--bg2); border: 1px solid var(--border-subtle); }
+.you { align-self: flex-end; max-width: 76%; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.you .meta { font-size: 11px; color: var(--faint); }
+.bubble { background: var(--bg3); border: 1px solid color-mix(in srgb, var(--brand) 24%, transparent); border-radius: 18px 18px 6px 18px; padding: 10px 14px; font-size: 14.5px; }
+.speaker { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 700; color: var(--c); }
+.speaker i { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.speaker .tag { font-weight: 500; font-size: 11px; color: var(--muted); }
+.speaker .when { font-weight: 400; color: var(--faint); font-size: 11.5px; }
+.prose { font-size: 14.5px; line-height: 1.6; }
+.prose p { margin: 0 0 6px; }
+.prose code { font-family: var(--font-mono); font-size: 12.5px; background: var(--bg3); border-radius: 4px; padding: 1px 5px; }
+.say { display: flex; flex-direction: column; gap: 6px; padding-left: 12px; border-left: 2px solid color-mix(in srgb, var(--c) 45%, transparent); }
+.toolrun { display: flex; align-items: center; gap: 10px; padding: 7px 11px; border-radius: 10px; border: 1px solid var(--border-subtle); background: color-mix(in srgb, var(--bg2) 55%, transparent); font-size: 12.5px; color: var(--fg2); text-align: left; width: 100%; }
+.toolrun b { color: var(--fg); font-weight: 600; }
+.toolrun .t { margin-left: auto; color: var(--muted); font-size: 11.5px; }
+
+/* handoff + outcome + relay */
+.handoff { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 10px; font-size: 12.5px; color: var(--muted); border-radius: 10px; }
+.handoff:hover { background: var(--bg2); }
+.handoff .who { display: inline-flex; align-items: center; gap: 6px; color: var(--fg2); white-space: nowrap; }
+.handoff .who b { color: var(--c1); font-weight: 600; } .handoff .who b + svg + b { color: var(--c2); }
+.handoff .what { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.handoff .ev { font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
+.outcome { border: 1px solid color-mix(in srgb, var(--c) 40%, var(--border-subtle)); background: color-mix(in srgb, var(--c) 6%, var(--bg2)); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.outcome-h { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.outcome-h .k { font-family: var(--font-mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.outcome-h .ev { font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
+.outcome .sum { font-size: 13.5px; }
+.facts { display: flex; gap: 6px; flex-wrap: wrap; }
+.fact { font-size: 11.5px; color: var(--fg2); background: var(--quiet); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1px 7px; }
+.fact b { color: var(--muted); font-weight: 500; margin-right: 4px; }
+.relay { border: 1px solid var(--border-subtle); border-left: 3px solid var(--c); background: var(--quiet); border-radius: 10px; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }
+.relay-h { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.relay-h b { font-weight: 600; }
+.relay-h .host { color: var(--muted); }
+.relay-h .tagc { font-size: 10.5px; color: var(--fg2); border: 1px solid var(--border); border-radius: 99px; padding: 0 7px; }
+.workercard { border: 1px solid var(--border-subtle); border-radius: 12px; background: var(--bg2); padding: 9px 12px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.workercard .ic { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; background: var(--bg3); color: var(--brand); }
+.workercard .n { font-weight: 600; font-size: 13.5px; }
+.workercard .d { font-size: 12px; color: var(--muted); }
+.ask { border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: linear-gradient(180deg, rgba(228,189,126,.08), rgba(228,189,126,.02)), var(--bg2); border-radius: 14px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.ask-h { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--warn); font-weight: 600; }
+.btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg2); font-size: 12.5px; }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--on-brand); font-weight: 600; }
+
+.band { padding: 0 24px 14px; max-width: 868px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 6px; }
+.composer { border: 1px solid var(--border); background: var(--bg2); border-radius: 20px; padding: 10px 12px 8px 14px; display: flex; flex-direction: column; gap: 8px; }
+.composer .ph { color: var(--muted); font-size: 14.5px; }
+.c-row { display: flex; align-items: center; gap: 6px; }
+.cbtn { height: 26px; padding: 0 9px; border-radius: 99px; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--fg2); border: 1px solid var(--border-subtle); background: var(--quiet); }
+.to { color: var(--c); border-color: color-mix(in srgb, var(--c) 45%, transparent); }
+
+/* ---- panel ---- */
+.panel { border-left: 1px solid var(--border-subtle); background: var(--quiet); overflow-y: auto; min-width: 0; }
+.app.nopanel .panel { display: none; }
+.psec { border-bottom: 1px solid var(--border-subtle); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.psec h3 { margin: 0; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 600; display: flex; gap: 6px; align-items: center; }
+.pmem { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 9px; text-align: left; width: 100%; }
+.pmem:hover { background: var(--bg2); }
+.pmem .av { width: 22px; height: 22px; border-radius: 50%; background: var(--c); color: #0b1722; font-size: 10.5px; font-weight: 700; display: grid; place-items: center; }
+.pmem .nm { font-size: 12.5px; font-weight: 600; }
+.pmem .ds { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kv { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 5px 8px; font-size: 12.5px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; color: var(--fg2); }
+
+/* ---- member sheet ---- */
+.sheet { position: absolute; top: 0; right: 0; bottom: 0; width: min(440px, 100%); background: var(--bg2); border-left: 1px solid var(--border); box-shadow: 0 28px 85px rgb(0 0 0 / .45); display: flex; flex-direction: column; z-index: 20; }
+.sheet-h { padding: 14px 16px; border-bottom: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 8px; }
+.sheet-h .t { display: flex; align-items: center; gap: 10px; }
+.sheet-h .t .av { width: 28px; height: 28px; border-radius: 50%; background: var(--c); color: #0b1722; font-weight: 700; display: grid; place-items: center; }
+.sheet-h h4 { margin: 0; font-size: 15px; }
+.sheet-h .ds { font-size: 12px; color: var(--muted); }
+.ev-row { display: flex; gap: 6px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
+.ev-row span { font-family: var(--font-mono); border: 1px solid var(--border-subtle); border-radius: 5px; padding: 0 5px; color: var(--fg2); }
+.sheet-b { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.thought { font-size: 13px; color: var(--fg2); font-style: italic; border-left: 2px solid var(--border); padding-left: 10px; }
+
+@media (max-width: 1100px) { .app, .app.nopanel { grid-template-columns: 260px minmax(0, 1fr) 0; } .panel { display: none; } .stages { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .app, .app.nopanel { grid-template-columns: 0 minmax(0, 1fr) 0; } .side { display: none; } .stages { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+</style>
+</head>
+<body>
+<div class="mockbar">
+  <span class="tag">Mockup</span>
+  <nav id="views">
+    <button data-view="flock" aria-pressed="true">Coordinator with Ravn workers</button>
+    <button data-view="coord" aria-pressed="false">Coordinator with worker sessions</button>
+  </nav>
+  <span class="sp"></span>
+  <span class="note">Click a crew member, a stage or a handoff to focus it</span>
+</div>
+<div class="app" id="app">
+  <aside class="side" id="side"></aside>
+  <main class="main" id="main"></main>
+  <aside class="panel" id="panel"></aside>
+</div>
+<script>
+const P = {
+  arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>', check: '<path d="M20 6 9 17l-5-5"/>', x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  terminal: '<path d="m4 17 6-6-6-6M12 19h8"/>', file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/>',
+  pencil: '<path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/>', users: '<circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M16 3.5a4 4 0 0 1 0 9M22 21a7 7 0 0 0-4-6.3"/>',
+  branch: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9a6 6 0 0 1-6 6H6"/>',
+  ext: '<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>', down: '<path d="m6 9 6 6 6-6"/>',
+  ask: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/>', loop: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/>',
+  dock: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>', more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  forward: '<path d="m15 17 5-5-5-5"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/>', plus: '<path d="M12 5v14M5 12h14"/>', up: '<path d="M12 19V5M5 12l7-7 7 7"/>',
+};
+const ic = (n, c = '') => `<svg class="i ${c}" viewBox="0 0 24 24" aria-hidden="true">${P[n]}</svg>`;
+const V = { pass: ['Passed', 'var(--ok)'], changes: ['Changes requested', 'var(--warn)'], blocked: ['Blocked', 'var(--crit)'], framed: ['Framed', 'var(--ok)'], pending: ['Waiting', 'var(--faint)'], working: ['Working', 'var(--brand)'], published: ['Published', 'var(--ok)'] };
+const verdict = (k) => `<span class="verdict" style="--c:${V[k][1]}">${V[k][0]}</span>`;
+
+const FLOCK = {
+  lead: { name: 'Lead', model: 'GPT-5.6 Terra', c: 'var(--codex)' },
+  members: [
+    { id: 'spec', name: 'specification-framer', short: 'S', c: 'var(--p1)', st: 'idle', v: 'framed', consumes: ['spec.requested'], emits: ['spec.framed'], last: 'Framed the probe brief: 3 probes, freshness rules, JSON result.' },
+    { id: 'coder', name: 'coder', short: 'C', c: 'var(--p2)', st: 'work', v: 'working', consumes: ['code.requested', 'review.changes_requested'], emits: ['code.changed'], last: 'Fixing the stale-cache probe after review.' },
+    { id: 'rev', name: 'reviewer', short: 'R', c: 'var(--p3)', st: 'idle', v: 'changes', consumes: ['code.changed'], emits: ['review.passed', 'review.changes_requested'], last: 'Stale-cache probe reads the wrong timestamp.' },
+    { id: 'sec', name: 'security-auditor', short: 'A', c: 'var(--p4)', st: 'idle', v: 'pass', consumes: ['code.changed'], emits: ['security.passed'], last: 'No new egress; secrets stay in the env.' },
+    { id: 'pub', name: 'capability-publisher', short: 'P', c: 'var(--p5)', st: 'idle', v: 'pending', consumes: ['delivery.merged'], emits: ['delivery.completed'], last: 'Waits for review to pass.' },
+  ],
+  stages: [
+    { m: 'spec', label: 'Spec', ev: 'spec.framed', v: 'framed', loops: 0 },
+    { m: 'coder', label: 'Code', ev: 'code.changed', v: 'working', loops: 2 },
+    { m: 'rev', label: 'Review', ev: 'review.changes_requested', v: 'changes', loops: 1, cur: true },
+    { m: 'sec', label: 'Security', ev: 'security.passed', v: 'pass', loops: 0 },
+    { m: 'pub', label: 'Publish', ev: 'delivery.completed', v: 'pending', loops: 0 },
+  ],
+};
+const COORD = {
+  workers: [
+    { id: 'w1', name: 'ticket-1342-gates', model: 'Claude Fable 5.1', c: 'var(--claude)', st: 'work', v: 'working', fact: 'running 6m', obj: 'Refuse agent approval on human gates' },
+    { id: 'w2', name: 'ticket-1339-catalog', model: 'GPT-6 Sol', c: 'var(--codex)', st: 'need', v: 'changes', fact: 'waiting 2m', obj: 'Remove retired models from Bifröst catalog' },
+    { id: 'w3', name: 'ticket-1337-docs', model: 'Claude Fable 5.1', c: 'var(--claude)', st: 'idle', v: 'pass', fact: 'idle 20m', obj: 'Operator doc for read state' },
+  ],
+};
+const S = { view: 'flock', focus: null, panel: true };
+const mem = (id) => FLOCK.members.find((m) => m.id === id);
+
+function renderSide() {
+  const flockSel = S.view === 'flock', coordSel = S.view === 'coord';
+  document.getElementById('side').innerHTML = `
+  <div class="side-head"><h1>Sessions</h1>
+    <div class="chips"><span class="chip">Unread <span>2</span></span><span class="chip on">Live <span>5</span></span><span class="chip">Needs you <span>1</span></span><span class="chip">All</span></div></div>
+  <div class="list">
+    <div class="grp">${ic('users', 'sm')} Coordinators</div>
+    <button class="row${flockSel ? ' sel' : ''}" data-view="flock"><span class="dot" style="background:var(--ok)"></span><span class="title">tool-build-storm-probe</span><span class="pill" style="--c:var(--ok)">Working</span><span class="meta"><b style="color:var(--codex)">GPT-5.6 Terra</b> · Valhalla · Coordinator · 5 workers</span><span class="fact">running 4m</span></button>
+    <div class="subs">${FLOCK.members.map((m) => `<button class="sub" data-focus="${m.id}" data-view="flock" style="--c:${m.c}"><span class="pd"></span><span class="nm"><b>${m.name}</b></span>${verdict(m.v)}</button>`).join('')}</div>
+    <div class="grp">${ic('branch', 'sm')} Project · Plan review</div>
+    <button class="row${coordSel ? ' sel' : ''}" data-view="coord"><span class="dot" style="background:var(--ok)"></span><span class="title">plan-review-coordinator <span class="role">COORDINATOR</span></span><span class="pill" style="--c:var(--warn)">Needs you</span><span class="meta"><b style="color:var(--claude)">Claude Opus 5.5</b> · Ymir · 3 workers</span><span class="fact">waiting 2m</span></button>
+    <div class="subs">${COORD.workers.map((w) => `<button class="sub" data-view="coord" style="--c:${w.c}"><span class="pd" style="background:${w.st === 'need' ? 'var(--warn)' : w.st === 'work' ? 'var(--ok)' : 'var(--faint)'}"></span><span class="nm">${w.name}</span><span style="font-size:11px;color:var(--muted);white-space:nowrap">${w.fact}</span></button>`).join('')}</div>
+    <div class="grp">Independent</div>
+    <button class="row"><span class="dot" style="background:var(--faint)"></span><span class="title">web-session-ux</span><span class="pill" style="--c:var(--muted)">Idle</span><span class="meta"><b style="color:var(--claude)">Claude Fable 5.1</b> · local</span><span class="fact">idle 25m</span></button>
+  </div>`;
+}
+
+function crewStrip(members) {
+  return `<div class="crew"><span class="lbl">Workers</span>${members.map((m) => `<button class="mem${S.focus === m.id ? ' on' : ''}" data-focus="${m.id}" style="--c:${m.c}"><span class="av">${m.short}</span>${m.name}<span class="st ${m.st}"></span></button>`).join('')}</div>`;
+}
+
+function flockMain() {
+  const f = FLOCK;
+  const say = (id, when, body) => { const m = mem(id); return `<div class="say" style="--c:${m.c}"><div class="speaker" style="--c:${m.c}"><i></i>${m.name}<span class="when">${when}</span></div>${body}</div>`; };
+  const hand = (from, to, ev, what) => { const a = from === 'lead' ? f.lead : mem(from), b = mem(to); return `<button class="handoff" data-focus="${to}" style="--c1:${a.c};--c2:${b.c}"><span class="who"><b>${a.name}</b>${ic('arrow', 'sm')}<b>${b.name}</b></span><span class="what">${what}</span><span class="ev">${ev}</span></button>`; };
+  const outcome = (id, vk, ev, sum, facts) => { const m = mem(id); return `<div class="outcome" style="--c:${V[vk][1]}"><div class="outcome-h"><span class="k">Outcome</span><b style="color:${m.c}">${m.name}</b>${verdict(vk)}<span class="sp"></span><span class="ev">${ev}</span></div><div class="sum">${sum}</div>${facts ? `<div class="facts">${facts.map(([k, v]) => `<span class="fact"><b>${k}</b>${v}</span>`).join('')}</div>` : ''}</div>`; };
+  return `
+  <header class="head">
+    <div class="head-top"><span class="st work" style="width:8px;height:8px;border-radius:50%"></span>
+      <div><h2>tool-build-storm-probe <span class="pill" style="--c:var(--ok)">Working</span></h2>
+      <div class="subline"><span class="eng" style="color:var(--codex)">GPT-5.6 Terra</span> · Valhalla · running 4m · Coordinator · 5 workers · workflow <span class="mono" style="font-size:11.5px">tool-build</span></div></div>
+      <span class="sp"></span><button class="iconbtn" data-panel>${ic('dock')}</button><button class="iconbtn">${ic('more')}</button></div>
+    ${crewStrip(f.members)}
+    <nav class="tabs"><button class="on">Conversation</button><button>Diffs</button><button>Files</button><button>Telemetry</button></nav>
+  </header>
+  <div class="lane"><div class="lane-h">${ic('loop', 'sm')} <b>Progress</b> · review sent the code back once · <span>coder is on it</span></div>
+    <div class="stages">${f.stages.map((s) => { const m = mem(s.m); return `<button class="stage${s.cur ? ' cur' : ''}" data-focus="${s.m}"><span class="sn" style="--c:${m.c}"><i></i>${s.label}</span><span class="sv">${verdict(s.v)}${s.loops ? `<span class="loops">↺ ${s.loops}</span>` : ''}</span></button>`; }).join('')}</div></div>
+  <div class="scroll"><div class="transcript">
+    <div class="capsule">Today · 05:12</div>
+    <div class="you"><div class="meta">05:12 · You</div><div class="bubble">Build a storm-probe coverage tool that checks the latest storm data is fresh. Publish it as a capability when review and security pass.</div></div>
+    <div class="say" style="--c:${f.lead.c}"><div class="speaker" style="--c:${f.lead.c}"><i></i>Lead<span class="tag">· this session</span><span class="when">05:12</span></div><div class="prose"><p>Framing the spec first, then code, review and security in parallel.</p></div></div>
+    ${hand('lead', 'spec', 'spec.requested', 'Frame a storm-probe coverage tool: probes, freshness, result shape')}
+    ${say('spec', '05:14', `<button class="toolrun">${ic('file', 'sm')}<b>3 files read</b> · 1 search<span class="t">48s</span></button>`)}
+    ${outcome('spec', 'framed', 'spec.framed', 'Three probes (coverage, freshness, precedence) with a JSON result per probe.', [['probes', '3'], ['schema', 'storm-probe/v1']])}
+    ${hand('spec', 'coder', 'code.requested', 'Implement the three probes against the framed brief')}
+    ${say('coder', '05:19', `<button class="toolrun">${ic('pencil', 'sm')}<b>2 files written</b> · 4 commands<span class="t">2m 10s</span></button>`)}
+    ${outcome('coder', 'pass', 'code.changed', 'Probes implemented; 6 tests pass.', [['files', '2'], ['tests', '6 added']])}
+    <div class="handoff" style="--c1:var(--p2);--c2:var(--p3)"><span class="who"><b>coder</b>${ic('arrow', 'sm')}<b style="color:var(--p3)">reviewer</b> · <b style="color:var(--p4)">security-auditor</b></span><span class="what">Review and audit the probe code</span><span class="ev">code.changed</span></div>
+    ${outcome('sec', 'pass', 'security.passed', 'No new egress, secrets stay in the environment.')}
+    ${outcome('rev', 'changes', 'review.changes_requested', 'The stale-cache probe compares the fetch time, not the data timestamp, so stale data passes.', [['findings', '1'], ['file', 'probes/freshness.py:42']])}
+    ${hand('rev', 'coder', 'review.changes_requested', 'Fix the freshness probe to read the data timestamp')}
+    ${say('coder', '05:27', `<div class="prose"><p>Reading the data timestamp from the feed header instead.</p></div><button class="toolrun">${ic('terminal', 'sm')}<b>2 commands</b> · 1 file edited<span class="t">running 40s</span></button>`)}
+  </div></div>
+  <div class="band"><div class="composer"><span class="ph">Message the workers…</span><div class="c-row"><button class="cbtn">${ic('plus', 'sm')}</button><button class="cbtn">To: everyone ${ic('down', 'sm')}</button><span class="cbtn to" style="--c:var(--p2)">@coder</span><span class="sp" style="flex:1"></span><button class="cbtn" style="color:var(--crit)">Stop turn</button><button class="cbtn" style="background:var(--brand);color:var(--on-brand);border-color:var(--brand)">${ic('up', 'sm')}</button></div></div></div>
+  ${S.focus ? memberSheet(mem(S.focus)) : ''}`;
+}
+
+function memberSheet(m) {
+  return `<aside class="sheet" style="--c:${m.c}"><div class="sheet-h"><div class="t"><span class="av">${m.short}</span><div style="flex:1;min-width:0"><h4>${m.name}</h4><div class="ds">${m.st === 'work' ? 'Working · 40s' : 'Idle'} · worker · GPT-5.6 Terra</div></div>${verdict(m.v)}<button class="iconbtn" data-close>${ic('x')}</button></div>
+    <div class="ev-row">Listens for ${m.consumes.map((e) => `<span>${e}</span>`).join('')} · Emits ${m.emits.map((e) => `<span>${e}</span>`).join('')}</div></div>
+    <div class="sheet-b">
+      <div class="speaker" style="--c:${m.c}"><i></i>${m.name}<span class="when">05:27</span></div>
+      <div class="thought">The review is right: freshness compares fetch time. The feed header carries the data timestamp.</div>
+      <button class="toolrun">${ic('file', 'sm')}<b>Read</b> probes/freshness.py<span class="t">0.1s</span></button>
+      <button class="toolrun">${ic('pencil', 'sm')}<b>Edited</b> probes/freshness.py <span style="color:var(--ok);font-family:var(--font-mono);font-size:11px">+6</span> <span style="color:var(--crit);font-family:var(--font-mono);font-size:11px">−2</span><span class="t">0.2s</span></button>
+      <button class="toolrun">${ic('terminal', 'sm')}<b>Running</b> pytest tests/test_probes.py -q<span class="t">40s</span></button>
+      <div style="font-size:12px;color:var(--muted)">Only this member's turns, thoughts and tool calls. Its outcomes also appear in the conversation.</div>
+    </div>
+    <div class="band" style="padding:12px 16px"><div class="composer"><span class="ph">Message coder directly…</span></div></div></aside>`;
+}
+
+function coordMain() {
+  const w = COORD.workers;
+  return `
+  <header class="head">
+    <div class="head-top"><span class="st need" style="width:8px;height:8px;border-radius:50%"></span>
+      <div><h2>plan-review-coordinator <span class="role">COORDINATOR</span> <span class="pill" style="--c:var(--warn)">Needs you</span></h2>
+      <div class="subline"><span class="eng" style="color:var(--claude)">Claude Opus 5.5</span> · Ymir · project Plan review · 3 workers</div></div>
+      <span class="sp"></span><button class="iconbtn" data-panel>${ic('dock')}</button><button class="iconbtn">${ic('more')}</button></div>
+    <div class="crew"><span class="lbl">Workers</span>${w.map((x) => `<button class="mem" style="--c:${x.c}"><span class="st ${x.st}"></span>${x.name}<span style="color:var(--faint);font-size:11px">${x.fact}</span></button>`).join('')}</div>
+    <nav class="tabs"><button class="on">Conversation</button><button>Diffs</button><button>Files</button></nav>
+  </header>
+  <div class="scroll"><div class="transcript">
+    <div class="capsule">Today · 09:02</div>
+    <div class="you"><div class="meta">09:02 · You</div><div class="bubble">Work through NIU-1337, 1339 and 1342. One worker each; report back when each is ready for review.</div></div>
+    <div class="say" style="--c:var(--claude)"><div class="speaker" style="--c:var(--claude)"><i></i>Claude Opus 5.5<span class="when">09:03</span></div><div class="prose"><p>Starting one worker per ticket.</p></div></div>
+    ${w.map((x) => `<div class="workercard"><span class="ic">${ic('branch')}</span><div style="min-width:0"><div class="n">Started worker <span style="color:var(--fg2)">${x.name}</span></div><div class="d">${x.obj} · ${x.model}</div></div><span style="display:flex;gap:8px;align-items:center">${verdict(x.v)}<button class="btn">Open ${ic('ext', 'sm')}</button></span></div>`).join('')}
+    <div class="relay" style="--c:var(--codex)"><div class="relay-h">${ic('forward', 'sm')}<b>ticket-1339-catalog</b><span class="host">· Valhalla</span><span class="tagc">worker</span><span class="sp"></span><span style="font-size:11.5px;color:var(--faint)">09:31</span>${ic('ext', 'sm')}</div>
+      <div class="prose" style="font-size:13.5px"><p>Two retired models are still pinned by running sessions. Remove them now (those sessions fail on resume) or after they stop?</p></div></div>
+    <div class="say" style="--c:var(--claude)"><div class="speaker" style="--c:var(--claude)"><i></i>Claude Opus 5.5<span class="when">09:32</span></div><div class="prose"><p>That's your call; it changes running sessions.</p></div></div>
+    <div class="ask"><div class="ask-h">${ic('ask')} The coordinator needs your input · waiting 2m</div><div style="font-size:14px;font-weight:500">Remove the retired models now or after the pinned sessions stop?</div><div style="display:flex;gap:6px"><button class="btn primary">After they stop (Recommended)</button><button class="btn">Now</button></div></div>
+  </div></div>
+  <div class="band"><div class="composer"><span class="ph">Steer the coordinator…  ( # to mention a worker )</span><div class="c-row"><button class="cbtn">${ic('plus', 'sm')}</button><span class="sp" style="flex:1"></span><button class="cbtn" style="background:var(--brand);color:var(--on-brand);border-color:var(--brand)">${ic('up', 'sm')}</button></div></div></div>`;
+}
+
+function renderPanel() {
+  const p = document.getElementById('panel');
+  if (S.view === 'flock') {
+    p.innerHTML = `<section class="psec"><h3>${ic('users', 'sm')} Workers · 5</h3>${FLOCK.members.map((m) => `<button class="pmem" data-focus="${m.id}" style="--c:${m.c}"><span class="av">${m.short}</span><span style="min-width:0"><span class="nm" style="color:${m.c}">${m.name}</span><div class="ds">${m.last}</div></span>${verdict(m.v)}</button>`).join('')}</section>
+    <section class="psec"><h3>Delivered</h3><div style="font-size:12.5px;color:var(--fg2)">Nothing yet · publishes when review passes</div></section>
+    <section class="psec"><h3>Session</h3><dl class="kv"><dt>Lead</dt><dd><span style="color:var(--codex)">GPT-5.6 Terra</span></dd><dt>Workflow</dt><dd>tool-build</dd><dt>Host</dt><dd>Valhalla</dd><dt>Started</dt><dd>05:12</dd></dl></section>`;
+  } else {
+    p.innerHTML = `<section class="psec"><h3>Needs you · 1</h3><div style="font-size:12.5px">Remove retired models now or later?</div></section>
+    <section class="psec"><h3>${ic('branch', 'sm')} Workers · 3</h3>${COORD.workers.map((x) => `<button class="pmem" style="--c:${x.c}"><span class="av" style="background:var(--bg3);color:${x.c}">${ic('branch', 'sm')}</span><span style="min-width:0"><span class="nm">${x.name}</span><div class="ds">${x.obj}</div></span>${verdict(x.v)}</button>`).join('')}</section>
+    <section class="psec"><h3>Project</h3><dl class="kv"><dt>Project</dt><dd>Plan review</dd><dt>Objective</dt><dd>Land NIU-1337, 1339, 1342 reviewed</dd><dt>Tools</dt><dd>Manage · Message sessions</dd></dl></section>`;
+  }
+}
+
+function render() {
+  document.querySelectorAll('#views button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === S.view)));
+  document.getElementById('app').classList.toggle('nopanel', !S.panel);
+  renderSide();
+  document.getElementById('main').innerHTML = S.view === 'flock' ? flockMain() : coordMain();
+  renderPanel();
+}
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('button');
+  if (!t) return;
+  if (t.hasAttribute('data-close')) { S.focus = null; render(); return; }
+  if (t.hasAttribute('data-panel')) { S.panel = !S.panel; render(); return; }
+  if (t.dataset.view) { if (t.dataset.view !== S.view) S.focus = null; S.view = t.dataset.view; }
+  if (t.dataset.focus && S.view === 'flock') S.focus = S.focus === t.dataset.focus ? null : t.dataset.focus;
+  render();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.focus) { S.focus = null; render(); } });
+render();
+</script>
+</body>
+</html>

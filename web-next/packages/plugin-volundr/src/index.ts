@@ -193,6 +193,7 @@ export {
 } from './ui/hooks/useNotifications';
 export { NewSessionPage } from './ui/NewSessionPage';
 export { useSessionList, useSessionDetail } from './ui/hooks/useSessionStore';
+export { useSessionRead, type UseSessionRead } from './ui/hooks/useSessionRead';
 export { sessionActivityTs, compareSessionsByActivity } from './ui/sessions/sessionLabels';
 export {
   useQuickLaunch,
@@ -225,7 +226,7 @@ export { ModelChip } from './ui/atoms/ModelChip';
 
 // Domain types
 export type { Session, SessionState, SessionResources, SessionEvent } from './domain/session';
-export { canTransition, transitionSession } from './domain/session';
+export { canTransition, transitionSession, SessionReadStateConflictError } from './domain/session';
 export { toLifecycleState } from './ui/utils/toLifecycleState';
 export type { ExecEntry, ExecStatus } from './domain/exec';
 export { appendExecEntry, updateExecEntry } from './domain/exec';
@@ -251,6 +252,7 @@ export type {
   SessionStatus,
   VolundrFeatures,
   VolundrMessage,
+  SessionMessageDelivery,
   VolundrLog,
   VolundrAggregatedLog,
   VolundrLogParticipant,
@@ -272,6 +274,9 @@ export type {
   SessionOrigin,
   ExternalSession,
   ExternalSessionHarness,
+  SessionReadState,
+  SessionReadStateChange,
+  ForgeMcpGrant,
 } from './models/volundr.model';
 
 export { UserStorageSettings } from './ui/UserStorageSettings';

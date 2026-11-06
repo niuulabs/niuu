@@ -94,3 +94,5 @@ export {
   type ForgeNotificationSpeak,
   type ForgeNotificationSpeakPriority,
 } from './forge-notification';
+
+export { modelLabel } from './model-label';

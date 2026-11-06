@@ -13,6 +13,7 @@ import {
   ConversationLink,
   GateDecision,
   ReviewBar,
+  FilesPane,
   SessionDiffs,
   SessionFilesWorkspace,
   SessionResources,
@@ -25,10 +26,16 @@ import {
   LoadingState,
   SessionChat,
   type ISessionHistoryLocator,
+  type ChatMessage,
   ChatConnectionsContext,
   ChatDisplayControls,
+  SessionLinksProvider,
+  SidebarResizer,
+  roomWorkers,
+  useResizableSidebar,
   type FileEntry,
   type MeshNotificationEvent,
+  type Worker,
   cn,
 } from '@niuulabs/ui';
 import {
@@ -37,15 +44,19 @@ import {
   ArrowLeft,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Eye,
-  EyeOff,
   FileCode2,
   FileDiff,
   FilePenLine,
+  Folder,
   FolderOpen,
+  GitBranch,
   GitCommitHorizontal,
   KeyRound,
+  Mail,
+  MailOpen,
   MessageCircleReply,
   MessageSquareText,
   PanelRight,
@@ -68,7 +79,19 @@ import type {
   VolundrSessionTraceSpan,
   VolundrSessionTraceSummary,
 } from '../models/volundr.model';
-import { useSessionDetail } from './hooks/useSessionStore';
+import { useSessionDetail, useSessionList } from './hooks/useSessionStore';
+import { coordinationOf } from '../domain/projectTree';
+import { buildSessionLinks } from './sessions/sessionLinks';
+import { CoordinatorTag, WorkerOf } from './detail/Coordination';
+import { DecisionDock } from './detail/DecisionDock';
+import { RightDock, type DockPane } from './detail/RightDock';
+import { compactDuration, useMinuteClock } from './sessions/timeFact';
+import { useElementWidth } from './detail/useElementWidth';
+import { useSessionRead } from './hooks/useSessionRead';
+import { useMediaQuery } from './hooks/useMediaQuery';
+
+/** Matches the width below which SessionAttentionPanel.css drops the panel's column. */
+const PANEL_OVERLAY_QUERY = '(max-width: 1100px)';
 import {
   meshEventsFromTurns,
   participantsFromTurns,
@@ -87,13 +110,25 @@ import { useSessionTabs } from './ForgeSessionSettings';
 import { useForgePreference } from './useForgePreference';
 import { SessionEnvironment } from './SessionEnvironment';
 import { SessionRuntimeVersion } from './SessionRuntimeVersion';
-import { sessionModelLabel } from '../domain/sessionModelLabel';
+import { modelLabel } from '@niuulabs/domain';
 import {
   buildAttentionItems,
-  latestChecklist,
+  resolveChecklist,
   type SessionGateSummary,
 } from '../domain/sessionAttention';
+import { sessionHarness } from '../domain/session';
 import { SessionAttentionPanel, sessionPanelHasContent } from './SessionAttentionPanel';
+import { DOCK_WIDTH, SESSION_STATE_LABELS, TRANSCRIPT_MIN_WIDTH } from './sessions/presentation';
+import { ContextMeter } from './detail/ContextMeter';
+import { SessionMoreMenu, type MoreMenuItem } from './detail/SessionMoreMenu';
+import { Subline } from './detail/Subline';
+import { ForwardMessageDialog, type ForwardedNotice } from './detail/ForwardMessageDialog';
+import {
+  contextMeterData,
+  isSessionWorking,
+  sessionInfoRows,
+  stateTone,
+} from './detail/sessionHeaderModel';
 
 export type LiveSessionTab =
   'chat' | 'terminal' | 'diffs' | 'files' | 'chronicles' | 'telemetry' | 'logs';
@@ -211,7 +246,7 @@ function WorkflowHumanGateCard({
   return (
     <div className="niuu:m-3 niuu:mb-0">
       <GateDecision
-        eyebrow="Human Gate Requested"
+        eyebrow="Your decision"
         title={title}
         summary={summary}
         facts={facts}
@@ -2332,6 +2367,13 @@ export function formatRepoLabel(repo: string): string {
   }
 }
 
+/** Where the session works: its repository, or the folder it mounts. */
+function sessionWorkspaceLabel(source: VolundrSession['source'] | null | undefined): string | null {
+  if (!source) return null;
+  if (source.type === 'git') return source.repo ? formatRepoLabel(source.repo) : null;
+  return source.local_path ?? source.path ?? source.paths?.[0]?.host_path ?? null;
+}
+
 export function truncateMiddle(value: string, maxLength = 30): string {
   if (value.length <= maxLength) return value;
   const start = Math.ceil((maxLength - 3) * 0.6);
@@ -2360,19 +2402,6 @@ function SourceMeta({ session }: { session: VolundrSession | null | undefined })
       repoLabel={session.source.type === 'git' ? formatRepoLabel(session.source.repo) : undefined}
     />
   );
-}
-
-function HeaderMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="niuu-live-session__metric">
-      <span className="niuu-live-session__metric-label">{label}</span>
-      <span className="niuu-live-session__metric-value">{value}</span>
-    </div>
-  );
-}
-
-function HeaderDivider() {
-  return <span className="niuu-live-session__divider" aria-hidden="true" />;
 }
 
 function HeaderActionButton({
@@ -2414,6 +2443,64 @@ function HeaderActionButton({
 function TabCountBadge({ count }: { count?: number }) {
   if (count == null || count <= 0) return null;
   return <span className="niuu-live-session__tab-count">{formatCount(count)}</span>;
+}
+
+interface PrimaryStateAction {
+  icon: typeof Play;
+  title: string;
+  label?: string;
+  tone: 'critical' | 'brand';
+  onSelect: () => void;
+  /** Shown but not actionable, e.g. while the session boots. */
+  disabled?: boolean;
+}
+
+/** The one lifecycle action that stays on the header: stop a live session, bring back a stopped or archived one. */
+function sessionPrimaryAction({
+  status,
+  readOnly,
+  onStop,
+  onStart,
+  onRestore,
+}: {
+  status: VolundrSession['status'] | undefined;
+  readOnly: boolean;
+  onStop: () => void;
+  onStart: () => void;
+  onRestore: () => void;
+}): PrimaryStateAction | null {
+  if (!status) return null;
+  if (status === 'archived') {
+    return {
+      icon: RotateCcw,
+      title: 'Restore archived session',
+      label: 'Restore',
+      tone: 'brand',
+      onSelect: onRestore,
+    };
+  }
+  if (readOnly) return null;
+  if (status === 'running') {
+    return {
+      icon: Square,
+      // A quiet icon, as Lexi keeps the header to the name and a few controls.
+      title: 'Stop session',
+      tone: 'critical',
+      onSelect: onStop,
+    };
+  }
+  if (isSessionBooting(status)) {
+    // A booting session cannot be started again; say what it is doing instead.
+    return {
+      icon: Play,
+      title: 'The session is starting',
+      label: 'Starting…',
+      tone: 'brand',
+      onSelect: onStart,
+      disabled: true,
+    };
+  }
+  return { icon: Play, title: 'Start session', label: 'Start', tone: 'brand', onSelect: onStart };
 }
 
 function SessionToolbarButton({
@@ -2492,15 +2579,6 @@ function TicketLink({ issue }: { issue: VolundrSession['trackerIssue'] }) {
   return (
     <span className="niuu-live-session__ticket">
       <ConversationLink href={issue.url}>{issue.identifier}</ConversationLink>
-    </span>
-  );
-}
-
-function SessionForgeBadge({ label, tone }: { label: string; tone?: string }) {
-  return (
-    <span className="niuu-live-session__forge-badge">
-      <span className="niuu-live-session__forge-badge-label">{label}</span>
-      <span className="niuu-live-session__forge-badge-tone">{tone ?? 'PRIMARY'}</span>
     </span>
   );
 }
@@ -3052,19 +3130,38 @@ export async function fetchSessionMentionFiles(
   );
 }
 
+/**
+ * A session list that shows a room's workers under the session selects them: it says which
+ * worker the chat shows on its own, and hears who the workers are.
+ */
+export interface RoomWorkerFocus {
+  focusedWorkerId?: string | null;
+  onFocusWorker?: (peerId: string | null) => void;
+  onRoomWorkers?: (workers: readonly Worker[]) => void;
+  /** Opened from the unread list: the header leads back to it, as Lexi's "‹ Unread". */
+  onBackToUnread?: () => void;
+  /** The host lists the workers under the coordinator, so the chat does not repeat them. */
+  workersInList?: boolean;
+}
+
 export function LiveSessionDetailPage({
   sessionId,
   instanceId,
   returnTo,
   readOnly = false,
   initialTab = 'chat',
+  focusedWorkerId,
+  onFocusWorker,
+  onRoomWorkers,
+  onBackToUnread,
+  workersInList = false,
 }: {
   sessionId: string;
   instanceId?: string;
   returnTo?: string;
   readOnly?: boolean;
   initialTab?: SessionTab;
-}) {
+} & RoomWorkerFocus) {
   return (
     <LiveSessionDetailPageInner
       key={`${instanceId ?? ''}:${sessionId}`}
@@ -3073,6 +3170,11 @@ export function LiveSessionDetailPage({
       returnTo={normalizeWorkReturnTo(returnTo)}
       readOnly={readOnly}
       initialTab={initialTab}
+      focusedWorkerId={focusedWorkerId}
+      onFocusWorker={onFocusWorker}
+      onRoomWorkers={onRoomWorkers}
+      onBackToUnread={onBackToUnread}
+      workersInList={workersInList}
     />
   );
 }
@@ -3083,14 +3185,25 @@ function LiveSessionDetailPageInner({
   returnTo,
   readOnly = false,
   initialTab = 'chat',
+  focusedWorkerId,
+  onFocusWorker,
+  onRoomWorkers,
+  onBackToUnread,
+  workersInList = false,
 }: {
   sessionId: string;
   instanceId?: string;
   returnTo: string | null;
   readOnly?: boolean;
   initialTab?: SessionTab;
-}) {
+} & RoomWorkerFocus) {
   const [activeTab, setActiveTab] = useState<SessionTab>(initialTab);
+  // A worker picked in the list is shown in the chat, whichever tab was open.
+  const [shownFocus, setShownFocus] = useState(focusedWorkerId);
+  if (focusedWorkerId !== shownFocus) {
+    setShownFocus(focusedWorkerId);
+    if (focusedWorkerId) setActiveTab('chat');
+  }
   const [tabWasManuallySelected, setTabWasManuallySelected] = useState(false);
   const [actionBusy, setActionBusy] = useState<
     'start' | 'stop' | 'archive' | 'restore' | 'delete' | null
@@ -3098,15 +3211,45 @@ function LiveSessionDetailPageInner({
   // Why the last toolbar action was refused (a restart with no free slot, say).
   const [actionError, setActionError] = useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [forwarding, setForwarding] = useState<ChatMessage | null>(null);
+  const [forwardedNotice, setForwardedNotice] = useState<ForwardedNotice | null>(null);
   const [dismissedHumanGateIds, setDismissedHumanGateIds] = useState<Set<string>>(new Set());
   const [toolVisibility, setToolVisibility] = useForgePreference('tools', '1', ['0', '1']);
+  const minuteNow = useMinuteClock();
+  // Changes and Files open beside the conversation, in the right dock, as Lexi's do.
+  const [dockPane, setDockPane] = useState<DockPane | null>(null);
+  const [quickOpen, setQuickOpen] = useState(false);
+  const { width: dockPreferredWidth, resizer: dockResizer } = useResizableSidebar(
+    'niuu.forge.dockWidth',
+    DOCK_WIDTH,
+  );
+  const [sessionRow, setSessionRow] = useState<HTMLDivElement | null>(null);
+  const sessionRowWidth = useElementWidth(sessionRow);
+  // As Lexi's resize contract: the dock narrows to keep the conversation readable and steps
+  // aside, still chosen, when even its narrowest would squeeze it; it returns when wider.
+  const dockWidth =
+    sessionRowWidth === null
+      ? dockPreferredWidth
+      : Math.min(dockPreferredWidth, sessionRowWidth - TRANSCRIPT_MIN_WIDTH);
+  const dockShown = dockPane !== null && dockWidth >= DOCK_WIDTH.min;
   const showInternalMessages = toolVisibility === '1';
   const [tokenVisibility] = useForgePreference('tokens', '0', ['0', '1']);
   const showTokenUsage = tokenVisibility === '1';
   const [detailsPreference] = useForgePreference('details', '0', ['0', '1']);
   const showDetails = detailsPreference === '1';
-  const [panelVisibility, setPanelVisibility] = useForgePreference('panel', '1', ['0', '1']);
-  const showPanel = panelVisibility === '1';
+  // The panel stays out of the way, as Lexi's dock does ('auto' is closed); once the person
+  // opens or closes it, that choice holds.
+  const [panelVisibility, setPanelVisibility] = useForgePreference('sidePanel', 'auto', [
+    'auto',
+    'open',
+    'closed',
+  ]);
+  // Below this width the panel has no room for a column (SessionAttentionPanel.css), so it
+  // starts closed and opens over the chat; the saved preference is for wide screens.
+  const narrowScreen = useMediaQuery(PANEL_OVERLAY_QUERY);
+  const [overlayPanelOpen, setOverlayPanelOpen] = useState(false);
+  const setPanelOpen = (open: boolean) =>
+    narrowScreen ? setOverlayPanelOpen(open) : setPanelVisibility(open ? 'open' : 'closed');
   const review = useReviewComments();
   // Signing an AI or Git account in again without leaving the session.
   const openConnections = useContext(ChatConnectionsContext);
@@ -3116,6 +3259,8 @@ function LiveSessionDetailPageInner({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const sessionQuery = useSessionDetail(sessionId, instanceId);
+  const sessionListQuery = useSessionList();
+  const sessionRead = useSessionRead();
   const liveSessionQuery = useQuery({
     queryKey: ['volundr', 'raw-session', sessionId, instanceId ?? null],
     queryFn: ({ signal }) => volundr.getSession(sessionId, { instanceId, signal }),
@@ -3260,6 +3405,7 @@ function LiveSessionDetailPageInner({
         reason: latest.reason,
         recommendation: latest.recommendation,
         persona: latest.persona,
+        timestamp: latest.timestamp,
       },
       participant: {
         peerId: participant.peerId,
@@ -3300,30 +3446,121 @@ function LiveSessionDetailPageInner({
     dismissedHumanGateIds,
     workflowGates,
   ]);
-  const checklist = useMemo(() => latestChecklist(chat.messages), [chat.messages]);
+  const checklist = useMemo(
+    () => resolveChecklist(chat.plan, chat.messages),
+    [chat.plan, chat.messages],
+  );
   const sessionDetail = sessionQuery.data;
   const costValue =
     sessionDetail?.costCents != null ? formatCurrencyCents(sessionDetail.costCents) : null;
-  const trailingMetric = useMemo(() => {
-    if (costValue) {
-      return { label: 'Cost', value: costValue };
-    }
-    if (forgeBadgeLabel) {
-      return null;
-    }
-    return { label: 'Host', value: sessionForgeLabel(liveSession) };
-  }, [costValue, forgeBadgeLabel, liveSession]);
+  // The pill, elapsed time and composer read the same pushed session, so they agree.
+  const sessionWorking = sessionDetail
+    ? sessionDetail.state === 'running'
+    : isSessionWorking(liveSession?.activityState);
+  const contextMeter = contextMeterData(chat.usage);
+  const sessionProjectId = liveSession?.coordination?.projectId;
+  // Who leads this session and whom it leads, read from the session list the page lists by.
+  const knownSessions = sessionListQuery.data;
+  const coordination = useMemo(
+    () => coordinationOf(knownSessions ?? [], sessionId),
+    [knownSessions, sessionId],
+  );
+  const isCoordinator =
+    liveSession?.coordination?.role === 'coordinator' || coordination.workers.length > 0;
+  const hasCoordinator = Boolean(liveSession?.coordination?.parent);
+  const openSession = useCallback(
+    (id: string) =>
+      void navigate({ to: '/volundr/sessions/$sessionId', params: { sessionId: id } }),
+    [navigate],
+  );
+  const sessionLinks = useMemo(
+    () => buildSessionLinks(knownSessions ?? [], sessionId, openSession),
+    [knownSessions, openSession, sessionId],
+  );
+  const workerSessionIds = useMemo(
+    () => coordination.workers.map((worker) => worker.id),
+    [coordination.workers],
+  );
+  const projectsQuery = useQuery({
+    queryKey: ['volundr', 'projects', 'session-detail', liveSession?.instanceId ?? null],
+    queryFn: ({ signal }) => volundr.getProjects({ instanceId: liveSession?.instanceId, signal }),
+    enabled: Boolean(sessionProjectId),
+    retry: false,
+  });
+  const sessionProjectName = projectsQuery.data?.find(
+    (project) => project.id === sessionProjectId,
+  )?.name;
+  const sessionModel = liveSession?.model;
+  const sessionSessionDefinition = liveSession?.sessionDefinition;
+  const sessionOrigin = liveSession?.origin;
+  const sessionEngineHarness = useMemo(
+    () =>
+      sessionModel
+        ? sessionHarness({
+            model: sessionModel,
+            sessionDefinition: sessionSessionDefinition,
+            origin: sessionOrigin,
+          })
+        : undefined,
+    [sessionModel, sessionOrigin, sessionSessionDefinition],
+  );
+  const sessionSource = liveSession?.source;
+  const infoRows = useMemo(
+    () =>
+      sessionInfoRows({
+        engine: sessionModel
+          ? { model: modelLabel(sessionModel), harness: sessionEngineHarness }
+          : undefined,
+        host: forgeBadgeLabel,
+        workspace: sessionWorkspaceLabel(sessionSource),
+        project: sessionProjectName,
+        objective: liveSession?.coordination?.objective,
+        startedAt: sessionDetail?.startedAt,
+      }),
+    [
+      liveSession?.coordination?.objective,
+      forgeBadgeLabel,
+      sessionDetail?.startedAt,
+      sessionEngineHarness,
+      sessionModel,
+      sessionProjectName,
+      sessionSource,
+    ],
+  );
   const tabCounts: Partial<Record<SessionTab, number>> = {
     chat: liveSession?.messageCount || replayMessages.length || undefined,
     diffs: fileChangeCount(sessionDetail?.files),
     chronicles: sessionDetail?.events.length ? sessionDetail.events.length : undefined,
   };
+  const ravnWorkers = useMemo(
+    () =>
+      isReady
+        ? roomWorkers(chat.participants, chat.meshEvents, chat.messages)
+        : roomWorkers(replayParticipants, replayMeshEvents, replayMessages),
+    [
+      isReady,
+      chat.participants,
+      chat.meshEvents,
+      chat.messages,
+      replayParticipants,
+      replayMeshEvents,
+      replayMessages,
+    ],
+  );
   const panelHasContent = sessionPanelHasContent({
+    workerSessions: coordination.workers,
+    ravnWorkers,
     items: attentionItems,
     ticket: sessionTrackerIssue,
     checklist,
     changedFiles: tabCounts.diffs,
+    agents: chat.agents,
+    deliverables: presentedFiles,
+    info: infoRows,
   });
+  // The panel opens when the person opens it. What needs them sits by the composer (the
+  // decision strip and the questions), and the panel's button says "Needs you N" meanwhile.
+  const showPanel = narrowScreen ? overlayPanelOpen : panelVisibility === 'open';
   const headerMessageCount = useMemo(() => {
     if (visibleMessageCount != null) return visibleMessageCount;
     if (canReplayTranscript) return replayMessages.length;
@@ -3395,9 +3632,48 @@ function LiveSessionDetailPageInner({
         : (tabs.find((tab) => tab.id === 'chat')?.id ?? tabs[0]?.id ?? 'chat');
 
   const openTab = useCallback((tab: SessionTab) => {
+    if (tab === 'diffs' || tab === 'files') {
+      setDockPane((current) => {
+        const pane = tab === 'diffs' ? 'changes' : 'files';
+        return current === pane ? null : pane;
+      });
+      return;
+    }
     setTabWasManuallySelected(true);
     setActiveTab(tab);
   }, []);
+  const panelShown = showPanel && !dockPane;
+  const tabSelected = (tab: SessionTab) =>
+    tab === 'diffs'
+      ? dockPane === 'changes'
+      : tab === 'files'
+        ? dockPane === 'files'
+        : resolvedActiveTab === tab;
+
+  // ⌥⌘O (Ctrl+Alt+O elsewhere): quick open a file, as in Lexi.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.altKey || !(event.metaKey || event.ctrlKey) || event.code !== 'KeyO') return;
+      event.preventDefault();
+      setDockPane('files');
+      setQuickOpen(true);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  // The files the agent read or wrote, newest first: marked in the tree, first in quick open.
+  const touchedPaths = useMemo(() => {
+    const paths: string[] = [];
+    for (const message of [...chat.messages].reverse()) {
+      for (const part of message.parts ?? []) {
+        if (part.type !== 'tool_use' || !part.input) continue;
+        const path = part.input.file_path ?? part.input.path ?? part.input.notebook_path;
+        if (typeof path === 'string' && path && !paths.includes(path)) paths.push(path);
+      }
+    }
+    return paths;
+  }, [chat.messages]);
 
   const handleSendReview = useCallback(() => {
     chat.sendMessage(formatReviewMessage(review.comments), []);
@@ -3519,6 +3795,64 @@ function LiveSessionDetailPageInner({
     }
   }
 
+  const primaryStateAction = sessionPrimaryAction({
+    status: liveSession?.status,
+    readOnly: Boolean(readOnly),
+    onStop: () => void handleStopSession(),
+    onStart: () => void handleResumeSession(),
+    onRestore: () => void handleRestoreSession(),
+  });
+  const moreMenuItems: MoreMenuItem[] = [];
+  const readTarget = sessionQuery.data;
+  if (readTarget?.readState) {
+    const unread = readTarget.readState.isUnread;
+    moreMenuItems.push({
+      id: 'read-state',
+      label: unread ? 'Mark as read' : 'Mark as unread',
+      icon: unread ? MailOpen : Mail,
+      onSelect: () =>
+        void (unread ? sessionRead.markRead(readTarget) : sessionRead.markUnread(readTarget)),
+      disabled: sessionRead.pendingIds.has(readTarget.id),
+    });
+  }
+  if (!readOnly && openConnections) {
+    moreMenuItems.push({
+      id: 'reconnect',
+      label: 'Reconnect account',
+      icon: KeyRound,
+      onSelect: openConnections,
+    });
+  }
+  if (canShowResendPromptToFlock) {
+    moreMenuItems.push({
+      id: 'resend',
+      label: 'Resend prompt to flock',
+      icon: MessageCircleReply,
+      onSelect: chat.sendResendPrompt,
+      disabled: !canResendPromptToFlock,
+    });
+  }
+  if (!readOnly && liveSession && liveSession.status !== 'archived') {
+    moreMenuItems.push({
+      id: 'archive',
+      label: 'Archive session',
+      icon: Archive,
+      onSelect: () => void handleArchiveSession(),
+      disabled: actionBusy !== null,
+    });
+  }
+  if (!readOnly) {
+    moreMenuItems.push({
+      id: 'delete',
+      label: 'Delete session',
+      icon: Trash2,
+      onSelect: () => setDeleteDialogOpen(true),
+      disabled: actionBusy !== null,
+      tone: 'critical',
+      separated: moreMenuItems.length > 0,
+    });
+  }
+
   if (sessionQuery.isLoading || liveSessionQuery.isLoading) {
     return <LoadingState className="forge-session-loading" label="Loading session…" />;
   }
@@ -3532,6 +3866,61 @@ function LiveSessionDetailPageInner({
       />
     );
   }
+
+  // A waiting decision sits by the composer, folded to a strip, as Lexi keeps its questions.
+  const gateRequestedAt = !activeHumanGate
+    ? Number.NaN
+    : activeHumanGate.source === 'native'
+      ? Date.parse(activeHumanGate.gate.requested_at ?? '')
+      : activeHumanGate.event.timestamp.getTime();
+  const gateWaitingLabel = Number.isFinite(gateRequestedAt)
+    ? compactDuration(Math.max(0, minuteNow - gateRequestedAt))
+    : undefined;
+  const decisionDock = activeHumanGate ? (
+    <DecisionDock
+      title={
+        activeHumanGate.source === 'native'
+          ? activeHumanGate.gate.label
+          : activeHumanGate.event.summary || 'Workflow gate'
+      }
+      waiting={gateWaitingLabel}
+    >
+      <WorkflowHumanGateCard
+        title={
+          activeHumanGate.source === 'native'
+            ? activeHumanGate.gate.label
+            : activeHumanGate.participant.displayName ||
+              activeHumanGate.participant.persona ||
+              activeHumanGate.event.persona ||
+              'Workflow gate'
+        }
+        summary={
+          activeHumanGate.source === 'native'
+            ? activeHumanGate.summary
+            : activeHumanGate.event.summary || 'Workflow gate'
+        }
+        reason={
+          activeHumanGate.source === 'native'
+            ? activeHumanGate.reason
+            : activeHumanGate.event.reason
+        }
+        recommendation={
+          activeHumanGate.source === 'native'
+            ? activeHumanGate.recommendation
+            : activeHumanGate.event.recommendation
+        }
+        comments={review.comments}
+        onApprove={(notes) => {
+          handleHumanGateReply('APPROVE', notes);
+          review.clear();
+        }}
+        onRequestChanges={(notes) => {
+          handleHumanGateReply('CHANGES_REQUESTED', notes);
+          review.clear();
+        }}
+      />
+    </DecisionDock>
+  ) : null;
 
   return (
     <SessionResources
@@ -3549,7 +3938,7 @@ function LiveSessionDetailPageInner({
       <div className="niuu:flex niuu:h-full niuu:flex-col" data-testid="live-session-detail-page">
         <div className="niuu-live-session__chrome">
           <div className="niuu-live-session__header">
-            <div className="niuu-live-session__title-group">
+            <div className="niuu-live-session__head-top">
               {returnTo ? (
                 <button
                   type="button"
@@ -3561,225 +3950,271 @@ function LiveSessionDetailPageInner({
                   Work
                 </button>
               ) : null}
+              {onBackToUnread ? (
+                <button
+                  type="button"
+                  className="niuu-live-session__return-link"
+                  aria-label="Back to Unread"
+                  onClick={onBackToUnread}
+                  data-testid="back-to-unread"
+                >
+                  <ChevronLeft aria-hidden="true" />
+                  Unread
+                </button>
+              ) : null}
               <span
                 className={cn(
                   'niuu-live-session__status-dot',
                   isSessionConnected
                     ? 'niuu-live-session__status-dot--connected'
                     : 'niuu-live-session__status-dot--disconnected',
+                  sessionWorking && 'niuu-live-session__status-dot--working',
                 )}
+                data-state={sessionDetail?.state}
+                title={sessionDetail ? SESSION_STATE_LABELS[sessionDetail.state] : undefined}
               />
-              <div className="niuu-live-session__identity">
-                <span className="niuu-live-session__title">{sessionName}</span>
-                {!readOnly && liveSession && (
-                  <>
-                    <RenameSession sessionId={sessionId} name={sessionName} />
-                    <PinSession sessionId={sessionId} name={sessionName} />
-                    <AssignSessionProject
-                      sessionId={sessionId}
-                      name={sessionName}
-                      instanceId={liveSession.instanceId}
-                    />
-                  </>
-                )}
-                {showDetails && sessionHandle ? (
-                  <span className="niuu-live-session__handle" title={sessionHandle}>
-                    {sessionHandle}
-                  </span>
-                ) : null}
-                {showDetails && <SessionIdChip sessionId={sessionId} />}
-              </div>
-              {sessionTrackerIssue ? (
-                <>
-                  <HeaderDivider />
-                  <TicketLink issue={sessionTrackerIssue} />
-                </>
-              ) : null}
-              {liveSession?.source ? (
-                <>
-                  <HeaderDivider />
-                  <SourceMeta session={liveSession} />
-                  {liveSession && <SessionRuntimeVersion session={liveSession} service={volundr} />}
-                </>
-              ) : null}
-              {forgeBadgeLabel ? (
-                <>
-                  <HeaderDivider />
-                  <SessionForgeBadge label={forgeBadgeLabel} />
-                </>
-              ) : null}
-              {liveSession?.model && (
-                <>
-                  <HeaderDivider />
-                  <span
-                    className="niuu-live-session__model"
-                    title={liveSession.model}
-                    data-testid="session-model"
-                  >
-                    <Sparkles size={14} />
-                    {sessionModelLabel(liveSession.model)}
-                  </span>
-                </>
-              )}
-              {readOnly ? (
-                <>
-                  <HeaderDivider />
-                  <span className="niuu-live-session__archived-badge">Archived</span>
-                </>
-              ) : null}
-            </div>
-
-            <div className="niuu-live-session__metrics-row" data-testid="session-stats">
-              {sessionDetail && <SessionActivityElapsed session={sessionDetail} />}
-              <HeaderDivider />
-              <HeaderMetric label="Msgs" value={formatCount(headerMessageCount)} />
-              {showTokenUsage && (
-                <>
-                  <HeaderDivider />
-                  <HeaderMetric label="Tokens" value={formatCount(liveSession?.tokensUsed ?? 0)} />
-                </>
-              )}
-              {trailingMetric ? (
-                <>
-                  <HeaderDivider />
-                  <HeaderMetric label={trailingMetric.label} value={trailingMetric.value} />
-                </>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="niuu-live-session__tabs-row">
-            <div className="niuu-live-session__tabs" role="tablist" aria-label="Session tabs">
-              {tabs.map((tab) =>
-                (() => {
-                  const TabIcon = tab.icon;
-                  return (
-                    <button
-                      key={tab.id}
-                      id={`tab-${tab.id}`}
-                      role="tab"
-                      aria-selected={resolvedActiveTab === tab.id}
-                      onClick={() => openTab(tab.id)}
-                      className={cn(
-                        'niuu-live-session__tab',
-                        resolvedActiveTab === tab.id && 'niuu-live-session__tab--active',
+              <div className="niuu-live-session__head-title">
+                <div className="niuu-live-session__identity">
+                  <span className="niuu-live-session__title">{sessionName}</span>
+                  {/* Lexi's title menu: the name's chevron opens the session's facts, its state
+                      and rename, pin and move, so the bar itself stays one quiet line. */}
+                  <details className="niuu-live-session__facts">
+                    <summary aria-label="Session details" title="Session details">
+                      <ChevronDown aria-hidden="true" />
+                    </summary>
+                    <div className="niuu-live-session__facts-panel">
+                      {sessionDetail ? (
+                        <span
+                          className="niuu-live-session__state-pill"
+                          data-tone={stateTone(sessionDetail.state)}
+                          data-testid="session-state-pill"
+                        >
+                          {SESSION_STATE_LABELS[sessionDetail.state]}
+                        </span>
+                      ) : null}
+                      {!readOnly && liveSession && (
+                        <span className="niuu-live-session__title-actions">
+                          <RenameSession sessionId={sessionId} name={sessionName} />
+                          <PinSession sessionId={sessionId} name={sessionName} />
+                          <AssignSessionProject
+                            sessionId={sessionId}
+                            name={sessionName}
+                            instanceId={liveSession.instanceId}
+                          />
+                        </span>
                       )}
+                      <Subline
+                        data-testid="session-stats"
+                        items={[
+                          liveSession?.model && {
+                            id: 'model',
+                            node: (
+                              <span
+                                className="niuu-live-session__model"
+                                data-harness={sessionEngineHarness}
+                                title={liveSession.model}
+                                data-testid="session-model"
+                              >
+                                {modelLabel(liveSession.model)}
+                              </span>
+                            ),
+                          },
+                          forgeBadgeLabel && {
+                            id: 'host',
+                            node: <span data-testid="session-host">{forgeBadgeLabel}</span>,
+                          },
+                          isCoordinator && { id: 'coordinator', node: <CoordinatorTag /> },
+                          sessionTrackerIssue && {
+                            id: 'ticket',
+                            node: <TicketLink issue={sessionTrackerIssue} />,
+                          },
+                          sessionDetail && {
+                            id: 'activity',
+                            node: <SessionActivityElapsed session={sessionDetail} />,
+                          },
+                          showDetails && {
+                            id: 'messages',
+                            node: (
+                              <span data-testid="session-message-count">
+                                {formatCount(headerMessageCount)}{' '}
+                                {headerMessageCount === 1 ? 'message' : 'messages'}
+                              </span>
+                            ),
+                          },
+                          showTokenUsage && {
+                            id: 'tokens',
+                            node: <span>{formatCount(liveSession?.tokensUsed ?? 0)} tokens</span>,
+                          },
+                          liveSession?.source && {
+                            id: 'source',
+                            node: (
+                              <span className="niuu-live-session__source-line">
+                                <SourceMeta session={liveSession} />
+                                {liveSession.source.type === 'git' && liveSession.source.branch ? (
+                                  <span
+                                    className="niuu-live-session__branch"
+                                    data-testid="session-branch"
+                                    title={liveSession.source.branch}
+                                  >
+                                    <GitBranch aria-hidden="true" />
+                                    {liveSession.source.branch}
+                                  </span>
+                                ) : null}
+                              </span>
+                            ),
+                          },
+                          showDetails &&
+                            liveSession?.source && {
+                              id: 'runtime',
+                              node: (
+                                <SessionRuntimeVersion session={liveSession} service={volundr} />
+                              ),
+                            },
+                        ]}
+                      />
+                      {hasCoordinator ? (
+                        <WorkerOf coordinator={coordination.coordinator} onOpen={openSession} />
+                      ) : null}
+                    </div>
+                  </details>
+                  {sessionProjectName ? (
+                    <span
+                      className="niuu-live-session__project"
+                      data-testid="session-project"
+                      title={`Project: ${sessionProjectName}`}
                     >
-                      <TabIcon className="niuu-live-session__tab-icon" />
-                      <span>{tab.label}</span>
-                      <TabCountBadge count={tabCounts[tab.id]} />
-                    </button>
-                  );
-                })(),
-              )}
-            </div>
-            <div className="niuu-live-session__toolbar">
-              {!readOnly && openConnections && (
-                <SessionToolbarButton
-                  icon={KeyRound}
-                  title="Reconnect account"
-                  onClick={openConnections}
-                />
-              )}
-              {resolvedActiveTab === 'chat' && (
-                <ChatDisplayControls className="niuu-live-session__display-controls" />
-              )}
-              <SessionToolbarButton
-                icon={showInternalMessages ? Eye : EyeOff}
-                title={
-                  showInternalMessages
-                    ? 'Hide tool calls and results'
-                    : 'Show tool calls and results'
-                }
-                active={showInternalMessages}
-                onClick={handleToggleInternalMessages}
-              />
-              {panelHasContent ? (
-                <SessionToolbarButton
-                  icon={PanelRight}
-                  title={showPanel ? 'Hide session panel' : 'Show session panel'}
-                  active={showPanel}
-                  tone={!showPanel && attentionItems.length > 0 ? 'brand' : 'neutral'}
-                  label={
-                    !showPanel && attentionItems.length > 0
-                      ? `Needs you ${attentionItems.length}`
+                      <Folder aria-hidden="true" />
+                      {sessionProjectName}
+                    </span>
+                  ) : null}
+                  {showDetails && sessionHandle ? (
+                    <span className="niuu-live-session__handle" title={sessionHandle}>
+                      {sessionHandle}
+                    </span>
+                  ) : null}
+                  {showDetails && <SessionIdChip sessionId={sessionId} />}
+                  {readOnly && sessionDetail?.state !== 'archived' ? (
+                    <span className="niuu-live-session__archived-badge">Archived</span>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* The views sit in the title bar as one segmented control, so the header is one
+                  bar as Lexi's is. */}
+              <div className="niuu-live-session__tabs" role="tablist" aria-label="Session tabs">
+                {tabs.map((tab) =>
+                  (() => {
+                    const TabIcon = tab.icon;
+                    return (
+                      <button
+                        key={tab.id}
+                        id={`tab-${tab.id}`}
+                        role="tab"
+                        aria-selected={tabSelected(tab.id)}
+                        onClick={() => openTab(tab.id)}
+                        className={cn(
+                          'niuu-live-session__tab',
+                          tabSelected(tab.id) && 'niuu-live-session__tab--active',
+                        )}
+                      >
+                        <TabIcon className="niuu-live-session__tab-icon" />
+                        <span className="niuu-live-session__tab-label">{tab.label}</span>
+                        <TabCountBadge count={tabCounts[tab.id]} />
+                      </button>
+                    );
+                  })(),
+                )}
+              </div>
+              <div className="niuu-live-session__toolbar">
+                <ContextMeter
+                  context={contextMeter}
+                  title={
+                    contextMeter
+                      ? `${formatCount(contextMeter.used)} of ${formatCount(contextMeter.window)} context used`
                       : undefined
                   }
-                  onClick={() => setPanelVisibility(showPanel ? '0' : '1')}
+                  cost={costValue}
                 />
-              ) : null}
-              {canShowResendPromptToFlock && (
-                <SessionToolbarButton
-                  icon={MessageCircleReply}
-                  title="Resend prompt to flock"
-                  onClick={chat.sendResendPrompt}
-                  disabled={!canResendPromptToFlock}
-                />
-              )}
-              {liveSession &&
-                !readOnly &&
-                (liveSession.status === 'running' ? (
-                  <SessionToolbarButton
-                    icon={Square}
-                    title="Stop session"
-                    onClick={() => void handleStopSession()}
-                    disabled={actionBusy !== null}
-                    tone="critical"
+                {/* One Display options menu, as Lexi's: folding, tool calls and the rest. */}
+                {resolvedActiveTab === 'chat' && (
+                  <ChatDisplayControls
+                    className="niuu-live-session__display-controls"
+                    toolCalls={{
+                      shown: showInternalMessages,
+                      onToggle: handleToggleInternalMessages,
+                    }}
                   />
-                ) : liveSession.status === 'stopped' ? (
+                )}
+                {panelHasContent ? (
                   <SessionToolbarButton
-                    icon={Play}
-                    title="Start session"
-                    onClick={() => void handleResumeSession()}
-                    disabled={actionBusy !== null}
-                    tone="brand"
+                    icon={PanelRight}
+                    title={panelShown ? 'Hide session panel' : 'Show session panel'}
+                    active={panelShown}
+                    tone={!panelShown && attentionItems.length > 0 ? 'brand' : 'neutral'}
+                    label={
+                      !panelShown && attentionItems.length > 0
+                        ? `Needs you ${attentionItems.length}`
+                        : undefined
+                    }
+                    onClick={() => {
+                      // The panel and the dock share the right side: opening one closes the other.
+                      setDockPane(null);
+                      setPanelOpen(!panelShown);
+                    }}
                   />
-                ) : liveSession.status === 'archived' ? null : (
+                ) : null}
+                {primaryStateAction ? (
                   <SessionToolbarButton
-                    icon={Play}
-                    title="Start session"
-                    onClick={() => void handleResumeSession()}
-                    disabled={actionBusy !== null}
-                    tone="brand"
+                    icon={primaryStateAction.icon}
+                    title={primaryStateAction.title}
+                    label={primaryStateAction.label}
+                    onClick={primaryStateAction.onSelect}
+                    disabled={actionBusy !== null || primaryStateAction.disabled === true}
+                    tone={primaryStateAction.tone}
                   />
-                ))}
-              {!readOnly && liveSession && liveSession.status !== 'archived' && (
-                <SessionToolbarButton
-                  icon={Archive}
-                  title="Archive session"
-                  onClick={() => void handleArchiveSession()}
-                  disabled={actionBusy !== null}
-                />
-              )}
-              {liveSession?.status === 'archived' ? (
-                <SessionToolbarButton
-                  icon={RotateCcw}
-                  title="Restore archived session"
-                  onClick={() => void handleRestoreSession()}
-                  disabled={actionBusy !== null}
-                  tone="brand"
-                />
-              ) : null}
-              {!readOnly && (
-                <SessionToolbarButton
-                  icon={Trash2}
-                  title="Delete session"
-                  onClick={() => setDeleteDialogOpen(true)}
-                  disabled={actionBusy !== null}
-                  tone="critical"
-                />
-              )}
+                ) : null}
+                <SessionMoreMenu items={moreMenuItems} />
+              </div>
             </div>
           </div>
         </div>
 
-        {actionError ? (
+        {forwardedNotice && (
+          <div
+            role="status"
+            className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-2 niuu:text-xs niuu:text-text-secondary"
+            data-testid="session-forwarded-notice"
+          >
+            <span>Forwarded to {forwardedNotice.targetName}.</span>
+            <button
+              type="button"
+              className="niuu:text-text-muted niuu:hover:text-text-primary"
+              onClick={() => setForwardedNotice(null)}
+              aria-label="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+        <ForwardMessageDialog
+          open={forwarding !== null}
+          onOpenChange={(next) => !next && setForwarding(null)}
+          currentSessionId={sessionId}
+          currentSessionName={sessionName}
+          content={forwarding?.content ?? ''}
+          onDelivered={(notice) => {
+            setForwarding(null);
+            setForwardedNotice(notice);
+          }}
+        />
+
+        {actionError || sessionRead.error ? (
           <div
             role="alert"
             className="niuu:border-b niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-2 niuu:text-xs niuu:text-critical"
             data-testid="session-action-error"
           >
-            <LinkedText text={actionError} />
+            <LinkedText text={actionError ?? sessionRead.error ?? ''} />
           </div>
         ) : liveSession?.error && (sessionStatus === 'failed' || sessionStatus === 'error') ? (
           <div
@@ -3799,145 +4234,137 @@ function LiveSessionDetailPageInner({
           </div>
         ) : null}
 
-        {isReady && chatEndpoint && activeHumanGate && (
-          <WorkflowHumanGateCard
-            title={
-              activeHumanGate.source === 'native'
-                ? activeHumanGate.gate.label
-                : activeHumanGate.participant.displayName ||
-                  activeHumanGate.participant.persona ||
-                  activeHumanGate.event.persona ||
-                  'Workflow gate'
-            }
-            summary={
-              activeHumanGate.source === 'native'
-                ? activeHumanGate.summary
-                : activeHumanGate.event.summary || 'Workflow gate'
-            }
-            reason={
-              activeHumanGate.source === 'native'
-                ? activeHumanGate.reason
-                : activeHumanGate.event.reason
-            }
-            recommendation={
-              activeHumanGate.source === 'native'
-                ? activeHumanGate.recommendation
-                : activeHumanGate.event.recommendation
-            }
-            comments={review.comments}
-            onApprove={(notes) => {
-              handleHumanGateReply('APPROVE', notes);
-              review.clear();
-            }}
-            onRequestChanges={(notes) => {
-              handleHumanGateReply('CHANGES_REQUESTED', notes);
-              review.clear();
-            }}
-          />
-        )}
-
-        <div className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:overflow-hidden">
+        <div
+          ref={setSessionRow}
+          className="niuu:relative niuu:flex niuu:min-h-0 niuu:flex-1 niuu:overflow-hidden"
+        >
           <div className="niuu:min-h-0 niuu:min-w-0 niuu:flex-1 niuu:overflow-hidden">
             {resolvedActiveTab === 'chat' && (
-              <div role="tabpanel" className="niuu:flex niuu:h-full niuu:min-h-0 niuu:flex-col">
-                {isReady && chatEndpoint ? (
-                  <>
+              <SessionLinksProvider value={sessionLinks}>
+                <div role="tabpanel" className="niuu:flex niuu:h-full niuu:min-h-0 niuu:flex-col">
+                  {isReady && chatEndpoint ? (
+                    <>
+                      <SessionChat
+                        className="niuu:h-full"
+                        showToolbar={false}
+                        showDisplayControls={false}
+                        showWorkersStrip={!workersInList}
+                        aboveComposer={decisionDock}
+                        showInternalToggle={false}
+                        internalVisibility={showInternalMessages}
+                        showTokenUsage={showTokenUsage}
+                        messages={chat.messages}
+                        streamingContent={chat.streamingContent}
+                        streamingParts={chat.streamingParts}
+                        streamingModel={chat.streamingModel}
+                        connected={chat.connected}
+                        historyLoaded={chat.historyLoaded}
+                        hasOlderHistory={chat.hasOlderHistory}
+                        loadingOlderHistory={chat.loadingOlderHistory}
+                        olderHistoryError={chat.olderHistoryError}
+                        onLoadOlderHistory={chat.loadOlderHistory}
+                        historyError={chat.historyError}
+                        onRetryHistory={chat.retryHistory}
+                        participants={chat.participants}
+                        workerSessionIds={workerSessionIds}
+                        focusedWorkerId={focusedWorkerId}
+                        onFocusWorker={onFocusWorker}
+                        onWorkersChange={onRoomWorkers}
+                        meshEvents={chat.meshEvents}
+                        agentEvents={chat.agentEvents}
+                        pendingPermissions={chat.pendingPermissions}
+                        pendingInputRequests={chat.pendingInputRequests}
+                        availableCommands={chat.availableCommands}
+                        capabilities={chat.capabilities}
+                        chatEndpoint={chatEndpoint}
+                        historyEndpoint={historyEndpoint}
+                        sessionName={sessionName}
+                        onSend={chat.sendMessage}
+                        onForwardMessage={setForwarding}
+                        onSendDirected={chat.sendDirectedMessages}
+                        onStop={chat.sendInterrupt}
+                        onClear={chat.clearMessages}
+                        onSetInternalVisibility={chat.sendSetInternalVisibility}
+                        onSetModel={chat.sendSetModel}
+                        onSetThinkingTokens={chat.sendSetThinkingTokens}
+                        plan={chat.plan}
+                        agents={chat.agents}
+                        effort={chat.effort}
+                        runtimeOptions={chat.runtimeOptions}
+                        onSetEffort={chat.sendSetEffort}
+                        onSetRuntimeModel={(model) => chat.sendSetRuntimeOptions({ model })}
+                        runtimeOptionsError={chat.runtimeOptionsError}
+                        effortError={chat.effortError}
+                        working={sessionWorking}
+                        onRewindFiles={chat.sendRewindFiles}
+                        onPermissionRespond={chat.respondToPermission}
+                        onInputRespond={chat.respondToInput}
+                        onInputDismiss={chat.dismissInputRequest}
+                        onFetchFiles={fetchSessionMentionFiles}
+                        onMessageCountChange={setVisibleMessageCount}
+                        renderPermissions={permissionRenderer}
+                      />
+                    </>
+                  ) : failedBeforeStart ? (
+                    <div
+                      className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted"
+                      data-testid="failed-before-start"
+                    >
+                      This session failed before it started, so it has no transcript.
+                    </div>
+                  ) : canReplayTranscript && transcriptQuery.isLoading ? (
+                    <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                      Loading saved transcript…
+                    </div>
+                  ) : canReplayTranscript && transcriptQuery.isError ? (
+                    <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:px-6 niuu:text-center niuu:text-sm niuu:text-critical">
+                      Failed to load saved transcript:{' '}
+                      {transcriptQuery.error instanceof Error
+                        ? transcriptQuery.error.message
+                        : String(transcriptQuery.error)}
+                    </div>
+                  ) : canReplayTranscript && replayMessages.length > 0 ? (
                     <SessionChat
                       className="niuu:h-full"
                       showToolbar={false}
                       showDisplayControls={false}
+                      showWorkersStrip={!workersInList}
                       showInternalToggle={false}
                       internalVisibility={showInternalMessages}
                       showTokenUsage={showTokenUsage}
-                      messages={chat.messages}
-                      streamingContent={chat.streamingContent}
-                      streamingParts={chat.streamingParts}
-                      streamingModel={chat.streamingModel}
-                      connected={chat.connected}
-                      historyLoaded={chat.historyLoaded}
-                      hasOlderHistory={chat.hasOlderHistory}
-                      loadingOlderHistory={chat.loadingOlderHistory}
-                      olderHistoryError={chat.olderHistoryError}
-                      onLoadOlderHistory={chat.loadOlderHistory}
-                      historyError={chat.historyError}
-                      onRetryHistory={chat.retryHistory}
-                      participants={chat.participants}
-                      meshEvents={chat.meshEvents}
-                      agentEvents={chat.agentEvents}
-                      pendingPermissions={chat.pendingPermissions}
-                      pendingInputRequests={chat.pendingInputRequests}
-                      availableCommands={chat.availableCommands}
-                      capabilities={chat.capabilities}
+                      messages={replayMessages}
                       chatEndpoint={chatEndpoint}
-                      historyEndpoint={historyEndpoint}
+                      connected={false}
+                      historyLoaded={!transcriptQuery.isLoading}
+                      participants={replayParticipants}
+                      workerSessionIds={workerSessionIds}
+                      focusedWorkerId={focusedWorkerId}
+                      onFocusWorker={onFocusWorker}
+                      onWorkersChange={onRoomWorkers}
+                      meshEvents={replayMeshEvents}
+                      plan={chat.plan}
+                      agents={chat.agents}
+                      working={false}
                       sessionName={sessionName}
-                      onSend={chat.sendMessage}
-                      onSendDirected={chat.sendDirectedMessages}
-                      onStop={chat.sendInterrupt}
-                      onClear={chat.clearMessages}
-                      onSetInternalVisibility={chat.sendSetInternalVisibility}
-                      onSetModel={chat.sendSetModel}
-                      onSetThinkingTokens={chat.sendSetThinkingTokens}
-                      onRewindFiles={chat.sendRewindFiles}
-                      onPermissionRespond={chat.respondToPermission}
-                      onInputRespond={chat.respondToInput}
-                      onInputDismiss={chat.dismissInputRequest}
-                      onFetchFiles={fetchSessionMentionFiles}
                       onMessageCountChange={setVisibleMessageCount}
-                      renderPermissions={permissionRenderer}
+                      onSend={() => {}}
+                      onStop={() => {}}
                     />
-                  </>
-                ) : failedBeforeStart ? (
-                  <div
-                    className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted"
-                    data-testid="failed-before-start"
-                  >
-                    This session failed before it started, so it has no transcript.
-                  </div>
-                ) : canReplayTranscript && transcriptQuery.isLoading ? (
-                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                    Loading saved transcript…
-                  </div>
-                ) : canReplayTranscript && transcriptQuery.isError ? (
-                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:px-6 niuu:text-center niuu:text-sm niuu:text-critical">
-                    Failed to load saved transcript:{' '}
-                    {transcriptQuery.error instanceof Error
-                      ? transcriptQuery.error.message
-                      : String(transcriptQuery.error)}
-                  </div>
-                ) : canReplayTranscript && replayMessages.length > 0 ? (
-                  <SessionChat
-                    className="niuu:h-full"
-                    showToolbar={false}
-                    showDisplayControls={false}
-                    showInternalToggle={false}
-                    internalVisibility={showInternalMessages}
-                    showTokenUsage={showTokenUsage}
-                    messages={replayMessages}
-                    chatEndpoint={chatEndpoint}
-                    connected={false}
-                    historyLoaded={!transcriptQuery.isLoading}
-                    participants={replayParticipants}
-                    meshEvents={replayMeshEvents}
-                    sessionName={sessionName}
-                    onMessageCountChange={setVisibleMessageCount}
-                    onSend={() => {}}
-                    onStop={() => {}}
-                  />
-                ) : isSessionBooting(sessionStatus) ? (
-                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                    Session is starting…
-                  </div>
-                ) : canReplayTranscript ? (
-                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                    No saved transcript yet.
-                  </div>
-                ) : (
-                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                    Start the session to chat.
-                  </div>
-                )}
-              </div>
+                  ) : isSessionBooting(sessionStatus) ? (
+                    <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                      Session is starting…
+                    </div>
+                  ) : canReplayTranscript ? (
+                    <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                      No saved transcript yet.
+                    </div>
+                  ) : (
+                    <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                      Start the session to chat.
+                    </div>
+                  )}
+                </div>
+              </SessionLinksProvider>
             )}
 
             {resolvedActiveTab === 'terminal' && (
@@ -4004,17 +4431,66 @@ function LiveSessionDetailPageInner({
               </div>
             )}
           </div>
-          {showPanel && panelHasContent ? (
+          {dockPane && dockShown ? (
+            <RightDock
+              pane={dockPane}
+              width={dockWidth}
+              edge={
+                <SidebarResizer
+                  label="Resize the dock"
+                  panelSide="right"
+                  {...dockResizer}
+                  width={dockWidth}
+                />
+              }
+              onSelect={setDockPane}
+              onClose={() => setDockPane(null)}
+            >
+              {dockPane === 'changes' ? (
+                <SessionDiffs
+                  chatEndpoint={chatEndpoint}
+                  review={readOnly ? undefined : review}
+                  layout="dock"
+                />
+              ) : (
+                <FilesPane
+                  sessionId={sessionId}
+                  filesystem={filesystem}
+                  touched={touchedPaths}
+                  quickOpen={quickOpen}
+                  onQuickOpenChange={setQuickOpen}
+                  onManage={
+                    readOnly
+                      ? undefined
+                      : () => {
+                          setDockPane(null);
+                          setTabWasManuallySelected(true);
+                          setActiveTab('files');
+                        }
+                  }
+                />
+              )}
+            </RightDock>
+          ) : null}
+          {!dockPane && showPanel && panelHasContent ? (
             <SessionAttentionPanel
               items={attentionItems}
               ticket={sessionTrackerIssue}
               checklist={checklist}
+              agents={chat.agents}
               changedFiles={tabCounts.diffs}
+              fileStats={sessionDetail?.files}
+              deliverables={presentedFiles}
+              info={infoRows}
+              workerSessions={coordination.workers}
+              ravnWorkers={ravnWorkers}
+              onOpenSession={openSession}
               showOpenChat={resolvedActiveTab !== 'chat'}
               onOpenChat={() => openTab('chat')}
               onOpenDiffs={() => openTab('diffs')}
               onRespondPermission={chat.respondToPermission}
-              onClose={() => setPanelVisibility('0')}
+              onClose={() => setPanelOpen(false)}
+              overlay={narrowScreen}
             />
           ) : null}
         </div>

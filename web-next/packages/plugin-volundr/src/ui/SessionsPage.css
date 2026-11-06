@@ -5,9 +5,8 @@
   position: relative;
 }
 .forge-session-row__select {
-  min-height: 68px;
-  padding-top: 10px;
-  padding-bottom: 10px;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 .forge-session-row__select--selected {
   background: color-mix(in srgb, var(--brand-600) 16%, var(--color-bg-secondary));
@@ -17,9 +16,6 @@
   font-size: 15px;
   font-weight: 650;
   line-height: 1.5;
-}
-.forge-session-search {
-  min-height: 40px;
 }
 .forge-session-list input[type='checkbox'] {
   width: 16px;
@@ -51,10 +47,17 @@
     height: 24px;
     min-height: 24px;
   }
-  .forge-session-row:hover .forge-session-row__actions,
-  .forge-session-row:focus-within .forge-session-row__actions {
+  /* Hovering shows only the "…" button, as Lexi keeps a row to its name; the actions open
+     from it, so they never sit over the name a person is about to click. */
+  .forge-session-row:hover .forge-session-row__more,
+  .forge-session-row:has(:focus-visible) .forge-session-row__more,
+  .forge-session-row[data-actions-open='true'] .forge-session-row__more {
+    display: grid;
+  }
+  .forge-session-row[data-actions-open='true'] .forge-session-row__actions {
     opacity: 1;
     pointer-events: auto;
+    right: 40px;
   }
 }
 .forge-session-row__actions button {
@@ -101,22 +104,9 @@
   outline: 2px solid var(--color-brand);
   outline-offset: -2px;
 }
-.forge-session-maintenance {
-  padding: 8px 10px;
-  color: var(--color-text-muted);
-  font-size: 11px;
-  border-bottom: 1px solid var(--color-border-subtle);
-}
-.forge-session-maintenance summary {
-  cursor: pointer;
-  margin-bottom: 6px;
-}
 @media (hover: none) {
   .forge-session-row .forge-session-row__more {
     display: grid;
-  }
-  .forge-session-row .forge-session-state {
-    margin-right: 30px;
   }
   .forge-session-row .forge-session-row__actions {
     opacity: 0;
@@ -174,13 +164,6 @@
   font-size: 20px;
   font-weight: 700;
   letter-spacing: -0.02em;
-}
-.forge-session-list [data-testid='pod-group-mode'] button {
-  min-height: 30px;
-}
-.forge-session-list [data-testid='pod-group-mode'] button[aria-pressed='true'] {
-  background: var(--color-accent-fill, var(--color-bg-elevated));
-  color: var(--color-accent-on-fill, var(--color-brand));
 }
 .forge-session-list input[type='checkbox'] {
   width: 16px;
@@ -250,16 +233,19 @@
 .forge-session-heading-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
 }
 .forge-session-heading-actions button {
   display: grid;
   place-items: center;
-  min-width: 36px;
-  min-height: 36px;
-  border: 1px solid var(--color-border-subtle);
+  min-width: 32px;
+  min-height: 32px;
   border-radius: 8px;
   color: var(--color-text-secondary);
+}
+.forge-session-heading-actions button[aria-expanded='true'] {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
 }
 .forge-session-heading-actions .forge-session-launch {
   color: var(--color-text-primary);
@@ -276,82 +262,6 @@
   font-weight: 650;
   padding: 9px 13px;
 }
-.forge-session-filters {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding-top: 6px;
-}
-.forge-session-group-label {
-  display: flex;
-  flex: 1 1 0;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  color: var(--color-text-muted);
-  font-size: 11px;
-}
-.forge-session-group-label select {
-  min-width: 0;
-  flex: 1 1 0;
-}
-.forge-session-states {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
-  gap: 4px;
-  padding-top: 6px;
-}
-.forge-session-states button {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 4px;
-  min-width: 0;
-  height: 26px;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 4px;
-  background: transparent;
-  padding: 0 6px;
-  color: var(--color-text-secondary);
-  font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.forge-session-states button span:first-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.forge-session-states button span:last-child {
-  color: var(--color-text-muted);
-  font-variant-numeric: tabular-nums;
-}
-.forge-session-states button:hover {
-  background: var(--color-bg-tertiary);
-  color: var(--color-text-primary);
-}
-.forge-session-states button[aria-pressed='true'] {
-  border-color: var(--color-brand);
-  background: color-mix(in srgb, var(--color-brand) 16%, transparent);
-  color: var(--color-text-primary);
-}
-.forge-session-states button[aria-pressed='true'] span:last-child {
-  color: var(--color-brand);
-}
-.forge-session-states button[data-filter='attention'] span:last-child {
-  color: var(--status-amber);
-}
-.forge-session-group-select {
-  flex-shrink: 0;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 8px;
-  background: var(--color-bg-tertiary);
-  padding: 4px 6px;
-  color: var(--color-text-secondary);
-  font: inherit;
-  font-size: 11px;
-}
 .forge-session-scroll {
   min-height: 80px;
 }
@@ -363,28 +273,8 @@
   overflow: auto;
   color: var(--color-text-secondary);
 }
-.forge-session-footer-settings {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 18px;
-  padding: 2px 2px 8px;
-}
-.forge-session-footer-settings label {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  cursor: pointer;
-}
 .forge-session-maintenance {
-  padding: 6px 0 0;
-  border: 0;
-}
-.forge-session-maintenance-label {
-  display: block;
-  margin-bottom: 5px;
-  font-size: 11px;
-  color: var(--color-text-muted);
+  padding: 0 0 8px;
 }
 .forge-session-footer-actions {
   display: flex;
@@ -409,23 +299,37 @@
 .forge-session-footer-actions .forge-session-delete {
   color: var(--color-critical);
 }
+/* The fold chevron sits in the row's left gutter, so a coordinator lines up with its siblings. */
 .forge-session-tree-row {
+  position: relative;
   display: flex;
-  align-items: center;
 }
 .forge-session-tree-row > .forge-session-row {
   flex: 1;
   min-width: 0;
 }
 .forge-session-tree-toggle {
-  flex-shrink: 0;
-  min-width: 22px;
-  min-height: 38px;
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 13px;
+  height: 30px;
+  padding: 0;
   color: var(--color-text-muted);
 }
+.forge-session-tree-toggle:hover {
+  color: var(--color-text-primary);
+}
+/* Each level steps in by a few pixels along a guide line; the sidebar is too narrow for more. */
 .forge-session-tree-children {
-  margin-left: 14px;
+  margin-left: 10px;
   border-left: 1px solid var(--color-border-subtle);
+}
+.forge-session-tree-children .forge-session-row__select {
+  padding-left: 10px;
 }
 .forge-session-project-status {
   padding: 10px;
@@ -495,7 +399,6 @@
   white-space: nowrap;
 }
 .forge-session-row__age {
-  margin-left: auto;
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
@@ -652,4 +555,606 @@
   background: transparent;
   color: var(--color-brand);
   cursor: pointer;
+}
+
+/* Lexi-style rows: title and state, the agent's own summary, then model · host and time. */
+.forge-session-row__headline {
+  justify-content: flex-start;
+  gap: 6px;
+}
+.forge-session-row__headline .forge-session-row__title {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.forge-session-unread-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-brand);
+}
+.forge-session-row__preview {
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+.forge-session-row__preview.forge-session-row__source {
+  display: flex;
+  min-width: 0;
+}
+.forge-session-row__metadata {
+  margin-top: 1px;
+}
+.forge-session-row__metadata .forge-session-harness {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.forge-session-today {
+  margin: 0;
+  padding: 0 2px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+.forge-session-read-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.forge-session-read-error button {
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+  text-decoration: underline;
+}
+
+/* ── Coordinators and their workers ── */
+
+.forge-session-row__leads {
+  flex: none;
+  white-space: nowrap;
+  color: var(--color-brand-300);
+}
+
+/* A coordinator the filters left out, listed only as the path to a matching worker. */
+.forge-session-row[data-context='true'] {
+  opacity: 0.55;
+}
+
+/* Workers sit under their coordinator as compact rows: name, state and time. */
+.forge-session-row[data-nested='true'] .forge-session-row__preview,
+.forge-session-row[data-nested='true'] .forge-session-row__details,
+.forge-session-row[data-nested='true'] .forge-session-harness,
+.forge-session-row[data-nested='true'] .forge-session-row__host {
+  display: none;
+}
+
+/* A worker in the open session's room, listed under its coordinator. */
+.forge-room-worker__dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--forge-worker-color);
+}
+
+.forge-room-worker .forge-session-row__title {
+  flex: 1;
+  min-width: 0;
+}
+
+.forge-room-worker__state {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--color-text-faint);
+}
+
+.forge-room-worker__state[data-status='working'] {
+  color: var(--state-ok);
+}
+
+.forge-room-worker__state[data-status='error'] {
+  color: var(--color-critical);
+}
+
+.forge-room-worker .forge-session-row__select {
+  gap: 6px;
+  min-height: 0;
+  padding-block: 7px;
+  padding-left: 3px;
+}
+
+/* ── List head: title and actions, search, then the quick states (Lexi's code sidebar) ── */
+
+.forge-session-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 10px 8px 14px;
+}
+
+.forge-session-search-row {
+  padding: 0 10px;
+}
+
+.forge-session-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 10px;
+  background: var(--color-bg-tertiary);
+}
+
+.forge-session-search:focus-within {
+  border-color: color-mix(in srgb, var(--color-brand) 50%, transparent);
+}
+
+.forge-session-search svg {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  color: var(--color-text-muted);
+}
+
+.forge-session-search input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+
+.forge-session-search input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.forge-session-search input:focus {
+  outline: none;
+}
+
+.forge-session-quick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 10px 6px 14px;
+}
+
+.forge-session-quick button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.forge-session-quick button:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.forge-session-quick button[aria-pressed='true'] {
+  border-color: var(--color-brand);
+  background: color-mix(in srgb, var(--color-brand) 16%, transparent);
+  color: var(--color-text-primary);
+}
+
+.forge-session-quick button span:last-child {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+
+.forge-session-quick button[data-filter='unread'] span:last-child {
+  color: var(--color-brand);
+}
+
+.forge-session-quick button[data-filter='attention'] span:last-child {
+  color: var(--status-amber);
+}
+
+.forge-session-scope {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* The state sits at the end of the row's last line, so the name keeps the whole first line. */
+.forge-session-row__metadata .forge-session-state {
+  margin-left: auto;
+}
+
+/* ── List menu: show, group by, display, stopped sessions ── */
+
+.forge-session-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 240px;
+  padding: 10px;
+}
+
+.forge-session-menu section {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.forge-session-menu section + section {
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.forge-session-menu h3 {
+  margin: 0 0 4px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.forge-session-menu button,
+.forge-session-menu label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  text-align: left;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.forge-session-menu button:hover:not(:disabled),
+.forge-session-menu label:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.forge-session-menu button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.forge-session-menu button[aria-pressed='true'] {
+  color: var(--color-text-primary);
+  background: color-mix(in srgb, var(--color-brand) 14%, transparent);
+}
+
+.forge-session-menu button span:last-child:not(:first-child) {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+
+.forge-session-menu input[type='checkbox'] {
+  appearance: auto;
+  width: 14px;
+  height: 14px;
+  accent-color: var(--color-brand);
+}
+
+/* ── Project folders (Lexi's code sidebar): caret, folder, name, needs-you, count, headline ── */
+
+.forge-project-folder {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  padding: 0 4px 0 2px;
+  color: var(--color-text-primary);
+}
+
+.forge-project-folder:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 60%, transparent);
+}
+
+/* The folder opens the project's home; the caret only folds it. */
+.forge-project-folder__caret {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 22px;
+  height: 34px;
+  color: var(--color-text-muted);
+}
+
+.forge-project-folder__open {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 18px minmax(0, 1fr) auto auto;
+  column-gap: 4px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 8px 6px 0;
+  text-align: left;
+  color: inherit;
+}
+
+/* Lexi fills the open project's folder with the accent. */
+.forge-project-folder[data-selected] {
+  border-radius: 8px;
+  background: var(--brand-600);
+  color: var(--color-bg-primary);
+}
+
+.forge-project-folder[data-selected] :is(.forge-project-folder__caret, .forge-project-folder__icon),
+.forge-project-folder[data-selected] .forge-project-folder__count,
+.forge-project-folder[data-selected] .forge-project-folder__headline {
+  color: color-mix(in srgb, var(--color-bg-primary) 80%, transparent);
+}
+
+.forge-project-folder__caret:focus-visible,
+.forge-project-folder__open:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: -2px;
+}
+
+.forge-project-folder__icon {
+  color: var(--color-text-secondary);
+}
+
+.forge-project-folder__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.forge-project-folder__badge {
+  display: grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  margin-right: 6px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--status-amber);
+  color: var(--color-bg-primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.forge-project-folder__count {
+  grid-column: 4;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+
+.forge-project-folder__headline {
+  grid-column: 2 / -1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.forge-project-folder__empty {
+  margin: 0;
+  padding: 4px 12px 8px 42px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* Rows in a folder sit under its name. */
+.forge-project-group
+  .forge-session-tree-entry
+  > .forge-session-tree-row
+  .forge-session-row__select {
+  padding-left: 28px;
+}
+
+.forge-session-section-label {
+  display: block;
+  width: 100%;
+  padding: 14px 12px 4px 14px;
+  text-align: left;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+/* ── Lexi rows: a state dot, the name, then host · model · role in one muted line ── */
+
+.forge-session-row__dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-faint);
+}
+
+.forge-session-row__dot[data-state='running'] {
+  background: var(--status-green);
+}
+
+.forge-session-row__dot[data-state='awaiting_input'] {
+  background: var(--status-amber);
+}
+
+.forge-session-row__dot[data-state='failed'] {
+  background: var(--color-critical);
+}
+
+.forge-session-row__title {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.forge-session-row__metadata {
+  gap: 0;
+  padding-left: 12px;
+  font-size: 11.5px;
+}
+
+.forge-session-row__metadata
+  > :not(.forge-session-state, .forge-session-new)
+  + :not(.forge-session-state, .forge-session-new)::before {
+  content: '·';
+  padding: 0 5px;
+  color: var(--color-text-faint);
+}
+
+.forge-session-row__metadata .forge-session-harness,
+.forge-session-row__metadata .forge-session-row__host,
+.forge-session-row__metadata .forge-session-row__leads {
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
+.forge-session-row__metadata .forge-session-state {
+  padding: 0 0 0 8px;
+  background: none;
+  font-size: 11.5px;
+}
+
+.forge-session-row__preview,
+.forge-session-row__details {
+  padding-left: 12px;
+}
+
+/* The model keeps its name; a long role line gives way first. */
+.forge-session-row__metadata .forge-session-harness {
+  flex-shrink: 0;
+}
+
+.forge-session-row__metadata .forge-session-row__leads {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The open session is a rounded fill, as Lexi marks it, not an edge. */
+.forge-sessions .forge-session-list .forge-session-row__select {
+  border-left-color: transparent;
+  border-bottom-color: transparent;
+  border-radius: 8px;
+}
+
+.forge-sessions .forge-session-list .forge-session-row__select--selected {
+  background: color-mix(in srgb, var(--color-text-primary) 9%, transparent);
+  box-shadow: none;
+}
+
+.forge-sessions
+  .forge-session-list
+  .forge-session-row__select:not(.forge-session-row__select--selected):hover {
+  background: color-mix(in srgb, var(--color-text-primary) 4%, transparent);
+}
+
+.forge-session-scroll {
+  padding: 0 6px;
+}
+
+/* The footer: the day's work and a refresh, as Lexi ends its session list. */
+.forge-session-footer-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.forge-session-refresh {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--color-text-muted);
+}
+
+.forge-session-refresh:hover:not(:disabled) {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.forge-session-refresh:disabled {
+  opacity: 0.5;
+}
+
+/* Lexi's search by voice: a round accent button at the end of the search field. */
+.forge-session-voice {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: -4px;
+  border-radius: 50%;
+  background: var(--status-amber);
+  color: var(--color-bg-primary);
+}
+
+.forge-session-voice[aria-pressed='true'] {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-amber) 35%, transparent);
+}
+
+.forge-session-voice-error {
+  margin: 4px 2px 0;
+  font-size: 12px;
+  color: var(--color-critical);
+}
+
+/* "Sessions" sized as Lexi's list title. */
+.forge-session-head h2 {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+/* ── Lexi's floating panels: the list and the session sit apart, rounded, on the window ── */
+@media (min-width: 761px) {
+  .forge-sessions {
+    padding: 8px;
+    gap: 2px;
+    background: var(--color-bg-primary);
+  }
+
+  .forge-sessions .forge-session-list,
+  .forge-sessions .forge-session-detail {
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+}
+
+/* ── Lexi's unread list: the sessions with new replies, newest first, each saying since when ── */
+
+.forge-unread-summary {
+  margin: 0;
+  padding: 6px 12px 6px 14px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.forge-session-row__metadata .forge-session-new {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--color-brand);
 }

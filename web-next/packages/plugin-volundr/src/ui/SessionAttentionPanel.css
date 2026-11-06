@@ -56,6 +56,14 @@
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.niuu-session-panel__count {
+  color: var(--color-text-faint);
+  letter-spacing: 0;
 }
 
 .niuu-session-panel ul {
@@ -217,8 +225,204 @@
   outline-offset: 2px;
 }
 
+/* Agents the session started. */
+.niuu-session-panel__agents li {
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-primary);
+  padding: 7px 10px;
+}
+
+.niuu-session-panel__agents strong {
+  overflow-wrap: anywhere;
+  color: var(--color-text-primary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.niuu-session-panel__agents small {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.niuu-session-panel__agents small[data-status='running'] {
+  color: var(--color-brand);
+}
+
+.niuu-session-panel__agents small[data-status='done'] {
+  color: var(--status-green);
+}
+
+.niuu-session-panel__agents small[data-status='failed'] {
+  color: var(--color-critical-fg);
+}
+
+/* Files the session presented. */
+ul.niuu-session-panel__files {
+  gap: 2px;
+}
+
+.niuu-session-panel__files button {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: 4px 6px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.niuu-session-panel__files button:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.niuu-session-panel__files svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.niuu-session-panel__files span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Facts about the session. */
+.niuu-session-panel__kv {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+}
+
+.niuu-session-panel__kv > div {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 8px;
+  font-size: var(--text-xs);
+}
+
+.niuu-session-panel__kv dt {
+  color: var(--color-text-muted);
+}
+
+.niuu-session-panel__kv dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.niuu-session-panel__mono {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.niuu-session-panel__kv [data-harness='claude'] {
+  color: var(--color-harness-claude);
+  font-weight: 600;
+}
+
+.niuu-session-panel__kv [data-harness='codex'] {
+  color: var(--color-harness-codex);
+  font-weight: 600;
+}
+
 @media (max-width: 1100px) {
   .niuu-session-panel {
     display: none;
   }
+
+  /* Opened on purpose at this width: float over the chat rather than squeeze it. */
+  .niuu-session-panel.niuu-session-panel--overlay {
+    display: flex;
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    width: min(320px, 100vw);
+    box-shadow: var(--niuu-panel-shadow, var(--shadow-lg));
+  }
+}
+
+/* Workers a coordinator leads: its sessions and the Ravn workers in its room. */
+.niuu-session-panel__worker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  align-items: center;
+  width: 100%;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-primary);
+  padding: 7px 10px;
+  text-align: left;
+  color: var(--color-text-primary);
+}
+
+button.niuu-session-panel__worker {
+  cursor: pointer;
+}
+
+button.niuu-session-panel__worker:hover {
+  border-color: var(--color-border);
+}
+
+.niuu-session-panel__worker strong {
+  overflow-wrap: anywhere;
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.niuu-session-panel__worker small {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.niuu-session-panel__worker-name {
+  color: var(--worker-color, var(--color-text-primary));
+}
+
+.niuu-session-panel__pill {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border: 1px solid currentcolor;
+  border-radius: var(--radius-full);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+}
+
+.niuu-session-panel__pill:is([data-tone='pass'], [data-tone='working']) {
+  color: var(--state-ok);
+}
+
+.niuu-session-panel__pill:is([data-tone='changes'], [data-tone='attention']) {
+  color: var(--state-warn);
+}
+
+.niuu-session-panel__pill:is([data-tone='blocked'], [data-tone='critical']) {
+  color: var(--color-critical-fg);
+}
+
+.niuu-session-panel__pill[data-tone='info'] {
+  color: var(--color-brand);
 }

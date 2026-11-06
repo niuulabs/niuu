@@ -8,7 +8,12 @@
  * `failed` can transition to `terminated` (clean-up complete).
  */
 
-import type { TrackerIssue, SessionCoordination, SessionSource } from '../models/volundr.model';
+import type {
+  TrackerIssue,
+  SessionCoordination,
+  SessionReadState,
+  SessionSource,
+} from '../models/volundr.model';
 
 export type SessionState =
   | 'requested'
@@ -94,6 +99,22 @@ export interface Session {
   origin?: string;
   /** Why Forge failed the session, as Forge reported it. */
   error?: string;
+  /** The caller's read state for the session's latest reply; absent when the host reports none. */
+  readState?: SessionReadState;
+  /** The agent's own one-line summary of what the session is doing, when it wrote one. */
+  shortDescription?: string;
+  /** Seconds Forge worked on the session in the last 24 hours; absent when not recorded. */
+  workedSeconds24h?: number;
+}
+
+/** A newer read or unread action won; the caller must look at the current state again. */
+export class SessionReadStateConflictError extends Error {
+  constructor(
+    message = 'This session was marked read or unread elsewhere. Review it and try again.',
+  ) {
+    super(message);
+    this.name = 'SessionReadStateConflictError';
+  }
 }
 
 /** Legal transitions in the session lifecycle state machine. */

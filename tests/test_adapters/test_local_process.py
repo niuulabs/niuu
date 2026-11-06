@@ -946,6 +946,7 @@ class TestGitClone:
                 checkout_proc,
                 checkout_proc,
                 checkout_proc,
+                checkout_proc,
             ]
             await manager._clone_repo(source, workspace, spec)
 
@@ -955,13 +956,15 @@ class TestGitClone:
         assert "clone" in args
         assert "--no-single-branch" in args
         assert "x-access-token:tok123@github.com/org/repo" in args[5]
-        assert mock_exec.call_args_list[3][0][-4:] == (
+        # The branch existed, so the workspace records the session's base branch.
+        assert mock_exec.call_args_list[3][0][-3:] == ("config", "niuu.baseBranch", "main")
+        assert mock_exec.call_args_list[4][0][-4:] == (
             "remote",
             "set-url",
             "origin",
             "https://github.com/org/repo",
         )
-        assert mock_exec.call_args_list[4][0][-5:] == (
+        assert mock_exec.call_args_list[5][0][-5:] == (
             "remote",
             "set-url",
             "--push",
@@ -1067,6 +1070,32 @@ class TestGitClone:
             await manager._clone_repo(source, workspace, spec)
 
         assert mock_exec.call_args_list[4][0][-3:] == ("checkout", "-b", "feat/missing")
+        assert mock_exec.call_args_list[5][0][-3:] == ("config", "niuu.baseBranch", "main")
+
+    async def test_failing_to_record_the_base_branch_raises(
+        self,
+        manager: LocalProcessPodManager,
+    ) -> None:
+        """A workspace that cannot record its base branch does not start silently without it."""
+        source = GitSource(repo="https://github.com/org/repo", branch="dev", base_branch="dev")
+        workspace = manager._workspaces_dir / "no-base"
+        workspace.mkdir(parents=True)
+        spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+
+        ok_proc = AsyncMock()
+        ok_proc.returncode = 0
+        ok_proc.communicate = AsyncMock(return_value=(b"", b""))
+        config_proc = AsyncMock()
+        config_proc.returncode = 1
+        config_proc.communicate = AsyncMock(return_value=(b"", b"error: could not lock config"))
+
+        with (
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            pytest.raises(RuntimeError, match="could not lock config"),
+        ):
+            # clone, rev-parse origin/dev, checkout dev, then the config write fails.
+            mock_exec.side_effect = [ok_proc, ok_proc, ok_proc, config_proc]
+            await manager._clone_repo(source, workspace, spec)
 
 
 # ------------------------------------------------------------------

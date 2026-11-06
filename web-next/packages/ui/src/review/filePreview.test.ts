@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { classifyPreview, isTextPreview } from './filePreview';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { classifyPreview, imageMimeFor, isTextPreview } from './filePreview';
+import { loadPreview } from './ResourcePreviewContent';
 
 describe('native-compatible file preview kinds', () => {
   it.each([
@@ -40,5 +41,35 @@ describe('native-compatible file preview kinds', () => {
     expect(isTextPreview('html')).toBe(true);
     expect(isTextPreview('video')).toBe(false);
     expect(isTextPreview('download')).toBe(false);
+  });
+});
+
+describe('imageMimeFor', () => {
+  it('names the image type a file name implies', () => {
+    expect(imageMimeFor('docs/layout.SVG')).toBe('image/svg+xml');
+    expect(imageMimeFor('photo.jpg')).toBe('image/jpeg');
+    expect(imageMimeFor('notes.md')).toBeUndefined();
+  });
+});
+
+describe('loadPreview', () => {
+  const original = URL.createObjectURL;
+  afterEach(() => {
+    URL.createObjectURL = original;
+  });
+
+  it('types an untyped image download so the browser can draw it', async () => {
+    const createObjectURL = vi.fn((_blob: Blob) => 'blob:preview');
+    URL.createObjectURL = createObjectURL;
+    const untyped = new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>'], {
+      type: 'application/octet-stream',
+    });
+    const preview = await loadPreview(untyped, 'layout.svg');
+    expect(preview.kind).toBe('image');
+    expect(createObjectURL.mock.calls[0]![0].type).toBe('image/svg+xml');
+
+    const typed = new Blob(['png'], { type: 'image/png' });
+    await loadPreview(typed, 'shot.png');
+    expect(createObjectURL.mock.calls[1]![0]).toBe(typed);
   });
 });

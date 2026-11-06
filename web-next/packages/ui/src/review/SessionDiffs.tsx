@@ -34,6 +34,7 @@ interface DiffData {
   hunks: DiffHunk[];
 }
 
+/** Skuld's diff bases; `default-branch` is its name for the branch the session started from. */
 type DiffBase = 'last-commit' | 'default-branch';
 
 function authHeaders(): Record<string, string> {
@@ -50,6 +51,8 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
   const diffAbortRef = useRef<AbortController | null>(null);
   const [files, setFiles] = useState<SessionDiffFile[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
+  // A failed load is said, never shown as an empty list that reads as "nothing changed".
+  const [filesError, setFilesError] = useState<string | null>(null);
   const [diff, setDiff] = useState<DiffData | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<Error | null>(null);
@@ -77,6 +80,7 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
     const controller = new AbortController();
     filesAbortRef.current = controller;
     setFilesLoading(true);
+    setFilesError(null);
     try {
       const params = new URLSearchParams({ base: diffBase });
       const response = await fetch(`${apiBase}/api/diff/files?${params}`, {
@@ -93,6 +97,9 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
       if (!mountedRef.current || filesAbortRef.current !== controller) return;
       setFiles([]);
+      setFilesError(
+        `The changed files could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
+      );
     } finally {
       if (mountedRef.current && filesAbortRef.current === controller) {
         filesAbortRef.current = null;
@@ -155,8 +162,11 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
   }, [fetchFiles]);
 
   return {
+    /** False when the session has no live endpoint, so its changes cannot be read now. */
+    available: apiBase !== null,
     files,
     filesLoading,
+    filesError,
     diff,
     diffLoading,
     diffError,
@@ -290,7 +300,7 @@ function DiffViewer({
         ) : (
           diff.hunks.map((hunk, i) => (
             <div key={i} className="niuu:font-mono niuu:text-xs">
-              <div className="niuu:bg-bg-tertiary niuu:px-4 niuu:py-0.5 niuu:text-text-muted">
+              <div className="niuu-diff-hunk-head niuu:bg-bg-tertiary niuu:px-4 niuu:py-0.5 niuu:text-text-muted">
                 @@ -{hunk.oldStart},{hunk.oldCount} +{hunk.newStart},{hunk.newCount} @@
               </div>
               {hunk.lines.map((line, j) => {
@@ -300,6 +310,7 @@ function DiffViewer({
                 return (
                   <Fragment key={j}>
                     <div
+                      data-line={line.type}
                       className={cn(
                         'niuu-review-line niuu:flex niuu:gap-2 niuu:px-4 niuu:py-px',
                         line.type === 'add' &&
@@ -359,13 +370,21 @@ function DiffViewer({
 export function SessionDiffs({
   chatEndpoint,
   review,
+  layout = 'split',
 }: {
   chatEndpoint: string | null;
   review?: ReviewControls;
+  /**
+   * `split`: the file list beside the diff. `dock`: Lexi's Changes pane for a narrow dock,
+   * a summary line and one tab per file over the open file's diff.
+   */
+  layout?: 'split' | 'dock';
 }) {
   const {
+    available,
     files,
     filesLoading,
+    filesError,
     diff,
     diffLoading,
     diffError,
@@ -375,6 +394,88 @@ export function SessionDiffs({
     setDiffBase,
   } = useLiveDiffViewer(chatEndpoint);
   const selected = files.find((file) => file.path === selectedFile) ?? null;
+  // The dock opens on the first changed file, as Lexi's Changes pane does.
+  const firstFile = files[0]?.path;
+  useEffect(() => {
+    if (layout === 'dock' && firstFile && !selectedFile) void selectFile(firstFile);
+  }, [layout, firstFile, selectedFile, selectFile]);
+
+  if (layout === 'dock') {
+    const added = files.reduce((total, file) => total + file.ins, 0);
+    const removed = files.reduce((total, file) => total + file.del, 0);
+    return (
+      <div className="niuu-session-diffs niuu-session-diffs--dock" data-testid="diffs-tab">
+        <div className="niuu-diffs-dock__head">
+          <span className="niuu-diffs-dock__summary" data-testid="diff-summary">
+            {files.length} {files.length === 1 ? 'file' : 'files'} changed
+            {added > 0 ? <span className="niuu-diffs-dock__ins">+{added}</span> : null}
+            {removed > 0 ? <span className="niuu-diffs-dock__del">−{removed}</span> : null}
+          </span>
+          <div className="niuu-diffs-dock__bases" role="group" aria-label="Compare with">
+            {(['last-commit', 'default-branch'] as const).map((base) => (
+              <button
+                key={base}
+                type="button"
+                aria-pressed={diffBase === base}
+                onClick={() => setDiffBase(base)}
+              >
+                {base === 'last-commit' ? 'Since last commit' : 'Against base branch'}
+              </button>
+            ))}
+          </div>
+        </div>
+        {!available ? (
+          <p className="niuu-diffs-dock__note" data-testid="diff-unavailable">
+            Changes show while the session&apos;s workspace is live.
+          </p>
+        ) : filesLoading ? (
+          <p className="niuu-diffs-dock__note">Loading changes…</p>
+        ) : filesError ? (
+          <p role="alert" className="niuu-diffs-dock__error" data-testid="diff-files-error">
+            {filesError}
+          </p>
+        ) : files.length === 0 ? (
+          <p className="niuu-diffs-dock__note" data-testid="diff-files-empty">
+            {diffBase === 'last-commit'
+              ? 'No changes since the last commit.'
+              : 'No changes against the base branch.'}
+          </p>
+        ) : (
+          <>
+            <div className="niuu-diffs-dock__files" role="tablist" aria-label="Changed files">
+              {files.map((file) => (
+                <button
+                  key={file.path}
+                  type="button"
+                  role="tab"
+                  title={file.path}
+                  aria-selected={file.path === selectedFile}
+                  data-testid={`diff-file-${file.status}`}
+                  onClick={() => void selectFile(file.path)}
+                >
+                  <span className="niuu-diffs-dock__file-name">
+                    {file.path.split('/').at(-1) ?? file.path}
+                  </span>
+                  {file.ins > 0 ? <span className="niuu-diffs-dock__ins">+{file.ins}</span> : null}
+                  {file.del > 0 ? <span className="niuu-diffs-dock__del">−{file.del}</span> : null}
+                </button>
+              ))}
+            </div>
+            <div className="niuu-diffs-dock__viewer">
+              <DiffViewer
+                key={selected?.path}
+                file={selected}
+                diff={diff}
+                loading={diffLoading}
+                error={diffError}
+                review={review}
+              />
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="niuu-session-diffs niuu:h-full" data-testid="diffs-tab">
@@ -396,7 +497,7 @@ export function SessionDiffs({
                     : 'niuu:border-border-subtle niuu:text-text-muted niuu:hover:text-text-secondary',
                 )}
               >
-                {base === 'last-commit' ? 'last commit' : 'default branch'}
+                {base === 'last-commit' ? 'last commit' : 'base branch'}
               </button>
             ))}
           </div>
@@ -405,6 +506,23 @@ export function SessionDiffs({
           <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:font-mono niuu:text-sm niuu:text-text-muted">
             Loading files...
           </div>
+        ) : filesError ? (
+          <p
+            role="alert"
+            className="niuu:m-0 niuu:px-4 niuu:py-3 niuu:text-xs niuu:text-critical"
+            data-testid="diff-files-error"
+          >
+            {filesError}
+          </p>
+        ) : files.length === 0 ? (
+          <p
+            className="niuu:m-0 niuu:px-4 niuu:py-3 niuu:text-xs niuu:text-text-muted"
+            data-testid="diff-files-empty"
+          >
+            {diffBase === 'last-commit'
+              ? 'No changes since the last commit.'
+              : 'No changes against the base branch.'}
+          </p>
         ) : (
           <DiffFileList
             files={files}

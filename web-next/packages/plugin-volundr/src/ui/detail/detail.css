@@ -1,0 +1,134 @@
+/* Header meter: context ring and cost. */
+.forge-meter {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.forge-meter:has(.forge-meter__ring) {
+  padding-left: 4px;
+}
+
+.forge-meter__ring {
+  width: 20px;
+  height: 20px;
+}
+
+.forge-meter__track,
+.forge-meter__fill {
+  fill: none;
+  stroke-width: 2.5;
+}
+
+.forge-meter__track {
+  stroke: var(--color-bg-elevated);
+}
+
+.forge-meter__fill {
+  stroke: var(--color-brand);
+  stroke-linecap: round;
+}
+
+.forge-meter__fill--warn {
+  stroke: var(--status-amber);
+}
+
+/* Header "More" menu. */
+.niuu-popover-content.forge-more-menu {
+  display: grid;
+  min-width: 220px;
+  padding: 6px;
+  border-color: var(--color-border-subtle);
+}
+
+.forge-more-menu__rule {
+  margin: 5px 4px;
+  border: 0;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.forge-more-menu__item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: 7px 10px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.forge-more-menu__item svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
+.forge-more-menu__item:hover:not(:disabled) {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.forge-more-menu__item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.forge-more-menu__item:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: -2px;
+}
+
+.forge-more-menu__item--critical {
+  color: var(--color-critical-fg);
+}
+
+.forge-more-menu__item--critical:hover:not(:disabled) {
+  background: var(--color-critical-bg);
+  color: var(--color-critical-fg);
+}
+
+/* Coordinators and their workers in the session header. */
+.forge-coordinator-tag {
+  flex: none;
+  font-weight: 600;
+  color: var(--color-brand-300);
+}
+
+.forge-worker-of__link:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+.forge-worker-of {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+
+.forge-worker-of__link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-brand);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.forge-worker-of__link:hover {
+  text-decoration: underline;
+}

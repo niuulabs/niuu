@@ -73,6 +73,23 @@ export function classifyPreview(name: string, mime = ''): { kind: PreviewKind; l
     return { kind: 'text' };
   return { kind: 'download' };
 }
+const imageMimes: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+};
+
+/** The image type a file name implies, for bytes served untyped. */
+export function imageMimeFor(name: string): string | undefined {
+  return imageMimes[name.toLowerCase().split('.').at(-1) ?? ''];
+}
+
 export function isTextPreview(kind: PreviewKind) {
   return ['markdown', 'mermaid', 'html', 'code', 'text'].includes(kind);
 }

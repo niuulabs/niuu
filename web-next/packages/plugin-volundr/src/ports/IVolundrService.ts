@@ -11,6 +11,7 @@ import type {
   VolundrStats,
   VolundrRepo,
   VolundrMessage,
+  SessionMessageDelivery,
   VolundrLog,
   VolundrAggregatedLog,
   VolundrLogParticipant,
@@ -57,6 +58,9 @@ import type {
   VolundrSessionTrace,
   VolundrSessionTraceSummary,
   ExternalSession,
+  SessionReadState,
+  SessionReadStateChange,
+  ForgeMcpSessionOptions,
 } from '../models/volundr.model';
 
 export interface VolundrConversationTurn {
@@ -157,6 +161,17 @@ export interface IVolundrService {
     options: SessionChangesReadOptions,
   ): Promise<VolundrSessionChanges>;
   getActiveSessions(): Promise<VolundrSession[]>;
+  /** The caller's read state for a session's latest reply. */
+  getSessionReadState(sessionId: string, options?: SessionReadOptions): Promise<SessionReadState>;
+  /**
+   * Marks the session read or unread. Rejects with `SessionReadStateConflictError` when a newer
+   * action won; the caller reads the state again before deciding.
+   */
+  changeSessionReadState(
+    sessionId: string,
+    change: SessionReadStateChange,
+    options?: SessionReadOptions,
+  ): Promise<SessionReadState>;
   getStats(options?: SessionReadOptions): Promise<VolundrStats>;
   getRepos(): Promise<VolundrRepo[]>;
   getTargets(): Promise<VolundrTarget[]>;
@@ -165,6 +180,10 @@ export interface IVolundrService {
   getProjects(options?: SessionReadOptions): Promise<ForgeProject[]>;
   /** A name is enough. The host is the given instance, else the default one. */
   createProject(name: string, options?: { instanceId?: string }): Promise<ForgeProject>;
+  /**
+   * Change a project at the revision the caller read; a stale revision is refused. The change
+   * goes to the host that owns the project. Setting `workspace_path` connects a checkout.
+   */
   updateProject(project: ForgeProject, changes: ForgeProjectChanges): Promise<ForgeProject>;
   getSessionProject(
     sessionId: string,
@@ -225,6 +244,8 @@ export interface IVolundrService {
     /** What the session runs: an ordinary coding session (default) or `ravn_flock`. */
     workloadType?: 'session' | 'ravn_flock';
     workloadConfig?: Record<string, unknown>;
+    /** Forge MCP grants for the session; the node's defaults and role grants apply on top. */
+    forgeMcp?: ForgeMcpSessionOptions;
   }): Promise<VolundrSession>;
   evaluatePermissionAutoApproval(
     sessionId: string,
@@ -256,6 +277,8 @@ export interface IVolundrService {
 
   // Messaging
   getConversationHistory(sessionId: string): Promise<VolundrConversationHistory>;
+  /** One turn in full (`GET /sessions/{id}/conversation/turns/{turnId}`), wherever it sits. */
+  getConversationTurn(sessionId: string, turnId: string): Promise<VolundrConversationTurn>;
   getWorkflowGates(sessionId: string): Promise<VolundrWorkflowGate[]>;
   resolveWorkflowGate(
     sessionId: string,
@@ -263,7 +286,11 @@ export interface IVolundrService {
     request: ResolveWorkflowGateRequest,
   ): Promise<VolundrWorkflowGate>;
   getMessages(sessionId: string): Promise<VolundrMessage[]>;
-  sendMessage(sessionId: string, content: string): Promise<VolundrMessage>;
+  /**
+   * Send a user message into a running session. Resolves `delivered` or `pending` (accepted,
+   * delivery still being retried; not confirmed); rejects with Forge's `detail` on refusal.
+   */
+  sendMessage(sessionId: string, content: string): Promise<SessionMessageDelivery>;
   subscribeMessages(sessionId: string, callback: (message: VolundrMessage) => void): () => void;
 
   // Logs

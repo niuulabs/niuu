@@ -70,6 +70,23 @@ describe('SidebarResizer', () => {
     expect(edge).toHaveAttribute('aria-valuenow', '240');
   });
 
+  it('grows a panel on the right as its edge moves left', () => {
+    function RightPanel() {
+      const { resizer } = useResizableSidebar(KEY, BOUNDS);
+      return <SidebarResizer label="Resize right panel" panelSide="right" {...resizer} />;
+    }
+    render(<RightPanel />);
+    const edge = screen.getByRole('separator');
+    fireEvent.pointerDown(edge, { clientX: 1000, pointerId: 1 });
+    fireEvent.pointerMove(edge, { clientX: 940, pointerId: 1 });
+    expect(edge).toHaveAttribute('aria-valuenow', '300');
+    fireEvent.pointerUp(edge, { clientX: 940, pointerId: 1 });
+    fireEvent.keyDown(edge, { key: 'ArrowLeft' });
+    expect(edge).toHaveAttribute('aria-valuenow', '320');
+    fireEvent.keyDown(edge, { key: 'ArrowRight' });
+    expect(edge).toHaveAttribute('aria-valuenow', '300');
+  });
+
   it('drops a cancelled drag', () => {
     render(<Sidebar />);
     const edge = screen.getByRole('separator');
