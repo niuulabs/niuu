@@ -74,11 +74,23 @@ class ProcNetListeningPortScanner(ListeningPortScanner):
     (found through ``/proc/self/fd``) and *excluded_ports* — the pod's other
     infrastructure containers (Envoy, nginx, terminal, editor), whose processes
     Skuld cannot see.
+
+    *same_user_only* offers only listeners owned by Skuld's own user, which the
+    agent and everything it starts run as. A session VM needs it: the guest's own
+    services (containerd's stream server, sshd's tunnels, the resolver) run as
+    root on ports no list can name, such as a random loopback port per boot.
     """
 
-    def __init__(self, *, excluded_ports: list[int] | None = None, proc_root: str = "/proc"):
+    def __init__(
+        self,
+        *,
+        excluded_ports: list[int] | None = None,
+        proc_root: str = "/proc",
+        same_user_only: bool = False,
+    ):
         self._excluded = frozenset(int(p) for p in excluded_ports or [])
         self._proc = Path(proc_root)
+        self._uid = str(os.geteuid()) if same_user_only else None
 
     async def scan(self) -> set[ListeningPort]:
         return await asyncio.to_thread(self._scan)
@@ -99,6 +111,8 @@ class ProcNetListeningPortScanner(ListeningPortScanner):
             for line in lines:
                 fields = line.split()
                 if len(fields) < 10 or fields[3] != _TCP_LISTEN or fields[9] in own:
+                    continue
+                if self._uid is not None and fields[7] != self._uid:
                     continue
                 hex_address, hex_port = fields[1].split(":")
                 port = int(hex_port, 16)

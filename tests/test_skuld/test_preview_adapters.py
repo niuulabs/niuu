@@ -48,10 +48,12 @@ _HEADER = (
 )
 
 
-def _row(index: int, local: str, port: int, *, state: str = "0A", inode: int = 1000) -> str:
+def _row(
+    index: int, local: str, port: int, *, state: str = "0A", inode: int = 1000, uid: int = 1000
+) -> str:
     return (
         f"  {index}: {local}:{port:04X} 00000000:0000 {state} 00000000:00000000 "
-        f"00:00000000 00000000  1000        0 {inode} 1 0000000000000000 100 0 0 10 0"
+        f"00:00000000 00000000 {uid:5d}        0 {inode} 1 0000000000000000 100 0 0 10 0"
     )
 
 
@@ -88,6 +90,24 @@ def _scanner(proc: _Proc, **kwargs: Any) -> ProcNetListeningPortScanner:
 
 
 class TestProcNetScanner:
+    async def test_same_user_only_skips_other_users_listeners(self, proc, monkeypatch) -> None:
+        # A session VM: Vite as the session user, containerd's stream server as root.
+        monkeypatch.setattr(os, "geteuid", lambda: 1000)
+        proc.tcp(
+            _row(0, _v4("127.0.0.1"), 5173, uid=1000),
+            _row(1, _v4("127.0.0.1"), 40445, uid=0, inode=2000),
+        )
+        proc.tcp6(_row(0, _v6("::"), 3000, uid=0, inode=3000))
+
+        assert await _scanner(proc, same_user_only=True).scan() == {
+            ListeningPort(5173, "127.0.0.1")
+        }
+        assert await _scanner(proc).scan() == {
+            ListeningPort(5173, "127.0.0.1"),
+            ListeningPort(40445, "127.0.0.1"),
+            ListeningPort(3000, "::1"),
+        }
+
     async def test_listening_sockets_only(self, proc) -> None:
         proc.tcp(
             _row(0, _v4("0.0.0.0"), 3000, state="0A"),
