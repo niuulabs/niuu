@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from volundr.guest_agent.config import (
+    BearerFileAuth,
     ForgeSessionTarget,
     HostKeyAuth,
     SpiffeAuth,
@@ -42,6 +43,28 @@ def test_valid_spiffe_config(make_config) -> None:
         socket_path="/run/spire/agent/api.sock",
         spire_agent_binary="/opt/spire/bin/spire-agent",
     )
+
+
+def test_valid_bearer_file_config(make_config) -> None:
+    config = parse_config(
+        make_config(auth={"kind": "bearer_file", "token_path": "/etc/niuu/guest-identity/token"})
+    )
+
+    assert config.auth == BearerFileAuth(token_path="/etc/niuu/guest-identity/token")
+
+
+@pytest.mark.parametrize(
+    ("auth", "message"),
+    [
+        ({"kind": "bearer_file"}, "auth.token_path: missing field"),
+        ({"kind": "bearer_file", "token_path": "token"}, "must be an absolute path"),
+        ({"kind": "bearer_file", "token_path": "/t", "audience": "x"}, "auth.audience: unknown"),
+    ],
+    ids=["missing", "relative", "unknown-field"],
+)
+def test_bearer_file_config_is_strict(make_config, auth: dict, message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        parse_config(make_config(auth=auth))
 
 
 def test_forge_session_may_be_null(make_config) -> None:

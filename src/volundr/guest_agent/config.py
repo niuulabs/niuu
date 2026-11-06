@@ -41,6 +41,13 @@ class HostKeyAuth:
 
 
 @dataclass(frozen=True)
+class BearerFileAuth:
+    """Present the token the machine provider keeps in ``token_path`` (read per request)."""
+
+    token_path: str
+
+
+@dataclass(frozen=True)
 class SpiffeAuth:
     """Present a JWT-SVID fetched from the local SPIRE agent."""
 
@@ -77,7 +84,7 @@ class Listen:
 class AgentConfig:
     metadata_url: str
     allocation_id: str
-    auth: HostKeyAuth | SpiffeAuth
+    auth: HostKeyAuth | BearerFileAuth | SpiffeAuth
     token_volumes: tuple[TokenVolume, ...]
     forge_session: ForgeSessionTarget | None
     listen: Listen
@@ -207,7 +214,7 @@ def _allocation_id(value: object) -> str:
         raise ConfigError(f"allocation_id: not a UUID: {text!r}") from exc
 
 
-def _auth(raw: object) -> HostKeyAuth | SpiffeAuth:
+def _auth(raw: object) -> HostKeyAuth | BearerFileAuth | SpiffeAuth:
     if not isinstance(raw, dict):
         raise ConfigError(f"auth: expected an object, got {type(raw).__name__}")
     kind = raw.get("kind")
@@ -216,6 +223,9 @@ def _auth(raw: object) -> HostKeyAuth | SpiffeAuth:
     if kind == "host_key":
         fields = _fields(raw, "auth", ("kind", "key_path"))
         return HostKeyAuth(key_path=_absolute_path(fields["key_path"], "auth.key_path"))
+    if kind == "bearer_file":
+        fields = _fields(raw, "auth", ("kind", "token_path"))
+        return BearerFileAuth(token_path=_absolute_path(fields["token_path"], "auth.token_path"))
     if kind == "spiffe":
         fields = _fields(raw, "auth", ("kind", "audience", "socket_path", "spire_agent_binary"))
         return SpiffeAuth(
@@ -225,7 +235,9 @@ def _auth(raw: object) -> HostKeyAuth | SpiffeAuth:
                 fields["spire_agent_binary"], "auth.spire_agent_binary"
             ),
         )
-    raise ConfigError(f"auth.kind: unknown kind {kind!r}; expected 'host_key' or 'spiffe'")
+    raise ConfigError(
+        f"auth.kind: unknown kind {kind!r}; expected 'host_key', 'bearer_file' or 'spiffe'"
+    )
 
 
 def _token_volumes(raw: object) -> tuple[TokenVolume, ...]:

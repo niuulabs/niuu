@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
@@ -210,6 +210,26 @@ class GuestIdentity(ABC):
 
     async def close(self) -> None:
         """Release client resources."""
+
+
+@runtime_checkable
+class GuestAttestingProvider(Protocol):
+    """A machine provider that gives each guest a token it can later vouch for.
+
+    The hypervisor-side answer to "which VM is asking": the provider puts a token
+    into the guest at boot, keeps it fresh, and verifies it against its own API.
+    """
+
+    @property
+    def attests_guests(self) -> bool:
+        """Whether this provider is configured to put an attestable token into guests."""
+
+    @property
+    def guest_token_path(self) -> str:
+        """Guest path of the token file the provider keeps fresh."""
+
+    async def attested_allocation(self, token: str) -> UUID:
+        """The allocation whose guest holds ``token``; raises ``GuestAuthenticationError``."""
 
 
 class GuestFiles(Protocol):

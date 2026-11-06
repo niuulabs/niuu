@@ -17,12 +17,13 @@ from cryptography.hazmat.primitives.serialization import (
 )
 
 from tests.test_guest_agent.conftest import ALLOCATION_ID
-from volundr.guest_agent.config import HostKeyAuth, SpiffeAuth
+from volundr.guest_agent.config import BearerFileAuth, HostKeyAuth, SpiffeAuth
 from volundr.guest_agent.errors import SignerError
 from volundr.guest_agent.signers import (
     HEADER_ALLOCATION,
     HEADER_SIGNATURE,
     HEADER_TIMESTAMP,
+    BearerFileSigner,
     HostKeySigner,
     SpiffeSigner,
     build_signer,
@@ -128,9 +129,38 @@ def test_build_signer_selects_by_auth_kind(host_key: tuple[str, Ed25519PublicKey
         allocation_id=ALLOCATION_ID,
         timeout_seconds=5,
     )
+    bearer = build_signer(
+        BearerFileAuth(token_path="/t"), allocation_id=ALLOCATION_ID, timeout_seconds=5
+    )
 
     assert isinstance(host, HostKeySigner)
     assert isinstance(spiffe, SpiffeSigner)
+    assert isinstance(bearer, BearerFileSigner)
+
+
+async def test_bearer_file_signer_rereads_the_rotated_token(tmp_path) -> None:
+    token = tmp_path / "token"
+    token.write_text("first\n")
+    signer = BearerFileSigner(token_path=str(token))
+
+    first = await signer.headers(method="POST", path=PATH, body=b"{}")
+    token.write_text("second")
+    second = await signer.headers(method="POST", path=PATH, body=b"{}")
+
+    assert first == {"Authorization": "Bearer first"}
+    assert second == {"Authorization": "Bearer second"}
+
+
+@pytest.mark.parametrize(("content", "message"), [(None, "cannot read"), ("  \n", "is empty")])
+async def test_bearer_file_signer_refuses_a_missing_or_empty_token(
+    tmp_path, content: str | None, message: str
+) -> None:
+    token = tmp_path / "token"
+    if content is not None:
+        token.write_text(content)
+
+    with pytest.raises(SignerError, match=message):
+        await BearerFileSigner(token_path=str(token)).headers(method="POST", path=PATH, body=b"")
 
 
 # --- SPIFFE output parsing ------------------------------------------------------------------

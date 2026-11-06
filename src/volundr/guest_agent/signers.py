@@ -1,4 +1,4 @@
-"""Proof of identity for the metadata request: an Ed25519 signature or a JWT-SVID."""
+"""Proof of identity for the metadata request: a signature, a provider token or a JWT-SVID."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import load_ssh_private_key
 
-from volundr.guest_agent.config import HostKeyAuth, SpiffeAuth
+from volundr.guest_agent.config import BearerFileAuth, HostKeyAuth, SpiffeAuth
 from volundr.guest_agent.errors import SignerError
 
 HEADER_ALLOCATION = "Niuu-Guest-Allocation"
@@ -64,6 +64,28 @@ class HostKeySigner(RequestSigner):
             HEADER_TIMESTAMP: str(timestamp_ms),
             HEADER_SIGNATURE: base64.b64encode(signature).decode("ascii"),
         }
+
+
+class BearerFileSigner(RequestSigner):
+    """Sends the provider-issued token in ``token_path``, re-read for every request.
+
+    The provider rotates the file in place, so a cached copy would go stale.
+    """
+
+    def __init__(self, *, token_path: str) -> None:
+        self._token_path = Path(token_path)
+
+    async def headers(self, *, method: str, path: str, body: bytes) -> dict[str, str]:
+        try:
+            token = (await asyncio.to_thread(self._token_path.read_text, encoding="utf-8")).strip()
+        except OSError as exc:
+            raise SignerError(
+                f"cannot read auth.token_path {str(self._token_path)!r}: {exc}; the machine "
+                "provider mounts it at boot"
+            ) from exc
+        if not token:
+            raise SignerError(f"auth.token_path {str(self._token_path)!r} is empty")
+        return {"Authorization": f"Bearer {token}"}
 
 
 class SpiffeSigner(RequestSigner):
@@ -128,10 +150,12 @@ class SpiffeSigner(RequestSigner):
 
 
 def build_signer(
-    auth: HostKeyAuth | SpiffeAuth, *, allocation_id: str, timeout_seconds: float
+    auth: HostKeyAuth | BearerFileAuth | SpiffeAuth, *, allocation_id: str, timeout_seconds: float
 ) -> RequestSigner:
     if isinstance(auth, HostKeyAuth):
         return HostKeySigner(key_path=auth.key_path, allocation_id=allocation_id)
+    if isinstance(auth, BearerFileAuth):
+        return BearerFileSigner(token_path=auth.token_path)
     return SpiffeSigner(
         audience=auth.audience,
         socket_path=auth.socket_path,

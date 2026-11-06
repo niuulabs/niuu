@@ -738,3 +738,37 @@ async def test_guest_identity_composes_with_only_its_declared_ports():
             config,
             {"pool_id": "pool", "machine_bootstrap_for": AsyncMock(), "watermarks": watermarks},
         )
+
+
+async def test_provider_attested_identity_receives_the_machine_provider():
+    from volundr.adapters.outbound.guest_identity_provider import ProviderAttestedGuestIdentity
+
+    class AttestingProvider:
+        attests_guests = True
+        guest_token_path = "/etc/niuu/guest-identity/token"
+
+        async def attested_allocation(self, token):
+            return uuid4()
+
+    config = ComputeConfig.model_validate(
+        {
+            "pool_id": "pool",
+            "max_machines": 1,
+            "provider": {"adapter": "x.Provider"},
+            "guest_identity": {
+                "adapter": (
+                    "volundr.adapters.outbound.guest_identity_provider."
+                    "ProviderAttestedGuestIdentity"
+                ),
+            },
+        }
+    )
+    provider = AttestingProvider()
+
+    built = build_guest_credentials(
+        config,
+        {"pool_id": "pool", "watermarks": MagicMock(), "machine_provider": provider},
+    )
+
+    assert isinstance(built.guest_identity, ProviderAttestedGuestIdentity)
+    assert built.guest_identity._provider is provider

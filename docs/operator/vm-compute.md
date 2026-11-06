@@ -427,6 +427,41 @@ NetworkPolicy and ingress admit guest traffic.
 
 ### Guest identity for the metadata endpoint
 
+Pick one per pool in `compute.guest_identity`:
+
+| Identity | Use it for | Needs in the VM image |
+|---|---|---|
+| `ProviderAttestedGuestIdentity` | Harvester (KubeVirt): the default there | nothing |
+| `SpiffeGuestIdentity` | VMware and other providers with SPIRE | `spire-agent` |
+| `HostKeyGuestIdentity` | any provider that delivers private bootstrap | nothing |
+
+`ProviderAttestedGuestIdentity` (Harvester): the hypervisor vouches for the guest,
+as an AWS instance identity document does. Set `guest_service_account` on
+`HarvesterMachineProvider`; every VM's virt-launcher pod then runs as that
+ServiceAccount, and KubeVirt shares the pod's token into the guest over virtiofs
+(`EnableVirtioFsConfigVolumes`). A `bootcmd` mounts it read-only at
+`/etc/niuu/guest-identity` on every boot, and the kubelet keeps it fresh. The agent
+sends it as `Authorization: Bearer <token>`. Forge sends a TokenReview to Harvester
+through the provider's own credential and requires:
+
+- the token is for `system:serviceaccount:<namespace>:<guest_service_account>` and
+  bound to one pod;
+- the pod exists with that UID, and its controller owner is a VMI;
+- the VMI carries this installation's and an allocation's labels, is named for that
+  allocation, and lists the pod in `status.activePods` (only virt-controller writes
+  it, so a pod that merely names the VMI as owner does not pass).
+
+On Harvester this needs:
+
+- the ServiceAccount in the provider namespace with **no** RoleBindings. Its token is
+  addressed to Harvester's API server (KubeVirt cannot set another audience), so it
+  must grant nothing there;
+- Forge's Harvester credential allowed to `create` `tokenreviews`
+  (`system:auth-delegator`) and to `get` `pods` and `virtualmachineinstances` in the
+  provider namespace.
+
+A Harvester outage or a denied TokenReview is a 500 naming the RBAC, never a 401.
+
 `HostKeyGuestIdentity` (works on every provider that delivers private bootstrap):
 the agent signs `METHOD\nPATH\nTIMESTAMP_MS\nSHA256(body)` with the guest's Ed25519
 SSH host key, which the controller generates and the provider delivers, and Forge
@@ -435,7 +470,8 @@ increase per allocation (an atomic watermark, migration 000104) within
 `clock_skew_seconds`. See the "VM guest metadata identities" exception in
 `.claude/rules/architecture.md`.
 
-`SpiffeGuestIdentity` (where SPIRE is available): the agent presents a JWT-SVID for
+`SpiffeGuestIdentity` (providers without a hypervisor attestor, such as VMware, where
+SPIRE is available): the agent presents a JWT-SVID for
 the configured `audience`, fetched from the guest's SPIRE agent
 (`spire-agent api fetch jwt`), and Forge verifies it against SPIRE's JWKS
 (`issuer`, `jwks_uri`, `ca_cert_path`). The subject must match `spiffe_id_template`

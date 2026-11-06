@@ -192,8 +192,8 @@ carries no Keycloak JWT, PAT or scoped workload token; the guest proves which
 allocation it is through one configured `GuestIdentity`. This is sanctioned
 because the caller is a *machine* whose only possible credential is one issued
 to it at provisioning, and the alternative (a long-lived bearer embedded in the
-guest) is strictly worse. Two identities exist; the compute pool configures one
-and Forge never tries the other.
+guest) is strictly worse. Three identities exist; the compute pool configures one
+and Forge never tries another.
 
 - **Host-key signing** (`volundr.adapters.outbound.guest_identity_host_key`).
   The guest signs with the Ed25519 SSH host key Forge generated for the
@@ -218,6 +218,14 @@ and Forge never tries the other.
     allocation that exists from one that does not.
   - The signature covers method, path, timestamp and body hash; omitting any
     would let a captured signature be replayed against another route or body.
+- **Provider attestation** (`volundr.adapters.outbound.guest_identity_provider`,
+  the Harvester default). The provider puts a token into the guest and vouches
+  for it: on Harvester, the VM's virt-launcher pod ServiceAccount token shared
+  over virtiofs, verified by a TokenReview and by the pod being an active pod
+  (`status.activePods`, written only by virt-controller) of the allocation's
+  VMI. The ServiceAccount holds no RBAC, because the token is addressed to
+  Harvester's API server. A failed check is the identical 401; a TokenReview
+  Forge cannot make is a provider error, never a 401.
 - **SPIFFE JWT-SVIDs** (`volundr.adapters.outbound.guest_identity_spiffe`) are
   the standard path and need no custom scheme. The guest agent fetches a
   JWT-SVID from its SPIRE agent and sends `Authorization: Bearer <JWT-SVID>`;

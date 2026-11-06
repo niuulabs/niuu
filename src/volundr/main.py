@@ -1126,6 +1126,7 @@ def create_app(
                         "pool_id": compute.pool_id,
                         "machine_bootstrap_for": machine_bootstrap_for,
                         "watermarks": PostgresGuestRequestWatermarks(pool),
+                        "machine_provider": compute_provider,
                     },
                 )
                 for component in (
