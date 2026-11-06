@@ -911,6 +911,19 @@ class TestSessionMessages:
                 f"/api/v1/forge/sessions/{session.id}/messages",
                 json={"content": "hello from rest"},
             )
+            authed = client.post(
+                f"/api/v1/forge/sessions/{session.id}/messages",
+                json={"content": "hello again"},
+                headers={"Authorization": "Bearer caller-jwt"},
+            )
+
+        # The caller's bearer goes to the broker socket as a header, never in the URL:
+        # Envoy reads no `access_token` parameter, and URLs reach access logs.
+        assert authed.status_code == 202
+        authed_url, authed_kwargs = fake_connect.calls.pop()
+        assert "caller-jwt" not in authed_url
+        assert authed_kwargs["additional_headers"] == {"Authorization": "Bearer caller-jwt"}
+        fake_connect.ws.sent.pop()
 
         # INV-7: no delivery ACK arrives within the grace (recv times out), so the
         # broker has ACCEPTED the message but not yet confirmed it reached the agent.

@@ -4131,7 +4131,6 @@ def create_router(
                 detail="Not authorized to message this session",
             )
 
-        # Build WS URL with access token
         ws_url = session.chat_endpoint
         # An instruction sender needs delivery ACKs, not the whole conversation.
         # Old proxies only forward history=recent, still avoiding full replay;
@@ -4146,13 +4145,15 @@ def create_router(
             (("history", "recent"), ("history_protocol", "2"), ("history_delivery", "none"))
         )
         ws_url = urlunsplit(endpoint._replace(query=urlencode(query)))
-        auth = request.headers.get("authorization", "")
-        token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
-        if token:
-            sep = "&" if "?" in ws_url else "?"
-            ws_url = f"{ws_url}{sep}access_token={token}"
 
         connect_kwargs: dict[str, object] = {"open_timeout": 10}
+        # The caller's bearer rides in the Authorization header, as for the history
+        # proxy: Envoy reads JWTs from that header (and only a `token` query
+        # parameter), so `?access_token=` reached a standalone Forge's /s route
+        # unauthenticated and the broker socket was refused with 401.
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer ") and auth.removeprefix("Bearer ").strip():
+            connect_kwargs["additional_headers"] = {"Authorization": auth}
         if ws_url.startswith("wss://"):
             ssl_ctx = ssl.create_default_context()
             ssl_ctx.check_hostname = False
