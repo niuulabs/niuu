@@ -13,6 +13,7 @@ import {
   ConversationLink,
   GateDecision,
   ReviewBar,
+  FilesPane,
   SessionDiffs,
   SessionFilesWorkspace,
   SessionResources,
@@ -80,6 +81,9 @@ import { useSessionDetail, useSessionList } from './hooks/useSessionStore';
 import { coordinationOf } from '../domain/projectTree';
 import { buildSessionLinks } from './sessions/sessionLinks';
 import { CoordinatorTag, WorkerOf } from './detail/Coordination';
+import { DecisionDock } from './detail/DecisionDock';
+import { RightDock, type DockPane } from './detail/RightDock';
+import { compactDuration, useMinuteClock } from './sessions/timeFact';
 import { useSessionRead } from './hooks/useSessionRead';
 import { useMediaQuery } from './hooks/useMediaQuery';
 
@@ -239,7 +243,7 @@ function WorkflowHumanGateCard({
   return (
     <div className="niuu:m-3 niuu:mb-0">
       <GateDecision
-        eyebrow="Human Gate Requested"
+        eyebrow="Your decision"
         title={title}
         summary={summary}
         facts={facts}
@@ -3208,13 +3212,17 @@ function LiveSessionDetailPageInner({
   const [forwardedNotice, setForwardedNotice] = useState<ForwardedNotice | null>(null);
   const [dismissedHumanGateIds, setDismissedHumanGateIds] = useState<Set<string>>(new Set());
   const [toolVisibility, setToolVisibility] = useForgePreference('tools', '1', ['0', '1']);
+  const minuteNow = useMinuteClock();
+  // Changes and Files open beside the conversation, in the right dock, as Lexi's do.
+  const [dockPane, setDockPane] = useState<DockPane | null>(null);
+  const [quickOpen, setQuickOpen] = useState(false);
   const showInternalMessages = toolVisibility === '1';
   const [tokenVisibility] = useForgePreference('tokens', '0', ['0', '1']);
   const showTokenUsage = tokenVisibility === '1';
   const [detailsPreference] = useForgePreference('details', '0', ['0', '1']);
   const showDetails = detailsPreference === '1';
-  // The panel stays out of the way, as Lexi's dock does, until something needs the person
-  // ('auto'); once they open or close it themselves, that choice holds.
+  // The panel stays out of the way, as Lexi's dock does ('auto' is closed); once the person
+  // opens or closes it, that choice holds.
   const [panelVisibility, setPanelVisibility] = useForgePreference('sidePanel', 'auto', [
     'auto',
     'open',
@@ -3381,6 +3389,7 @@ function LiveSessionDetailPageInner({
         reason: latest.reason,
         recommendation: latest.recommendation,
         persona: latest.persona,
+        timestamp: latest.timestamp,
       },
       participant: {
         peerId: participant.peerId,
@@ -3533,9 +3542,9 @@ function LiveSessionDetailPageInner({
     deliverables: presentedFiles,
     info: infoRows,
   });
-  const showPanel = narrowScreen
-    ? overlayPanelOpen
-    : panelVisibility === 'open' || (panelVisibility === 'auto' && attentionItems.length > 0);
+  // The panel opens when the person opens it. What needs them sits by the composer (the
+  // decision strip and the questions), and the panel's button says "Needs you N" meanwhile.
+  const showPanel = narrowScreen ? overlayPanelOpen : panelVisibility === 'open';
   const headerMessageCount = useMemo(() => {
     if (visibleMessageCount != null) return visibleMessageCount;
     if (canReplayTranscript) return replayMessages.length;
@@ -3607,9 +3616,48 @@ function LiveSessionDetailPageInner({
         : (tabs.find((tab) => tab.id === 'chat')?.id ?? tabs[0]?.id ?? 'chat');
 
   const openTab = useCallback((tab: SessionTab) => {
+    if (tab === 'diffs' || tab === 'files') {
+      setDockPane((current) => {
+        const pane = tab === 'diffs' ? 'changes' : 'files';
+        return current === pane ? null : pane;
+      });
+      return;
+    }
     setTabWasManuallySelected(true);
     setActiveTab(tab);
   }, []);
+  const panelShown = showPanel && !dockPane;
+  const tabSelected = (tab: SessionTab) =>
+    tab === 'diffs'
+      ? dockPane === 'changes'
+      : tab === 'files'
+        ? dockPane === 'files'
+        : resolvedActiveTab === tab;
+
+  // ⌥⌘O (Ctrl+Alt+O elsewhere): quick open a file, as in Lexi.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.altKey || !(event.metaKey || event.ctrlKey) || event.code !== 'KeyO') return;
+      event.preventDefault();
+      setDockPane('files');
+      setQuickOpen(true);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  // The files the agent read or wrote, newest first: marked in the tree, first in quick open.
+  const touchedPaths = useMemo(() => {
+    const paths: string[] = [];
+    for (const message of [...chat.messages].reverse()) {
+      for (const part of message.parts ?? []) {
+        if (part.type !== 'tool_use' || !part.input) continue;
+        const path = part.input.file_path ?? part.input.path ?? part.input.notebook_path;
+        if (typeof path === 'string' && path && !paths.includes(path)) paths.push(path);
+      }
+    }
+    return paths;
+  }, [chat.messages]);
 
   const handleSendReview = useCallback(() => {
     chat.sendMessage(formatReviewMessage(review.comments), []);
@@ -3803,6 +3851,61 @@ function LiveSessionDetailPageInner({
     );
   }
 
+  // A waiting decision sits by the composer, folded to a strip, as Lexi keeps its questions.
+  const gateRequestedAt = !activeHumanGate
+    ? Number.NaN
+    : activeHumanGate.source === 'native'
+      ? Date.parse(activeHumanGate.gate.requested_at ?? '')
+      : activeHumanGate.event.timestamp.getTime();
+  const gateWaitingLabel = Number.isFinite(gateRequestedAt)
+    ? compactDuration(Math.max(0, minuteNow - gateRequestedAt))
+    : undefined;
+  const decisionDock = activeHumanGate ? (
+    <DecisionDock
+      title={
+        activeHumanGate.source === 'native'
+          ? activeHumanGate.gate.label
+          : activeHumanGate.event.summary || 'Workflow gate'
+      }
+      waiting={gateWaitingLabel}
+    >
+      <WorkflowHumanGateCard
+        title={
+          activeHumanGate.source === 'native'
+            ? activeHumanGate.gate.label
+            : activeHumanGate.participant.displayName ||
+              activeHumanGate.participant.persona ||
+              activeHumanGate.event.persona ||
+              'Workflow gate'
+        }
+        summary={
+          activeHumanGate.source === 'native'
+            ? activeHumanGate.summary
+            : activeHumanGate.event.summary || 'Workflow gate'
+        }
+        reason={
+          activeHumanGate.source === 'native'
+            ? activeHumanGate.reason
+            : activeHumanGate.event.reason
+        }
+        recommendation={
+          activeHumanGate.source === 'native'
+            ? activeHumanGate.recommendation
+            : activeHumanGate.event.recommendation
+        }
+        comments={review.comments}
+        onApprove={(notes) => {
+          handleHumanGateReply('APPROVE', notes);
+          review.clear();
+        }}
+        onRequestChanges={(notes) => {
+          handleHumanGateReply('CHANGES_REQUESTED', notes);
+          review.clear();
+        }}
+      />
+    </DecisionDock>
+  ) : null;
+
   return (
     <SessionResources
       key={sessionId}
@@ -3991,11 +4094,11 @@ function LiveSessionDetailPageInner({
                         key={tab.id}
                         id={`tab-${tab.id}`}
                         role="tab"
-                        aria-selected={resolvedActiveTab === tab.id}
+                        aria-selected={tabSelected(tab.id)}
                         onClick={() => openTab(tab.id)}
                         className={cn(
                           'niuu-live-session__tab',
-                          resolvedActiveTab === tab.id && 'niuu-live-session__tab--active',
+                          tabSelected(tab.id) && 'niuu-live-session__tab--active',
                         )}
                       >
                         <TabIcon className="niuu-live-session__tab-icon" />
@@ -4029,15 +4132,19 @@ function LiveSessionDetailPageInner({
                 {panelHasContent ? (
                   <SessionToolbarButton
                     icon={PanelRight}
-                    title={showPanel ? 'Hide session panel' : 'Show session panel'}
-                    active={showPanel}
-                    tone={!showPanel && attentionItems.length > 0 ? 'brand' : 'neutral'}
+                    title={panelShown ? 'Hide session panel' : 'Show session panel'}
+                    active={panelShown}
+                    tone={!panelShown && attentionItems.length > 0 ? 'brand' : 'neutral'}
                     label={
-                      !showPanel && attentionItems.length > 0
+                      !panelShown && attentionItems.length > 0
                         ? `Needs you ${attentionItems.length}`
                         : undefined
                     }
-                    onClick={() => setPanelOpen(!showPanel)}
+                    onClick={() => {
+                      // The panel and the dock share the right side: opening one closes the other.
+                      setDockPane(null);
+                      setPanelOpen(!panelShown);
+                    }}
                   />
                 ) : null}
                 {primaryStateAction ? (
@@ -4111,44 +4218,7 @@ function LiveSessionDetailPageInner({
           </div>
         ) : null}
 
-        {isReady && chatEndpoint && activeHumanGate && (
-          <WorkflowHumanGateCard
-            title={
-              activeHumanGate.source === 'native'
-                ? activeHumanGate.gate.label
-                : activeHumanGate.participant.displayName ||
-                  activeHumanGate.participant.persona ||
-                  activeHumanGate.event.persona ||
-                  'Workflow gate'
-            }
-            summary={
-              activeHumanGate.source === 'native'
-                ? activeHumanGate.summary
-                : activeHumanGate.event.summary || 'Workflow gate'
-            }
-            reason={
-              activeHumanGate.source === 'native'
-                ? activeHumanGate.reason
-                : activeHumanGate.event.reason
-            }
-            recommendation={
-              activeHumanGate.source === 'native'
-                ? activeHumanGate.recommendation
-                : activeHumanGate.event.recommendation
-            }
-            comments={review.comments}
-            onApprove={(notes) => {
-              handleHumanGateReply('APPROVE', notes);
-              review.clear();
-            }}
-            onRequestChanges={(notes) => {
-              handleHumanGateReply('CHANGES_REQUESTED', notes);
-              review.clear();
-            }}
-          />
-        )}
-
-        <div className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:overflow-hidden">
+        <div className="niuu:relative niuu:flex niuu:min-h-0 niuu:flex-1 niuu:overflow-hidden">
           <div className="niuu:min-h-0 niuu:min-w-0 niuu:flex-1 niuu:overflow-hidden">
             {resolvedActiveTab === 'chat' && (
               <SessionLinksProvider value={sessionLinks}>
@@ -4160,6 +4230,7 @@ function LiveSessionDetailPageInner({
                         showToolbar={false}
                         showDisplayControls={false}
                         showWorkersStrip={!workersInList}
+                        aboveComposer={decisionDock}
                         showInternalToggle={false}
                         internalVisibility={showInternalMessages}
                         showTokenUsage={showTokenUsage}
@@ -4341,7 +4412,35 @@ function LiveSessionDetailPageInner({
               </div>
             )}
           </div>
-          {showPanel && panelHasContent ? (
+          {dockPane ? (
+            <RightDock pane={dockPane} onSelect={setDockPane} onClose={() => setDockPane(null)}>
+              {dockPane === 'changes' ? (
+                <SessionDiffs
+                  chatEndpoint={chatEndpoint}
+                  review={readOnly ? undefined : review}
+                  layout="dock"
+                />
+              ) : (
+                <FilesPane
+                  sessionId={sessionId}
+                  filesystem={filesystem}
+                  touched={touchedPaths}
+                  quickOpen={quickOpen}
+                  onQuickOpenChange={setQuickOpen}
+                  onManage={
+                    readOnly
+                      ? undefined
+                      : () => {
+                          setDockPane(null);
+                          setTabWasManuallySelected(true);
+                          setActiveTab('files');
+                        }
+                  }
+                />
+              )}
+            </RightDock>
+          ) : null}
+          {!dockPane && showPanel && panelHasContent ? (
             <SessionAttentionPanel
               items={attentionItems}
               ticket={sessionTrackerIssue}

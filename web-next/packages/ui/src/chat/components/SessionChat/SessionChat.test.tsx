@@ -1905,6 +1905,18 @@ describe('SessionChat', () => {
     expect(screen.queryByTestId('conversation-view-toggle')).toBeNull();
     expect(screen.queryByText('Display')).toBeNull();
   });
+  it('keeps what the host gives it right above the composer', () => {
+    render(
+      <SessionChat
+        {...defaultProps}
+        messages={[userMessage, assistantMessage]}
+        aboveComposer={<div data-testid="host-dock">1 decision waiting</div>}
+      />,
+    );
+    const dock = screen.getByTestId('host-dock');
+    expect(dock.nextElementSibling).toContainElement(screen.getByTestId('chat-textarea'));
+  });
+
   it('keeps display controls available when Forge supplies its own toolbar', () => {
     localStorage.clear();
     render(

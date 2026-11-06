@@ -91,9 +91,13 @@
   gap: var(--space-1);
 }
 
+/* A field's value takes the rest of the line; on a narrow chat it drops under its name
+   rather than being squeezed to a letter a line. */
 .niuu-chat-outcome-field {
   display: flex;
-  gap: var(--space-3);
+  flex-wrap: wrap;
+  column-gap: var(--space-3);
+  row-gap: 2px;
   font-size: var(--text-xs);
 }
 
@@ -105,6 +109,7 @@
 }
 
 .niuu-chat-outcome-field-value {
+  flex: 1 1 220px;
   color: var(--color-text-secondary);
   min-width: 0;
 }

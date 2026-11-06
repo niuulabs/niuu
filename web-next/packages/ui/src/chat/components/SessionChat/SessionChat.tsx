@@ -167,6 +167,11 @@ export interface SessionChatProps {
    */
   workerSessionIds?: readonly string[];
   /**
+   * What the host keeps by the composer, above it: a decision the session waits on, as Lexi
+   * keeps its questions where the person answers.
+   */
+  aboveComposer?: ReactNode;
+  /**
    * Draw the workers strip and progress lane over the conversation. A host that lists the
    * workers itself (a session list with the workers under their coordinator) leaves them out,
    * so the chat starts with the conversation, as Lexi's does.
@@ -332,6 +337,7 @@ export function SessionChat({
   participants = new Map(),
   workerSessionIds,
   showWorkersStrip = true,
+  aboveComposer,
   focusedWorkerId,
   onFocusWorker,
   onWorkersChange,
@@ -1445,6 +1451,7 @@ export function SessionChat({
                 ))}
               </div>
             )}
+            {aboveComposer}
             <ChatInput
               onSend={handleSend}
               onSendDirected={handleSendDirected}

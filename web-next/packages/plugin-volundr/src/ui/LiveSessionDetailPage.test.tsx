@@ -759,13 +759,17 @@ describe('LiveSessionDetailPage', () => {
     });
 
     await screen.findByTestId('live-session-detail-page');
-    await screen.findByText('Human Gate Requested');
+    // The decision waits by the composer as a strip and opens in place.
+    const strip = await screen.findByTestId('decision-strip');
+    expect(strip).toHaveTextContent('1 decision waiting');
+    expect(strip).toHaveTextContent('PRD approval gate');
+    fireEvent.click(within(strip).getByRole('button', { name: /Show the decision/ }));
+    expect(screen.getByTestId('decision-card')).toHaveTextContent('Your decision');
     expect(
       within(screen.getByRole('region', { name: 'PRD approval gate' })).getByText(
         /Please approve or request changes on the PRD/,
       ),
     ).toBeInTheDocument();
-    expect(screen.getByTestId('attention-gate')).toHaveTextContent('PRD approval gate');
 
     fireEvent.change(screen.getByLabelText('Reply Notes'), {
       target: { value: 'The scope is right; proceed.' },
@@ -780,8 +784,9 @@ describe('LiveSessionDetailPage', () => {
       });
     });
     await waitFor(() => {
-      expect(screen.queryByText('Human Gate Requested')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('decision-card')).not.toBeInTheDocument();
     });
+    expect(screen.queryByTestId('decision-strip')).not.toBeInTheDocument();
   });
 
   it('hides the gate card once the latest gate verdict is already resolved', async () => {
@@ -816,7 +821,7 @@ describe('LiveSessionDetailPage', () => {
     });
 
     await screen.findByTestId('live-session-detail-page');
-    expect(screen.queryByText('Human Gate Requested')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('decision-strip')).not.toBeInTheDocument();
   });
 
   it('shows a pending agent question and sends the chosen answer', async () => {
@@ -837,9 +842,11 @@ describe('LiveSessionDetailPage', () => {
 
     const chatPanel = await screen.findByRole('tabpanel');
     expect(await within(chatPanel).findByText('Which accent colour do you prefer?')).toBeVisible();
-    expect(
-      within(screen.getByTestId('attention-input')).getByText('Which accent colour do you prefer?'),
-    ).toBeInTheDocument();
+    // The question is answered by the composer; the closed panel only says something waits.
+    expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show session panel' })).toHaveTextContent(
+      'Needs you 1',
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Teal' }));
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
     expect(respondToInput).toHaveBeenCalledWith('tty-1-6f17f32f', [
@@ -882,7 +889,8 @@ describe('LiveSessionDetailPage', () => {
     wrap('test-session-id-1234');
 
     await screen.findByTestId('live-session-detail-page');
-    expect(await screen.findByText('Human Gate Requested')).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /Show the decision/ }));
+    expect(screen.getByTestId('decision-card')).toHaveTextContent('Your decision');
     expect(screen.getAllByText('reviewer').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Please tighten the telemetry review.').length).toBeGreaterThan(0);
     expect(screen.getByText('A human review is required.')).toBeInTheDocument();
@@ -1412,6 +1420,44 @@ describe('LiveSessionDetailPage', () => {
       });
     });
 
+    it('keeps Changes and Files in one dock beside the chat, with quick open on ⌥⌘O', async () => {
+      mockChatState({
+        messages: [
+          {
+            id: 'edit',
+            role: 'assistant',
+            content: '',
+            createdAt: new Date(0),
+            parts: [
+              { type: 'tool_use', name: 'Edit', input: { file_path: '/workspace/src/app.ts' } },
+              { type: 'tool_use', name: 'Read', input: { path: '/workspace/README.md' } },
+            ],
+          },
+        ],
+      });
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      const diffs = screen.getByRole('tab', { name: /Diffs/i });
+      fireEvent.click(diffs);
+      expect(diffs).toHaveAttribute('aria-selected', 'true');
+      // The chat stays the main view while the dock is open.
+      expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute('aria-selected', 'true');
+      fireEvent.click(diffs);
+      expect(screen.queryByTestId('right-dock')).not.toBeInTheDocument();
+
+      fireEvent.keyDown(window, { key: 'o', code: 'KeyO', altKey: true, metaKey: true });
+      expect(await screen.findByTestId('files-pane')).toBeInTheDocument();
+      const quickOpen = await screen.findByTestId('quick-open');
+      // The files the agent touched come first.
+      expect(within(quickOpen).getAllByRole('option')[0]).toHaveTextContent('app.ts');
+      expect(within(quickOpen).getAllByRole('option')[1]).toHaveTextContent('README.md');
+      fireEvent.keyDown(within(quickOpen).getByLabelText('Find a file'), { key: 'Escape' });
+
+      // Opening the session panel closes the dock: they share the right side.
+      fireEvent.click(screen.getByRole('button', { name: 'Show session panel' }));
+      expect(screen.queryByTestId('right-dock')).not.toBeInTheDocument();
+    });
+
     it('says there are no changes rather than showing an empty list', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
@@ -1528,6 +1574,9 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       fireEvent.click(screen.getByRole('tab', { name: /Files/i }));
+      // Files open in the dock; the full manager is one step away.
+      expect(await screen.findByTestId('files-pane')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /Upload, new folder, delete/ }));
 
       await waitFor(() => {
         expect(screen.getByTestId('session-files-workspace')).toBeInTheDocument();
@@ -1609,11 +1658,13 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
-      const fileButton = await screen.findByText('README.md');
-      expect(screen.getByText('+2')).toBeInTheDocument();
-      expect(screen.getByText('-1')).toBeInTheDocument();
-
-      fireEvent.click(fileButton);
+      // Changes open in the dock beside the chat, on the first changed file.
+      expect(screen.getByTestId('right-dock')).toBeInTheDocument();
+      const files = await screen.findByRole('tablist', { name: 'Changed files' });
+      expect(within(files).getByRole('tab', { name: /README\.md/ })).toHaveTextContent(
+        'README.md+2−1',
+      );
+      expect(screen.getByTestId('diff-summary')).toHaveTextContent('1 file changed+2−1');
 
       await waitFor(() => {
         expect(screen.getByText('No changes in this file')).toBeInTheDocument();
@@ -1650,7 +1701,7 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
-      fireEvent.click(await screen.findByText('README.md'));
+      await screen.findByRole('tablist', { name: 'Changed files' });
 
       await waitFor(() => {
         expect(
@@ -1712,7 +1763,6 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
-      fireEvent.click(await screen.findByText('src/app.ts'));
 
       await waitFor(() => {
         expect(screen.getByText('@@ -1,2 +1,3 @@')).toBeInTheDocument();
@@ -1723,9 +1773,12 @@ describe('LiveSessionDetailPage', () => {
       fireEvent.click(screen.getByRole('button', { name: /default branch/i }));
 
       await waitFor(() => {
-        expect(screen.getByText('Select a file to view changes')).toBeInTheDocument();
+        expect(screen.getByTestId('diff-summary')).toHaveTextContent('1 file changed−4');
       });
-      expect(screen.getByText('-4')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /default branch/i })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      );
     });
 
     it('shows the empty diff state when a session has no live endpoint', async () => {
@@ -1733,11 +1786,11 @@ describe('LiveSessionDetailPage', () => {
       await screen.findByTestId('live-session-detail-page');
       fireEvent.click(screen.getByRole('tab', { name: /Diffs/i }));
 
-      await waitFor(() => {
-        expect(screen.getByText('Select a file to view changes')).toBeInTheDocument();
-      });
-      expect(screen.getAllByText('changed files').length).toBeGreaterThanOrEqual(1);
-      expect(screen.queryByText('Loading files...')).not.toBeInTheDocument();
+      // Without a live workspace the dock says so, never "no changes".
+      expect(await screen.findByTestId('diff-unavailable')).toHaveTextContent(
+        "Changes show while the session's workspace is live.",
+      );
+      expect(screen.queryByTestId('diff-files-empty')).not.toBeInTheDocument();
     });
 
     describe('review comments', () => {
@@ -1858,14 +1911,16 @@ describe('LiveSessionDetailPage', () => {
         expect(show).not.toHaveTextContent('Needs you');
       });
 
-      it('opens on its own while something needs the person', async () => {
+      it('stays closed while something needs the person, and its button says so', async () => {
         mockChatState({
           pendingInputRequests: [
             { requestId: 'input-1', questions: [{ prompt: 'Which branch?', choices: [] }] },
           ],
         });
         wrap('test-session-id-1234');
-        expect(await screen.findByTestId('session-attention-panel')).toBeInTheDocument();
+        const show = await screen.findByRole('button', { name: 'Show session panel' });
+        expect(show).toHaveTextContent('Needs you 1');
+        expect(screen.queryByTestId('session-attention-panel')).not.toBeInTheDocument();
         expect(localStorage.getItem('niuu.forge.sidePanel')).toBeNull();
       });
 
