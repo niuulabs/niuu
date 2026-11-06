@@ -105,79 +105,28 @@ data:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
                           providers:
                             keycloak:
-                              issuer: {{ .Values.envoy.jwt.issuer | quote }}
-                              {{- if .Values.envoy.jwt.audiences }}
-                              audiences:
-                                {{- range .Values.envoy.jwt.audiences }}
-                                - {{ . | quote }}
-                                {{- end }}
-                              {{- end }}
-                              from_headers:
-                                - name: Authorization
-                                  value_prefix: "Bearer "
-                              from_params:
-                                - token
-                                - access_token
-                              remote_jwks:
-                                http_uri:
-                                  uri: {{ .Values.envoy.jwt.jwksUri | quote }}
-                                  cluster: keycloak
-                                  timeout: {{ .Values.envoy.jwt.jwksTimeout }}
-                                cache_duration:
-                                  seconds: {{ .Values.envoy.jwt.jwksCacheDurationSeconds }}
-                              forward: true
-                              payload_in_metadata: jwt_payload
-                              claim_to_headers:
-                                - header_name: {{ .Values.envoy.headerNames.userId }}
-                                  claim_name: sub
-                                - header_name: {{ .Values.envoy.headerNames.email }}
-                                  claim_name: email
-                                - header_name: {{ .Values.envoy.headerNames.tenant }}
-                                  claim_name: {{ .Values.envoy.jwt.tenantClaim }}
-                                - header_name: {{ .Values.envoy.headerNames.roles }}
-                                  claim_name: {{ .Values.envoy.jwt.rolesClaim }}
-                                {{- range .Values.envoy.jwt.extraClaimHeaders }}
-                                - header_name: {{ .headerName | quote }}
-                                  claim_name: {{ .claimName | quote }}
-                                {{- end }}
+                              {{- include "skuld.envoy.keycloakJwtProvider" (dict "root" . "params" true) | nindent 30 }}
                             {{- if .Values.envoy.jwt.workload.enabled }}
                             workload:
-                              issuer: {{ .Values.envoy.jwt.workload.issuer | quote }}
-                              {{- if .Values.envoy.jwt.workload.audiences }}
-                              audiences:
-                                {{- range .Values.envoy.jwt.workload.audiences }}
-                                - {{ . | quote }}
-                                {{- end }}
-                              {{- end }}
-                              from_headers:
-                                - name: Authorization
-                                  value_prefix: "Bearer "
-                              from_params:
-                                - token
-                              remote_jwks:
-                                http_uri:
-                                  uri: {{ .Values.envoy.jwt.workload.jwksUri | quote }}
-                                  cluster: workload_jwks
-                                  timeout: {{ .Values.envoy.jwt.workload.jwksTimeout | default "5s" }}
-                                cache_duration:
-                                  seconds: {{ .Values.envoy.jwt.workload.jwksCacheDurationSeconds | default 300 }}
-                              forward: true
-                              payload_in_metadata: jwt_payload
-                              claim_to_headers:
-                                - header_name: {{ .Values.envoy.headerNames.userId }}
-                                  claim_name: sub
-                                - header_name: {{ .Values.envoy.headerNames.email }}
-                                  claim_name: email
-                                - header_name: {{ .Values.envoy.headerNames.tenant }}
-                                  claim_name: {{ .Values.envoy.jwt.workload.tenantClaim | default "tenant_id" }}
-                                - header_name: {{ .Values.envoy.headerNames.roles }}
-                                  claim_name: {{ .Values.envoy.jwt.workload.rolesClaim | default "resource_access.volundr-api.roles" }}
-                                {{- range .Values.envoy.jwt.workload.extraClaimHeaders }}
-                                - header_name: {{ .headerName | quote }}
-                                  claim_name: {{ .claimName | quote }}
-                                {{- end }}
+                              {{- include "skuld.envoy.workloadJwtProvider" (dict "root" . "params" true) | nindent 30 }}
+                            {{- end }}
+                            {{- if .Values.preview.enabled }}
+                            {{- if not .Values.envoy.jwt.workload.enabled }}
+                            {{- fail "preview.enabled with envoy.jwt.enabled needs envoy.jwt.workload.enabled: Envoy verifies the router's workload credential on /preview/" }}
+                            {{- end }}
+                            workload_preview:
+                              {{- include "skuld.envoy.workloadJwtProvider" (dict "root" . "params" false) | nindent 30 }}
                             {{- end }}
                           rules:
+                            {{- if .Values.preview.enabled }}
+                            # Live preview, first: the router's credential comes from
+                            # Authorization only, never the app's own ?token= (see
+                            # _envoy_jwt.tpl).
+                            - match:
+                                prefix: "/preview/"
+                              requires:
+                                provider_name: workload_preview
+                            {{- end }}
                             {{- if not $room }}
                             - match:
                                 path: /health

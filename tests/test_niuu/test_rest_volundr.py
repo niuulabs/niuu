@@ -2252,6 +2252,68 @@ def test_feature_flags_select_requested_instance() -> None:
     assert route.called
 
 
+@respx.mock
+def test_live_preview_settings_come_from_the_requested_instance() -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha", is_default=True),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
+    settings = {
+        "enabled": True,
+        "origin_template": "https://{port}--{session_id}.preview.beta.example",
+    }
+    beta = respx.get("http://beta/api/v1/forge/settings/live-preview").mock(
+        return_value=Response(200, json=settings)
+    )
+    alpha = respx.get("http://alpha/api/v1/forge/settings/live-preview").mock(
+        return_value=Response(200, json={"enabled": False, "origin_template": ""})
+    )
+
+    response = client.get(
+        "/api/v1/forge/settings/live-preview?instance_id=beta", headers=_headers()
+    )
+
+    assert response.status_code == 200
+    assert response.json() == settings
+    assert beta.called and not alpha.called
+
+
+@respx.mock
+def test_live_preview_settings_default_to_the_default_instance() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha", is_default=True)])
+    respx.get("http://alpha/api/v1/forge/settings/live-preview").mock(
+        return_value=Response(200, json={"enabled": False, "origin_template": ""})
+    )
+
+    response = client.get("/api/v1/forge/settings/live-preview", headers=_headers())
+
+    assert response.json() == {"enabled": False, "origin_template": ""}
+
+
+@respx.mock
+def test_live_preview_settings_surface_a_node_failure() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha", is_default=True)])
+    respx.get("http://alpha/api/v1/forge/settings/live-preview").mock(
+        return_value=Response(503, json={"detail": "down"})
+    )
+
+    response = client.get("/api/v1/forge/settings/live-preview", headers=_headers())
+
+    assert response.status_code >= 500
+
+
+def test_live_preview_settings_reject_an_invisible_instance() -> None:
+    client = _client([_instance("private", base_url="http://private", tenant_id="other")])
+
+    response = client.get(
+        "/api/v1/forge/settings/live-preview?instance_id=private", headers=_headers()
+    )
+
+    assert response.status_code == 404
+
+
 def test_feature_flags_reject_invisible_instance() -> None:
     client = _client([_instance("private", base_url="http://private", tenant_id="other")])
     response = client.get("/api/v1/forge/feature-flags?instance_id=private", headers=_headers())

@@ -150,8 +150,11 @@ export interface RuntimeVersion {
 export interface IVolundrService {
   // Feature flags
   getFeatures(instanceId?: string): Promise<VolundrFeatures>;
-  /** Where sessions' live previews open; disabled when the platform serves none. */
-  getLivePreviewConfig(): Promise<LivePreviewConfig>;
+  /**
+   * Where sessions' live previews open; disabled when the platform serves none. Each Forge
+   * host has its own preview domain, so ask the one that runs the session.
+   */
+  getLivePreviewConfig(instanceId?: string): Promise<LivePreviewConfig>;
 
   // Session definitions
   getSessionDefinitions(): Promise<SessionDefinition[]>;

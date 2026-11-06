@@ -2631,6 +2631,24 @@ def create_volundr_router(
         }
         return flags
 
+    @router.get("/settings/live-preview")
+    async def get_live_preview_settings(
+        request: Request,
+        instance_id: str | None = Query(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """Where previews of the node's sessions open: each Forge has its own preview domain."""
+        instance = await _resolve_target_instance(service, principal, instance_id)
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path="/settings/live-preview",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return response.json()
+
     async def _push_gateway_capabilities(
         request: Request,
         principal: Principal,

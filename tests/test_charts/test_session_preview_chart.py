@@ -7,6 +7,7 @@ Volundr: the ``*.<preview domain>`` listener, route and OIDC policy.
 from __future__ import annotations
 
 import copy
+import re
 import shutil
 import subprocess
 import time
@@ -95,6 +96,14 @@ def find_all(node: Any, predicate) -> list[dict]:
     return found
 
 
+def jwt_authn(envoy: dict) -> dict:
+    (config,) = [
+        node["typed_config"]
+        for node in find_all(envoy, lambda n: n.get("name") == "envoy.filters.http.jwt_authn")
+    ]
+    return config
+
+
 # --------------------------------------------------------------------------- skuld
 
 SKULD_BASE = {
@@ -142,6 +151,7 @@ class TestSkuldPreviewDisabled:
 
         text = yaml.safe_dump(docs)
         assert "/preview/" not in text
+        assert "workload_preview" not in text
         assert "forge:session:preview" not in text
         assert "preview_adapters" not in text
         config = yaml.safe_load(configmap_file(docs, "config.yaml"))
@@ -293,6 +303,45 @@ class TestSkuldPreviewEnabled:
         envoy = configmap_file(skuld(tmp_path), "envoy.yaml")
 
         assert "/preview/" not in envoy
+
+    def test_envoy_reads_the_routers_credential_from_the_header_only(self, tmp_path):
+        # The app's query string is its own: Vite's hot-reload socket sends ?token=<its
+        # token>, which Envoy would reject as a malformed JWT if it looked there.
+        envoy = yaml.safe_load(configmap_file(skuld(tmp_path, SKULD_PREVIEW), "envoy.yaml"))
+
+        jwt = jwt_authn(envoy)
+        assert jwt["rules"][0] == {
+            "match": {"prefix": "/preview/"},
+            "requires": {"provider_name": "workload_preview"},
+        }
+        preview = jwt["providers"]["workload_preview"]
+        assert "from_params" not in preview
+        assert preview["from_headers"] == [{"name": "Authorization", "value_prefix": "Bearer "}]
+        workload = dict(jwt["providers"]["workload"])
+        assert workload.pop("from_params") == ["token"]
+        assert preview == workload
+        assert jwt["providers"]["keycloak"]["from_params"] == ["token", "access_token"]
+
+    def test_the_other_rules_are_unchanged_behind_the_preview_rule(self, tmp_path):
+        with_preview = jwt_authn(
+            yaml.safe_load(configmap_file(skuld(tmp_path, SKULD_PREVIEW), "envoy.yaml"))
+        )
+        without = jwt_authn(yaml.safe_load(configmap_file(skuld(tmp_path), "envoy.yaml")))
+
+        assert with_preview["rules"][1:] == without["rules"]
+        assert list(without["providers"]) == ["keycloak", "workload"]
+
+    def test_enabled_jwt_without_the_workload_provider_fails_with_the_remedy(self, tmp_path):
+        values = merged(
+            merged(SKULD_BASE, SKULD_PREVIEW), {"envoy": {"jwt": {"workload": {"enabled": False}}}}
+        )
+
+        result = helm_template("skuld", tmp_path, values)
+
+        assert result.returncode != 0
+        assert "preview.enabled with envoy.jwt.enabled needs envoy.jwt.workload.enabled" in (
+            result.stderr
+        )
 
     def test_no_envoy_means_no_envoy_route(self, tmp_path):
         docs = render(
@@ -620,3 +669,107 @@ class TestVolundrPreviewRequirements:
         stderr = volundr_failure(tmp_path, {"sessionPreview": {"oidc": {field: ""}}})
 
         assert message in stderr
+
+
+VOLUNDR_JWT = {
+    "envoy": {
+        "enabled": True,
+        "jwt": {
+            "enabled": True,
+            "issuer": OPERATOR_ISSUER,
+            "audiences": ["volundr-api"],
+            "jwksUri": f"{OPERATOR_ISSUER}/protocol/openid-connect/certs",
+            "keycloakHost": "auth.test",
+            "bypassPrefixes": ["/health"],
+            "workload": {
+                "enabled": True,
+                "issuer": WORKLOAD_ISSUER,
+                "audiences": ["volundr-api"],
+                "jwksUri": f"{WORKLOAD_ISSUER}/jwks",
+                "jwksHost": "forge.niuu.test",
+            },
+        },
+    }
+}
+
+
+def forge_jwt(tmp_path: Path, *overrides: dict) -> dict:
+    envoy = configmap_file(volundr(tmp_path, VOLUNDR_JWT, *overrides), "envoy.yaml")
+    return jwt_authn(yaml.safe_load(envoy))
+
+
+class TestVolundrPreviewJwt:
+    """Preview hosts read the caller's JWT from Authorization, never the app's query."""
+
+    @staticmethod
+    def _preview_rule(jwt: dict) -> tuple[int, dict]:
+        (found,) = [
+            (index, rule)
+            for index, rule in enumerate(jwt["rules"])
+            if any(h["name"] == ":authority" for h in rule["match"].get("headers", []))
+        ]
+        return found
+
+    def test_preview_hosts_use_header_only_providers(self, tmp_path):
+        jwt = forge_jwt(tmp_path)
+
+        _, rule = self._preview_rule(jwt)
+        assert rule["requires"] == {
+            "requires_any": {
+                "requirements": [
+                    {"provider_name": "keycloak_preview"},
+                    {"provider_name": "workload_preview"},
+                ]
+            }
+        }
+        for name in ("keycloak", "workload"):
+            preview = jwt["providers"][f"{name}_preview"]
+            assert "from_params" not in preview
+            base = dict(jwt["providers"][name])
+            assert base.pop("from_params") == ["token"]
+            assert preview == base
+
+    def test_the_rule_matches_preview_hosts_only(self, tmp_path):
+        _, rule = self._preview_rule(forge_jwt(tmp_path))
+
+        (header,) = rule["match"]["headers"]
+        pattern = re.compile(header["string_match"]["safe_regex"]["regex"])
+        assert rule["match"]["prefix"] == "/"
+        for host in (
+            "5173--3f1c2d4e-0000-4000-8000-000000000000.preview.niuu.example",
+            "8000--abc.preview.niuu.example:443",
+        ):
+            assert pattern.fullmatch(host), host
+        for host in (
+            "preview.niuu.example",
+            "a.b.preview.niuu.example",
+            "forge.niuu.example",
+            "5173--abc.previewxniuu.example",
+            "5173--abc.preview.niuu.example.evil.test",
+        ):
+            assert not pattern.fullmatch(host), host
+
+    def test_it_runs_ahead_of_the_bypass_prefixes_and_the_catch_all(self, tmp_path):
+        jwt = forge_jwt(tmp_path)
+
+        index, _ = self._preview_rule(jwt)
+        bypass = jwt["rules"].index({"match": {"prefix": "/health"}})
+        assert jwt["rules"][0]["match"]["headers"][0]["name"] == ":method"
+        assert index == 1 < bypass
+
+    def test_without_workload_identity_in_envoy_only_keycloak_is_asked(self, tmp_path):
+        jwt = forge_jwt(tmp_path, {"envoy": {"jwt": {"workload": {"enabled": False}}}})
+
+        _, rule = self._preview_rule(jwt)
+        assert rule["requires"] == {"provider_name": "keycloak_preview"}
+        assert "workload_preview" not in jwt["providers"]
+
+    def test_preview_off_adds_neither_providers_nor_the_rule(self, tmp_path):
+        jwt = forge_jwt(tmp_path, {"sessionPreview": {"enabled": False}})
+
+        assert list(jwt["providers"]) == ["keycloak", "workload"]
+        assert not [
+            rule
+            for rule in jwt["rules"]
+            if any(h["name"] == ":authority" for h in rule["match"].get("headers", []))
+        ]

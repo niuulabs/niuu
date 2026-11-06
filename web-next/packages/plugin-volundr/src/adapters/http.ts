@@ -1899,9 +1899,9 @@ export function buildVolundrHttpAdapter(
         miniMode: flags.mini_mode,
       };
     },
-    getLivePreviewConfig: async () => {
+    getLivePreviewConfig: async (instanceId) => {
       const payload = await forgeClient.get<{ enabled: boolean; origin_template: string }>(
-        '/settings/live-preview',
+        `/settings/live-preview${instanceId ? `?instance_id=${encodeURIComponent(instanceId)}` : ''}`,
       );
       return { enabled: payload.enabled, originTemplate: payload.origin_template };
     },
