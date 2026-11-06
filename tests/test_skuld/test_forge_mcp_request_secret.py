@@ -77,18 +77,39 @@ class FakeSecretClient(ForgeClient):
         self.calls.append(("cancel", (session_id, request_id)))
         return _request("cancelled")
 
-    # The rest of the port is not exercised here.
-    async def list_notifications(self, params): ...
-    async def list_sessions(self, params): ...
-    async def get_session(self, session_id, *, instance_id): ...
-    async def get_conversation(self, session_id, *, turns, instance_id): ...
-    async def send_message(self, session_id, *, content, request_id, instance_id): ...
-    async def get_message_delivery(self, session_id, *, request_id, instance_id): ...
-    async def create_session(self, body): ...
-    async def start_session(self, session_id, *, instance_id): ...
-    async def stop_session(self, session_id, *, instance_id): ...
-    async def submit_notification(self, session_id, draft, *, idempotency_key, instance_id): ...
-    async def update_description(self, session_id, changes): ...
+    # The rest of the port is not exercised here; a call is a test bug.
+    async def list_notifications(self, params):
+        raise AssertionError("not exercised")
+
+    async def list_sessions(self, params):
+        raise AssertionError("not exercised")
+
+    async def get_session(self, session_id, *, instance_id):
+        raise AssertionError("not exercised")
+
+    async def get_conversation(self, session_id, *, turns, instance_id):
+        raise AssertionError("not exercised")
+
+    async def send_message(self, session_id, *, content, request_id, instance_id):
+        raise AssertionError("not exercised")
+
+    async def get_message_delivery(self, session_id, *, request_id, instance_id):
+        raise AssertionError("not exercised")
+
+    async def create_session(self, body):
+        raise AssertionError("not exercised")
+
+    async def start_session(self, session_id, *, instance_id):
+        raise AssertionError("not exercised")
+
+    async def stop_session(self, session_id, *, instance_id):
+        raise AssertionError("not exercised")
+
+    async def submit_notification(self, session_id, draft, *, idempotency_key, instance_id):
+        raise AssertionError("not exercised")
+
+    async def update_description(self, session_id, changes):
+        raise AssertionError("not exercised")
 
 
 def _host(tmp_path, forge, client: FakeSecretClient, **secret_requests: Any):

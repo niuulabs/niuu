@@ -181,7 +181,9 @@ class SecretRequestService(SessionSecretCleanup):
             await self._delete_session_value(request)
         if cancelled:
             logger.info(
-                "Cancelled %d open secret requests of session %s", len(cancelled), session_id
+                "Cancelled %d open secret requests of session %s",
+                len(cancelled),
+                cancelled[0].session_id,
             )
         return len(cancelled)
 
