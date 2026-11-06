@@ -16,6 +16,7 @@ from niuu.domain.services.token_scope import (
     FORGE_SESSION_LIFECYCLE_SCOPE,
     FORGE_SESSION_MESSAGE_SCOPE,
     FORGE_SESSION_READ_SCOPE,
+    FORGE_SESSION_SECRET_SCOPE,
 )
 from tests.support.forge_session import (
     OWNER,
@@ -85,6 +86,21 @@ class TestPolicyTable:
             ("POST", "/sessions/S/usage", FORGE_NOTIFY_SCOPE, Binding.OWN),
             ("PUT", "/sessions/S/description", FORGE_NOTIFY_SCOPE, Binding.OWN),
             ("PUT", f"/sessions/S/files/presented/pf_{'a' * 32}", FORGE_NOTIFY_SCOPE, Binding.OWN),
+            ("POST", "/sessions/S/secret-requests", FORGE_SESSION_SECRET_SCOPE, Binding.OWN),
+            ("GET", "/sessions/S/secret-requests", FORGE_SESSION_SECRET_SCOPE, Binding.OWN),
+            ("GET", "/sessions/S/secret-requests/r-1", FORGE_SESSION_SECRET_SCOPE, Binding.OWN),
+            (
+                "POST",
+                "/sessions/S/secret-requests/r-1/claim",
+                FORGE_SESSION_SECRET_SCOPE,
+                Binding.OWN,
+            ),
+            (
+                "POST",
+                "/sessions/S/secret-requests/r-1/cancel",
+                FORGE_SESSION_SECRET_SCOPE,
+                Binding.OWN,
+            ),
             ("POST", "/mcp", None, Binding.NONE),
         ],
     )
@@ -113,6 +129,11 @@ class TestPolicyTable:
             ("GET", "/sessions/S/logs"),
             ("GET", "/sessions/S/files"),
             ("POST", "/sessions/S/message-deliveries/r/claim"),
+            # Supplying or declining a secret is the owner's alone.
+            ("POST", "/sessions/S/secret-requests/r-1/fulfill"),
+            ("POST", "/sessions/S/secret-requests/r-1/decline"),
+            ("DELETE", "/sessions/S/secret-requests/r-1"),
+            ("PUT", "/sessions/S/secret-requests"),
             ("GET", "/admin/settings"),
             ("POST", "/sessions/import"),
             ("POST", "/sessions/archive-stopped"),
@@ -147,6 +168,7 @@ class TestPolicyTable:
         scopes = {
             FORGE_NOTIFY_SCOPE,
             FORGE_SESSION_READ_SCOPE,
+            FORGE_SESSION_SECRET_SCOPE,
             FORGE_SESSION_MESSAGE_SCOPE,
             FORGE_SESSION_LIFECYCLE_SCOPE,
             None,

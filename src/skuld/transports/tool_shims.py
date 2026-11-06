@@ -220,6 +220,97 @@ main()
 '''
 
 
+# The `request-secret` command: engine-agnostic like forge-describe. It asks the user for a secret
+# through the broker's loopback Forge MCP route (URL from FORGE_REQUEST_SECRET_URL, exported only
+# when the broker serves the Forge MCP). The user types the value into a masked card in the chat;
+# it goes to Forge, never through this command, and lands in a private file. The command prints
+# that file's path only. It waits as long as the broker does (secret_requests.wait_max_s bounds
+# the broker's answer), so it sets no timeout of its own.
+_REQUEST_SECRET_SHIM = '''#!/usr/bin/env python3
+"""request-secret NAME --purpose "..." [--target host]: ask the user for a secret.
+
+Prints the path of the private file holding it; never the value."""
+import json, os, sys, urllib.request, urllib.error
+
+USAGE = 'usage: request-secret NAME --purpose "..." [--target host]'
+
+
+def _value(args, i, flag):
+    if i + 1 >= len(args):
+        print("request-secret: " + flag + " needs a value\\n" + USAGE, file=sys.stderr)
+        sys.exit(2)
+    return args[i + 1]
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    name = purpose = target = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-h", "--help"):
+            print(USAGE + "\\nPrints the path of the file holding the secret the user provided.")
+            return
+        if a == "--purpose":
+            purpose = _value(args, i, a); i += 2
+        elif a == "--target":
+            target = _value(args, i, a); i += 2
+        elif a.startswith("--purpose="):
+            purpose = a.split("=", 1)[1]; i += 1
+        elif a.startswith("--target="):
+            target = a.split("=", 1)[1]; i += 1
+        elif a.startswith("-") or name is not None:
+            print(
+                "request-secret: unexpected argument " + repr(a) + "\\n" + USAGE, file=sys.stderr
+            )
+            sys.exit(2)
+        else:
+            name = a; i += 1
+    if not name or not purpose:
+        print(USAGE, file=sys.stderr)
+        sys.exit(2)
+    url = os.environ.get("FORGE_REQUEST_SECRET_URL")
+    if not url:
+        print("request-secret: not available in this session", file=sys.stderr)
+        sys.exit(3)
+    headers = {"content-type": "application/json"}
+    token_file = os.environ.get("FORGE_BROKER_TOKEN_FILE")
+    if token_file:
+        # The broker's per-start loopback secret; read from the 0600 file, never from argv/env.
+        try:
+            with open(token_file, encoding="utf-8") as handle:
+                headers["authorization"] = "Bearer " + handle.read().strip()
+        except OSError as e:
+            print("request-secret: cannot read the broker token:", e, file=sys.stderr)
+            sys.exit(3)
+    payload = {"name": name, "purpose": purpose}
+    if target:
+        payload["target"] = target
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(), headers=headers, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req) as r:
+            result = json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        sys.stderr.write(e.read().decode()); sys.stderr.write("\\n"); sys.exit(1)
+    except Exception as e:  # noqa: BLE001 - surface any transport error to the agent
+        print("request-secret:", e, file=sys.stderr); sys.exit(1)
+    text = "".join(
+        part.get("text", "") for part in result.get("content") or [] if isinstance(part, dict)
+    )
+    if result.get("isError"):
+        print("request-secret:", text, file=sys.stderr); sys.exit(1)
+    path = (result.get("structuredContent") or {}).get("path")
+    if not path:
+        print("request-secret: the broker answered without a path", file=sys.stderr); sys.exit(1)
+    sys.stdout.write(path); sys.stdout.write("\\n")
+
+
+main()
+'''
+
+
 def _install_executable(bin_dir: Path, name: str, script: str) -> None:
     target = bin_dir / name
     target.write_text(script, encoding="utf-8")
@@ -229,6 +320,11 @@ def _install_executable(bin_dir: Path, name: str, script: str) -> None:
 def _install_forge_describe_shim(bin_dir: Path) -> None:
     """Write the engine-agnostic ``forge-describe`` PATH shim into ``bin_dir``."""
     _install_executable(bin_dir, "forge-describe", _FORGE_DESCRIBE_SHIM)
+
+
+def _install_request_secret_shim(bin_dir: Path) -> None:
+    """Write the engine-agnostic ``request-secret`` PATH shim into ``bin_dir``."""
+    _install_executable(bin_dir, "request-secret", _REQUEST_SECRET_SHIM)
 
 
 def ensure_codex_tool_shims(
@@ -253,9 +349,11 @@ def ensure_codex_tool_shims(
     source_root = Path(__file__).resolve().parents[2]
     ravn_config = os.environ.get("RAVN_CONFIG", "").strip()
     mimir_configured = mount is not None or _ravn_config_has_mimir(ravn_config)
-    # Engine-agnostic present-file / forge-describe commands (claude AND codex sessions).
+    # Engine-agnostic present-file / forge-describe / request-secret commands (claude AND
+    # codex sessions).
     _install_present_file_shim(bin_dir)
     _install_forge_describe_shim(bin_dir)
+    _install_request_secret_shim(bin_dir)
 
     commands: dict[str, tuple[str, str, str]] = {
         "tracker_issue": ("ravn.cli.tracker_bridge", "", "Search, read and update tracker issues."),

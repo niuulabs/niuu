@@ -30,7 +30,7 @@ from niuu.forge_mcp.tools import ForgeMcpToolbox
 from skuld.flock_outcomes import FlockActivityLog
 from skuld.forge_mcp.forge_client import HttpForgeClient
 from skuld.forge_mcp.host import BrokerForgeMcpFlock, BrokerForgeMcpHost
-from skuld.forge_mcp.routes import DESCRIBE_TOOL_PATH
+from skuld.forge_mcp.routes import DESCRIBE_TOOL_PATH, REQUEST_SECRET_TOOL_PATH
 from skuld.forge_mcp.skill import (
     FORGE_NOTIFY_SKILL,
     materialize_claude_plugin,
@@ -41,6 +41,7 @@ from skuld.transports.mcp_config import mcp_server_names, with_default_mcp_serve
 from skuld.transports.session_tools import (
     BROKER_TOKEN_FILE_ENV,
     FORGE_DESCRIBE_URL_ENV,
+    FORGE_REQUEST_SECRET_URL_ENV,
     PRESENT_FILE_URL_ENV,
     SessionTools,
     capability_instructions,
@@ -156,9 +157,15 @@ class ForgeSessionMixin:
             env={
                 PRESENT_FILE_URL_ENV: f"{self._loopback_base_url()}/api/present-file",
                 BROKER_TOKEN_FILE_ENV: str(runtime.token_file),
-                # forge-describe rides the Forge MCP loopback route, served only when enabled.
+                # forge-describe and request-secret ride the Forge MCP loopback route, served
+                # only when enabled.
                 **(
-                    {FORGE_DESCRIBE_URL_ENV: f"{self._loopback_base_url()}{DESCRIBE_TOOL_PATH}"}
+                    {
+                        FORGE_DESCRIBE_URL_ENV: f"{self._loopback_base_url()}{DESCRIBE_TOOL_PATH}",
+                        FORGE_REQUEST_SECRET_URL_ENV: (
+                            f"{self._loopback_base_url()}{REQUEST_SECRET_TOOL_PATH}"
+                        ),
+                    }
                     if cfg.enabled
                     else {}
                 ),

@@ -18,6 +18,7 @@ from niuu.domain.services.token_scope import (
     FORGE_SESSION_MESSAGE_SCOPE,
     FORGE_SESSION_READ_SCOPE,
     FORGE_SESSION_SCOPES,
+    FORGE_SESSION_SECRET_SCOPE,
     FORGE_SESSION_TOKEN_USE,
     KNOWN_WORKLOAD_SCOPES,
     VALKYRIE_BUILD_SCOPES,
@@ -101,6 +102,7 @@ class TestKnownWorkloadScopes:
                 "node_join",
                 "forge:notify",
                 "forge:session:read",
+                "forge:session:secret",
                 "forge:session:message",
                 "forge:session:lifecycle",
                 "forge:notifications:deliver",
@@ -349,6 +351,7 @@ class TestForgeSessionScopes:
         assert FORGE_SESSION_SCOPES == {
             FORGE_NOTIFY_SCOPE,
             FORGE_SESSION_READ_SCOPE,
+            FORGE_SESSION_SECRET_SCOPE,
             FORGE_SESSION_MESSAGE_SCOPE,
             FORGE_SESSION_LIFECYCLE_SCOPE,
         }
@@ -362,6 +365,25 @@ class TestForgeSessionScopes:
     def test_session_token_with_scope_allowed(self) -> None:
         token = _session_token([FORGE_NOTIFY_SCOPE, FORGE_SESSION_READ_SCOPE])
         assert token_has_scope(token, FORGE_SESSION_READ_SCOPE) is True
+
+    def test_secret_scope_admits_only_the_owned_secret_routes(self) -> None:
+        sid = "0b9e1f7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b"
+        base = f"/api/v1/forge/sessions/{sid}/secret-requests"
+        with_scope = _session_token([FORGE_SESSION_SECRET_SCOPE])
+        without = _session_token([FORGE_NOTIFY_SCOPE, FORGE_SESSION_READ_SCOPE])
+        owned = [
+            ("POST", base),
+            ("GET", base),
+            ("GET", f"{base}/r-1"),
+            ("POST", f"{base}/r-1/claim"),
+            ("POST", f"{base}/r-1/cancel"),
+        ]
+        for method, path in owned:
+            assert credential_allows_route(with_scope, method, path) is True
+            assert credential_allows_route(without, method, path) is False
+        # Supplying or declining belongs to the owner: no scope opens it to a token.
+        for action in ("fulfill", "decline"):
+            assert credential_allows_route(with_scope, "POST", f"{base}/r-1/{action}") is False
 
     def test_session_token_missing_grant_denied(self) -> None:
         token = _session_token([FORGE_NOTIFY_SCOPE, FORGE_SESSION_READ_SCOPE])

@@ -844,6 +844,61 @@ describe('LiveSessionDetailPage', () => {
     expect(screen.queryByTestId('decision-strip')).not.toBeInTheDocument();
   });
 
+  it("answers a secret request in the chat through this session's Forge route", async () => {
+    mockChatState({
+      messages: [
+        {
+          id: 'sr-1',
+          role: 'assistant',
+          content: '',
+          createdAt: new Date(0),
+          status: 'done',
+          parts: [
+            {
+              type: 'tool_use',
+              id: 'sr-1',
+              name: 'secret_request',
+              input: {
+                request_id: 'r-1',
+                name: 'GITLAB_TOKEN',
+                purpose: 'Push the branch',
+                target: 'gitlab.niuu.world',
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const request = {
+      id: 'r-1',
+      sessionId: 'test-session-id-1234',
+      name: 'GITLAB_TOKEN',
+      purpose: 'Push the branch',
+      target: 'gitlab.niuu.world',
+      status: 'pending' as const,
+      keep: null,
+      credentialName: null,
+    };
+    const getSecretRequest = vi.fn().mockResolvedValue(request);
+    const fulfillSecretRequest = vi
+      .fn()
+      .mockResolvedValue({ ...request, status: 'fulfilled', keep: 'session' });
+
+    wrap('test-session-id-1234', { volundr: { getSecretRequest, fulfillSecretRequest } });
+
+    const field = await screen.findByLabelText('Secret');
+    expect(getSecretRequest).toHaveBeenCalledWith('test-session-id-1234', 'r-1');
+    fireEvent.change(field, { target: { value: 'glpat-123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save securely' }));
+    expect(
+      await screen.findByText('Saved. The value was never shown to the agent.'),
+    ).toBeInTheDocument();
+    expect(fulfillSecretRequest).toHaveBeenCalledWith('test-session-id-1234', 'r-1', {
+      value: 'glpat-123',
+      keep: 'session',
+    });
+  });
+
   it('shows a pending agent question and sends the chosen answer', async () => {
     const respondToInput = vi.fn();
     mockChatState({

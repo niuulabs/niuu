@@ -3447,3 +3447,90 @@ describe('session read state', () => {
     expect(client.post.mock.calls.at(-1)?.[1]).not.toHaveProperty('forge_mcp');
   });
 });
+
+describe('secret requests', () => {
+  const payload = {
+    id: 'r 1',
+    session_id: 'sess-1',
+    name: 'GITLAB_TOKEN',
+    purpose: 'Push the branch',
+    target: 'gitlab.niuu.world',
+    status: 'fulfilled',
+    keep: 'saved',
+    credential_name: 'gitlab-token',
+    created_at: '2026-11-06T10:00:00Z',
+    resolved_at: '2026-11-06T10:01:00Z',
+    delivered_at: null,
+  };
+
+  it('reads a request from the session secret-requests route', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(payload);
+    const request = await buildVolundrHttpAdapter(client).getSecretRequest('sess-1', 'r 1');
+    expect(client.get).toHaveBeenCalledWith('/sessions/sess-1/secret-requests/r%201');
+    expect(request).toEqual({
+      id: 'r 1',
+      sessionId: 'sess-1',
+      name: 'GITLAB_TOKEN',
+      purpose: 'Push the branch',
+      target: 'gitlab.niuu.world',
+      status: 'fulfilled',
+      keep: 'saved',
+      credentialName: 'gitlab-token',
+    });
+  });
+
+  it('posts only the value and keep choice to fulfill and returns no value', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({ ...payload, keep: 'session', credential_name: null });
+    const request = await buildVolundrHttpAdapter(client).fulfillSecretRequest('sess-1', 'r-1', {
+      value: 'glpat-123',
+      keep: 'session',
+    });
+    expect(client.post).toHaveBeenCalledExactlyOnceWith(
+      '/sessions/sess-1/secret-requests/r-1/fulfill',
+      { value: 'glpat-123', keep: 'session' },
+    );
+    expect(request).toMatchObject({ status: 'fulfilled', keep: 'session', credentialName: null });
+    expect(JSON.stringify(request)).not.toContain('glpat-123');
+  });
+
+  it('posts a decline with no body', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      ...payload,
+      status: 'declined',
+      keep: null,
+      target: undefined,
+    });
+    const request = await buildVolundrHttpAdapter(client).declineSecretRequest('sess-1', 'r-1');
+    expect(client.post).toHaveBeenCalledExactlyOnceWith(
+      '/sessions/sess-1/secret-requests/r-1/decline',
+    );
+    expect(request).toMatchObject({ status: 'declined', keep: null, target: null });
+  });
+
+  it('lets a Forge error reach the caller', async () => {
+    const client = makeClient();
+    client.post.mockRejectedValue(new Error('409 already fulfilled'));
+    await expect(
+      buildVolundrHttpAdapter(client).fulfillSecretRequest('sess-1', 'r-1', {
+        value: 'v',
+        keep: 'saved',
+      }),
+    ).rejects.toThrow('409 already fulfilled');
+  });
+
+  it('refuses a status or keep choice it does not know', async () => {
+    const client = makeClient();
+    const adapter = buildVolundrHttpAdapter(client);
+    client.get.mockResolvedValueOnce({ ...payload, status: 'mystery' });
+    await expect(adapter.getSecretRequest('sess-1', 'r-1')).rejects.toThrow(
+      'unknown secret request status: mystery',
+    );
+    client.get.mockResolvedValueOnce({ ...payload, keep: 'forever' });
+    await expect(adapter.getSecretRequest('sess-1', 'r-1')).rejects.toThrow(
+      'unknown secret keep choice: forever',
+    );
+  });
+});

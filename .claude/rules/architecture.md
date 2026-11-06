@@ -102,7 +102,9 @@ principal for "this one session".
   key file (`forge_mcp.session_tokens`). Enabled with no usable key is fatal at
   startup, never "mint nothing".
 - Its `scopes` are bounded to its own family, `FORGE_SESSION_SCOPES`:
-  `forge:notify` and `forge:session:read` for every session, plus
+  `forge:notify`, `forge:session:read` and `forge:session:secret` (ask the session's own
+  owner for a secret and claim it once; supplying or declining a request stays the owner's
+  alone and is closed to every scoped token) for every session, plus
   `forge:session:message` / `forge:session:lifecycle` only through an operator
   grant. The family is part of `KNOWN_WORKLOAD_SCOPES` and keyed by
   `SCOPES_BY_TOKEN_USE` (`src/niuu/domain/services/token_scope.py`) — a

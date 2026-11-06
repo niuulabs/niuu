@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import stat
 import tempfile
 from pathlib import Path
@@ -32,6 +33,7 @@ from pathlib import Path
 logger = logging.getLogger("skuld.broker")
 
 TOKEN_FILE_NAME = "forge-mcp.token"
+SECRETS_DIR_NAME = "secrets"
 _BEARER_PREFIX = "Bearer "
 _SECRET_BYTES = 32
 _PRIVATE_DIR_MODE = 0o700
@@ -121,6 +123,23 @@ class SessionRuntime:
         presented = authorization[len(_BEARER_PREFIX) :].strip()
         return hmac.compare_digest(presented.encode(), self._secret.encode())
 
+    @property
+    def secrets_dir(self) -> Path:
+        """Where secrets the user typed into the chat land, one 0600 file per name."""
+        return self.root / SECRETS_DIR_NAME
+
+    def write_secret(self, name: str, value: str) -> Path:
+        """Write one requested secret as ``<runtime dir>/secrets/<name>`` (0600, dir 0700).
+
+        ``name`` is the caller's validated identifier; it can never name a path.
+        """
+        if "/" in name or name in {"", ".", ".."}:
+            raise ValueError(f"invalid secret name {name!r}")
+        _ensure_private_dir(self.secrets_dir)
+        path = self.secrets_dir / name
+        write_private_file(path, value)
+        return path
+
     def path(self, name: str) -> Path:
         """A file or directory name inside the runtime dir."""
         if "/" in name or name in {"", ".", ".."}:
@@ -128,10 +147,11 @@ class SessionRuntime:
         return self.root / name
 
     def revoke(self) -> None:
-        """Delete the token file at shutdown — only if it is still this start's secret.
+        """Delete the token file and the requested secrets at shutdown — only if the token
+        file is still this start's secret.
 
         A replacement broker for the same session may already have written its own
-        secret; that one must survive this broker's teardown.
+        secret; that one (and the secrets it was handed) must survive this broker's teardown.
         """
         try:
             current = self.token_file.read_text(encoding="utf-8")
@@ -139,3 +159,5 @@ class SessionRuntime:
             return
         if hmac.compare_digest(current.encode(), self._secret.encode()):
             self.token_file.unlink(missing_ok=True)
+            if self.secrets_dir.exists():
+                shutil.rmtree(self.secrets_dir)

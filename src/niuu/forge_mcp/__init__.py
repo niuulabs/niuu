@@ -11,6 +11,7 @@ from niuu.forge_mcp.models import (
     ForgeMcpGrant,
     ForgeMcpLimits,
     ForgeMcpNotifyMode,
+    SecretRequestError,
     ToolResult,
 )
 from niuu.forge_mcp.ports import ForgeClient, ForgeMcpFlock, ForgeMcpHost
@@ -37,6 +38,7 @@ __all__ = [
     "ForgeMcpLimits",
     "ForgeMcpNotifyMode",
     "ForgeMcpToolbox",
+    "SecretRequestError",
     "ToolResult",
     "UnknownToolError",
 ]

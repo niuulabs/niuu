@@ -1,4 +1,4 @@
-import { FORGE_NOTIFICATION_TOOL_NAME } from '@niuulabs/domain';
+import { FORGE_NOTIFICATION_TOOL_NAME, SECRET_REQUEST_TOOL_NAME } from '@niuulabs/domain';
 import { toolImages, type ToolImage } from '../../toolImages';
 import { isSubagentTool } from './toolFamilies';
 export interface ToolUseBlock {
@@ -170,6 +170,11 @@ export function isNotificationCardTool(name: string): boolean {
   return name === FORGE_NOTIFICATION_TOOL_NAME;
 }
 
+/** The broker's secret request part: a masked card, never a plain tool call. */
+export function isSecretRequestTool(name: string): boolean {
+  return name === SECRET_REQUEST_TOOL_NAME;
+}
+
 /** What a coordinator does to another session with the Forge MCP. */
 export type ForgeSessionAction =
   'create_session' | 'start_session' | 'stop_session' | 'send_message';
@@ -198,5 +203,10 @@ function isOwnCardTool(name: string): boolean {
 
 /** Tool parts that render as their own card and never join a tool group. */
 export function isStandaloneCardTool(name: string): boolean {
-  return isPresentedFileTool(name) || isNotificationCardTool(name) || isForgeSessionTool(name);
+  return (
+    isPresentedFileTool(name) ||
+    isNotificationCardTool(name) ||
+    isSecretRequestTool(name) ||
+    isForgeSessionTool(name)
+  );
 }

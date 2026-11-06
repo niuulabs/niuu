@@ -95,4 +95,17 @@ export {
   type ForgeNotificationSpeakPriority,
 } from './forge-notification';
 
+export {
+  SECRET_REQUEST_TOOL_NAME,
+  SECRET_REQUEST_STATUSES,
+  SECRET_KEEP_CHOICES,
+  parseSecretRequestInput,
+  secretTitle,
+  type SecretRequestStatus,
+  type SecretKeep,
+  type SecretRequestInput,
+  type SecretRequest,
+  type SecretFulfillment,
+} from './secret-request';
+
 export { modelLabel } from './model-label';

@@ -79,6 +79,7 @@ from volundr.adapters.inbound.rest_push import create_push_router
 from volundr.adapters.inbound.rest_resident_a2a import create_resident_a2a_router
 from volundr.adapters.inbound.rest_resident_runtimes import create_resident_runtimes_router
 from volundr.adapters.inbound.rest_resources import create_resources_router
+from volundr.adapters.inbound.rest_secret_requests import create_secret_requests_router
 from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
 from volundr.adapters.inbound.rest_session_participants import (
@@ -129,6 +130,7 @@ from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
 from volundr.adapters.outbound.postgres_resident_runtimes import (
     PostgresResidentRuntimeRepository,
 )
+from volundr.adapters.outbound.postgres_secret_requests import PostgresSecretRequestRepository
 from volundr.adapters.outbound.postgres_session_participants import (
     PostgresSessionParticipantRepository,
 )
@@ -208,6 +210,7 @@ from volundr.domain.services.resident_runtime import (
     ResidentRuntimeNotFoundError,
     ResidentRuntimeService,
 )
+from volundr.domain.services.secret_requests import SecretRequestService
 from volundr.domain.services.session_events import SessionEventStream
 from volundr.domain.services.session_participants import SessionParticipantService
 from volundr.domain.services.telegram_ingress import TelegramIngressService
@@ -1396,6 +1399,11 @@ def create_app(
                     settings.presented_files.max_total_bytes
                 )
 
+            secret_request_service = SecretRequestService(
+                PostgresSecretRequestRepository(pool), credential_store
+            )
+            app.state.secret_request_service = secret_request_service
+
             session_service = SessionService(
                 repository,
                 pod_manager,
@@ -1423,6 +1431,7 @@ def create_app(
                 audit_repository=PostgresAuditRepository(pool),
                 presented_file_store=presented_file_store,
                 forge_session_projection=_create_forge_session_projection(settings),
+                secret_cleanup=secret_request_service,
             )
             if presented_file_store is not None:
                 require_presented_file_uploads(
@@ -2092,6 +2101,11 @@ def create_app(
                         node_pushes_alerts=settings.push.pushes_alerts_itself(),
                     )
                 )
+            app.include_router(
+                create_secret_requests_router(
+                    secret_request_service, session_service, prefix="/api/v1/forge"
+                )
+            )
             app.include_router(
                 create_message_delivery_router(PostgresMessageDelivery(pool), session_service)
             )

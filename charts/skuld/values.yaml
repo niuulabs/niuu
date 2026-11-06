@@ -312,6 +312,22 @@ forgeMcp:
   tokenFile: ""
   # -- Tool grants of the credential (message, lifecycle). Null keeps the token's own.
   grants: null
+  # -- Seconds the engine allows one stdio-server -> broker tool call (forge_mcp.broker_request_timeout_s).
+  # Null keeps the broker default (60). Must exceed secretRequests.waitMaxS.
+  brokerRequestTimeoutS: null
+  # -- Seconds the engine allows one MCP tool call (forge_mcp.tool_timeout_s). Null keeps the broker
+  # default (120). Must exceed secretRequests.waitMaxS.
+  toolTimeoutS: null
+
+# request_secret / request-secret: the agent asks the user for a secret through a masked chat card.
+secretRequests:
+  # -- Seconds between checks of whether the user answered the card (secret_requests.poll_interval_s).
+  pollIntervalS: 2
+  # -- Longest one request_secret call waits for the user, in seconds (secret_requests.wait_max_s).
+  # Bounded by the engine's MCP call timeouts: it must stay below forgeMcp.brokerRequestTimeoutS
+  # (default 60) and forgeMcp.toolTimeoutS (default 120), or the broker refuses to start. When it
+  # passes, the call fails and the request stays open in the chat; the agent calls it again.
+  waitMaxS: 50
 
 # Volundr API (for token usage reporting back to the control plane)
 volundr:

@@ -39,12 +39,19 @@ import {
   isNotificationCardTool,
   isPresentedFileTool,
   isForgeSessionTool,
+  isSecretRequestTool,
 } from '../ToolBlock/groupContentBlocks';
 import { useSessionLinks } from '../../sessionLinks';
 import { RelayCard } from './RelayCard';
 import { classifyRelayedTurn } from './relayedTurn';
 import { NotificationCard } from '../NotificationCard';
-import { isForgeNotifyCall, modelLabel, parseForgeNotificationPayload } from '@niuulabs/domain';
+import { SecretRequestCard } from '../SecretRequestCard';
+import {
+  isForgeNotifyCall,
+  modelLabel,
+  parseForgeNotificationPayload,
+  parseSecretRequestInput,
+} from '@niuulabs/domain';
 
 /** "Today at 1:08 PM", "Yesterday at 9:54 AM", "Oct 31, 2026 at 9:54 AM", as Lexi dates a message. */
 export function messageTime(date: Date, now: Date = new Date()): string {
@@ -494,9 +501,11 @@ function AssistantContentWithTools({
   // Older histories retain tool positions but only aggregate prose. Preserve that prose once;
   // its original position cannot be recovered here. Structured text parts remain authoritative.
   const hasText = grouped.some((item) => item.kind === 'text' && item.text.trim().length > 0);
-  // A notification turn's content is its title; the card already shows it.
+  // A notification or secret request turn's content is its title; the card already shows it.
   const hasNotificationCard = grouped.some(
-    (item) => item.kind === 'single' && isNotificationCardTool(item.block.name),
+    (item) =>
+      item.kind === 'single' &&
+      (isNotificationCardTool(item.block.name) || isSecretRequestTool(item.block.name)),
   );
 
   if (grouped.length === 0)
@@ -562,10 +571,18 @@ function AssistantContentWithTools({
             return (
               <NotificationCard key={`notification:${item.block.id}`} notification={notification} />
             );
+          const secretRequest = isSecretRequestTool(item.block.name)
+            ? parseSecretRequestInput(item.block.input)
+            : null;
+          if (secretRequest)
+            return (
+              <SecretRequestCard key={`secret-request:${item.block.id}`} request={secretRequest} />
+            );
           // The raw notify call stays a quiet, expandable line beside its notification card,
           // and a notification whose payload cannot be read stays visible as a raw call.
           if (
             isNotificationCardTool(item.block.name) ||
+            isSecretRequestTool(item.block.name) ||
             isForgeNotifyCall(item.block.name, item.block.input)
           )
             return (
