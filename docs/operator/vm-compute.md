@@ -299,6 +299,16 @@ compute:
       command_timeout_seconds: 900
 ```
 
+The runtime holds an SSH reverse tunnel from the guest's
+`127.0.0.1:<guest_platform_port>` to `platform_host:platform_port` on the
+controller, and Skuld inside the guest reaches Forge only through it. That port
+must serve Forge the way the session would see it in a pod. In a Helm deployment
+that is the Forge pod's Envoy listener (`envoy.port`, 8443 by default), not the
+app port (8080): the app trusts the identity headers that only Envoy sets, so a
+tunnel to the app port reaches Forge unauthenticated and the broker's calls
+(delivery claims, notifications) are refused with 401. A Forge without Envoy in
+front, as in the standalone example above, points it at its own HTTP port.
+
 Generate a real SSH client keypair and configure its paths. The guest must have
 OpenSSH, passwordless sudo for `ssh_user` (default `ubuntu`), Python 3.12+, Git,
 Docker and the QEMU guest agent. The controller needs OpenSSH and network access

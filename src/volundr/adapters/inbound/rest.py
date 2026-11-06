@@ -4685,6 +4685,8 @@ def create_router(
         except SessionAccessDeniedError as exc:
             raise HTTPException(403, f"Access denied to session {session_id}") from exc
 
+        # The broker's answer when it holds no turns, kept while the durable rebuild is tried.
+        empty_live: tuple[dict, float] | None = None
         try:
             if session.chat_endpoint:
                 t_tgt = time.perf_counter()
@@ -4872,6 +4874,8 @@ def create_router(
                         "falling through to durable-log rebuild",
                         _sanitize_log(session_id),
                     )
+                    if isinstance(live, dict) and live.get("turns") == []:
+                        empty_live = (live, fetch_ms)
         except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
             logger.info(
                 "Falling back to workspace transcript for session %s: %s",
@@ -4892,6 +4896,17 @@ def create_router(
             fallback = _fallback_workspace_transcript(session)
             if fallback is not None:
                 return _maybe_elide(fallback)
+            if isinstance(e, SessionArchiveNotAvailableError) and empty_live is not None:
+                # The broker holds no turns and no durable source holds anything (a new
+                # session, e.g. a VM session whose workspace lives in its guest): the
+                # empty transcript is the answer, not an outage. A seed-only body with
+                # nothing durable still closes with 503 — that user turn went unrecorded.
+                logger.info(
+                    "No durable transcript for session %s; serving the live broker's "
+                    "empty transcript",
+                    _sanitize_log(session_id),
+                )
+                return _maybe_elide(empty_live[0], fetch_ms=empty_live[1])
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(e) or "Session archive service not available",

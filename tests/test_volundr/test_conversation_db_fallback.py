@@ -309,6 +309,34 @@ async def test_dead_session_conversation_close_is_deterministic_not_silent(
     assert resp.json()["detail"]
 
 
+@pytest.mark.asyncio
+async def test_new_running_session_with_no_turns_returns_empty_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A RUNNING session that has not been talked to yet: the broker answers with no
+    turns and no durable source holds anything (a VM session's workspace lives in its
+    guest). Nothing went unrecorded, so the empty live transcript is the answer — not
+    the 503 a seed-only body with an empty log closes with."""
+    event_log = InMemorySessionEventLog()  # intentionally empty
+    client, repository = _build_client(
+        Session(name="x", model="m", status=SessionStatus.STOPPED), event_log
+    )
+    session = await _running_session(repository)
+
+    _, mock_client = _patch_live_pod({"turns": [], "is_active": False, "last_activity": ""})
+    with monkeypatch.context() as m:
+        client_cls = MagicMock()
+        client_cls.return_value.__aenter__.return_value = mock_client
+        m.setattr("volundr.adapters.inbound.rest.httpx.AsyncClient", client_cls)
+        resp = client.get(_CONV_PATH.format(sid=session.id))
+
+    mock_client.get.assert_awaited_once()
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["turns"] == []
+    assert body["total_turns"] == 0
+
+
 def _renderable_short_live_body() -> dict:
     """FAULT C: a RUNNING session whose resumed/restarted broker is DESYNCED from the
     durable log. The live pod returns a renderable body (it has an assistant turn, so
