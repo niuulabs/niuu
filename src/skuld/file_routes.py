@@ -428,11 +428,15 @@ BASE_BRANCH_CONFIG_KEY = "niuu.baseBranch"
 _STATUS_BY_LETTER = {"A": "new", "D": "del"}
 
 
-async def _git(workspace: Path, *args: str, ok: tuple[int, ...] = (0,)) -> str:
-    """Run git in *workspace* and return its output; a failure is an HTTP error that says why."""
+async def _git(workspace: Path, command: str, *args: str, ok: tuple[int, ...] = (0,)) -> str:
+    """Run ``git <command> <args>`` in *workspace*; a failure is an HTTP error that says why.
+
+    *command* is always a fixed git subcommand; anything a request supplies goes in *args*.
+    """
     try:
         proc = await asyncio.create_subprocess_exec(
             "git",
+            command,
             *args,
             cwd=str(workspace),
             stdout=asyncio.subprocess.PIPE,
@@ -440,13 +444,13 @@ async def _git(workspace: Path, *args: str, ok: tuple[int, ...] = (0,)) -> str:
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
     except TimeoutError:
-        raise HTTPException(504, f"git {args[0]} timed out")
+        raise HTTPException(504, f"git {command} timed out")
 
     if proc.returncode not in ok:
         detail = stderr.decode(errors="replace").strip()
         # git's message can echo a requested path, so it goes to the caller, not the log.
-        logger.warning("git %s failed with exit code %s", args[0], proc.returncode)
-        raise HTTPException(502, f"git {args[0]} failed: {detail}")
+        logger.warning("git %s failed with exit code %s", command, proc.returncode)
+        raise HTTPException(502, f"git {command} failed: {detail}")
     return stdout.decode(errors="replace")
 
 
