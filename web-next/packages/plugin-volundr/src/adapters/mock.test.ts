@@ -1018,6 +1018,30 @@ describe('mock Forge projects', () => {
     expect((await service.getProjects()).map((entry) => entry.name)).toContain('Spring catalogue');
   });
 
+  it('refuses an update made against a stale revision', async () => {
+    const service = createMockVolundrService();
+    const project = await service.createProject('Spring catalogue');
+    await service.updateProject(project, { description: 'First' });
+    await expect(service.updateProject(project, { description: 'Second' })).rejects.toThrow(
+      'Project changed; reload before saving',
+    );
+  });
+
+  it('carries the description, status and checkout folder of an update', async () => {
+    const service = createMockVolundrService();
+    const project = await service.createProject('Spring catalogue');
+    const updated = await service.updateProject(project, {
+      description: 'Seasonal',
+      status: 'archived',
+      workspace_path: '/work/spring',
+    });
+    expect(updated).toMatchObject({
+      description: 'Seasonal',
+      status: 'archived',
+      workspace_path: '/work/spring',
+    });
+  });
+
   it('refuses to update a project it does not hold', async () => {
     const service = createMockVolundrService();
     await expect(

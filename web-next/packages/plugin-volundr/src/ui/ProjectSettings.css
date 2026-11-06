@@ -1,0 +1,179 @@
+/* Lexi's project settings sheet: grouped rows on a quiet panel. */
+
+.niuu-dialog-content.forge-project-settings-dialog {
+  width: min(560px, calc(100vw - 24px));
+  border-radius: 18px;
+  background: var(--color-bg-secondary);
+}
+
+.forge-project-settings-dialog .niuu-dialog-body {
+  padding: 0;
+}
+
+.forge-project-settings {
+  display: flex;
+  flex-direction: column;
+  color: var(--color-text-primary);
+}
+
+.forge-project-settings__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 24px;
+}
+
+.forge-project-settings h3 {
+  margin: 8px 0 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.forge-project-settings h3:first-child {
+  margin-top: 0;
+}
+
+.forge-project-settings__group {
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  background: var(--color-bg-tertiary);
+}
+
+.forge-project-settings__group > * + * {
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.forge-project-settings__group label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  font-size: 15px;
+}
+
+.forge-project-settings__group input,
+.forge-project-settings__group textarea {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text-primary);
+  font: inherit;
+  outline: none;
+}
+
+.forge-project-settings__group textarea {
+  resize: vertical;
+}
+
+.forge-project-settings__group label:focus-within {
+  outline: 2px solid var(--color-brand);
+  outline-offset: -2px;
+  border-radius: 12px;
+}
+
+.forge-project-settings__row select {
+  margin-left: auto;
+  max-width: 60%;
+  border: 0;
+  background: none;
+  color: var(--color-text-primary);
+  font: inherit;
+}
+
+.forge-project-settings__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.forge-project-settings__action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 14px;
+}
+
+.forge-project-settings__action button {
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  color: var(--color-brand);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.forge-project-settings__action button:disabled {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.forge-project-settings__action .forge-project-settings__danger {
+  color: var(--color-critical-fg);
+}
+
+.forge-project-settings__status {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+
+.forge-project-settings__note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+
+.forge-project-settings__error {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-critical) 14%, transparent);
+  color: var(--color-critical-fg);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+/* Done and Save stay in view while the fields scroll on a short window. */
+.forge-project-settings__footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-tertiary);
+}
+
+.forge-project-settings__footer button {
+  padding: 9px 18px;
+  border-radius: 10px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.forge-project-settings__footer .forge-project-settings__save {
+  background: var(--brand-600);
+  color: var(--color-bg-primary);
+}
+
+.forge-project-settings__footer button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.forge-project-settings button:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}

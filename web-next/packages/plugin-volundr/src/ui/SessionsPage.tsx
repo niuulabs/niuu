@@ -63,8 +63,8 @@ import {
 } from '../domain/projectTree';
 import { groupByState } from './sessions/groupByState';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
+import { ProjectHome } from './ProjectHome';
 import { sessionHarness, type Session, type SessionState } from '../domain/session';
-import { modelLabel as readableModel } from '@niuulabs/domain';
 import type { IVolundrService } from '../ports/IVolundrService';
 import { useForgePreference } from './useForgePreference';
 import {
@@ -74,6 +74,7 @@ import {
   STOPPABLE_STATES,
   SIDEBAR_WIDTH,
   matchesSessionFilter,
+  sessionModelLabel,
   type SessionFilter,
 } from './sessions/presentation';
 import {
@@ -343,11 +344,7 @@ function PodEntry({
   const forgeLabel = session.clusterName ?? session.clusterId;
   const originBadge = sessionOriginBadge(session);
   const harness = sessionHarness(session);
-  const modelLabel = session.model
-    ? readableModel(session.model)
-    : harness === 'claude'
-      ? 'Claude'
-      : 'Codex';
+  const modelLabel = sessionModelLabel(session);
   const unread = session.readState?.isUnread === true;
   const now = useMinuteClock();
   const timeFact = sessionTimeFact(session, now);
@@ -751,10 +748,16 @@ function PodGroup({
   workerCounts,
   openRoom = null,
   folder,
+  folderSelected = false,
+  onOpenFolder,
   sectionLabel = false,
 }: {
   /** Draw the group as a project folder: name, needs-you badge, count and headline. */
   folder?: ProjectFolder;
+  /** The folder's project home is open: the folder is filled, as Lexi's selected folder. */
+  folderSelected?: boolean;
+  /** Open the folder's project home; the caret only folds. */
+  onOpenFolder?: () => void;
   /** Draw the group as a quiet section label, as Lexi heads its independent sessions. */
   sectionLabel?: boolean;
   contextIds?: ReadonlySet<string>;
@@ -823,34 +826,47 @@ function PodGroup({
       )}
     >
       {!collapsed && folder && (
-        <button
-          type="button"
-          className="forge-project-folder"
-          aria-expanded={folded !== '1'}
-          onClick={() => setFolded(folded === '1' ? '0' : '1')}
-        >
-          <span className="forge-project-folder__caret" aria-hidden="true">
-            {folded === '1' ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
-          </span>
-          <Folder className="forge-project-folder__icon" size={15} aria-hidden="true" />
-          <span className="forge-project-folder__name">{label}</span>
-          {folder.needsYou > 0 && (
-            <span
-              className="forge-project-folder__badge"
-              title={`${folder.needsYou} waiting for you`}
-              data-testid={`pod-group-${toGroupTestId(label)}-needs-you`}
-            >
-              {folder.needsYou}
-            </span>
-          )}
-          <span
-            className="forge-project-folder__count"
-            data-testid={`pod-group-${toGroupTestId(label)}-count`}
+        <div className="forge-project-folder" data-selected={folderSelected || undefined}>
+          <button
+            type="button"
+            className="forge-project-folder__caret"
+            aria-expanded={folded !== '1'}
+            aria-label={`${folded === '1' ? 'Expand' : 'Collapse'} ${label}`}
+            onClick={() => setFolded(folded === '1' ? '0' : '1')}
           >
-            {sessions.length}
-          </span>
-          <span className="forge-project-folder__headline">{folder.headline}</span>
-        </button>
+            {folded === '1' ? (
+              <ChevronRight size={13} aria-hidden="true" />
+            ) : (
+              <ChevronDown size={13} aria-hidden="true" />
+            )}
+          </button>
+          <button
+            type="button"
+            className="forge-project-folder__open"
+            aria-current={folderSelected ? 'true' : undefined}
+            title={`Open ${label}`}
+            onClick={onOpenFolder}
+          >
+            <Folder className="forge-project-folder__icon" size={15} aria-hidden="true" />
+            <span className="forge-project-folder__name">{label}</span>
+            {folder.needsYou > 0 && (
+              <span
+                className="forge-project-folder__badge"
+                title={`${folder.needsYou} waiting for you`}
+                data-testid={`pod-group-${toGroupTestId(label)}-needs-you`}
+              >
+                {folder.needsYou}
+              </span>
+            )}
+            <span
+              className="forge-project-folder__count"
+              data-testid={`pod-group-${toGroupTestId(label)}-count`}
+            >
+              {sessions.length}
+            </span>
+            <span className="forge-project-folder__headline">{folder.headline}</span>
+          </button>
+        </div>
       )}
       {!collapsed && sectionLabel && (
         <button
@@ -908,6 +924,8 @@ export function SessionsPage() {
   const navigate = useNavigate();
   const { sessionId: routeSessionId } = useParams({ strict: false });
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  // The project whose home fills the detail pane; a session and a project never both show.
+  const [openProjectId, setOpenProjectId] = useState<string | null>(null);
   // The open session's room workers, heard from its chat, and the one it shows on its own.
   const [room, setRoom] = useState<{ sessionId: string; workers: readonly Worker[] } | null>(null);
   const [focusedWorker, setFocusedWorker] = useState<{ sessionId: string; peerId: string } | null>(
@@ -1107,6 +1125,15 @@ export function SessionsPage() {
     );
   }, [allSessions, projects.data]);
   const requestedSessionId = typeof routeSessionId === 'string' ? routeSessionId : null;
+  const showProjectHome = openProjectId !== null;
+  // Opening a session from a link or the browser's history leaves the project.
+  const [seenRoute, setSeenRoute] = useState(requestedSessionId);
+  if (seenRoute !== requestedSessionId) {
+    setSeenRoute(requestedSessionId);
+    if (requestedSessionId) setOpenProjectId(null);
+  }
+  const openProjectGroup = sidebarGroups.find((group) => group.id === openProjectId);
+  const openProjectRecord = (projects.data ?? []).find((project) => project.id === openProjectId);
   const resolvedSelectedSessionId = useMemo(() => {
     if (allSessions.length === 0) return null;
     if (requestedSessionId) {
@@ -1139,7 +1166,10 @@ export function SessionsPage() {
   );
   const openRoom = useMemo<OpenRoom | null>(
     () =>
-      room && room.sessionId === resolvedSelectedSessionId && room.workers.length > 0
+      !showProjectHome &&
+      room &&
+      room.sessionId === resolvedSelectedSessionId &&
+      room.workers.length > 0
         ? {
             sessionId: room.sessionId,
             workers: room.workers,
@@ -1147,21 +1177,23 @@ export function SessionsPage() {
             onSelect: (sessionId, peerId) => setFocusedWorker({ sessionId, peerId }),
           }
         : null,
-    [room, resolvedSelectedSessionId, focusedPeerId],
+    [room, resolvedSelectedSessionId, focusedPeerId, showProjectHome],
   );
+  // While a project's home is open no session is the open one.
+  const listSelectedId = showProjectHome ? null : resolvedSelectedSessionId;
   const resolvedSelectedStoppedIds = useMemo(
     () => new Set([...selectedStoppedIds].filter((id) => stoppedSessionIds.has(id))),
     [selectedStoppedIds, stoppedSessionIds],
   );
 
   // The unread stream stands in for the detail while that filter is on and no session is open.
-  const showUnreadStream = filter === 'unread' && !requestedSessionId;
+  const showUnreadStream = filter === 'unread' && !requestedSessionId && !showProjectHome;
   const openSession = useMemo(
     () =>
-      showUnreadStream
+      showUnreadStream || showProjectHome
         ? undefined
         : allSessions.find((session) => session.id === resolvedSelectedSessionId),
-    [allSessions, resolvedSelectedSessionId, showUnreadStream],
+    [allSessions, resolvedSelectedSessionId, showUnreadStream, showProjectHome],
   );
   // Opening an unread session reads it, but only one the person opened (a click or a link):
   // the session shown by default when the page loads has not been read. Once per opening: a
@@ -1188,6 +1220,7 @@ export function SessionsPage() {
 
   function handleSelectFilter(value: SessionFilter) {
     setFilter(value);
+    if (value === 'unread') setOpenProjectId(null);
     if (value !== 'unread' || !requestedSessionId) return;
     // The stream shows only while no session is open.
     setSelectedSessionId(null);
@@ -1203,8 +1236,16 @@ export function SessionsPage() {
     } else setSelectedStoppedIds(new Set());
   }
 
+  function handleOpenProject(id: string) {
+    setFocusedWorker(null);
+    setSelectedSessionId(null);
+    setOpenProjectId(id);
+    void navigate({ to: '/volundr/sessions' });
+  }
+
   function handleSelectSession(id: string) {
     setFocusedWorker(null);
+    setOpenProjectId(null);
     setSelectedSessionId(id);
     void navigate({
       to: '/volundr/sessions/$sessionId',
@@ -1330,7 +1371,7 @@ export function SessionsPage() {
     <>
       <div
         className="forge-sessions niuu:relative niuu:flex niuu:h-full"
-        data-detail-open={!!requestedSessionId}
+        data-detail-open={!!requestedSessionId || showProjectHome}
         data-testid="sessions-page"
       >
         {/* ── Left sidebar: pod list ─────────────────────────────── */}
@@ -1373,7 +1414,7 @@ export function SessionsPage() {
                   groupKey="pinned"
                   pinned
                   sessions={pinnedSessions}
-                  selectedId={resolvedSelectedSessionId}
+                  selectedId={listSelectedId}
                   onSelect={handleSelectSession}
                   collapsed
                 />
@@ -1387,7 +1428,7 @@ export function SessionsPage() {
                     contextIds={nesting.contextIds}
                     workerCounts={nesting.workerCounts}
                     sessions={g.sessions}
-                    selectedId={resolvedSelectedSessionId}
+                    selectedId={listSelectedId}
                     onSelect={handleSelectSession}
                     showDetails={details === '1'}
                     onAction={(session, action) => void handleRowAction(session, action)}
@@ -1444,7 +1485,11 @@ export function SessionsPage() {
                               type="button"
                               aria-pressed={sidebarMode === mode}
                               data-testid={`pod-group-mode-${mode}`}
-                              onClick={() => setSidebarMode(mode)}
+                              onClick={() => {
+                                setSidebarMode(mode);
+                                // Folders exist only when grouped by project; their home goes with them.
+                                setOpenProjectId(null);
+                              }}
                             >
                               {SIDEBAR_MODE_LABELS[mode]}
                             </button>
@@ -1630,7 +1675,7 @@ export function SessionsPage() {
                   pinned
                   workerCounts={nesting.workerCounts}
                   sessions={pinnedSessions}
-                  selectedId={resolvedSelectedSessionId}
+                  selectedId={listSelectedId}
                   onSelect={handleSelectSession}
                   showDetails={details === '1'}
                   onAction={(session, action) => void handleRowAction(session, action)}
@@ -1692,12 +1737,14 @@ export function SessionsPage() {
                       folder={
                         sidebarMode === 'project' && g.id ? projectFolders.get(g.id) : undefined
                       }
+                      folderSelected={!!g.id && g.id === openProjectId}
+                      onOpenFolder={g.id ? () => handleOpenProject(g.id!) : undefined}
                       sectionLabel={sidebarMode === 'project' && !g.id}
                       openRoom={openRoom}
                       contextIds={nesting.contextIds}
                       workerCounts={nesting.workerCounts}
                       sessions={g.sessions}
-                      selectedId={resolvedSelectedSessionId}
+                      selectedId={listSelectedId}
                       onSelect={handleSelectSession}
                       showDetails={details === '1'}
                       onAction={(session, action) => void handleRowAction(session, action)}
@@ -1811,6 +1858,7 @@ export function SessionsPage() {
             className="forge-session-back"
             onClick={() => {
               setSelectedSessionId(null);
+              setOpenProjectId(null);
               void navigate({ to: '/volundr/sessions' });
             }}
           >
@@ -1825,11 +1873,25 @@ export function SessionsPage() {
               }
             />
           )}
+          {sessionsQuery.data && openProjectId !== null && (
+            <ProjectHome
+              key={openProjectId}
+              projectId={openProjectId}
+              name={openProjectGroup?.label ?? openProjectRecord?.name ?? openProjectId}
+              project={openProjectRecord}
+              sessions={allSessions}
+              workerCounts={nesting.workerCounts}
+              onOpenSession={handleSelectSession}
+              onNewSession={() => setLaunchOpen(true)}
+              onArchived={() => setOpenProjectId(null)}
+            />
+          )}
           {sessionsQuery.data && showUnreadStream && (
             <UnreadStream sessions={unreadSessions} onOpen={handleSelectSession} />
           )}
           {sessionsQuery.data &&
             !showUnreadStream &&
+            !showProjectHome &&
             !resolvedSelectedSessionId &&
             requestedSessionId &&
             connectionStates.some((source) => source.loading) && (
@@ -1837,6 +1899,7 @@ export function SessionsPage() {
             )}
           {sessionsQuery.data &&
             !showUnreadStream &&
+            !showProjectHome &&
             !resolvedSelectedSessionId &&
             !(requestedSessionId && connectionStates.some((source) => source.loading)) && (
               <EmptyState
@@ -1844,24 +1907,27 @@ export function SessionsPage() {
                 description="Select a session from the sidebar."
               />
             )}
-          {sessionsQuery.data && !showUnreadStream && resolvedSelectedSessionId && (
-            <LiveSessionDetailPage
-              key={resolvedSelectedSessionId}
-              sessionId={resolvedSelectedSessionId}
-              focusedWorkerId={focusedPeerId}
-              onFocusWorker={handleFocusWorker}
-              onRoomWorkers={handleRoomWorkers}
-              workersInList
-              onBackToUnread={
-                filter === 'unread'
-                  ? () => {
-                      setSelectedSessionId(null);
-                      void navigate({ to: '/volundr/sessions' });
-                    }
-                  : undefined
-              }
-            />
-          )}
+          {sessionsQuery.data &&
+            !showUnreadStream &&
+            !showProjectHome &&
+            resolvedSelectedSessionId && (
+              <LiveSessionDetailPage
+                key={resolvedSelectedSessionId}
+                sessionId={resolvedSelectedSessionId}
+                focusedWorkerId={focusedPeerId}
+                onFocusWorker={handleFocusWorker}
+                onRoomWorkers={handleRoomWorkers}
+                workersInList
+                onBackToUnread={
+                  filter === 'unread'
+                    ? () => {
+                        setSelectedSessionId(null);
+                        void navigate({ to: '/volundr/sessions' });
+                      }
+                    : undefined
+                }
+              />
+            )}
         </div>
       </div>
       <Dialog

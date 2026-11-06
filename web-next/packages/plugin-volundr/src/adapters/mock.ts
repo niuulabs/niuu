@@ -1325,6 +1325,8 @@ export function createMockVolundrService(): IVolundrService {
     updateProject: async (project, changes) => {
       const stored = projects.find((item) => item.id === project.id);
       if (!stored) throw new Error('Project not found');
+      if ((project.revision ?? 1) !== (stored.revision ?? 1))
+        throw new Error('Project changed; reload before saving');
       Object.assign(stored, changes, { revision: (stored.revision ?? 1) + 1 });
       return { ...stored };
     },

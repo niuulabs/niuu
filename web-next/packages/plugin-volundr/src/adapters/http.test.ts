@@ -2978,6 +2978,22 @@ describe('Forge project grouping contract', () => {
     expect(client.patch).toHaveBeenLastCalledWith('/projects/lexi', { repo_url: '', revision: 4 });
   });
 
+  it('sends a description, a status and a checkout folder as the project’s own fields', async () => {
+    const client = makeClient();
+    client.patch.mockResolvedValue({ id: 'lexi' });
+    const service = buildVolundrHttpAdapter(client);
+    await service.updateProject(
+      { id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active', revision: 4 },
+      { description: 'Chat', status: 'archived', workspace_path: '/work/lexi' },
+    );
+    expect(client.patch).toHaveBeenCalledWith('/projects/lexi', {
+      description: 'Chat',
+      status: 'archived',
+      workspace_path: '/work/lexi',
+      revision: 4,
+    });
+  });
+
   it('loads projects from Forge and preserves coordination and parent references on sessions', async () => {
     const client = makeClient();
     const project = { id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' };

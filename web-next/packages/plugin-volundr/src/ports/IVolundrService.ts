@@ -180,6 +180,10 @@ export interface IVolundrService {
   getProjects(options?: SessionReadOptions): Promise<ForgeProject[]>;
   /** A name is enough. The host is the given instance, else the default one. */
   createProject(name: string, options?: { instanceId?: string }): Promise<ForgeProject>;
+  /**
+   * Change a project at the revision the caller read; a stale revision is refused. The change
+   * goes to the host that owns the project. Setting `workspace_path` connects a checkout.
+   */
   updateProject(project: ForgeProject, changes: ForgeProjectChanges): Promise<ForgeProject>;
   getSessionProject(
     sessionId: string,

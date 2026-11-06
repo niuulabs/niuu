@@ -1,4 +1,5 @@
-import type { Session, SessionState } from '../../domain/session';
+import { modelLabel as readableModel } from '@niuulabs/domain';
+import { sessionHarness, type Session, type SessionState } from '../../domain/session';
 
 export const SESSION_FILTERS = [
   'unread',
@@ -68,3 +69,11 @@ export function matchesSessionFilter(session: Session, filter: SessionFilter): b
 }
 
 export const SIDEBAR_WIDTH = { default: 340, min: 288, max: 640, keyboardStep: 20 } as const;
+
+/** The model a row names: its own, else the harness that runs it. */
+export function sessionModelLabel(
+  session: Pick<Session, 'model' | 'sessionDefinition' | 'origin'>,
+): string {
+  if (session.model) return readableModel(session.model);
+  return sessionHarness(session) === 'claude' ? 'Claude' : 'Codex';
+}

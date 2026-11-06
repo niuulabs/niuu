@@ -166,14 +166,22 @@ export interface ForgeProject {
   instance_id?: string;
   instance_name?: string;
   workspace_path?: string;
+  description?: string;
   brief?: string;
   repo_url?: string;
   revision?: number;
 }
+/**
+ * What `PATCH /projects/{id}` accepts besides the revision. Connecting a checkout is a
+ * change of `workspace_path`: Forge reads the folder's Git remote and sets `repo_url`.
+ */
 export interface ForgeProjectChanges {
   name?: string;
+  description?: string;
   brief?: string;
+  status?: 'active' | 'archived';
   repo_url?: string;
+  workspace_path?: string;
 }
 export interface SessionProjectMembership {
   sessionId: string;

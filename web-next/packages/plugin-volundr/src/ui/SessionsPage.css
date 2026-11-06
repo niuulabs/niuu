@@ -854,13 +854,10 @@
 /* ── Project folders (Lexi's code sidebar): caret, folder, name, needs-you, count, headline ── */
 
 .forge-project-folder {
-  display: grid;
-  grid-template-columns: 14px 18px minmax(0, 1fr) auto auto;
-  column-gap: 4px;
-  align-items: center;
+  display: flex;
+  align-items: flex-start;
   width: 100%;
-  padding: 8px 12px 6px 6px;
-  text-align: left;
+  padding: 0 4px 0 2px;
   color: var(--color-text-primary);
 }
 
@@ -868,10 +865,45 @@
   background: color-mix(in srgb, var(--color-bg-tertiary) 60%, transparent);
 }
 
+/* The folder opens the project's home; the caret only folds it. */
 .forge-project-folder__caret {
   display: grid;
+  flex-shrink: 0;
   place-items: center;
+  width: 22px;
+  height: 34px;
   color: var(--color-text-muted);
+}
+
+.forge-project-folder__open {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 18px minmax(0, 1fr) auto auto;
+  column-gap: 4px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 8px 6px 0;
+  text-align: left;
+  color: inherit;
+}
+
+/* Lexi fills the open project's folder with the accent. */
+.forge-project-folder[data-selected] {
+  border-radius: 8px;
+  background: var(--brand-600);
+  color: var(--color-bg-primary);
+}
+
+.forge-project-folder[data-selected] :is(.forge-project-folder__caret, .forge-project-folder__icon),
+.forge-project-folder[data-selected] .forge-project-folder__count,
+.forge-project-folder[data-selected] .forge-project-folder__headline {
+  color: color-mix(in srgb, var(--color-bg-primary) 80%, transparent);
+}
+
+.forge-project-folder__caret:focus-visible,
+.forge-project-folder__open:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: -2px;
 }
 
 .forge-project-folder__icon {
@@ -901,14 +933,14 @@
 }
 
 .forge-project-folder__count {
-  grid-column: 5;
+  grid-column: 4;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--color-text-muted);
 }
 
 .forge-project-folder__headline {
-  grid-column: 3 / -1;
+  grid-column: 2 / -1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
