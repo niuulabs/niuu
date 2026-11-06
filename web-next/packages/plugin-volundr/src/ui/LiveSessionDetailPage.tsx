@@ -30,7 +30,9 @@ import {
   ChatConnectionsContext,
   ChatDisplayControls,
   SessionLinksProvider,
+  SidebarResizer,
   roomWorkers,
+  useResizableSidebar,
   type FileEntry,
   type MeshNotificationEvent,
   type Worker,
@@ -84,6 +86,7 @@ import { CoordinatorTag, WorkerOf } from './detail/Coordination';
 import { DecisionDock } from './detail/DecisionDock';
 import { RightDock, type DockPane } from './detail/RightDock';
 import { compactDuration, useMinuteClock } from './sessions/timeFact';
+import { useElementWidth } from './detail/useElementWidth';
 import { useSessionRead } from './hooks/useSessionRead';
 import { useMediaQuery } from './hooks/useMediaQuery';
 
@@ -115,7 +118,7 @@ import {
 } from '../domain/sessionAttention';
 import { sessionHarness } from '../domain/session';
 import { SessionAttentionPanel, sessionPanelHasContent } from './SessionAttentionPanel';
-import { SESSION_STATE_LABELS } from './sessions/presentation';
+import { DOCK_WIDTH, SESSION_STATE_LABELS, TRANSCRIPT_MIN_WIDTH } from './sessions/presentation';
 import { ContextMeter } from './detail/ContextMeter';
 import { SessionMoreMenu, type MoreMenuItem } from './detail/SessionMoreMenu';
 import { Subline } from './detail/Subline';
@@ -3216,6 +3219,19 @@ function LiveSessionDetailPageInner({
   // Changes and Files open beside the conversation, in the right dock, as Lexi's do.
   const [dockPane, setDockPane] = useState<DockPane | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
+  const { width: dockPreferredWidth, resizer: dockResizer } = useResizableSidebar(
+    'niuu.forge.dockWidth',
+    DOCK_WIDTH,
+  );
+  const [sessionRow, setSessionRow] = useState<HTMLDivElement | null>(null);
+  const sessionRowWidth = useElementWidth(sessionRow);
+  // As Lexi's resize contract: the dock narrows to keep the conversation readable and steps
+  // aside, still chosen, when even its narrowest would squeeze it; it returns when wider.
+  const dockWidth =
+    sessionRowWidth === null
+      ? dockPreferredWidth
+      : Math.min(dockPreferredWidth, sessionRowWidth - TRANSCRIPT_MIN_WIDTH);
+  const dockShown = dockPane !== null && dockWidth >= DOCK_WIDTH.min;
   const showInternalMessages = toolVisibility === '1';
   const [tokenVisibility] = useForgePreference('tokens', '0', ['0', '1']);
   const showTokenUsage = tokenVisibility === '1';
@@ -4218,7 +4234,10 @@ function LiveSessionDetailPageInner({
           </div>
         ) : null}
 
-        <div className="niuu:relative niuu:flex niuu:min-h-0 niuu:flex-1 niuu:overflow-hidden">
+        <div
+          ref={setSessionRow}
+          className="niuu:relative niuu:flex niuu:min-h-0 niuu:flex-1 niuu:overflow-hidden"
+        >
           <div className="niuu:min-h-0 niuu:min-w-0 niuu:flex-1 niuu:overflow-hidden">
             {resolvedActiveTab === 'chat' && (
               <SessionLinksProvider value={sessionLinks}>
@@ -4412,8 +4431,21 @@ function LiveSessionDetailPageInner({
               </div>
             )}
           </div>
-          {dockPane ? (
-            <RightDock pane={dockPane} onSelect={setDockPane} onClose={() => setDockPane(null)}>
+          {dockPane && dockShown ? (
+            <RightDock
+              pane={dockPane}
+              width={dockWidth}
+              edge={
+                <SidebarResizer
+                  label="Resize the dock"
+                  panelSide="right"
+                  {...dockResizer}
+                  width={dockWidth}
+                />
+              }
+              onSelect={setDockPane}
+              onClose={() => setDockPane(null)}
+            >
               {dockPane === 'changes' ? (
                 <SessionDiffs
                   chatEndpoint={chatEndpoint}

@@ -25,6 +25,11 @@ export interface SidebarResizerProps {
   onDrag: (width: number | null) => void;
   onCommit: (width: number) => void;
   className?: string;
+  /**
+   * Where the panel sits. A panel on the right grows when its edge moves left, so the drag
+   * and the arrow keys run the other way.
+   */
+  panelSide?: 'left' | 'right';
 }
 
 /** The draggable edge of a sidebar: drag, arrow keys, Home and End; double-click resets. */
@@ -35,10 +40,12 @@ export function SidebarResizer({
   onDrag,
   onCommit,
   className,
+  panelSide = 'left',
 }: SidebarResizerProps) {
   const drag = useRef<{ x: number; width: number } | null>(null);
+  const grow = panelSide === 'left' ? 1 : -1;
   const widthAt = (clientX: number) =>
-    clampSidebarWidth(drag.current!.width + clientX - drag.current!.x, bounds);
+    clampSidebarWidth(drag.current!.width + grow * (clientX - drag.current!.x), bounds);
   return (
     <div
       role="separator"
@@ -74,7 +81,8 @@ export function SidebarResizer({
             ? bounds.min
             : event.key === 'End'
               ? bounds.max
-              : width + (event.key === 'ArrowRight' ? bounds.keyboardStep : -bounds.keyboardStep);
+              : width +
+                grow * (event.key === 'ArrowRight' ? bounds.keyboardStep : -bounds.keyboardStep);
         onCommit(clampSidebarWidth(next, bounds));
       }}
       onDoubleClick={() => onCommit(bounds.default)}

@@ -15,17 +15,29 @@ const PANES: Array<{ id: DockPane; label: string; icon: typeof FileDiff }> = [
  */
 export function RightDock({
   pane,
+  width,
+  edge,
   onSelect,
   onClose,
   children,
 }: {
   pane: DockPane;
+  /** The dock's width in pixels: the person's, narrowed to leave the conversation room. */
+  width: number;
+  /** The control on the dock's left edge, such as a resizer; it takes none of the width. */
+  edge?: ReactNode;
   onSelect: (pane: DockPane) => void;
   onClose: () => void;
   children: ReactNode;
 }) {
   return (
-    <aside className="forge-right-dock" aria-label="Right dock" data-testid="right-dock">
+    <aside
+      className="forge-right-dock"
+      aria-label="Right dock"
+      data-testid="right-dock"
+      style={{ width: `${width}px` }}
+    >
+      {edge}
       <div className="forge-right-dock__tabs" role="tablist" aria-label="Panels">
         {PANES.map(({ id, label, icon: Icon }) => (
           <button

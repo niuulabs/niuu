@@ -69,6 +69,13 @@ export function matchesSessionFilter(session: Session, filter: SessionFilter): b
 }
 
 export const SIDEBAR_WIDTH = { default: 340, min: 288, max: 640, keyboardStep: 20 } as const;
+/** The right dock (Changes, Files): its width when the person has not dragged it. */
+export const DOCK_WIDTH = { default: 560, min: 340, max: 960, keyboardStep: 20 } as const;
+/**
+ * The conversation's narrowest usable width beside the dock, as Lexi's transcript minimum:
+ * the dock narrows to keep it, and steps aside when even its own minimum does not fit.
+ */
+export const TRANSCRIPT_MIN_WIDTH = 480;
 
 /** The model a row names: its own, else the harness that runs it. */
 export function sessionModelLabel(

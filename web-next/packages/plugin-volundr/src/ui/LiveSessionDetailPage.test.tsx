@@ -70,7 +70,11 @@ vi.mock('shiki', () => ({
   codeToHtml: vi.fn().mockResolvedValue('<pre><code>highlighted</code></pre>'),
 }));
 
+const resizeCallbacks: ResizeObserverCallback[] = [];
 class ResizeObserverStub {
+  constructor(callback: ResizeObserverCallback) {
+    resizeCallbacks.push(callback);
+  }
   observe = vi.fn();
   disconnect = vi.fn();
   unobserve = vi.fn();
@@ -647,8 +651,18 @@ function mockChatState(overrides: Partial<ReturnType<typeof chatHooks.useSkuldCh
 // Tests
 // ---------------------------------------------------------------------------
 
+/** Resize every observed element to `width`, as a window resize would. */
+function resizeTo(width: number) {
+  act(() => {
+    for (const callback of resizeCallbacks) {
+      callback([{ contentRect: { width } } as ResizeObserverEntry], {} as ResizeObserver);
+    }
+  });
+}
+
 describe('LiveSessionDetailPage', () => {
   beforeEach(() => {
+    resizeCallbacks.length = 0;
     localStorage.clear();
     localStorage.setItem(
       'niuu.forge.sessionTabs',
@@ -1456,6 +1470,29 @@ describe('LiveSessionDetailPage', () => {
       // Opening the session panel closes the dock: they share the right side.
       fireEvent.click(screen.getByRole('button', { name: 'Show session panel' }));
       expect(screen.queryByTestId('right-dock')).not.toBeInTheDocument();
+    });
+
+    it('steps the dock aside rather than cover a narrow conversation, and brings it back', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      const diffs = screen.getByRole('tab', { name: /Diffs/i });
+      fireEvent.click(diffs);
+      expect(screen.getByTestId('right-dock')).toBeInTheDocument();
+      resizeTo(700);
+      // Still chosen, but 700px cannot hold the conversation's 480 and the dock's 340.
+      expect(diffs).toHaveAttribute('aria-selected', 'true');
+      expect(screen.queryByTestId('right-dock')).not.toBeInTheDocument();
+
+      resizeTo(1000);
+      // The dock narrows to what is left beside the conversation.
+      expect(screen.getByTestId('right-dock')).toHaveStyle({ width: '520px' });
+      expect(screen.getByRole('separator', { name: 'Resize the dock' })).toHaveAttribute(
+        'aria-valuenow',
+        '520',
+      );
+
+      resizeTo(1600);
+      expect(screen.getByTestId('right-dock')).toHaveStyle({ width: '560px' });
     });
 
     it('says there are no changes rather than showing an empty list', async () => {
