@@ -899,7 +899,12 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             "SKULD__PREVIEW__PORT_SCANNER": json.dumps(
                 {
                     "adapter": "skuld.preview_adapters.ProcNetListeningPortScanner",
-                    "kwargs": {"excluded_ports": self._preview_excluded_ports},
+                    "kwargs": {
+                        "excluded_ports": self._preview_excluded_ports,
+                        # The guest's own services run as root on ports no list
+                        # names (containerd's stream server picks one per boot).
+                        "same_user_only": True,
+                    },
                 }
             ),
             "SKULD__PREVIEW__ROUTER_AUTH": json.dumps(self._preview_router_auth),

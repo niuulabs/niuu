@@ -841,7 +841,7 @@ class TestVmLivePreview:
         assert environment["SKULD__PREVIEW__ENABLED"] == "true"
         assert json.loads(environment["SKULD__PREVIEW__PORT_SCANNER"]) == {
             "adapter": "skuld.preview_adapters.ProcNetListeningPortScanner",
-            "kwargs": {"excluded_ports": [53, 2222, 8099, 18081]},
+            "kwargs": {"excluded_ports": [53, 2222, 8099, 18081], "same_user_only": True},
         }
         assert json.loads(environment["SKULD__PREVIEW__ROUTER_AUTH"]) == _ROUTER_AUTH
 
@@ -878,3 +878,5 @@ class TestVmLivePreview:
         watcher, forwarder = build_preview(config, session_id="s", emit=AsyncMock())
 
         assert watcher is not None and forwarder is not None
+        # The guest's root-owned services are never offered as previews.
+        assert watcher._scanner._uid is not None
