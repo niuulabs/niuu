@@ -3298,3 +3298,37 @@ class TestResidentCredentials:
             await pod_manager.delete(runtime)
 
         injection.cleanup_workload.assert_awaited_once_with(str(runtime.id))
+
+
+class TestFluxSessionProxyTarget:
+    """The in-cluster hop to a session's Skuld (live-preview router)."""
+
+    def test_a_running_session_targets_its_own_service(self, pod_manager, sample_session):
+        sample_session.status = SessionStatus.RUNNING
+
+        target = pod_manager.session_proxy_target(sample_session)
+
+        host = f"skuld-{sample_session.id}.test-ns.svc.cluster.local"
+        assert target is not None
+        assert target.service_url == f"http://{host}:8080/"
+        assert target.connect_host == host
+        assert target.connect_port == 8080
+
+    def test_the_chart_service_port_is_configurable(self, sample_session):
+        manager = FluxPodManager(namespace="ns", session_service_port=9090)
+        sample_session.status = SessionStatus.RUNNING
+
+        target = manager.session_proxy_target(sample_session)
+
+        assert target is not None
+        assert target.service_url.endswith(":9090/")
+        assert target.connect_port == 9090
+
+    @pytest.mark.parametrize(
+        "status",
+        [s for s in SessionStatus if s is not SessionStatus.RUNNING],
+    )
+    def test_only_a_running_session_has_a_target(self, pod_manager, sample_session, status):
+        sample_session.status = status
+
+        assert pod_manager.session_proxy_target(sample_session) is None
