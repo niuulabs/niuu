@@ -764,6 +764,20 @@ class VmPodManager(PodManager):
         runtime = await self._runtime_for_lease(lease)
         return await runtime.target(lease, await service.bootstrap_for(lease))
 
+    async def broker_target(self, session: Session) -> SessionProxyTarget:
+        """The guest broker, as the session proxy reaches it.
+
+        The chat endpoint is Forge's own public ``/s/{id}/session`` route, which
+        Forge cannot dial from inside its pod without leaving through the ingress.
+        """
+        try:
+            target = await self.session_proxy_target(session)
+        except VmRuntimeUnavailableError as exc:
+            raise ValueError(f"Session {session.id} VM broker is unreachable: {exc}") from exc
+        if target is None:
+            raise ValueError(f"Session {session.id} has no ready VM broker")
+        return target
+
     async def status(self, session: Session) -> SessionStatus:
         service, repository, _ = self._configured()
         lease = await repository.active_for_session(self._pool_id, session.id)

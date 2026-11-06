@@ -2,14 +2,18 @@
 
 Every server-side call Forge makes to a session's broker resolves it the same way:
 the session's chat endpoint names the broker, path segments are quoted onto that
-base, and OpenShell service hosts are routed through the in-cluster gateway. The
-REST proxy routes (including the presented-file download) and the notification
-image copies share these helpers so they cannot drift apart.
+base, and OpenShell service hosts are routed through the in-cluster gateway. A pod
+manager whose chat endpoint is Forge's own session proxy (VM sessions) names the
+broker's target instead (``PodManager.broker_target``). The REST proxy routes
+(including the presented-file download) and the notification image copies share
+these helpers so they cannot drift apart.
 """
 
 from __future__ import annotations
 
 from urllib.parse import quote, urlsplit, urlunsplit
+
+from niuu.ports.session_proxy import SessionProxyTarget
 
 DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL = "http://openshell.openshell.svc.cluster.local:8080"
 OPENSHELL_SERVICE_HOST_SUFFIX = ".openshell.localhost"
@@ -70,3 +74,16 @@ def server_side_http_proxy_target(
         (gateway.scheme, gateway.netloc, parsed.path, parsed.query, parsed.fragment)
     )
     return routed_url, {"Host": parsed.netloc}
+
+
+def broker_target_request(
+    target: SessionProxyTarget, *path_segments: str
+) -> tuple[str, dict[str, str]]:
+    """The URL and routing headers that reach ``path_segments`` on a broker target.
+
+    Forge dials the target's connect address and names its service in the Host
+    header, exactly as the session proxy does for ``/s/{id}/...``.
+    """
+    path = urlsplit(session_proxy_url(target.service_url, *path_segments)).path
+    url, host = target.http_url(path)
+    return url, {"Host": host}

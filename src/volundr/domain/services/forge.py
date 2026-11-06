@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from datetime import datetime
     from uuid import UUID
 
+    from niuu.ports.session_proxy import SessionProxyTarget
     from volundr.adapters.inbound.rest import SessionCreate
     from volundr.domain.models import (
         Chronicle,
@@ -546,6 +547,10 @@ class ForgeService:
         if not session.chat_endpoint:
             raise ValueError(f"Session {session_id} has no active endpoint")
         return session, broker_base_url(session.chat_endpoint)
+
+    async def get_broker_target(self, session: Session) -> SessionProxyTarget | None:
+        """The broker target Forge dials for ``session``; None means its chat endpoint."""
+        return await self._session_service.broker_target(session)
 
     async def get_transcript(self, session_id: UUID, *, tail_turns: int = 0) -> dict:
         """The persisted transcript; ``tail_turns > 0`` lets the durable rebuild read only

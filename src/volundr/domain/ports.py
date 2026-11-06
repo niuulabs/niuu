@@ -590,6 +590,15 @@ class PodManager(ABC):
         """Return the deterministic chat endpoint before pods are ready, if known."""
         return None
 
+    async def broker_target(self, session: Session) -> SessionProxyTarget | None:
+        """Where Forge itself reaches the session's broker HTTP API.
+
+        None means at the session's chat endpoint. A manager whose chat endpoint
+        is Forge's own session proxy returns the target that proxy dials, and
+        raises ``ValueError`` while the session has no reachable broker.
+        """
+        return None
+
     def initial_code_endpoint(self, session: Session) -> str | None:
         """Return the deterministic code endpoint before pods are ready, if known."""
         return None
