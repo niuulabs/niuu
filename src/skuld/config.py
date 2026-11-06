@@ -714,8 +714,8 @@ class PreviewConfig(BaseModel):
             "skuld.preview_port.ListeningPortScanner adapter, e.g. "
             "skuld.preview_adapters.ProcNetListeningPortScanner (a pod or VM: the whole "
             "network namespace, minus excluded_ports) or "
-            "skuld.preview_adapters.LsofDescendantPortScanner (a shared host: only "
-            "Skuld's child processes)."
+            "skuld.preview_adapters.LsofSessionPortScanner (a shared host: only "
+            "the session's own processes)."
         ),
     )
     router_auth: DynamicAdapterConfig | None = Field(

@@ -576,12 +576,13 @@ class LocalProcessPodManager(PodManager):
             if info.state in (ProcessState.STARTING, ProcessState.RUNNING) and info.flock_base_port:
                 self._allocated_flock_base_ports.add(info.flock_base_port)
 
-    def _preview_env(self) -> dict[str, str]:
+    def _preview_env(self, session_id: str) -> dict[str, str]:
         """Skuld live-preview settings for a session on this shared host.
 
         Only the agent's own processes count as the session's (a laptop listens
-        on plenty of other ports), and the router credential check follows the
-        host: none where the host has no identity provider at all.
+        on plenty of other ports): Skuld's descendants, and processes carrying
+        this session's SKULD__SESSION__ID, which the agent inherits. The router
+        credential check follows the host: none where it has no identity provider.
         """
         if getattr(self._skuld_registry, "dev_identity", False):
             router_auth: dict = {"adapter": "skuld.preview_adapters.NoRouterAuth"}
@@ -597,7 +598,10 @@ class LocalProcessPodManager(PodManager):
         return {
             "SKULD__PREVIEW__ENABLED": "true",
             "SKULD__PREVIEW__PORT_SCANNER": json.dumps(
-                {"adapter": "skuld.preview_adapters.LsofDescendantPortScanner"}
+                {
+                    "adapter": "skuld.preview_adapters.LsofSessionPortScanner",
+                    "kwargs": {"session_id": session_id},
+                }
             ),
             "SKULD__PREVIEW__ROUTER_AUTH": json.dumps(router_auth),
         }
@@ -1255,7 +1259,7 @@ class LocalProcessPodManager(PodManager):
         # auth boundary already gates every caller" (skuld.config.WsAuthConfig
         # .room_role_source, default "deployment" — every other backend).
         env["SKULD__WS_AUTH__ROOM_ROLE_SOURCE"] = "proxy"
-        env.update(self._preview_env())
+        env.update(self._preview_env(session_id))
         model = str(session.model or spec.values.get("model", "") or "").strip()
         env["SKULD__SESSION__MODEL"] = model
         env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)

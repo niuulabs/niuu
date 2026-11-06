@@ -124,44 +124,97 @@ class ProcNetListeningPortScanner(ListeningPortScanner):
         return inodes
 
 
-class LsofDescendantPortScanner(ListeningPortScanner):
-    """Listening sockets of processes Skuld started, via ``ps`` and ``lsof``.
+class LsofSessionPortScanner(ListeningPortScanner):
+    """Listening sockets of this session's processes on a shared host, via ``lsof``.
 
     For a session that shares its host with everything else (mini mode on a
-    laptop): only Skuld's descendants — the agent and whatever it ran — count as
-    the session's. Works on macOS and Linux.
+    laptop), a listener is the session's when its process descends from Skuld
+    (the agent and whatever it ran) or carries ``<session_env_var>=<session_id>``
+    in its environment. The second covers a server the agent started detached
+    (``nohup … &``): its shell exits and the OS re-parents it, but it keeps the
+    environment Skuld gave the agent. Skuld's own sockets never count. Works on
+    macOS and Linux.
     """
 
-    def __init__(self, *, ps_path: str = "ps", lsof_path: str = "lsof"):
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        session_env_var: str = "SKULD__SESSION__ID",
+        ps_path: str = "ps",
+        lsof_path: str = "lsof",
+        proc_root: str = "/proc",
+    ):
+        if not session_id:
+            raise ValueError(
+                "LsofSessionPortScanner needs session_id: the id its agent's processes "
+                "carry in their environment"
+            )
+        self._marker = f"{session_env_var}={session_id}"
         self._ps = ps_path
         self._lsof = lsof_path
+        self._proc = Path(proc_root)
 
     async def scan(self) -> set[ListeningPort]:
-        descendants = self._descendants(await self._run(self._ps, "-A", "-o", "pid=,ppid="))
-        if not descendants:
-            return set()
         output = await self._run(
-            self._lsof,
-            "-nP",
-            "-a",
-            "-p",
-            ",".join(str(pid) for pid in sorted(descendants)),
-            "-iTCP",
-            "-sTCP:LISTEN",
-            "-Fn",
-            nothing_found_ok=True,
+            self._lsof, "-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn", nothing_found_ok=True
         )
-        listeners: list[tuple[int, str]] = []
+        by_pid: dict[int, list[tuple[int, str]]] = {}
+        pid: int | None = None
         for line in output.splitlines():
-            if not line.startswith("n"):
+            if line.startswith("p") and line[1:].isdigit():
+                pid = int(line[1:])
+                continue
+            if not line.startswith("n") or pid is None:
                 continue
             host_part, _, port_part = line[1:].rpartition(":")
             if not port_part.isdigit():
                 continue
             host = self._host(host_part)
             if host is not None:
-                listeners.append((int(port_part), host))
-        return _merge(listeners)
+                by_pid.setdefault(pid, []).append((int(port_part), host))
+        by_pid.pop(os.getpid(), None)
+        if not by_pid:
+            return set()
+        descendants = self._descendants(await self._run(self._ps, "-A", "-o", "pid=,ppid="))
+        others = sorted(set(by_pid) - descendants)
+        marked = await self._marked(others) if others else set()
+        return _merge(
+            [
+                listener
+                for owner, listeners in by_pid.items()
+                if owner in descendants or owner in marked
+                for listener in listeners
+            ]
+        )
+
+    async def _marked(self, pids: list[int]) -> set[int]:
+        """The *pids* whose environment holds this session's marker."""
+        if self._proc.is_dir():
+            return {pid for pid in pids if self._proc_environ_marked(pid)}
+        # macOS: -E appends each process's environment to its command line.
+        output = await self._run(
+            self._ps,
+            "-wwE",
+            "-o",
+            "pid=,command=",
+            "-p",
+            ",".join(str(pid) for pid in pids),
+            nothing_found_ok=True,
+        )
+        marked: set[int] = set()
+        for line in output.splitlines():
+            first, _, rest = line.strip().partition(" ")
+            if first.isdigit() and f" {self._marker} " in f" {rest} ":
+                marked.add(int(first))
+        return marked
+
+    def _proc_environ_marked(self, pid: int) -> bool:
+        try:
+            raw = (self._proc / str(pid) / "environ").read_bytes()
+        except OSError:
+            return False  # gone, or another user's process: not this session's
+        return self._marker.encode() in raw.split(b"\0")
 
     @staticmethod
     def _host(bound: str) -> str | None:
@@ -259,6 +312,9 @@ class WorkloadJwtRouterAuth(PreviewRouterAuth):
         except jwt.PyJWKClientConnectionError as exc:
             logger.error("Preview router JWKS unreachable: %s", exc)
             raise PreviewAuthError("router credential keys unavailable") from exc
+        except jwt.PyJWKClientError as exc:
+            # A token naming a key the issuer does not publish: not the router's.
+            raise PreviewAuthError(f"invalid router credential: {exc}") from exc
         except jwt.InvalidTokenError as exc:
             raise PreviewAuthError(f"invalid router credential: {exc}") from exc
         if claims.get("token_use") != VALKYRIE_BUILD_TOKEN_USE or not token_requires_scope_check(

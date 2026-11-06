@@ -2406,7 +2406,7 @@ def create_app(
         settings.session_preview, public_origin=public_origin, embedded=skuld_registry is not None
     )
 
-    @app.get("/api/v1/forge/preview", tags=["Sessions"])
+    @app.get("/api/v1/forge/settings/live-preview", tags=["Sessions"])
     async def live_preview_config() -> dict[str, Any]:
         """Where a session's live previews open, for the web UI.
 

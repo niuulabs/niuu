@@ -40,6 +40,10 @@ HOP_BY_HOP_HEADERS = frozenset(
     }
 )
 
+#: Response headers that stay behind: hop-by-hop ones, and ``date``/``server``,
+#: which the serving ASGI server writes itself (a copy per hop otherwise).
+_NOT_FORWARDED_RESPONSE_HEADERS = HOP_BY_HOP_HEADERS | {"date", "server"}
+
 #: WebSocket handshake headers the upstream client library writes itself.
 _WEBSOCKET_HANDSHAKE_HEADERS = frozenset(
     {
@@ -164,7 +168,7 @@ async def forward_http(
         raw = [
             (key, value)
             for key, value in response.headers.raw
-            if key.decode("latin-1").lower() not in HOP_BY_HOP_HEADERS
+            if key.decode("latin-1").lower() not in _NOT_FORWARDED_RESPONSE_HEADERS
         ]
         if rewrite_response_headers is not None:
             raw = rewrite_response_headers(raw)
@@ -241,7 +245,8 @@ async def bridge_websocket(
                     await send({"type": "websocket.send", "text": frame})
         except ConnectionClosed:
             pass
-        close = upstream.close_rcvd
+        # The close frame the upstream sent lives on the sans-IO protocol object.
+        close = upstream.protocol.close_rcvd
         await send(
             {
                 "type": "websocket.close",
