@@ -425,3 +425,14 @@ operator sees whichever template Helm renders first.
 {{- end -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+Ports of the pod's own infrastructure, never offered as live previews: nginx,
+the broker, Envoy and its admin and authz listeners, the terminal, the Skuld
+and Ravn mesh listeners, the resident shim, plus preview.excludedPorts.
+*/}}
+{{- define "skuld.previewExcludedPorts" -}}
+{{- $ports := list (int .Values.service.port) 8080 8081 (int .Values.envoy.port) (int .Values.envoy.adminPort) (int .Values.envoy.authorization.port) (int .Values.localServices.terminal.port) 7480 7481 7482 7483 7580 7581 7781 (int .Values.resident.openclaw.port) -}}
+{{- range .Values.preview.excludedPorts }}{{ $ports = append $ports (int .) }}{{ end -}}
+{{- $ports | uniq | toJson -}}
+{{- end }}

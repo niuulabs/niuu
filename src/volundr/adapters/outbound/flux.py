@@ -166,9 +166,13 @@ class FluxPodManager(
         resident_workspace_size: str = "2Gi",
         resident_storage_class: str = "",
         resident_access_mode: str = "ReadWriteOnce",
+        session_service_port: int = 8080,
         **_extra: object,
     ):
+        """``session_service_port`` is the skuld chart's ``service.port``: the
+        session Service's single entry point (Envoy when enabled)."""
         self._namespace = namespace
+        self._session_service_port = session_service_port
         self._chart_name = chart_name
         self._chart_version = chart_version
         self._source_ref_kind = source_ref_kind
@@ -993,6 +997,22 @@ class FluxPodManager(
             runtime,
             values if isinstance(values, dict) else {},
             tokens_provisioned=self._resident_openclaw_tokens is not None,
+        )
+
+    def session_proxy_target(self, session: Session) -> SessionProxyTarget | None:
+        """The session pod's own Service, for in-cluster hops to its Skuld.
+
+        The browser reaches a session through the gateway; Forge-side hops (the
+        live-preview router) dial this Service, where the pod's Envoy still
+        authenticates every request. Only a running session has one.
+        """
+        if session.status is not SessionStatus.RUNNING:
+            return None
+        host = f"{self._release_name(session)}.{self._namespace}.svc.cluster.local"
+        return SessionProxyTarget(
+            service_url=f"http://{host}:{self._session_service_port}/",
+            connect_host=host,
+            connect_port=self._session_service_port,
         )
 
     def resident_openclaw_target(

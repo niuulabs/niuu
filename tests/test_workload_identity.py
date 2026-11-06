@@ -576,6 +576,49 @@ async def test_workload_identity_exchange_drops_unknown_build_scopes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_workload_identity_exchange_never_grants_the_issuer_only_preview_scope() -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+
+    result = await service.exchange(
+        _workload_token(proof_key),
+        scopes=["forge:session:create", "forge:session:preview"],
+    )
+
+    jwk = PyJWKSet.from_dict(service.jwks()).keys[0]
+    claims = jwt.decode(
+        result.token,
+        key=jwk.key,
+        algorithms=["RS256"],
+        audience="volundr-api",
+        issuer=EXCHANGE_ISSUER,
+    )
+    assert claims["scopes"] == ["forge:session:create"]
+
+
+@pytest.mark.asyncio
+async def test_workload_identity_exchange_asking_only_for_preview_yields_a_plain_token() -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+
+    result = await service.exchange(
+        _workload_token(proof_key),
+        scopes=["forge:session:preview"],
+    )
+
+    jwk = PyJWKSet.from_dict(service.jwks()).keys[0]
+    claims = jwt.decode(
+        result.token,
+        key=jwk.key,
+        algorithms=["RS256"],
+        audience="volundr-api",
+        issuer=EXCHANGE_ISSUER,
+    )
+    assert "scopes" not in claims
+    assert "token_use" not in claims
+
+
+@pytest.mark.asyncio
 async def test_workload_identity_exchange_without_scopes_is_not_a_build_token() -> None:
     proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     service = _service(proof_key)

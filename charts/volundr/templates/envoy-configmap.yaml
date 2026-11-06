@@ -46,6 +46,20 @@ data:
                     route_config:
                       name: local_route
                       virtual_hosts:
+                        {{- if .Values.sessionPreview.enabled }}
+                        {{- $previewDomain := include "volundr.sessionPreview.domain" . }}
+                        # Live preview hosts: an app's responses and hot-reload
+                        # sockets stream for as long as the browser holds them.
+                        - name: session-preview
+                          domains: [{{ printf "*.%s" $previewDomain | quote }}, {{ printf "*.%s:*" $previewDomain | quote }}]
+                          routes:
+                            - match:
+                                prefix: "/"
+                              route:
+                                cluster: local_service
+                                timeout: 0s
+                                idle_timeout: {{ .Values.sessionPreview.streamIdleTimeout }}
+                        {{- end }}
                         - name: backend
                           domains: ["*"]
                           routes:

@@ -536,9 +536,16 @@ class LocalProcessPodManager(PodManager):
         server_public_host: str = "127.0.0.1",
         server_host: str = "127.0.0.1",
         server_port: int = 8080,
+        preview_router_auth: dict | None = None,
         **_extra: object,
     ):
+        """``preview_router_auth`` is the Skuld ``preview.router_auth`` adapter
+        (``{"adapter": ..., "kwargs": {...}}``) for a host with an identity
+        provider; on a host without one, local sessions use
+        ``skuld.preview_adapters.NoRouterAuth``. Unset on an authenticated host,
+        local sessions run without live preview."""
         self._workspaces_dir = Path(str(workspaces_dir)).expanduser()
+        self._preview_router_auth = dict(preview_router_auth or {})
         self._claude_binary = str(claude_binary)
         self._max_concurrent = int(max_concurrent)
         self._stop_timeout = int(stop_timeout)
@@ -570,6 +577,36 @@ class LocalProcessPodManager(PodManager):
         for info in self._processes.values():
             if info.state in (ProcessState.STARTING, ProcessState.RUNNING) and info.flock_base_port:
                 self._allocated_flock_base_ports.add(info.flock_base_port)
+
+    def _preview_env(self, session_id: str) -> dict[str, str]:
+        """Skuld live-preview settings for a session on this shared host.
+
+        Only the agent's own processes count as the session's (a laptop listens
+        on plenty of other ports): Skuld's descendants, and processes carrying
+        this session's SKULD__SESSION__ID, which the agent inherits. The router
+        credential check follows the host: none where it has no identity provider.
+        """
+        if getattr(self._skuld_registry, "dev_identity", False):
+            router_auth: dict = {"adapter": "skuld.preview_adapters.NoRouterAuth"}
+        elif self._preview_router_auth:
+            router_auth = self._preview_router_auth
+        else:
+            logger.info(
+                "Live preview is off for local sessions: this host authenticates "
+                "users, so set the pod manager's preview_router_auth "
+                "(skuld.preview_adapters.WorkloadJwtRouterAuth) to turn it on"
+            )
+            return {"SKULD__PREVIEW__ENABLED": "false"}
+        return {
+            "SKULD__PREVIEW__ENABLED": "true",
+            "SKULD__PREVIEW__PORT_SCANNER": json.dumps(
+                {
+                    "adapter": "skuld.preview_adapters.LsofSessionPortScanner",
+                    "kwargs": {"session_id": session_id},
+                }
+            ),
+            "SKULD__PREVIEW__ROUTER_AUTH": json.dumps(router_auth),
+        }
 
     def set_skuld_registry(self, registry: object) -> None:
         """Inject the SkuldPortRegistry for proxy routing."""
@@ -1224,6 +1261,7 @@ class LocalProcessPodManager(PodManager):
         # auth boundary already gates every caller" (skuld.config.WsAuthConfig
         # .room_role_source, default "deployment" — every other backend).
         env["SKULD__WS_AUTH__ROOM_ROLE_SOURCE"] = "proxy"
+        env.update(self._preview_env(session_id))
         model = str(session.model or spec.values.get("model", "") or "").strip()
         env["SKULD__SESSION__MODEL"] = model
         env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)

@@ -92,6 +92,17 @@ FORGE_SESSION_LIFECYCLE_SCOPE = "forge:session:lifecycle"
 #: grant it; the route also requires a resident's delegated credential.
 FORGE_PUSH_CALL_SCOPE = "forge:push:call"
 
+#: Forge's live-preview router forwarding one request to a session's own Skuld,
+#: which dials a port the session listens on (``skuld.preview``). Forge mints it
+#: in process for the session owner, bound to one session
+#: (``workload_session_id``); the exchange never grants it — see
+#: :data:`ISSUER_ONLY_SCOPES`.
+FORGE_SESSION_PREVIEW_SCOPE = "forge:session:preview"
+
+#: Scoped workload credentials whose ``/preview/<port>/...`` requests a session's
+#: Skuld admits (the broker's routes and its pod's gateway route).
+SESSION_PREVIEW_PATH = re.compile(r"/preview/[0-9]+(?:/.*)?")
+
 #: The claim value of the push gateway's cross-tenant notification reader.
 NOTIFICATION_DELIVERY_TOKEN_USE = "notification_delivery"
 #: Read every owner's notification feed (with each owner's read state) and every
@@ -109,8 +120,17 @@ VALKYRIE_BUILD_SCOPES: frozenset[str] = frozenset(
         TOPOLOGY_PUSH_SCOPE,
         NODE_JOIN_SCOPE,
         FORGE_PUSH_CALL_SCOPE,
+        FORGE_SESSION_PREVIEW_SCOPE,
     }
 )
+
+#: ``valkyrie_build`` scopes only an in-process issuer may put on a credential.
+#: The workload-identity exchange drops them like an unknown scope: a workload
+#: proof never earns the right to drive another session's preview.
+ISSUER_ONLY_SCOPES: frozenset[str] = frozenset({FORGE_SESSION_PREVIEW_SCOPE})
+
+#: What the workload-identity exchange may grant a ``valkyrie_build`` credential.
+EXCHANGE_GRANTABLE_SCOPES: frozenset[str] = VALKYRIE_BUILD_SCOPES - ISSUER_ONLY_SCOPES
 
 #: Scopes a ``forge_session`` credential may carry.
 FORGE_SESSION_SCOPES: frozenset[str] = frozenset(
@@ -367,6 +387,9 @@ def credential_allows_route(token: str, method: str, path: str) -> bool:
         return _forge_session_allows_route(claims, method, path)
     if (method, path) == _IDENTITY_ME:
         return True
+    if SESSION_PREVIEW_PATH.fullmatch(path):
+        # Any method and WebSocket upgrades: the preview carries the app's own traffic.
+        return FORGE_SESSION_PREVIEW_SCOPE in credential_scopes(claims)
     if claims.get("token_use") == NOTIFICATION_DELIVERY_TOKEN_USE:
         return is_notification_delivery_claims(claims) and any(
             method == verb and re.fullmatch(pattern, path)
@@ -462,14 +485,17 @@ def require_scope(scope: str, *alternatives: str) -> Callable[..., Awaitable[Non
 
 
 __all__ = [
+    "EXCHANGE_GRANTABLE_SCOPES",
     "FORGE_NOTIFY_SCOPE",
     "FORGE_PUSH_CALL_SCOPE",
     "FORGE_SESSION_LIFECYCLE_SCOPE",
     "FORGE_SESSION_MESSAGE_SCOPE",
+    "FORGE_SESSION_PREVIEW_SCOPE",
     "FORGE_SESSION_READ_SCOPE",
     "FORGE_SESSION_SCOPES",
     "FORGE_SESSION_SECRET_SCOPE",
     "FORGE_SESSION_TOKEN_USE",
+    "ISSUER_ONLY_SCOPES",
     "KNOWN_WORKLOAD_SCOPES",
     "NODE_JOIN_SCOPE",
     "NOTIFICATION_DELIVERY_SCOPE",
@@ -478,6 +504,7 @@ __all__ = [
     "OPENSHELL_SESSION_TOKEN_USE",
     "OPENSHELL_RESIDENT_TOKEN_USE",
     "SCOPES_BY_TOKEN_USE",
+    "SESSION_PREVIEW_PATH",
     "TOPOLOGY_PUSH_SCOPE",
     "VALKYRIE_BUILD_SCOPES",
     "VALKYRIE_BUILD_TOKEN_USE",

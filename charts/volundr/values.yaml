@@ -1447,6 +1447,46 @@ sessionGateway:
   # -- Extra annotations on the Gateway resource
   annotations: {}
 
+# Live preview: <port>--<session-id>.<domain> opens a port a session listens on,
+# on its own origin, for the session's owner only (niuu.preview_proxy). Needs
+# workloadIdentity (the router's credential to each session's Skuld), session
+# pods with skuld's preview.enabled, a wildcard DNS record for *.<domain>
+# pointing at the session gateway, and the OIDC client below.
+sessionPreview:
+  # -- Serve live previews through the session gateway
+  enabled: false
+  # -- Preview domain (defaults to preview.{domain}); the listener serves *.<domain>
+  domain: ""
+  # -- TLS secret for the *.<domain> listener (defaults to "{gateway name}-preview-tls");
+  # cert-manager issues it through sessionGateway.certIssuer, which must solve DNS-01
+  tlsSecretName: ""
+  # -- How long an idle preview stream (hot-reload WebSocket, SSE) stays open at
+  # Forge's Envoy. Past it the dev server's client reconnects.
+  streamIdleTimeout: "3600s"
+  # -- Lifetime of the router credential minted per forwarded request
+  credentialTtlSeconds: 60
+  # -- Audience of the router credential; session pods' Skuld verifies it
+  credentialAudience: "volundr-api"
+  # Sign-in on the preview domain: Envoy Gateway runs the OIDC code flow for
+  # every preview host, with its session cookies scoped to the preview domain
+  # (never the platform's parent domain), and forwards the access token to
+  # Forge, whose Envoy verifies it like any other request.
+  oidc:
+    # -- OIDC issuer (the realm Forge's Envoy trusts)
+    issuer: ""
+    # -- Confidential client for the preview domain; its access tokens must
+    # carry an audience Forge's Envoy accepts
+    clientId: ""
+    # -- Secret (in this namespace) holding the client secret under key "client-secret"
+    clientSecretName: ""
+    # -- Host the provider redirects back to (defaults to auth.<domain>); one
+    # registered redirect URI, https://<host>/oauth2/callback, serves every preview
+    callbackHost: ""
+    # -- Scopes requested at sign-in
+    scopes: ["openid", "profile", "email"]
+    # -- Path on any preview host that signs out of the preview domain
+    logoutPath: "/.niuu/preview/logout"
+
 # Auth discovery (public endpoint for CLI auto-configuration)
 authDiscovery:
   # -- OIDC issuer URL for CLI auth discovery (falls back to gateway issuer if empty)

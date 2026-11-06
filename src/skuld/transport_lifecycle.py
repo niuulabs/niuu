@@ -228,6 +228,23 @@ class TransportLifecycleMixin:
         except Exception:
             logger.error("Transport auto-start failed", exc_info=True)
 
+    def _start_preview(self) -> None:
+        """Start live-preview port discovery and forwarding when configured."""
+        if not self._settings.preview.enabled:
+            return
+        from skuld.preview import build_preview
+
+        self.preview_watcher, self.preview_forwarder = build_preview(
+            self._settings.preview,
+            session_id=self.session_id,
+            emit=self._emit_broker_frame,
+        )
+        self.preview_watcher.start()
+        logger.info(
+            "Live preview enabled: scanning listening ports every %ss",
+            self._settings.preview.port_scan_interval_seconds,
+        )
+
     async def startup(self) -> None:
         """Initialize the broker on startup."""
         self._startup_ready = False
@@ -277,6 +294,7 @@ class TransportLifecycleMixin:
         self.service_manager = ServiceManager(self.workspace_dir)
         await self.service_manager.init()
         logger.info("Service manager initialized")
+        self._start_preview()
         self._git_workspace_checkpoint = _capture_git_workspace_checkpoint(self.workspace_dir)
 
         # Initialize Telegram channel if configured
@@ -411,6 +429,11 @@ class TransportLifecycleMixin:
 
         if self._room_bridge is not None:
             await self._room_bridge.stop_presence_sweep()
+
+        if self.preview_watcher is not None:
+            await self.preview_watcher.stop()
+        if self.preview_forwarder is not None:
+            await self.preview_forwarder.aclose()
 
         # Stop chronicle watcher first (flush pending events)
         if self._chronicle_watcher:

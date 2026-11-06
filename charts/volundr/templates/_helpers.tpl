@@ -404,3 +404,14 @@ lifecycle:
 {{- end -}}
 {{- end -}}
 
+
+{{/*
+Live preview domain (defaults to preview.{domain}).
+*/}}
+{{- define "volundr.sessionPreview.domain" -}}
+{{- if .Values.sessionPreview.domain -}}
+  {{- .Values.sessionPreview.domain -}}
+{{- else -}}
+  {{- printf "preview.%s" (required "sessionPreview.domain or global.domain is required for live preview" (include "volundr.domain" .)) -}}
+{{- end -}}
+{{- end }}

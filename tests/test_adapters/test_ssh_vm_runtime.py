@@ -774,3 +774,107 @@ async def test_injected_access_is_closed_only_by_composition_owner(setup, tmp_pa
     await runtime.close()
 
     access.close.assert_not_awaited()
+
+
+def _preview_runtime(tmp_path: Path, **kwargs) -> SshContainerVmRuntime:
+    key = Ed25519PrivateKey.generate()
+    private = tmp_path / "preview-key"
+    public = tmp_path / "preview-key.pub"
+    private.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.OpenSSH,
+            serialization.NoEncryption(),
+        )
+    )
+    public.write_bytes(
+        key.public_key().public_bytes(
+            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
+        )
+    )
+    return SshContainerVmRuntime(
+        ssh_private_key_file=str(private),
+        ssh_public_key_file=str(public),
+        data_dir=str(tmp_path / "preview-data"),
+        skuld_image="test/skuld:dev",
+        **kwargs,
+    )
+
+
+def _launch_environment(runtime: SshContainerVmRuntime) -> dict[str, str]:
+    session = Session(name="test", owner_id="owner", tenant_id="tenant", source=GitSource())
+    spec = SessionSpec(values={"session": {}}, pod_spec=PodSpecAdditions())
+    bootstrap = runtime.bootstrap(session, spec, MachineBootstrap())
+    files = {f.path: f.content for f in bootstrap.files}
+    return json.loads(files[module._LAUNCH])["environment"]
+
+
+_ROUTER_AUTH = {
+    "adapter": "skuld.preview_adapters.WorkloadJwtRouterAuth",
+    "kwargs": {
+        "issuer": "https://forge.example/api/v1/tokens/workload",
+        "audience": "volundr-api",
+        "jwks_uri": "http://127.0.0.1:18080/api/v1/tokens/workload/jwks",
+    },
+}
+
+
+class TestVmLivePreview:
+    def test_off_without_a_router_auth(self, tmp_path):
+        environment = _launch_environment(_preview_runtime(tmp_path))
+
+        assert environment["SKULD__PREVIEW__ENABLED"] == "false"
+        assert "SKULD__PREVIEW__PORT_SCANNER" not in environment
+        assert "SKULD__PREVIEW__ROUTER_AUTH" not in environment
+
+    def test_on_scans_the_vm_minus_its_own_infrastructure_ports(self, tmp_path):
+        runtime = _preview_runtime(
+            tmp_path,
+            preview_router_auth=_ROUTER_AUTH,
+            ssh_port=2222,
+            guest_platform_port=18081,
+            broker_port=8099,
+        )
+
+        environment = _launch_environment(runtime)
+
+        assert environment["SKULD__PREVIEW__ENABLED"] == "true"
+        assert json.loads(environment["SKULD__PREVIEW__PORT_SCANNER"]) == {
+            "adapter": "skuld.preview_adapters.ProcNetListeningPortScanner",
+            "kwargs": {"excluded_ports": [53, 2222, 8099, 18081]},
+        }
+        assert json.loads(environment["SKULD__PREVIEW__ROUTER_AUTH"]) == _ROUTER_AUTH
+
+    def test_extra_excluded_ports_join_the_fixed_ones(self, tmp_path):
+        runtime = _preview_runtime(
+            tmp_path,
+            preview_router_auth=_ROUTER_AUTH,
+            preview_excluded_ports=[5432, "22", 8081],
+        )
+
+        scanner = json.loads(_launch_environment(runtime)["SKULD__PREVIEW__PORT_SCANNER"])
+
+        # defaults: ssh 22, resolver 53, guest platform 18080, broker 8081
+        assert scanner["kwargs"]["excluded_ports"] == [22, 53, 5432, 8081, 18080]
+
+    def test_the_rendered_adapters_are_ones_skuld_can_build(self, tmp_path):
+        from niuu.config import DynamicAdapterConfig
+        from skuld.config import PreviewConfig
+        from skuld.preview import build_preview
+
+        environment = _launch_environment(
+            _preview_runtime(tmp_path, preview_router_auth=_ROUTER_AUTH)
+        )
+        config = PreviewConfig(
+            enabled=environment["SKULD__PREVIEW__ENABLED"] == "true",
+            port_scanner=DynamicAdapterConfig(
+                **json.loads(environment["SKULD__PREVIEW__PORT_SCANNER"])
+            ),
+            router_auth=DynamicAdapterConfig(
+                **json.loads(environment["SKULD__PREVIEW__ROUTER_AUTH"])
+            ),
+        )
+
+        watcher, forwarder = build_preview(config, session_id="s", emit=AsyncMock())
+
+        assert watcher is not None and forwarder is not None
