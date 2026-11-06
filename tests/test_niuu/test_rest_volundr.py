@@ -1736,6 +1736,107 @@ def test_delivery_get_query_cannot_change_the_forwarded_path() -> None:
     assert response.status_code == 422
 
 
+SECRET_REQUEST_ID = "6f1c2d4e-8a9b-4c3d-9e0f-1a2b3c4d5e6f"
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("method", "suffix"),
+    [
+        ("GET", ""),
+        ("POST", ""),
+        ("GET", f"/{SECRET_REQUEST_ID}"),
+        ("POST", f"/{SECRET_REQUEST_ID}/fulfill"),
+        ("POST", f"/{SECRET_REQUEST_ID}/decline"),
+        ("POST", f"/{SECRET_REQUEST_ID}/claim"),
+        ("POST", f"/{SECRET_REQUEST_ID}/cancel"),
+    ],
+)
+def test_secret_request_routes_reach_session_owner(method, suffix) -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    path = f"/api/v1/forge/sessions/s1/secret-requests{suffix}"
+    route = respx.request(method, f"http://alpha{path}").mock(
+        return_value=Response(
+            200, json={"id": SECRET_REQUEST_ID}, headers={"cache-control": "no-store"}
+        )
+    )
+    body = b'{"value": "hunter2", "keep": "session"}' if method == "POST" else None
+    response = client.request(method, path, headers=_headers(), content=body)
+    assert response.status_code == 200
+    assert response.json() == {"id": SECRET_REQUEST_ID}
+    assert response.headers["cache-control"] == "no-store"
+    if body is not None:
+        assert route.calls.last.request.content == body
+
+
+@respx.mock
+def test_secret_request_list_forwards_its_filter_and_forge_refusals_pass_through() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    listing = respx.get("http://alpha/api/v1/forge/sessions/s1/secret-requests").mock(
+        return_value=Response(200, json=[])
+    )
+    ended = respx.post("http://alpha/api/v1/forge/sessions/s1/secret-requests").mock(
+        return_value=Response(409, json={"detail": "session has ended"})
+    )
+
+    assert (
+        client.get(
+            "/api/v1/forge/sessions/s1/secret-requests",
+            headers=_headers(),
+            params={"status": "pending"},
+        ).json()
+        == []
+    )
+    assert listing.calls.last.request.url.params["status"] == "pending"
+
+    response = client.post(
+        "/api/v1/forge/sessions/s1/secret-requests",
+        headers=_headers(),
+        json={"name": "TOKEN", "purpose": "clone"},
+    )
+    assert ended.called
+    assert response.status_code == 409
+    assert response.json() == {"detail": "session has ended"}
+
+
+@respx.mock
+def test_secret_request_body_is_never_parsed_at_the_gateway() -> None:
+    """A malformed fulfil body reaches Forge as bytes; the gateway never answers it with
+    a 422 that would echo the typed value."""
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    path = f"/api/v1/forge/sessions/s1/secret-requests/{SECRET_REQUEST_ID}/fulfill"
+    route = respx.post(f"http://alpha{path}").mock(
+        return_value=Response(422, json={"detail": "body must be a JSON object"})
+    )
+    response = client.post(path, headers=_headers(), content=b"hunter2 not json")
+    assert route.calls.last.request.content == b"hunter2 not json"
+    assert response.status_code == 422
+    assert "hunter2" not in response.text
+
+
+@respx.mock
+def test_secret_request_unknown_operation_or_id_is_not_forwarded() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    owner = respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    base = "/api/v1/forge/sessions/s1/secret-requests"
+    unknown = client.post(f"{base}/{SECRET_REQUEST_ID}/reveal", headers=_headers())
+    assert unknown.status_code == 404
+    not_an_id = client.get(f"{base}/..%2F..%2Ffeature-flags", headers=_headers())
+    assert not_an_id.status_code in (404, 422)
+    assert not owner.called
+
+
 @respx.mock
 def test_activity_report_proxies_to_owner_with_body() -> None:
     """Broker activity heartbeats (incl. cli_session_id for resume) must reach

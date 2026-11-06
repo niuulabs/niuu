@@ -3,6 +3,7 @@ import {
   forgeSessionAction,
   groupContentBlocks,
   isForgeSessionTool,
+  isSecretRequestTool,
   isStandaloneCardTool,
   type ContentBlock,
 } from './groupContentBlocks';
@@ -85,5 +86,27 @@ describe('groupContentBlocks with Forge session calls', () => {
       true,
     );
     expect(grouped.map((item) => item.kind)).toEqual(['group']);
+  });
+});
+
+describe('groupContentBlocks with secret requests', () => {
+  it('names the secret_request part and treats it as a standalone card', () => {
+    expect(isSecretRequestTool('secret_request')).toBe(true);
+    expect(isSecretRequestTool('request_secret')).toBe(false);
+    expect(isStandaloneCardTool('secret_request')).toBe(true);
+  });
+
+  it('keeps every secret request its own card and out of the tool burst around it', () => {
+    const grouped = groupContentBlocks(
+      [
+        use('a', 'Read'),
+        use('b', 'secret_request'),
+        use('c', 'secret_request'),
+        use('d', 'Read'),
+        use('e', 'Read'),
+      ],
+      true,
+    );
+    expect(grouped.map((item) => item.kind)).toEqual(['single', 'single', 'single', 'group']);
   });
 });

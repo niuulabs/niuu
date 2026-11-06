@@ -110,6 +110,8 @@ MCP_PATH = "/mcp"
 NOTIFICATION_EVENT = "session_notification"
 # Gateway-only selectors: never forwarded to a Forge node, whose ids differ.
 _FLEET_SELECTORS = frozenset({"instance_id", "all_instances", "scope"})
+#: The actions Forge offers on one secret request (``rest_secret_requests``).
+SECRET_REQUEST_OPERATIONS = frozenset({"fulfill", "decline", "claim", "cancel"})
 
 _DELIVERY_POST_PATHS = frozenset(
     {
@@ -4965,6 +4967,56 @@ def create_volundr_router(
         )
         _ensure_remote_success(response)
         return JSONResponse(content=response.json(), status_code=response.status_code)
+
+    @router.api_route("/sessions/{session_id}/secret-requests", methods=["GET", "POST"])
+    @router.api_route("/sessions/{session_id}/secret-requests/{request_id}", methods=["GET"])
+    @router.api_route(
+        "/sessions/{session_id}/secret-requests/{request_id}/{operation}", methods=["POST"]
+    )
+    async def secret_request(
+        request: Request,
+        session_id: str,
+        request_id: UUID | None = None,
+        operation: str | None = None,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Secret requests, on the session's owning node.
+
+        The body goes through as bytes and is never parsed here, so a malformed fulfil
+        body cannot be echoed back in a 422. Forge's answer comes back as is: its status
+        (409 for an ended session, 403 for a scoped token on fulfil) and the claim's
+        ``Cache-Control: no-store``.
+        """
+        if operation is not None and operation not in SECRET_REQUEST_OPERATIONS:
+            raise HTTPException(404, "Unknown secret request operation")
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        path = f"/sessions/{session_id}/secret-requests"
+        if request_id is not None:
+            path += f"/{request_id}"
+        if operation is not None:
+            path += f"/{operation}"
+        is_post = request.method == "POST"
+        upstream = await _request_remote(
+            instance,
+            request,
+            method=request.method,
+            path=path,
+            content_body=await request.body() if is_post else None,
+            params=None if is_post else _query_params(request),
+            extra_headers={"content-type": "application/json"} if is_post else None,
+            embedded_app=embedded_forge_app,
+        )
+        headers: dict[str, str] = {}
+        if cache := upstream.headers.get("cache-control"):
+            headers["cache-control"] = cache
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+            headers=headers,
+        )
 
     @router.get("/sessions/{session_id}/logs")
     async def get_logs(

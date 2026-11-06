@@ -1,6 +1,7 @@
 /**
  * Mock adapters for Völundr ports — used in tests and dev mode.
  */
+import type { SecretRequest } from '@niuulabs/domain';
 import type { IVolundrService, ResolveWorkflowGateRequest } from '../ports/IVolundrService';
 import type { ForgeProject } from '../models/volundr.model';
 import type { IClusterAdapter } from '../ports/IClusterAdapter';
@@ -59,6 +60,19 @@ const SEED_SESSIONS: VolundrSession[] = [
     tokensUsed: 1_200,
     taskType: 'skuld-claude',
     activityState: null,
+  },
+];
+
+const SEED_SECRET_REQUESTS: SecretRequest[] = [
+  {
+    id: 'secret-request-1',
+    sessionId: 'sess-1',
+    name: 'GITLAB_TOKEN',
+    purpose: 'Push the release branch to the internal GitLab',
+    target: 'gitlab.niuu.world',
+    status: 'pending',
+    keep: null,
+    credentialName: null,
   },
 ];
 
@@ -1242,6 +1256,19 @@ export function createMockVolundrService(): IVolundrService {
   const sessions = [...SEED_SESSIONS];
   const projects = SEED_PROJECTS.map((project) => ({ ...project }));
   const projectRevisions = new Map<string, number>();
+  const secretRequests = new Map(
+    SEED_SECRET_REQUESTS.map((request) => [request.id, { ...request }]),
+  );
+  const pendingSecretRequest = (sessionId: string, requestId: string): SecretRequest => {
+    const request = secretRequests.get(requestId);
+    if (!request || request.sessionId !== sessionId) {
+      throw new Error(`Secret request not found: ${requestId}`);
+    }
+    if (request.status !== 'pending') {
+      throw new Error(`Secret request ${requestId} is already ${request.status}`);
+    }
+    return request;
+  };
   const externalSessions = SEED_EXTERNAL_SESSIONS.map((session) => ({ ...session }));
   const credentials = new Map(SEED_CREDENTIALS.map((credential) => [credential.name, credential]));
   const launchSpecs = [...SEED_LAUNCH_SPECS];
@@ -1489,6 +1516,27 @@ export function createMockVolundrService(): IVolundrService {
     deleteSession: async () => {},
     archiveSession: async () => {},
     archiveStoppedSessions: async () => [],
+    getSecretRequest: async (sessionId, requestId) => {
+      const request = secretRequests.get(requestId);
+      if (!request || request.sessionId !== sessionId) {
+        throw new Error(`Secret request not found: ${requestId}`);
+      }
+      return { ...request };
+    },
+    fulfillSecretRequest: async (sessionId, requestId, { keep }) => {
+      const request = pendingSecretRequest(sessionId, requestId);
+      // The mock keeps no value: it records only the decision.
+      request.status = 'fulfilled';
+      request.keep = keep;
+      request.credentialName =
+        keep === 'saved' ? request.name.toLowerCase().replace(/_/g, '-') : null;
+      return { ...request };
+    },
+    declineSecretRequest: async (sessionId, requestId) => {
+      const request = pendingSecretRequest(sessionId, requestId);
+      request.status = 'declined';
+      return { ...request };
+    },
     restoreSession: async () => {},
     listArchivedSessions: async () => [],
 

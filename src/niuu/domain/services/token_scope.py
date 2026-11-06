@@ -18,7 +18,8 @@ own *family* of scopes (:data:`SCOPES_BY_TOKEN_USE`):
   this family.
 - ``token_use == "forge_session"`` — minted by Forge when it launches a
   session, bound to that one session, and held by its broker for the Forge MCP
-  (notify, read sessions and, with an operator grant, message or run peers).
+  (notify, read sessions, ask its owner for a secret and, with an operator grant,
+  message or run peers).
 - ``token_use == "notification_delivery"`` — minted by the workload-identity
   exchange for the one workload whose mapping lists the scope in
   ``privileged_scopes``: the Forge push gateway. It is the only scope that
@@ -75,10 +76,14 @@ TOPOLOGY_PUSH_SCOPE = "observatory:topology:push"
 #: ``niuu.domain.services.guild_join`` and ``.claude/rules/architecture.md``.
 NODE_JOIN_SCOPE = "node_join"
 
-#: Forge session credential scopes. ``notify`` and ``read`` are granted to every
-#: session; ``message`` and ``lifecycle`` only through an operator grant.
+#: Forge session credential scopes. ``notify``, ``read`` and ``secret`` are granted to
+#: every session; ``message`` and ``lifecycle`` only through an operator grant.
 FORGE_NOTIFY_SCOPE = "forge:notify"
 FORGE_SESSION_READ_SCOPE = "forge:session:read"
+#: Ask the session's own owner for a secret (secure secret requests) and collect it
+#: once supplied. It never lets a session supply or decline a request: those routes
+#: are the owner's and are closed to every scoped credential.
+FORGE_SESSION_SECRET_SCOPE = "forge:session:secret"
 FORGE_SESSION_MESSAGE_SCOPE = "forge:session:message"
 FORGE_SESSION_LIFECYCLE_SCOPE = "forge:session:lifecycle"
 
@@ -132,6 +137,7 @@ FORGE_SESSION_SCOPES: frozenset[str] = frozenset(
     {
         FORGE_NOTIFY_SCOPE,
         FORGE_SESSION_READ_SCOPE,
+        FORGE_SESSION_SECRET_SCOPE,
         FORGE_SESSION_MESSAGE_SCOPE,
         FORGE_SESSION_LIFECYCLE_SCOPE,
     }
@@ -487,6 +493,7 @@ __all__ = [
     "FORGE_SESSION_PREVIEW_SCOPE",
     "FORGE_SESSION_READ_SCOPE",
     "FORGE_SESSION_SCOPES",
+    "FORGE_SESSION_SECRET_SCOPE",
     "FORGE_SESSION_TOKEN_USE",
     "ISSUER_ONLY_SCOPES",
     "KNOWN_WORKLOAD_SCOPES",

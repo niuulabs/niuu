@@ -67,6 +67,7 @@ from volundr.domain.ports import (
 )
 from volundr.domain.presented_files import PresentedFileStore
 from volundr.domain.projects import SessionCoordination
+from volundr.domain.secret_request_ports import SessionSecretCleanup
 from volundr.domain.services.forge_session_launch import (
     ForgeMcpGrantChangeRefusedError,
     ForgeMcpGrantEscalationError,
@@ -194,6 +195,7 @@ class SessionService:
         user_integration: UserIntegrationPort | None = None,
         presented_file_store: PresentedFileStore | None = None,
         forge_session_projection: ExecutionCredentialProjectionPort | None = None,
+        secret_cleanup: SessionSecretCleanup | None = None,
     ):
         if forge_session_projection is not None and not forge_session_projection.supports(
             runtime_backend
@@ -204,6 +206,7 @@ class SessionService:
             )
         self._repository = repository
         self._presented_file_store = presented_file_store
+        self._secret_cleanup = secret_cleanup
         self._pod_manager = pod_manager
         self._git_registry = git_registry
         self._user_integration = user_integration
@@ -1095,6 +1098,11 @@ class SessionService:
         # Run contributor cleanup in reverse order
         await self._run_cleanup(session, principal, context=cleanup_context)
 
+        # A failure keeps the record, so the delete can be retried: a session-only
+        # secret must never outlive the session that asked for it.
+        if self._secret_cleanup is not None:
+            await self._secret_cleanup.purge_session(session_id)
+
         deleted = await self._repository.delete(session_id)
 
         # Run optional resource cleanup after session record is gone
@@ -1131,6 +1139,16 @@ class SessionService:
 
         if CleanupTarget.CHRONICLES in targets:
             await self._cleanup_chronicles(session_id)
+
+    async def _cancel_secret_requests(self, session_id: UUID) -> None:
+        """Cancel the session's open secret requests and delete their session-only values.
+
+        Not guarded: a value that cannot be deleted is an error for the caller, never a
+        secret left behind unnoticed.
+        """
+        if self._secret_cleanup is None:
+            return
+        await self._secret_cleanup.cancel_for_session(session_id)
 
     async def _cleanup_presented_files(self, session_id: UUID) -> None:
         """Drop the session's durable presented files (F2) with the session."""
@@ -2108,6 +2126,7 @@ class SessionService:
                 .model_copy(update={"error": kept_error})
             )
             final = await self._repository.update(stopped)
+            await self._cancel_secret_requests(session_id)
 
             if self._broadcaster is not None:
                 await self._broadcaster.publish_session_updated(final)
@@ -2159,6 +2178,8 @@ class SessionService:
             SessionStatus.CREATED,
         ):
             raise SessionStateError(session_id, "archive", session.status)
+
+        await self._cancel_secret_requests(session_id)
 
         now = datetime.now(UTC)
         archived = session.model_copy(
@@ -2292,6 +2313,8 @@ class SessionService:
     ) -> Session:
         updated = self._reconciled_session(session, actual_status, status_detail)
         final = await self._repository.update(updated)
+        if final.status in _ENDED_STATUSES and session.status not in _ENDED_STATUSES:
+            await self._cancel_secret_requests(final.id)
         if self._broadcaster is not None:
             await self._broadcaster.publish_session_updated(final)
         if session.status != SessionStatus.RUNNING and final.status == SessionStatus.RUNNING:
@@ -2454,6 +2477,10 @@ class SessionService:
         untouched (no false reap).
         """
         return await self.reconcile_session_if_active(session_id)
+
+
+#: Statuses of a session that no longer runs: its secret requests are closed with it.
+_ENDED_STATUSES = frozenset({SessionStatus.STOPPED, SessionStatus.FAILED, SessionStatus.ARCHIVED})
 
 
 def _booting_status(session: Session, actual_status: SessionStatus) -> SessionStatus:

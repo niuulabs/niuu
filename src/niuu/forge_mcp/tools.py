@@ -62,11 +62,14 @@ from niuu.forge_mcp.guidance import (
     QUESTION_STANDARD,
 )
 from niuu.forge_mcp.models import (
+    SECRET_NAME_MAX_CHARS,
+    SECRET_NAME_PATTERN,
     FlockError,
     ForgeApiError,
     ForgeMcpGrant,
     ForgeMcpLimits,
     ForgeMcpNotifyMode,
+    SecretRequestError,
     ToolResult,
 )
 from niuu.forge_mcp.ports import ForgeClient, ForgeMcpFlock, ForgeMcpHost
@@ -701,6 +704,49 @@ _REPORT_ARTIFACT_SCHEMA = _object(
     required=("url", "title"),
 )
 
+
+class _RequestSecretArgs(_Args):
+    name: str = Field(pattern=SECRET_NAME_PATTERN, max_length=SECRET_NAME_MAX_CHARS)
+    purpose: str = Field(min_length=1)
+    target: str | None = Field(default=None, min_length=1)
+
+
+_REQUEST_SECRET_DESCRIPTION = (
+    "Ask the user for a secret (an API key, token or password) you need. Use this instead "
+    "of ever asking them to paste a secret into the chat: the chat shows them a masked "
+    "field that goes straight to Forge, so the value never enters the transcript or your "
+    "context. The call waits until they answer. On success the value is in a private file "
+    "and you get only its `path`: refer to the secret by that path, e.g. "
+    '`curl -H "Authorization: Bearer $(cat <path>)" …` inside a command. Never echo, '
+    "print, log or copy it into a file you present. `name` is the identifier you will "
+    "know it by (UPPER_SNAKE_CASE, e.g. GITLAB_TOKEN); `purpose` tells the user what it is "
+    "for; `target` optionally names the host or service it unlocks. Asking again for a "
+    "name that is still open returns to the same request instead of a second card. "
+    "Errors say if the user declined, the request was cancelled, or the wait ended while "
+    "the request stays open (call again with the same name to keep waiting)."
+)
+
+_REQUEST_SECRET_SCHEMA = _object(
+    {
+        "name": {
+            "type": "string",
+            "pattern": SECRET_NAME_PATTERN,
+            "maxLength": SECRET_NAME_MAX_CHARS,
+            "description": "UPPER_SNAKE_CASE name of the secret; it becomes the file's name.",
+        },
+        "purpose": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why you need it, in words the user will recognise.",
+        },
+        "target": {
+            "type": ["string", "null"],
+            "description": "The host or service it is for (e.g. gitlab.example.com), if any.",
+        },
+    },
+    required=("name", "purpose"),
+)
+
 TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="environment",
@@ -724,6 +770,12 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         description=_REPORT_ARTIFACT_DESCRIPTION,
         input_schema=_REPORT_ARTIFACT_SCHEMA,
         args_model=_ReportArtifactArgs,
+    ),
+    ToolSpec(
+        name="request_secret",
+        description=_REQUEST_SECRET_DESCRIPTION,
+        input_schema=_REQUEST_SECRET_SCHEMA,
+        args_model=_RequestSecretArgs,
     ),
     ToolSpec(
         name="describe_session",
@@ -1010,9 +1062,10 @@ FEED_NOTIFY_SPEC = ToolSpec(
 )
 
 
-#: Tools that write the caller's own durable transcript, so only a session's own broker
+#: Tools that write the caller's own durable transcript (or, for ``request_secret``, put a
+#: card in it and a file in the session's runtime), so only a session's own broker
 #: (transcript mode) can serve them.
-TRANSCRIPT_ONLY_TOOLS = frozenset({"report_artifact"})
+TRANSCRIPT_ONLY_TOOLS = frozenset({"report_artifact", "request_secret"})
 
 
 def _specs_for(mode: ForgeMcpNotifyMode) -> tuple[ToolSpec, ...]:
@@ -1161,6 +1214,7 @@ class ForgeMcpToolbox:
             "notify": notify,
             "describe_session": self._describe_session,
             "report_artifact": self._report_artifact,
+            "request_secret": self._request_secret,
             "list_notifications": self._list_notifications,
             "list_sessions": self._list_sessions,
             "get_session": self._get_session,
@@ -1202,7 +1256,7 @@ class ForgeMcpToolbox:
             return await self._handlers[name](args)
         except ForgeApiError as exc:
             return ToolResult.error(_forge_error_text(name, exc))
-        except FlockError as exc:
+        except (FlockError, SecretRequestError) as exc:
             return ToolResult.error(f"{name} failed: {exc}")
 
     def _ok(self, payload: dict[str, Any]) -> ToolResult:
@@ -1266,6 +1320,10 @@ class ForgeMcpToolbox:
         except ValidationError as exc:
             return ToolResult.error(_validation_text("report_artifact", exc))
         return self._ok(await self._host.report_artifact(report))
+
+    async def _request_secret(self, args: _RequestSecretArgs) -> ToolResult:
+        """The host's result carries a path only; the value never passes through here."""
+        return self._ok(await self._host.request_secret(args.name, args.purpose, args.target))
 
     async def _describe_session(self, args: _DescribeSessionArgs) -> ToolResult:
         session_id = self._host.session_id

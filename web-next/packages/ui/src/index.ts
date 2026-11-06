@@ -59,3 +59,5 @@ export * from './review';
 export * from './MCPConnectionForm';
 
 export { ChatConnectionsContext, ChatConnectionsButton } from './ChatConnections';
+export { SecretRequestsContext, useSecretRequests } from './SecretRequests';
+export type { SecretRequestsPort } from './SecretRequests';
