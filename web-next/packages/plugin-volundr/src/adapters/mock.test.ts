@@ -1098,3 +1098,55 @@ describe('mock session read state', () => {
     );
   });
 });
+
+describe('mock secret requests', () => {
+  it('serves a pending request and records the keep choice, never the value', async () => {
+    const svc = createMockVolundrService();
+    expect(await svc.getSecretRequest('sess-1', 'secret-request-1')).toMatchObject({
+      name: 'GITLAB_TOKEN',
+      status: 'pending',
+    });
+    const fulfilled = await svc.fulfillSecretRequest('sess-1', 'secret-request-1', {
+      value: 'glpat-123',
+      keep: 'saved',
+    });
+    expect(fulfilled).toMatchObject({
+      status: 'fulfilled',
+      keep: 'saved',
+      credentialName: 'gitlab-token',
+    });
+    expect(JSON.stringify(fulfilled)).not.toContain('glpat-123');
+    expect(await svc.getSecretRequest('sess-1', 'secret-request-1')).toMatchObject({
+      status: 'fulfilled',
+    });
+    await expect(
+      svc.fulfillSecretRequest('sess-1', 'secret-request-1', { value: 'again', keep: 'session' }),
+    ).rejects.toThrow('already fulfilled');
+  });
+
+  it('keeps a session-only value without a credential name', async () => {
+    const svc = createMockVolundrService();
+    expect(
+      await svc.fulfillSecretRequest('sess-1', 'secret-request-1', { value: 'v', keep: 'session' }),
+    ).toMatchObject({ keep: 'session', credentialName: null });
+  });
+
+  it('declines a pending request once', async () => {
+    const svc = createMockVolundrService();
+    expect(await svc.declineSecretRequest('sess-1', 'secret-request-1')).toMatchObject({
+      status: 'declined',
+    });
+    await expect(svc.declineSecretRequest('sess-1', 'secret-request-1')).rejects.toThrow(
+      'already declined',
+    );
+  });
+
+  it('refuses an unknown request or one from another session', async () => {
+    const svc = createMockVolundrService();
+    await expect(svc.getSecretRequest('sess-1', 'nope')).rejects.toThrow('not found: nope');
+    await expect(svc.getSecretRequest('sess-2', 'secret-request-1')).rejects.toThrow('not found');
+    await expect(svc.declineSecretRequest('sess-2', 'secret-request-1')).rejects.toThrow(
+      'not found',
+    );
+  });
+});

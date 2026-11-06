@@ -2009,3 +2009,44 @@ class TestForgeSessionCredentialFile:
             if c["name"] == "skuld"
         )
         assert {"name": "forge-session-x", "mountPath": mount} in broker["volumeMounts"]
+
+
+def _skuld_config(*set_args: str) -> dict:
+    command = ["helm", "template", "secrets-test", str(CHART_DIR), *set_args]
+    return next(
+        yaml.safe_load(doc["data"]["config.yaml"])
+        for doc in yaml.safe_load_all(subprocess.check_output(command))
+        if doc and doc.get("kind") == "ConfigMap" and "config.yaml" in doc.get("data", {})
+    )
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_secret_request_knobs_reach_runtime_configuration():
+    from pydantic import ValidationError
+
+    from skuld.config import SkuldSettings
+
+    defaults = _skuld_config()
+    assert defaults["secret_requests"] == {"poll_interval_s": 2, "wait_max_s": 50}
+    assert "forge_mcp" not in defaults
+    assert SkuldSettings(**defaults).secret_requests.wait_max_s == 50
+
+    tuned = _skuld_config(
+        "--set",
+        "secretRequests.waitMaxS=300,secretRequests.pollIntervalS=5",
+        "--set",
+        "forgeMcp.brokerRequestTimeoutS=400,forgeMcp.toolTimeoutS=500",
+    )
+    settings = SkuldSettings(**tuned)
+    assert (settings.secret_requests.poll_interval_s, settings.secret_requests.wait_max_s) == (
+        5,
+        300,
+    )
+    assert (settings.forge_mcp.broker_request_timeout_s, settings.forge_mcp.tool_timeout_s) == (
+        400,
+        500,
+    )
+
+    too_long = _skuld_config("--set", "secretRequests.waitMaxS=300")
+    with pytest.raises(ValidationError, match="secret_requests.wait_max_s"):
+        SkuldSettings(**too_long)

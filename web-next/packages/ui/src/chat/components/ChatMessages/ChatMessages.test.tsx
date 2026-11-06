@@ -394,3 +394,48 @@ describe('messageTime', () => {
     expect(messageTime(new Date(2026, 9, 31, 9, 54), now)).toBe('Oct 31, 2026 at 9:54 AM');
   });
 });
+
+describe('secret request turns', () => {
+  const secretTurn: ChatMessage = {
+    id: 'sr_1',
+    role: 'assistant',
+    content: 'Secret requested: GITLAB_TOKEN',
+    createdAt: now,
+    status: 'done',
+    parts: [
+      {
+        type: 'tool_use',
+        id: 'sr_1',
+        name: 'secret_request',
+        input: {
+          request_id: 'r-1',
+          name: 'GITLAB_TOKEN',
+          purpose: 'Push the branch',
+          target: 'gitlab.niuu.world',
+        },
+      },
+    ],
+  };
+
+  it('renders a read-only card without a host and does not repeat the content as prose', () => {
+    render(<AssistantMessage message={secretTurn} />);
+    const card = screen.getByTestId('secret-request-card');
+    expect(card).toHaveTextContent('Push the branch');
+    expect(card).toHaveTextContent('Answer this in Forge');
+    expect(screen.queryByText('Secret requested: GITLAB_TOKEN')).toBeNull();
+    expect(screen.queryByTestId('tool-block')).toBeNull();
+  });
+
+  it('falls back to a generic tool block when the input is unreadable', () => {
+    render(
+      <AssistantMessage
+        message={{
+          ...secretTurn,
+          parts: [{ type: 'tool_use', id: 'sr_2', name: 'secret_request', input: {} }],
+        }}
+      />,
+    );
+    expect(screen.queryByTestId('secret-request-card')).toBeNull();
+    expect(screen.getByTestId('tool-block')).toBeInTheDocument();
+  });
+});

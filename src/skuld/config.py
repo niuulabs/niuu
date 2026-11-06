@@ -832,6 +832,30 @@ class ForgeMcpConfig(BaseModel):
         return self
 
 
+class SecretRequestsConfig(BaseModel):
+    """How the ``request_secret`` tool waits for the user to type a secret into the chat card."""
+
+    poll_interval_s: float = Field(
+        default=2.0,
+        gt=0,
+        description=(
+            "How often request_secret asks Forge whether the user answered the card. It "
+            "trades answer latency against Forge load; there is no event to wait on."
+        ),
+    )
+    wait_max_s: float = Field(
+        default=50.0,
+        gt=0,
+        description=(
+            "Longest one request_secret call waits for the user. Bounded by the engine's MCP "
+            "call timeouts: it must be shorter than forge_mcp.broker_request_timeout_s and "
+            "forge_mcp.tool_timeout_s, or the engine kills the call first (startup fails "
+            "otherwise). When it passes the call fails loudly and the request stays open in "
+            "the chat; the agent calls request_secret again with the same name to keep waiting."
+        ),
+    )
+
+
 class CodexAuthConfig(BaseModel):
     """Dynamic Codex authentication adapter configuration."""
 
@@ -1280,6 +1304,7 @@ class SkuldSettings(BaseSettings):
     acp_prompt_timeout_s: float = Field(default=300.0)  # ACP/MSP (Grok Build, Muse) turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
+    secret_requests: SecretRequestsConfig = Field(default_factory=SecretRequestsConfig)
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)
     observability: SkuldObservabilityConfig = Field(default_factory=SkuldObservabilityConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
@@ -1349,6 +1374,24 @@ class SkuldSettings(BaseSettings):
                 "its flock through the room's mesh route via the forge MCP flock tools. "
                 "Enable them, or unset mesh.flock_broker"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _secret_wait_fits_engine_call(self) -> "SkuldSettings":
+        """A wait the engine cuts off mid-call would read as a failure, not as "still open"."""
+        if not self.forge_mcp.enabled:
+            return self
+        wait = self.secret_requests.wait_max_s
+        for knob, bound in (
+            ("forge_mcp.broker_request_timeout_s", self.forge_mcp.broker_request_timeout_s),
+            ("forge_mcp.tool_timeout_s", self.forge_mcp.tool_timeout_s),
+        ):
+            if wait >= bound:
+                raise ValueError(
+                    f"secret_requests.wait_max_s ({wait}) must be shorter than {knob} ({bound}), "
+                    "or the engine ends every long request_secret call before it can answer. "
+                    f"Lower secret_requests.wait_max_s or raise {knob}"
+                )
         return self
 
     @property

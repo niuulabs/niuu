@@ -1016,6 +1016,11 @@ function buildSplitVolundrService(
     deleteSession: (sessionId, cleanup) => forge.deleteSession(sessionId, cleanup),
     archiveSession: (sessionId) => forge.archiveSession(sessionId),
     archiveStoppedSessions: () => forge.archiveStoppedSessions(),
+    getSecretRequest: (sessionId, requestId) => forge.getSecretRequest(sessionId, requestId),
+    fulfillSecretRequest: (sessionId, requestId, fulfillment) =>
+      forge.fulfillSecretRequest(sessionId, requestId, fulfillment),
+    declineSecretRequest: (sessionId, requestId) =>
+      forge.declineSecretRequest(sessionId, requestId),
     restoreSession: (sessionId) => forge.restoreSession(sessionId),
     listArchivedSessions: (options) => forge.listArchivedSessions(options),
     listExternalSessions: () => forge.listExternalSessions(),

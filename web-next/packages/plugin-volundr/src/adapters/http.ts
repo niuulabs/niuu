@@ -71,6 +71,7 @@ import type {
   ExternalSession,
   SessionReadState,
 } from '../models/volundr.model';
+import { normalizeSecretRequest, type SecretRequestPayload } from './secretRequestWire';
 import { SessionForkError, SessionReadStateConflictError } from '../domain/session';
 
 /** Minimal HTTP client — structurally compatible with ApiClient from @niuulabs/query. */
@@ -1566,6 +1567,10 @@ export function buildVolundrHttpAdapter(
     return `${path}${path.includes('?') ? '&' : '?'}instance_id=${encodeURIComponent(instanceId)}`;
   }
 
+  function secretRequestPath(sessionId: string, requestId: string, action = ''): string {
+    return sessionPath(sessionId, `/secret-requests/${encodeURIComponent(requestId)}${action}`);
+  }
+
   async function loadSession(
     id: string,
     options?: { instanceId?: string; signal?: AbortSignal },
@@ -2151,6 +2156,23 @@ export function buildVolundrHttpAdapter(
     archiveSession: (sessionId) =>
       forgeClient.patch<void>(sessionPath(sessionId, '/archive'), undefined),
     archiveStoppedSessions: () => forgeClient.post<string[]>('/sessions/archive-stopped'),
+    getSecretRequest: async (sessionId, requestId) =>
+      normalizeSecretRequest(
+        await forgeClient.get<SecretRequestPayload>(secretRequestPath(sessionId, requestId)),
+      ),
+    fulfillSecretRequest: async (sessionId, requestId, fulfillment) =>
+      normalizeSecretRequest(
+        await forgeClient.post<SecretRequestPayload>(
+          secretRequestPath(sessionId, requestId, '/fulfill'),
+          { value: fulfillment.value, keep: fulfillment.keep },
+        ),
+      ),
+    declineSecretRequest: async (sessionId, requestId) =>
+      normalizeSecretRequest(
+        await forgeClient.post<SecretRequestPayload>(
+          secretRequestPath(sessionId, requestId, '/decline'),
+        ),
+      ),
     restoreSession: (sessionId) =>
       forgeClient.patch<void>(sessionPath(sessionId, '/restore'), undefined),
     listArchivedSessions: async (options) => {

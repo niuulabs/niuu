@@ -24,6 +24,7 @@ from niuu.domain.services.token_scope import (
     FORGE_SESSION_LIFECYCLE_SCOPE,
     FORGE_SESSION_MESSAGE_SCOPE,
     FORGE_SESSION_READ_SCOPE,
+    FORGE_SESSION_SECRET_SCOPE,
 )
 
 FORGE_PREFIX = "/api/v1/forge"
@@ -121,6 +122,26 @@ ROUTE_POLICIES: tuple[RoutePolicy, ...] = (
     RoutePolicy("PUT", f"{_S}/description", FORGE_NOTIFY_SCOPE, Binding.OWN),
     # The broker's durable copy of a file its own session presented (F2).
     RoutePolicy("PUT", f"{_S}/files/presented/{{file_id}}", FORGE_NOTIFY_SCOPE, Binding.OWN),
+    # Secure secret requests: the session asks its own owner for a secret, watches the
+    # request and collects the value once. Supplying or declining (fulfill, decline) is
+    # the owner's alone and is deliberately not listed.
+    RoutePolicy("POST", f"{_S}/secret-requests", FORGE_SESSION_SECRET_SCOPE, Binding.OWN),
+    RoutePolicy("GET", f"{_S}/secret-requests", FORGE_SESSION_SECRET_SCOPE, Binding.OWN),
+    RoutePolicy(
+        "GET", f"{_S}/secret-requests/{{request_id}}", FORGE_SESSION_SECRET_SCOPE, Binding.OWN
+    ),
+    RoutePolicy(
+        "POST",
+        f"{_S}/secret-requests/{{request_id}}/claim",
+        FORGE_SESSION_SECRET_SCOPE,
+        Binding.OWN,
+    ),
+    RoutePolicy(
+        "POST",
+        f"{_S}/secret-requests/{{request_id}}/cancel",
+        FORGE_SESSION_SECRET_SCOPE,
+        Binding.OWN,
+    ),
     # The Forge-hosted MCP. Each tool re-enters this allow-list as a REST call.
     RoutePolicy("POST", f"{FORGE_PREFIX}/mcp", None, Binding.NONE),
 )

@@ -68,6 +68,19 @@ class FlockError(Exception):
     """A flock tool could not hand work to, or hear from, the brokered flock."""
 
 
+#: A secret's name is also its file name and an environment-variable-shaped identifier, so the
+#: shape is fixed by the Forge REST contract (``POST /sessions/{id}/secret-requests``).
+SECRET_NAME_PATTERN = r"^[A-Z_][A-Z0-9_]*$"
+SECRET_NAME_MAX_CHARS = 255
+
+
+class SecretRequestError(Exception):
+    """``request_secret`` ended without a secret: declined, cancelled or not answered in time.
+
+    The message is shown to the model, so it must never contain the secret's value.
+    """
+
+
 @dataclass(frozen=True)
 class ToolResult:
     """One MCP ``tools/call`` result, before transport encoding."""

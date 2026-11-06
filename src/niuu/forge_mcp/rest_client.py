@@ -185,3 +185,23 @@ class RestForgeClient(ForgeClient):
         return await self._object(
             "PUT", f"/sessions/{quote(session_id)}/description", json=dict(changes)
         )
+
+    async def create_secret_request(self, session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        return await self._object(
+            "POST", f"/sessions/{quote(session_id)}/secret-requests", json=dict(body)
+        )
+
+    async def get_secret_request(self, session_id: str, request_id: str) -> dict[str, Any]:
+        return await self._object(
+            "GET", f"/sessions/{quote(session_id)}/secret-requests/{quote(request_id)}"
+        )
+
+    async def claim_secret_request(self, session_id: str, request_id: str) -> dict[str, Any]:
+        return await self._object(
+            "POST", f"/sessions/{quote(session_id)}/secret-requests/{quote(request_id)}/claim"
+        )
+
+    async def cancel_secret_request(self, session_id: str, request_id: str) -> dict[str, Any]:
+        return await self._object(
+            "POST", f"/sessions/{quote(session_id)}/secret-requests/{quote(request_id)}/cancel"
+        )
