@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { cn } from '../../utils/cn';
 import { useStoredPreference } from './useStoredPreference';
 import './ResizableSidebar.css';
 
@@ -27,10 +28,18 @@ export interface SidebarResizerProps {
   className?: string;
   /**
    * Where the panel sits. A panel on the right grows when its edge moves left, so the drag
-   * and the arrow keys run the other way.
+   * and the arrow keys run the other way. A panel on the bottom is sized by its top edge:
+   * `width` is then its height, and it grows as the edge moves up.
    */
-  panelSide?: 'left' | 'right';
+  panelSide?: 'left' | 'right' | 'bottom';
 }
+
+/** The arrow key that grows a panel on each side, then the one that shrinks it. */
+const ARROW_KEYS = {
+  left: ['ArrowRight', 'ArrowLeft'],
+  right: ['ArrowLeft', 'ArrowRight'],
+  bottom: ['ArrowUp', 'ArrowDown'],
+} as const;
 
 /** The draggable edge of a sidebar: drag, arrow keys, Home and End; double-click resets. */
 export function SidebarResizer({
@@ -42,30 +51,39 @@ export function SidebarResizer({
   className,
   panelSide = 'left',
 }: SidebarResizerProps) {
-  const drag = useRef<{ x: number; width: number } | null>(null);
+  const drag = useRef<{ at: number; width: number } | null>(null);
+  const vertical = panelSide === 'bottom';
   const grow = panelSide === 'left' ? 1 : -1;
-  const widthAt = (clientX: number) =>
-    clampSidebarWidth(drag.current!.width + grow * (clientX - drag.current!.x), bounds);
+  const pointerAt = (event: { clientX: number; clientY: number }) =>
+    vertical ? event.clientY : event.clientX;
+  const widthAt = (at: number) =>
+    clampSidebarWidth(drag.current!.width + grow * (at - drag.current!.at), bounds);
+  const [growKey, shrinkKey] = ARROW_KEYS[panelSide];
   return (
     <div
       role="separator"
       aria-label={label}
-      aria-orientation="vertical"
+      // A separator's orientation is the line it draws: a bottom panel's edge is horizontal.
+      aria-orientation={vertical ? 'horizontal' : 'vertical'}
       aria-valuemin={bounds.min}
       aria-valuemax={bounds.max}
       aria-valuenow={width}
       tabIndex={0}
-      className={className ? `niuu-sidebar-resizer ${className}` : 'niuu-sidebar-resizer'}
+      className={cn(
+        'niuu-sidebar-resizer',
+        vertical && 'niuu-sidebar-resizer--horizontal',
+        className,
+      )}
       onPointerDown={(event) => {
-        drag.current = { x: event.clientX, width };
+        drag.current = { at: pointerAt(event), width };
         event.currentTarget.setPointerCapture(event.pointerId);
       }}
       onPointerMove={(event) => {
-        if (drag.current) onDrag(widthAt(event.clientX));
+        if (drag.current) onDrag(widthAt(pointerAt(event)));
       }}
       onPointerUp={(event) => {
         if (!drag.current) return;
-        onCommit(widthAt(event.clientX));
+        onCommit(widthAt(pointerAt(event)));
         drag.current = null;
         onDrag(null);
       }}
@@ -74,15 +92,14 @@ export function SidebarResizer({
         onDrag(null);
       }}
       onKeyDown={(event) => {
-        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        if (![growKey, shrinkKey, 'Home', 'End'].includes(event.key)) return;
         event.preventDefault();
         const next =
           event.key === 'Home'
             ? bounds.min
             : event.key === 'End'
               ? bounds.max
-              : width +
-                grow * (event.key === 'ArrowRight' ? bounds.keyboardStep : -bounds.keyboardStep);
+              : width + (event.key === growKey ? bounds.keyboardStep : -bounds.keyboardStep);
         onCommit(clampSidebarWidth(next, bounds));
       }}
       onDoubleClick={() => onCommit(bounds.default)}

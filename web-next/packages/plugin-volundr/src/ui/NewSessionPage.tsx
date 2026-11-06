@@ -18,7 +18,12 @@ import {
 import { ArrowRight } from 'lucide-react';
 import type { IVolundrService } from '../ports/IVolundrService';
 import type { SessionDefinition } from '../models/volundr.model';
-import { deriveCliTool, getDefinitionRune, validateSessionName } from './launchWizardModel';
+import {
+  deriveCliTool,
+  getDefinitionRune,
+  normalizeRepoUrl,
+  validateSessionName,
+} from './launchWizardModel';
 import {
   PROVIDER_SETTINGS_PATH,
   availableEngines,
@@ -126,6 +131,14 @@ export function NewSessionPage() {
     [definitions, integrations, integrationCatalogQuery.data],
   );
   const repos = useMemo(() => reposQuery.data ?? [], [reposQuery.data]);
+  // A link from a session names its repository as Forge recorded it (often without `.git`);
+  // the catalog's clone URL for the same repository is the one to select and launch with.
+  const repoValue = useMemo(
+    () =>
+      repos.find((item) => normalizeRepoUrl(item.cloneUrl) === normalizeRepoUrl(repo))?.cloneUrl ??
+      repo,
+    [repo, repos],
+  );
   const personas = personasQuery.data ?? [];
   const targets = useMemo(
     () => (targetsQuery.data ?? []).filter((target) => target.enabled),
@@ -141,7 +154,7 @@ export function NewSessionPage() {
   const selectedDefinition: SessionDefinition | undefined = selectedEngine?.definition;
   const enginesPending =
     definitionsQuery.isPending || integrationsQuery.isPending || integrationCatalogQuery.isPending;
-  const sessionName = quickLaunchName('', repo);
+  const sessionName = quickLaunchName('', repoValue);
   const nameError = validateSessionName(sessionName);
   const loadError =
     definitionsQuery.error ??
@@ -151,7 +164,7 @@ export function NewSessionPage() {
     integrationCatalogQuery.error;
   const canStart =
     task.trim().length > 0 &&
-    repo.trim().length > 0 &&
+    repoValue.trim().length > 0 &&
     Boolean(selectedDefinition) &&
     !nameError &&
     !creating &&
@@ -163,7 +176,7 @@ export function NewSessionPage() {
     await launch(
       {
         name: sessionName,
-        source: quickLaunchSource(false, repo, branch),
+        source: quickLaunchSource(false, repoValue, branch),
         definition: selectedDefinition,
         model: launchModel(selectedEngine, provider, ''),
         instanceId: defaultTargetId(targets),
@@ -173,7 +186,7 @@ export function NewSessionPage() {
           provider,
           integrations,
           repos,
-          repoUrl: repo.trim(),
+          repoUrl: repoValue.trim(),
           local: false,
         }),
       },
@@ -188,7 +201,7 @@ export function NewSessionPage() {
         onOpenChange={setWizardOpen}
         initialForm={{
           sourcetype: 'git',
-          repo: repo.trim(),
+          repo: repoValue.trim(),
           branch: branch.trim(),
           sessionName,
           personaName,
@@ -239,7 +252,7 @@ export function NewSessionPage() {
             {repos.length > 0 ? (
               <RepoSelect
                 repos={repos}
-                value={repo}
+                value={repoValue}
                 onChange={(value) => {
                   const selected = repos.find((item) => item.cloneUrl === value);
                   setRepo(value);
@@ -259,11 +272,11 @@ export function NewSessionPage() {
             )}
           </Field>
           <Field label="Branch" hint="Optional — uses the repository default">
-            {repo && repos.length > 0 ? (
+            {repoValue && repos.length > 0 ? (
               <BranchSelect
                 loadBranches={repoCatalog.getBranches}
                 repos={repos}
-                selectedRepos={repo}
+                selectedRepos={repoValue}
                 value={branch}
                 onChange={setBranch}
                 testId="new-session-branch"

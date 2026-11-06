@@ -208,10 +208,12 @@ describe('links to files a stopped or presenting session wrote', () => {
     markdown,
     filesReadable = true,
     presented = [],
+    onOpenWorkspaceFile,
   }: {
     markdown: string;
     filesReadable?: boolean;
     presented?: { fileId: string; name: string; mime?: string; path?: string }[];
+    onOpenWorkspaceFile?: (path: string) => void;
   }) {
     const filesystem = {
       ...fileSystemStub(),
@@ -224,6 +226,7 @@ describe('links to files a stopped or presenting session wrote', () => {
         filesystem={filesystem}
         presented={presented}
         filesReadable={filesReadable}
+        onOpenWorkspaceFile={onOpenWorkspaceFile}
       >
         <MarkdownContent content={markdown} />
       </SessionResources>,
@@ -294,5 +297,26 @@ describe('links to files a stopped or presenting session wrote', () => {
         expect.any(AbortSignal),
       ),
     );
+  });
+
+  it("hands a live workspace file to the host's own pane instead of the dialog", () => {
+    const onOpenWorkspaceFile = vi.fn();
+    const filesystem = render2({ markdown: '[notes](docs/notes.md)', onOpenWorkspaceFile });
+
+    fireEvent.click(screen.getByRole('button', { name: 'notes' }));
+
+    expect(onOpenWorkspaceFile).toHaveBeenCalledWith('/workspace/docs/notes.md');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(filesystem.downloadFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps a stopped session's file in the dialog, which says it is gone", async () => {
+    const onOpenWorkspaceFile = vi.fn();
+    render2({ markdown: '[notes](notes.md)', filesReadable: false, onOpenWorkspaceFile });
+
+    fireEvent.click(screen.getByRole('button', { name: 'notes' }));
+
+    expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
+    expect(await screen.findByRole('alert')).toHaveTextContent('This session has stopped');
   });
 });

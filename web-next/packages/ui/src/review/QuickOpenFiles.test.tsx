@@ -55,4 +55,19 @@ describe('QuickOpenFiles', () => {
     fireEvent.keyDown(screen.getByLabelText('Find a file'), { key: 'Escape' });
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
+
+  it('says which sources failed to load, so a missing file is not read as absent', () => {
+    render(
+      <QuickOpenFiles
+        open
+        onOpenChange={vi.fn()}
+        candidates={[]}
+        loadErrors={['The changed files could not be listed: 502']}
+        onPick={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'The changed files could not be listed: 502',
+    );
+  });
 });

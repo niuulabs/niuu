@@ -71,7 +71,7 @@ import type {
   ExternalSession,
   SessionReadState,
 } from '../models/volundr.model';
-import { SessionReadStateConflictError } from '../domain/session';
+import { SessionForkError, SessionReadStateConflictError } from '../domain/session';
 
 /** Minimal HTTP client — structurally compatible with ApiClient from @niuulabs/query. */
 export interface HttpClient {
@@ -2106,6 +2106,42 @@ export function buildVolundrHttpAdapter(
       normalizeSession(await forgeClient.post<SessionPayload>('/sessions/connect', config)),
     updateSession: (sessionId, updates) =>
       forgeClient.put<SessionPayload>(sessionPath(sessionId), updates).then(normalizeSession),
+    forkSession: async (sessionId, name) => {
+      // The reforge runs on the host that holds the session's chronicle, as Lexi's fork does.
+      const instanceId =
+        sessionCache.get(sessionId)?.instanceId ?? archivedSessionOwners.get(sessionId);
+      const chronicle = await forgeClient.get<{ id: string }>(sessionPath(sessionId, '/chronicle'));
+      const reforgePath = `/chronicles/${encodeURIComponent(chronicle.id)}/reforge`;
+      const child = normalizeSession(
+        await forgeClient.post<SessionPayload>(
+          instanceId ? `${reforgePath}?instance_id=${encodeURIComponent(instanceId)}` : reforgePath,
+        ),
+      );
+      if (instanceId && !child.instanceId) child.instanceId = instanceId;
+      sessionCache.set(child.id, child);
+      publishSessions();
+      // Reforge takes no name and only creates the child: name it, then start it.
+      let step = 'name';
+      try {
+        const named = normalizeSession(
+          await forgeClient.put<SessionPayload>(sessionPath(child.id), { name }),
+        );
+        step = 'start';
+        await forgeClient.post<void>(sessionPath(child.id, '/start'));
+        return { ...named, instanceId: named.instanceId ?? child.instanceId };
+      } catch (error) {
+        const detail =
+          error instanceof ApiClientError && error.detail
+            ? error.detail
+            : error instanceof Error
+              ? error.message
+              : String(error);
+        throw new SessionForkError(
+          child.id,
+          `The side chat ${child.name} was created, but Forge could not ${step} it: ${detail}`,
+        );
+      }
+    },
     stopSession: (sessionId) => forgeClient.post<void>(sessionPath(sessionId, '/stop')),
     resumeSession: (sessionId) => forgeClient.post<void>(sessionPath(sessionId, '/resume')),
     deleteSession: (sessionId, cleanup) =>

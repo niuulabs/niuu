@@ -13,3 +13,11 @@
   background: var(--color-brand);
   outline: none;
 }
+
+/* The top edge of a panel on the bottom: a full-width line, dragged up and down. */
+.niuu-sidebar-resizer--horizontal {
+  flex: 0 0 7px;
+  width: auto;
+  height: 7px;
+  cursor: row-resize;
+}

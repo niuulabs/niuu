@@ -124,6 +124,16 @@ describe('NewSessionPage', () => {
     expect(screen.getByTestId('new-session-branch')).toHaveValue('develop');
   });
 
+  it("selects the catalog's repository for a link that names it as a session records it", async () => {
+    // A side chat's "New chat" passes the session's repository without the catalog's form.
+    setSearch({ repo: 'https://github.com/niuulabs/volundr.git/', branch: 'develop' });
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('new-session-repo')).toHaveValue('github.com/niuulabs/volundr'),
+    );
+  });
+
   it('starts a session with the chosen engine and repository, then opens it', async () => {
     const service = createMockVolundrService();
     const startSession = vi.fn(service.startSession);

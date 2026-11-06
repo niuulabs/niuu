@@ -1804,6 +1804,74 @@ def test_chronicle_timeline_post_proxies_to_owner() -> None:
 
 
 @respx.mock
+def test_session_chronicle_get_proxies_to_owner() -> None:
+    # A side chat reads the session's chronicle before reforging it.
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2"})
+    )
+    route = respx.get("http://beta/api/v1/forge/sessions/s2/chronicle").mock(
+        return_value=Response(200, json={"id": "chron-2", "session_id": "s2"})
+    )
+
+    response = client.get("/api/v1/forge/sessions/s2/chronicle", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "chron-2"
+    assert route.called
+
+
+@respx.mock
+def test_session_chronicle_get_passes_the_owners_404_through() -> None:
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2"})
+    )
+    respx.get("http://beta/api/v1/forge/sessions/s2/chronicle").mock(
+        return_value=Response(404, json={"detail": "No chronicle for session s2"})
+    )
+
+    response = client.get("/api/v1/forge/sessions/s2/chronicle", headers=_headers())
+
+    assert response.status_code == 404
+
+
+@respx.mock
+def test_reforge_proxies_to_the_named_instance_and_stamps_the_child() -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha", is_default=True),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
+    route = respx.post("http://beta/api/v1/forge/chronicles/chron-2/reforge").mock(
+        return_value=Response(200, json={"id": "child", "name": "demo (reforged)"})
+    )
+
+    response = client.post(
+        "/api/v1/forge/chronicles/chron-2/reforge?instance_id=beta",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "child"
+    assert response.json()["instance_id"] == "beta"
+    assert route.called
+
+
+@respx.mock
+def test_reforge_on_an_unknown_instance_is_404() -> None:
+    client = _client([_instance("beta", base_url="http://beta")])
+
+    response = client.post(
+        "/api/v1/forge/chronicles/chron-2/reforge?instance_id=missing",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 404
+
+
+@respx.mock
 def test_span_and_event_telemetry_forward_to_default_instance() -> None:
     client = _client([_instance("alpha", base_url="http://alpha", is_default=True)])
     start = respx.post("http://alpha/api/v1/forge/spans/start").mock(

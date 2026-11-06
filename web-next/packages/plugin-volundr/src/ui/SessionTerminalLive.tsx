@@ -1,7 +1,8 @@
 import { syncTerminalTheme } from './Terminal/syncTerminalTheme';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { getAuthHeaders } from '@niuulabs/query';
-import { cn, ErrorState, LoadingState } from '@niuulabs/ui';
+import { ErrorState, LoadingState } from '@niuulabs/ui';
+import { Plus, RotateCw, X } from 'lucide-react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -17,13 +18,18 @@ const NERD_FONT_FAMILY =
 interface SessionTerminalLiveProps {
   url: string | null;
   readOnly?: boolean;
+  /** Closes the panel the terminal sits in; its shells keep running on the host. */
+  onClose?: () => void;
+  /** What to say while there is no terminal to reach, such as a session still starting. */
+  unavailableMessage?: string;
 }
 
 interface TerminalTab {
   id: string;
   label: string;
   cliType: string;
-  restricted?: boolean;
+  /** An agent's terminal shows its work without taking keys until the person allows it. */
+  viewOnly: boolean;
 }
 
 interface ServerSession {
@@ -39,15 +45,13 @@ interface TerminalInstance {
   stopThemeSync: () => void;
 }
 
-const CLI_OPTIONS = [
-  { id: 'shell', label: 'Shell' },
-  { id: 'bash', label: 'Bash' },
-  { id: 'zsh', label: 'Zsh' },
-  { id: 'fish', label: 'Fish' },
-  { id: 'claude', label: 'Claude' },
-  { id: 'codex', label: 'Codex' },
-  { id: 'aider', label: 'Aider' },
-] as const;
+/** The shells the devrunner terminal server starts (`containers/devrunner/terminal.py`). */
+const SHELL_CLI_TYPES: ReadonlySet<string> = new Set(['shell', 'bash', 'zsh', 'fish']);
+
+/** An agent CLI (claude, codex, aider) rather than a person's shell. */
+export function isAgentTerminal(cliType: string): boolean {
+  return !SHELL_CLI_TYPES.has(cliType);
+}
 
 export function deriveHttpBase(wsUrl: string): string {
   const httpProto = wsUrl.startsWith('wss:') ? 'https:' : 'http:';
@@ -109,10 +113,24 @@ export async function killSession(httpBase: string, terminalId: string): Promise
 }
 
 export function SessionTerminalLive(props: SessionTerminalLiveProps) {
-  return <SessionTerminalConnection key={props.url} {...props} />;
+  // Reconnecting starts the connection afresh: the host keeps its terminals, so they come back.
+  const [connection, setConnection] = useState(0);
+  return (
+    <SessionTerminalConnection
+      key={`${props.url}:${connection}`}
+      {...props}
+      onReconnect={() => setConnection((value) => value + 1)}
+    />
+  );
 }
 
-function SessionTerminalConnection({ url, readOnly = false }: SessionTerminalLiveProps) {
+function SessionTerminalConnection({
+  url,
+  readOnly = false,
+  onClose,
+  unavailableMessage = 'terminal unavailable',
+  onReconnect,
+}: SessionTerminalLiveProps & { onReconnect: () => void }) {
   const [tabs, setTabs] = useState<TerminalTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
@@ -120,20 +138,10 @@ function SessionTerminalConnection({ url, readOnly = false }: SessionTerminalLiv
   const [unavailable, setUnavailable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [terminalError, setTerminalError] = useState<string | null>(null);
-  const [retry, setRetry] = useState(0);
-  const retryConnection = () => {
-    initialisedRef.current = false;
-    setUnavailable(false);
-    setTerminalError(null);
-    setLoading(true);
-    setRetry((value) => value + 1);
-  };
-  const [menuOpen, setMenuOpen] = useState(false);
 
   const containerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const instanceRefs = useRef<Map<string, TerminalInstance>>(new Map());
   const initialisedRef = useRef(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
 
   const httpBase = useMemo(() => (url ? deriveHttpBase(url) : null), [url]);
 
@@ -237,7 +245,7 @@ function SessionTerminalConnection({ url, readOnly = false }: SessionTerminalLiv
             id: session.terminalId,
             label: session.label || `Terminal ${index + 1}`,
             cliType: session.cli_type,
-            restricted: false,
+            viewOnly: isAgentTerminal(session.cli_type),
           }));
           setTabs(restored);
           setActiveTabId(restored[0]?.id ?? null);
@@ -251,7 +259,12 @@ function SessionTerminalConnection({ url, readOnly = false }: SessionTerminalLiv
         if (cancelled) return;
         if (!created) throw new Error('The host could not start a terminal.');
         setTabs([
-          { id: created.terminalId, label: created.label || 'Terminal 1', cliType: 'shell' },
+          {
+            id: created.terminalId,
+            label: created.label || 'Terminal 1',
+            cliType: 'shell',
+            viewOnly: false,
+          },
         ]);
         setActiveTabId(created.terminalId);
       } catch (error: unknown) {
@@ -267,10 +280,11 @@ function SessionTerminalConnection({ url, readOnly = false }: SessionTerminalLiv
       cancelled = true;
       initialisedRef.current = false;
     };
-  }, [httpBase, retry, readOnly]);
+  }, [httpBase, readOnly]);
 
   const mountTerminal = useCallback(
-    (tabId: string) => {
+    (tab: TerminalTab) => {
+      const tabId = tab.id;
       const container = containerRefs.current.get(tabId);
       if (!container || !fontReady) {
         return;
@@ -286,7 +300,7 @@ function SessionTerminalConnection({ url, readOnly = false }: SessionTerminalLiv
         fontFamily: NERD_FONT_FAMILY,
         fontSize: 13,
         lineHeight: 1.4,
-        disableStdin: readOnly,
+        disableStdin: readOnly || tab.viewOnly,
         allowProposedApi: true,
         scrollback: 5_000,
         theme: {
@@ -340,7 +354,7 @@ function SessionTerminalConnection({ url, readOnly = false }: SessionTerminalLiv
     }
 
     for (const tab of tabs) {
-      mountTerminal(tab.id);
+      mountTerminal(tab);
     }
   }, [fontReady, tabs, mountTerminal]);
 
@@ -358,17 +372,20 @@ function SessionTerminalConnection({ url, readOnly = false }: SessionTerminalLiv
     };
   }, []);
 
+  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+  const activeViewOnly = activeTab?.viewOnly ?? false;
+
   useEffect(() => {
     if (!activeTabId) return;
     const instance = instanceRefs.current.get(activeTabId);
-    if (!instance || readOnly) return;
+    if (!instance || readOnly || activeViewOnly) return;
 
     const disposable = instance.term.onData((data: string) => {
       sendJson({ type: 'input', data });
     });
 
     return () => disposable.dispose();
-  }, [activeTabId, readOnly, sendJson, fontReady]);
+  }, [activeTabId, activeViewOnly, readOnly, sendJson, fontReady]);
 
   useEffect(() => {
     if (!activeTabId) return;
@@ -420,56 +437,50 @@ function SessionTerminalConnection({ url, readOnly = false }: SessionTerminalLiv
     return () => clearTimeout(timer);
   }, [activeTabId]);
 
+  const handleAddShell = useCallback(async () => {
+    if (!httpBase || readOnly) return;
+    let created: Awaited<ReturnType<typeof spawnSession>>;
+    try {
+      created = await spawnSession(httpBase, 'shell');
+    } catch {
+      setTerminalError('Could not reach the terminal service.');
+      return;
+    }
+    if (!created) {
+      setTerminalError('The host could not start a terminal.');
+      return;
+    }
+    setTerminalError(null);
+    setTabs((prev) => [
+      ...prev,
+      {
+        id: created.terminalId,
+        label: created.label || `Terminal ${prev.length + 1}`,
+        cliType: 'shell',
+        viewOnly: false,
+      },
+    ]);
+    setActiveTabId(created.terminalId);
+  }, [httpBase, readOnly]);
+
+  // ⌃⇧` opens another shell, as in VS Code: the browser keeps ⌘T for its own tabs.
   useEffect(() => {
-    if (!menuOpen) return;
-
-    const handleClickOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setMenuOpen(false);
-      }
+    if (readOnly || !httpBase) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || !event.shiftKey || event.code !== 'Backquote') return;
+      event.preventDefault();
+      void handleAddShell();
     };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleAddShell, httpBase, readOnly]);
 
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [menuOpen]);
-
-  const handleAddCliTab = useCallback(
-    async (cliType: string) => {
-      if (!httpBase || readOnly) return;
-      let created: Awaited<ReturnType<typeof spawnSession>>;
-      try {
-        created = await spawnSession(httpBase, cliType);
-      } catch {
-        setTerminalError('Could not reach the terminal service.');
-        return;
-      }
-      if (!created) {
-        setTerminalError('The host could not start a terminal.');
-        return;
-      }
-      setTerminalError(null);
-
-      setTabs((prev) => {
-        const cliLabel =
-          CLI_OPTIONS.find((option) => option.id === cliType)?.label ??
-          created.label ??
-          `Terminal ${prev.length + 1}`;
-
-        return [
-          ...prev,
-          {
-            id: created.terminalId,
-            label: created.label || cliLabel,
-            cliType,
-            restricted: false,
-          },
-        ];
-      });
-      setActiveTabId(created.terminalId);
-      setMenuOpen(false);
-    },
-    [httpBase, readOnly],
-  );
+  const enableInput = useCallback((tabId: string) => {
+    const instance = instanceRefs.current.get(tabId);
+    if (instance) instance.term.options.disableStdin = false;
+    setTabs((prev) => prev.map((tab) => (tab.id === tabId ? { ...tab, viewOnly: false } : tab)));
+    instance?.term.focus();
+  }, []);
 
   const handleCloseTab = useCallback(
     async (tabId: string) => {
@@ -504,28 +515,113 @@ function SessionTerminalConnection({ url, readOnly = false }: SessionTerminalLiv
     setActiveTabId(tabId);
   }, []);
 
+  const header = (
+    <div className={styles.header}>
+      <div className={styles.tabs} role="tablist" aria-label="Terminals">
+        {tabs.map((tab) => (
+          <div key={tab.id} className={styles.tabWrap}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTabId === tab.id}
+              onClick={() => handleSelectTab(tab.id)}
+              className={styles.tab}
+            >
+              <span>{tab.label}</span>
+              {tab.viewOnly && !readOnly ? (
+                <span className={styles.viewOnly}>view only</span>
+              ) : null}
+            </button>
+            {tabs.length > 1 && !readOnly && (
+              <button
+                type="button"
+                aria-label={`Close ${tab.label}`}
+                className={styles.tabClose}
+                onClick={() => void handleCloseTab(tab.id)}
+              >
+                <X aria-hidden="true" />
+              </button>
+            )}
+          </div>
+        ))}
+        {!readOnly && httpBase && !loading && !unavailable ? (
+          <button
+            type="button"
+            aria-label="New shell"
+            title="New shell (⌃⇧`)"
+            className={styles.tool}
+            onClick={() => void handleAddShell()}
+          >
+            <Plus aria-hidden="true" />
+          </button>
+        ) : null}
+      </div>
+      {activeTab?.viewOnly && !readOnly ? (
+        <button
+          type="button"
+          className={styles.textTool}
+          onClick={() => enableInput(activeTab.id)}
+          title="This is the agent's terminal; typing here goes to the agent's process"
+        >
+          Enable input
+        </button>
+      ) : null}
+      {url && !loading && !unavailable && tabs.length > 0 ? (
+        <span className={styles.status} data-testid="terminal-connection">
+          {connected ? 'connected' : 'connecting…'}
+        </span>
+      ) : null}
+      {url ? (
+        <button
+          type="button"
+          className={styles.textTool}
+          onClick={onReconnect}
+          title="Reconnect to this session's terminals"
+        >
+          <RotateCw aria-hidden="true" />
+          Reconnect
+        </button>
+      ) : null}
+      {onClose ? (
+        <button
+          type="button"
+          className={styles.tool}
+          aria-label="Close the terminal"
+          title="Close the terminal (⌃`)"
+          onClick={onClose}
+        >
+          <X aria-hidden="true" />
+        </button>
+      ) : null}
+    </div>
+  );
+
+  let body: ReactNode;
   if (!url) {
-    return (
-      <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-        terminal unavailable
+    body = <p className={styles.notice}>{unavailableMessage}</p>;
+  } else if (loading) {
+    body = <LoadingState className="forge-session-loading" label="Connecting to terminal…" />;
+  } else if (unavailable) {
+    // The host answered, but serves no terminal for this session: say so, never fake one.
+    body = (
+      <div className={styles.notice} data-testid="terminal-not-served">
+        <div>
+          <b>No terminal yet</b>
+          {"This session's host serves no terminal. Container sessions get one from their pod; a "}
+          {'session on a VM needs a terminal server in the VM and a '}
+          <code>/terminal</code>
+          {" route through Forge's session proxy, which do not exist yet."}
+        </div>
       </div>
     );
-  }
-
-  if (loading)
-    return <LoadingState className="forge-session-loading" label="Connecting to terminal…" />;
-  if (unavailable || (terminalError && tabs.length === 0)) {
-    return (
+  } else if (terminalError && tabs.length === 0) {
+    body = (
       <ErrorState
         className="forge-session-loading"
-        title={unavailable ? 'Terminal unavailable' : 'Could not connect to terminal'}
-        message={
-          unavailable
-            ? 'This host does not provide terminal access for this session.'
-            : terminalError!
-        }
+        title="Could not connect to terminal"
+        message={terminalError}
         action={
-          <button type="button" className="niuu-chat-retry" onClick={retryConnection}>
+          <button type="button" className="niuu-chat-retry" onClick={onReconnect}>
             Try again
           </button>
         }
@@ -534,100 +630,38 @@ function SessionTerminalConnection({ url, readOnly = false }: SessionTerminalLiv
   }
 
   return (
-    <div className="niuu:flex niuu:h-full niuu:min-h-0 niuu:flex-col niuu:bg-bg-primary">
-      <div className="niuu:flex niuu:items-center niuu:justify-between niuu:border-b niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2">
-        <div className="niuu:flex niuu:items-center niuu:gap-1.5" role="tablist">
-          {tabs.map((tab) => (
-            <div key={tab.id} className="niuu:flex niuu:items-center niuu:gap-1">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTabId === tab.id}
-                onClick={() => handleSelectTab(tab.id)}
-                className={cn(
-                  'niuu:flex niuu:items-center niuu:gap-2 niuu:rounded-md niuu:border niuu:px-3 niuu:py-1.5 niuu:font-mono niuu:text-[11px]',
-                  activeTabId === tab.id
-                    ? 'niuu:border-border niuu:bg-bg-elevated niuu:text-text-primary'
-                    : 'niuu:border-transparent niuu:text-text-muted niuu:hover:border-border-subtle niuu:hover:text-text-secondary',
-                )}
-              >
-                <span className="niuu:text-brand">{'>_'}</span>
-                <span>{tab.label}</span>
-              </button>
-              {tabs.length > 1 && !readOnly && (
-                <button
-                  type="button"
-                  aria-label={`Close ${tab.label}`}
-                  className="niuu:rounded niuu:px-1.5 niuu:py-1 niuu:font-mono niuu:text-[11px] niuu:text-text-muted niuu:hover:bg-bg-elevated niuu:hover:text-text-primary"
-                  onClick={() => void handleCloseTab(tab.id)}
-                >
-                  x
-                </button>
-              )}
-            </div>
-          ))}
-          <div className="niuu:relative" ref={menuRef}>
-            <button
-              type="button"
-              aria-label="New terminal"
-              disabled={readOnly}
-              aria-expanded={menuOpen}
-              aria-haspopup="menu"
-              className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1.5 niuu:font-mono niuu:text-[11px] niuu:text-text-muted niuu:hover:text-text-primary"
-              onClick={() => setMenuOpen((prev) => !prev)}
-            >
-              +
-            </button>
-            {menuOpen && (
+    <div className={styles.root} data-testid="session-terminal">
+      {header}
+      {body ?? (
+        <>
+          {terminalError && (
+            <p role="alert" className="niuu:p-3 niuu:text-sm niuu:text-critical-fg">
+              {terminalError}
+            </p>
+          )}
+          <div className={styles.terminalArea}>
+            {tabs.map((tab) => (
               <div
-                role="menu"
-                className="niuu:absolute niuu:left-0 niuu:top-[calc(100%+6px)] niuu:z-20 niuu:min-w-32 niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:p-1 niuu:shadow-lg"
-              >
-                {CLI_OPTIONS.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    role="menuitem"
-                    className="niuu:flex niuu:w-full niuu:items-center niuu:justify-start niuu:rounded-sm niuu:px-2.5 niuu:py-1.5 niuu:text-left niuu:text-xs niuu:text-text-secondary niuu:hover:bg-bg-secondary niuu:hover:text-text-primary"
-                    onClick={() => void handleAddCliTab(option.id)}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            )}
+                key={tab.id}
+                role="tabpanel"
+                aria-hidden={tab.id !== activeTabId}
+                data-terminal-id={tab.id}
+                data-visible={tab.id === activeTabId}
+                className={styles.terminalContainer}
+                style={{ display: tab.id === activeTabId ? 'block' : 'none' }}
+                ref={(element) => {
+                  if (element) {
+                    containerRefs.current.set(tab.id, element);
+                    mountTerminal(tab);
+                  } else {
+                    containerRefs.current.delete(tab.id);
+                  }
+                }}
+              />
+            ))}
           </div>
-        </div>
-        <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
-          {connected ? 'connected' : 'connecting…'}
-        </div>
-      </div>
-      {terminalError && (
-        <p role="alert" className="niuu:p-3 niuu:text-sm niuu:text-critical-fg">
-          {terminalError}
-        </p>
+        </>
       )}
-      <div className={styles.terminalArea}>
-        {tabs.map((tab) => (
-          <div
-            key={tab.id}
-            role="tabpanel"
-            aria-hidden={tab.id !== activeTabId}
-            data-terminal-id={tab.id}
-            data-visible={tab.id === activeTabId}
-            className={styles.terminalContainer}
-            style={{ display: tab.id === activeTabId ? 'block' : 'none' }}
-            ref={(element) => {
-              if (element) {
-                containerRefs.current.set(tab.id, element);
-                mountTerminal(tab.id);
-              } else {
-                containerRefs.current.delete(tab.id);
-              }
-            }}
-          />
-        ))}
-      </div>
     </div>
   );
 }

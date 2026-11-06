@@ -283,15 +283,21 @@ describe('SessionTerminalLive', () => {
   it('renders a fallback when no websocket URL is available', () => {
     render(<SessionTerminalLive url={null} />);
     expect(screen.getByText('terminal unavailable')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Reconnect/ })).not.toBeInTheDocument();
   });
 
-  it('renders the legacy-transport notice when the backend does not expose terminal sessions', async () => {
+  it('says what the page asks while there is nothing to connect to', () => {
+    render(<SessionTerminalLive url={null} unavailableMessage="Session is starting…" />);
+    expect(screen.getByText('Session is starting…')).toBeInTheDocument();
+  });
+
+  it('says there is no terminal yet when the host serves none, rather than faking one', async () => {
     render(<SessionTerminalLive url="ws://localhost:8080/ws" />);
-    await waitFor(() =>
-      expect(
-        screen.getByText('This host does not provide terminal access for this session.'),
-      ).toBeInTheDocument(),
-    );
+    const notice = await screen.findByTestId('terminal-not-served');
+    expect(notice).toHaveTextContent('No terminal yet');
+    expect(notice).toHaveTextContent('/terminal');
+    expect(screen.queryByRole('button', { name: 'New shell' })).not.toBeInTheDocument();
+    expect(latestWebSocketUrl).toBeNull();
   });
 
   it('treats an HTML fallback as unavailable and never spawns a shell', async () => {
@@ -299,7 +305,7 @@ describe('SessionTerminalLive', () => {
       new Response('<html>App</html>', { headers: { 'Content-Type': 'text/html' } }),
     );
     render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" />);
-    await screen.findByText('Terminal unavailable');
+    await screen.findByText('No terminal yet');
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(latestWebSocketUrl).toBeNull();
   });
@@ -357,7 +363,7 @@ describe('SessionTerminalLive', () => {
     expect(latestWebSocketUrl).toBe('ws://localhost:8080/terminal/ws/term-1');
   });
 
-  it('adds a new CLI tab from the menu', async () => {
+  it('opens a new shell from "+"', async () => {
     vi.mocked(global.fetch)
       .mockResolvedValueOnce(
         new Response(
@@ -370,7 +376,7 @@ describe('SessionTerminalLive', () => {
         ),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ terminalId: 'term-2', label: 'Claude' }), {
+        new Response(JSON.stringify({ terminalId: 'term-2', label: 'bash-2' }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }),
@@ -379,19 +385,50 @@ describe('SessionTerminalLive', () => {
     render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" />);
 
     await waitFor(() => expect(screen.getByRole('tab', { name: /shell 1/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'New shell' }));
 
-    fireEvent.click(screen.getByRole('button', { name: /new terminal/i }));
-    fireEvent.click(screen.getByRole('menuitem', { name: /claude/i }));
-
-    await waitFor(() => expect(screen.getByRole('tab', { name: /claude/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('tab', { name: /bash-2/i })).toBeInTheDocument());
+    expect(screen.getByRole('tab', { name: /bash-2/i })).toHaveAttribute('aria-selected', 'true');
+    expect(vi.mocked(global.fetch).mock.calls[1]?.[1]?.body).toBe(
+      JSON.stringify({ cli_type: 'shell' }),
+    );
   });
 
-  it('offers a shell tab option in the new terminal menu', async () => {
+  it('opens a new shell on ⌃⇧`', async () => {
+    vi.mocked(global.fetch)
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sessions: [
+              { terminalId: 'term-1', label: 'Shell 1', cli_type: 'shell', status: 'running' },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ terminalId: 'term-2' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+    render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" />);
+    await waitFor(() => expect(screen.getByRole('tab', { name: /shell 1/i })).toBeInTheDocument());
+    // Without Shift, ⌃` belongs to the page (it toggles the terminal dock).
+    fireEvent.keyDown(window, { code: 'Backquote', ctrlKey: true });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(window, { code: 'Backquote', ctrlKey: true, shiftKey: true });
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: /term-2/i })).toBeInTheDocument());
+  });
+
+  it("shows an agent's terminal view-only until the person enables input", async () => {
     vi.mocked(global.fetch).mockResolvedValueOnce(
       new Response(
         JSON.stringify({
           sessions: [
-            { terminalId: 'term-1', label: 'Shell 1', cli_type: 'shell', status: 'running' },
+            { terminalId: 'codex-1', label: 'codex', cli_type: 'codex', status: 'running' },
           ],
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -400,11 +437,56 @@ describe('SessionTerminalLive', () => {
 
     render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" />);
 
-    await waitFor(() => expect(screen.getByRole('tab', { name: /shell 1/i })).toBeInTheDocument());
+    const tab = await screen.findByRole('tab', { name: /codex/ });
+    expect(tab).toHaveTextContent('view only');
+    await waitFor(() => expect(xtermInstances).toHaveLength(1));
+    expect(xtermInstances[0]?.options).toMatchObject({ disableStdin: true });
+    // Its keystrokes go nowhere while it is view-only.
+    expect(onDataCallbacks).toHaveLength(0);
 
-    fireEvent.click(screen.getByRole('button', { name: /new terminal/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Enable input' }));
 
-    expect(screen.getByRole('menuitem', { name: /shell/i })).toBeInTheDocument();
+    expect(tab).not.toHaveTextContent('view only');
+    expect(xtermInstances[0]?.options).toMatchObject({ disableStdin: false });
+    await waitFor(() => expect(onDataCallbacks).toHaveLength(1));
+    onDataCallbacks[0]?.('y');
+    expect(mockSendJson).toHaveBeenCalledWith({ type: 'input', data: 'y' });
+    expect(screen.queryByRole('button', { name: 'Enable input' })).not.toBeInTheDocument();
+  });
+
+  it('reconnects by asking the host for its terminals again, and closes the panel', async () => {
+    vi.mocked(global.fetch)
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sessions: [
+              { terminalId: 'term-1', label: 'Shell 1', cli_type: 'shell', status: 'running' },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sessions: [
+              { terminalId: 'term-1', label: 'Shell 1', cli_type: 'shell', status: 'running' },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+    const onClose = vi.fn();
+
+    render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" onClose={onClose} />);
+    await screen.findByRole('tab', { name: /shell 1/i });
+
+    fireEvent.click(screen.getByRole('button', { name: /Reconnect/ }));
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(2));
+    await screen.findByRole('tab', { name: /shell 1/i });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close the terminal' }));
+    expect(onClose).toHaveBeenCalled();
   });
 
   it('switches the active tab when a tab is clicked', async () => {
@@ -739,53 +821,7 @@ describe('SessionTerminalLive', () => {
     expect(mockFitAddonFit.mock.calls.length).toBeGreaterThan(fitCallsBeforeResize);
   });
 
-  it('closes the new-terminal menu when clicking outside', async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          sessions: [
-            { terminalId: 'term-1', label: 'Shell 1', cli_type: 'shell', status: 'running' },
-          ],
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      ),
-    );
-
-    render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" />);
-
-    await waitFor(() => expect(screen.getByRole('tab', { name: /shell 1/i })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /new terminal/i }));
-    expect(screen.getByRole('menu')).toBeInTheDocument();
-
-    fireEvent.mouseDown(document.body);
-
-    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
-  });
-
-  it('keeps the new-terminal menu open when clicking inside it', async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          sessions: [
-            { terminalId: 'term-1', label: 'Shell 1', cli_type: 'shell', status: 'running' },
-          ],
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      ),
-    );
-
-    render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" />);
-
-    await waitFor(() => expect(screen.getByRole('tab', { name: /shell 1/i })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /new terminal/i }));
-
-    const shellMenuItem = screen.getByRole('menuitem', { name: /shell/i });
-    fireEvent.mouseDown(shellMenuItem);
-
-    expect(screen.getByRole('menu')).toBeInTheDocument();
-  });
-
-  it('keeps the menu open when spawning a new terminal fails', async () => {
+  it('says so when the host cannot start another shell', async () => {
     vi.mocked(global.fetch)
       .mockResolvedValueOnce(
         new Response(
@@ -797,16 +833,21 @@ describe('SessionTerminalLive', () => {
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),
       )
-      .mockResolvedValueOnce(new Response(null, { status: 500 }));
+      .mockResolvedValueOnce(new Response(null, { status: 500 }))
+      .mockRejectedValueOnce(new Error('offline'));
 
     render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" />);
 
     await waitFor(() => expect(screen.getByRole('tab', { name: /shell 1/i })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /new terminal/i }));
-    fireEvent.click(screen.getByRole('menuitem', { name: /bash/i }));
-
-    expect(screen.getByRole('menu')).toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: /bash/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'New shell' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'The host could not start a terminal.',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'New shell' }));
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('Could not reach the terminal service.'),
+    );
+    expect(screen.getAllByRole('tab')).toHaveLength(1);
   });
 
   it('keeps the only tab open when its close button is unavailable', async () => {

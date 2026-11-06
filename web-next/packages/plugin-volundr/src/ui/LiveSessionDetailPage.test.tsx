@@ -651,6 +651,15 @@ function mockChatState(overrides: Partial<ReturnType<typeof chatHooks.useSkuldCh
 // Tests
 // ---------------------------------------------------------------------------
 
+/** Resize every observed element to `height`, as a window made shorter or taller would. */
+function resizeHeightTo(height: number) {
+  act(() => {
+    for (const callback of resizeCallbacks) {
+      callback([{ contentRect: { height } } as ResizeObserverEntry], {} as ResizeObserver);
+    }
+  });
+}
+
 /** Resize every observed element to `width`, as a window resize would. */
 function resizeTo(width: number) {
   act(() => {
@@ -664,10 +673,7 @@ describe('LiveSessionDetailPage', () => {
   beforeEach(() => {
     resizeCallbacks.length = 0;
     localStorage.clear();
-    localStorage.setItem(
-      'niuu.forge.sessionTabs',
-      'chat,terminal,diffs,files,chronicles,telemetry,logs',
-    );
+    localStorage.setItem('niuu.forge.sessionTabs', 'chat,diffs,files,chronicles,telemetry,logs');
     vi.clearAllMocks();
     navigate.mockReset();
     global.fetch = vi.fn(async (input: string | URL | Request) => {
@@ -1167,7 +1173,8 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByRole('tab', { name: /Chat/i })).toBeInTheDocument();
-      expect(screen.getByRole('tab', { name: /Terminal/i })).toBeInTheDocument();
+      // The terminal docks under the conversation instead of being a tab.
+      expect(screen.queryByRole('tab', { name: /Terminal/i })).not.toBeInTheDocument();
       expect(screen.getByRole('tab', { name: /Diffs/i })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: /Files/i })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: /Chronicle/i })).toBeInTheDocument();
@@ -1460,12 +1467,21 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.queryByTestId('right-dock')).not.toBeInTheDocument();
 
       fireEvent.keyDown(window, { key: 'o', code: 'KeyO', altKey: true, metaKey: true });
-      expect(await screen.findByTestId('files-pane')).toBeInTheDocument();
       const quickOpen = await screen.findByTestId('quick-open');
       // The files the agent touched come first.
       expect(within(quickOpen).getAllByRole('option')[0]).toHaveTextContent('app.ts');
       expect(within(quickOpen).getAllByRole('option')[1]).toHaveTextContent('README.md');
-      fireEvent.keyDown(within(quickOpen).getByLabelText('Find a file'), { key: 'Escape' });
+      // A picked file opens as its own pane in the dock.
+      fireEvent.click(within(quickOpen).getAllByRole('option')[1]!);
+      expect(await screen.findByTestId('file-preview-pane')).toBeInTheDocument();
+      expect(screen.getByTestId('right-dock-tab-file:/workspace/README.md')).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      // "Open in Files" shows it in the tree's pane, a tab of its own.
+      fireEvent.click(screen.getByRole('button', { name: /Open in Files/ }));
+      expect(await screen.findByTestId('files-pane')).toBeInTheDocument();
+      expect(screen.getByRole('navigation', { name: 'File path' })).toHaveTextContent('README.md');
 
       // Opening the session panel closes the dock: they share the right side.
       fireEvent.click(screen.getByRole('button', { name: 'Show session panel' }));
@@ -1521,22 +1537,24 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.queryByTestId('diff-files-empty')).not.toBeInTheDocument();
     });
 
-    it('shows a starting message in the terminal tab while a session boots', async () => {
+    it('says in the terminal dock that a booting session is starting', async () => {
       wrap('test-session-id-1234', { session: STARTING_SESSION });
       await screen.findByTestId('live-session-detail-page');
-      fireEvent.click(screen.getByRole('tab', { name: /Terminal/i }));
-      await waitFor(() => {
-        expect(screen.getByText('Session is starting…')).toBeInTheDocument();
-      });
+      fireEvent.click(screen.getByRole('button', { name: 'Show the terminal (⌃`)' }));
+      expect(
+        within(screen.getByTestId('terminal-dock')).getByText('Session is starting…'),
+      ).toBeInTheDocument();
     });
 
-    it('shows a stopped message in the terminal tab when no live terminal is available', async () => {
+    it('says in the terminal dock that a stopped session has to start first', async () => {
       wrap('test-session-id-1234', { session: STOPPED_SESSION });
       await screen.findByTestId('live-session-detail-page');
-      fireEvent.click(screen.getByRole('tab', { name: /Terminal/i }));
-      await waitFor(() => {
-        expect(screen.getByText('Start the session to access terminal.')).toBeInTheDocument();
-      });
+      fireEvent.keyDown(window, { code: 'Backquote', ctrlKey: true });
+      expect(
+        within(screen.getByTestId('terminal-dock')).getByText(
+          'Start the session to use its terminal.',
+        ),
+      ).toBeInTheDocument();
     });
 
     it('shows a transcript error for stopped sessions when replay loading fails', async () => {
@@ -1620,15 +1638,161 @@ describe('LiveSessionDetailPage', () => {
       });
     });
 
-    it('renders the live terminal when a session is ready', async () => {
+    it('docks the live terminal under the conversation, toggled with ⌃` and kept', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      fireEvent.click(screen.getByRole('tab', { name: /Terminal/i }));
+      expect(screen.queryByTestId('terminal-dock')).not.toBeInTheDocument();
+      fireEvent.keyDown(window, { code: 'Backquote', ctrlKey: true });
 
-      await waitFor(() => {
-        expect(screen.getByRole('button', { name: /New terminal/i })).toBeInTheDocument();
+      const dock = screen.getByTestId('terminal-dock');
+      expect(dock).toHaveStyle({ height: '230px' });
+      expect(await within(dock).findByRole('tab', { name: /shell 1/i })).toBeInTheDocument();
+      expect(within(dock).getByRole('button', { name: 'New shell' })).toBeInTheDocument();
+      // The chat stays the main view above it.
+      expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute('aria-selected', 'true');
+      expect(localStorage.getItem('niuu.forge.terminal')).toBe('1');
+      expect(screen.getByRole('button', { name: 'Hide the terminal (⌃`)' })).toBeInTheDocument();
+
+      fireEvent.click(within(dock).getByRole('button', { name: 'Close the terminal' }));
+      expect(screen.queryByTestId('terminal-dock')).not.toBeInTheDocument();
+      expect(localStorage.getItem('niuu.forge.terminal')).toBe('0');
+    });
+
+    it('shortens the terminal for a short window and hides it for the moment, keeping the choice', async () => {
+      localStorage.setItem('niuu.forge.terminal', '1');
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByTestId('terminal-dock')).toHaveStyle({ height: '230px' });
+
+      resizeHeightTo(500);
+      // 500px keeps 320 for the conversation, so the terminal gets 180.
+      expect(screen.getByTestId('terminal-dock')).toHaveStyle({ height: '180px' });
+      expect(screen.getByRole('separator', { name: 'Resize the terminal' })).toHaveAttribute(
+        'aria-valuenow',
+        '180',
+      );
+
+      resizeHeightTo(400);
+      expect(screen.queryByTestId('terminal-dock')).not.toBeInTheDocument();
+      expect(localStorage.getItem('niuu.forge.terminal')).toBe('1');
+
+      resizeHeightTo(900);
+      expect(screen.getByTestId('terminal-dock')).toHaveStyle({ height: '230px' });
+    });
+
+    it('finds the files the session changed in quick open', async () => {
+      const baseFetch = global.fetch;
+      global.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url.includes('/api/diff/files'))
+          return new Response(
+            JSON.stringify({
+              files: [
+                { path: 'docs/operator/notes.md', status: 'mod', ins: 1, del: 0 },
+                { path: 'gone.md', status: 'del', ins: 0, del: 3 },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        return baseFetch(input, init);
+      }) as typeof fetch;
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.keyDown(window, { code: 'KeyO', altKey: true, metaKey: true });
+      const quickOpen = await screen.findByTestId('quick-open');
+      fireEvent.click(await within(quickOpen).findByRole('option', { name: /notes\.md/ }));
+      expect(
+        await screen.findByTestId('right-dock-tab-file:/workspace/docs/operator/notes.md'),
+      ).toBeInTheDocument();
+      // A deleted file has nothing to preview.
+      expect(screen.queryByText('gone.md')).not.toBeInTheDocument();
+    });
+
+    it('says in quick open when the changed files cannot be listed', async () => {
+      const baseFetch = global.fetch;
+      global.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url.includes('/api/diff/files')) return new Response('', { status: 502 });
+        return baseFetch(input, init);
+      }) as typeof fetch;
+      wrap('test-session-id-1234', {});
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.keyDown(window, { code: 'KeyO', altKey: true, ctrlKey: true });
+      const quickOpen = await screen.findByTestId('quick-open');
+      expect(await within(quickOpen).findByRole('alert')).toHaveTextContent(
+        'The changed files could not be listed: Failed to fetch diff files: 502',
+      );
+    });
+
+    it('opens a file the transcript links to as a pane in the dock', async () => {
+      mockChatState({
+        messages: [
+          {
+            id: 'link',
+            role: 'assistant',
+            content: 'The paging example is in [the notes](docs/notes.md).',
+            createdAt: new Date(0),
+          },
+        ],
       });
-      expect(await screen.findByRole('tab', { name: /shell 1/i })).toBeInTheDocument();
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(await screen.findByRole('button', { name: 'the notes' }));
+      expect(await screen.findByTestId('file-preview-pane')).toBeInTheDocument();
+      expect(
+        screen.getByTestId('right-dock-tab-file:/workspace/docs/notes.md'),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+
+    it('adds panes from "+", closes them one by one, and shows or hides the dock on ⌥⌘→', async () => {
+      const forkSession = vi.fn().mockResolvedValue({ ...RUNNING_SESSION, id: 'child-1' });
+      wrap('test-session-id-1234', { volundr: { forkSession } });
+      await screen.findByTestId('live-session-detail-page');
+
+      // An empty dock opens on Changes.
+      fireEvent.keyDown(window, { code: 'ArrowRight', altKey: true, metaKey: true });
+      expect(screen.getByTestId('right-dock-tab-changes')).toHaveAttribute('aria-selected', 'true');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add a pane' }));
+      // Live preview waits for a safe route to a session's ports, so it is not offered.
+      expect(screen.queryByRole('button', { name: /Live preview/ })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /Side chat/ }));
+      const side = screen.getByTestId('right-dock-tab-side');
+      expect(side).toHaveTextContent('↳ test-session · side');
+      fireEvent.click(screen.getByRole('button', { name: /Fork with context/ }));
+      await waitFor(() =>
+        expect(forkSession).toHaveBeenCalledWith('test-session-id-1234', 'test-session-side'),
+      );
+
+      fireEvent.keyDown(window, { code: 'ArrowRight', altKey: true, metaKey: true });
+      expect(screen.queryByTestId('right-dock')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Show the dock (⌥⌘→)' }));
+      expect(screen.getByTestId('right-dock-tab-side')).toHaveAttribute('aria-selected', 'true');
+
+      fireEvent.click(screen.getByRole('button', { name: /Close ↳ test-session · side/ }));
+      expect(screen.getByTestId('right-dock-tab-changes')).toHaveAttribute('aria-selected', 'true');
+      fireEvent.click(screen.getByRole('button', { name: 'Close Changes' }));
+      expect(screen.queryByTestId('right-dock')).not.toBeInTheDocument();
+    });
+
+    it("starts a side chat's new chat in the session's repository and branch", async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.keyDown(window, { code: 'ArrowRight', altKey: true, ctrlKey: true });
+      fireEvent.click(screen.getByRole('button', { name: 'Add a pane' }));
+      fireEvent.click(screen.getByRole('button', { name: /Side chat/ }));
+      fireEvent.click(screen.getByRole('button', { name: /New chat/ }));
+      expect(navigate).toHaveBeenCalledWith({
+        to: '/volundr/sessions/new',
+        search: {
+          repo: 'niuulabs/volundr',
+          branch: 'main',
+          back: '/volundr/sessions/test-session-id-1234',
+        },
+      });
     });
 
     it('always shows Chat even when the server feature catalog omits it', async () => {

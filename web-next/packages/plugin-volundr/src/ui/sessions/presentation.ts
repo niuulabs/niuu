@@ -76,6 +76,13 @@ export const DOCK_WIDTH = { default: 560, min: 340, max: 960, keyboardStep: 20 }
  * the dock narrows to keep it, and steps aside when even its own minimum does not fit.
  */
 export const TRANSCRIPT_MIN_WIDTH = 480;
+/** The terminal dock under the conversation, as Lexi's: its height when not dragged. */
+export const TERMINAL_HEIGHT = { default: 230, min: 140, max: 520, keyboardStep: 20 } as const;
+/**
+ * The conversation's lowest usable height above the terminal: the composer and a few turns.
+ * The terminal shortens to keep it, and hides for the moment when even its minimum does not fit.
+ */
+export const CONVERSATION_MIN_HEIGHT = 320;
 
 /** The model a row names: its own, else the harness that runs it. */
 export function sessionModelLabel(

@@ -226,7 +226,12 @@ export { ModelChip } from './ui/atoms/ModelChip';
 
 // Domain types
 export type { Session, SessionState, SessionResources, SessionEvent } from './domain/session';
-export { canTransition, transitionSession, SessionReadStateConflictError } from './domain/session';
+export {
+  canTransition,
+  transitionSession,
+  SessionForkError,
+  SessionReadStateConflictError,
+} from './domain/session';
 export { toLifecycleState } from './ui/utils/toLifecycleState';
 export type { ExecEntry, ExecStatus } from './domain/exec';
 export { appendExecEntry, updateExecEntry } from './domain/exec';

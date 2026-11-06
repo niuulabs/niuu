@@ -32,6 +32,7 @@ export function QuickOpenFiles({
   onOpenChange,
   candidates,
   touched = [],
+  loadErrors = [],
   onPick,
 }: {
   open: boolean;
@@ -39,6 +40,8 @@ export function QuickOpenFiles({
   /** Every path to search, in the order to show them when nothing is typed. */
   candidates: readonly string[];
   touched?: readonly string[];
+  /** Sources of candidates that failed to load, so a missing file is not read as absent. */
+  loadErrors?: readonly string[];
   onPick: (path: string) => void;
 }) {
   const [query, setQuery] = useState('');
@@ -93,6 +96,11 @@ export function QuickOpenFiles({
             }}
             onKeyDown={onKeyDown}
           />
+          {loadErrors.map((message) => (
+            <p key={message} role="alert" className="niuu-quick-open__error">
+              {message}
+            </p>
+          ))}
           {matches.length === 0 ? (
             <p className="niuu-quick-open__empty">No file matches “{query}”.</p>
           ) : (
