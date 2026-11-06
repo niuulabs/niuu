@@ -678,11 +678,12 @@ class TestSessionServiceStart:
         assert result.chat_endpoint.startswith("ws://localhost:")
         assert "session" in result.chat_endpoint
 
-    async def test_vm_pipeline_omits_kubernetes_identity_and_storage(
+    async def test_vm_pipeline_projects_identity_but_omits_storage(
         self,
         repository: Repo,
         pod_manager: Pods,
     ):
+        """A VM runtime issues the projected token itself; workspace PVCs stay pod-only."""
         storage = AsyncMock()
         service = SessionService(
             repository,
@@ -700,8 +701,9 @@ class TestSessionServiceStart:
         _, spec = pod_manager.start_calls[-1]
         assert spec.values == {}
         assert spec.pod_spec.service_account is None
-        assert spec.pod_spec.volumes == ()
-        assert spec.pod_spec.volume_mounts == ()
+        [volume] = spec.pod_spec.volumes
+        assert "serviceAccountToken" in volume["projected"]["sources"][0]
+        assert [mount["name"] for mount in spec.pod_spec.volume_mounts] == [volume["name"]]
         storage.get_workspace_by_session.assert_not_awaited()
 
     async def test_restart_preserves_workload_identity(self, repository: Repo, pod_manager: Pods):

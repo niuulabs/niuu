@@ -20,6 +20,30 @@ class ComputeConfig(BaseModel):
     execution_catalog: DynamicAdapterConfig | None = Field(
         default=None, description="File-backed operator execution catalog adapter"
     )
+    credential_delivery: DynamicAdapterConfig | None = Field(
+        default=None,
+        description=(
+            "How VM guests receive ServiceAccount tokens and the Forge session credential: "
+            "SshPushCredentialDelivery or MetadataCredentialDelivery "
+            "(volundr.adapters.outbound.guest_credential_delivery). Required when sessions "
+            "carry projected tokens or a Forge session credential."
+        ),
+    )
+    guest_identity: DynamicAdapterConfig | None = Field(
+        default=None,
+        description=(
+            "How a guest proves its allocation to Forge's metadata endpoint "
+            "(HostKeyGuestIdentity or SpiffeGuestIdentity). Enables the endpoint; "
+            "required by MetadataCredentialDelivery."
+        ),
+    )
+    service_account_tokens: DynamicAdapterConfig | None = Field(
+        default=None,
+        description=(
+            "Issuer of session ServiceAccount tokens for VM guests "
+            "(KubernetesServiceAccountTokenIssuer)."
+        ),
+    )
     provider_binding: str = Field(
         default="", description="Stable deployment provider identity used by execution profiles"
     )

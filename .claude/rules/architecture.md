@@ -179,3 +179,81 @@ Limits of this exception, enforced together, not individually:
   chart's Envoy `jwt_authn` bypass (`charts/guild/templates/envoy-configmap.yaml`,
   an exact `safe_regex` match — never a `prefix`, which would also exempt
   routes that must stay JWT-gated).
+
+### Exception: VM guest metadata identities
+
+A VM session has no kubelet and no human behind it. Its guest agent pulls the
+session's credentials (projected-style ServiceAccount tokens and the Forge
+session credential) from exactly one Forge route,
+`POST /api/v1/internal/compute/metadata/credentials`
+(`volundr.adapters.inbound.rest_compute_metadata`,
+`volundr.domain.services.guest_metadata.GuestMetadataService`). The request
+carries no Keycloak JWT, PAT or scoped workload token; the guest proves which
+allocation it is through one configured `GuestIdentity`. This is sanctioned
+because the caller is a *machine* whose only possible credential is one issued
+to it at provisioning, and the alternative (a long-lived bearer embedded in the
+guest) is strictly worse. Three identities exist; the compute pool configures one
+and Forge never tries another.
+
+- **Host-key signing** (`volundr.adapters.outbound.guest_identity_host_key`).
+  The guest signs with the Ed25519 SSH host key Forge generated for the
+  allocation; Forge verifies against the public key it stores in the
+  allocation's machine bootstrap (`/etc/niuu/ssh_host_ed25519_key.pub`), so no
+  new secret is stored. The signed bytes are the `niuu join` scheme
+  (`niuu.adapters.node_signature.signing_message`):
+  `f"{METHOD}\n{PATH}\n{timestamp_ms}\n{sha256(body).hexdigest()}"`, carried in
+  `Niuu-Guest-Allocation`, `Niuu-Guest-Timestamp` and `Niuu-Guest-Signature`.
+  - **Replay protection is the timestamp, advanced atomically.** It must
+    strictly increase per allocation through one conditional upsert
+    (`PostgresGuestRequestWatermarks.try_advance`, table
+    `compute_guest_request_watermarks`); the write happens only after the
+    signature and the skew check pass, so a forged request cannot burn a
+    legitimate timestamp. Milliseconds, as for `niuu join`.
+  - **A bounded clock-skew window** (`clock_skew_seconds` on the adapter,
+    positive and finite) — an unbounded window lets a captured request replay.
+  - **Every rejection is the identical 401 `{"error": "unauthorized"}`**:
+    missing or malformed header, unknown allocation, missing or non-Ed25519
+    stored key, bad signature, stale timestamp, replay, and a body naming a
+    different allocation than the one authenticated. Nothing distinguishes an
+    allocation that exists from one that does not.
+  - The signature covers method, path, timestamp and body hash; omitting any
+    would let a captured signature be replayed against another route or body.
+- **Provider attestation** (`volundr.adapters.outbound.guest_identity_provider`,
+  the Harvester default). The provider puts a token into the guest and vouches
+  for it: on Harvester, the VM's virt-launcher pod ServiceAccount token shared
+  over virtiofs, verified by a TokenReview and by the pod being an active pod
+  (`status.activePods`, written only by virt-controller) of the allocation's
+  VMI. The ServiceAccount holds no RBAC, because the token is addressed to
+  Harvester's API server. A failed check is the identical 401; a TokenReview
+  Forge cannot make is a provider error, never a 401.
+- **SPIFFE JWT-SVIDs** (`volundr.adapters.outbound.guest_identity_spiffe`) are
+  the standard path and need no custom scheme. The guest agent fetches a
+  JWT-SVID from its SPIRE agent and sends `Authorization: Bearer <JWT-SVID>`;
+  Forge verifies it as any OIDC token (issuer, signature against the SPIRE OIDC
+  discovery keys, the configured metadata audience, expiry). The subject must
+  match `spiffe_id_template` (default
+  `spiffe://{trust_domain}/forge-vm/{pool_id}/{allocation_id}`), which binds the
+  token to one allocation of one pool; SPIRE entries selecting that allocation's
+  container decide who may hold it.
+
+Limits of this exception, enforced together:
+
+- **The endpoint only ever answers for the session currently bound to the
+  allocation.** Authentication yields an allocation, never a session. The lease
+  must be in the configured pool, `ready` or `busy`, with a bound session and no
+  stop requested, and the credentials come from that session's own launch
+  payload; anything else is a 409 with the reason (after authentication) or the
+  identical 401. A released, draining or unbound allocation gets nothing, and
+  the Forge session credential carries the session's *current* launch id, so a
+  restart revokes what the previous launch held.
+- **Exactly one route.** Do not extend either identity to another route without
+  adding it to the same enforcement points this one touches: the router, the
+  Volundr chart's Envoy `jwt_authn` bypass and Cedar `ext_authz` skip
+  (`charts/volundr/templates/envoy-configmap.yaml`, an exact `safe_regex` on the
+  path and `POST` — never a `prefix`, which would also exempt sibling routes
+  that must stay JWT-gated; enabled by `guestMetadata.enabled`), and, if Forge's
+  `PATRevocationMiddleware` is ever run with `authenticate_http=True`, its
+  exempt-path list.
+- **Forge's authority to mint is narrow.** The ServiceAccount tokens come from
+  the Kubernetes TokenRequest API under a namespaced Role allowing only `create`
+  on `serviceaccounts/token` (`guestMetadata` in the Volundr chart).

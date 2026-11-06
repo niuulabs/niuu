@@ -1,7 +1,5 @@
 """Tests for WorkloadIdentityContributor."""
 
-import pytest
-
 from volundr.adapters.outbound.contributors.workload_identity import WorkloadIdentityContributor
 from volundr.domain.models import GitSource, Session
 from volundr.domain.ports import SessionContext
@@ -52,16 +50,26 @@ async def test_workload_identity_contributor_projects_audience_scoped_token():
     } in contribution.pod_spec.env
 
 
-@pytest.mark.parametrize("runtime_backend", ["openshell", "vm"])
-async def test_workload_identity_contributor_skips_non_kubernetes_identity_backend(
-    runtime_backend,
-):
+async def test_workload_identity_contributor_skips_openshell_identity_backend():
     contributor = WorkloadIdentityContributor()
 
     contribution = await contributor.contribute(
         Session(name="session", model="gpt-5.5", source=GitSource()),
-        SessionContext(runtime_backend=runtime_backend),
+        SessionContext(runtime_backend="openshell"),
     )
 
     assert contribution.values == {}
     assert contribution.pod_spec is None
+
+
+async def test_workload_identity_contributor_projects_the_token_for_vm_sessions():
+    """A VM runtime issues the projected token itself, so VM sessions declare it too."""
+    contributor = WorkloadIdentityContributor()
+
+    contribution = await contributor.contribute(
+        Session(name="session", model="gpt-5.5", source=GitSource()),
+        SessionContext(runtime_backend="vm"),
+    )
+
+    [volume] = contribution.pod_spec.volumes
+    assert volume["projected"]["sources"][0]["serviceAccountToken"]["audience"] == "volundr-api"
