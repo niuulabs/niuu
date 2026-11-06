@@ -2449,3 +2449,160 @@ class TestPresentedFilesOnACluster:
     def test_read_write_once_is_accepted_with_colocated_pods(self):
         args = (*PRESENTED_FILES_ON, "--set", "presentedFiles.persistence.accessMode=ReadWriteOnce")
         assert _rendered_configmap(*args)["presented_files"]["enabled"] is True
+
+
+GUEST_METADATA_ON = ("--set", "guestMetadata.enabled=true")
+
+
+def _gateway_http(config: dict) -> dict:
+    return config["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0][
+        "typed_config"
+    ]
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestGuestMetadataEndpoint:
+    """VM guests authenticate to the metadata endpoint themselves (host-key signature or
+    SPIFFE JWT-SVID), so the gateway must pass exactly that route and Forge must be able
+    to request the ServiceAccount tokens it hands out."""
+
+    @staticmethod
+    def _gateway(*overrides: str) -> dict:
+        from tests.test_charts.test_cedar_authz import envoy_config, render_cedar
+
+        values = {"guestMetadata.enabled": "true", "podManager.kwargs.namespace": "vm-sessions"}
+        values.update(dict(item.split("=", 1) for item in overrides))
+        return envoy_config(render_cedar(**values))
+
+    def test_off_by_default_no_bypass_and_no_role(self):
+        names = {doc["metadata"]["name"] for doc in _rendered_documents()}
+        assert "test-volundr-guest-metadata" not in names
+
+    def test_regex_is_exactly_the_endpoint_path(self):
+        from volundr.domain.guest_credentials import METADATA_CREDENTIALS_PATH
+
+        http = _gateway_http(self._gateway())
+        jwt_filter = next(f for f in http["http_filters"] if f["name"].endswith("jwt_authn"))
+        bypasses = [
+            rule["match"]
+            for rule in jwt_filter["typed_config"]["rules"]
+            if "safe_regex" in rule["match"]
+        ]
+        assert bypasses == [
+            {
+                "safe_regex": {"google_re2": {}, "regex": f"^{METADATA_CREDENTIALS_PATH}$"},
+                "headers": [{"name": ":method", "exact_match": "POST"}],
+            }
+        ]
+        # Exactly that route: no prefix match covers it or its siblings.
+        assert not any(
+            "prefix" in rule["match"]
+            and rule["match"]["prefix"] != "/"
+            and METADATA_CREDENTIALS_PATH.startswith(rule["match"]["prefix"])
+            for rule in jwt_filter["typed_config"]["rules"]
+        )
+
+    def test_cedar_admission_is_skipped_for_the_same_route_only(self):
+        http = _gateway_http(self._gateway())
+        routes = http["route_config"]["virtual_hosts"][0]["routes"]
+        skipped = [
+            route["match"]
+            for route in routes
+            if route.get("typed_per_filter_config", {})
+            .get("envoy.filters.http.ext_authz", {})
+            .get("disabled")
+            and "safe_regex" in route["match"]
+        ]
+        assert [match["safe_regex"]["regex"] for match in skipped] == [
+            "^/api/v1/internal/compute/metadata/credentials$"
+        ]
+        assert skipped[0]["headers"] == [{"name": ":method", "exact_match": "POST"}]
+
+    def test_without_the_switch_the_gateway_has_no_such_bypass(self):
+        from tests.test_charts.test_cedar_authz import envoy_config, render_cedar
+
+        http = _gateway_http(envoy_config(render_cedar()))
+        assert "safe_regex" not in json.dumps(http["route_config"])
+        jwt_filter = next(f for f in http["http_filters"] if f["name"].endswith("jwt_authn"))
+        assert "safe_regex" not in json.dumps(jwt_filter)
+
+    def test_ssh_push_gets_the_token_role_without_the_gateway_bypass(self):
+        docs = _rendered_documents(
+            "--set",
+            "guestMetadata.issueServiceAccountTokens=true",
+            "--set",
+            "podManager.kwargs.namespace=vm",
+        )
+        names = {(d["kind"], d["metadata"]["name"]) for d in docs}
+        assert ("Role", "test-volundr-guest-metadata") in names
+        from tests.test_charts.test_cedar_authz import envoy_config, render_cedar
+
+        gateway = envoy_config(render_cedar(**{"guestMetadata.issueServiceAccountTokens": "true"}))
+        assert "/compute/metadata/" not in json.dumps(gateway)
+
+    def test_spiffe_registration_grants_only_cluster_static_entries(self):
+        assert not any(
+            d["metadata"]["name"].endswith("-guest-spiffe") for d in _rendered_documents()
+        )
+        docs = _rendered_documents("--set", "guestMetadata.spiffeRegistration=true")
+        role = next(
+            d
+            for d in docs
+            if d["kind"] == "ClusterRole" and d["metadata"]["name"].endswith("-guest-spiffe")
+        )
+        assert role["rules"] == [
+            {
+                "apiGroups": ["spire.spiffe.io"],
+                "resources": ["clusterstaticentries"],
+                "verbs": ["get", "create", "update", "delete"],
+            }
+        ]
+        binding = next(
+            d
+            for d in docs
+            if d["kind"] == "ClusterRoleBinding" and d["metadata"]["name"].endswith("-guest-spiffe")
+        )
+        assert binding["roleRef"]["name"] == role["metadata"]["name"]
+
+    def test_forge_may_only_create_tokens_in_the_session_namespace(self):
+        docs = _rendered_documents(*GUEST_METADATA_ON, "--set", "podManager.kwargs.namespace=vm")
+        role = next(
+            d
+            for d in docs
+            if d["kind"] == "Role" and d["metadata"]["name"].endswith("-guest-metadata")
+        )
+        assert role["metadata"]["namespace"] == "vm"
+        assert role["rules"] == [
+            {"apiGroups": [""], "resources": ["serviceaccounts/token"], "verbs": ["create"]}
+        ]
+        binding = next(
+            d
+            for d in docs
+            if d["kind"] == "RoleBinding" and d["metadata"]["name"].endswith("-guest-metadata")
+        )
+        assert binding["metadata"]["namespace"] == "vm"
+        assert binding["roleRef"]["name"] == role["metadata"]["name"]
+
+    def test_the_namespace_can_be_named_explicitly_and_defaults_to_the_release(self):
+        explicit = _rendered_documents(
+            *GUEST_METADATA_ON,
+            "--set",
+            "guestMetadata.serviceAccountNamespace=vm-accounts",
+            "--set",
+            "podManager.kwargs.namespace=vm",
+        )
+        role = next(d for d in explicit if d["metadata"]["name"].endswith("-guest-metadata"))
+        assert role["metadata"]["namespace"] == "vm-accounts"
+        default = _rendered_documents(
+            *GUEST_METADATA_ON, "--set", "podManager.kwargs.namespace=null", "--namespace", "forge"
+        )
+        role = next(
+            d
+            for d in default
+            if d["kind"] == "Role" and d["metadata"]["name"].endswith("-guest-metadata")
+        )
+        assert role["metadata"]["namespace"] == "forge"
+
+    def test_no_role_without_rbac(self):
+        docs = _rendered_documents(*GUEST_METADATA_ON, "--set", "rbac.create=false")
+        assert not any(d["metadata"]["name"].endswith("-guest-metadata") for d in docs)

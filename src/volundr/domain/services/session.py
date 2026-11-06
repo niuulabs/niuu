@@ -1776,6 +1776,22 @@ class SessionService:
             return True
         return self._forge_session_projection is not None
 
+    async def issue_forge_session(self, session_id: UUID) -> IssuedForgeSessionToken | None:
+        """Mint a credential for the session's current launch without starting a new one.
+
+        A guest that pulls its credentials (VM metadata delivery) refreshes them while the
+        session runs; the launch id stays the one recorded at start, so the credential is
+        revoked by the next start exactly like the one handed over at launch. Returns
+        ``None`` when the session is gone, has no owner or no recorded launch, or no
+        broker can receive a credential on this Forge.
+        """
+        session = await self._repository.get(session_id)
+        if session is None or not session.owner_id:
+            return None
+        if launch_id_of(session.workload_config) is None:
+            return None
+        return self._mint_forge_session(session)
+
     async def _deliver_forge_session(
         self, session: Session, spec: SessionSpec
     ) -> IssuedForgeSessionToken | None:

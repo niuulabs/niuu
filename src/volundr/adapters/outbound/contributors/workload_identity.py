@@ -40,10 +40,10 @@ class WorkloadIdentityContributor(SessionContributor):
         session: Session,
         context: SessionContext,
     ) -> SessionContribution:
-        # Projected service-account tokens are provided by Kubernetes. OpenShell
-        # owns its workload identity, while VM sessions have no Kubernetes token
-        # issuer or projected-volume implementation.
-        if context.runtime_backend in {"openshell", "vm"}:
+        # Kubernetes projects the token into a session pod; a VM runtime issues the
+        # same token through TokenRequest and refreshes it in the guest. OpenShell
+        # owns its workload identity.
+        if context.runtime_backend == "openshell":
             return SessionContribution()
 
         if not self._enabled:

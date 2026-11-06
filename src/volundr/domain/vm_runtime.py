@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Protocol, runtime_checkable
+from uuid import UUID
 
+from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.compute import ComputeLease, MachineBootstrap
+from volundr.domain.guest_credentials import GuestCredentialDelivery
 from volundr.domain.models import Session, SessionSpec
 
 
@@ -31,6 +34,33 @@ class CredentialAwareVmRuntime(Protocol):
 
     def configure_credentials(self, credential_store: CredentialStorePort) -> None:
         """Attach the configured credential port without placing values in runtime config."""
+
+
+@runtime_checkable
+class CredentialDeliveryVmRuntime(Protocol):
+    """Optional composition hook for runtimes that deliver guest credentials."""
+
+    def configure_credential_delivery(self, delivery: GuestCredentialDelivery) -> None:
+        """Attach the configured ``GuestCredentialDelivery``."""
+
+
+@runtime_checkable
+class ForgeSessionVmRuntime(Protocol):
+    """A runtime that writes each launch's Forge session credential into its guest.
+
+    The credential changes on every start, so it is staged in memory for the next
+    start and never stored with the allocation's bootstrap.
+    """
+
+    @property
+    def delivers_forge_session_token(self) -> bool:
+        """Whether this runtime writes the Forge session credential into its guest."""
+
+    def stage_forge_session(self, session_id: UUID, credential: IssuedForgeSessionToken) -> None:
+        """Hold ``credential`` for the next start of ``session_id``."""
+
+    def discard_forge_session(self, session_id: UUID) -> None:
+        """Forget a staged credential."""
 
 
 @runtime_checkable

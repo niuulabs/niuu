@@ -366,6 +366,121 @@ class TestLifespan:
         assert provider.closed
         runtime.close.assert_awaited_once()
 
+    @staticmethod
+    def _guest_compute_settings(**compute):
+        return Settings(
+            pod_manager={
+                "adapter": "volundr.adapters.outbound.vm_pod_manager.VmPodManager",
+                "runtime_backend": "vm",
+                "kwargs": {"profile": "small", "pool_id": "test-pool", "max_machines": 1},
+            },
+            compute={
+                "pool_id": "test-pool",
+                "max_machines": 1,
+                "provider": {"adapter": "tests.Provider"},
+                "runtime": {"adapter": "tests.Runtime"},
+                **compute,
+            },
+        )
+
+    @staticmethod
+    def _run_guest_compute_app(settings, runtime, request=None):
+        from fastapi.testclient import TestClient
+
+        from tests.compute_fakes import LeaseRepository, Provider
+
+        mock_pool = AsyncMock()
+        mock_pool.get_max_size = MagicMock(return_value=10)
+
+        @asynccontextmanager
+        async def _mock_db_pool(_config):
+            yield mock_pool
+
+        with (
+            patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
+            patch("volundr.main.database_pool", _mock_db_pool),
+            patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
+                new=AsyncMock(return_value=0),
+            ),
+            patch(
+                "volundr.domain.services.resident_runtime.ResidentRuntimeService.reconcile_all",
+                new=AsyncMock(),
+            ),
+            patch("volundr.compute.main.build_provider", return_value=Provider()),
+            patch(
+                "volundr.adapters.outbound.postgres_compute_leases.PostgresComputeLeaseRepository",
+                return_value=LeaseRepository(),
+            ),
+            patch("volundr.compute.main.build_runtime", return_value=runtime),
+        ):
+            app = create_app(settings)
+            with TestClient(app) as client:
+                return request(client) if request else None
+
+    _METADATA = {
+        "service_account_tokens": {"adapter": "tests.test_main.GuestTokens"},
+        "guest_identity": {
+            "adapter": "volundr.adapters.outbound.guest_identity_host_key.HostKeyGuestIdentity",
+        },
+        "credential_delivery": {
+            "adapter": (
+                "volundr.adapters.outbound.guest_credential_delivery.MetadataCredentialDelivery"
+            ),
+            "kwargs": {"metadata_url": "https://forge.example"},
+        },
+    }
+
+    def test_lifespan_wires_vm_guest_credentials_and_serves_the_metadata_route(self) -> None:
+        from volundr.adapters.outbound.ssh_vm_runtime import SshContainerVmRuntime
+        from volundr.domain.guest_credentials import METADATA_CREDENTIALS_PATH
+
+        runtime = AsyncMock(spec=SshContainerVmRuntime)
+        runtime.configure_credential_delivery = MagicMock()
+        status = self._run_guest_compute_app(
+            self._guest_compute_settings(**self._METADATA),
+            runtime,
+            lambda client: (
+                client.post(METADATA_CREDENTIALS_PATH, json={"allocation_id": "x"}).status_code
+            ),
+        )
+        assert status == 401
+        [call] = runtime.configure_credential_delivery.call_args_list
+        assert type(call.args[0]).__name__ == "MetadataCredentialDelivery"
+
+    def test_lifespan_refuses_a_delivery_its_runtime_cannot_run(self) -> None:
+        from volundr.domain.vm_runtime import VmRuntime
+
+        settings = self._guest_compute_settings(
+            service_account_tokens=self._METADATA["service_account_tokens"],
+            credential_delivery={
+                "adapter": (
+                    "volundr.adapters.outbound.guest_credential_delivery.SshPushCredentialDelivery"
+                )
+            },
+        )
+        with pytest.raises(ValueError, match="cannot deliver guest credentials"):
+            self._run_guest_compute_app(settings, AsyncMock(spec=VmRuntime))
+
+    def test_lifespan_refuses_a_metadata_endpoint_without_a_token_issuer(self) -> None:
+        from volundr.adapters.outbound.ssh_vm_runtime import SshContainerVmRuntime
+
+        settings = self._guest_compute_settings(guest_identity=self._METADATA["guest_identity"])
+        with pytest.raises(ValueError, match="compute.service_account_tokens"):
+            self._run_guest_compute_app(settings, AsyncMock(spec=SshContainerVmRuntime))
+
     def test_lifespan_initializes_audit_subscriber(self):
         """Lifespan must run startup/shutdown without error when sleipnir is disabled.
 
@@ -1098,3 +1213,16 @@ class TestStartupReconcilePasses:
 
         assert order == ["sleep"]
         assert "Resident runtime reconcile iteration failed" in caplog.text
+
+
+class GuestTokens:
+    """A ServiceAccount token issuer for lifespan wiring tests; never called."""
+
+    def __new__(cls, **_ports):
+        from volundr.domain.service_account_tokens import ServiceAccountTokenPort
+
+        class _Tokens(ServiceAccountTokenPort):
+            async def issue(self, service_account, *, audience, expiration_seconds):
+                raise AssertionError("not issued in wiring tests")
+
+        return _Tokens()

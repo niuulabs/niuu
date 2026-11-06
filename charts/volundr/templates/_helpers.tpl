@@ -100,6 +100,13 @@ Namespace of the session pods that receive their Forge credential from a Secret
 {{- end }}
 
 {{/*
+Namespace of the ServiceAccounts VM sessions run as (Forge requests their tokens there)
+*/}}
+{{- define "volundr.guestMetadataNamespace" -}}
+{{- .Values.guestMetadata.serviceAccountNamespace | default ((.Values.podManager.kwargs).namespace) | default .Release.Namespace }}
+{{- end }}
+
+{{/*
 Home PVC name
 */}}
 {{- define "volundr.homePvcName" -}}

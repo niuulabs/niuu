@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import copy
+import inspect
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -31,6 +32,8 @@ from volundr.domain.compute import (
     MachineProvider,
     MachineState,
 )
+from volundr.domain.guest_credentials import GuestCredentialDelivery, GuestIdentity
+from volundr.domain.service_account_tokens import ServiceAccountTokenPort
 from volundr.domain.services.compute_leases import ComputeLeaseService
 from volundr.external_modules import load_external_module_manifests
 
@@ -58,6 +61,57 @@ def build_provider(config: ComputeConfig) -> MachineProvider:
     if not isinstance(provider, MachineProvider):
         raise TypeError("Configured compute provider must implement MachineProvider")
     return provider
+
+
+@dataclass(frozen=True)
+class GuestCredentialComponents:
+    """VM guest credential collaborators, owned (and closed) by the composition root."""
+
+    service_account_tokens: ServiceAccountTokenPort | None
+    guest_identity: GuestIdentity | None
+    delivery: GuestCredentialDelivery | None
+
+
+def _build_adapter(config: DynamicAdapterConfig, ports: Mapping[str, object]):
+    """Construct with config kwargs plus the ports the constructor declares.
+
+    An adapter that accepts ``**kwargs`` receives every port; one with an exact
+    signature receives only its own, so a mistyped config kwarg still fails.
+    """
+    kwargs = resolve_secret_kwargs(copy.deepcopy(config.kwargs), config.secret_kwargs_env)
+    cls = import_class(config.adapter)
+    parameters = inspect.signature(cls).parameters.values()
+    if not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters):
+        declared = {p.name for p in parameters}
+        ports = {name: port for name, port in ports.items() if name in declared}
+    return cls(**{**kwargs, **ports})
+
+
+def build_guest_credentials(
+    config: ComputeConfig, ports: Mapping[str, object]
+) -> GuestCredentialComponents:
+    """Compose the token issuer, guest identity and delivery from dynamic config.
+
+    Each adapter receives its kwargs plus the shared ``ports`` and the components
+    built before it; adapters ignore the ports they do not use (``**_extra``).
+    """
+    tokens = identity = delivery = None
+    if config.service_account_tokens is not None:
+        tokens = _build_adapter(config.service_account_tokens, ports)
+        if not isinstance(tokens, ServiceAccountTokenPort):
+            raise TypeError("compute.service_account_tokens must implement ServiceAccountTokenPort")
+    if config.guest_identity is not None:
+        identity = _build_adapter(config.guest_identity, ports)
+        if not isinstance(identity, GuestIdentity):
+            raise TypeError("compute.guest_identity must implement GuestIdentity")
+    if config.credential_delivery is not None:
+        delivery = _build_adapter(
+            config.credential_delivery,
+            {**ports, "service_account_tokens": tokens, "guest_identity": identity},
+        )
+        if not isinstance(delivery, GuestCredentialDelivery):
+            raise TypeError("compute.credential_delivery must implement GuestCredentialDelivery")
+    return GuestCredentialComponents(tokens, identity, delivery)
 
 
 def build_runtime(

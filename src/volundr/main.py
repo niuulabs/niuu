@@ -62,6 +62,7 @@ from volundr.adapters.inbound.rest_audit import (
     create_canonical_audit_router,
 )
 from volundr.adapters.inbound.rest_codex_credentials import create_codex_credentials_router
+from volundr.adapters.inbound.rest_compute_metadata import create_compute_metadata_router
 from volundr.adapters.inbound.rest_credentials import create_canonical_credentials_router
 from volundr.adapters.inbound.rest_events import create_events_router
 from volundr.adapters.inbound.rest_forge_mcp import create_forge_mcp_router
@@ -1063,12 +1064,17 @@ def create_app(
             compute_pool = None
             compute_pool_task = None
             execution_components = None
+            guest_metadata_service = None
             if settings.compute is not None:
                 from volundr.adapters.outbound.postgres_compute_leases import (
                     PostgresComputeLeaseRepository,
                 )
+                from volundr.adapters.outbound.postgres_guest_request_watermarks import (
+                    PostgresGuestRequestWatermarks,
+                )
                 from volundr.compute.main import (
                     build_execution_components,
+                    build_guest_credentials,
                     build_provider,
                     build_runtime,
                     provider_fingerprint,
@@ -1076,7 +1082,11 @@ def create_app(
                 from volundr.domain.compute import ComputePoolPolicy
                 from volundr.domain.services.compute_leases import ComputeLeaseService
                 from volundr.domain.services.compute_pool import ComputePoolService
-                from volundr.domain.vm_runtime import CredentialAwareVmRuntime
+                from volundr.domain.services.guest_metadata import GuestMetadataService
+                from volundr.domain.vm_runtime import (
+                    CredentialAwareVmRuntime,
+                    CredentialDeliveryVmRuntime,
+                )
 
                 compute = settings.compute
                 if (compute.runtime is None and compute.execution_catalog is None) or not hasattr(
@@ -1131,6 +1141,69 @@ def create_app(
                     retry_interval_seconds=compute.retry_interval_seconds,
                     retry_max_seconds=compute.retry_max_seconds,
                 )
+
+                async def machine_bootstrap_for(lease_id):
+                    lease = await compute_repository.get(lease_id)
+                    if lease is None or lease.pool_id != compute.pool_id:
+                        return None
+                    return await compute_service.machine_bootstrap_for(lease)
+
+                guest_credentials = build_guest_credentials(
+                    compute,
+                    {
+                        "pool_id": compute.pool_id,
+                        "machine_bootstrap_for": machine_bootstrap_for,
+                        "watermarks": PostgresGuestRequestWatermarks(pool),
+                        "machine_provider": compute_provider,
+                    },
+                )
+                for component in (
+                    guest_credentials.service_account_tokens,
+                    guest_credentials.guest_identity,
+                    guest_credentials.delivery,
+                ):
+                    if component is not None:
+                        compute_resources.push_async_callback(component.close)
+                if guest_credentials.delivery is not None:
+                    vm_runtimes = {
+                        id(candidate): candidate
+                        for candidate in (
+                            runtime,
+                            *(
+                                execution_components.runtimes.values()
+                                if execution_components is not None
+                                else ()
+                            ),
+                        )
+                        if candidate is not None
+                    }
+                    for vm_runtime in vm_runtimes.values():
+                        if not isinstance(vm_runtime, CredentialDeliveryVmRuntime):
+                            raise ValueError(
+                                f"compute.credential_delivery is configured but "
+                                f"{type(vm_runtime).__name__} cannot deliver guest credentials"
+                            )
+                        vm_runtime.configure_credential_delivery(guest_credentials.delivery)
+                if guest_credentials.guest_identity is not None:
+                    if guest_credentials.service_account_tokens is None:
+                        raise ValueError(
+                            "compute.guest_identity enables the metadata endpoint, which "
+                            "needs compute.service_account_tokens"
+                        )
+
+                    async def issue_forge_session(session_id):
+                        # session_service is composed below; the endpoint serves only
+                        # after startup completes.
+                        return await session_service.issue_forge_session(session_id)
+
+                    guest_metadata_service = GuestMetadataService(
+                        repository=compute_repository,
+                        compute_service=compute_service,
+                        pool_id=compute.pool_id,
+                        identity=guest_credentials.guest_identity,
+                        service_account_tokens=guest_credentials.service_account_tokens,
+                        issue_forge_session=issue_forge_session,
+                    )
                 pod_manager.configure_compute(
                     compute_service,
                     compute_repository,
@@ -1862,6 +1935,9 @@ def create_app(
                         next(iter(credential_grant_brokers.values()))
                     )
                 )
+
+            if guest_metadata_service is not None:
+                app.include_router(create_compute_metadata_router(guest_metadata_service))
 
             app.include_router(catalog.router)
 

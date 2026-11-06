@@ -469,6 +469,16 @@ class SecretInjectionContributor(SessionContributor):
             tenant_id=session.tenant_id,
         )
 
+        if context.runtime_backend == "vm" and self._secret_injection.supports_guest_agents:
+            # A VM has no injector to mutate the pod: the adapter describes its agent as
+            # explicit init/sidecar containers the VM runtime runs on the guest.
+            pod_spec = await self._secret_injection.guest_agent_pod_spec_additions(
+                session.owner_id,
+                str(session.id),
+                mappings,
+            )
+            return SessionContribution(values=values, pod_spec=pod_spec)
+
         # Get pod spec additions (annotations, volumes, mounts)
         pod_spec = await self._secret_injection.pod_spec_additions(
             session.owner_id,
