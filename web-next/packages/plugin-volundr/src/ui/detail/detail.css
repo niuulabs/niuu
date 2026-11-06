@@ -101,6 +101,13 @@
   color: var(--color-critical-fg);
 }
 
+.forge-more-menu__shortcut {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
 /* Coordinators and their workers in the session header. */
 .forge-coordinator-tag {
   flex: none;

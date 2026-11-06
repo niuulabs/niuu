@@ -256,6 +256,12 @@ export interface IVolundrService {
     sessionId: string,
     updates: { name?: string; model?: string; branch?: string; tracker_issue_id?: string },
   ): Promise<VolundrSession>;
+  /**
+   * Forks a session into a child on the same host, as Lexi's side chat: Forge's reforge of the
+   * session's chronicle (same repository, branch and model), named `name` and started. Throws
+   * `SessionForkError` with the child's id when the child was created but a later step failed.
+   */
+  forkSession(sessionId: string, name: string): Promise<VolundrSession>;
   getRuntimeVersion(sessionId: string, instanceId?: string): Promise<RuntimeVersion>;
   stopSession(sessionId: string): Promise<void>;
   resumeSession(sessionId: string): Promise<void>;

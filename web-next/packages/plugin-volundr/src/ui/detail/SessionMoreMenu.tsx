@@ -12,10 +12,34 @@ export interface MoreMenuItem {
   tone?: 'critical';
   /** Rule above this item, to set apart a group (the destructive ones). */
   separated?: boolean;
+  /** A keyboard shortcut shown at the item's end. */
+  shortcut?: string;
 }
 
+/** The button that opens the menu; the header's "More" when none is given. */
+export interface MoreMenuTrigger {
+  icon: LucideIcon;
+  label: string;
+  className: string;
+  testId?: string;
+}
+
+const MORE_TRIGGER: MoreMenuTrigger = {
+  icon: MoreHorizontal,
+  label: 'More actions',
+  className: 'niuu-live-session__toolbar-button niuu-live-session__toolbar-button--neutral',
+  testId: 'session-more-menu',
+};
+
 /** The header's secondary actions. Nothing renders when there are none. */
-export function SessionMoreMenu({ items }: { items: readonly MoreMenuItem[] }) {
+export function SessionMoreMenu({
+  items,
+  trigger = MORE_TRIGGER,
+}: {
+  items: readonly MoreMenuItem[];
+  trigger?: MoreMenuTrigger;
+}) {
+  const TriggerIcon = trigger.icon;
   const [open, setOpen] = useState(false);
   if (items.length === 0) return null;
   return (
@@ -23,12 +47,12 @@ export function SessionMoreMenu({ items }: { items: readonly MoreMenuItem[] }) {
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="niuu-live-session__toolbar-button niuu-live-session__toolbar-button--neutral"
-          aria-label="More actions"
-          title="More"
-          data-testid="session-more-menu"
+          className={trigger.className}
+          aria-label={trigger.label}
+          title={trigger === MORE_TRIGGER ? 'More' : trigger.label}
+          data-testid={trigger.testId}
         >
-          <MoreHorizontal className="niuu-live-session__toolbar-icon" aria-hidden="true" />
+          <TriggerIcon className="niuu-live-session__toolbar-icon" aria-hidden="true" />
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="forge-more-menu">
@@ -51,6 +75,9 @@ export function SessionMoreMenu({ items }: { items: readonly MoreMenuItem[] }) {
               >
                 <Icon aria-hidden="true" />
                 {item.label}
+                {item.shortcut ? (
+                  <kbd className="forge-more-menu__shortcut">{item.shortcut}</kbd>
+                ) : null}
               </button>
             </div>
           );

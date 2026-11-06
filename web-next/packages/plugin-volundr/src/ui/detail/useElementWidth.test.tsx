@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
-import { useElementWidth } from './useElementWidth';
+import { useElementHeight, useElementWidth } from './useElementWidth';
 
 describe('useElementWidth', () => {
   it('follows the observed width, forgets it for another element and stops on unmount', () => {
@@ -36,6 +36,31 @@ describe('useElementWidth', () => {
 
     unmount();
     expect(disconnect).toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('follows the observed height and ignores reports that carry none', () => {
+    let notify: ResizeObserverCallback = () => {};
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          notify = callback;
+        }
+        observe = vi.fn();
+        disconnect = vi.fn();
+      },
+    );
+    const report = (rect: Partial<DOMRectReadOnly>) =>
+      act(() => notify([{ contentRect: rect } as ResizeObserverEntry], {} as ResizeObserver));
+    const element = document.createElement('div');
+
+    const { result } = renderHook(() => useElementHeight(element));
+    expect(result.current).toBeNull();
+    report({ height: 640 });
+    expect(result.current).toBe(640);
+    report({ width: 1200 });
+    expect(result.current).toBe(640);
     vi.unstubAllGlobals();
   });
 });

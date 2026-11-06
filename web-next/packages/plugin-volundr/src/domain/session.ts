@@ -117,6 +117,20 @@ export class SessionReadStateConflictError extends Error {
   }
 }
 
+/**
+ * A fork got as far as creating its child session, then a later step (naming or starting it)
+ * failed. The child exists and is named here, so the caller can still show and fix it.
+ */
+export class SessionForkError extends Error {
+  constructor(
+    readonly childId: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SessionForkError';
+  }
+}
+
 /** Legal transitions in the session lifecycle state machine. */
 const VALID_TRANSITIONS: Record<SessionState, readonly SessionState[]> = {
   requested: ['provisioning', 'failed'],

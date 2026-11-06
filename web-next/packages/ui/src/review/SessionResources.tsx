@@ -23,6 +23,7 @@ export function SessionResources({
   filesystem,
   presented = NO_PRESENTED,
   filesReadable = true,
+  onOpenWorkspaceFile,
   children,
 }: {
   sessionId: string;
@@ -32,6 +33,11 @@ export function SessionResources({
   presented?: readonly PresentedFileRef[];
   /** False once the session has stopped: its own files can no longer be read. */
   filesReadable?: boolean;
+  /**
+   * Opens a workspace file the conversation links to somewhere of the host's own, such as a
+   * dock pane beside the chat, instead of this dialog. Used only while the files are readable.
+   */
+  onOpenWorkspaceFile?: (path: string) => void;
   children: ReactNode;
 }) {
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -62,16 +68,23 @@ export function SessionResources({
     },
     [filesystem, sessionId, filesReadable],
   );
-  const open = useCallback((resource: ConversationResource) => {
-    if (!isOpen.current) {
-      returnFocus.current =
-        document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      isOpen.current = true;
-    }
-    setPreview(undefined);
-    setError(undefined);
-    setSelected(resource);
-  }, []);
+  const open = useCallback(
+    (resource: ConversationResource) => {
+      if (resource.kind === 'workspace' && filesReadable && onOpenWorkspaceFile) {
+        onOpenWorkspaceFile(resource.path);
+        return;
+      }
+      if (!isOpen.current) {
+        returnFocus.current =
+          document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        isOpen.current = true;
+      }
+      setPreview(undefined);
+      setError(undefined);
+      setSelected(resource);
+    },
+    [filesReadable, onOpenWorkspaceFile],
+  );
   const port = useMemo(
     () => ({
       resolve: (href: string) => {

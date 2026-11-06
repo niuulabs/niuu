@@ -43,7 +43,7 @@ vi.mock('@niuulabs/query', async () => {
 
 import { __testables, buildVolundrFileSystemHttpAdapter, buildVolundrHttpAdapter } from './http';
 import type { IVolundrService } from '../ports/IVolundrService';
-import { SessionReadStateConflictError } from '../domain/session';
+import { SessionForkError, SessionReadStateConflictError } from '../domain/session';
 import { ApiClientError } from '@niuulabs/query';
 
 function makeClient() {
@@ -68,6 +68,66 @@ it('renames through the Forge PUT contract and normalizes the returned session',
   });
   expect(client.patch).not.toHaveBeenCalled();
   expect(updated).toMatchObject({ id: 'sess-1', name: 'review-renamed', status: 'running' });
+});
+
+it('forks a session through its chronicle on its own host, then names and starts the child', async () => {
+  const client = makeClient();
+  const service = buildVolundrHttpAdapter(client);
+  client.get.mockImplementation(async (endpoint: string) =>
+    endpoint.startsWith('/sessions/parent/chronicle')
+      ? { id: 'chron-1' }
+      : { id: 'parent', name: 'demo', status: 'running', instance_id: 'thor' },
+  );
+  await service.getSession('parent', { instanceId: 'thor' });
+  client.post.mockImplementation(async (endpoint: string) =>
+    endpoint.startsWith('/chronicles/')
+      ? { id: 'child', name: 'demo (reforged)', status: 'created' }
+      : undefined,
+  );
+  client.put.mockResolvedValue({ id: 'child', name: 'demo-side', status: 'created' });
+
+  const child = await service.forkSession('parent', 'demo-side');
+
+  expect(client.get).toHaveBeenCalledWith('/sessions/parent/chronicle?instance_id=thor');
+  expect(client.post).toHaveBeenNthCalledWith(1, '/chronicles/chron-1/reforge?instance_id=thor');
+  expect(client.put).toHaveBeenCalledWith('/sessions/child?instance_id=thor', {
+    name: 'demo-side',
+  });
+  expect(client.post).toHaveBeenNthCalledWith(2, '/sessions/child/start?instance_id=thor');
+  expect(child).toMatchObject({ id: 'child', name: 'demo-side', instanceId: 'thor' });
+});
+
+it('names the child it created when naming or starting it fails', async () => {
+  const client = makeClient();
+  const service = buildVolundrHttpAdapter(client);
+  client.get.mockResolvedValue({ id: 'chron-1' });
+  client.post.mockImplementation(async (endpoint: string) => {
+    if (endpoint.startsWith('/chronicles/'))
+      return { id: 'child', name: 'demo', status: 'created' };
+    throw new ApiClientError('API request failed: 409', 409, 'No free session slot');
+  });
+  client.put.mockResolvedValue({ id: 'child', name: 'demo-side', status: 'created' });
+
+  const failure = await service.forkSession('parent', 'demo-side').catch((error) => error);
+  expect(failure).toBeInstanceOf(SessionForkError);
+  expect(failure).toMatchObject({ childId: 'child' });
+  expect(failure.message).toContain('could not start it: No free session slot');
+
+  client.put.mockRejectedValue(new Error('name taken'));
+  const unnamed = await service.forkSession('parent', 'demo-side').catch((error) => error);
+  expect(unnamed.message).toContain('could not name it: name taken');
+  client.put.mockRejectedValue('odd');
+  const odd = await service.forkSession('parent', 'demo-side').catch((error) => error);
+  expect(odd.message).toContain('could not name it: odd');
+});
+
+it('refuses a fork outright when the session has no chronicle', async () => {
+  const client = makeClient();
+  client.get.mockRejectedValue(new ApiClientError('API request failed: 404', 404, 'No chronicle'));
+  await expect(buildVolundrHttpAdapter(client).forkSession('parent', 'x-side')).rejects.toThrow(
+    'API request failed: 404',
+  );
+  expect(client.post).not.toHaveBeenCalled();
 });
 
 it('assigns a project from a different host while keeping the session owner selector', async () => {

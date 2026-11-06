@@ -1463,6 +1463,21 @@ export function createMockVolundrService(): IVolundrService {
     }),
 
     updateSession: async (_id, updates) => ({ ...sessions[0]!, ...updates }),
+    forkSession: async (sessionId, name) => {
+      const parent = sessions.find((session) => session.id === sessionId);
+      if (!parent) throw new Error(`Session not found: ${sessionId}`);
+      const child: VolundrSession = {
+        ...parent,
+        id: `${parent.id}-side-${sessions.length}`,
+        name,
+        status: 'starting',
+        messageCount: 0,
+        tokensUsed: 0,
+        lastActive: Date.now(),
+      };
+      sessions.unshift(child);
+      return child;
+    },
 
     stopSession: async () => {},
     resumeSession: async () => {},

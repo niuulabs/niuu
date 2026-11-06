@@ -1010,6 +1010,7 @@ function buildSplitVolundrService(
       forge.evaluatePermissionAutoApproval(sessionId, request),
     connectSession: (config) => forge.connectSession(config),
     updateSession: (sessionId, updates) => forge.updateSession(sessionId, updates),
+    forkSession: (sessionId, name) => forge.forkSession(sessionId, name),
     stopSession: (sessionId) => forge.stopSession(sessionId),
     resumeSession: (sessionId) => forge.resumeSession(sessionId),
     deleteSession: (sessionId, cleanup) => forge.deleteSession(sessionId, cleanup),

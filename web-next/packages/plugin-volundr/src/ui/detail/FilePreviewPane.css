@@ -1,0 +1,71 @@
+/* ── One previewed file in the right dock ── */
+
+.forge-file-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.forge-file-pane__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px 7px 12px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.forge-file-pane__crumbs {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.forge-file-pane__crumbs span + span::before {
+  content: '/';
+  margin-right: 4px;
+  color: var(--color-text-faint);
+}
+
+.forge-file-pane__crumbs span[aria-current='true'] {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.forge-file-pane__files {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.forge-file-pane__files:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.forge-file-pane__files svg {
+  width: 13px;
+  height: 13px;
+}
+
+.forge-file-pane__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+}

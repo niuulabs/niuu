@@ -202,14 +202,16 @@ describe('SettingsPage', () => {
     localStorage.clear();
     routerMocks.params = { providerId: 'session-view', sectionId: 'tabs' };
     wrap(<SettingsPage />, true);
-    const terminal = screen.getByRole('checkbox', { name: 'Terminal' }) as HTMLInputElement;
-    expect(terminal.checked).toBe(false);
+    // The terminal docks under the conversation (⌃`), so it is not a tab to choose.
+    expect(screen.queryByRole('checkbox', { name: 'Terminal' })).not.toBeInTheDocument();
+    const chronicle = screen.getByRole('checkbox', { name: 'Chronicle' }) as HTMLInputElement;
+    expect(chronicle.checked).toBe(false);
     expect((screen.getByRole('checkbox', { name: /Chat/ }) as HTMLInputElement).disabled).toBe(
       true,
     );
-    fireEvent.click(terminal);
-    expect(terminal.checked).toBe(true);
-    expect(localStorage.getItem('niuu.forge.sessionTabs')).toContain('terminal');
+    fireEvent.click(chronicle);
+    expect(chronicle.checked).toBe(true);
+    expect(localStorage.getItem('niuu.forge.sessionTabs')).toContain('chronicles');
     expect(apiMocks.get).not.toHaveBeenCalled();
     expect(apiMocks.patch).not.toHaveBeenCalled();
   });
