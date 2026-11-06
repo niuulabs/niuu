@@ -58,6 +58,8 @@ _FORGE_SESSION_FILE = "token"
 _NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,40}[a-z0-9])?")
 _CONTAINER_KEYS = {"name", "image", "command", "args", "env", "volumeMounts", "securityContext"}
 _MOUNT_KEYS = {"name", "mountPath", "readOnly"}
+#: Directory symlinks in the session images: in the Skuld image ``/var/run`` is ``/run``.
+_DEFAULT_IMAGE_PATH_LINKS = {"/var/run": "/run"}
 
 # Passed as a fixed program; session-controlled values arrive as JSON on stdin.
 # Init containers run to completion and sidecars start before Skuld, in the
@@ -271,6 +273,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         guest_access: GuestAccess | None = None,
         host_prepared: bool = False,
         default_service_account: str = "",
+        image_path_links: dict[str, str] | None = None,
     ):
         if not skuld_image or not ssh_user or ssh_user.startswith("-"):
             raise ValueError("Configure a Skuld image and SSH user")
@@ -291,6 +294,17 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             <= 0
         ):
             raise ValueError("VM runtime timeouts must be positive")
+        links = _DEFAULT_IMAGE_PATH_LINKS if image_path_links is None else image_path_links
+        if any(
+            not PurePosixPath(link).is_absolute()
+            or not PurePosixPath(target).is_absolute()
+            or ".." in PurePosixPath(link).parts + PurePosixPath(target).parts
+            for link, target in links.items()
+        ):
+            raise ValueError("image_path_links map absolute image paths to absolute paths")
+        self._image_path_links = {
+            PurePosixPath(link): PurePosixPath(target) for link, target in links.items()
+        }
         if guest_platform_bind_host not in {"127.0.0.1", "0.0.0.0"}:
             raise ValueError("guest_platform_bind_host must be '127.0.0.1' or '0.0.0.0'")
         if any(
@@ -502,6 +516,19 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 *launch["directories"],
             ]
             launch.update(added.launch)
+        launch["directories"] = [
+            *launch["directories"],
+            *self._nested_mountpoints(
+                [*launch["secret_mounts"], *launch["volume_mounts"]], owner="the session"
+            ),
+            *(
+                directory
+                for container in (*launch["init_containers"], *launch["sidecars"])
+                for directory in self._nested_mountpoints(
+                    container["mounts"], owner=f"container {container['name']!r}"
+                )
+            ),
+        ]
         payload = json.dumps(launch)
         return machine.model_copy(
             update={
@@ -656,6 +683,40 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             "service_account": service_account or "",
             **containers,
         }
+
+    def _in_image(self, target: str) -> PurePosixPath:
+        """Where a mount target lands inside the image, through its directory symlinks."""
+        path = PurePosixPath(target)
+        for link, resolved in self._image_path_links.items():
+            if path == link or link in path.parents:
+                return resolved / path.relative_to(link)
+        return path
+
+    def _nested_mountpoints(self, mounts: list[dict], *, owner: str) -> list[dict]:
+        """Mountpoints that must exist in a read-only bind's guest directory before start.
+
+        The container runtime creates a missing mountpoint inside the container. When it
+        falls inside a read-only bind (``/var/run/secrets/x`` in ``/run/secrets``) it
+        cannot, and the container never starts; the guest creates it in that bind's
+        source first, so the parent bind stays read-only.
+        """
+        placed = [(self._in_image(mount["target"]), mount) for mount in mounts]
+        directories = []
+        for target, mount in placed:
+            parents = [(path, other) for path, other in placed if path in target.parents]
+            if not parents:
+                continue
+            parent_target, parent = max(parents, key=lambda entry: len(entry[0].parts))
+            if not parent.get("readonly", True):
+                continue
+            if parent["source"].startswith(_SECRETS):
+                raise ValueError(
+                    f"VM mount {mount['target']!r} of {owner} lies inside the secret file "
+                    f"mounted at {parent['target']!r}"
+                )
+            path = PurePosixPath(parent["source"]) / target.relative_to(parent_target)
+            directories.append({"path": str(path), "mode": "0755"})
+        return directories
 
     @staticmethod
     def _token_volume(name: str, projected: dict) -> dict:
