@@ -16,6 +16,8 @@ export interface FilesPaneProps {
   onQuickOpenChange?: (open: boolean) => void;
   /** Open the full file manager (upload, new folder, delete) in the main area. */
   onManage?: () => void;
+  /** A file to preview when the pane opens, such as one opened from a file's own pane. */
+  initialPath?: string;
 }
 
 function byKindThenName(a: FileTreeNode, b: FileTreeNode): number {
@@ -48,13 +50,14 @@ export function FilesPane({
   quickOpen: quickOpenProp,
   onQuickOpenChange,
   onManage,
+  initialPath,
 }: FilesPaneProps) {
   const [roots, setRoots] = useState<FileTreeNode[] | null>(null);
   const [rootError, setRootError] = useState<string | null>(null);
   const [children, setChildren] = useState<Map<string, FileTreeNode[]>>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [folderErrors, setFolderErrors] = useState<Map<string, string>>(new Map());
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(initialPath ?? null);
   const [ownQuickOpen, setOwnQuickOpen] = useState(false);
   const quickOpen = quickOpenProp ?? ownQuickOpen;
   const setQuickOpen = (open: boolean) => {

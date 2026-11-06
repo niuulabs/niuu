@@ -78,6 +78,16 @@ describe('FilesPane', () => {
     expect(await screen.findByText('Could not open src: denied')).toBeInTheDocument();
   });
 
+  it('opens on the file it is handed', async () => {
+    render(
+      <FilesPane sessionId="s1" filesystem={filesystem()} initialPath="/workspace/README.md" />,
+    );
+    expect(await screen.findByRole('navigation', { name: 'File path' })).toHaveTextContent(
+      'README.md',
+    );
+    expect(screen.queryByText('Choose a file to preview it here.')).not.toBeInTheDocument();
+  });
+
   it('says when the workspace is empty', async () => {
     render(
       <FilesPane

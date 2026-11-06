@@ -20,6 +20,15 @@ describe('createMockVolundrService', () => {
     expect(typeof svc.subscribe).toBe('function');
   });
 
+  it('forks a session into a named, starting child it then lists', async () => {
+    const svc = createMockVolundrService();
+    const [parent] = await svc.getSessions();
+    const child = await svc.forkSession(parent!.id, 'parent-side');
+    expect(child).toMatchObject({ name: 'parent-side', status: 'starting', messageCount: 0 });
+    expect(await svc.getSession(child.id)).toMatchObject({ id: child.id });
+    await expect(svc.forkSession('missing', 'x')).rejects.toThrow('Session not found: missing');
+  });
+
   it('getSessions returns seeded sessions', async () => {
     const svc = createMockVolundrService();
     const sessions = await svc.getSessions();

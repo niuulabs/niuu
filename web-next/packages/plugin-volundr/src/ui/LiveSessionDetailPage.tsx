@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useReducer, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RenameSession } from './RenameSession';
 import { AssignSessionProject } from './AssignSessionProject';
@@ -31,6 +31,9 @@ import {
   ChatDisplayControls,
   SessionLinksProvider,
   SidebarResizer,
+  QuickOpenFiles,
+  fetchSessionDiffFiles,
+  resolveSessionResource,
   roomWorkers,
   useResizableSidebar,
   type FileEntry,
@@ -46,10 +49,13 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Columns2,
+  CornerDownRight,
   Eye,
   FileCode2,
   FileDiff,
   FilePenLine,
+  FileText,
   Folder,
   FolderOpen,
   GitBranch,
@@ -69,7 +75,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { IVolundrService } from '../ports/IVolundrService';
-import type { IFileSystemPort } from '../ports/IFileSystemPort';
+import type { FileTreeNode, IFileSystemPort } from '../ports/IFileSystemPort';
 import type {
   SessionChronicle,
   VolundrAggregatedLog,
@@ -84,9 +90,19 @@ import { coordinationOf } from '../domain/projectTree';
 import { buildSessionLinks } from './sessions/sessionLinks';
 import { CoordinatorTag, WorkerOf } from './detail/Coordination';
 import { DecisionDock } from './detail/DecisionDock';
-import { RightDock, type DockPane } from './detail/RightDock';
+import { RightDock, type RightDockTab } from './detail/RightDock';
+import {
+  EMPTY_DOCK,
+  activeDockPane,
+  dockPaneId,
+  dockReducer,
+  type DockPane,
+} from './detail/dockPanes';
+import { TerminalDock } from './detail/TerminalDock';
+import { FilePreviewPane } from './detail/FilePreviewPane';
+import { SideChatPane, sideChatLabel } from './detail/SideChatPane';
 import { compactDuration, useMinuteClock } from './sessions/timeFact';
-import { useElementWidth } from './detail/useElementWidth';
+import { useElementHeight, useElementWidth } from './detail/useElementWidth';
 import { useSessionRead } from './hooks/useSessionRead';
 import { useMediaQuery } from './hooks/useMediaQuery';
 
@@ -118,7 +134,13 @@ import {
 } from '../domain/sessionAttention';
 import { sessionHarness } from '../domain/session';
 import { SessionAttentionPanel, sessionPanelHasContent } from './SessionAttentionPanel';
-import { DOCK_WIDTH, SESSION_STATE_LABELS, TRANSCRIPT_MIN_WIDTH } from './sessions/presentation';
+import {
+  CONVERSATION_MIN_HEIGHT,
+  DOCK_WIDTH,
+  SESSION_STATE_LABELS,
+  TERMINAL_HEIGHT,
+  TRANSCRIPT_MIN_WIDTH,
+} from './sessions/presentation';
 import { ContextMeter } from './detail/ContextMeter';
 import { SessionMoreMenu, type MoreMenuItem } from './detail/SessionMoreMenu';
 import { Subline } from './detail/Subline';
@@ -130,8 +152,8 @@ import {
   stateTone,
 } from './detail/sessionHeaderModel';
 
-export type LiveSessionTab =
-  'chat' | 'terminal' | 'diffs' | 'files' | 'chronicles' | 'telemetry' | 'logs';
+// The terminal is no longer a tab: it docks under the conversation, as Lexi's does.
+export type LiveSessionTab = 'chat' | 'diffs' | 'files' | 'chronicles' | 'telemetry' | 'logs';
 
 type SessionTab = LiveSessionTab;
 
@@ -145,7 +167,6 @@ const SETTLED_RAW_STATUSES: ReadonlySet<VolundrSession['status']> = new Set([
 
 const ALL_TABS: Array<{ id: SessionTab; label: string; icon: typeof MessageSquareText }> = [
   { id: 'chat', label: 'Chat', icon: MessageSquareText },
-  { id: 'terminal', label: 'Terminal', icon: SquareTerminal },
   { id: 'diffs', label: 'Diffs', icon: FileDiff },
   { id: 'files', label: 'Files', icon: FolderOpen },
   { id: 'chronicles', label: 'Chronicle', icon: ScrollText },
@@ -3221,9 +3242,14 @@ function LiveSessionDetailPageInner({
   const [dismissedHumanGateIds, setDismissedHumanGateIds] = useState<Set<string>>(new Set());
   const [toolVisibility, setToolVisibility] = useForgePreference('tools', '1', ['0', '1']);
   const minuteNow = useMinuteClock();
-  // Changes and Files open beside the conversation, in the right dock, as Lexi's do.
-  const [dockPane, setDockPane] = useState<DockPane | null>(null);
+  // Changes, Files, a previewed file and a side chat open beside the conversation, as tabs of
+  // the right dock, as Lexi's do.
+  const [dock, dispatchDock] = useReducer(dockReducer, EMPTY_DOCK);
+  const shownPane = activeDockPane(dock);
+  const openPane = useCallback((pane: DockPane) => dispatchDock({ type: 'open', pane }), []);
   const [quickOpen, setQuickOpen] = useState(false);
+  // "Open in Files" from a previewed file shows that file in the tree's pane.
+  const [filesFocus, setFilesFocus] = useState<string | undefined>(undefined);
   const { width: dockPreferredWidth, resizer: dockResizer } = useResizableSidebar(
     'niuu.forge.dockWidth',
     DOCK_WIDTH,
@@ -3236,8 +3262,27 @@ function LiveSessionDetailPageInner({
     sessionRowWidth === null
       ? dockPreferredWidth
       : Math.min(dockPreferredWidth, sessionRowWidth - TRANSCRIPT_MIN_WIDTH);
-  const dockShown = dockPane !== null && dockWidth >= DOCK_WIDTH.min;
-  const dockOpen = dockPane !== null;
+  const dockOpen = shownPane !== null;
+  const dockShown = dockOpen && dockWidth >= DOCK_WIDTH.min;
+  // The terminal docks under the conversation and the right dock. The choice to show it is
+  // kept; it shortens to keep the conversation usable and hides for the moment when even its
+  // lowest would squeeze it, as the right dock steps aside.
+  const [terminalPreference, setTerminalPreference] = useForgePreference('terminal', '0', [
+    '0',
+    '1',
+  ]);
+  const terminalOpen = terminalPreference === '1';
+  const { width: terminalPreferredHeight, resizer: terminalResizer } = useResizableSidebar(
+    'niuu.forge.terminalHeight',
+    TERMINAL_HEIGHT,
+  );
+  const [workArea, setWorkArea] = useState<HTMLDivElement | null>(null);
+  const workAreaHeight = useElementHeight(workArea);
+  const terminalHeight =
+    workAreaHeight === null
+      ? terminalPreferredHeight
+      : Math.min(terminalPreferredHeight, workAreaHeight - CONVERSATION_MIN_HEIGHT);
+  const terminalShown = terminalOpen && terminalHeight >= TERMINAL_HEIGHT.min;
   useEffect(() => {
     if (!onDockOpenChange) return;
     onDockOpenChange(dockOpen);
@@ -3642,36 +3687,55 @@ function LiveSessionDetailPageInner({
         ? activeTab
         : (tabs.find((tab) => tab.id === 'chat')?.id ?? tabs[0]?.id ?? 'chat');
 
-  const openTab = useCallback((tab: SessionTab) => {
-    if (tab === 'diffs' || tab === 'files') {
-      setDockPane((current) => {
-        const pane = tab === 'diffs' ? 'changes' : 'files';
-        return current === pane ? null : pane;
-      });
-      return;
-    }
-    setTabWasManuallySelected(true);
-    setActiveTab(tab);
-  }, []);
-  const panelShown = showPanel && !dockPane;
+  const shownKind = shownPane?.kind ?? null;
+  const openTab = useCallback(
+    (tab: SessionTab) => {
+      if (tab === 'diffs' || tab === 'files') {
+        const kind = tab === 'diffs' ? 'changes' : 'files';
+        if (shownKind === kind) dispatchDock({ type: 'hide' });
+        else openPane({ kind });
+        return;
+      }
+      setTabWasManuallySelected(true);
+      setActiveTab(tab);
+    },
+    [openPane, shownKind],
+  );
+  const panelShown = showPanel && !dockOpen;
   const tabSelected = (tab: SessionTab) =>
     tab === 'diffs'
-      ? dockPane === 'changes'
+      ? shownKind === 'changes'
       : tab === 'files'
-        ? dockPane === 'files'
+        ? shownKind === 'files'
         : resolvedActiveTab === tab;
+  const toggleTerminal = useCallback(
+    () => setTerminalPreference(terminalOpen ? '0' : '1'),
+    [setTerminalPreference, terminalOpen],
+  );
 
-  // ⌥⌘O (Ctrl+Alt+O elsewhere): quick open a file, as in Lexi.
+  // As Lexi's: ⌥⌘O quick opens a file into the dock, ⌥⌘→ shows or hides the dock and ⌃`
+  // the terminal (Ctrl+Alt stands in for ⌥⌘ off a Mac).
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!event.altKey || !(event.metaKey || event.ctrlKey) || event.code !== 'KeyO') return;
-      event.preventDefault();
-      setDockPane('files');
-      setQuickOpen(true);
+      if (event.ctrlKey && !event.shiftKey && !event.altKey && event.code === 'Backquote') {
+        event.preventDefault();
+        toggleTerminal();
+        return;
+      }
+      if (!event.altKey || !(event.metaKey || event.ctrlKey)) return;
+      if (event.code === 'KeyO') {
+        event.preventDefault();
+        setQuickOpen(true);
+        return;
+      }
+      if (event.code === 'ArrowRight') {
+        event.preventDefault();
+        dispatchDock({ type: 'toggle' });
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [toggleTerminal]);
 
   // The files the agent read or wrote, newest first: marked in the tree, first in quick open.
   const touchedPaths = useMemo(() => {
@@ -3685,6 +3749,97 @@ function LiveSessionDetailPageInner({
     }
     return paths;
   }, [chat.messages]);
+  // Quick open searches the files the agent touched, the files the session changed, then the
+  // workspace's first two levels (what the files API lists without opening a folder).
+  const quickOpenChangesQuery = useQuery({
+    queryKey: ['volundr', 'quick-open-changes', sessionId, chatEndpoint],
+    queryFn: ({ signal }) => fetchSessionDiffFiles(chatEndpoint!, 'last-commit', signal),
+    enabled: quickOpen && isReady && Boolean(chatEndpoint),
+  });
+  const quickOpenTreeQuery = useQuery({
+    queryKey: ['volundr', 'filetree', sessionId, 'quick-open'],
+    queryFn: () => filesystem.listTree(sessionId),
+    enabled: quickOpen && isRunning,
+  });
+  const quickOpenCandidates = useMemo(() => {
+    const listed: string[] = [];
+    const walk = (nodes: readonly FileTreeNode[]) => {
+      for (const node of nodes) {
+        if (node.kind === 'file') listed.push(node.path);
+        if (node.children) walk(node.children);
+      }
+    };
+    walk(quickOpenTreeQuery.data ?? []);
+    const changed = (quickOpenChangesQuery.data ?? [])
+      .filter((file) => file.status !== 'del')
+      .flatMap((file) => resolveSessionResource(file.path)?.path ?? []);
+    return [...touchedPaths, ...changed, ...listed];
+  }, [quickOpenChangesQuery.data, quickOpenTreeQuery.data, touchedPaths]);
+  const openFilePane = useCallback((path: string) => openPane({ kind: 'file', path }), [openPane]);
+
+  // "New chat" in the side chat opens the launch flow in this session's repository and branch.
+  const sideNewChat = useMemo(() => {
+    const source = liveSession?.source;
+    if (source?.type !== 'git' || !source.repo) return undefined;
+    return () =>
+      void navigate({
+        to: '/volundr/sessions/new',
+        search: {
+          repo: source.repo,
+          branch: source.branch,
+          back: `/volundr/sessions/${sessionId}`,
+        } as never,
+      });
+  }, [liveSession?.source, navigate, sessionId]);
+
+  const dockTabs: RightDockTab[] = dock.panes.map((pane) => {
+    const id = dockPaneId(pane);
+    switch (pane.kind) {
+      case 'changes':
+        return { id, label: 'Changes', icon: FileDiff };
+      case 'files':
+        return { id, label: 'Files', icon: FolderOpen };
+      case 'file':
+        return {
+          id,
+          label: pane.path.split('/').at(-1) ?? pane.path,
+          icon: FileText,
+          title: pane.path,
+        };
+      case 'side':
+        return { id, label: sideChatLabel(sessionName), icon: CornerDownRight };
+    }
+  });
+  const dockAddItems: MoreMenuItem[] = [
+    {
+      id: 'changes',
+      label: 'Changes',
+      icon: FileDiff,
+      onSelect: () => openPane({ kind: 'changes' }),
+    },
+    {
+      id: 'file',
+      label: 'Preview file…',
+      icon: FileText,
+      shortcut: '⌥⌘O',
+      disabled: !isRunning,
+      onSelect: () => setQuickOpen(true),
+    },
+    {
+      id: 'side',
+      label: 'Side chat',
+      icon: CornerDownRight,
+      disabled: !liveSession,
+      onSelect: () => openPane({ kind: 'side', childId: null }),
+    },
+    {
+      id: 'files',
+      label: 'Files',
+      icon: FolderOpen,
+      separated: true,
+      onSelect: () => openPane({ kind: 'files' }),
+    },
+  ];
 
   const handleSendReview = useCallback(() => {
     chat.sendMessage(formatReviewMessage(review.comments), []);
@@ -3945,6 +4100,7 @@ function LiveSessionDetailPageInner({
       filesystem={filesystem}
       presented={presentedFiles}
       filesReadable={isRunning}
+      onOpenWorkspaceFile={openFilePane}
     >
       <div className="niuu:flex niuu:h-full niuu:flex-col" data-testid="live-session-detail-page">
         <div className="niuu-live-session__chrome">
@@ -4156,6 +4312,18 @@ function LiveSessionDetailPageInner({
                     }}
                   />
                 )}
+                <SessionToolbarButton
+                  icon={SquareTerminal}
+                  title={terminalOpen ? 'Hide the terminal (⌃`)' : 'Show the terminal (⌃`)'}
+                  active={terminalOpen}
+                  onClick={toggleTerminal}
+                />
+                <SessionToolbarButton
+                  icon={Columns2}
+                  title={dockOpen ? 'Hide the dock (⌥⌘→)' : 'Show the dock (⌥⌘→)'}
+                  active={dockOpen}
+                  onClick={() => dispatchDock({ type: 'toggle' })}
+                />
                 {panelHasContent ? (
                   <SessionToolbarButton
                     icon={PanelRight}
@@ -4169,7 +4337,7 @@ function LiveSessionDetailPageInner({
                     }
                     onClick={() => {
                       // The panel and the dock share the right side: opening one closes the other.
-                      setDockPane(null);
+                      dispatchDock({ type: 'hide' });
                       setPanelOpen(!panelShown);
                     }}
                   />
@@ -4245,266 +4413,322 @@ function LiveSessionDetailPageInner({
           </div>
         ) : null}
 
-        <div
-          ref={setSessionRow}
-          className="niuu:relative niuu:flex niuu:min-h-0 niuu:flex-1 niuu:overflow-hidden"
-        >
-          <div className="niuu:min-h-0 niuu:min-w-0 niuu:flex-1 niuu:overflow-hidden">
-            {resolvedActiveTab === 'chat' && (
-              <SessionLinksProvider value={sessionLinks}>
-                <div role="tabpanel" className="niuu:flex niuu:h-full niuu:min-h-0 niuu:flex-col">
-                  {isReady && chatEndpoint ? (
-                    <>
+        <div ref={setWorkArea} className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:flex-col">
+          <div
+            ref={setSessionRow}
+            className="niuu:relative niuu:flex niuu:min-h-0 niuu:flex-1 niuu:overflow-hidden"
+          >
+            <div className="niuu:min-h-0 niuu:min-w-0 niuu:flex-1 niuu:overflow-hidden">
+              {resolvedActiveTab === 'chat' && (
+                <SessionLinksProvider value={sessionLinks}>
+                  <div role="tabpanel" className="niuu:flex niuu:h-full niuu:min-h-0 niuu:flex-col">
+                    {isReady && chatEndpoint ? (
+                      <>
+                        <SessionChat
+                          className="niuu:h-full"
+                          showToolbar={false}
+                          showDisplayControls={false}
+                          showWorkersStrip={!workersInList}
+                          aboveComposer={decisionDock}
+                          showInternalToggle={false}
+                          internalVisibility={showInternalMessages}
+                          showTokenUsage={showTokenUsage}
+                          messages={chat.messages}
+                          streamingContent={chat.streamingContent}
+                          streamingParts={chat.streamingParts}
+                          streamingModel={chat.streamingModel}
+                          connected={chat.connected}
+                          historyLoaded={chat.historyLoaded}
+                          hasOlderHistory={chat.hasOlderHistory}
+                          loadingOlderHistory={chat.loadingOlderHistory}
+                          olderHistoryError={chat.olderHistoryError}
+                          onLoadOlderHistory={chat.loadOlderHistory}
+                          historyError={chat.historyError}
+                          onRetryHistory={chat.retryHistory}
+                          participants={chat.participants}
+                          workerSessionIds={workerSessionIds}
+                          focusedWorkerId={focusedWorkerId}
+                          onFocusWorker={onFocusWorker}
+                          onWorkersChange={onRoomWorkers}
+                          meshEvents={chat.meshEvents}
+                          agentEvents={chat.agentEvents}
+                          pendingPermissions={chat.pendingPermissions}
+                          pendingInputRequests={chat.pendingInputRequests}
+                          availableCommands={chat.availableCommands}
+                          capabilities={chat.capabilities}
+                          chatEndpoint={chatEndpoint}
+                          historyEndpoint={historyEndpoint}
+                          sessionName={sessionName}
+                          onSend={chat.sendMessage}
+                          onForwardMessage={setForwarding}
+                          onSendDirected={chat.sendDirectedMessages}
+                          onStop={chat.sendInterrupt}
+                          onClear={chat.clearMessages}
+                          onSetInternalVisibility={chat.sendSetInternalVisibility}
+                          onSetModel={chat.sendSetModel}
+                          onSetThinkingTokens={chat.sendSetThinkingTokens}
+                          plan={chat.plan}
+                          agents={chat.agents}
+                          effort={chat.effort}
+                          runtimeOptions={chat.runtimeOptions}
+                          onSetEffort={chat.sendSetEffort}
+                          onSetRuntimeModel={(model) => chat.sendSetRuntimeOptions({ model })}
+                          runtimeOptionsError={chat.runtimeOptionsError}
+                          effortError={chat.effortError}
+                          working={sessionWorking}
+                          onRewindFiles={chat.sendRewindFiles}
+                          onPermissionRespond={chat.respondToPermission}
+                          onInputRespond={chat.respondToInput}
+                          onInputDismiss={chat.dismissInputRequest}
+                          onFetchFiles={fetchSessionMentionFiles}
+                          onMessageCountChange={setVisibleMessageCount}
+                          renderPermissions={permissionRenderer}
+                        />
+                      </>
+                    ) : failedBeforeStart ? (
+                      <div
+                        className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted"
+                        data-testid="failed-before-start"
+                      >
+                        This session failed before it started, so it has no transcript.
+                      </div>
+                    ) : canReplayTranscript && transcriptQuery.isLoading ? (
+                      <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                        Loading saved transcript…
+                      </div>
+                    ) : canReplayTranscript && transcriptQuery.isError ? (
+                      <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:px-6 niuu:text-center niuu:text-sm niuu:text-critical">
+                        Failed to load saved transcript:{' '}
+                        {transcriptQuery.error instanceof Error
+                          ? transcriptQuery.error.message
+                          : String(transcriptQuery.error)}
+                      </div>
+                    ) : canReplayTranscript && replayMessages.length > 0 ? (
                       <SessionChat
                         className="niuu:h-full"
                         showToolbar={false}
                         showDisplayControls={false}
                         showWorkersStrip={!workersInList}
-                        aboveComposer={decisionDock}
                         showInternalToggle={false}
                         internalVisibility={showInternalMessages}
                         showTokenUsage={showTokenUsage}
-                        messages={chat.messages}
-                        streamingContent={chat.streamingContent}
-                        streamingParts={chat.streamingParts}
-                        streamingModel={chat.streamingModel}
-                        connected={chat.connected}
-                        historyLoaded={chat.historyLoaded}
-                        hasOlderHistory={chat.hasOlderHistory}
-                        loadingOlderHistory={chat.loadingOlderHistory}
-                        olderHistoryError={chat.olderHistoryError}
-                        onLoadOlderHistory={chat.loadOlderHistory}
-                        historyError={chat.historyError}
-                        onRetryHistory={chat.retryHistory}
-                        participants={chat.participants}
+                        messages={replayMessages}
+                        chatEndpoint={chatEndpoint}
+                        connected={false}
+                        historyLoaded={!transcriptQuery.isLoading}
+                        participants={replayParticipants}
                         workerSessionIds={workerSessionIds}
                         focusedWorkerId={focusedWorkerId}
                         onFocusWorker={onFocusWorker}
                         onWorkersChange={onRoomWorkers}
-                        meshEvents={chat.meshEvents}
-                        agentEvents={chat.agentEvents}
-                        pendingPermissions={chat.pendingPermissions}
-                        pendingInputRequests={chat.pendingInputRequests}
-                        availableCommands={chat.availableCommands}
-                        capabilities={chat.capabilities}
-                        chatEndpoint={chatEndpoint}
-                        historyEndpoint={historyEndpoint}
-                        sessionName={sessionName}
-                        onSend={chat.sendMessage}
-                        onForwardMessage={setForwarding}
-                        onSendDirected={chat.sendDirectedMessages}
-                        onStop={chat.sendInterrupt}
-                        onClear={chat.clearMessages}
-                        onSetInternalVisibility={chat.sendSetInternalVisibility}
-                        onSetModel={chat.sendSetModel}
-                        onSetThinkingTokens={chat.sendSetThinkingTokens}
+                        meshEvents={replayMeshEvents}
                         plan={chat.plan}
                         agents={chat.agents}
-                        effort={chat.effort}
-                        runtimeOptions={chat.runtimeOptions}
-                        onSetEffort={chat.sendSetEffort}
-                        onSetRuntimeModel={(model) => chat.sendSetRuntimeOptions({ model })}
-                        runtimeOptionsError={chat.runtimeOptionsError}
-                        effortError={chat.effortError}
-                        working={sessionWorking}
-                        onRewindFiles={chat.sendRewindFiles}
-                        onPermissionRespond={chat.respondToPermission}
-                        onInputRespond={chat.respondToInput}
-                        onInputDismiss={chat.dismissInputRequest}
-                        onFetchFiles={fetchSessionMentionFiles}
+                        working={false}
+                        sessionName={sessionName}
                         onMessageCountChange={setVisibleMessageCount}
-                        renderPermissions={permissionRenderer}
+                        onSend={() => {}}
+                        onStop={() => {}}
                       />
-                    </>
-                  ) : failedBeforeStart ? (
-                    <div
-                      className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted"
-                      data-testid="failed-before-start"
-                    >
-                      This session failed before it started, so it has no transcript.
-                    </div>
-                  ) : canReplayTranscript && transcriptQuery.isLoading ? (
-                    <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                      Loading saved transcript…
-                    </div>
-                  ) : canReplayTranscript && transcriptQuery.isError ? (
-                    <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:px-6 niuu:text-center niuu:text-sm niuu:text-critical">
-                      Failed to load saved transcript:{' '}
-                      {transcriptQuery.error instanceof Error
-                        ? transcriptQuery.error.message
-                        : String(transcriptQuery.error)}
-                    </div>
-                  ) : canReplayTranscript && replayMessages.length > 0 ? (
-                    <SessionChat
-                      className="niuu:h-full"
-                      showToolbar={false}
-                      showDisplayControls={false}
-                      showWorkersStrip={!workersInList}
-                      showInternalToggle={false}
-                      internalVisibility={showInternalMessages}
-                      showTokenUsage={showTokenUsage}
-                      messages={replayMessages}
-                      chatEndpoint={chatEndpoint}
-                      connected={false}
-                      historyLoaded={!transcriptQuery.isLoading}
-                      participants={replayParticipants}
-                      workerSessionIds={workerSessionIds}
-                      focusedWorkerId={focusedWorkerId}
-                      onFocusWorker={onFocusWorker}
-                      onWorkersChange={onRoomWorkers}
-                      meshEvents={replayMeshEvents}
-                      plan={chat.plan}
-                      agents={chat.agents}
-                      working={false}
-                      sessionName={sessionName}
-                      onMessageCountChange={setVisibleMessageCount}
-                      onSend={() => {}}
-                      onStop={() => {}}
-                    />
-                  ) : isSessionBooting(sessionStatus) ? (
-                    <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                      Session is starting…
-                    </div>
-                  ) : canReplayTranscript ? (
-                    <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                      No saved transcript yet.
-                    </div>
-                  ) : (
-                    <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                      Start the session to chat.
-                    </div>
-                  )}
+                    ) : isSessionBooting(sessionStatus) ? (
+                      <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                        Session is starting…
+                      </div>
+                    ) : canReplayTranscript ? (
+                      <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                        No saved transcript yet.
+                      </div>
+                    ) : (
+                      <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
+                        Start the session to chat.
+                      </div>
+                    )}
+                  </div>
+                </SessionLinksProvider>
+              )}
+
+              {resolvedActiveTab === 'diffs' && (
+                <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
+                  <SessionDiffs
+                    chatEndpoint={chatEndpoint}
+                    review={readOnly ? undefined : review}
+                  />
                 </div>
-              </SessionLinksProvider>
-            )}
+              )}
 
-            {resolvedActiveTab === 'terminal' && (
-              <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
-                {isReady ? (
-                  <SessionTerminalLive url={terminalUrl} readOnly={readOnly} />
-                ) : isSessionBooting(sessionStatus) ? (
-                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                    Session is starting…
-                  </div>
-                ) : (
-                  <div className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:text-sm niuu:text-text-muted">
-                    Start the session to access terminal.
-                  </div>
-                )}
-              </div>
-            )}
+              {resolvedActiveTab === 'files' && (
+                <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
+                  <SessionFilesWorkspace
+                    sessionId={sessionId}
+                    filesystem={filesystem}
+                    review={readOnly ? undefined : review}
+                  />
+                </div>
+              )}
 
-            {resolvedActiveTab === 'diffs' && (
-              <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
-                <SessionDiffs chatEndpoint={chatEndpoint} review={readOnly ? undefined : review} />
-              </div>
-            )}
+              {resolvedActiveTab === 'chronicles' && (
+                <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
+                  <LiveChroniclesTab
+                    sessionId={sessionId}
+                    sessionStatus={sessionStatus}
+                    session={liveSession ?? null}
+                    volundr={volundr}
+                  />
+                </div>
+              )}
 
-            {resolvedActiveTab === 'files' && (
-              <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
-                <SessionFilesWorkspace
-                  sessionId={sessionId}
-                  filesystem={filesystem}
-                  review={readOnly ? undefined : review}
-                />
-              </div>
-            )}
+              {resolvedActiveTab === 'telemetry' && (
+                <div
+                  role="tabpanel"
+                  className="niuu-live-telemetry-panel niuu:h-full niuu:min-h-0 niuu:overflow-auto"
+                >
+                  <TelemetryTab
+                    sessionId={sessionId}
+                    session={liveSession ?? null}
+                    runLabel={telemetryRunLabel ?? sessionName ?? 'session'}
+                    volundr={volundr}
+                    isRunning={isRunning}
+                  />
+                </div>
+              )}
 
-            {resolvedActiveTab === 'chronicles' && (
-              <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
-                <LiveChroniclesTab
-                  sessionId={sessionId}
-                  sessionStatus={sessionStatus}
-                  session={liveSession ?? null}
-                  volundr={volundr}
-                />
-              </div>
-            )}
-
-            {resolvedActiveTab === 'telemetry' && (
-              <div
-                role="tabpanel"
-                className="niuu-live-telemetry-panel niuu:h-full niuu:min-h-0 niuu:overflow-auto"
+              {resolvedActiveTab === 'logs' && (
+                <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
+                  <LiveLogsTab sessionId={sessionId} volundr={volundr} />
+                </div>
+              )}
+            </div>
+            {shownPane && dockShown ? (
+              <RightDock
+                tabs={dockTabs}
+                active={dock.active}
+                width={dockWidth}
+                edge={
+                  <SidebarResizer
+                    label="Resize the dock"
+                    panelSide="right"
+                    {...dockResizer}
+                    width={dockWidth}
+                  />
+                }
+                addItems={dockAddItems}
+                onSelect={(id) => dispatchDock({ type: 'select', id })}
+                onClosePane={(id) => dispatchDock({ type: 'close', id })}
+                onClose={() => dispatchDock({ type: 'hide' })}
               >
-                <TelemetryTab
-                  sessionId={sessionId}
-                  session={liveSession ?? null}
-                  runLabel={telemetryRunLabel ?? sessionName ?? 'session'}
-                  volundr={volundr}
-                  isRunning={isRunning}
-                />
-              </div>
-            )}
-
-            {resolvedActiveTab === 'logs' && (
-              <div role="tabpanel" className="niuu:h-full niuu:min-h-0">
-                <LiveLogsTab sessionId={sessionId} volundr={volundr} />
-              </div>
-            )}
+                {shownPane.kind === 'changes' ? (
+                  <SessionDiffs
+                    chatEndpoint={chatEndpoint}
+                    review={readOnly ? undefined : review}
+                    layout="dock"
+                  />
+                ) : shownPane.kind === 'files' ? (
+                  <FilesPane
+                    key={filesFocus}
+                    sessionId={sessionId}
+                    filesystem={filesystem}
+                    touched={touchedPaths}
+                    initialPath={filesFocus}
+                    onManage={
+                      readOnly
+                        ? undefined
+                        : () => {
+                            dispatchDock({ type: 'hide' });
+                            setTabWasManuallySelected(true);
+                            setActiveTab('files');
+                          }
+                    }
+                  />
+                ) : shownPane.kind === 'file' ? (
+                  <FilePreviewPane
+                    key={shownPane.path}
+                    sessionId={sessionId}
+                    path={shownPane.path}
+                    filesystem={filesystem}
+                    onOpenInFiles={() => {
+                      setFilesFocus(shownPane.path);
+                      openPane({ kind: 'files' });
+                    }}
+                  />
+                ) : liveSession ? (
+                  <SideChatPane
+                    session={liveSession}
+                    childId={shownPane.childId}
+                    readOnly={readOnly}
+                    onForked={(childId) => dispatchDock({ type: 'side', childId })}
+                    onNewChat={sideNewChat}
+                    onOpenSession={openSession}
+                  />
+                ) : (
+                  <LoadingState className="forge-session-loading" label="Loading the session…" />
+                )}
+              </RightDock>
+            ) : null}
+            {!dockOpen && showPanel && panelHasContent ? (
+              <SessionAttentionPanel
+                items={attentionItems}
+                ticket={sessionTrackerIssue}
+                checklist={checklist}
+                agents={chat.agents}
+                changedFiles={tabCounts.diffs}
+                fileStats={sessionDetail?.files}
+                deliverables={presentedFiles}
+                info={infoRows}
+                workerSessions={coordination.workers}
+                ravnWorkers={ravnWorkers}
+                onOpenSession={openSession}
+                showOpenChat={resolvedActiveTab !== 'chat'}
+                onOpenChat={() => openTab('chat')}
+                onOpenDiffs={() => openTab('diffs')}
+                onRespondPermission={chat.respondToPermission}
+                onClose={() => setPanelOpen(false)}
+                overlay={narrowScreen}
+              />
+            ) : null}
           </div>
-          {dockPane && dockShown ? (
-            <RightDock
-              pane={dockPane}
-              width={dockWidth}
+          {terminalShown ? (
+            <TerminalDock
+              height={terminalHeight}
               edge={
                 <SidebarResizer
-                  label="Resize the dock"
-                  panelSide="right"
-                  {...dockResizer}
-                  width={dockWidth}
+                  label="Resize the terminal"
+                  panelSide="bottom"
+                  {...terminalResizer}
+                  width={terminalHeight}
                 />
               }
-              onSelect={setDockPane}
-              onClose={() => setDockPane(null)}
             >
-              {dockPane === 'changes' ? (
-                <SessionDiffs
-                  chatEndpoint={chatEndpoint}
-                  review={readOnly ? undefined : review}
-                  layout="dock"
-                />
-              ) : (
-                <FilesPane
-                  sessionId={sessionId}
-                  filesystem={filesystem}
-                  touched={touchedPaths}
-                  quickOpen={quickOpen}
-                  onQuickOpenChange={setQuickOpen}
-                  onManage={
-                    readOnly
-                      ? undefined
-                      : () => {
-                          setDockPane(null);
-                          setTabWasManuallySelected(true);
-                          setActiveTab('files');
-                        }
-                  }
-                />
-              )}
-            </RightDock>
-          ) : null}
-          {!dockPane && showPanel && panelHasContent ? (
-            <SessionAttentionPanel
-              items={attentionItems}
-              ticket={sessionTrackerIssue}
-              checklist={checklist}
-              agents={chat.agents}
-              changedFiles={tabCounts.diffs}
-              fileStats={sessionDetail?.files}
-              deliverables={presentedFiles}
-              info={infoRows}
-              workerSessions={coordination.workers}
-              ravnWorkers={ravnWorkers}
-              onOpenSession={openSession}
-              showOpenChat={resolvedActiveTab !== 'chat'}
-              onOpenChat={() => openTab('chat')}
-              onOpenDiffs={() => openTab('diffs')}
-              onRespondPermission={chat.respondToPermission}
-              onClose={() => setPanelOpen(false)}
-              overlay={narrowScreen}
-            />
+              <SessionTerminalLive
+                url={isReady ? terminalUrl : null}
+                readOnly={readOnly}
+                onClose={() => setTerminalPreference('0')}
+                unavailableMessage={
+                  isSessionBooting(sessionStatus)
+                    ? 'Session is starting…'
+                    : 'Start the session to use its terminal.'
+                }
+              />
+            </TerminalDock>
           ) : null}
         </div>
+        <QuickOpenFiles
+          open={quickOpen}
+          onOpenChange={setQuickOpen}
+          candidates={quickOpenCandidates}
+          touched={touchedPaths}
+          loadErrors={[
+            quickOpenChangesQuery.isError
+              ? `The changed files could not be listed: ${errorText(quickOpenChangesQuery.error)}`
+              : null,
+            quickOpenTreeQuery.isError
+              ? `The workspace could not be listed: ${errorText(quickOpenTreeQuery.error)}`
+              : null,
+          ].filter((message): message is string => message !== null)}
+          onPick={(path) => {
+            setQuickOpen(false);
+            openFilePane(path);
+          }}
+        />
 
         {review.comments.length > 0 && !activeHumanGate ? (
           <ReviewBar

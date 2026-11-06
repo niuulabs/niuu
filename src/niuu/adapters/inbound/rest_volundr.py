@@ -5318,6 +5318,57 @@ def create_volundr_router(
         _ensure_remote_success(response)
         return response.json()
 
+    # A side chat forks a session as Lexi does: read the session's chronicle,
+    # then reforge it into a child on the same host. Both were missing from the
+    # aggregate, so the fork 404'd here though each Forge serves them.
+    @router.get("/sessions/{session_id}/chronicle")
+    async def get_session_chronicle(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/chronicle",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.post("/chronicles/{chronicle_id}/reforge")
+    async def reforge_chronicle(
+        request: Request,
+        chronicle_id: str = Path(description="Chronicle identifier"),
+        instance_id: str | None = Query(
+            default=None,
+            description="The Forge holding the chronicle: the session it was read from",
+        ),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        # A chronicle id names no owner the aggregate can look up, so the caller
+        # names the Forge it read the chronicle from.
+        instance = await _resolve_target_instance(service, principal, instance_id)
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/chronicles/{chronicle_id}/reforge",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return _with_instance(payload, instance) if isinstance(payload, dict) else {}
+
     # --- Skuld broker telemetry ingestion -----------------------------------
     # The in-instance Skuld broker POSTs trace spans, session events, and
     # chronicle-timeline entries back to the Forge API. These were missing
