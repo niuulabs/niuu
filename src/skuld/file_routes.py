@@ -444,7 +444,8 @@ async def _git(workspace: Path, *args: str, ok: tuple[int, ...] = (0,)) -> str:
 
     if proc.returncode not in ok:
         detail = stderr.decode(errors="replace").strip()
-        logger.warning("git %s failed: %s", args[0], repr(detail))
+        # git's message can echo a requested path, so it goes to the caller, not the log.
+        logger.warning("git %s failed with exit code %s", args[0], proc.returncode)
         raise HTTPException(502, f"git {args[0]} failed: {detail}")
     return stdout.decode(errors="replace")
 
