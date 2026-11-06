@@ -17,6 +17,7 @@ from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.integrations import IntegrationRepository
 from niuu.utils import import_class, resolve_secret_kwargs
 from volundr.adapters.outbound.notification_image_fetcher import (
+    BrokerTargetLookup,
     HttpNotificationImageFetcher,
     SessionLookup,
 )
@@ -173,13 +174,15 @@ def create_notification_image_worker(
     notifications: NotificationRepository,
     images: NotificationImageRepository,
     session_lookup: SessionLookup,
+    broker_target: BrokerTargetLookup,
     broadcaster: EventBroadcaster | None,
     guild_instance: GuildInstance | None = None,
 ) -> NotificationImageWorker:
     """Build the worker that copies attached images (``notifications.images``).
 
     ``file_id`` images are read through the session's broker, routed like every
-    other server-side broker call (``openshell_internal_gateway_url``).
+    other server-side broker call (the pod manager's ``broker_target``, else the
+    chat endpoint through ``openshell_internal_gateway_url``).
     """
     config = settings.notifications.images
     return NotificationImageWorker(
@@ -187,6 +190,7 @@ def create_notification_image_worker(
         notifications,
         HttpNotificationImageFetcher(
             session_lookup=session_lookup,
+            broker_target=broker_target,
             gateway_url=settings.openshell_internal_gateway_url,
             timeout_seconds=config.fetch_timeout_seconds,
             max_redirects=config.max_redirects,

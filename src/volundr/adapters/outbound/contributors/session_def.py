@@ -7,6 +7,9 @@ from volundr.config import SessionDefinitionConfig
 from volundr.domain.models import Session
 from volundr.domain.ports import SessionContext, SessionContribution, SessionContributor
 
+#: Kubernetes pod-storage values a definition may default for the session chart.
+_POD_STORAGE_DEFAULTS = ("homeVolume", "persistence")
+
 
 def _drop_empty_deployment_owned_defaults(values: dict[str, Any]) -> dict[str, Any]:
     """Remove empty values for fields that deployment defaults own."""
@@ -18,6 +21,24 @@ def _drop_empty_deployment_owned_defaults(values: dict[str, Any]) -> dict[str, A
         volundr.pop("apiUrl")
     if not volundr:
         values.pop("volundr")
+    return values
+
+
+def _drop_pod_storage_defaults(key: str, values: dict[str, Any]) -> dict[str, Any]:
+    """Remove pod-storage defaults a VM session has no use for.
+
+    A VM runtime keeps workspace and home on guest-local disk and archives
+    them at stop, so a definition's pod mount paths and home-volume toggle do
+    not apply. A definition that names a claim asks for storage a VM cannot
+    mount, so it is refused rather than dropped.
+    """
+    for field in _POD_STORAGE_DEFAULTS:
+        storage = values.pop(field, None)
+        if isinstance(storage, dict) and storage.get("existingClaim"):
+            raise ValueError(
+                f"Session definition {key!r} sets {field}.existingClaim, which a VM "
+                f"runtime cannot mount; remove it from the definition's defaults"
+            )
     return values
 
 
@@ -60,6 +81,10 @@ class SessionDefinitionContributor(SessionContributor):
 
         values: dict[str, Any] = deepcopy(defn.defaults)
         values = _drop_empty_deployment_owned_defaults(values)
+        # VM runtimes own their guest-local storage, as the storage contributor
+        # assumes; the runtime still refuses storage that a later contributor sets.
+        if context.storage_backend == "vm" or context.runtime_backend == "vm":
+            values = _drop_pod_storage_defaults(key, values)
         if defn.default_model and "model" not in values:
             values["model"] = defn.default_model
         return SessionContribution(values=values)
