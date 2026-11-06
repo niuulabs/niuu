@@ -1,0 +1,122 @@
+/* ── A session's dev server in the right dock ── */
+
+.forge-preview-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.forge-preview-pane__bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.forge-preview-pane__tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.forge-preview-pane__tool:hover:not(:disabled) {
+  background: var(--color-bg-hover, var(--color-bg-tertiary));
+  color: var(--color-text-primary);
+}
+
+.forge-preview-pane__tool:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.forge-preview-pane__tool svg {
+  width: 14px;
+  height: 14px;
+}
+
+.forge-preview-pane__url {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 999px;
+  background: var(--color-bg-primary);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+}
+
+.forge-preview-pane__url b {
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+.forge-preview-pane__url input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.forge-preview-pane__dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--color-text-faint);
+}
+
+.forge-preview-pane__dot[data-open='true'] {
+  background: var(--color-success, #3fb950);
+}
+
+.forge-preview-pane__ports {
+  display: flex;
+  gap: 4px;
+}
+
+.forge-preview-pane__port {
+  padding: 2px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.forge-preview-pane__port[aria-pressed='true'] {
+  border-color: var(--color-brand-600, var(--color-accent));
+  color: var(--color-brand, var(--color-accent));
+}
+
+.forge-preview-pane__frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
+
+.forge-preview-pane__empty {
+  margin: 16px 12px;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}

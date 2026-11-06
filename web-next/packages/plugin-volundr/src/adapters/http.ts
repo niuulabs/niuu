@@ -1899,6 +1899,12 @@ export function buildVolundrHttpAdapter(
         miniMode: flags.mini_mode,
       };
     },
+    getLivePreviewConfig: async () => {
+      const payload = await forgeClient.get<{ enabled: boolean; origin_template: string }>(
+        '/settings/live-preview',
+      );
+      return { enabled: payload.enabled, originTemplate: payload.origin_template };
+    },
     getSessionDefinitions: async () => {
       const payload = await catalogClient.get<SessionDefinitionPayload[]>('/session-definitions');
       return payload.map(normalizeSessionDefinition);

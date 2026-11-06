@@ -254,6 +254,11 @@ interface UseSkuldChatResult {
   pendingInputRequests: InputRequest[];
   availableCommands: SlashCommand[];
   capabilities: SessionCapabilities;
+  /**
+   * The TCP ports the session listens on, from Skuld's latest `preview_ports` frame
+   * (live preview); null until one arrives on this connection.
+   */
+  previewPorts: number[] | null;
   /** The agent's current plan (`plan` frame); null until the agent has made one. */
   plan: SessionPlan | null;
   /** Subagents and teammates the session started, finished ones included with their status. */
@@ -860,6 +865,11 @@ export function useSkuldChat(
     url: string | null;
     commands: SlashCommand[];
   }>({ url, commands: [] });
+  const [previewPortsState, setPreviewPortsState] = useState<{
+    url: string | null;
+    ports: number[] | null;
+  }>({ url, ports: null });
+  const previewPorts = previewPortsState.url === url ? previewPortsState.ports : null;
   const [capabilitiesState, setCapabilitiesState] = useState<{
     url: string | null;
     value: SessionCapabilities;
@@ -2039,6 +2049,22 @@ export function useSkuldChat(
             ]);
             break;
           }
+          case 'preview_ports': {
+            const reported = (event as unknown as { ports?: unknown }).ports;
+            if (!Array.isArray(reported)) break;
+            setPreviewPortsState({
+              url,
+              ports: [
+                ...new Set(
+                  reported.filter(
+                    (port): port is number =>
+                      Number.isInteger(port) && (port as number) >= 1 && (port as number) <= 65535,
+                  ),
+                ),
+              ].sort((a, b) => a - b),
+            });
+            break;
+          }
           case 'capabilities': {
             const caps = event as unknown as Record<string, unknown>;
             setCapabilitiesState({
@@ -2991,6 +3017,7 @@ export function useSkuldChat(
     pendingInputRequests,
     availableCommands,
     capabilities,
+    previewPorts,
     plan: live.plan,
     agents: live.agents,
     effort: live.effort ?? effortFromRuntimeOptions(live.runtimeOptions),

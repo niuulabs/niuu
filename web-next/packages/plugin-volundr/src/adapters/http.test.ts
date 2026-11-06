@@ -1426,6 +1426,19 @@ describe('buildVolundrHttpAdapter', () => {
     expect(client.get).toHaveBeenCalledWith('/feature-flags?instance_id=host%2Fa');
   });
 
+  it('getLivePreviewConfig reads where previews open from Forge settings', async () => {
+    const client = makeClient();
+    vi.mocked(client.get).mockResolvedValue({
+      enabled: true,
+      origin_template: 'https://{port}--{session_id}.preview.niuu.world',
+    });
+    expect(await buildVolundrHttpAdapter(client).getLivePreviewConfig()).toEqual({
+      enabled: true,
+      originTemplate: 'https://{port}--{session_id}.preview.niuu.world',
+    });
+    expect(client.get).toHaveBeenCalledWith('/settings/live-preview');
+  });
+
   it('getCredentials forwards the optional secret type and applies the fallback type', async () => {
     const client = makeClientWithBase('http://localhost:8080/api/v1');
     const service = buildVolundrHttpAdapter(client);

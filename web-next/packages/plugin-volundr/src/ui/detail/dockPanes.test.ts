@@ -21,6 +21,16 @@ describe('dock panes', () => {
     expect(activeDockPane(state)).toEqual({ kind: 'changes' });
   });
 
+  it('points an open live preview at the port and path asked for', () => {
+    const state = run(
+      { type: 'open', pane: { kind: 'preview', port: 5173, path: '/' } },
+      { type: 'open', pane: { kind: 'changes' } },
+      { type: 'open', pane: { kind: 'preview', port: 8000, path: '/docs' } },
+    );
+    expect(state.panes.map(dockPaneId)).toEqual(['preview', 'changes']);
+    expect(activeDockPane(state)).toEqual({ kind: 'preview', port: 8000, path: '/docs' });
+  });
+
   it("keeps a side chat's session when it is opened again", () => {
     const state = run(
       { type: 'open', pane: { kind: 'side', childId: null } },

@@ -626,6 +626,7 @@ function mockChatState(overrides: Partial<ReturnType<typeof chatHooks.useSkuldCh
     pendingPermissions: [],
     pendingInputRequests: [],
     capabilities: {},
+    previewPorts: null,
     sendMessage: vi.fn(),
     sendDirectedMessages: vi.fn(),
     sendResendPrompt: vi.fn(),
@@ -1781,6 +1782,40 @@ describe('LiveSessionDetailPage', () => {
       );
     });
 
+    it('shows a chip per open port and opens it in the live preview pane', async () => {
+      mockChatState({ previewPorts: [5173] });
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(await screen.findByRole('button', { name: /Preview :5173/ }));
+      const frame = await screen.findByTitle('Live preview of port 5173');
+      expect(frame).toHaveAttribute('src', 'http://5173--test-session-id-1234.localhost:8080/');
+      expect(screen.getByTestId('right-dock-tab-preview')).toHaveTextContent('Preview :5173');
+    });
+
+    it('opens a localhost link from the transcript in the live preview, at its path', async () => {
+      mockChatState({
+        previewPorts: [5173],
+        messages: [
+          {
+            id: 'dev-server',
+            role: 'assistant',
+            content: 'The docs run at http://localhost:5173/operator/paging now.',
+            createdAt: new Date(0),
+          },
+        ],
+      });
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'http://localhost:5173/operator/paging' }),
+      );
+      expect(await screen.findByTitle('Live preview of port 5173')).toHaveAttribute(
+        'src',
+        'http://5173--test-session-id-1234.localhost:8080/operator/paging',
+      );
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+
     it('opens a file the transcript links to as a pane in the dock', async () => {
       mockChatState({
         messages: [
@@ -1812,8 +1847,8 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByTestId('right-dock-tab-changes')).toHaveAttribute('aria-selected', 'true');
 
       fireEvent.click(screen.getByRole('button', { name: 'Add a pane' }));
-      // Live preview waits for a safe route to a session's ports, so it is not offered.
-      expect(screen.queryByRole('button', { name: /Live preview/ })).not.toBeInTheDocument();
+      // A running session on a platform that serves previews offers its live preview.
+      expect(screen.getByRole('button', { name: /Live preview/ })).toBeEnabled();
       fireEvent.click(screen.getByRole('button', { name: /Side chat/ }));
       const side = screen.getByTestId('right-dock-tab-side');
       expect(side).toHaveTextContent('↳ test-session · side');

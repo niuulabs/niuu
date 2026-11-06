@@ -6,6 +6,7 @@
  * aliases.
  */
 import type { SecretFulfillment, SecretRequest } from '@niuulabs/domain';
+import type { LivePreviewConfig } from '../domain/livePreview';
 import type {
   VolundrFeatures,
   VolundrSession,
@@ -149,6 +150,8 @@ export interface RuntimeVersion {
 export interface IVolundrService {
   // Feature flags
   getFeatures(instanceId?: string): Promise<VolundrFeatures>;
+  /** Where sessions' live previews open; disabled when the platform serves none. */
+  getLivePreviewConfig(): Promise<LivePreviewConfig>;
 
   // Session definitions
   getSessionDefinitions(): Promise<SessionDefinition[]>;
