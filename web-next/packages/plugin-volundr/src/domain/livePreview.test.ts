@@ -31,6 +31,17 @@ describe('previewUrl', () => {
     expect(previewUrl(config, 's', 3000)).toBe('https://3000--s.preview.niuu.world/');
     expect(previewUrl(LIVE_PREVIEW_DISABLED, 's', 3000)).toBeNull();
   });
+
+  it('refuses a typed path that would leave the preview origin', () => {
+    expect(previewUrl(config, 's', 3000, '//evil.example/x')).toBeNull();
+    expect(previewUrl(config, 's', 3000, '/\\evil.example/x')).toBeNull();
+    expect(previewUrl(config, 's', 3000, 'javascript:alert(1)')).toBe(
+      'https://3000--s.preview.niuu.world/javascript:alert(1)',
+    );
+    expect(previewUrl(config, 's', 3000, '@evil.example/')).toBe(
+      'https://3000--s.preview.niuu.world/@evil.example/',
+    );
+  });
 });
 
 describe('preview_ports frames', () => {

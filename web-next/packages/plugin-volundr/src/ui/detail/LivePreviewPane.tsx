@@ -112,6 +112,11 @@ export function LivePreviewPane({
       {shown !== null && !open && (
         <p className="forge-preview-pane__empty">Port {shown} stopped listening.</p>
       )}
+      {open && !url && (
+        <p className="forge-preview-pane__empty">
+          That address leaves this preview, so it is not opened here.
+        </p>
+      )}
       {open && url && (
         <iframe
           key={`${url}#${reloads}`}

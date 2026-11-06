@@ -46,6 +46,25 @@ describe('LivePreviewPane', () => {
     );
   });
 
+  it('does not open a typed address on another origin', () => {
+    render(
+      <LivePreviewPane
+        sessionId="s1"
+        config={config}
+        ports={[5173]}
+        port={5173}
+        onSelectPort={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText('Preview path'), {
+      target: { value: '//evil.example/' },
+    });
+    fireEvent.submit(screen.getByLabelText('Preview path'));
+    expect(screen.queryByTitle('Live preview of port 5173')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Open in a new tab' })).toBeNull();
+    expect(screen.getByText(/leaves this preview/)).toBeTruthy();
+  });
+
   it('switches ports from the chips', () => {
     const onSelectPort = vi.fn();
     render(

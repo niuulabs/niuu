@@ -60,7 +60,12 @@ export function previewOrigin(
     .replaceAll('{session_id}', sessionId);
 }
 
-/** The preview URL for *path* (as typed in the URL bar) on *port*. */
+/**
+ * The preview URL for *path* (as typed in the URL bar) on *port*. The path only ever
+ * moves within the preview origin: the URL is parsed back and anything that resolves
+ * to another origin is refused, so the frame and the new-tab link cannot be pointed
+ * at a `javascript:` URL or another site.
+ */
 export function previewUrl(
   config: LivePreviewConfig,
   sessionId: string,
@@ -70,7 +75,10 @@ export function previewUrl(
   const origin = previewOrigin(config, sessionId, port);
   if (origin === null) return null;
   const trimmed = path.trim();
-  return `${origin}${trimmed.startsWith('/') ? trimmed : `/${trimmed}`}`;
+  const base = new URL(origin);
+  const url = new URL(trimmed.startsWith('/') ? trimmed : `/${trimmed}`, base);
+  if (url.origin !== base.origin) return null;
+  return url.href;
 }
 
 /**
