@@ -72,6 +72,14 @@ if marker.read_text()!=sys.argv[1]: raise RuntimeError('Workspace allocation mis
 
 
 class OpenShellVmRuntime(SshContainerVmRuntime):
+    # The OpenShell gateway owns the sandbox: no Docker sidecars or token volumes,
+    # and its broker keeps its own Forge credential.
+    _runs_pod_containers = False
+
+    @property
+    def delivers_forge_session_token(self) -> bool:
+        return False
+
     def __init__(
         self,
         *,

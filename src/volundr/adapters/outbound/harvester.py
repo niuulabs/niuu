@@ -2,6 +2,13 @@
 
 No kubectl, cluster-admin token minting, or provider credentials in guests.
 The caller supplies an HttpAuthPort and a trusted CA for private certificates.
+
+With ``guest_service_account`` set, every VM's virt-launcher pod runs as that
+ServiceAccount and KubeVirt shares the pod's token into the guest over virtiofs
+(``GUEST_TOKEN_PATH``), refreshed by the kubelet. Forge then attests a guest by that
+token (``attested_allocation``): a TokenReview names the pod, and the pod must be an
+active pod of this allocation's VMI. The ServiceAccount must hold no RBAC: its token
+is addressed to Harvester's API server, so it must grant nothing there.
 """
 
 from __future__ import annotations
@@ -32,10 +39,17 @@ from volundr.domain.compute import (
     MachineRequest,
     MachineState,
 )
+from volundr.domain.guest_credentials import GuestAuthenticationError
 
 INSTALLATION_LABEL = "compute.niuu.io/installation"
 ALLOCATION_LABEL = "compute.niuu.io/allocation"
 REQUEST_ANNOTATION = "compute.niuu.io/request-sha256"
+#: KubeVirt volume (and virtiofs tag, at most 36 bytes) carrying the launcher pod's token.
+GUEST_IDENTITY_VOLUME = "niuu-guest-identity"
+GUEST_IDENTITY_DIRECTORY = "/etc/niuu/guest-identity"
+GUEST_TOKEN_PATH = f"{GUEST_IDENTITY_DIRECTORY}/token"
+_POD_NAME_CLAIM = "authentication.kubernetes.io/pod-name"
+_POD_UID_CLAIM = "authentication.kubernetes.io/pod-uid"
 _NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
 
 
@@ -43,6 +57,18 @@ def _name(value: str) -> str:
     if len(value) > 63 or not _NAME.fullmatch(value):
         raise ValueError("Harvester resource names must be DNS labels of at most 63 characters")
     return value
+
+
+def _is_label(value: object) -> bool:
+    return isinstance(value, str) and len(value) <= 63 and _NAME.fullmatch(value) is not None
+
+
+def _single_claim(extra: dict, claim: str) -> str:
+    """The one value of a TokenReview ``extra`` claim; anything else is not a pod's token."""
+    values = extra.get(claim)
+    if not isinstance(values, list) or len(values) != 1 or not _is_label(values[0]):
+        raise GuestAuthenticationError
+    return values[0]
 
 
 def _reference(value: str) -> tuple[str, str]:
@@ -85,6 +111,7 @@ class HarvesterMachineProvider(MachineProvider):
         profiles: dict[str, dict],
         auth: HttpAuthPort,
         cloud_init: dict | None = None,
+        guest_service_account: str | None = None,
         ca_file: str | None = None,
         timeout_seconds: float = 30,
         page_size: int = 100,
@@ -113,6 +140,9 @@ class HarvesterMachineProvider(MachineProvider):
             _reference(profile.image)
             _reference(profile.network)
         self._auth = auth
+        self._guest_service_account = (
+            _name(guest_service_account) if guest_service_account is not None else None
+        )
         self._cloud_init = TypeAdapter(dict[str, JsonValue]).validate_python(
             cloud_init if cloud_init is not None else {}
         )
@@ -160,6 +190,70 @@ class HarvesterMachineProvider(MachineProvider):
 
     async def close(self) -> None:
         await self._client.aclose()
+
+    @property
+    def attests_guests(self) -> bool:
+        return self._guest_service_account is not None
+
+    @property
+    def guest_token_path(self) -> str:
+        return GUEST_TOKEN_PATH
+
+    async def attested_allocation(self, token: str) -> UUID:
+        """The allocation whose VM holds ``token``, proven by Harvester's own API.
+
+        Every way the token fails to prove an allocation raises the same
+        ``GuestAuthenticationError``; a Harvester outage or missing RBAC raises
+        ``MachineProviderError`` so it is never mistaken for a bad guest.
+        """
+        if self._guest_service_account is None:
+            raise MachineProviderError(
+                "Harvester guest attestation is off; set guest_service_account"
+            )
+        review = self._body(
+            await self._request(
+                "POST",
+                "apis/authentication.k8s.io/v1/tokenreviews",
+                json={
+                    "apiVersion": "authentication.k8s.io/v1",
+                    "kind": "TokenReview",
+                    "spec": {"token": token},
+                },
+            )
+        )
+        status = review.get("status") or {}
+        user = status.get("user") or {}
+        expected = f"system:serviceaccount:{self._namespace}:{self._guest_service_account}"
+        if status.get("authenticated") is not True or user.get("username") != expected:
+            raise GuestAuthenticationError
+        extra = user.get("extra") or {}
+        pod_name = _single_claim(extra, _POD_NAME_CLAIM)
+        pod_uid = _single_claim(extra, _POD_UID_CLAIM)
+        pod = await self._read(f"{self._core}/pods/{pod_name}")
+        if pod is None or pod.get("metadata", {}).get("uid") != pod_uid:
+            raise GuestAuthenticationError
+        owners = [
+            owner
+            for owner in pod["metadata"].get("ownerReferences") or ()
+            if owner.get("kind") == "VirtualMachineInstance" and owner.get("controller") is True
+        ]
+        if len(owners) != 1 or not _is_label(owners[0].get("name")):
+            raise GuestAuthenticationError
+        vmi = await self._read(f"{self._vmi_path}/{owners[0]['name']}")
+        if vmi is None:
+            raise GuestAuthenticationError
+        try:
+            allocation_id = UUID(vmi.get("metadata", {}).get("labels", {}).get(ALLOCATION_LABEL))
+            self._owned(vmi, allocation_id)
+        except (TypeError, ValueError, MachineOwnershipError):
+            raise GuestAuthenticationError from None
+        if vmi["metadata"].get("name") != self._resource_name(allocation_id):
+            raise GuestAuthenticationError
+        # virt-controller alone writes activePods, so a pod that merely names the VMI
+        # as its owner is not one of its pods.
+        if pod_uid not in (vmi.get("status", {}).get("activePods") or {}):
+            raise GuestAuthenticationError
+        return allocation_id
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         # Existing OAuth adapters may perform blocking token exchange; keep it off the event loop.
@@ -250,6 +344,11 @@ class HarvesterMachineProvider(MachineProvider):
                     "request": request.model_dump(mode="json"),
                     "profile": profile.model_dump(),
                     "cloud_init": self._cloud_init,
+                    **(
+                        {"guest_service_account": self._guest_service_account}
+                        if self._guest_service_account is not None
+                        else {}
+                    ),
                 },
                 sort_keys=True,
             ).encode()
@@ -350,6 +449,17 @@ class HarvesterMachineProvider(MachineProvider):
                 },
             },
         }
+        if self._guest_service_account is not None:
+            template = vm["spec"]["template"]["spec"]
+            template["domain"]["devices"]["filesystems"] = [
+                {"name": GUEST_IDENTITY_VOLUME, "virtiofs": {}}
+            ]
+            template["volumes"].append(
+                {
+                    "name": GUEST_IDENTITY_VOLUME,
+                    "serviceAccount": {"serviceAccountName": self._guest_service_account},
+                }
+            )
         await self._ensure(self._vm_path, vm, request.allocation_id)
         machine = await self.get(request.allocation_id)
         if machine is None:
@@ -389,6 +499,18 @@ class HarvesterMachineProvider(MachineProvider):
             paths.append(item["path"])
         if len(paths) != len(set(paths)):
             raise ValueError("Harvester cloud_init has duplicate bootstrap file paths")
+        if self._guest_service_account is not None:
+            # bootcmd runs on every boot, so the share is mounted again after a reboot.
+            result["bootcmd"] = [
+                *result.get("bootcmd", []),
+                [
+                    "sh",
+                    "-c",
+                    f"mkdir -p {GUEST_IDENTITY_DIRECTORY} && "
+                    f"(mountpoint -q {GUEST_IDENTITY_DIRECTORY} || mount -t virtiofs -o ro "
+                    f"{GUEST_IDENTITY_VOLUME} {GUEST_IDENTITY_DIRECTORY})",
+                ],
+            ]
         return result
 
     @staticmethod

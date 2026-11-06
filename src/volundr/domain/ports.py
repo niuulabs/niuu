@@ -1865,6 +1865,31 @@ class SecretInjectionPort(ABC):
         """Whether this adapter continuously projects OAuth engine access tokens."""
         return False
 
+    @property
+    def supports_guest_agents(self) -> bool:
+        """Whether this adapter can run its own agent containers on a VM guest.
+
+        Kubernetes sessions get their secrets from an in-cluster injector; a VM has none,
+        so an adapter that renders secrets with an agent describes that agent as
+        containers the VM runtime runs (``guest_agent_pod_spec_additions``).
+        """
+        return False
+
+    async def guest_agent_pod_spec_additions(
+        self,
+        user_id: str,
+        session_id: str,
+        credential_mappings: list[CredentialMapping],
+    ) -> PodSpecAdditions:
+        """Return explicit init/sidecar containers and volumes that render the secrets.
+
+        Used instead of ``pod_spec_additions`` for VM sessions, where no injector
+        mutates the pod.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot run secret injection agents on a VM guest"
+        )
+
     @abstractmethod
     async def pod_spec_additions(
         self,
