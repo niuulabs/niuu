@@ -127,9 +127,7 @@ class TestPresentedFile:
         async def broker_target(_session):
             raise ValueError("no ready VM broker")
 
-        fetcher = _fetcher(
-            lambda r: _image(r), sessions={session.id: session}, broker_target=broker_target
-        )
+        fetcher = _fetcher(_image, sessions={session.id: session}, broker_target=broker_target)
         with pytest.raises(NotificationImageError, match="no ready VM broker"):
             await fetcher.fetch(_pending({"file_id": FILE_ID}, session.id))
 
