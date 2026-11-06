@@ -32,6 +32,8 @@ import {
   SessionLinksProvider,
   SidebarResizer,
   QuickOpenFiles,
+  fetchSessionDiffFiles,
+  resolveSessionResource,
   roomWorkers,
   useResizableSidebar,
   type FileEntry,
@@ -3747,8 +3749,13 @@ function LiveSessionDetailPageInner({
     }
     return paths;
   }, [chat.messages]);
-  // Quick open searches the files the agent touched, then the workspace's first two levels
-  // (what the files API lists without opening a folder).
+  // Quick open searches the files the agent touched, the files the session changed, then the
+  // workspace's first two levels (what the files API lists without opening a folder).
+  const quickOpenChangesQuery = useQuery({
+    queryKey: ['volundr', 'quick-open-changes', sessionId, chatEndpoint],
+    queryFn: ({ signal }) => fetchSessionDiffFiles(chatEndpoint!, 'last-commit', signal),
+    enabled: quickOpen && isReady && Boolean(chatEndpoint),
+  });
   const quickOpenTreeQuery = useQuery({
     queryKey: ['volundr', 'filetree', sessionId, 'quick-open'],
     queryFn: () => filesystem.listTree(sessionId),
@@ -3763,8 +3770,11 @@ function LiveSessionDetailPageInner({
       }
     };
     walk(quickOpenTreeQuery.data ?? []);
-    return [...touchedPaths, ...listed];
-  }, [quickOpenTreeQuery.data, touchedPaths]);
+    const changed = (quickOpenChangesQuery.data ?? [])
+      .filter((file) => file.status !== 'del')
+      .flatMap((file) => resolveSessionResource(file.path)?.path ?? []);
+    return [...touchedPaths, ...changed, ...listed];
+  }, [quickOpenChangesQuery.data, quickOpenTreeQuery.data, touchedPaths]);
   const openFilePane = useCallback((path: string) => openPane({ kind: 'file', path }), [openPane]);
 
   // "New chat" in the side chat opens the launch flow in this session's repository and branch.
@@ -4706,6 +4716,14 @@ function LiveSessionDetailPageInner({
           onOpenChange={setQuickOpen}
           candidates={quickOpenCandidates}
           touched={touchedPaths}
+          loadErrors={[
+            quickOpenChangesQuery.isError
+              ? `The changed files could not be listed: ${errorText(quickOpenChangesQuery.error)}`
+              : null,
+            quickOpenTreeQuery.isError
+              ? `The workspace could not be listed: ${errorText(quickOpenTreeQuery.error)}`
+              : null,
+          ].filter((message): message is string => message !== null)}
           onPick={(path) => {
             setQuickOpen(false);
             openFilePane(path);

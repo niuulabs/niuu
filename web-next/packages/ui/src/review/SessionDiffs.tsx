@@ -35,10 +35,28 @@ interface DiffData {
 }
 
 /** Skuld's diff bases; `default-branch` is its name for the branch the session started from. */
-type DiffBase = 'last-commit' | 'default-branch';
+export type DiffBase = 'last-commit' | 'default-branch';
 
 function authHeaders(): Record<string, string> {
   return Object.fromEntries(getAuthHeaders().entries());
+}
+
+/** The files a live session changed against `base`, as its broker lists them. */
+export async function fetchSessionDiffFiles(
+  chatEndpoint: string,
+  base: DiffBase,
+  signal?: AbortSignal,
+): Promise<SessionDiffFile[]> {
+  const params = new URLSearchParams({ base });
+  const response = await fetch(`${wsUrlToHttpBase(chatEndpoint)}/api/diff/files?${params}`, {
+    headers: authHeaders(),
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch diff files: ${response.status}`);
+  }
+  const data = (await response.json()) as { files?: SessionDiffFile[] };
+  return data.files ?? [];
 }
 
 function useLiveDiffViewer(chatEndpoint: string | null) {
@@ -70,7 +88,7 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
 
   const fetchFiles = useCallback(async () => {
     filesAbortRef.current?.abort();
-    if (!apiBase) {
+    if (!apiBase || !chatEndpoint) {
       if (mountedRef.current) {
         setFiles([]);
         setFilesLoading(false);
@@ -82,17 +100,9 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
     setFilesLoading(true);
     setFilesError(null);
     try {
-      const params = new URLSearchParams({ base: diffBase });
-      const response = await fetch(`${apiBase}/api/diff/files?${params}`, {
-        headers: authHeaders(),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        throw new Error(`Failed to fetch diff files: ${response.status}`);
-      }
-      const data = (await response.json()) as { files?: SessionDiffFile[] };
+      const changed = await fetchSessionDiffFiles(chatEndpoint, diffBase, controller.signal);
       if (!mountedRef.current || filesAbortRef.current !== controller) return;
-      setFiles(data.files ?? []);
+      setFiles(changed);
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
       if (!mountedRef.current || filesAbortRef.current !== controller) return;
@@ -106,7 +116,7 @@ function useLiveDiffViewer(chatEndpoint: string | null) {
         setFilesLoading(false);
       }
     }
-  }, [apiBase, diffBase]);
+  }, [apiBase, chatEndpoint, diffBase]);
 
   const selectFile = useCallback(
     async (filePath: string) => {

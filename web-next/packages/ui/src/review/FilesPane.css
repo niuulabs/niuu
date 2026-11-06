@@ -268,6 +268,13 @@
   color: var(--color-text-muted);
 }
 
+.niuu-quick-open__error {
+  margin: 0;
+  padding: 6px 2px 0;
+  font-size: 12.5px;
+  color: var(--color-critical-fg);
+}
+
 /* The preview in the dock: a quieter header and the document without a second frame. */
 .niuu-files-pane__preview .forge-resource-toolbar {
   gap: 6px;

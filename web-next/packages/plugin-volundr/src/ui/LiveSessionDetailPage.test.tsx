@@ -1680,6 +1680,52 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByTestId('terminal-dock')).toHaveStyle({ height: '230px' });
     });
 
+    it('finds the files the session changed in quick open', async () => {
+      const baseFetch = global.fetch;
+      global.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url.includes('/api/diff/files'))
+          return new Response(
+            JSON.stringify({
+              files: [
+                { path: 'docs/operator/notes.md', status: 'mod', ins: 1, del: 0 },
+                { path: 'gone.md', status: 'del', ins: 0, del: 3 },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        return baseFetch(input, init);
+      }) as typeof fetch;
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.keyDown(window, { code: 'KeyO', altKey: true, metaKey: true });
+      const quickOpen = await screen.findByTestId('quick-open');
+      fireEvent.click(await within(quickOpen).findByRole('option', { name: /notes\.md/ }));
+      expect(
+        await screen.findByTestId('right-dock-tab-file:/workspace/docs/operator/notes.md'),
+      ).toBeInTheDocument();
+      // A deleted file has nothing to preview.
+      expect(screen.queryByText('gone.md')).not.toBeInTheDocument();
+    });
+
+    it('says in quick open when the changed files cannot be listed', async () => {
+      const baseFetch = global.fetch;
+      global.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url.includes('/api/diff/files')) return new Response('', { status: 502 });
+        return baseFetch(input, init);
+      }) as typeof fetch;
+      wrap('test-session-id-1234', {});
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.keyDown(window, { code: 'KeyO', altKey: true, ctrlKey: true });
+      const quickOpen = await screen.findByTestId('quick-open');
+      expect(await within(quickOpen).findByRole('alert')).toHaveTextContent(
+        'The changed files could not be listed: Failed to fetch diff files: 502',
+      );
+    });
+
     it('opens a file the transcript links to as a pane in the dock', async () => {
       mockChatState({
         messages: [
