@@ -2,7 +2,7 @@
 
 Every transition is one conditional ``UPDATE ... WHERE status = ...  RETURNING *``, so two
 callers racing for the same request cannot both win: the loser gets no row back. The table
-holds no secret value (see ``migrations/000104_session_secret_requests.up.sql``).
+holds no secret value (see ``migrations/000105_session_secret_requests.up.sql``).
 """
 
 from __future__ import annotations

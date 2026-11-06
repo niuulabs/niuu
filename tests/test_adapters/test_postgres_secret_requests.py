@@ -84,7 +84,7 @@ class TestRows:
         assert row_to_request(row()).keep is None
 
     def test_the_table_has_no_column_for_the_secret(self):
-        migration = (MIGRATIONS / "000104_session_secret_requests.up.sql").read_text()
+        migration = (MIGRATIONS / "000105_session_secret_requests.up.sql").read_text()
         columns = {
             line.split()[0]
             for line in migration.splitlines()
