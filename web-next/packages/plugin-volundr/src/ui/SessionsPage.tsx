@@ -63,16 +63,19 @@ import {
 } from '../domain/projectTree';
 import { groupByState } from './sessions/groupByState';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
+import { useElementWidth } from './detail/useElementWidth';
 import { ProjectHome } from './ProjectHome';
 import { sessionHarness, type Session, type SessionState } from '../domain/session';
 import type { IVolundrService } from '../ports/IVolundrService';
 import { useForgePreference } from './useForgePreference';
 import {
+  DOCK_WIDTH,
   FILTER_LABELS,
   SESSION_FILTERS,
   SESSION_STATE_LABELS,
   STOPPABLE_STATES,
   SIDEBAR_WIDTH,
+  TRANSCRIPT_MIN_WIDTH,
   matchesSessionFilter,
   sessionModelLabel,
   type SessionFilter,
@@ -951,6 +954,21 @@ export function SessionsPage() {
   const [details, setDetails] = useForgePreference('details', '0', ['0', '1']);
   const [tokens, setTokens] = useForgePreference('tokens', '0', ['0', '1']);
   const { width, resizer } = useResizableSidebar('niuu.forge.sidebarWidth', SIDEBAR_WIDTH);
+  // As Lexi's: the list folds to its rail when the open dock has no room beside the
+  // conversation, and returns when the dock closes or the window widens. Expanding it while
+  // folded keeps it open, and the dock steps aside instead, until the dock no longer needs it.
+  const [dockOpen, setDockOpen] = useState(false);
+  const [page, setPage] = useState<HTMLDivElement | null>(null);
+  const pageWidth = useElementWidth(page);
+  const dockNeedsList =
+    dockOpen && pageWidth !== null && pageWidth - width - TRANSCRIPT_MIN_WIDTH < DOCK_WIDTH.min;
+  const [listKeptOpen, setListKeptOpen] = useState(false);
+  if (listKeptOpen && !dockNeedsList) setListKeptOpen(false);
+  const listFolded = sidebarCollapsed || (dockNeedsList && !listKeptOpen);
+  const expandList = () => {
+    setSidebarCollapsed(false);
+    if (dockNeedsList) setListKeptOpen(true);
+  };
   const [rowBusyId, setRowBusyId] = useState<string>();
   const [actionError, setActionError] = useState<string>();
   const [deleteTarget, setDeleteTarget] = useState<Session | null>(null);
@@ -1370,6 +1388,7 @@ export function SessionsPage() {
   return (
     <>
       <div
+        ref={setPage}
         className="forge-sessions niuu:relative niuu:flex niuu:h-full"
         data-detail-open={!!requestedSessionId || showProjectHome}
         data-testid="sessions-page"
@@ -1378,7 +1397,7 @@ export function SessionsPage() {
         <nav
           className={cn('forge-session-list niuu:relative niuu:shrink-0 niuu:overflow-hidden')}
           style={
-            sidebarCollapsed
+            listFolded
               ? {
                   width: '48px',
                   minWidth: '48px',
@@ -1395,12 +1414,12 @@ export function SessionsPage() {
           aria-label="Session list"
           data-testid="pod-list-sidebar"
         >
-          {sidebarCollapsed ? (
+          {listFolded ? (
             <div className="niuu:flex niuu:h-full niuu:flex-col niuu:overflow-hidden">
               <div className="niuu:flex niuu:items-center niuu:justify-center niuu:border-b niuu:border-border-subtle niuu:py-2.5">
                 <button
                   type="button"
-                  onClick={() => setSidebarCollapsed(false)}
+                  onClick={expandList}
                   className="niuu:font-mono niuu:text-sm niuu:text-text-muted"
                   data-testid="pod-sidebar-toggle"
                   aria-label="Expand pods sidebar"
@@ -1844,7 +1863,7 @@ export function SessionsPage() {
         </nav>
 
         {/* ── Main content: session detail ───────────────────────── */}
-        {!sidebarCollapsed && (
+        {!listFolded && (
           <SidebarResizer
             label="Resize session list"
             className="forge-session-resizer"
@@ -1918,6 +1937,7 @@ export function SessionsPage() {
                 onFocusWorker={handleFocusWorker}
                 onRoomWorkers={handleRoomWorkers}
                 workersInList
+                onDockOpenChange={setDockOpen}
                 onBackToUnread={
                   filter === 'unread'
                     ? () => {

@@ -3142,6 +3142,8 @@ export interface RoomWorkerFocus {
   onBackToUnread?: () => void;
   /** The host lists the workers under the coordinator, so the chat does not repeat them. */
   workersInList?: boolean;
+  /** Told when the right dock opens or closes, so the host can make room for it. */
+  onDockOpenChange?: (open: boolean) => void;
 }
 
 export function LiveSessionDetailPage({
@@ -3155,6 +3157,7 @@ export function LiveSessionDetailPage({
   onRoomWorkers,
   onBackToUnread,
   workersInList = false,
+  onDockOpenChange,
 }: {
   sessionId: string;
   instanceId?: string;
@@ -3175,6 +3178,7 @@ export function LiveSessionDetailPage({
       onRoomWorkers={onRoomWorkers}
       onBackToUnread={onBackToUnread}
       workersInList={workersInList}
+      onDockOpenChange={onDockOpenChange}
     />
   );
 }
@@ -3190,6 +3194,7 @@ function LiveSessionDetailPageInner({
   onRoomWorkers,
   onBackToUnread,
   workersInList = false,
+  onDockOpenChange,
 }: {
   sessionId: string;
   instanceId?: string;
@@ -3232,6 +3237,12 @@ function LiveSessionDetailPageInner({
       ? dockPreferredWidth
       : Math.min(dockPreferredWidth, sessionRowWidth - TRANSCRIPT_MIN_WIDTH);
   const dockShown = dockPane !== null && dockWidth >= DOCK_WIDTH.min;
+  const dockOpen = dockPane !== null;
+  useEffect(() => {
+    if (!onDockOpenChange) return;
+    onDockOpenChange(dockOpen);
+    return () => onDockOpenChange(false);
+  }, [dockOpen, onDockOpenChange]);
   const showInternalMessages = toolVisibility === '1';
   const [tokenVisibility] = useForgePreference('tokens', '0', ['0', '1']);
   const showTokenUsage = tokenVisibility === '1';
