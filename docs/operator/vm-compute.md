@@ -341,7 +341,11 @@ honour, and refuses the rest by name:
 
 Credential files live outside the archived workspace/home and are deleted with the
 VM. PVCs, ConfigMap/Secret volumes, `valueFrom` env and workspace host-path sources
-are rejected. The storage contributor emits no PVC settings for VMs.
+are rejected. The storage contributor emits no PVC settings for VMs, and session
+definitions drop their `homeVolume`/`persistence` pod defaults (the chart's built-in
+definitions carry them), so a VM release needs no override for them. A definition
+that names an `existingClaim`, and any template or profile that sets pod storage,
+is still refused.
 
 ## VM session credentials
 
