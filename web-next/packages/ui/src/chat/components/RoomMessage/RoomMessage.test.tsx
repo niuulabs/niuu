@@ -92,7 +92,7 @@ describe('RoomMessage', () => {
       expect(message).toHaveAttribute('data-speaker');
       expect(message.style.getPropertyValue('--niuu-persona-color')).toBe('#123456');
       expect(screen.getByText('Odin')).toBeInTheDocument();
-      expect(screen.getByText('O')).toHaveClass('niuu-chat-room-avatar');
+      expect(document.querySelector('.niuu-chat-room-avatar')).toHaveAttribute('data-initial', 'O');
       expect(document.querySelector('.niuu-chat-assistant-footer')).toHaveTextContent(/5:12/);
     });
 

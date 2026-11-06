@@ -164,9 +164,12 @@ export function ModelSpeaker({ model }: { model?: string }) {
       data-testid="model-speaker"
       title={model}
     >
-      <i className="niuu-chat-speaker-avatar" aria-hidden="true">
-        {label.trim().charAt(0).toUpperCase()}
-      </i>
+      {/* The initial is drawn, not written, so the speaker reads as its name alone. */}
+      <i
+        className="niuu-chat-speaker-avatar"
+        aria-hidden="true"
+        data-initial={label.trim().charAt(0).toUpperCase()}
+      />
       {label}
     </span>
   );

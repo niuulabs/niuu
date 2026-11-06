@@ -62,3 +62,7 @@
 [data-theme='light'] .niuu-chat-room-persona-name {
   color: var(--color-text-primary);
 }
+
+.niuu-chat-room-avatar::before {
+  content: attr(data-initial);
+}

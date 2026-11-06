@@ -1654,7 +1654,8 @@ describe('SessionChat', () => {
     expect(worked).toHaveAttribute('aria-expanded', 'false');
     const turn = screen.getByTestId('compact-turn');
     expect(turn).toHaveAttribute('data-headed', 'true');
-    expect(within(turn).getAllByTestId('model-speaker')[0]).toHaveTextContent('Opus 5.5');
+    // The avatar's initial is drawn, so the speaker reads as the model's name alone.
+    expect(within(turn).getAllByTestId('model-speaker')[0]).toHaveTextContent(/^Claude Opus 5\.5$/);
     expect(screen.getByText('Shipped.')).toBeInTheDocument();
   });
 

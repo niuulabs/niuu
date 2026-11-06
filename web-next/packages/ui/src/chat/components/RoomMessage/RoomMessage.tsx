@@ -53,9 +53,11 @@ function SpeakerHeader({
   const name = <span className="niuu-chat-room-persona-name">{speaker.name}</span>;
   return (
     <div className="niuu-chat-room-label">
-      <span className="niuu-chat-room-avatar" aria-hidden="true">
-        {speaker.name.trim().charAt(0).toUpperCase()}
-      </span>
+      <span
+        className="niuu-chat-room-avatar"
+        aria-hidden="true"
+        data-initial={speaker.name.trim().charAt(0).toUpperCase()}
+      />
       {onShowDetail && peerId ? (
         <button
           type="button"

@@ -151,6 +151,10 @@
   font-weight: 700;
 }
 
+.niuu-chat-speaker-avatar::before {
+  content: attr(data-initial);
+}
+
 .niuu-chat-header-sep {
   color: var(--color-text-faint);
 }
