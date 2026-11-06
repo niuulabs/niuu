@@ -360,6 +360,17 @@ Configuration for reporting token usage and session events back to the Volundr c
 | `volundr.externalApiTokenSecret.name` | string | `""` | Existing Kubernetes Secret containing the outbound service token; empty disables token injection |
 | `volundr.externalApiTokenSecret.key` | string | `"token"` | Key within the referenced Secret |
 
+### Secret requests
+
+An agent asks the user for a secret with `request-secret` or the Forge MCP `request_secret` tool. The user types it into a masked card in the chat; it reaches the agent only as a private file path. The wait is bounded by the engine's MCP call timeouts, so `secretRequests.waitMaxS` must stay below `forgeMcp.brokerRequestTimeoutS` and `forgeMcp.toolTimeoutS`; the broker refuses to start otherwise. When the wait passes, the call fails loudly and the request stays open in the chat for the agent to ask again.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `secretRequests.pollIntervalS` | int | `2` | Seconds between checks of whether the user answered the card (`secret_requests.poll_interval_s`) |
+| `secretRequests.waitMaxS` | int | `50` | Longest one `request_secret` call waits for the user, in seconds (`secret_requests.wait_max_s`) |
+| `forgeMcp.brokerRequestTimeoutS` | number | `null` | Seconds the engine allows one stdio-server to broker tool call (`forge_mcp.broker_request_timeout_s`); null keeps the broker default of 60 |
+| `forgeMcp.toolTimeoutS` | number | `null` | Seconds the engine allows one MCP tool call (`forge_mcp.tool_timeout_s`); null keeps the broker default of 120 |
+
 ### Environment Variables
 
 | Key | Type | Default | Description |

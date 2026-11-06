@@ -116,6 +116,22 @@ class FakeClient(ForgeClient):
         self._record("submit_notification", (session_id, draft, idempotency_key, instance_id))
         return {"id": "nid-feed", "seq": 12, "session_id": session_id, "source": "agent"}
 
+    async def create_secret_request(self, session_id, body):
+        self._record("create_secret_request", (session_id, body))
+        return {"id": "sr-1", "session_id": session_id, "status": "pending", **body}
+
+    async def get_secret_request(self, session_id, request_id):
+        self._record("get_secret_request", (session_id, request_id))
+        return {"id": request_id, "session_id": session_id, "status": "pending"}
+
+    async def claim_secret_request(self, session_id, request_id):
+        self._record("claim_secret_request", (session_id, request_id))
+        return {"name": "TOKEN", "value": "not-a-real-secret"}
+
+    async def cancel_secret_request(self, session_id, request_id):
+        self._record("cancel_secret_request", (session_id, request_id))
+        return {"id": request_id, "session_id": session_id, "status": "cancelled"}
+
     async def update_description(self, session_id, changes):
         self._record("update_description", (session_id, changes))
         stamp = "2026-10-16T12:00:00+00:00"
@@ -158,6 +174,7 @@ class TestToolList:
             "environment",
             "notify",
             "report_artifact",
+            "request_secret",
             "describe_session",
             "list_notifications",
             "list_sessions",
@@ -529,7 +546,7 @@ class TestFeedNotify:
         assert {"session_id", "instance_id", "idempotency_key"} <= set(schema["properties"])
         assert "feed-only" in notify["description"]
         assert [tool["name"] for tool in toolbox.list_tools()] == [
-            name for name in TOOL_NAMES if name != "report_artifact"
+            name for name in TOOL_NAMES if name not in {"report_artifact", "request_secret"}
         ]
 
     def test_transcript_mode_keeps_the_session_schema(self) -> None:

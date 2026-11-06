@@ -78,6 +78,25 @@ class ForgeClient(ABC):
     ) -> dict[str, Any]:
         """``PUT /sessions/{id}/description``: sent keys replace, ``None`` clears."""
 
+    @abstractmethod
+    async def create_secret_request(self, session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /sessions/{id}/secret-requests``: ``{name, purpose, target?}``.
+
+        Idempotent per (session, name) while a request is open: Forge returns that
+        request instead of a second one."""
+
+    @abstractmethod
+    async def get_secret_request(self, session_id: str, request_id: str) -> dict[str, Any]:
+        """``GET /sessions/{id}/secret-requests/{request_id}``; never carries the value."""
+
+    @abstractmethod
+    async def claim_secret_request(self, session_id: str, request_id: str) -> dict[str, Any]:
+        """``POST .../{request_id}/claim``: ``{name, value}``, once, after the user fulfilled it."""
+
+    @abstractmethod
+    async def cancel_secret_request(self, session_id: str, request_id: str) -> dict[str, Any]:
+        """``POST .../{request_id}/cancel``: withdraw a pending or fulfilled request."""
+
 
 class ForgeMcpHost(ABC):
     """The caller's own context: who is asking, and how its notifications are recorded."""
@@ -101,6 +120,18 @@ class ForgeMcpHost(ABC):
         Only a session's own broker can; other hosts refuse."""
         raise ForgeApiError(
             "report_artifact needs a Forge session's own MCP (it writes that session's log)",
+            status=501,
+        )
+
+    async def request_secret(self, name: str, purpose: str, target: str | None) -> dict[str, Any]:
+        """Ask the user for a secret and return ``{status: "ready", name, path}``.
+
+        The value lands in a private file in the caller's session and is never part of the
+        result. Only a session's own broker can: it owns the chat card and the file. Other
+        hosts refuse."""
+        raise ForgeApiError(
+            "request_secret needs a Forge session's own MCP (it asks in that session's chat "
+            "and writes the value into that session's runtime)",
             status=501,
         )
 

@@ -5,6 +5,7 @@
  * import from the local models instead of the legacy @/modules/volundr/models
  * aliases.
  */
+import type { SecretFulfillment, SecretRequest } from '@niuulabs/domain';
 import type {
   VolundrFeatures,
   VolundrSession,
@@ -268,6 +269,16 @@ export interface IVolundrService {
   deleteSession(sessionId: string, cleanup?: string[]): Promise<void>;
   archiveSession(sessionId: string): Promise<void>;
   archiveStoppedSessions(): Promise<string[]>;
+
+  // Secure secret requests: an agent asks the person for a secret. The value goes to Forge in
+  // `fulfillSecretRequest` and is never returned, cached or shown to the agent.
+  getSecretRequest(sessionId: string, requestId: string): Promise<SecretRequest>;
+  fulfillSecretRequest(
+    sessionId: string,
+    requestId: string,
+    fulfillment: SecretFulfillment,
+  ): Promise<SecretRequest>;
+  declineSecretRequest(sessionId: string, requestId: string): Promise<SecretRequest>;
   restoreSession(sessionId: string): Promise<void>;
   listArchivedSessions(options?: SessionReadOptions): Promise<VolundrSession[]>;
 

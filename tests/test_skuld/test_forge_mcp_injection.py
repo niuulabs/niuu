@@ -24,6 +24,7 @@ from skuld.config import SkuldSettings
 from skuld.transports.session_tools import (
     BROKER_TOKEN_FILE_ENV,
     FORGE_DESCRIBE_URL_ENV,
+    FORGE_REQUEST_SECRET_URL_ENV,
     PRESENT_FILE_URL_ENV,
     claude_cli_args,
 )
@@ -91,7 +92,13 @@ class TestBrokerComposition:
             PRESENT_FILE_URL_ENV: "http://127.0.0.1:18765/api/present-file",
             BROKER_TOKEN_FILE_ENV: str(token_file),
             FORGE_DESCRIBE_URL_ENV: "http://127.0.0.1:18765/api/forge-mcp/tools/describe_session",
+            FORGE_REQUEST_SECRET_URL_ENV: (
+                "http://127.0.0.1:18765/api/forge-mcp/tools/request_secret"
+            ),
         }
+        # Secrets are asked for through the shim or tool, never in chat.
+        assert "request-secret NAME" in tools.instructions
+        assert "`request_secret`" in tools.instructions
         assert "notify" in tools.instructions and "present-file" in tools.instructions
         # Agents are told to keep their session description current, both ways.
         assert "forge-describe --short" in tools.instructions
@@ -131,6 +138,8 @@ class TestBrokerComposition:
         assert "notify" not in kwargs["session_tools"].instructions
         # forge-describe rides the Forge MCP route, so it is neither exported nor advertised.
         assert FORGE_DESCRIBE_URL_ENV not in kwargs["session_tools"].env
+        assert FORGE_REQUEST_SECRET_URL_ENV not in kwargs["session_tools"].env
+        assert "request-secret" not in kwargs["session_tools"].instructions
         assert "forge-describe" not in kwargs["session_tools"].instructions
         assert broker._effective_mcp_server_names() == []
 

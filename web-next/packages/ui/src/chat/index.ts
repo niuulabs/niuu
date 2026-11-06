@@ -101,6 +101,9 @@ export type {
   NotificationTone,
 } from './components/NotificationCard';
 
+export { SecretRequestCard, SECRET_REQUEST_POLL_MS } from './components/SecretRequestCard';
+export type { SecretRequestCardProps } from './components/SecretRequestCard';
+
 export {
   ConversationResourceProvider,
   ConversationLink,
