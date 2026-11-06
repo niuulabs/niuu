@@ -38,6 +38,8 @@ from volundr.domain.vm_runtime import VmRuntime
 _HOST_KEY = HOST_KEY_PATH
 _HOST_KEY_CONFIG = HOST_KEY_CONFIG_PATH
 _LAUNCH = "/etc/niuu/session-launch.json"
+#: The guest's local DNS stub (systemd-resolved on 127.0.0.53): never a preview.
+VM_GUEST_RESOLVER_PORT = 53
 _REMOTE_DATA = "/var/lib/niuu/session"
 
 # Passed as a fixed program; session-controlled values arrive as JSON on stdin.
@@ -172,9 +174,24 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         machine_commands: list[list[str]] | tuple[tuple[str, ...], ...] = (),
         guest_access: GuestAccess | None = None,
         host_prepared: bool = False,
+        preview_router_auth: dict | None = None,
+        preview_excluded_ports: list[int] | None = None,
     ):
+        """``preview_router_auth`` turns on live preview in session VMs: the Skuld
+        ``preview.router_auth`` adapter (``{"adapter": ..., "kwargs": {...}}``),
+        normally ``skuld.preview_adapters.WorkloadJwtRouterAuth`` for Forge's
+        workload issuer, whose JWKS the guest reaches through the platform tunnel
+        (``http://127.0.0.1:<guest_platform_port>/api/v1/tokens/workload/jwks``).
+        The VM is the session, so every listener on it is offered except SSH,
+        the guest resolver, the tunnel and broker ports, and
+        ``preview_excluded_ports``."""
         if not skuld_image or not ssh_user or ssh_user.startswith("-"):
             raise ValueError("Configure a Skuld image and SSH user")
+        self._preview_router_auth = dict(preview_router_auth or {})
+        self._preview_excluded_ports = sorted(
+            {ssh_port, VM_GUEST_RESOLVER_PORT, guest_platform_port, broker_port}
+            | {int(port) for port in preview_excluded_ports or []}
+        )
         if host_prepared and not re.search(r"@sha256:[a-f0-9]{64}$", skuld_image):
             raise ValueError("Prepared-host runtime requires a digest-pinned Skuld image")
         if any(
@@ -323,6 +340,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 "HOME": "/home/skuld",
             }
         )
+        env.update(self._preview_env())
         for source, target in [
             ("systemPrompt", "SYSTEM_PROMPT"),
             ("initialPrompt", "INITIAL_PROMPT"),
@@ -484,6 +502,21 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             safe_detail_prefix=safe_detail_prefix,
         )
         return result.exit_code
+
+    def _preview_env(self) -> dict[str, str]:
+        """Skuld live-preview settings for a session VM (see ``__init__``)."""
+        if not self._preview_router_auth:
+            return {"SKULD__PREVIEW__ENABLED": "false"}
+        return {
+            "SKULD__PREVIEW__ENABLED": "true",
+            "SKULD__PREVIEW__PORT_SCANNER": json.dumps(
+                {
+                    "adapter": "skuld.preview_adapters.ProcNetListeningPortScanner",
+                    "kwargs": {"excluded_ports": self._preview_excluded_ports},
+                }
+            ),
+            "SKULD__PREVIEW__ROUTER_AUTH": json.dumps(self._preview_router_auth),
+        }
 
     async def target(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> SessionProxyTarget:
         return await self._guest_access.open_tunnel(
