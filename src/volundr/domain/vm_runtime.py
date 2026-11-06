@@ -53,13 +53,14 @@ class ForgeSessionVmRuntime(Protocol):
     """
 
     @property
-    def delivers_forge_session_token(self) -> bool: ...
+    def delivers_forge_session_token(self) -> bool:
+        """Whether this runtime writes the Forge session credential into its guest."""
 
-    def stage_forge_session(
-        self, session_id: UUID, credential: IssuedForgeSessionToken
-    ) -> None: ...
+    def stage_forge_session(self, session_id: UUID, credential: IssuedForgeSessionToken) -> None:
+        """Hold ``credential`` for the next start of ``session_id``."""
 
-    def discard_forge_session(self, session_id: UUID) -> None: ...
+    def discard_forge_session(self, session_id: UUID) -> None:
+        """Forget a staged credential."""
 
 
 @runtime_checkable

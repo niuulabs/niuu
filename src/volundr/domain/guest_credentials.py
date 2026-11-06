@@ -19,6 +19,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
@@ -37,8 +38,26 @@ class GuestAuthenticationError(Exception):
     """A metadata request did not prove an allocation identity (always one 401)."""
 
 
+class GuestUnavailableReason(StrEnum):
+    """Why an authenticated allocation gets no credentials (the 409's ``error``)."""
+
+    NOT_RUNNING = "allocation_not_running"
+    STOPPING = "session_stopping"
+    UNBOUND = "no_bound_session"
+    NOT_LAUNCHED = "session_not_launched"
+    NO_SERVICE_ACCOUNT = "no_service_account"
+    NO_FORGE_SESSION = "forge_session_unavailable"
+
+
 class GuestCredentialUnavailableError(Exception):
-    """An authenticated allocation has no running session to issue credentials for."""
+    """An authenticated allocation has no running session to issue credentials for.
+
+    ``reason`` is what the guest is told; the message carries detail for Forge's log.
+    """
+
+    def __init__(self, reason: GuestUnavailableReason, detail: str) -> None:
+        super().__init__(detail)
+        self.reason = reason
 
 
 @dataclass(frozen=True)

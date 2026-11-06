@@ -130,16 +130,14 @@ class SpiffeSigner(RequestSigner):
 def build_signer(
     auth: HostKeyAuth | SpiffeAuth, *, allocation_id: str, timeout_seconds: float
 ) -> RequestSigner:
-    match auth:
-        case HostKeyAuth():
-            return HostKeySigner(key_path=auth.key_path, allocation_id=allocation_id)
-        case SpiffeAuth():
-            return SpiffeSigner(
-                audience=auth.audience,
-                socket_path=auth.socket_path,
-                spire_agent_binary=auth.spire_agent_binary,
-                timeout_seconds=timeout_seconds,
-            )
+    if isinstance(auth, HostKeyAuth):
+        return HostKeySigner(key_path=auth.key_path, allocation_id=allocation_id)
+    return SpiffeSigner(
+        audience=auth.audience,
+        socket_path=auth.socket_path,
+        spire_agent_binary=auth.spire_agent_binary,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def parse_jwt_svid_output(stdout: bytes) -> str:

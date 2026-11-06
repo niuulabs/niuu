@@ -30,6 +30,7 @@ from volundr.domain.guest_credentials import (
     GuestAuthenticationError,
     GuestCredentials,
     GuestCredentialUnavailableError,
+    GuestUnavailableReason,
     IssuedGuestForgeSession,
     IssuedGuestToken,
 )
@@ -117,22 +118,26 @@ def test_every_authentication_failure_is_the_same_401():
     assert response.headers["cache-control"] == "no-store"
 
 
-def test_an_allocation_without_a_running_session_is_a_409_with_the_reason():
-    response = client_for(
-        service_returning(error=GuestCredentialUnavailableError("The allocation is draining"))
-    ).post(METADATA_CREDENTIALS_PATH, content=b"{}")
+def test_an_allocation_without_a_running_session_is_a_409_with_the_reason_code(caplog):
+    error = GuestCredentialUnavailableError(
+        GuestUnavailableReason.NOT_RUNNING, "The allocation is draining"
+    )
+    response = client_for(service_returning(error=error)).post(
+        METADATA_CREDENTIALS_PATH, content=b"{}"
+    )
 
     assert response.status_code == 409
-    assert response.json() == {"error": "The allocation is draining"}
+    assert response.json() == {"error": "allocation_not_running"}
+    assert "The allocation is draining" in caplog.text
 
 
-def test_an_unreadable_authenticated_body_is_a_400():
-    response = client_for(service_returning(error=GuestRequestError("bad body"))).post(
+def test_an_unreadable_authenticated_body_is_a_400_without_the_exception_text():
+    response = client_for(service_returning(error=GuestRequestError("internal detail"))).post(
         METADATA_CREDENTIALS_PATH, content=b"{}"
     )
 
     assert response.status_code == 400
-    assert response.json() == {"error": "bad body"}
+    assert response.json() == {"error": 'The request body must be {"allocation_id": "<uuid>"}'}
 
 
 def test_a_body_over_64_kib_is_refused_before_authentication():
@@ -296,7 +301,7 @@ def test_a_stopped_session_is_a_409_even_with_a_valid_signature():
     response = guest.post()
 
     assert response.status_code == 409
-    assert "stopping" in response.json()["error"]
+    assert response.json() == {"error": "session_stopping"}
 
 
 def test_a_missing_forge_session_is_a_409_not_a_partial_answer():
@@ -306,7 +311,7 @@ def test_a_missing_forge_session_is_a_409_not_a_partial_answer():
     response = guest.post()
 
     assert response.status_code == 409
-    assert "Forge session credential" in response.json()["error"]
+    assert response.json() == {"error": "forge_session_unavailable"}
 
 
 @pytest.mark.parametrize("headers", [{}, {"Niuu-Guest-Allocation": "x"}])

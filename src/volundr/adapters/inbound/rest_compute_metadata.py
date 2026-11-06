@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Request
@@ -13,6 +14,7 @@ from volundr.domain.guest_credentials import (
     GuestCredentials,
     GuestCredentialUnavailableError,
     GuestRequest,
+    GuestUnavailableReason,
 )
 from volundr.domain.services.guest_metadata import GuestMetadataService, GuestRequestError
 
@@ -20,6 +22,12 @@ MAX_METADATA_REQUEST_BYTES = 64 * 1024
 
 #: Every credential response, success or not, must stay out of shared caches.
 _NO_STORE = {"Cache-Control": "no-store"}
+
+#: The only body text a guest sees; the exception's detail stays in Forge's log.
+_UNAVAILABLE = {reason: reason.value for reason in GuestUnavailableReason}
+_BAD_BODY = 'The request body must be {"allocation_id": "<uuid>"}'
+
+logger = logging.getLogger(__name__)
 
 
 def create_compute_metadata_router(service: GuestMetadataService) -> APIRouter:
@@ -48,9 +56,10 @@ def create_compute_metadata_router(service: GuestMetadataService) -> APIRouter:
         except GuestAuthenticationError:
             return _error("unauthorized", 401)
         except GuestCredentialUnavailableError as exc:
-            return _error(str(exc), 409)
-        except GuestRequestError as exc:
-            return _error(str(exc), 400)
+            logger.warning("Guest metadata request refused (%s): %s", exc.reason.value, exc)
+            return _error(_UNAVAILABLE[exc.reason], 409)
+        except GuestRequestError:
+            return _error(_BAD_BODY, 400)
         return JSONResponse(_payload(issued), headers=_NO_STORE)
 
     return router

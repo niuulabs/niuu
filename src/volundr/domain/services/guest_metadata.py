@@ -22,6 +22,7 @@ from volundr.domain.guest_credentials import (
     GuestCredentialUnavailableError,
     GuestIdentity,
     GuestRequest,
+    GuestUnavailableReason,
     IssuedGuestForgeSession,
     IssuedGuestToken,
 )
@@ -81,7 +82,8 @@ class GuestMetadataService:
         issued_tokens: list[IssuedGuestToken] = []
         if plan.token_volumes and not plan.service_account:
             raise GuestCredentialUnavailableError(
-                "The session's launch names token volumes but no ServiceAccount"
+                GuestUnavailableReason.NO_SERVICE_ACCOUNT,
+                "The session's launch names token volumes but no ServiceAccount",
             )
         for volume in plan.token_volumes:
             for token in volume.tokens:
@@ -104,8 +106,9 @@ class GuestMetadataService:
             credential = await self._issue_forge_session(session_id)
             if credential is None:
                 raise GuestCredentialUnavailableError(
+                    GuestUnavailableReason.NO_FORGE_SESSION,
                     "The session needs a Forge session credential but none can be issued "
-                    "(the session has no owner or launch, or forge_mcp.session_tokens is off)"
+                    "(the session has no owner or launch, or forge_mcp.session_tokens is off)",
                 )
             forge_session = IssuedGuestForgeSession(
                 token=credential.token,
@@ -126,11 +129,17 @@ class GuestMetadataService:
     @staticmethod
     def _bound_session(lease: ComputeLease) -> UUID:
         if lease.state not in _RUNNING_STATES:
-            raise GuestCredentialUnavailableError(f"The allocation is {lease.state.value}")
+            raise GuestCredentialUnavailableError(
+                GuestUnavailableReason.NOT_RUNNING, f"The allocation is {lease.state.value}"
+            )
         if lease.stop_requested:
-            raise GuestCredentialUnavailableError("The allocation's session is stopping")
+            raise GuestCredentialUnavailableError(
+                GuestUnavailableReason.STOPPING, "The allocation's session is stopping"
+            )
         if lease.session_id is None:
-            raise GuestCredentialUnavailableError("The allocation has no bound session")
+            raise GuestCredentialUnavailableError(
+                GuestUnavailableReason.UNBOUND, "The allocation has no bound session"
+            )
         return lease.session_id
 
     async def _plan(self, lease: ComputeLease) -> GuestCredentialPlan:
@@ -139,5 +148,8 @@ class GuestMetadataService:
             (item.content for item in bootstrap.files if item.path == LAUNCH_PAYLOAD_PATH), None
         )
         if launch is None:
-            raise GuestCredentialUnavailableError("The allocation's session has not been launched")
+            raise GuestCredentialUnavailableError(
+                GuestUnavailableReason.NOT_LAUNCHED,
+                "The allocation's session has not been launched",
+            )
         return GuestCredentialPlan.from_launch(json.loads(launch))

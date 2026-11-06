@@ -650,12 +650,11 @@ class TestGuestAgentInjection:
         (init,) = result.init_containers
         assert init["name"] == "openbao-agent-init"
         assert init["image"] == "openbao/openbao:2.5.3"
-        assert init["command"] == [
-            "/bin/sh",
-            "-ec",
+        script = (
             'printf "%s" "$BAO_AGENT_CONFIG" > /home/vault/config.hcl'
-            " && exec bao agent -config=/home/vault/config.hcl",
-        ]
+            " && exec bao agent -config=/home/vault/config.hcl"
+        )
+        assert init["command"] == ["/bin/sh", "-ec", script]
         assert init["volumeMounts"] == [
             {"name": "openbao-secrets", "mountPath": "/run/secrets"},
             {"name": "openbao-agent-home", "mountPath": "/home/vault"},

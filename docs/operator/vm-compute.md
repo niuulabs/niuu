@@ -417,7 +417,10 @@ The agent calls `POST /api/v1/internal/compute/metadata/credentials`. Forge answ
 only for the session currently bound to the calling allocation (READY/BUSY, not
 stopping), minting fresh ServiceAccount tokens and a Forge session credential for
 the session's **current** launch. Every authentication failure is the same 401; an
-authenticated allocation without a running session is 409. The chart's
+authenticated allocation without a running session is 409 with a reason code
+(`allocation_not_running`, `session_stopping`, `no_bound_session`,
+`session_not_launched`, `no_service_account`, `forge_session_unavailable`); Forge
+logs the detail at warning, and the guest agent logs the code. The chart's
 `guestMetadata.enabled` renders the Envoy bypass for exactly that route (JWT and
 Cedar are skipped; the route authenticates the guest itself). Check that Forge's
 NetworkPolicy and ingress admit guest traffic.
