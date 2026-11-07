@@ -110,9 +110,6 @@ thread:
   enricher_poll_interval_seconds: 600
   enricher_llm_alias: fast
 
-wakefulness:
-  enabled: false                         # peers handle their own idle time
-
 recap:
   enabled: false
 

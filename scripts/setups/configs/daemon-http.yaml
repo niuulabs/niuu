@@ -78,9 +78,6 @@ thread:
   enricher_poll_interval_seconds: 600    # every 10 min (less aggressive for dev)
   enricher_llm_alias: fast
 
-wakefulness:
-  enabled: false                         # off for local dev — enable if you want it
-
 recap:
   enabled: false                         # off for local dev
 

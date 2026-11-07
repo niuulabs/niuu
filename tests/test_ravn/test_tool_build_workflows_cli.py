@@ -223,19 +223,6 @@ def test_workflows_config_option_sets_env(tmp_path, monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_effective_workflow_selector_prefers_realm_grant() -> None:
-    settings = _settings_with_selector()  # static selector = tool-builder
-    realm_selector = {"names": ["realm-workflow"]}
-
-    with patch(
-        "ravn.cli.commands._resolve_realm_build_config",
-        return_value=type("_R", (), {"workflow_selector": realm_selector})(),
-    ):
-        result = _effective_workflow_selector(settings)
-
-    assert result == realm_selector
-
-
 def test_effective_workflow_selector_none_when_nothing_configured() -> None:
     settings = Settings(
         resident_evolution={

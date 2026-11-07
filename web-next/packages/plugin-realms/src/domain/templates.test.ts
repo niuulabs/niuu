@@ -12,23 +12,15 @@ describe('realm templates', () => {
     expect(REALM_TEMPLATES.filter((template) => template.recommended)).toHaveLength(1);
   });
 
-  it('writes the charter, repository and board into the persona prompt', () => {
-    const prompt = templateById('product-resident').prompt(
-      'Keep it shippable.',
-      'niuulabs/lexi-api',
-      'LXA',
-    );
-    expect(prompt).toContain('# Product resident');
-    expect(prompt).toContain('Keep it shippable.');
-    expect(prompt).toContain('Repository: niuulabs/lexi-api');
-    expect(prompt).toContain('Tracker board: LXA');
+  it('describes every template as a workspace', () => {
+    for (const template of REALM_TEMPLATES) {
+      expect(template.name).toMatch(/workspace$/);
+      expect(template.covers.length).toBeGreaterThan(0);
+    }
   });
 
-  it('keeps every persona seed writing to workspace memory', () => {
-    for (const template of REALM_TEMPLATES) {
-      expect(template.persona.mimirWriteRouting).toBe('domain');
-      expect(template.persona.role).toBe('build');
-    }
+  it('finds a template by id', () => {
+    expect(templateById('qa-resident').needsBugBoard).toBe(true);
   });
 
   it('fails loudly on an unknown template', () => {

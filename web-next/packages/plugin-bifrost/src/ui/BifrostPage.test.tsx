@@ -211,7 +211,7 @@ describe('BifrostPage', () => {
             },
             {
               requestId: 'req-billable',
-              agentId: 'warden-test',
+              agentId: 'agent-test',
               tenantId: 'dev',
               sessionId: 'session-2',
               sagaId: 'saga-2',

@@ -16,10 +16,7 @@ from pathlib import Path
 
 import httpx
 
-from mimir.dream_results import dream_results
 from mimir.ports.deployment import DeploymentRequest, KnowledgeDeploymentPort
-from ravn.warden.deployment import build_warden_store
-from ravn.warden.models import WardenMimirBinding, WardenSpec
 
 
 class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
@@ -29,7 +26,6 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
         root: str = "~/.local/share/niuu/knowledge",
         gbrain_command: list[str] | None = None,
         gbrain_environment: dict[str, str] | None = None,
-        warden_defaults: dict | None = None,
         database: dict | None = None,
         workspace: str = "",
         startup_timeout: float = 45,
@@ -38,12 +34,10 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
         self.root = Path(root).expanduser().resolve()
         self.gbrain_command = gbrain_command
         self.environment = gbrain_environment or {}
-        self.warden_defaults = warden_defaults
         self.database = database
         self.workspace = Path(workspace or Path.cwd()).resolve()
         self.timeout = startup_timeout
         self.poll = poll_interval
-        self.wardens = build_warden_store()
         self._ports: dict = {}
         self._lock = asyncio.Lock()
 
@@ -125,7 +119,7 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
                 )
         except httpx.HTTPError:
             pass  # A stopped service is an observed state, not a successful deployment.
-        return {k: record[k] for k in ("name", "backend", "dream", "warden_id")} | {
+        return {k: record[k] for k in ("name", "backend")} | {
             "ready": ready,
             "message": message,
             "target": "local",
@@ -140,8 +134,6 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             "namespace": "local",
             "target": "local",
             "backends": ["mimir", *(["gbrain"] if self.gbrain_command else [])],
-            "warden_available": self.warden_defaults is not None,
-            "dream_available": bool(self.database or self.environment.get("GBRAIN_DATABASE_URL")),
             "releases": [
                 await self._view(r) for r in self._records() if r.get("tenant_id", "") == tenant_id
             ],
@@ -189,15 +181,8 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             return await self._deploy(request)
 
     async def _deploy(self, request: DeploymentRequest) -> dict:
-        if request.warden and self.warden_defaults is None:
-            raise ValueError("Configure the local warden model/profile before enabling a warden")
         if request.backend == "gbrain" and not self.gbrain_command:
             raise ValueError("The local target has no gbrain executable configured")
-        if request.dream.enabled and (
-            request.backend != "gbrain"
-            or not (self.database or self.environment.get("GBRAIN_DATABASE_URL"))
-        ):
-            raise ValueError("Native dream scheduling requires gbrain with a PostgreSQL connection")
         directory = self.root / request.name
         if directory.exists():
             record = self._record(request.name)
@@ -207,17 +192,6 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
                 raise ValueError(
                     f"A different or uninitialized deployment named {request.name} exists"
                 )
-            if record.get("warden_id") and request.warden_overrides.model_dump(exclude_none=True):
-                raise ValueError(
-                    "Warden overrides apply when attaching a new warden; "
-                    "this instance already has one"
-                )
-            if request.warden and not record.get("warden_id"):
-                cfg = record["mount"]
-                binding = {"name": request.name, **cfg}
-                await self._attach_warden(request, record, binding, directory / "deployment.json")
-                record.pop("error", None)
-                (directory / "deployment.json").write_text(json.dumps(record))
             return await self._view(record)
         directory.mkdir(mode=0o700, parents=True, exist_ok=False)
         directory.chmod(0o700)
@@ -231,8 +205,6 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             "backend": request.backend,
             "url": url,
             "health_url": url + ("/mimir/health" if request.backend == "mimir" else "/health"),
-            "dream": request.dream.model_dump(),
-            "warden_id": None,
             "initialized": False,
         }
         config_file = directory / "deployment.json"
@@ -269,7 +241,6 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
                     "--name",
                     request.name,
                 ]
-                binding = {"name": request.name, "path": str(data)}
             else:
                 env = {**self.environment, "GBRAIN_HOME": str(directory)}
                 if self.database:
@@ -309,11 +280,6 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
                     "adapter": "ravn.adapters.mimir.gbrain.GBrainMimirAdapter",
                     "kwargs": kwargs,
                 }
-                binding = {
-                    "name": request.name,
-                    "adapter": record["mount"]["adapter"],
-                    "kwargs": kwargs,
-                }
                 # Keep environment secrets in the private runner config.
                 runner = directory / "runtime.json"
                 runner.write_text(
@@ -323,7 +289,6 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
                             "command": self.gbrain_command,
                             "environment": env,
                             "port": port,
-                            "dream": request.dream.model_dump(),
                         }
                     )
                 )
@@ -338,8 +303,6 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             async with asyncio.timeout(self.timeout):
                 while not (await self._view(record))["ready"]:
                     await asyncio.sleep(self.poll)
-            if request.warden:
-                await self._attach_warden(request, record, binding, config_file)
             return await self._view(record)
         except Exception as exc:
             if database is not None:
@@ -348,42 +311,20 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             config_file.write_text(json.dumps(record))
             raise
 
-    async def _attach_warden(self, request, record, binding, config_file):
-        spec = WardenSpec(
-            **{
-                **request.warden_overrides.apply(self.warden_defaults),
-                "id": request.name + "-warden",
-                "name": f"{request.name} warden",
-                "autostart": True,
-                "deployment": "launchd" if sys.platform == "darwin" else "systemd",
-                "mimir": WardenMimirBinding(
-                    mount_names=[request.name], instance_configs={request.name: binding}
-                ),
-            }
-        )
-        warden = await asyncio.to_thread(self.wardens.create, spec)
-        record["warden_id"] = warden.id
-        config_file.write_text(json.dumps(record))
-        await asyncio.to_thread(self.wardens.install, warden.id, self.workspace)
-
     async def inspect_deployment(self, name: str, *, tenant_id: str = "") -> dict:
         record = self._record(name)
         if record.get("tenant_id", "") != tenant_id:
             raise ValueError("Knowledge instance not found in this tenant")
         directory = self.root / record["name"]
         logs = {}
-        for stream in ("stdout", "stderr", "dream"):
+        for stream in ("stdout", "stderr"):
             path = directory / f"{stream}.log"
             logs[stream] = ""
             if path.exists():
                 with path.open("rb") as log:
                     log.seek(max(0, path.stat().st_size - 65536))
                     logs[stream] = log.read().decode(errors="replace")
-        return {
-            **await self._view(record),
-            "logs": logs,
-            "dream_results": dream_results(logs["dream"]),
-        }
+        return {**await self._view(record), "logs": logs}
 
     async def control(self, name: str, action: str, *, tenant_id: str = "") -> dict:
         if action == "delete":
@@ -394,8 +335,6 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
         service = self._service_file(record["name"])
         if action not in {"start", "stop"}:
             raise ValueError("Supported actions: start, stop")
-        if record.get("warden_id") and action == "stop":
-            await asyncio.to_thread(self.wardens.stop, record["warden_id"])
         if sys.platform == "darwin":
             jobs = await self._run("launchctl", "list")
             label = f"dev.niuu.knowledge.{record['name']}"
@@ -408,8 +347,6 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
                 )
         else:
             await self._run("systemctl", "--user", action, service.name)
-        if record.get("warden_id") and action == "start":
-            await asyncio.to_thread(self.wardens.start, record["warden_id"])
         return await self._view(record)
 
     async def _delete(self, name: str, *, tenant_id: str = "") -> dict:
@@ -425,8 +362,6 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             ):
                 raise ValueError("Invalid local instance directory")
             service = self._service_file(instance)
-            if record.get("warden_id"):
-                await asyncio.to_thread(self.wardens.uninstall, record["warden_id"])
             pid = None
             if sys.platform == "darwin":
                 jobs = await self._run("launchctl", "list")
@@ -459,8 +394,6 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             service.unlink(missing_ok=True)
             if sys.platform == "linux":
                 await self._run("systemctl", "--user", "daemon-reload")
-            if record.get("warden_id"):
-                await asyncio.to_thread(self.wardens.delete, record["warden_id"])
             port = self._ports.pop(instance, None)
             close = getattr(port, "close", None)
             if close is not None:

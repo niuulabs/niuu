@@ -1,13 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, screen, waitFor } from '@testing-library/react';
+import { cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { Ravn } from '@niuulabs/plugin-ravn';
-import { createMockValkyrieService, createSeedRealms } from '@niuulabs/plugin-valkyrie';
+import { createSeedRealms } from '../adapters/mock';
 import {
   createCallLog,
-  fakePersonas,
   fakeRealmService,
-  fakeResidents,
   fakeTracker,
   workspaceWithWaitingTicket,
 } from '../testing/fakes';
@@ -41,10 +38,10 @@ describe('RealmPage', () => {
     localStorage.clear();
   });
 
-  it('shows the realm with its resident, counts, trust and budget', async () => {
+  it('shows the realm with its counts and trust', async () => {
     const user = userEvent.setup();
     const log = createCallLog();
-    renderRealms('/realms/valhalla', { 'valkyrie.realms': await realmWithBinding(log) }, log);
+    renderRealms('/realms/valhalla', { 'realms.governance': await realmWithBinding(log) }, log);
     await screen.findByTestId('realm-page');
     expect(screen.getByText('Valhalla')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId('queue-intake')).toHaveTextContent('Intake1'));
@@ -56,64 +53,6 @@ describe('RealmPage', () => {
     expect(screen.queryByText(/LXA-1/)).not.toBeInTheDocument();
     await user.click(screen.getByTestId('queue-intake'));
     expect(await screen.findByText(/LXA-1/)).toBeInTheDocument();
-  });
-
-  it('talks to the resident the workspace was adopted around', async () => {
-    const log = createCallLog();
-    const residents = fakeResidents(log);
-    // The mock dashboard's Valhalla resident, registered under its own id with no realm link.
-    const sigrun = {
-      id: 'valkyrie-valhalla-sigrun',
-      residentName: 'Sigrun',
-      personaName: 'k8s-valkyrie',
-      status: 'active',
-      kind: 'resident',
-      managed: false,
-    } as unknown as Ravn;
-    const services = {
-      'valkyrie.realms': await realmWithBinding(log),
-      'ravn.residents': residents,
-      'ravn.ravens': { ...residents, listRavens: async () => [sigrun] },
-    };
-    renderRealms('/realms/valhalla', services, log);
-    await screen.findByTestId('realm-page');
-    expect(
-      await screen.findByText('No conversation yet. Ask it anything about the workspace.'),
-    ).toBeInTheDocument();
-    expect(screen.queryByText('No resident yet.')).not.toBeInTheDocument();
-  });
-
-  it('says why the budget cannot be read instead of reporting nothing spent', async () => {
-    const log = createCallLog();
-    const residents = fakeResidents(log);
-    const sigrun = {
-      id: 'valkyrie-valhalla-sigrun',
-      residentName: 'Sigrun',
-      status: 'active',
-    } as unknown as Ravn;
-    const unavailable = Object.assign(new Error('API request failed: 503'), {
-      detail: 'Ravn budget persistence is unavailable',
-    });
-    renderRealms(
-      '/realms/valhalla',
-      {
-        'valkyrie.realms': await realmWithBinding(log),
-        'ravn.ravens': { ...residents, listRavens: async () => [sigrun] },
-        'ravn.budget': {
-          getBudget: async () => {
-            throw unavailable;
-          },
-          getFleetBudget: async () => {
-            throw unavailable;
-          },
-        },
-      },
-      log,
-    );
-    expect(
-      await screen.findByText(/Budget unavailable: Ravn budget persistence is unavailable/),
-    ).toBeInTheDocument();
-    expect(screen.queryByText('Nothing spent yet.')).not.toBeInTheDocument();
   });
 
   it('shows a ticket at a gate at the top of the overview', async () => {
@@ -129,7 +68,7 @@ describe('RealmPage', () => {
     const log = createCallLog();
     const { router } = renderRealms(
       '/realms/valhalla',
-      { 'valkyrie.realms': await realmWithBinding(log) },
+      { 'realms.governance': await realmWithBinding(log) },
       log,
     );
     const link = await screen.findByTestId('realm-project-link');
@@ -159,7 +98,7 @@ describe('RealmPage', () => {
     renderRealms(
       '/realms/valhalla',
       {
-        'valkyrie.realms': await realmWithBinding(log),
+        'realms.governance': await realmWithBinding(log),
         'ting.tracker': tracker,
         ting: {
           getSagas: async () => [
@@ -202,7 +141,7 @@ describe('RealmPage', () => {
     };
     renderRealms(
       '/realms/valhalla',
-      { 'valkyrie.realms': await realmWithBinding(log), 'ting.tracker': tracker },
+      { 'realms.governance': await realmWithBinding(log), 'ting.tracker': tracker },
       log,
     );
     await screen.findByTestId('realm-page');
@@ -219,7 +158,7 @@ describe('RealmPage', () => {
   it('opens the launch wizard and the workflow modal from the header', async () => {
     const user = userEvent.setup();
     const log = createCallLog();
-    renderRealms('/realms/valhalla', { 'valkyrie.realms': await realmWithBinding(log) }, log);
+    renderRealms('/realms/valhalla', { 'realms.governance': await realmWithBinding(log) }, log);
     await screen.findByTestId('realm-page');
     await waitFor(() => expect(screen.getByTestId('realm-run-workflow')).toBeEnabled());
     await user.click(screen.getByTestId('realm-run-workflow'));
@@ -230,84 +169,61 @@ describe('RealmPage', () => {
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
   });
 
-  it('sends the old settings route to the Resident tab', async () => {
+  it('sends the old settings route to the Settings tab', async () => {
     const log = createCallLog();
     const { router } = renderRealms(
       '/realms/valhalla/settings',
-      { 'valkyrie.realms': await realmWithBinding(log) },
+      { 'realms.governance': await realmWithBinding(log) },
       log,
     );
     await screen.findByTestId('realm-settings');
     await waitFor(() => expect(router.state.location.pathname).toBe('/realms/valhalla'));
-    expect(router.state.location.search).toMatchObject({ tab: 'resident' });
+    expect(router.state.location.search).toMatchObject({ tab: 'settings' });
   });
 
-  it('keeps the resident in its own tab', async () => {
+  it('keeps trust and deletion in the Settings tab', async () => {
     const user = userEvent.setup();
     const log = createCallLog();
-    renderRealms('/realms/valhalla', { 'valkyrie.realms': await realmWithBinding(log) }, log);
+    renderRealms('/realms/valhalla', { 'realms.governance': await realmWithBinding(log) }, log);
     await screen.findByTestId('realm-page');
-    await user.click(screen.getByRole('button', { name: 'Resident' }));
+    expect(screen.queryByRole('button', { name: 'Resident' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
     await screen.findByTestId('realm-settings');
-    await user.click(screen.getByRole('button', { name: 'Trust' }));
     expect(await screen.findByText('What it may do on its own')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Standing jobs' }));
-    expect(await screen.findByText(/Triggers that wake the resident/)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Memory' }));
-    expect(await screen.findByText(/realms\/valhalla\/charter.md/)).toBeInTheDocument();
+    expect(screen.getByTestId('realm-delete')).toBeInTheDocument();
   });
 
-  it("shows an adopted resident's own charter, lifecycle and memory", async () => {
+  it('changes a trust rung by adding a grant', async () => {
+    const user = userEvent.setup();
+    const log = createCallLog();
+    renderRealms(
+      '/realms/valhalla?tab=settings',
+      { 'realms.governance': await realmWithBinding(log) },
+      log,
+    );
+    await screen.findByTestId('trust-panel');
+    await user.click(
+      within(screen.getByRole('group', { name: 'deploy trust' })).getByRole('button', {
+        name: 'on its own',
+      }),
+    );
+    await waitFor(() => expect(log.calls).toContain('createTrustGrant:valhalla:deploy:2'));
+  });
+
+  it('says a workspace made without a memory target has no memory of its own', async () => {
     const user = userEvent.setup();
     const log = createCallLog();
     const realms = fakeRealmService(log, createSeedRealms());
-    // Adopting names a board but no memory target: nothing was deployed for the workspace.
     await realms.createTrustGrant('valhalla', {
       action_class: 'observe',
       target: '*',
       level: 2,
       limits: { tracker_board: 'board-1', mount_target: '' },
     });
-    const valkyrie = createMockValkyrieService();
-    const dashboard = valkyrie.getDashboard.bind(valkyrie);
-    renderRealms(
-      '/realms/valhalla',
-      {
-        'valkyrie.realms': realms,
-        valkyrie: {
-          ...valkyrie,
-          getDashboard: async () => {
-            const data = await dashboard();
-            return {
-              ...data,
-              valkyries: data.valkyries.map((entry) => ({
-                ...entry,
-                charter: 'Keep **valhalla** healthy.',
-              })),
-            };
-          },
-        },
-        // The resident's persona lives in its own deployment, not the registry.
-        'ravn.personas': {
-          ...fakePersonas(log),
-          getPersona: async () => Promise.reject(Object.assign(new Error('nope'), { status: 404 })),
-        },
-      },
-      log,
-    );
+    renderRealms('/realms/valhalla', { 'realms.governance': realms }, log);
     await screen.findByTestId('realm-page');
-    await user.click(screen.getByRole('button', { name: 'Resident' }));
-    const charter = await screen.findByTestId('resident-charter');
-    expect(charter.querySelector('strong')).toHaveTextContent('valhalla');
-    expect(screen.getByText(/Sigrun runs persona cluster-guardian/)).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Lifecycle' }));
-    expect(await screen.findByText(/Sigrun was running before the workspace/)).toBeInTheDocument();
-
     await user.click(screen.getByRole('button', { name: 'Memory' }));
-    expect(
-      await screen.findByText(/Sigrun has not reported where it keeps its memory/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('No workspace memory')).toBeInTheDocument();
     expect(screen.queryByText('Workspace memory is still starting')).not.toBeInTheDocument();
   });
 });

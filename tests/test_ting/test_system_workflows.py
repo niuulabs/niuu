@@ -89,7 +89,6 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
 
     names = {workflow.name for workflow in workflows}
     assert names == {
-        "Ting Run Flow + Security + Memory Curation",
         "Research Campaign",
         "Research Thread",
         "Research Thread — Breadth",
@@ -109,30 +108,6 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         "Developer Workstream",
         "Developer Integration",
     }
-
-    run_flow = next(
-        workflow
-        for workflow in workflows
-        if workflow.name == "Ting Run Flow + Security + Memory Curation"
-    )
-    assert run_flow.scope == WorkflowScope.SYSTEM
-    assert run_flow.owner_id is None
-    assert set(run_flow.persona_definitions) == set(run_flow.persona_dependencies)
-    assert all(
-        run_flow.persona_definitions[alias]["revision"] == dependency.revision
-        for alias, dependency in run_flow.persona_dependencies.items()
-    )
-    stage_personas = {
-        node["label"]: [member["personaId"] for member in node.get("stageMembers", [])]
-        for node in run_flow.graph["nodes"]
-        if node.get("kind") == "stage"
-    }
-    assert stage_personas["Implement code"] == ["coder"]
-    assert stage_personas["Security review"] == ["security-auditor"]
-    assert stage_personas["Curate shared memory"] == ["mimir-memory-curator"]
-    edge_labels = {edge["label"] for edge in run_flow.graph["edges"]}
-    assert "security.completed -> security.completed" in edge_labels
-    assert "mimir.curated -> mimir.curated" in edge_labels
 
     research_flow = next(workflow for workflow in workflows if workflow.name == "Research Campaign")
     research_stage_labels = [
@@ -489,7 +464,6 @@ async def test_seed_system_workflows_preserves_authored_and_obsolete_entries() -
     saved = await seed_system_workflows(repo)
     names = {workflow.name for workflow in saved}
     assert names == {
-        "Ting Run Flow + Security + Memory Curation",
         "Research Campaign",
         "Research Thread",
         "Research Thread — Breadth",

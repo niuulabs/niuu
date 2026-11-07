@@ -235,3 +235,27 @@ async def _run_peers(settings: Settings, *, verbose: bool, force_scan: bool) -> 
         typer.echo(line)
 
     await discovery.stop()
+
+
+def _build_environment_signal_publisher(settings: Settings) -> Any | None:
+    """Build the shared mesh publisher used by the drive loop's task telemetry."""
+    if not settings.environment.flocks:
+        return None
+    if not settings.mesh.enabled:
+        logger.warning("environment: mesh is disabled; flock events will not be published")
+        return None
+
+    from niuu.mesh.transport_builder import build_transport  # noqa: PLC0415
+
+    if settings.mesh.adapters:
+        entry = settings.mesh.adapters[0]
+        adapter = entry.get("transport", settings.mesh.adapter or "nng")
+    else:
+        adapter = settings.mesh.adapter or "nng"
+
+    publisher = build_transport(adapter, **_resolve_transport_kwargs(settings, adapter))
+    if settings.observability.enabled:
+        from ravn.adapters.observability import ObservedSleipnirBus  # noqa: PLC0415
+
+        return ObservedSleipnirBus(publisher)
+    return publisher

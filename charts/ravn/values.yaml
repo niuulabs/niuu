@@ -1,4 +1,4 @@
-# Ravn — agent runtime and warden API
+# Ravn — agent runtime API
 
 replicaCount: 1
 revisionHistoryLimit: 10
@@ -26,18 +26,6 @@ serviceAccount:
   automount: true
   annotations: {}
   name: ""
-
-rbac:
-  # Kubernetes discovery permissions for standalone-resident discovery
-  # (resident_discovery Settings section). Disabled by default.
-  discovery:
-    enabled: false
-    # Grant cluster-wide read access (ClusterRole/ClusterRoleBinding) instead
-    # of a single namespace.
-    clusterWide: false
-    # Namespace the Role/RoleBinding are created in; defaults to the release
-    # namespace. Ignored when clusterWide is true.
-    namespace: ""
 
 service:
   type: ClusterIP
@@ -67,14 +55,6 @@ config:
   #     gateway:
   #       platform:
   #         base_url: "http://niuu-volundr.volundr.svc.cluster.local:80"
-  #     valkyrie:
-  #       telemetry:
-  #         nats_url: "nats://sleipnir:4222"
-  #         retry_seconds: 30
-  #       command:
-  #         subject_prefix: "ravn.environment"
-  #       room:
-  #         url: "http://skuld:8081"
   #     # Which repos each tenant's event triggers may reference — empty by
   #     # default (fail closed): see ravn.config.TriggerRepoAllowlistConfig.
   #     trigger_repo_allowlist:
@@ -88,25 +68,6 @@ config:
   #     # auto-detected from this process.
   #     trigger_execution:
   #       enabled: false
-  #     # System One decision model (ravn.config.DecisionConfig). Any
-  #     # /v1/systemone backend: hosted Jev as below, or a local Clef/Ollama
-  #     # (base_url: "http://ollama:11434", model: "clef-flash", no secret).
-  #     # The key comes from the environment — inject it with extraEnv.
-  #     decision:
-  #       enabled: true
-  #       kwargs:
-  #         base_url: "https://api.typesafe.ai"
-  #         model: "jev-latest"
-  #       secret_kwargs_env:
-  #         api_key: TYPESAFE_API_KEY
-  #       # Observe-only: a first opinion on every resident turn, recorded
-  #       # beside the turn's own tier/decision; the turn always runs.
-  #       resident_first_opinion:
-  #         enabled: true
-  #       # Judge whether two learned tools are one capability. Needs
-  #       # reflection.matching.mode: semantic for the embedding shortlist.
-  #       capability_matching:
-  #         enabled: true
   settings: {}
 
 # database.enabled / persistence.enabled are general-purpose: they existed

@@ -10,67 +10,17 @@ not capped at all, and a test below asserts it reaches the resident whole.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
-from niuu.domain.notifications import MAX_BODY_CHARS
 from ravn.adapters.tools.a2a_task import _append_while_fits
 from ravn.adapters.tools.introspection import RavnReflectTool
-from ravn.cap_telemetry import HEALTH_TOTAL_KEY, cap_hit_counts, record_cap_hit
+from ravn.cap_telemetry import cap_hit_counts
 from ravn.domain.models import (
     LLMResponse,
     Session,
     StopReason,
     TokenUsage,
-    ToolCall,
-    ToolResult,
-    TurnResult,
 )
-from ravn.drive_loop import _build_resident_valkyrie_schema_repair_prompt
-from ravn.resident_continuation import _operator_question_line
-from ravn.resident_runtime import ResidentRuntime, _tool_result_summaries
-
-
-class TestResidentContext:
-    def test_recorded_tool_results_are_persisted_whole(self) -> None:
-        output = "y" * 50_000
-        result = TurnResult(
-            response="",
-            tool_calls=[ToolCall(id="c1", name="kubernetes_inspect", input={})],
-            tool_results=[ToolResult(tool_call_id="c1", content=output)],
-            usage=TokenUsage(input_tokens=0, output_tokens=0),
-        )
-
-        (summary,) = _tool_result_summaries(result)
-
-        assert summary == f"### kubernetes_inspect (ok)\n\n{output}"
-        assert cap_hit_counts() == {}
-
-    def test_an_errored_tool_result_is_labelled_and_whole(self) -> None:
-        output = "boom " * 5_000
-        result = TurnResult(
-            response="",
-            tool_calls=[ToolCall(id="c1", name="bash", input={})],
-            tool_results=[ToolResult(tool_call_id="c1", content=output, is_error=True)],
-            usage=TokenUsage(input_tokens=0, output_tokens=0),
-        )
-
-        (summary,) = _tool_result_summaries(result)
-
-        assert summary.startswith("### bash (error)")
-        assert summary.endswith(output)
-        assert cap_hit_counts() == {}
-
-
-class TestOperatorQuestion:
-    def test_a_question_within_the_notification_bound_is_kept_whole(self) -> None:
-        question = "Which cluster should I drain first?\nThe two are equally loaded."
-        assert _operator_question_line(question) == " ".join(question.split())
-        assert cap_hit_counts() == {}
-
-    def test_a_question_longer_than_a_notification_counts(self) -> None:
-        line = _operator_question_line("q" * (MAX_BODY_CHARS + 100))
-        assert len(line) == MAX_BODY_CHARS
-        assert cap_hit_counts() == {"niuu.notifications.MAX_BODY_CHARS": 1}
 
 
 class TestA2AResult:
@@ -93,18 +43,6 @@ class TestA2AResult:
         assert cap_hit_counts() == {}
 
 
-class TestSchemaRepair:
-    def test_the_whole_previous_answer_is_repaired(self) -> None:
-        # The outcome block sits at the end; keeping only the head cut it off.
-        original = "reasoning " * 1_000 + "---outcome---\ndecision: watch\n---end---"
-
-        prompt = _build_resident_valkyrie_schema_repair_prompt(
-            original_response=original, validation_errors=["bad"], outcome_fields={}
-        )
-
-        assert "decision: watch\n---end---\n</previous_response>" in prompt
-
-
 class TestReflectTool:
     async def test_a_cut_off_reflection_is_a_failed_tool_call(self) -> None:
         llm = AsyncMock()
@@ -122,26 +60,3 @@ class TestReflectTool:
         assert "ravn_reflect" in result.content
         assert llm.generate.await_args.kwargs["max_tokens"] is None
         assert cap_hit_counts() == {"ravn_reflect": 1}
-
-
-class TestHealthSnapshot:
-    def test_cap_hits_ride_on_the_health_snapshot(self) -> None:
-        runtime = ResidentRuntime(state=MagicMock(), resident_id="regin")
-        record_cap_hit("llm.max_tokens", "cut")
-        record_cap_hit("llm.max_tokens", "cut")
-
-        snapshot = runtime.health_snapshot()
-
-        assert snapshot["cap_hits.llm.max_tokens"] == 2
-        assert snapshot[HEALTH_TOTAL_KEY] == 2
-
-    def test_gauges_restate_the_total(self, monkeypatch) -> None:
-        telemetry = MagicMock()
-        monkeypatch.setattr("ravn.resident_runtime.get_observability", lambda: telemetry)
-        runtime = ResidentRuntime(state=MagicMock(), resident_id="regin")
-        record_cap_hit("wakefulness", "cut")
-
-        runtime._emit_health_gauges({})
-
-        names = {call.args[0]: call.args[1] for call in telemetry.gauge.call_args_list}
-        assert names["ravn.resident.cap_hits"] == 1

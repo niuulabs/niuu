@@ -181,3 +181,23 @@ def build_room_copier(config: VoiceChannelConfig) -> VoiceRoomCopier | None:
         participant_id=config.room_participant_id,
         timeout_seconds=config.room_timeout_seconds,
     )
+
+
+def build_resident_notification_outbox(settings: Settings) -> Any | None:
+    """The resident's notification outbox, served to Forge by its OpenClaw shim.
+
+    ``None`` when the shim is off or its notifications are switched off
+    (``gateway.channels.openclaw.notifications_enabled``): Forge drains the outbox
+    through the shim, so without it nothing would ever read it.
+    """
+    shim = settings.gateway.channels.openclaw
+    if not shim.enabled or not shim.notifications_enabled:
+        return None
+    from ravn.adapters.resident_notifications import (  # noqa: PLC0415
+        SqliteResidentNotificationOutbox,
+    )
+
+    return SqliteResidentNotificationOutbox(
+        shim.store_path,
+        max_pending=shim.notifications_max_pending,
+    )

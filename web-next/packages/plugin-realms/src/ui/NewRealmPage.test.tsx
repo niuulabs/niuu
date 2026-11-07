@@ -62,7 +62,7 @@ describe('NewRealmPage', () => {
         encodeURIComponent('Keep niuulabs/lexi-api shippable, work the LXA board.'),
     );
     await screen.findByTestId('wizard-step-launch');
-    // Fill what a sentence cannot: profile and memory target come from the connect/charter steps.
+    // Fill what a sentence cannot: the memory target comes from the connect step.
     await user.click(screen.getByRole('button', { name: 'Review step by step' }));
     await screen.findByTestId('wizard-step-connect');
     await waitFor(() => expect(log.calls).toContain('getDeployments'));
@@ -76,9 +76,9 @@ describe('NewRealmPage', () => {
       timeout: 5000,
     });
     expect(log.calls).toContain('createRealm:lexi-api');
-    // The deploy call carries the realm id createRealm returned (asserted
-    // exactly in useCreateRealm.test.tsx); here just confirm it deployed.
-    expect(log.calls.some((call) => call.startsWith('deploy:lexi-api:realm-lexi-api:'))).toBe(true);
+    // A workspace is created on its own: no resident is deployed for it.
+    expect(log.calls.some((call) => call.startsWith('deploy:'))).toBe(false);
+    expect(log.calls).toContain('upsertPage:realms/lexi-api/charter.md@realm-lexi-api');
   });
 
   it('shows the failing step and the Advanced link when a step fails', async () => {

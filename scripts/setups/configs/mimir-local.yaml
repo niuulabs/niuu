@@ -61,9 +61,6 @@ mesh:
 thread:
   enabled: false
 
-wakefulness:
-  enabled: false
-
 recap:
   enabled: false
 

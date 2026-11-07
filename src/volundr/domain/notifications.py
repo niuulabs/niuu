@@ -60,11 +60,6 @@ _CLOCK_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 RESIDENT_ID_KEY = "resident_id"
 RESIDENT_SESSION_ID_KEY = "resident_session_id"
 
-#: Metadata keys that anchor a notification to an item of the ODIN review queue,
-#: where the operator answers it (``POST`` to the decide path with the item id).
-ODIN_REVIEW_ID_KEY = "odin_review_id"
-ODIN_REVIEW_DECIDE_PATH_KEY = "odin_review_decide_path"
-
 #: A notification recorded for the feed only: no rule schedules a delivery for it,
 #: so it is never pushed or relayed to an external sink. A producer sets it for
 #: items the owner should be able to see but must not be interrupted by.
@@ -180,16 +175,6 @@ class Notification(BaseModel):
         return _metadata_text(self.metadata, RESIDENT_SESSION_ID_KEY)
 
     @property
-    def odin_review_id(self) -> str | None:
-        """The ODIN review item this notification asks the operator to answer, if any."""
-        return _metadata_text(self.metadata, ODIN_REVIEW_ID_KEY)
-
-    @property
-    def odin_review_decide_path(self) -> str | None:
-        """The path (on the host serving the review queue) that decides that item."""
-        return _metadata_text(self.metadata, ODIN_REVIEW_DECIDE_PATH_KEY)
-
-    @property
     def input_request(self) -> dict[str, str | None] | None:
         """The pending request a system ``attention`` item stands for, or ``None``.
 
@@ -221,8 +206,6 @@ class Notification(BaseModel):
         data["turn_id"] = self.turn_id
         data["resident_id"] = self.resident_id
         data["resident_session_id"] = self.resident_session_id
-        data["odin_review_id"] = self.odin_review_id
-        data["odin_review_decide_path"] = self.odin_review_decide_path
         # Question signals (F11b) live in metadata; null when the notice carries none.
         data["question"] = self.metadata.get("question")
         data["about_question"] = self.metadata.get("about_question")

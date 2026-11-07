@@ -91,7 +91,6 @@ from volundr.adapters.outbound.resident_container_spec import (
     RAVN_OPENCLAW_PORT,
     RAVN_OPENCLAW_TOKEN_ENV,
     enable_resident_openclaw_shim,
-    realm_charter_page_for,
     realm_mount_name_for,
     realm_routing_prefix_for,
     resident_flock_environment,
@@ -5468,14 +5467,6 @@ def _resident_ravn_config(
         llm["model"] = runtime.model
     if llm:
         config["llm"] = llm
-    if isinstance(resident.get("wakefulness"), dict):
-        config["wakefulness"] = resident["wakefulness"]
-    if realm_slug:
-        config["environment"]["charter_mimir_page"] = realm_charter_page_for(realm_slug)
-        config["resident_evolution"] = {
-            "realm_slug": realm_slug,
-            "realm_api_base_url": volundr_api_url,
-        }
     resident_flock_runtime_config(config, runtime, values)
     if resident.get("dailyBudgetUsd") or resident.get("daily_budget_usd"):
         config["budget"] = {

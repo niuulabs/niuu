@@ -73,13 +73,6 @@ describe('MimirSubnav', () => {
     await waitFor(() => expect(screen.getAllByText('local').length).toBeGreaterThan(0));
   });
 
-  it('renders wardens roster when ravns are present', async () => {
-    wrap();
-    await waitFor(() => expect(screen.getByText('Instance activity')).toBeInTheDocument());
-    // ravns from mock: ravn-fjolnir, ravn-skald
-    await waitFor(() => expect(screen.getByText('ravn-fjolnir')).toBeInTheDocument());
-  });
-
   it('clicking "All mounts" calls setTweak with "all"', () => {
     const setTweak = vi.fn();
     wrap({ tweaks: {}, setTweak });
@@ -124,15 +117,6 @@ describe('MimirSubnav', () => {
     fireEvent.click(screen.getByText('Low confidence'));
   });
 
-  it('clicking a warden navigates', async () => {
-    const setTweak = vi.fn();
-    wrap({ tweaks: {}, setTweak });
-    await waitFor(() => expect(screen.getByText('ravn-fjolnir')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('ravn-fjolnir'));
-    expect(setTweak).toHaveBeenCalledWith('mimir.selectedWardenId', 'ravn-fjolnir');
-    expect(navigateMock).toHaveBeenCalledWith({ to: '/mimir/registry/analytics' });
-  });
-
   it('can collapse the Mímir subnav', async () => {
     const setTweak = vi.fn();
     wrap({ tweaks: {}, setTweak });
@@ -153,7 +137,7 @@ describe('MimirSubnav', () => {
     expect(screen.getByText('All mounts').closest('button')).toHaveClass('mm-mount-row--active');
   });
 
-  it('supports collapsed mount and warden shortcuts', async () => {
+  it('supports collapsed mount shortcuts', async () => {
     const setTweak = vi.fn();
     wrap({ tweaks: { 'mimir.subnavCollapsed': true, activeMount: 'local' }, setTweak });
 
@@ -162,31 +146,6 @@ describe('MimirSubnav', () => {
     expect(localShortcut.className).toContain('mm-subnav-collapsed-item--active');
     fireEvent.click(localShortcut);
     expect(setTweak).toHaveBeenCalledWith('activeMount', 'local');
-
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /warden ravn-fjolnir/i })).toBeInTheDocument(),
-    );
-    fireEvent.click(screen.getByRole('button', { name: /warden ravn-fjolnir/i }));
-    expect(setTweak).toHaveBeenCalledWith('mimir.selectedWardenId', 'ravn-fjolnir');
-    expect(navigateMock).toHaveBeenCalledWith({ to: '/mimir/registry/analytics' });
-  });
-
-  it('omits collapsed warden shortcuts when no wardens are bound', async () => {
-    const noRavnsService: IMimirService = {
-      ...createMimirMockAdapter(),
-      mounts: {
-        ...createMimirMockAdapter().mounts,
-        listRavnBindings: async () => [],
-      },
-    };
-
-    renderWithMimir(
-      <MimirSubnav ctx={{ tweaks: { 'mimir.subnavCollapsed': true }, setTweak: vi.fn() }} />,
-      noRavnsService,
-      { tweaks: { 'mimir.subnavCollapsed': true }, setTweak: vi.fn() },
-    );
-
-    expect(screen.queryByRole('button', { name: /warden /i })).not.toBeInTheDocument();
   });
 
   it('mutes down mounts in the mount picker', async () => {

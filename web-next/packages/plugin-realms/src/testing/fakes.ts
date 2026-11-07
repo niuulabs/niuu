@@ -3,31 +3,17 @@
  * calls it received so tests can assert the recipe's order and payloads.
  */
 import { createMimirMockAdapter, type IMimirService } from '@niuulabs/plugin-mimir';
-import type {
-  CreatedTrigger,
-  DeployResidentRequest,
-  IPersonaStore,
-  IRavenStream,
-  IResidentControl,
-  ITriggerStore,
-  PersonaCreateRequest,
-  Ravn,
-  Trigger,
-} from '@niuulabs/plugin-ravn';
 import {
   createMockTingService,
   createMockWorkService,
   type ITrackerBrowserService,
   type ReviewItem as WorkReviewItem,
 } from '@niuulabs/plugin-ting';
-import {
-  createMockOdinReviewService,
-  createSeedRealms,
-  type IRealmGovernanceService,
-  type RealmSummary,
-  type RealmTrustGrant,
-} from '@niuulabs/plugin-valkyrie';
 import { createMockVolundrService, type IVolundrService } from '@niuulabs/plugin-volundr';
+import { createSeedRealms } from '../adapters/mock';
+import { REALM_GOVERNANCE_SERVICE_KEY } from '../application/useRealmGovernance';
+import type { RealmSummary, RealmTrustGrant } from '../domain/governance';
+import type { IRealmGovernanceService } from '../ports';
 
 export interface CallLog {
   calls: string[];
@@ -50,7 +36,7 @@ export const WAITING_TICKET: WorkReviewItem = {
   identifier: 'NIU-1',
 };
 
-/** Overrides that put `slug` on a board with one ticket at a gate, and no resident asking. */
+/** Overrides that put `slug` on a board with one ticket at a gate. */
 export async function workspaceWithWaitingTicket(log: CallLog, slug: string) {
   const realms = fakeRealmService(log, createSeedRealms());
   await realms.createTrustGrant(slug, {
@@ -60,8 +46,7 @@ export async function workspaceWithWaitingTicket(log: CallLog, slug: string) {
     limits: { tracker_board: 'board-1' },
   });
   return {
-    'valkyrie.realms': realms,
-    'valkyrie.reviews': createMockOdinReviewService([]),
+    [REALM_GOVERNANCE_SERVICE_KEY]: realms,
     ting: {
       ...createMockTingService(),
       getSagas: async () => [{ id: 'link-1', trackerId: 'board-1', name: 'Spring board' }],
@@ -146,9 +131,6 @@ export function fakeRealmService(log: CallLog, seed: RealmSummary[] = []): IReal
       grants.set(slug, [...(grants.get(slug) ?? []), grant]);
       return grant;
     },
-    async listWorkflows() {
-      return [];
-    },
   };
 }
 
@@ -212,177 +194,6 @@ export function fakeMimir(
     },
   };
   return mimir as unknown as IMimirService;
-}
-
-/** The shape the persona API hands back: every list and block present, like the real thing. */
-function personaDetailOf(request: Partial<PersonaCreateRequest> & { name: string }) {
-  return {
-    role: 'build',
-    letter: request.name.charAt(0).toUpperCase(),
-    color: '',
-    summary: '',
-    description: '',
-    systemPromptTemplate: '',
-    allowedTools: [],
-    forbiddenTools: [],
-    permissionMode: 'default',
-    iterationBudget: 20,
-    ...request,
-    isBuiltin: false,
-    hasOverride: false,
-    producesEvent: request.producesEventType ?? '',
-    consumesEvents: request.consumesEvents ?? [],
-    llm: {
-      thinkingEnabled: request.llmThinkingEnabled ?? false,
-      maxTokens: request.llmMaxTokens ?? 8192,
-    },
-    produces: { eventType: request.producesEventType ?? '', schemaDef: {} },
-    consumes: { events: [], schemaDef: {} },
-    yamlSource: '',
-  } as never;
-}
-
-export function fakePersonas(log: CallLog): IPersonaStore {
-  const personas = new Map<string, PersonaCreateRequest>();
-  return {
-    async listPersonas() {
-      return [];
-    },
-    async getPersona(name) {
-      const persona = personas.get(name);
-      if (!persona) throw new Error(`Persona not found: ${name}`);
-      return personaDetailOf(persona);
-    },
-    async getPersonaYaml() {
-      return '';
-    },
-    async createPersona(request) {
-      log.calls.push(`createPersona:${request.name}`);
-      personas.set(request.name, request);
-      return personaDetailOf(request);
-    },
-    async updatePersona(name, request) {
-      log.calls.push(`updatePersona:${name}`);
-      personas.set(name, request);
-      return {
-        ...request,
-        isBuiltin: false,
-        hasOverride: false,
-        producesEvent: '',
-        consumesEvents: [],
-        llm: {},
-        produces: {},
-        consumes: {},
-        yamlSource: '',
-      } as never;
-    },
-    async deletePersona(name) {
-      log.calls.push(`deletePersona:${name}`);
-      if (!personas.delete(name)) {
-        throw Object.assign(new Error(`Persona not found: ${name}`), { status: 404 });
-      }
-    },
-    async forkPersona(name, request) {
-      log.calls.push(`forkPersona:${name}->${request.newName}`);
-      return { name: request.newName } as never;
-    },
-  };
-}
-
-export function fakeTriggers(
-  log: CallLog,
-  options: { executionEnabled?: boolean } = {},
-): ITriggerStore {
-  const { executionEnabled = true } = options;
-  const triggers: Trigger[] = [];
-  return {
-    async listTriggers() {
-      return triggers;
-    },
-    async createTrigger(request) {
-      log.calls.push(`createTrigger:${request.kind}:${request.personaName}`);
-      const trigger = {
-        ...request,
-        id: `00000000-0000-4000-8000-00000000000${triggers.length + 1}`,
-        createdAt: '2026-09-13T00:00:00Z',
-      } as Trigger;
-      triggers.push(trigger);
-      return { ...trigger, executionEnabled } as CreatedTrigger;
-    },
-    async deleteTrigger() {},
-  };
-}
-
-export function fakeResidents(
-  log: CallLog,
-  options: { failDeploy?: boolean } = {},
-): IResidentControl & IRavenStream {
-  const ravens: Ravn[] = [];
-  return {
-    async listProfiles() {
-      return [
-        {
-          id: 'profile-1',
-          displayName: 'Valhalla resident',
-          description: '',
-          backend: 'helmrelease',
-          engine: 'ravn',
-          capabilities: ['chat', 'session.list', 'session.create', 'logs'],
-          defaultModel: 'claude-fable-5',
-          allowedModels: ['claude-fable-5'],
-          labels: [],
-          instanceId: 'inst-1',
-          instanceName: 'valhalla',
-          instanceSlug: 'valhalla',
-        },
-      ];
-    },
-    async deploy(request: DeployResidentRequest) {
-      log.calls.push(`deploy:${request.name}:${request.personaName}:${request.realmId ?? ''}`);
-      if (options.failDeploy) throw new Error('profile is not enabled on this target');
-      const ravn = {
-        id: `ravn-${ravens.length + 1}`,
-        personaName: request.personaName ?? '',
-        residentName: request.name,
-        status: 'active',
-        model: request.model ?? 'claude-fable-5',
-        createdAt: '2026-09-13T00:00:00Z',
-        kind: 'resident',
-        managed: true,
-        instanceId: request.instanceId,
-      } as unknown as Ravn;
-      ravens.push(ravn);
-      return ravn;
-    },
-    async applyLifecycle(ravn, action) {
-      log.calls.push(`applyLifecycle:${ravn.residentName ?? ravn.id}:${action}`);
-      return ravn;
-    },
-    async delete(ravn) {
-      log.calls.push(`deleteResident:${ravn.residentName ?? ravn.id}`);
-      const index = ravens.indexOf(ravn);
-      if (index >= 0) ravens.splice(index, 1);
-    },
-    async getLogs() {
-      return { entries: [], bufferTotal: 0 };
-    },
-    async listSessions() {
-      return [];
-    },
-    async createSession() {
-      throw new Error('not used in tests');
-    },
-    async deleteSession() {},
-    async listRavens() {
-      log.calls.push('listRavens');
-      return ravens;
-    },
-    async getRaven(id) {
-      const ravn = ravens.find((entry) => entry.id === id);
-      if (!ravn) throw new Error(`Ravn not found: ${id}`);
-      return ravn;
-    },
-  };
 }
 
 export function fakeTracker(log: CallLog): ITrackerBrowserService {

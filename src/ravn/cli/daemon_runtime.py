@@ -24,7 +24,6 @@ async def _run_daemon(
         CliThreadStore,
         workflow_thread_key,
     )
-    from ravn.cli.runtime_builders import require_tool_build_push  # noqa: PLC0415
     from ravn.drive_loop import DriveLoop
     from ravn.ports.channel import ChannelPort
 
@@ -53,7 +52,6 @@ async def _run_daemon(
                 max_iterations = persona_config.iteration_budget
     base_model = _resolve_persona_model(settings, persona_config)
 
-    require_tool_build_push(settings)
     workspace = _resolve_workspace(settings)
     from ravn.cli.tool_builders import _build_learned_tool_resolver  # noqa: PLC0415
 
@@ -73,54 +71,12 @@ async def _run_daemon(
     # Build Mímir adapter early so _agent_factory closure can capture it.
     daemon_mimir = _build_mimir(settings)
     memory = _with_mimir_fact_capture(memory, daemon_mimir)
-    learning_consolidation = _build_learning_consolidation(settings, llm)
-    capability_matcher = _build_capability_matcher(settings, learning_consolidation)
-    peer_capability_matcher = _build_peer_capability_matcher(settings, learning_consolidation)
-    friction_ledger = _build_friction_ledger(
-        settings, mimir=daemon_mimir, consolidation=learning_consolidation
-    )
-
-    # Resolve the resident's charter once, before any consumer (this runtime,
-    # EnvironmentSignalRuntime's triage prompts, resident context, the HUD
-    # dashboard payload) reads settings.environment.charter — otherwise only
-    # some of them would see a Mímir-resolved charter and the rest would see
-    # the stale static one. Mutating settings here, not passing the resolved
-    # value around, is what makes every later reader consistent for free.
-    from ravn.cli.resident_runtime_wiring import (
-        _resolve_environment_charter,
-    )
-
-    settings.environment.charter = await _resolve_environment_charter(settings, daemon_mimir)
 
     drive_loop: Any | None = None
-    resident_inbox: Any | None = None
-    resident_state: Any | None = None
-    resident_runtime: Any | None = None
-    if settings.initiative.enabled or task_dispatch:
-        resident_inbox = _build_resident_inbox(
-            settings,
-            workspace=workspace,
-            mimir=daemon_mimir,
-        )
-        resident_state = await _build_resident_state(
-            settings,
-            workspace=workspace,
-            mimir=daemon_mimir,
-        )
-        resident_runtime = _build_resident_runtime(
-            settings,
-            state=resident_state,
-            inbox=resident_inbox,
-            known_resolutions=(
-                friction_ledger if settings.reflection.self_improvement.enabled else None
-            ),
-        )
 
     # What the resident wants its owner to hear about (questions it waits on, its
     # agent's own notifications). Forge drains it through the OpenClaw shim.
-    from ravn.cli.resident_runtime_wiring import (  # noqa: PLC0415
-        build_resident_notification_outbox,
-    )
+    from ravn.cli.voice_wiring import build_resident_notification_outbox  # noqa: PLC0415
 
     resident_notification_outbox = build_resident_notification_outbox(settings)
     # The call requests notify's speak queues for the voice channel (voice.calls).
@@ -129,31 +85,15 @@ async def _run_daemon(
         from ravn.cli.voice_wiring import build_resident_call_requests  # noqa: PLC0415
 
         resident_call_requests = build_resident_call_requests(settings)
-    if resident_runtime is not None and resident_notification_outbox is not None:
-        resident_runtime.bind_notification_outbox(resident_notification_outbox)
-        raised = await resident_runtime.raise_pending_attention()
-        if raised:
-            logger.info("Raised %d waiting operator question(s) for the owner", raised)
 
     # Populated by _wire_cron after drive_loop is created; captured by _agent_factory.
     cron_tools: list[Any] = []
 
-    # NIU-598: shared in-process bus for post-session reflection (daemon mode).
-    # Captured by _agent_factory so each agent created by the daemon publishes to it.
-    daemon_bus: Any | None = None
     sleipnir_catalog_publisher: Any | None = None
-    if settings.reflection.enabled:
-        from sleipnir.adapters.in_process import InProcessBus
 
-        daemon_bus = InProcessBus()
-        if settings.observability.enabled:
-            from ravn.adapters.observability import ObservedSleipnirBus  # noqa: PLC0415
-
-            daemon_bus = ObservedSleipnirBus(daemon_bus)
-
-    # This publisher is shared by gateways, the drive loop, and the resident
-    # learning services. Start it before constructing any of those producers so
-    # an immediately-ready trigger cannot publish against an unstarted adapter.
+    # This publisher is shared by gateways and the drive loop. Start it before
+    # constructing any of those producers so an immediately-ready trigger cannot
+    # publish against an unstarted adapter.
     environment_signal_publisher_started = False
     environment_signal_publisher: Any | None = _build_environment_signal_publisher(settings)
     if environment_signal_publisher is not None and hasattr(
@@ -162,26 +102,6 @@ async def _run_daemon(
     ):
         await environment_signal_publisher.start()
         environment_signal_publisher_started = True
-
-    resident_learning_runtime = _build_resident_learning_runtime(
-        settings,
-        publisher=environment_signal_publisher,
-        workspace=workspace,
-    )
-    if resident_runtime is not None and resident_learning_runtime is not None:
-        from ravn.valkyrie_evolution.tool_curation import learned_tool_health  # noqa: PLC0415
-
-        learned_tool_state_dir = _resident_ravn_state_dir(workspace, settings)
-        learned_tool_skills = resident_learning_runtime.skills
-        resident_runtime.bind_learned_tool_health(
-            lambda: learned_tool_health(
-                learned_tool_state_dir,
-                learned_tool_skills,
-                refused=learned_tool_resolver.list_refused,
-            )
-        )
-        resident_runtime.bind_review_requester(resident_learning_runtime.review_requester)
-        resident_learning_runtime.bind_operator_answerer(resident_runtime.submit_operator_answer)
 
     # Only a workflow session: its state dir is on that session's own workspace and it
     # runs one workflow. A long-lived process would carry threads from run to run.
@@ -255,48 +175,6 @@ async def _run_daemon(
                 fields=fields,
             )
 
-        async def _emit_a2a_activity(activity: dict[str, object]) -> None:
-            if drive_loop is None:
-                return
-            current_task = drive_loop.resolve_task_context(task_id)
-            if current_task is None:
-                logger.warning("a2a_activity: no task context available for task_id=%s", task_id)
-                return
-            durable_activity = {
-                **activity,
-                "case_id": current_task.resident_case_id,
-                "root_correlation_id": current_task.root_correlation_id,
-                "parent_task_id": current_task.task_id,
-                "mandate": current_task.resident_mandate or current_task.initiative_context,
-                "turn_index": current_task.resident_turn_index,
-                "case_input_tokens": current_task.resident_input_tokens,
-                "case_output_tokens": current_task.resident_output_tokens,
-                "case_started_at": current_task.resident_started_at,
-            }
-            if resident_runtime is not None:
-                await resident_runtime.record_a2a_activity(durable_activity)
-            drive_loop.record_a2a_activity(
-                parent_task_id=current_task.task_id,
-                activity=durable_activity,
-            )
-
-        async def _find_a2a_activity(
-            *,
-            query: str = "",
-            active_only: bool = False,
-            limit: int = 10,
-        ) -> list[dict[str, object]]:
-            if resident_runtime is None:
-                return []
-            current_task = drive_loop.resolve_task_context(task_id) if drive_loop else None
-            case_id = "" if query.strip() else getattr(current_task, "resident_case_id", "")
-            return await resident_runtime.find_a2a_tasks(
-                query=query,
-                case_id=case_id,
-                active_only=active_only,
-                limit=limit,
-            )
-
         tools = _build_tools(
             settings,
             workspace,
@@ -315,11 +193,6 @@ async def _run_daemon(
                 drive_loop._session_join_manager if drive_loop is not None else None
             ),
             permission=permission,
-            a2a_activity_emitter=_emit_a2a_activity,
-            a2a_activity_finder=_find_a2a_activity,
-            skill_manager=(
-                resident_learning_runtime.skills if resident_learning_runtime is not None else None
-            ),
             learned_tool_resolver=learned_tool_resolver,
         )
         if profile_cfg.include_mcp:
@@ -387,18 +260,6 @@ async def _run_daemon(
             user_input_fn=None,
             memory=memory,
             mimir=daemon_mimir,
-            inject_learnings=settings.reflection.inject_learnings,
-            max_learnings_injected=settings.reflection.max_learnings_injected,
-            learning_token_budget=settings.reflection.learning_token_budget,
-            learning_index=learning_consolidation.lessons if learning_consolidation else None,
-            learning_entry_max_chars=settings.reflection.learning_entry_max_chars,
-            max_route_recoveries=settings.reflection.verified_promotion.max_route_recoveries,
-            route_excerpt_chars=settings.reflection.verified_promotion.excerpt_chars,
-            max_friction_signals=(
-                settings.reflection.friction.max_signals
-                if settings.reflection.friction.enabled
-                else 0
-            ),
             episode_summary_max_chars=settings.agent.episode_summary_max_chars,
             episode_task_max_chars=settings.agent.episode_task_max_chars,
             iteration_budget=budget,
@@ -411,8 +272,6 @@ async def _run_daemon(
             input_token_cost_per_million=settings.memory.input_token_cost_per_million,
             output_token_cost_per_million=settings.memory.output_token_cost_per_million,
             extended_thinking=resolved_extended_thinking,
-            # NIU-598: session lifecycle events for optional reflection storage
-            sleipnir_publisher=daemon_bus,
             persona=resolved_persona.name if resolved_persona else "",
             # Persona config drives outcome parsing; stop_on_outcome is retained
             # only for compatibility and cannot suppress tool execution.
@@ -433,38 +292,12 @@ async def _run_daemon(
                 drive_loop.resolve_task_context(task_id) if drive_loop is not None else None
             ),
         )
-        # Reviews and flock proposals must cross the mesh, not stay on the
-        # daemon's in-process reflection bus — same precedence as the drive
-        # loop's sleipnir publisher (closure binds late; the signal publisher
-        # is built during daemon boot, before any task runs).
-        allowed_tools = _expand_allowed_tools(
-            set(resolved_persona.allowed_tools or []) if resolved_persona else set()
-        )
-        return _attach_agent_build_tool(
-            agent,
-            workspace,
-            enabled="build_tool" in allowed_tools,
-            settings=settings,
-            publisher=environment_signal_publisher or sleipnir_catalog_publisher or daemon_bus,
-            drive_loop=drive_loop,
-            a2a_activity_emitter=_emit_a2a_activity,
-            installed_artifact_recorder=(
-                resident_learning_runtime.register_installed_artifact
-                if resident_learning_runtime is not None
-                else None
-            ),
-            capability_matcher=capability_matcher,
-            skill_manager=(
-                resident_learning_runtime.skills if resident_learning_runtime is not None else None
-            ),
-            peer_tools=resident_learning_runtime,
-            peer_capability_matcher=peer_capability_matcher,
-        )
+        return agent
 
     tasks: list[asyncio.Task] = []
 
     # Create interaction tracker early so it can be shared between gateway
-    # channels (touch on operator message) and the wakefulness trigger (read).
+    # channels (touch on operator message) and the Mímir recap trigger (read).
     from ravn.domain.interaction_tracker import LastInteractionTracker
 
     interaction_tracker = LastInteractionTracker()
@@ -499,12 +332,7 @@ async def _run_daemon(
             gw_tasks.append("telegram")
 
         if channels_cfg.http.enabled:
-            http_gateway = HttpGateway(
-                channels_cfg.http,
-                gw,
-                resident_runtime=resident_runtime,
-                mimir=daemon_mimir,
-            )
+            http_gateway = HttpGateway(channels_cfg.http, gw)
             tasks.append(asyncio.create_task(http_gateway.run(), name="http"))
             gw_tasks.append("http")
 
@@ -532,11 +360,6 @@ async def _run_daemon(
     drive_loop: Any = None
     _cascade_participant: Any = None
     present_file_relay: Any = None
-    environment_signal_runtime: Any | None = None
-    resident_wakefulness: Any | None = None
-    resident_identity: Any | None = None
-    odin_court: Any | None = None
-    feedback_recorder: Any | None = None
     huddle_archiver: Any | None = None
     if settings.initiative.enabled or task_dispatch:
         if settings.sleipnir.enabled:
@@ -560,7 +383,7 @@ async def _run_daemon(
                 except Exception as exc:
                     logger.warning(
                         "sleipnir: catalog publisher unavailable; "
-                        "mimir.dream.completed emission will be skipped: %s",
+                        "catalog events will not be published: %s",
                         exc,
                     )
                     sleipnir_catalog_publisher = None
@@ -585,26 +408,10 @@ async def _run_daemon(
             resume=resume,
             resident_budget=_resident_budget,
             mimir=daemon_mimir,
-            sleipnir_publisher=environment_signal_publisher
-            or sleipnir_catalog_publisher
-            or daemon_bus,
+            sleipnir_publisher=environment_signal_publisher or sleipnir_catalog_publisher,
         )
         if hasattr(drive_loop, "set_persona_config"):
             drive_loop.set_persona_config(persona_config)
-        from ravn.cli.runtime_builders import (  # noqa: PLC0415
-            build_resident_first_opinion,
-            build_resident_slot_attention,
-        )
-
-        first_opinion = build_resident_first_opinion(
-            settings, has_resident_runtime=resident_runtime is not None
-        )
-        if first_opinion is not None:
-            drive_loop.set_first_opinion(first_opinion)
-            # build_resident_first_opinion refuses to build without a resident runtime.
-            resident_runtime.bind_slot_attention(
-                build_resident_slot_attention(settings, first_opinion)
-            )
         if hasattr(drive_loop, "register_telemetry_refresh"):
             # The inventory is published once while the resolver is built, so
             # the gauge ages out and the fleet reads zero installed tools while
@@ -617,40 +424,6 @@ async def _run_daemon(
                 publish_learned_tool_inventory(learned_tool_resolver.list_loadable_artifacts())
 
             drive_loop.register_telemetry_refresh(_refresh_learned_tool_inventory)
-        if resident_runtime is not None:
-            from ravn.resident_runtime import ResidentHomeTrigger  # noqa: PLC0415
-
-            if hasattr(drive_loop, "set_resident_runtime"):
-                drive_loop.set_resident_runtime(resident_runtime)
-            if hasattr(drive_loop, "register_telemetry_refresh"):
-                # The health scorecard gauges (cases, wakes, inbox, streak)
-                # age out like any other steady-state gauge — restate them on
-                # every heartbeat; the recount behind them paces itself.
-                drive_loop.register_telemetry_refresh(resident_runtime.publish_health_gauges)
-            if http_gateway is not None:
-                http_gateway.bind_resident_status_provider(drive_loop.resident_hud_status)
-            if hasattr(drive_loop, "register_directed_message_interceptor"):
-                drive_loop.register_directed_message_interceptor(
-                    resident_runtime.consume_directed_message
-                )
-            if resident_inbox is not None and hasattr(drive_loop, "register_trigger"):
-                try:
-                    resident_output_mode = OutputMode(settings.initiative.default_output_mode)
-                except ValueError:
-                    resident_output_mode = OutputMode.AMBIENT
-                drive_loop.register_trigger(
-                    ResidentHomeTrigger(
-                        resident_runtime,
-                        interval_seconds=settings.resident_state.home_wake_interval_seconds,
-                        max_signals=settings.resident_inbox.max_signals_per_wake,
-                        persona=(
-                            persona_config.name
-                            if persona_config is not None
-                            else settings.initiative.default_persona or None
-                        ),
-                        output_mode=resident_output_mode,
-                    )
-                )
         _cron_jobs = _wire_triggers(drive_loop, settings.initiative)
         cron_tools[:] = _wire_cron(drive_loop, _cron_jobs, settings.initiative)
 
@@ -703,117 +476,11 @@ async def _run_daemon(
         trigger_names = [t.name for t in drive_loop._triggers]
         tasks.append(asyncio.create_task(drive_loop.run(), name="drive_loop"))
 
-    if resident_learning_runtime is not None:
-        await resident_learning_runtime.start()
-        if resident_runtime is not None:
-            await resident_runtime.publish_pending_questions()
-        tasks.append(asyncio.create_task(asyncio.Event().wait(), name="resident_learning"))
-        typer.echo("  Resident learning: subscribed")
-
-    realm_capability_sync = _build_realm_capability_sync(
-        settings,
-        subscriber=environment_signal_publisher,
-    )
-    if realm_capability_sync is not None:
-        await realm_capability_sync.start()
-        typer.echo("  Realm capability sync: subscribed")
-
-    learning_curator = _build_learning_curator(
-        settings,
-        mimir=daemon_mimir,
-        consolidation=learning_consolidation,
-    )
-    self_improvement = _build_self_improvement(
-        settings,
-        mimir=daemon_mimir,
-        consolidation=learning_consolidation,
-        ledger=friction_ledger,
-        drive_loop=drive_loop,
-        resident_id=(
-            resident_runtime.resident_id
-            if resident_runtime is not None
-            else settings.environment.resident_name or settings.environment.id
-        ),
-    )
-    # Only a resident that adopts and builds learned tools has a library to
-    # curate; an ordinary daemon has neither the tools nor the dream.
-    tool_curator = (
-        _build_learned_tool_curator(
-            settings,
-            workspace=workspace,
-            skills=resident_learning_runtime.skills,
-            matcher=capability_matcher,
-            load_refusal=learned_tool_resolver.load_refusal,
-        )
-        if resident_learning_runtime is not None
-        else None
-    )
-    resident_wakefulness = _build_resident_wakefulness(
-        settings,
-        resident_learning_runtime=resident_learning_runtime,
-        publisher=environment_signal_publisher,
-        memory=memory,
-        learning_curator=learning_curator,
-        self_improvement=self_improvement,
-        tool_curator=tool_curator,
-        state_dir=_resident_ravn_state_dir(workspace, settings),
-    )
-    if tool_curator is not None and resident_wakefulness is None:
-        raise RuntimeError(
-            "resident_evolution.tool_curation.enabled is true, but learned-tool curation "
-            "runs inside the resident consolidation dream and resident wakefulness is not "
-            "running. Enable resident_wakefulness (with a mesh publisher), or set "
-            "resident_evolution.tool_curation.enabled: false."
-        )
-    if learning_curator is not None and resident_wakefulness is None:
-        raise RuntimeError(
-            "reflection.curation.enabled is true, but learning curation runs inside "
-            "the resident consolidation dream and resident wakefulness is not running "
-            "(resident_wakefulness.enabled, a resident learning runtime, and a mesh "
-            "publisher are all required). Enable those or set "
-            "reflection.curation.enabled: false."
-        )
-    if resident_wakefulness is not None:
-        await resident_wakefulness.start()
-        typer.echo("  Resident wakefulness: started")
-
-    odin_court = _build_odin_court(
-        settings,
-        publisher=environment_signal_publisher,
-        memory=memory,
-        review_requester=(
-            resident_learning_runtime.review_requester
-            if resident_learning_runtime is not None
-            else None
-        ),
-    )
-    if odin_court is not None:
-        await odin_court.start()
-        tasks.append(
-            asyncio.create_task(
-                _run_odin_court_sweep(
-                    odin_court,
-                    settings.odin_court.sweep_interval_seconds,
-                ),
-                name="odin_court_sweep",
-            )
-        )
-        typer.echo("  ODIN court: subscribed")
-
-    feedback_recorder = _build_feedback_recorder(
-        settings,
-        publisher=environment_signal_publisher,
-        memory=memory,
-    )
-    if feedback_recorder is not None:
-        await feedback_recorder.start()
-        typer.echo("  Feedback recorder: subscribed")
-
     if (
         daemon_mimir is not None
         and environment_signal_publisher is not None
         and hasattr(environment_signal_publisher, "subscribe")
-        and (settings.environment.flocks or settings.environment.signal_sources)
+        and settings.environment.flocks
     ):
         from ravn.huddle_archiver import HuddleTranscriptArchiver  # noqa: PLC0415
 
@@ -823,37 +490,6 @@ async def _run_daemon(
         )
         await huddle_archiver.start()
         typer.echo("  Huddle transcript archiver: subscribed")
-
-    environment_signal_runtime = _build_environment_signal_runtime(
-        settings,
-        drive_loop=drive_loop,
-        persona_config=persona_config,
-        publisher=environment_signal_publisher,
-        mimir=daemon_mimir,
-        resident_learning_runtime=resident_learning_runtime,
-        resident_wakefulness=resident_wakefulness,
-        resident_inbox=resident_inbox,
-        resident_runtime=resident_runtime,
-        owns_publisher=not environment_signal_publisher_started,
-    )
-    if environment_signal_runtime is not None:
-        await environment_signal_runtime.start()
-        tasks.append(
-            asyncio.create_task(environment_signal_runtime.wait(), name="environment_signals")
-        )
-
-    # Every resident reports who it is, sources or not, and keeps reporting it:
-    # nothing replays valkyrie.runtime.started to a reader that restarted.
-    if environment_signal_publisher is not None:
-        from ravn.environment_signal_runtime import build_runtime_environment  # noqa: PLC0415
-        from ravn.resident_identity import ResidentIdentityPublisher  # noqa: PLC0415
-
-        resident_identity = ResidentIdentityPublisher(
-            settings=settings,
-            publisher=environment_signal_publisher,
-            environment=build_runtime_environment(settings),
-        )
-        await resident_identity.start()
 
     async def _handle_mcp_tool_result(
         server_name: str,
@@ -904,22 +540,6 @@ async def _run_daemon(
         tool_result_hook=_handle_mcp_tool_result,
     )
 
-    # NIU-598: start post-session reflection service for daemon mode.
-    daemon_reflection_svc: Any | None = None
-    if daemon_bus is not None and daemon_mimir is not None:
-        from ravn.adapters.reflection.post_session import PostSessionReflectionService
-
-        daemon_reflection_svc = PostSessionReflectionService(
-            subscriber=daemon_bus,
-            mimir=daemon_mimir,
-            llm=llm,
-            config=settings.effective_post_session_reflection_config(),
-            lessons=learning_consolidation.lessons if learning_consolidation else None,
-            judge=learning_consolidation.judge if learning_consolidation else None,
-            friction=friction_ledger,
-        )
-        await daemon_reflection_svc.start()
-
     channels_str = ", ".join(gw_tasks) if gw_tasks else "none"
     triggers_str = ", ".join(trigger_names) if trigger_names else "none"
     concurrent = settings.initiative.max_concurrent_tasks if settings.initiative.enabled else 0
@@ -954,20 +574,8 @@ async def _run_daemon(
             await present_file_relay.stop()
         if _cascade_participant is not None:
             await _cascade_participant.stop()
-        if resident_wakefulness is not None:
-            await resident_wakefulness.stop()
-        if odin_court is not None:
-            await odin_court.stop()
-        if feedback_recorder is not None:
-            await feedback_recorder.stop()
         if huddle_archiver is not None:
             await huddle_archiver.stop()
-        if resident_learning_runtime is not None:
-            await resident_learning_runtime.stop()
-        if resident_identity is not None:
-            await resident_identity.stop()
-        if environment_signal_runtime is not None:
-            await environment_signal_runtime.stop()
         if environment_signal_publisher_started and environment_signal_publisher is not None:
             await environment_signal_publisher.stop()
         if resident_notification_outbox is not None:
@@ -983,11 +591,6 @@ async def _run_daemon(
             await _shutdown_step("memory.close", memory.close)
         await event_publisher.close()
         await _shutdown_mcp(mcp_manager)
-        # NIU-598: flush pending events before tearing down daemon reflection service.
-        if daemon_bus is not None:
-            await _shutdown_step("daemon_bus.flush", daemon_bus.flush)
-        if daemon_reflection_svc is not None:
-            await daemon_reflection_svc.stop()
         if sleipnir_catalog_publisher is not None:
             await sleipnir_catalog_publisher.stop()
         shutdown_observability()

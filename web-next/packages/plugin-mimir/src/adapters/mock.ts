@@ -2,7 +2,7 @@ import type { Mount } from '@niuulabs/domain';
 import type { IMimirService } from '../ports';
 import type { RecentWrite } from '../ports/IMountAdapter';
 import type { PageMeta, Page, SearchResult } from '../domain/page';
-import type { LintIssue, LintReport, DreamCycle, ActivityEvent } from '../domain/lint';
+import type { LintIssue, LintReport, ActivityEvent } from '../domain/lint';
 import type { Source } from '../domain/source';
 import type {
   MimirStats,
@@ -15,7 +15,6 @@ import type { EmbeddingSearchResult } from '../ports/IEmbeddingStore';
 import type { EntityMeta } from '../domain/entity';
 import type { FactEvidence, RelatedPage, ReviseRequest } from '../domain/evidence';
 import type { WriteRoutingRule } from '../domain/routing';
-import type { RavnBinding } from '../domain/ravn-binding';
 import type { RegistryMount } from '../domain/registry';
 import type { EvalReport, QueryStats } from '../domain/analytics';
 import type { DoctorCheck, DoctorReport, DoctorStatus } from '../domain/doctor';
@@ -277,7 +276,7 @@ const MOCK_PAGES: Page[] = [
   {
     path: '/agents/raven-runtime',
     title: 'Raven agent runtime',
-    summary: 'Drive loop, tool registry, composite mimir binding, dream-cycle trigger.',
+    summary: 'Drive loop, tool registry, composite mimir binding, scheduled triggers.',
     type: 'topic' as const,
     category: 'component',
     entityType: undefined,
@@ -404,13 +403,13 @@ const MOCK_SOURCES: Source[] = [
   },
   {
     id: 'src-006',
-    title: 'Niuu blog: ravn dream cycles',
+    title: 'Niuu blog: idle-time knowledge synthesis',
     originType: 'rss',
     originUrl: 'https://blog.niuu.world/feed.xml',
     ingestedAt: '2026-04-17T06:00:00Z',
     ingestAgent: 'ravn-skald',
     compiledInto: [],
-    content: 'Blog post on the design of Niuu dream cycles for idle-time knowledge synthesis.',
+    content: 'Blog post on the design of idle-time knowledge synthesis in Niuu.',
   },
   {
     id: 'src-007',
@@ -792,7 +791,6 @@ const INITIAL_LINT_ISSUES: LintIssue[] = [
     severity: 'warn',
     page: '/infra/legacy-proxy',
     mount: 'platform',
-    assignee: 'ravn-skald',
     autoFix: true,
     message: 'Orphan page — no inbound links from any other page',
   },
@@ -820,56 +818,8 @@ const INITIAL_LINT_ISSUES: LintIssue[] = [
     severity: 'error',
     page: '/arch/overview',
     mount: 'shared',
-    assignee: 'ravn-fjolnir',
     autoFix: true,
     message: 'Stale mount index — index out of sync with page store',
-  },
-];
-
-// ---------------------------------------------------------------------------
-// Seed data — Dream cycles
-// ---------------------------------------------------------------------------
-
-const MOCK_DREAM_CYCLES: DreamCycle[] = [
-  {
-    id: 'dream-001',
-    timestamp: '2026-04-19T03:00:00Z',
-    ravn: 'ravn-fjolnir',
-    mounts: ['local', 'shared'],
-    pagesUpdated: 8,
-    entitiesCreated: 2,
-    lintFixes: 1,
-    durationMs: 42000,
-  },
-  {
-    id: 'dream-002',
-    timestamp: '2026-04-18T03:00:00Z',
-    ravn: 'ravn-fjolnir',
-    mounts: ['shared', 'platform'],
-    pagesUpdated: 14,
-    entitiesCreated: 5,
-    lintFixes: 3,
-    durationMs: 67000,
-  },
-  {
-    id: 'dream-003',
-    timestamp: '2026-04-17T03:00:00Z',
-    ravn: 'ravn-skald',
-    mounts: ['platform'],
-    pagesUpdated: 6,
-    entitiesCreated: 1,
-    lintFixes: 0,
-    durationMs: 28000,
-  },
-  {
-    id: 'dream-004',
-    timestamp: '2026-04-16T03:00:00Z',
-    ravn: 'ravn-fjolnir',
-    mounts: ['local', 'shared', 'platform'],
-    pagesUpdated: 22,
-    entitiesCreated: 8,
-    lintFixes: 5,
-    durationMs: 91000,
   },
 ];
 
@@ -913,91 +863,6 @@ const INITIAL_ROUTING_RULES: WriteRoutingRule[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Seed data — ravn bindings
-// ---------------------------------------------------------------------------
-
-const MOCK_RAVN_BINDINGS: RavnBinding[] = [
-  {
-    ravnId: 'ravn-fjolnir',
-    ravnRune: 'ᚠ',
-    role: 'index',
-    state: 'active',
-    mountNames: ['local', 'shared', 'platform'],
-    writeMount: 'local',
-    lastDream: MOCK_DREAM_CYCLES[0] ?? null,
-    bio: 'Synthesises infrastructure documentation from git commits and runbooks',
-    pagesTouched: 52,
-    expertise: ['infra', 'api', 'arch'],
-    tools: ['mimir', 'web', 'file', 'ravn'],
-  },
-  {
-    ravnId: 'ravn-skald',
-    ravnRune: 'ᛋ',
-    role: 'build',
-    state: 'idle',
-    mountNames: ['shared', 'platform'],
-    writeMount: 'shared',
-    lastDream: MOCK_DREAM_CYCLES[2] ?? null,
-    bio: 'Compiles API guidelines and architectural decisions from RFC discussions',
-    pagesTouched: 28,
-    expertise: ['api', 'observability'],
-    tools: ['mimir', 'web'],
-  },
-  {
-    ravnId: 'ravn-galdra',
-    ravnRune: 'ᚷ',
-    role: 'verify',
-    state: 'offline',
-    mountNames: ['shared'],
-    writeMount: 'shared',
-    lastDream: null,
-    bio: 'Verifies knowledge consistency and resolves broken wikilinks across mounts',
-    pagesTouched: 0,
-    expertise: ['lint', 'wikilinks'],
-    tools: ['mimir', 'lint-fix'],
-  },
-  {
-    ravnId: 'ravn-saga',
-    ravnRune: 'ᛊ',
-    role: 'index',
-    state: 'idle',
-    mountNames: ['shared', 'forge'],
-    writeMount: 'shared',
-    lastDream: MOCK_DREAM_CYCLES[1] ?? null,
-    bio: 'Indexes saga histories and run outcomes into long-term knowledge',
-    pagesTouched: 34,
-    expertise: ['sagas', 'runs'],
-    tools: ['mimir', 'ting'],
-  },
-  {
-    ravnId: 'ravn-eir',
-    ravnRune: 'ᛖ',
-    role: 'verify',
-    state: 'active',
-    mountNames: ['local', 'shared'],
-    writeMount: 'local',
-    lastDream: MOCK_DREAM_CYCLES[0] ?? null,
-    bio: 'Monitors deployment health and synthesises runbook updates',
-    pagesTouched: 19,
-    expertise: ['monitoring', 'runbooks'],
-    tools: ['mimir', 'web', 'lint-fix'],
-  },
-  {
-    ravnId: 'ravn-vor',
-    ravnRune: 'ᚹ',
-    role: 'build',
-    state: 'idle',
-    mountNames: ['platform'],
-    writeMount: 'platform',
-    lastDream: null,
-    bio: 'Compiles and cross-references ADR documents with implementation state',
-    pagesTouched: 11,
-    expertise: ['adr', 'compliance'],
-    tools: ['mimir', 'file'],
-  },
-];
-
-// ---------------------------------------------------------------------------
 // Seed data — Recent writes activity feed
 // ---------------------------------------------------------------------------
 
@@ -1019,15 +884,6 @@ const MOCK_RECENT_WRITES: RecentWrite[] = [
     ravn: 'ravn-skald',
     kind: 'compile',
     message: 'recompiled from 2 sources after RFC merge',
-  },
-  {
-    id: 'ev-003',
-    timestamp: '2026-04-19T03:01:00Z',
-    mount: 'shared',
-    page: '',
-    ravn: 'ravn-fjolnir',
-    kind: 'dream',
-    message: 'dream cycle complete — 8 pages updated, 2 entities created',
   },
   {
     id: 'ev-004',
@@ -1118,14 +974,6 @@ const MOCK_ACTIVITY_EVENTS: ActivityEvent[] = [
     page: 'entities/project-niuu.md',
   },
   {
-    id: 'act-005',
-    timestamp: '2026-04-19T09:54:22Z',
-    kind: 'dream',
-    mount: 'shared',
-    ravn: 'ravn-fjolnir',
-    message: 'dream cycle complete (pages_updated=2, lint_fixes=1)',
-  },
-  {
     id: 'act-006',
     timestamp: '2026-04-19T09:44:01Z',
     kind: 'query',
@@ -1197,7 +1045,7 @@ const MOCK_QUERY_STATS: QueryStats = {
     { ts: '2026-04-19T09:22:10Z', query: 'bifrost gpu quota', resultCount: 0 },
     { ts: '2026-04-19T08:58:44Z', query: 'cluster upgrade', resultCount: 2 },
     { ts: '2026-04-19T08:31:09Z', query: 'kubernetes deployment', resultCount: 5 },
-    { ts: '2026-04-19T08:12:55Z', query: 'dream cycle cadence', resultCount: 4 },
+    { ts: '2026-04-19T08:12:55Z', query: 'idle synthesis cadence', resultCount: 4 },
   ],
 };
 
@@ -1357,10 +1205,6 @@ export function createMimirMockAdapter(): IMimirService {
 
       async deleteRoutingRule(id: string): Promise<void> {
         routingRules = routingRules.filter((r) => r.id !== id);
-      },
-
-      async listRavnBindings(): Promise<RavnBinding[]> {
-        return MOCK_RAVN_BINDINGS;
       },
 
       async getRecentWrites(limit = 20): Promise<RecentWrite[]> {
@@ -1645,20 +1489,6 @@ export function createMimirMockAdapter(): IMimirService {
           mounts: [],
           summary: tallySeverity(lintIssues),
         };
-      },
-
-      async reassignIssues(issueIds: string[], assignee: string): Promise<LintReport> {
-        lintIssues = lintIssues.map((i) => (issueIds.includes(i.id) ? { ...i, assignee } : i));
-        return {
-          issues: lintIssues,
-          pagesChecked: MOCK_PAGES.length,
-          mounts: [],
-          summary: tallySeverity(lintIssues),
-        };
-      },
-
-      async getDreamCycles(limit = 20): Promise<DreamCycle[]> {
-        return MOCK_DREAM_CYCLES.slice(0, limit);
       },
 
       async getActivityLog(limit = 50): Promise<ActivityEvent[]> {

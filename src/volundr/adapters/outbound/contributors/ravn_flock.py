@@ -703,8 +703,8 @@ def _build_ravn_config(
             "write routing and preserve source attribution. These tools use the actual "
             "backend attached to each well. gbrain wells support search, read, write, "
             "query and ingestion; they do not support Mimir raw-source retrieval or "
-            "Mimir lint. Native dream cycles run on the gbrain service; do not attach "
-            "a warden or pretend unsupported operations succeeded."
+            "Mimir lint. Native dream cycles run on the gbrain service; do not "
+            "pretend unsupported operations succeeded."
         )
     if system_prompt_extra.strip():
         po["system_prompt_extra"] = system_prompt_extra

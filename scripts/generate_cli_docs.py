@@ -258,7 +258,7 @@ NIUU_INTRO = [
 
 RAVN_INTRO = [
     "`ravn` is the agent runtime: it runs a conversation or daemon, manages",
-    "personas and profiles, and supervises rooms, flocks, and wardens on the",
+    "personas and profiles, and supervises rooms and flocks on the",
     "local host.",
     "",
     "Start with the worked examples below; the full command tree follows.",
@@ -458,9 +458,6 @@ RAVN_TASKS: list[tuple[str, str, list[str]]] = [
             "ravn daemon --persona coordinator",
             "ravn listen --persona coder                # take dispatched tasks",
             "ravn gateway --telegram --http           # human-facing chat channels",
-            "",
-            "ravn warden list                           # persisted long-lived agents",
-            "ravn warden create notes-warden",
         ],
     ),
     (

@@ -4,7 +4,6 @@
  * Sections:
  *   1. Mount picker — "all mounts" + per-mount rows with status dots
  *   2. Quick filters — Errors / Flagged / Low confidence
- *   3. Wardens roster — top-6 ravns with initials + state dot
  *
  * Navigation tabs live in the topbar (plugin descriptor `tabs` array).
  */
@@ -16,8 +15,7 @@ import { useActiveMount } from '../application/useActiveMount';
 import { useMimirMounts } from './useMimirMounts';
 import { useMimirPages } from './useMimirPages';
 import { useLint } from '../application/useLint';
-import { useRavns } from '../application/useRavns';
-import { RAVN_DOT_STATE, MOUNT_DOT_STATE } from './mimir.constants';
+import { MOUNT_DOT_STATE } from './mimir.constants';
 import './MimirSubnav.css';
 import { accessScopeLabel } from '../domain/access-scope';
 
@@ -28,7 +26,7 @@ interface MimirSubnavProps {
 /**
  * The Memory scene (`/mimir`) is a full-canvas view with its own context —
  * mount scoping, colour-by and the ask bar are all in the scene's own
- * panels. The mount/filters/wardens subnav duplicates and conflicts with
+ * panels. The mount/filters subnav duplicates and conflicts with
  * that, so it renders nothing there; the registry routes still get it.
  */
 export function MimirSubnav({ ctx }: MimirSubnavProps) {
@@ -46,7 +44,6 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
   const { data: mounts = [] } = useMimirMounts();
   const { data: pages = [] } = useMimirPages(mountName ? { mountName } : undefined);
   const { summary: lintSummary } = useLint(mountName);
-  const { data: ravns = [] } = useRavns();
 
   const errorCount = lintSummary.error;
   const flaggedCount = pages.filter((p) => p.flagged).length;
@@ -120,29 +117,6 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
           >
             ◇
           </button>
-          {ravns.length > 0 && (
-            <>
-              <div className="mm-subnav-collapsed-sep" />
-              {ravns.slice(0, 6).map((ravn) => (
-                <button
-                  key={ravn.ravnId}
-                  type="button"
-                  className="mm-subnav-collapsed-item"
-                  onClick={() => {
-                    ctx.setTweak('mimir.selectedWardenId', ravn.ravnId);
-                    setActiveMount(ravn.writeMount || ravn.mountNames[0] || 'all');
-                    ctx.setTweak('mimir.registryView', 'Analytics');
-                    navigate({ to: '/mimir/registry/analytics' });
-                  }}
-                  aria-label={`Warden ${ravn.ravnId}`}
-                  title={ravn.ravnId}
-                >
-                  {ravn.ravnId.charAt(0)}
-                  {ravn.ravnId.charAt(ravn.ravnId.length - 1)}
-                </button>
-              ))}
-            </>
-          )}
         </div>
       </nav>
     );
@@ -153,7 +127,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
       <div className="mm-subnav-head">
         <div>
           <div className="mm-subnav-head__title">Context</div>
-          <div className="mm-subnav-head__subtitle">mounts · filters · wardens</div>
+          <div className="mm-subnav-head__subtitle">mounts · filters</div>
         </div>
         <button
           type="button"
@@ -241,34 +215,6 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
           <span className="mm-subnav-btn__count">{lowConfidenceCount}</span>
         </button>
       </div>
-
-      {/* ── Wardens roster ────────────────────────────────────────── */}
-      {ravns.length > 0 && (
-        <div className="mm-subnav-block">
-          <div className="mm-subnav-label">Instance activity</div>
-          {ravns.slice(0, 6).map((ravn) => (
-            <button
-              key={ravn.ravnId}
-              type="button"
-              className="mm-subnav-btn"
-              onClick={() => {
-                ctx.setTweak('mimir.selectedWardenId', ravn.ravnId);
-                setActiveMount(ravn.writeMount || ravn.mountNames[0] || 'all');
-                ctx.setTweak('mimir.registryView', 'Analytics');
-                navigate({ to: '/mimir/registry/analytics' });
-              }}
-              aria-label={`Warden ${ravn.ravnId}`}
-            >
-              <span className="mm-subnav-btn__initials" aria-hidden>
-                {ravn.ravnId.charAt(0)}
-                {ravn.ravnId.charAt(ravn.ravnId.length - 1)}
-              </span>
-              <span className="mm-subnav-btn__label">{ravn.ravnId}</span>
-              <StateDot state={RAVN_DOT_STATE[ravn.state]} size={6} />
-            </button>
-          ))}
-        </div>
-      )}
     </nav>
   );
 }

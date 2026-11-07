@@ -57,11 +57,30 @@ export { RealmSettingsPage } from './ui/RealmSettingsPage';
 export { ProjectPage } from './ui/ProjectPage';
 export { REALM_TEMPLATES, templateById, type RealmTemplate } from './domain/templates';
 export { parseSentence, type SentenceDraft } from './domain/sentence';
+export { mountNameFor, routingRuleIdFor, charterPagePathFor, type RealmView } from './domain/realm';
+export { buildRealmGovernanceHttpAdapter } from './adapters/http';
 export {
-  personaNameFor,
-  residentNameFor,
-  mountNameFor,
-  routingRuleIdFor,
-  charterPagePathFor,
-  type RealmView,
-} from './domain/realm';
+  createMockRealmGovernanceService,
+  createSeedRealms,
+  createSeedTrustGrants,
+  type RealmGovernanceSeed,
+} from './adapters/mock';
+export {
+  REALMS_QUERY_KEY,
+  REALM_GOVERNANCE_SERVICE_KEY,
+  useCreateTrustGrant,
+  useRealms,
+  useRealmTrustGrants,
+} from './application/useRealmGovernance';
+export type {
+  RealmCapability,
+  RealmDetail,
+  RealmSummary,
+  RealmTrustGrant,
+} from './domain/governance';
+export type {
+  IRealmGovernanceService,
+  RealmCreate,
+  RealmDetailListener,
+  TrustGrantCreate,
+} from './ports';

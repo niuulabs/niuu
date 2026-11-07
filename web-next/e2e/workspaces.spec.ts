@@ -75,7 +75,7 @@ test('a project nobody can find says so', async ({ page }) => {
   await expect(page.getByTestId('realms-home')).toBeVisible();
 });
 
-test('a workspace keeps its board, resident and connections in tabs', async ({ page }) => {
+test('a workspace keeps its board, connections and settings in tabs', async ({ page }) => {
   await page.goto('/realms/valhalla');
   await expect(page.getByTestId('realm-project-link')).toHaveText('Yggdrasil', { timeout: 8_000 });
   const tabs = page.getByRole('group', { name: 'Workspace section' });
@@ -83,28 +83,16 @@ test('a workspace keeps its board, resident and connections in tabs', async ({ p
   await tabs.getByRole('button', { name: /^Board/ }).click();
   await expect(page.getByText('No tracker connected')).toBeVisible();
 
-  await tabs.getByRole('button', { name: 'Resident' }).click();
-  await expect(page.getByTestId('realm-settings')).toBeVisible();
-
   await tabs.getByRole('button', { name: 'Connections' }).click();
   await expect(page.getByTestId('connection-tracker')).toContainText('A workspace works without');
+
+  await tabs.getByRole('button', { name: 'Settings' }).click();
+  await expect(page.getByTestId('realm-settings')).toBeVisible();
 });
 
-test('the old settings address lands on the resident tab', async ({ page }) => {
+test('the old settings address lands on the settings tab', async ({ page }) => {
   await page.goto('/realms/valhalla/settings');
 
   await expect(page.getByTestId('realm-settings')).toBeVisible({ timeout: 8_000 });
-  await expect(page).toHaveURL(/\/realms\/valhalla\?tab=resident/);
-});
-
-test('a running resident gets a workspace without a deployment', async ({ page }) => {
-  await page.goto('/realms');
-  const unclaimed = page.getByTestId('unclaimed-residents');
-  await unclaimed.getByRole('button', { name: 'Create workspace' }).first().click();
-
-  await expect(page.getByTestId('adopt-dialog')).toBeVisible();
-  await page.getByRole('dialog').getByRole('button', { name: 'Create workspace' }).click();
-
-  await expect(page.getByTestId('realm-page')).toBeVisible({ timeout: 8_000 });
-  await expect(page.getByTestId('realm-page')).not.toContainText('no resident');
+  await expect(page).toHaveURL(/\/realms\/valhalla\?tab=settings/);
 });

@@ -1,10 +1,9 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import { useNavigate, useSearch } from '@tanstack/react-router';
-import { ChevronLeft, GitFork, Pencil, Plus, Rocket, Search, Trash2 } from 'lucide-react';
-import { Dialog, DialogContent, ErrorState, LoadingState, PersonaAvatar, cn } from '@niuulabs/ui';
+import { ChevronLeft, GitFork, Pencil, Plus, Search, Trash2 } from 'lucide-react';
+import { Dialog, DialogContent, ErrorState, LoadingState, PersonaAvatar } from '@niuulabs/ui';
 import type { PersonaSummary } from '@niuulabs/domain';
 import type { PersonaCreateRequest } from '../../ports';
-import type { Ravn } from '../../domain/ravn';
 import {
   groupPersonaFamilies,
   isCustomPersona,
@@ -22,18 +21,16 @@ import {
   usePersona,
   useUpdatePersona,
 } from '../usePersona';
-import { useRavens } from '../hooks/useRavens';
 import { PersonaForm } from '../PersonaForm';
 import { PersonaYaml } from '../PersonaYaml';
 import { PersonaSheet } from './PersonaSheet';
-import { errorText } from '../workbench/errorText';
-import '../workbench/workbench.css';
+import { errorText } from './errorText';
+import './library.css';
 
 type PersonaView = 'sheet' | 'yaml' | 'edit';
 
 const SOURCES: Array<{ id: PersonaSource; label: string }> = [
   { id: 'all', label: 'All' },
-  { id: 'in-use', label: 'In use' },
   { id: 'custom', label: 'Custom' },
 ];
 
@@ -125,18 +122,12 @@ function NameDialog({
 function PersonaDetailPane({
   name,
   taken,
-  usedBy,
   onSelect,
-  onOpenRavn,
-  onDeploy,
   onBack,
 }: {
   name: string;
   taken: string[];
-  usedBy: Ravn[];
   onSelect: (name: string | null) => void;
-  onOpenRavn: (ravn: Ravn) => void;
-  onDeploy: (name: string) => void;
   onBack: () => void;
 }) {
   const persona = usePersona(name);
@@ -183,9 +174,6 @@ function PersonaDetailPane({
               <span className="rw-chip__k">permissions</span>
               {detail.permissionMode}
             </span>
-            <span className="rw-chip">
-              {usedBy.length > 0 ? `used by ${usedBy.length}` : 'not used by any agent'}
-            </span>
           </div>
         </div>
         <div className="rw-actions">
@@ -207,10 +195,6 @@ function PersonaDetailPane({
               YAML
             </button>
           </div>
-          <button type="button" className="rw-btn" onClick={() => onDeploy(detail.name)}>
-            <Rocket size={14} aria-hidden="true" />
-            Deploy
-          </button>
           <button
             type="button"
             className="rw-btn"
@@ -252,14 +236,7 @@ function PersonaDetailPane({
       </header>
 
       <div className="rw-body" data-testid={`persona-body-${view}`}>
-        {view === 'sheet' && (
-          <PersonaSheet
-            persona={detail}
-            usedBy={usedBy}
-            onOpenRavn={onOpenRavn}
-            onDeploy={() => onDeploy(detail.name)}
-          />
-        )}
+        {view === 'sheet' && <PersonaSheet persona={detail} />}
         {view === 'yaml' && (
           <div className="rw-yaml">
             <PersonaYaml name={detail.name} />
@@ -315,7 +292,7 @@ function PersonaDetailPane({
           description={
             detail.isBuiltin
               ? 'Removes your override; the built-in definition applies again.'
-              : `Deletes this persona.${usedBy.length > 0 ? ` ${usedBy.length} agent(s) still name it and will fail to load it.` : ''}`
+              : 'Deletes this persona.'
           }
         >
           {remove.isError && (
@@ -356,7 +333,6 @@ export function PersonaLibrary() {
   const search = useSearch({ strict: false }) as { persona?: unknown };
   const requested = typeof search.persona === 'string' ? search.persona : null;
   const personas = usePersonas();
-  const ravens = useRavens();
   const create = useCreatePersona();
   const [query, setQuery] = useState('');
   const [source, setSource] = useState<PersonaSource>('all');
@@ -364,31 +340,21 @@ export function PersonaLibrary() {
   const [creating, setCreating] = useState(false);
 
   const list = useMemo(() => personas.data ?? [], [personas.data]);
-  const fleet = useMemo(() => ravens.data ?? [], [ravens.data]);
-  const usage = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const ravn of fleet) {
-      if (ravn.personaName) counts.set(ravn.personaName, (counts.get(ravn.personaName) ?? 0) + 1);
-    }
-    return (name: string) => counts.get(name) ?? 0;
-  }, [fleet]);
   const counts = useMemo(
     () => ({
       all: list.length,
-      'in-use': list.filter((persona) => usage(persona.name) > 0).length,
       custom: list.filter(isCustomPersona).length,
     }),
-    [list, usage],
+    [list],
   );
   const families = useMemo(
     () =>
       groupPersonaFamilies(
         list.filter(
-          (persona) =>
-            matchesPersonaQuery(persona, query) && matchesPersonaSource(persona, source, usage),
+          (persona) => matchesPersonaQuery(persona, query) && matchesPersonaSource(persona, source),
         ),
       ),
-    [list, query, source, usage],
+    [list, query, source],
   );
   const selectedName =
     (requested && list.some((persona) => persona.name === requested) ? requested : null) ??
@@ -401,17 +367,6 @@ export function PersonaLibrary() {
       to: '/ravn/personas' as never,
       search: (name ? { persona: name } : {}) as never,
     });
-  }
-
-  function openRavn(ravn: Ravn) {
-    void navigate({
-      to: '/ravn' as never,
-      search: { ravn: ravn.id, instance_id: ravn.instanceId, tab: 'chat' } as never,
-    });
-  }
-
-  function deploy(name: string) {
-    void navigate({ to: '/ravn' as never, search: { deploy: name } as never });
   }
 
   if (personas.isLoading) {
@@ -507,7 +462,6 @@ export function PersonaLibrary() {
                 </button>
                 {!isClosed &&
                   family.personas.map((persona) => {
-                    const used = usage(persona.name);
                     return (
                       <button
                         key={persona.name}
@@ -522,8 +476,8 @@ export function PersonaLibrary() {
                           <span className="rw-prow__name">{persona.name}</span>
                           <span className="rw-prow__sub">{personaTagline(persona)}</span>
                         </span>
-                        <span className={cn(used > 0 ? 'rw-prow__used' : 'rw-prow__badge')}>
-                          {used > 0 ? `● ${used}` : isCustomPersona(persona) ? 'custom' : ''}
+                        <span className="rw-prow__badge">
+                          {isCustomPersona(persona) ? 'custom' : ''}
                         </span>
                       </button>
                     );
@@ -540,10 +494,7 @@ export function PersonaLibrary() {
             key={selectedName}
             name={selectedName}
             taken={list.map((persona) => persona.name)}
-            usedBy={fleet.filter((ravn) => ravn.personaName === selectedName)}
             onSelect={select}
-            onOpenRavn={openRavn}
-            onDeploy={deploy}
             onBack={() => select(null)}
           />
         ) : (

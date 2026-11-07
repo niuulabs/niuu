@@ -1,15 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { createSeedRealms } from '@niuulabs/plugin-valkyrie';
-import {
-  createCallLog,
-  fakeMimir,
-  fakePersonas,
-  fakeRealmService,
-  fakeResidents,
-  fakeVolundr,
-} from '../testing/fakes';
+import { createMockTingService, createMockWorkService } from '@niuulabs/plugin-ting';
+import { createSeedRealms } from '../adapters/mock';
+import { createCallLog, fakeMimir, fakeRealmService, fakeVolundr } from '../testing/fakes';
 import { renderRealms } from '../testing/renderRealms';
 
 async function populated(log = createCallLog()) {
@@ -26,24 +20,6 @@ async function populated(log = createCallLog()) {
       mount_target: 'ymir',
     },
   });
-  const residents = fakeResidents(log);
-  await residents.deploy({
-    name: 'valhalla',
-    profileId: 'profile-1',
-    instanceId: 'inst-1',
-    personaName: 'realm-valhalla',
-  });
-  residents.listSessions = async () =>
-    [
-      {
-        id: 'sess-1',
-        ravnId: 'ravn-1',
-        personaName: 'realm-valhalla',
-        status: 'running',
-        model: 'm',
-        createdAt: '',
-      },
-    ] as never;
   const mimir = fakeMimir(log);
   await mimir.mounts.deployInstance!({ name: 'realm-valhalla', backend: 'mimir', target: 'ymir' });
   const volundr = fakeVolundr(log);
@@ -54,32 +30,44 @@ async function populated(log = createCallLog()) {
         name: 'fix flaky test',
         status: 'running',
         model: 'claude',
-        personaName: 'realm-valhalla',
       },
-      { id: 's-2', name: 'other', status: 'completed', model: 'claude', personaName: 'someone' },
+      { id: 's-2', name: 'other', status: 'completed', model: 'claude' },
     ] as never;
-  const personas = fakePersonas(log);
-  await personas.createPersona({
-    name: 'realm-valhalla',
-    description: 'Keep valhalla humming.',
-  } as never);
   return {
-    'valkyrie.realms': realms,
-    'ravn.residents': residents,
-    'ravn.ravens': residents,
-    'ravn.personas': personas,
+    'realms.governance': realms,
+    // The board's one ticket is coordinated by session s-1, which is what makes it the
+    // workspace's session.
+    ting: {
+      ...createMockTingService(),
+      getSagas: async () => [{ id: 'link-1', trackerId: 'board-1', name: 'Board' }],
+    },
+    'ting.work': {
+      ...createMockWorkService(),
+      get: async () => ({
+        board: null,
+        tasks: [
+          {
+            source: { issueId: 'i-1', identifier: 'LXA-1', url: '' },
+            title: 'First ticket',
+            coordinator: { sessionId: 's-1' },
+          },
+        ],
+        coordinators: [],
+        coverage: [],
+      }),
+    },
     mimir,
     volundr,
   };
 }
 
-describe('RealmPage with a running resident', () => {
+describe('RealmPage of a populated workspace', () => {
   afterEach(() => {
     cleanup();
     localStorage.clear();
   });
 
-  it('shows sessions, QA findings, the conversation and workspace memory', async () => {
+  it('shows sessions, QA findings and workspace memory', async () => {
     const user = userEvent.setup();
     const log = createCallLog();
     const { router } = renderRealms('/realms/valhalla', await populated(log), log);
@@ -87,17 +75,11 @@ describe('RealmPage with a running resident', () => {
     await waitFor(() =>
       expect(screen.getByTestId('queue-findings')).toHaveTextContent('QA findings1'),
     );
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'New conversation' })).toBeInTheDocument(),
-    );
-    await user.click(screen.getByRole('button', { name: 'New conversation' }));
-    await screen.findByText(/not used in tests/);
     await user.click(screen.getByRole('button', { name: /^Board/ }));
     expect(await screen.findByText(/QA findings · 1/)).toBeInTheDocument();
     expect(screen.getAllByText(/LXA-1/).length).toBeGreaterThan(0);
     await user.click(screen.getByRole('button', { name: /^Sessions/ }));
-    expect(await screen.findByText(/Resident logs/)).toBeInTheDocument();
-    expect(screen.getByText('fix flaky test')).toBeInTheDocument();
+    expect(await screen.findByText('fix flaky test')).toBeInTheDocument();
     expect(screen.queryByText('other')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Memory' }));
     const exploreLink = await screen.findByRole('link', {
@@ -108,20 +90,12 @@ describe('RealmPage with a running resident', () => {
     expect(router.state.location.search).toEqual({ mount: 'realm-valhalla' });
   });
 
-  it('lets you decide a pending review and finish the walkthrough', async () => {
+  it('hides the walkthrough and brings it back', async () => {
     const user = userEvent.setup();
-    localStorage.setItem(
-      'niuu.compactUx.walkthrough.first-realm',
-      JSON.stringify({ done: ['template', 'connect', 'charter', 'trust'], hidden: false }),
-    );
     const log = createCallLog();
     renderRealms('/realms/valhalla', await populated(log), log);
     await screen.findByTestId('realm-page');
-    const finish = await screen.findByRole('button', { name: 'I answered its first question' });
-    await user.click(finish);
-    await screen.findByText('Done. Nicely kept.');
-    expect(screen.getByText('What it did')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Hide walkthrough' }));
+    await user.click(await screen.findByRole('button', { name: 'Hide walkthrough' }));
     expect(screen.queryByTestId('walkthrough-rail')).not.toBeInTheDocument();
     await user.click(screen.getByTestId('walkthrough-show'));
     expect(await screen.findByTestId('walkthrough-rail')).toBeInTheDocument();
@@ -141,38 +115,20 @@ describe('RealmPage with a running resident', () => {
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
   });
 
-  it('pauses and removes the resident from its tab', async () => {
-    const user = userEvent.setup();
-    const log = createCallLog();
-    renderRealms('/realms/valhalla?tab=resident', await populated(log), log);
-    await screen.findByTestId('realm-settings');
-    await user.click(screen.getByRole('button', { name: 'Lifecycle' }));
-    await screen.findByTestId('resident-controls');
-    await user.click(screen.getByRole('button', { name: 'Pause' }));
-    await waitFor(() => expect(log.calls).toContain('applyLifecycle:valhalla:suspend'));
-    await user.click(screen.getByTestId('resident-remove'));
-    await user.click(screen.getByRole('button', { name: 'Keep it' }));
-    expect(screen.getByTestId('resident-remove')).toBeInTheDocument();
-    await user.click(screen.getByTestId('resident-remove'));
-    await user.click(screen.getByTestId('resident-remove-confirm'));
-    await waitFor(() => expect(log.calls).toContain('deleteResident:valhalla'));
-  });
-
   it('deletes the realm in two clicks and lands on the home page', async () => {
     const user = userEvent.setup();
     const log = createCallLog();
-    const { router } = renderRealms('/realms/valhalla?tab=resident', await populated(log), log);
-    await screen.findByTestId('realm-settings');
-    await user.click(screen.getByRole('button', { name: 'Lifecycle' }));
+    const { router } = renderRealms('/realms/valhalla?tab=settings', await populated(log), log);
     await screen.findByTestId('realm-teardown');
     await user.click(screen.getByTestId('realm-delete'));
     await user.click(screen.getByTestId('realm-delete-confirm'));
     await waitFor(() => expect(log.calls).toContain('deleteRealm:valhalla'));
     await waitFor(() => expect(router.state.location.pathname).toBe('/realms'));
-    expect(log.calls).toContain('deletePersona:realm-valhalla');
+    expect(log.calls).toContain('deleteRoutingRule:realm-valhalla');
+    expect(log.calls.some((call) => call.startsWith('deleteResident'))).toBe(false);
   });
 
-  it('clones the realm into the wizard with its charter and trust', async () => {
+  it('clones the realm into the wizard with its template and trust', async () => {
     const user = userEvent.setup();
     const log = createCallLog();
     const { router } = renderRealms('/realms/valhalla', await populated(log), log);
@@ -182,7 +138,8 @@ describe('RealmPage with a running resident', () => {
     await screen.findByTestId('wizard-step-connect');
     await user.click(screen.getByTestId('realm-continue'));
     await screen.findByTestId('wizard-step-charter');
-    expect(screen.getByTestId('realm-charter')).toHaveValue('Keep valhalla humming.');
+    expect(screen.getByTestId('realm-charter')).toHaveValue('');
+    expect(screen.getByRole('group', { name: 'deploy trust' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Back' }));
     await screen.findByTestId('wizard-step-connect');
   });

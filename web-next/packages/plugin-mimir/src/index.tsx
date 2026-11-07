@@ -33,7 +33,7 @@ export const mimirPlugin = definePlugin({
     { id: 'registry', label: 'Library', path: '/mimir/registry' },
   ],
   routes: (rootRoute) => [
-    ...['wardens', 'health', 'analytics'].map((section) =>
+    ...['health', 'analytics'].map((section) =>
       createRoute({
         getParentRoute: () => rootRoute,
         path: `/mimir/registry/${section}`,
@@ -62,11 +62,6 @@ export const mimirPlugin = definePlugin({
     }),
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/mimir/ravns',
-      component: RegistryWorkspace,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
       path: '/mimir/health',
       component: RegistryWorkspace,
     }),
@@ -78,11 +73,6 @@ export const mimirPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/mimir/doctor',
-      component: RegistryWorkspace,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/mimir/dreams',
       component: RegistryWorkspace,
     }),
     createRoute({
@@ -142,10 +132,9 @@ export type {
   Page,
   SearchResult,
 } from './domain/page';
-export type { LintRule, IssueSeverity, LintIssue, LintReport, DreamCycle } from './domain/lint';
+export type { LintRule, IssueSeverity, LintIssue, LintReport } from './domain/lint';
 export type { WriteRoutingRule, RouteTestResult } from './domain/routing';
 export { resolveRoute } from './domain/routing';
-export type { RavnState, RavnBinding } from './domain/ravn-binding';
 export type { Source, OriginType } from './domain/source';
 export type { EntityKind, EntityMeta } from './domain/entity';
 export type { RegistryMount } from './domain/registry';

@@ -1177,17 +1177,17 @@ def test_embedding_search_falls_back_to_page_search(client_with_page: TestClient
     assert result["mount_name"] == "test"
 
 
-def test_lint_reassign_persists_assignee_on_response(client_with_page: TestClient) -> None:
-    lint_report = client_with_page.get("/mimir/lint")
-    issue_id = lint_report.json()["issues"][0]["id"]
+def test_lint_reassign_route_is_gone(client_with_page: TestClient) -> None:
     resp = client_with_page.post(
-        "/mimir/lint/reassign",
-        json={"issue_ids": [issue_id], "assignee": "ravn-fjolnir"},
+        "/mimir/lint/reassign", json={"issue_ids": [], "assignee": "ravn-a"}
     )
-    assert resp.status_code == 200
-    issues = [issue for issue in resp.json()["issues"] if issue["id"] == issue_id]
+    assert resp.status_code in {404, 405}
+
+
+def test_lint_issues_carry_no_assignee(client_with_page: TestClient) -> None:
+    issues = client_with_page.get("/mimir/lint").json()["issues"]
     assert issues
-    assert all(issue["assignee"] == "ravn-fjolnir" for issue in issues)
+    assert all("assignee" not in issue for issue in issues)
 
 
 def test_file_ingest_endpoint_returns_source_shape(client: TestClient) -> None:

@@ -1,32 +1,16 @@
 import { Link } from '@tanstack/react-router';
-import type { Ravn } from '@niuulabs/plugin-ravn';
-import type { EnvironmentSummary, RealmSummary, ValkyrieResident } from '@niuulabs/plugin-valkyrie';
-import { wakefulnessCopy } from '@niuulabs/plugin-valkyrie';
-import { Chip, StateDot, type DotState } from '@niuulabs/ui';
+import { Chip } from '@niuulabs/ui';
+import type { RealmSummary } from '../domain/governance';
 import type { RealmBinding } from '../domain/realm';
-import { TemplateIcon, agoLabel, templateLabel } from './icons';
+import { TemplateIcon, templateLabel } from './icons';
 
 export interface RealmCardProps {
   realm: RealmSummary;
-  resident: ValkyrieResident | null;
-  ravn: Ravn | null;
-  environment?: EnvironmentSummary | null;
   binding?: RealmBinding | null;
   boardName?: string | null;
-  pendingReviews: number;
   waitingTickets?: number;
   runningSessions: number;
 }
-
-/** Red is for failures; "watch" and "unknown" are not failures. */
-const FAILING_HEALTH = new Set(['degraded', 'critical', 'unhealthy', 'failed', 'down']);
-
-const WAKEFULNESS_DOT: Record<string, DotState> = {
-  wakeful: 'healthy',
-  watching: 'observing',
-  dreaming: 'processing',
-  sleeping: 'unknown',
-};
 
 function Stat({ value, label, attention }: { value: number; label: string; attention?: boolean }) {
   return (
@@ -41,33 +25,14 @@ function Stat({ value, label, attention }: { value: number; label: string; atten
   );
 }
 
-/** One realm on the home screen: who keeps it, what is moving, what needs you. */
+/** One realm on the home screen: what it is bound to, what is moving, what needs you. */
 export function RealmCard({
   realm,
-  resident,
-  ravn,
-  environment = null,
   binding = null,
   boardName = null,
-  pendingReviews,
   waitingTickets = 0,
   runningSessions,
 }: RealmCardProps) {
-  const wakefulness = resident?.wakefulness ?? null;
-  const dot: DotState = wakefulness
-    ? (WAKEFULNESS_DOT[wakefulness] ?? 'unknown')
-    : ravn
-      ? 'healthy'
-      : 'unknown';
-  const stateLabel = wakefulness
-    ? wakefulnessCopy(wakefulness).label
-    : ravn
-      ? ravn.status
-      : 'no resident yet';
-  const unresolved = environment?.unresolvedSignalCount ?? 0;
-  const acted = agoLabel(resident?.lastActionAt);
-  const needsYou = pendingReviews + waitingTickets;
-
   return (
     <article
       className="niuu:flex niuu:flex-col niuu:gap-3 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-3.5"
@@ -89,45 +54,33 @@ export function RealmCard({
             {templateLabel(binding?.template)} · {binding?.repo || realm.slug}
           </span>
         </div>
-        <Chip tone={wakefulness === 'wakeful' ? 'brand' : 'muted'}>
-          <StateDot state={dot} pulse={wakefulness === 'wakeful'} size={6} />
-          {stateLabel}
-        </Chip>
       </div>
       <div className="niuu:flex niuu:flex-wrap niuu:gap-1.5">
         {binding?.trackerBoard ? (
           <Chip tone="muted">board {boardName ?? binding.trackerBoard}</Chip>
         ) : null}
         {binding?.bugBoard ? <Chip tone="muted">bugs {binding.bugBoard}</Chip> : null}
-        {environment ? (
-          <Chip tone={FAILING_HEALTH.has(environment.health) ? 'critical' : 'muted'}>
-            {unresolved > 0 ? `${unresolved} open signals` : environment.health}
-          </Chip>
-        ) : null}
-        {!binding && !environment ? (
+        {!binding ? (
           <span className="niuu:text-[11px] niuu:text-text-faint">nothing bound yet</span>
         ) : null}
       </div>
       <div className="niuu:flex niuu:gap-4 niuu:border-t niuu:border-border-subtle niuu:pt-2.5">
         <Stat value={runningSessions} label="in sessions" />
-        <Stat value={needsYou} label="needs you" attention={needsYou > 0} />
-        {resident ? <Stat value={resident.toolCount} label="tools" /> : null}
+        <Stat value={waitingTickets} label="needs you" attention={waitingTickets > 0} />
       </div>
       <div className="niuu:flex niuu:items-center niuu:justify-between">
-        <span className="niuu:text-[11px] niuu:text-text-faint">
-          {acted ? `last acted ${acted}` : realm.autonomy_profile}
-        </span>
+        <span className="niuu:text-[11px] niuu:text-text-faint">{realm.autonomy_profile}</span>
         <Link
           to="/realms/$slug"
           params={{ slug: realm.slug }}
-          search={(pendingReviews === 0 && waitingTickets > 0 ? { tab: 'board' } : {}) as never}
+          search={(waitingTickets > 0 ? { tab: 'board' } : {}) as never}
           className={
-            needsYou > 0
+            waitingTickets > 0
               ? 'niuu:rounded-md niuu:border niuu:border-brand/50 niuu:bg-brand/10 niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:text-brand-300'
               : 'niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-text-secondary'
           }
         >
-          {needsYou > 0 ? `Review ${needsYou}` : 'Open ›'}
+          {waitingTickets > 0 ? `Review ${waitingTickets}` : 'Open ›'}
         </Link>
       </div>
     </article>

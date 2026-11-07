@@ -188,7 +188,7 @@ class TestLintAcrossMounts:
             "detail": "gbrain has no equivalent for lint.",
         }
 
-    def test_fix_and_reassign_report_the_unsupported_mount_too(self, tmp_path: Path) -> None:
+    def test_fix_reports_the_unsupported_mount_too(self, tmp_path: Path) -> None:
         _page(tmp_path / "shared", "notes/a.md", "A")
         client = _client(
             [
@@ -198,14 +198,10 @@ class TestLintAcrossMounts:
         )
 
         fixed = client.post("/mimir/lint/fix")
-        reassigned = client.post(
-            "/mimir/lint/reassign", json={"issue_ids": [], "assignee": "ravn-a"}
-        )
 
-        for response in (fixed, reassigned):
-            assert response.status_code == 200
-            statuses = {m["name"]: m["status"] for m in response.json()["mounts"]}
-            assert statuses == {"shared": "linted", "gbrain-kanuck": "unsupported"}
+        assert fixed.status_code == 200
+        statuses = {m["name"]: m["status"] for m in fixed.json()["mounts"]}
+        assert statuses == {"shared": "linted", "gbrain-kanuck": "unsupported"}
 
     def test_naming_the_unsupported_mount_is_still_501(self, tmp_path: Path) -> None:
         client = _client(

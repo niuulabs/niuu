@@ -584,43 +584,6 @@ describe('buildMimirHttpAdapter', () => {
     });
   });
 
-  describe('lint.getDreamCycles', () => {
-    it('calls GET /dreams with limit', async () => {
-      const client = makeClient({ get: vi.fn().mockResolvedValue([]) });
-      await buildMimirHttpAdapter(client).lint.getDreamCycles(5);
-      expect(client.get).toHaveBeenCalledWith('/dreams?limit=5');
-    });
-
-    it('maps raw dream cycle fields', async () => {
-      const raw = [
-        {
-          id: 'dream-1',
-          timestamp: '2026-04-19T03:00:00Z',
-          ravn: 'ravn-fjolnir',
-          mounts: ['local'],
-          pages_updated: 8,
-          entities_created: 2,
-          lint_fixes: 1,
-          duration_ms: 42000,
-        },
-      ];
-      const client = makeClient({ get: vi.fn().mockResolvedValue(raw) });
-      const cycles = await buildMimirHttpAdapter(client).lint.getDreamCycles();
-      expect(cycles[0]).toMatchObject({
-        id: 'dream-1',
-        pagesUpdated: 8,
-        entitiesCreated: 2,
-        lintFixes: 1,
-        durationMs: 42000,
-      });
-    });
-
-    it('returns an empty list when dreams are not implemented yet', async () => {
-      const client = makeClient({ get: vi.fn().mockRejectedValue(missingRoute()) });
-      await expect(buildMimirHttpAdapter(client).lint.getDreamCycles()).resolves.toEqual([]);
-    });
-  });
-
   describe('lint.getActivityLog', () => {
     it('calls GET /activity with limit', async () => {
       const client = makeClient({ get: vi.fn().mockResolvedValue([]) });
@@ -1365,22 +1328,6 @@ describe('buildMimirHttpAdapter', () => {
     });
   });
 
-  describe('mounts.listRavnBindings', () => {
-    it('returns bindings from the backend when the route exists', async () => {
-      const client = makeClient({
-        get: vi.fn().mockResolvedValue([{ id: 'binding-1', ravnId: 'ravn-1', mountName: 'local' }]),
-      });
-      await expect(buildMimirHttpAdapter(client).mounts.listRavnBindings()).resolves.toEqual([
-        { id: 'binding-1', ravnId: 'ravn-1', mountName: 'local' },
-      ]);
-    });
-
-    it('returns an empty list when ravn bindings are unavailable', async () => {
-      const client = makeClient({ get: vi.fn().mockRejectedValue(missingRoute()) });
-      await expect(buildMimirHttpAdapter(client).mounts.listRavnBindings()).resolves.toEqual([]);
-    });
-  });
-
   describe('mounts.getEvalReport', () => {
     it('calls GET /eval/latest and maps the wire shape', async () => {
       const client = makeClient({
@@ -1513,21 +1460,6 @@ describe('buildMimirHttpAdapter', () => {
     it('rethrows non-404 errors from the fix route', async () => {
       const client = makeClient({ post: vi.fn().mockRejectedValue(new Error('boom')) });
       await expect(buildMimirHttpAdapter(client).mounts.runDoctorFixes()).rejects.toThrow('boom');
-    });
-  });
-
-  describe('lint.reassignIssues', () => {
-    it('calls POST /lint/reassign with issue ids and assignee', async () => {
-      const client = makeClient({
-        post: vi.fn().mockResolvedValue({ issues: [], pages_checked: 0 }),
-      });
-
-      await buildMimirHttpAdapter(client).lint.reassignIssues(['lint-1'], 'ravn-fjolnir');
-
-      expect(client.post).toHaveBeenCalledWith('/lint/reassign', {
-        issue_ids: ['lint-1'],
-        assignee: 'ravn-fjolnir',
-      });
     });
   });
 });

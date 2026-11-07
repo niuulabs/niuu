@@ -39,7 +39,6 @@ class CapabilityListTool(ToolPort):
         skill_manager: SkillManagementRegistry | None = None,
         workflow_sources: Sequence[WorkflowCapabilityPort] | None = None,
         learned_tools_provider: Callable[[], Sequence[Any]] | None = None,
-        retired_learned_tools: Callable[[], Sequence[Any]] | None = None,
         refused_learned_tools: Callable[[], Sequence[Any]] | None = None,
         agent_directory: PeerAgentDirectoryPort | None = None,
     ) -> None:
@@ -50,10 +49,6 @@ class CapabilityListTool(ToolPort):
         # Returns learned-tool artifact envelopes (manifest name/description/
         # schema) read from disk — never loaded as callables here (NIU-1118).
         self._learned_tools_provider = learned_tools_provider
-        # Retired tools stay out of the listing — that is what retiring is for —
-        # but a query that matches one says so, because asking build_tool for
-        # it restores it instead of building it again.
-        self._retired_learned_tools = retired_learned_tools
         # Installed tools this resident's execution backend refuses to load.
         # `learned_tools_provider` must already exclude them; they are named
         # here, apart from the callable catalog, so the resident sees that the
@@ -73,11 +68,9 @@ class CapabilityListTool(ToolPort):
             "and peer Agent Card skills. Use this before building new tools so existing "
             "capabilities are not duplicated. Entries tagged 'learned' are not native "
             "tools — execute them by name with learned_tool_run; their usage (runs, "
-            "successes, last use) says which ones work. To fix or extend one, call "
-            "build_tool for the same capability with replace=true: it builds the next "
-            "version of that tool in place. Installed learned tools this resident's "
-            "backend cannot load are never listed as capabilities; their names appear "
-            "under unavailable_learned_tools and they need that same build_tool repair. "
+            "successes, last use) says which ones work. Installed learned tools this "
+            "resident's backend cannot load are never listed as capabilities; their "
+            "names appear under unavailable_learned_tools. "
             "Listing is compact and omits input schemas; pass names: [...] for the full "
             "entry, including schema "
             "and lifecycle/usage/failure/supersession evidence, of the ones you care "
@@ -194,9 +187,7 @@ class CapabilityListTool(ToolPort):
             payload["unavailable_next_step"] = (
                 "These installed learned tools are NOT callable on this resident: its "
                 "execution backend refuses to load them. Do not call them through "
-                "learned_tool_run. Call build_tool for the same capability with "
-                "replace=true to rebuild the tool self-contained. Pass `query` or "
-                "`names` to see the reason for each."
+                "learned_tool_run. Pass `query` or `names` to see the reason for each."
             )
             details = [
                 _unavailable_entry(item)
@@ -215,9 +206,6 @@ class CapabilityListTool(ToolPort):
             payload["not_found"] = missing
         if query:
             payload["query"] = query
-            retired = self._retired_matches(query)
-            if retired:
-                payload["retired_matches"] = retired
         telemetry = get_observability()
         telemetry.set_attributes(
             {
@@ -305,8 +293,7 @@ class CapabilityListTool(ToolPort):
                         if isinstance(verification, dict) and verification.get("ok") is False
                         else "unknown"
                     )
-                    # Skip names already exposed natively (legacy bulk mode, or
-                    # a tool build_tool registered live in this session).
+                    # Skip names already exposed natively (legacy bulk mode).
                     if manifest.name in native_names:
                         continue
                     capabilities.append(
@@ -436,35 +423,6 @@ class CapabilityListTool(ToolPort):
             return []
         return list(self._refused_learned_tools())
 
-    def _retired_matches(self, query: str) -> list[dict[str, Any]]:
-        if self._retired_learned_tools is None:
-            return []
-        needle = query.casefold()
-        matches: list[dict[str, Any]] = []
-        for entry in self._retired_learned_tools():
-            manifest = entry.artifact.manifest
-            if needle not in manifest.name.casefold() and needle not in (
-                manifest.description.casefold()
-            ):
-                continue
-            record = entry.lifecycle
-            matches.append(
-                {
-                    "name": manifest.name,
-                    "description": manifest.description,
-                    "retired_reason": record.archived_reason if record else "",
-                    "retired_detail": record.archived_detail if record else "",
-                    "superseded_by": record.superseded_by if record else "",
-                    "next_step": (
-                        f"Use {record.superseded_by!r} instead."
-                        if record and record.superseded_by
-                        else "Call build_tool for this capability (its name or capability_id): "
-                        "it restores this tool instead of building a new one."
-                    ),
-                }
-            )
-        return matches
-
     def _learned_tool_lifecycle(self, name: str) -> dict[str, Any]:
         if self._skill_manager is None:
             return {"status": "unmanaged"}
@@ -502,8 +460,7 @@ def _unavailable_entry(refused: Any) -> dict[str, Any]:
         "description": manifest.description,
         "reason": refused.reason,
         "next_step": (
-            f"Call build_tool for this capability ({manifest.name!r}) with replace=true, "
-            "producing a self-contained version that this resident's backend can load."
+            f"{manifest.name!r} cannot run on this resident's execution backend; see `reason`."
         ),
     }
 

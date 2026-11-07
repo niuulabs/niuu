@@ -16,8 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-import posixpath
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -484,15 +483,10 @@ class MimirReadSourceTool(ToolPort):
 
 
 class MimirWriteTool(ToolPort):
-    """Create or update a Mímir wiki page.
+    """Create or update a Mímir wiki page."""
 
-    Pages under *reserved_prefixes* are records Ravn keeps itself and parses
-    back, so the model can read them but never write them.
-    """
-
-    def __init__(self, adapter: MimirPort, *, reserved_prefixes: Sequence[str] = ()) -> None:
+    def __init__(self, adapter: MimirPort) -> None:
         self._adapter = adapter
-        self._reserved_prefixes = tuple(prefix.strip("/") for prefix in reserved_prefixes)
 
     @property
     def name(self) -> str:
@@ -556,18 +550,6 @@ class MimirWriteTool(ToolPort):
                 is_error=True,
             )
 
-        reserved = self._reserved_prefix(path)
-        if reserved is not None:
-            return ToolResult(
-                tool_call_id="",
-                content=(
-                    f"{reserved}/ pages are records Ravn keeps itself: it parses them back and "
-                    "overwrites them, so a hand edit is lost or breaks the dream cycle. Write "
-                    f"the decision or resolution on a page outside {reserved}/ instead."
-                ),
-                is_error=True,
-            )
-
         provenance_error = await _validate_research_page_provenance(
             self._adapter,
             path=path,
@@ -583,13 +565,6 @@ class MimirWriteTool(ToolPort):
         await self._adapter.upsert_page(path, content, mimir=mimir)
         suffix = f" (routed to: {mimir})" if mimir else ""
         return ToolResult(tool_call_id="", content=f"Page written: {path}{suffix}")
-
-    def _reserved_prefix(self, path: str) -> str | None:
-        normalized = posixpath.normpath(path).lstrip("/")
-        for prefix in self._reserved_prefixes:
-            if normalized.startswith(f"{prefix}/"):
-                return prefix
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -981,20 +956,18 @@ def build_mimir_tools(
     workspace: Path | None = None,
     entity_extractor: EntityExtractor | None = None,
     event_emitter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
-    reserved_prefixes: Sequence[str] = (),
 ) -> list[ToolPort]:
     """Return all Mímir tools wired to *adapter*.
 
     When *entity_extractor* is provided it is wired into :class:`MimirIngestTool`
     so that LLM-based entity detection runs automatically on every ingest.
-    *reserved_prefixes* are page prefixes :class:`MimirWriteTool` refuses.
     """
     tools: list[ToolPort] = [
         MimirIngestTool(adapter, entity_extractor=entity_extractor, event_emitter=event_emitter),
         MimirQueryTool(adapter),
         MimirReadTool(adapter),
         MimirReadSourceTool(adapter),
-        MimirWriteTool(adapter, reserved_prefixes=reserved_prefixes),
+        MimirWriteTool(adapter),
         MimirPublishArtifactTool(adapter),
         MimirSearchTool(adapter),
         MimirLintTool(adapter),

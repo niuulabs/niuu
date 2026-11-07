@@ -10,7 +10,7 @@ from ravn.domain.environment import (
     example_environments,
     k8s_environment_fixture,
 )
-from sleipnir.domain.catalog import learning_promoted, signal_received
+from sleipnir.domain.catalog import signal_received
 from sleipnir.domain.events import SleipnirEvent
 
 
@@ -38,36 +38,8 @@ def test_environment_examples_share_one_serializable_model() -> None:
             "unknown",
         }
         assert loaded.action_capabilities
-        assert loaded.wakefulness.wakefulness_enabled is True
         assert loaded.flock_memberships
         assert loaded.learning_scopes
-
-
-def test_environment_projects_to_existing_ravn_config_and_derived_nats_subjects() -> None:
-    environment = k8s_environment_fixture()
-    config = EnvironmentConfig(**environment.to_ravn_environment_config())
-
-    assert config.id == "cluster-prod-a"
-    assert config.type == "k8s"
-    assert config.flocks == ["k8s-valkyries"]
-    assert [source.id for source in config.signal_sources] == [
-        "kubernetes-events",
-        "prometheus-alerts",
-    ]
-    assert config.signal_sources[0].adapter == "ravn.adapters.environment.kubernetes"
-    assert config.signal_sources[0].kwargs == {
-        "metadata": {"cluster": "prod-a"},
-        "replay_cursor": "",
-    }
-    assert config.signal_subjects == []
-    assert environment.signal_subjects() == [
-        "ravn.environment.signal.kubernetes.*",
-        "ravn.environment.environment.state",
-        "ravn.environment.signal.metrics.*",
-    ]
-    assert environment.subject_for_event_type("valkyrie.judgment.proposed") == (
-        "ravn.environment.valkyrie.judgment.proposed"
-    )
 
 
 def test_environment_projects_to_existing_skuld_participant_metadata() -> None:
@@ -129,31 +101,6 @@ def test_environment_metadata_flows_through_sleipnir_event_roundtrip() -> None:
     assert round_tripped.payload["topology_ref"]["type_id"] == "cluster"
     assert round_tripped.payload["nats_subject"] == "ravn.environment.signal.kubernetes.event"
     assert round_tripped.payload["root_correlation_id"] == "corr-k8s-scheduled"
-
-
-def test_environment_metadata_covers_learning_provenance() -> None:
-    environment = k8s_environment_fixture()
-    event = learning_promoted(
-        environment_id=environment.id,
-        learning_id="learn-oom-normal",
-        from_scope="environment",
-        to_scope="flock",
-        summary="Recovered OOM restarts can stay in watch before escalation.",
-        confidence=0.82,
-        source="valkyrie:k8s-prod-a",
-        correlation_id="corr-oom",
-    )
-
-    enriched = apply_environment_metadata(event, environment)
-
-    assert enriched.payload["environment_id"] == "cluster-prod-a"
-    assert enriched.payload["flock_ids"] == ["k8s-valkyries"]
-    assert enriched.payload["learning_scopes"] == [
-        "private:cluster-prod-a",
-        "environment:cluster-prod-a",
-        "flock:k8s-valkyries",
-    ]
-    assert enriched.payload["nats_subject"] == "ravn.environment.learning.promoted"
 
 
 def test_environment_projects_into_existing_observatory_topology_types() -> None:

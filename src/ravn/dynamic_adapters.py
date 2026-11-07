@@ -2,7 +2,7 @@
 
 Implements the shared ``adapter:`` dotted-path + kwargs configuration pattern
 (see ``.claude/rules/dynamic-adapters.md``). Discovery composition modules
-(warden discovery, resident discovery, ...) build their adapter chains through
+(resident discovery, ...) build their adapter chains through
 these helpers instead of duplicating the import/kwargs plumbing.
 """
 

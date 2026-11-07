@@ -5,7 +5,6 @@ import type { IMimirService } from '../ports';
 import { useActiveMount } from '../application/useActiveMount';
 import { categoryColor } from './graphColors';
 import './InstanceInspection.css';
-import { RavnsPage } from './RavnsPage';
 import { DeploymentInspection } from './DeploymentInspection';
 
 export function InstanceInspection() {
@@ -184,8 +183,8 @@ export function InstanceInspection() {
               {instance.unavailable.length ? (
                 <>
                   <p className="mimir-empty-result">
-                    The knowledge adapter does not expose the metrics below. Managed runtime logs
-                    and native dream results are shown separately below.
+                    The knowledge adapter does not expose the metrics below. Managed runtime logs is
+                    shown separately below.
                   </p>
                   <ul>
                     {instance.unavailable.map((item) => (
@@ -199,9 +198,6 @@ export function InstanceInspection() {
             </section>
           </div>
           <DeploymentInspection instanceName={instance.mount} />
-          {instance.backend !== 'gbrain' && (
-            <RavnsPage key={instance.mount} instanceName={instance.mount} />
-          )}
         </div>
       )}
     </section>

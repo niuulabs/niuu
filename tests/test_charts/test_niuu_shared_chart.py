@@ -42,6 +42,31 @@ def test_embeds_valkyrie_history_migration_in_shared_db() -> None:
         assert blocks[filename] == (MIGRATIONS_DIR / filename).read_text().rstrip() + "\n"
 
 
+def test_shared_db_drops_the_retired_odin_review_and_valkyrie_history_tables() -> None:
+    template = (CHART_DIR / "templates" / "migrations-configmap.yaml").read_text()
+    blocks = _migration_blocks(template)
+
+    up = blocks["000110_drop_odin_review_and_valkyrie_history.up.sql"]
+    for table in (
+        "odin_review_items",
+        "valkyrie_decisions",
+        "valkyrie_actions",
+        "valkyrie_signals",
+    ):
+        assert f"DROP TABLE IF EXISTS {table};" in up
+    # The Forge relay tables (000089) never existed in the shared database.
+    assert "odin_review_relay" not in up
+
+    down = blocks["000110_drop_odin_review_and_valkyrie_history.down.sql"]
+    for table in (
+        "odin_review_items",
+        "valkyrie_decisions",
+        "valkyrie_actions",
+        "valkyrie_signals",
+    ):
+        assert f"CREATE TABLE IF NOT EXISTS {table} (" in down
+
+
 def test_shared_db_does_not_embed_volundr_session_migrations() -> None:
     template = (CHART_DIR / "templates" / "migrations-configmap.yaml").read_text()
     blocks = _migration_blocks(template)

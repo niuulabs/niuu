@@ -9,11 +9,11 @@ function makeLog(id: string, overrides: Partial<VolundrAggregatedLog> = {}): Vol
     sessionId: 'session-1',
     timestamp: Date.parse('2026-05-13T00:00:00Z'),
     level: 'info',
-    participant: 'warden-1',
-    participantLabel: 'Warden One',
+    participant: 'agent-1',
+    participantLabel: 'Agent One',
     participantKind: 'service',
     source: 'ravn.daemon',
-    message: 'dream cycle completed',
+    message: 'cycle completed',
     sequence: 1,
     stream: 'stdout',
     ...overrides,
@@ -27,8 +27,8 @@ describe('StructuredLogViewer', () => {
         logs={[
           makeLog('log-1'),
           makeLog('log-2', {
-            participant: 'warden-2',
-            participantLabel: 'Warden Two',
+            participant: 'agent-2',
+            participantLabel: 'Agent Two',
             participantKind: 'ravn',
             message: 'fresh source ingested',
           }),
@@ -37,19 +37,19 @@ describe('StructuredLogViewer', () => {
     );
 
     expect(screen.getByRole('button', { name: /All/i })).toBeInTheDocument();
-    expect(screen.getByTestId('log-participant-warden-1')).toHaveTextContent('Warden One');
-    expect(screen.getByTestId('log-participant-warden-2')).toHaveTextContent('Warden Two');
+    expect(screen.getByTestId('log-participant-agent-1')).toHaveTextContent('Agent One');
+    expect(screen.getByTestId('log-participant-agent-2')).toHaveTextContent('Agent Two');
 
-    fireEvent.click(screen.getByTestId('log-participant-warden-2'));
+    fireEvent.click(screen.getByTestId('log-participant-agent-2'));
     expect(screen.getByText('fresh source ingested')).toBeInTheDocument();
-    expect(screen.queryByText('dream cycle completed')).not.toBeInTheDocument();
+    expect(screen.queryByText('cycle completed')).not.toBeInTheDocument();
   });
 
   it('filters log lines by search query and falls back to the empty state', () => {
     render(
       <StructuredLogViewer
         logs={[
-          makeLog('log-1', { message: 'dream cycle completed' }),
+          makeLog('log-1', { message: 'cycle completed' }),
           makeLog('log-2', { message: 'lint autofix applied', source: 'mimir.lint' }),
         ]}
         emptyText="No matching daemon logs."
@@ -60,7 +60,7 @@ describe('StructuredLogViewer', () => {
       target: { value: 'lint' },
     });
     expect(screen.getByText('lint autofix applied')).toBeInTheDocument();
-    expect(screen.queryByText('dream cycle completed')).not.toBeInTheDocument();
+    expect(screen.queryByText('cycle completed')).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByRole('textbox', { name: /search logs/i }), {
       target: { value: 'missing-entry' },
@@ -91,35 +91,35 @@ describe('StructuredLogViewer', () => {
     const logs = [
       makeLog('log-1'),
       makeLog('log-2', {
-        participant: 'warden-2',
-        participantLabel: 'Warden Two',
+        participant: 'agent-2',
+        participantLabel: 'Agent Two',
         participantKind: 'ravn',
         message: 'new page compiled',
       }),
     ];
     const initialParticipants: VolundrLogParticipant[] = [
-      { id: 'warden-1', label: 'Warden One', kind: 'service' },
-      { id: 'warden-2', label: 'Warden Two', kind: 'ravn' },
+      { id: 'agent-1', label: 'Agent One', kind: 'service' },
+      { id: 'agent-2', label: 'Agent Two', kind: 'ravn' },
     ];
     const nextParticipants: VolundrLogParticipant[] = [
-      { id: 'warden-1', label: 'Warden One', kind: 'service' },
+      { id: 'agent-1', label: 'Agent One', kind: 'service' },
     ];
 
     const { rerender } = render(
       <StructuredLogViewer logs={logs} participants={initialParticipants} />,
     );
 
-    fireEvent.click(screen.getByTestId('log-participant-warden-2'));
+    fireEvent.click(screen.getByTestId('log-participant-agent-2'));
     expect(screen.getByText('new page compiled')).toBeInTheDocument();
-    expect(screen.queryByText('dream cycle completed')).not.toBeInTheDocument();
+    expect(screen.queryByText('cycle completed')).not.toBeInTheDocument();
 
     rerender(<StructuredLogViewer logs={logs} participants={nextParticipants} />);
-    expect(screen.getByText('dream cycle completed')).toBeInTheDocument();
+    expect(screen.getByText('cycle completed')).toBeInTheDocument();
     expect(screen.getByText('new page compiled')).toBeInTheDocument();
   });
 
   it('downloads the filtered logs and can hide toolbar controls', () => {
-    const createObjectURL = vi.fn(() => 'blob:warden-logs');
+    const createObjectURL = vi.fn(() => 'blob:agent-logs');
     const revokeObjectURL = vi.fn();
     const anchorClick = vi.fn();
     const createElement = vi.spyOn(document, 'createElement');
@@ -142,7 +142,7 @@ describe('StructuredLogViewer', () => {
     const { rerender } = render(
       <StructuredLogViewer
         logs={[makeLog('log-1')]}
-        downloadFilename="warden.log"
+        downloadFilename="agent.log"
         showParticipantFilters={false}
       />,
     );
@@ -151,7 +151,7 @@ describe('StructuredLogViewer', () => {
     fireEvent.click(screen.getByRole('button', { name: /download/i }));
     expect(createObjectURL).toHaveBeenCalledTimes(1);
     expect(anchorClick).toHaveBeenCalledTimes(1);
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:warden-logs');
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:agent-logs');
 
     rerender(<StructuredLogViewer logs={[makeLog('log-1')]} showDownload={false} />);
     expect(screen.queryByRole('button', { name: /download/i })).not.toBeInTheDocument();

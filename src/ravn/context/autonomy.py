@@ -11,7 +11,6 @@ from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
 
-from ravn.context.evolution import PromptEvolution
 from ravn.ports.permission import Allow, Deny, NeedsApproval, PermissionDecision
 
 
@@ -310,68 +309,6 @@ class JsonProposalStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"proposals": [p.to_dict() for p in self.list()]}
         self._path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-
-
-def proposals_from_evolution(
-    evolution: PromptEvolution,
-    *,
-    mode: str = AutonomyMode.GUARDED.value,
-    scope: str = ProposalScope.PRIVATE.value,
-    environment_id: str = "",
-    domain: str = "",
-) -> list[SelfImprovementProposal]:
-    """Convert mined ``PromptEvolution`` output into durable proposals."""
-    proposals: list[SelfImprovementProposal] = []
-    for skill in evolution.suggested_skills:
-        tools = ", ".join(skill.tool_pattern)
-        proposals.append(
-            SelfImprovementProposal(
-                proposal_id=str(uuid4()),
-                title=f"Create skill for {tools}",
-                artifact_type="skill",
-                action="create",
-                content=skill.description,
-                scope=scope,
-                environment_id=environment_id,
-                domain=domain,
-                mode=mode,
-                risk_class=RiskClass.LOW.value,
-                source_episode_ids=skill.source_episode_ids,
-                applied_artifact_refs={"requires_tools": tools},
-            )
-        )
-    for warning in evolution.system_warnings:
-        proposals.append(
-            SelfImprovementProposal(
-                proposal_id=str(uuid4()),
-                title="Add system warning",
-                artifact_type="system_prompt",
-                action="update",
-                content=warning.warning_text,
-                scope=ProposalScope.GLOBAL.value,
-                mode=mode,
-                risk_class=RiskClass.HIGH.value,
-                risk_boundaries=["global_doctrine"],
-                source_episode_ids=warning.source_outcome_ids,
-            )
-        )
-    for strategy in evolution.strategy_injections:
-        proposals.append(
-            SelfImprovementProposal(
-                proposal_id=str(uuid4()),
-                title=f"Add strategy for {strategy.task_type}",
-                artifact_type="strategy",
-                action="update",
-                content=strategy.strategy_text,
-                scope=scope,
-                environment_id=environment_id,
-                domain=domain or strategy.task_type,
-                mode=mode,
-                risk_class=RiskClass.MEDIUM.value,
-                source_episode_ids=strategy.source_episode_ids,
-            )
-        )
-    return proposals
 
 
 async def evaluate_and_store_proposals(

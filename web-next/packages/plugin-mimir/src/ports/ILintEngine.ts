@@ -1,10 +1,9 @@
-import type { LintReport, DreamCycle, ActivityEvent } from '../domain/lint';
+import type { LintReport, ActivityEvent } from '../domain/lint';
 
 /**
  * Port: ILintEngine
  *
- * Runs lint rules (L01–L12) across mounted pages, surfaces issues, and
- * tracks dream-cycle history.
+ * Runs lint rules (L01–L12) across mounted pages and surfaces issues.
  */
 export interface ILintEngine {
   /**
@@ -19,21 +18,6 @@ export interface ILintEngine {
    * when omitted) and return the updated lint report.
    */
   runAutoFix(issueIds?: string[]): Promise<LintReport>;
-
-  /**
-   * Assign one or more issues to a ravn and return the updated lint report.
-   *
-   * @param issueIds IDs of the issues to reassign.
-   * @param assignee Ravn ID to assign the issues to.
-   */
-  reassignIssues(issueIds: string[], assignee: string): Promise<LintReport>;
-
-  /**
-   * Fetch recent dream-cycle run records, most-recent-first.
-   *
-   * @param limit Maximum records to return (default: 20).
-   */
-  getDreamCycles(limit?: number): Promise<DreamCycle[]>;
 
   /**
    * Fetch recent activity events across all mounts, most-recent-first.

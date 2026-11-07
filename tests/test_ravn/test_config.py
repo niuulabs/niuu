@@ -17,6 +17,7 @@ from ravn.config import (
     HookConfig,
     HooksConfig,
     KubernetesToolsConfig,
+    LearnedToolsConfig,
     LLMConfig,
     LLMProviderConfig,
     LoggingConfig,
@@ -25,9 +26,7 @@ from ravn.config import (
     ObservabilityConfig,
     PermissionConfig,
     PermissionRuleConfig,
-    ResidentEvolutionConfig,
     Settings,
-    SignalSourceConfig,
     ThreadConfig,
     ToolAdapterConfig,
     ToolsConfig,
@@ -150,47 +149,6 @@ class TestReflectionModelFallbacks:
         settings.memory.reflection_model = "claude-haiku-4-5-20251001"
 
         assert settings.effective_memory_reflection_model() == "claude-haiku-4-5-20251001"
-
-    def test_post_session_reflection_config_can_use_effective_agent_model(self) -> None:
-        settings = Settings()
-        settings.llm.model = "Qwen/Qwen3.6-35B-A3B-FP8"
-        settings.reflection.llm_alias = "agent"
-
-        resolved = settings.effective_post_session_reflection_config()
-
-        assert resolved.llm_alias == "Qwen/Qwen3.6-35B-A3B-FP8"
-        assert settings.reflection.llm_alias == "agent"
-
-    def test_post_session_reflection_config_keeps_explicit_alias(self) -> None:
-        settings = Settings()
-        settings.llm.model = "Qwen/Qwen3.6-35B-A3B-FP8"
-        settings.reflection.llm_alias = "fast"
-
-        resolved = settings.effective_post_session_reflection_config()
-
-        assert resolved.llm_alias == "fast"
-        # An empty judge alias means "the reflection model".
-        assert resolved.matching.judge_llm_alias == "fast"
-        assert settings.reflection.matching.judge_llm_alias == ""
-
-    def test_post_session_reflection_config_keeps_explicit_judge_alias(self) -> None:
-        settings = Settings()
-        settings.reflection.llm_alias = "fast"
-        settings.reflection.matching.judge_llm_alias = "judge"
-
-        resolved = settings.effective_post_session_reflection_config()
-
-        assert resolved is settings.reflection
-        assert resolved.matching.judge_llm_alias == "judge"
-
-    def test_post_session_reflection_judge_follows_resolved_agent_model(self) -> None:
-        settings = Settings()
-        settings.llm.model = "Qwen/Qwen3.6-35B-A3B-FP8"
-        settings.reflection.llm_alias = "agent"
-
-        resolved = settings.effective_post_session_reflection_config()
-
-        assert resolved.matching.judge_llm_alias == "Qwen/Qwen3.6-35B-A3B-FP8"
 
 
 class TestToolAdapterConfig:
@@ -373,62 +331,32 @@ class TestChannelConfig:
         assert "webhook" in c.kwargs
 
 
-class TestSignalSourceConfig:
-    def test_adapter_kwargs_and_secret_env_mapping(self) -> None:
-        c = SignalSourceConfig(
-            id="nats-upstream-signals",
-            name="Upstream NATS Signals",
-            kind="webhook",
-            adapter="ravn.adapters.environment_signals.NatsSignalAdapter",
-            kwargs={
-                "servers_env": "NATS_URL",
-                "subjects": ["external.cluster.events"],
-            },
-            secret_kwargs_env={"token": "UPSTREAM_NATS_TOKEN"},
-        )
-
-        assert c.adapter.endswith("NatsSignalAdapter")
-        assert c.kwargs["subjects"] == ["external.cluster.events"]
-        assert c.secret_kwargs_env == {"token": "UPSTREAM_NATS_TOKEN"}
-
-    def test_config_is_not_an_alias_for_kwargs(self) -> None:
-        c = SignalSourceConfig.model_validate(
-            {
-                "id": "canonical",
-                "adapter": "pkg.Adapter",
-                "config": {"path": "/tmp/signals.jsonl"},
-            }
-        )
-
-        assert c.kwargs == {}
-
-
 class TestLoggingConfig:
     def test_defaults(self) -> None:
         c = LoggingConfig()
         assert c.level in ("debug", "info", "warning", "error", "critical")
 
 
-class TestResidentEvolutionConfig:
+class TestLearnedToolsConfig:
     def test_defaults_route_missing_capabilities_to_the_investigation_loop(self) -> None:
         # The classifier micro-dream is retired: a missing capability defers to
         # the build_tool investigation loop (NIU-1051), and tools are authored
         # inline unless a Forge/Ting build backend is configured.
-        c = ResidentEvolutionConfig()
+        c = LearnedToolsConfig()
         assert c.tool_build_adapter == ""
         assert c.learned_tool_execution_backend == "container"
         assert c.tool_builder_workflow.names == []
         assert c.tool_builder_workflow.tags == []
 
     def test_learned_tool_execution_backend_can_select_forge(self) -> None:
-        c = ResidentEvolutionConfig(learned_tool_execution_backend="forge")
+        c = LearnedToolsConfig(learned_tool_execution_backend="forge")
         assert c.learned_tool_execution_backend == "forge"
 
     def test_k8s_job_backend_requires_verified_policy_coordinates(self) -> None:
         with pytest.raises(ValueError, match="requires learned_tool_k8s"):
-            ResidentEvolutionConfig(learned_tool_execution_backend="k8s_job")
+            LearnedToolsConfig(learned_tool_execution_backend="k8s_job")
 
-        c = ResidentEvolutionConfig(
+        c = LearnedToolsConfig(
             learned_tool_execution_backend="k8s_job",
             learned_tool_k8s={
                 "namespace": "ravn",
@@ -439,7 +367,7 @@ class TestResidentEvolutionConfig:
         assert c.learned_tool_k8s.namespace == "ravn"
 
     def test_tool_builder_workflow_selector_is_configurable(self) -> None:
-        c = ResidentEvolutionConfig(
+        c = LearnedToolsConfig(
             tool_builder_workflow={
                 "names": ["Tool Builder"],
                 "tags": ["tool-builder"],
@@ -450,47 +378,6 @@ class TestResidentEvolutionConfig:
         assert c.tool_builder_workflow.names == ["Tool Builder"]
         assert c.tool_builder_workflow.tags == ["tool-builder"]
         assert c.tool_builder_workflow.require_all_tags is True
-
-    def test_self_evolution_policy_defaults_match_the_previous_constants(self) -> None:
-        # P5a: these defaults must reproduce the constants they replaced
-        # bit-for-bit, so a config-less deployment behaves identically.
-        from ravn.adapters.tools.build_tool import (  # noqa: PLC0415
-            DEFAULT_MAX_REPAIR_ATTEMPTS,
-            SELF_REGISTERED_TOOL_CONFIDENCE,
-        )
-
-        c = ResidentEvolutionConfig()
-        assert c.build_repair_attempts == DEFAULT_MAX_REPAIR_ATTEMPTS == 3
-        assert c.self_registered_tool_confidence == SELF_REGISTERED_TOOL_CONFIDENCE == 0.74
-        assert c.trust_level_autonomy_table.autonomous == 2
-        assert c.trust_level_autonomy_table.yolo == 4
-        assert c.review_attention_tiers == ["present", "urgent"]
-        assert c.observational_actions == ["", "none", "n/a", "watch", "observe"]
-
-    def test_self_evolution_policy_values_are_configurable(self) -> None:
-        c = ResidentEvolutionConfig(
-            build_repair_attempts=7,
-            self_registered_tool_confidence=0.9,
-            trust_level_autonomy_table={"autonomous": 3, "yolo": 6},
-            review_attention_tiers=["ambient", "present", "urgent"],
-            observational_actions=["", "none"],
-        )
-
-        assert c.build_repair_attempts == 7
-        assert c.self_registered_tool_confidence == 0.9
-        assert c.trust_level_autonomy_table.autonomous == 3
-        assert c.trust_level_autonomy_table.yolo == 6
-        assert c.review_attention_tiers == ["ambient", "present", "urgent"]
-        assert c.observational_actions == ["", "none"]
-
-    def test_trust_level_autonomy_table_rejects_yolo_below_autonomous(self) -> None:
-        with pytest.raises(ValueError, match="must be >= trust_level_autonomy_table.autonomous"):
-            ResidentEvolutionConfig(trust_level_autonomy_table={"autonomous": 4, "yolo": 2})
-
-    def test_trust_level_autonomy_table_allows_equal_thresholds(self) -> None:
-        # yolo == autonomous is valid: no level resolves to 'autonomous'.
-        c = ResidentEvolutionConfig(trust_level_autonomy_table={"autonomous": 3, "yolo": 3})
-        assert c.trust_level_autonomy_table.yolo == 3
 
 
 class TestSettings:
@@ -1049,95 +936,6 @@ class TestRuntimeOverrides:
             Settings()
 
 
-class TestValkyrieRuntimeConfig:
-    def test_defaults_are_explicit_and_safe(self) -> None:
-        settings = Settings()
-
-        assert settings.valkyrie.telemetry.nats_url == ""
-        assert settings.valkyrie.telemetry.retry_seconds == 30
-        assert settings.valkyrie.command.nats_url == ""
-        assert settings.valkyrie.room.url == ""
-        assert settings.valkyrie.brief_interval_seconds == 86_400.0
-
-    def test_legacy_environment_aliases_are_typed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_URL", "tls://nats:4222")
-        monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_RETRY_SECONDS", "17")
-        monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_TLS_HANDSHAKE_FIRST", "true")
-        monkeypatch.setenv("RAVN_VALKYRIE_COMMAND_NATS_ENSURE_STREAM", "yes")
-        monkeypatch.setenv("RAVN_VALKYRIE_COMMAND_NATS_START_TIMEOUT_SECONDS", "2.5")
-        monkeypatch.setenv("RAVN_VALKYRIE_SKULD_ROOM_URL", "http://skuld:8081")
-        monkeypatch.setenv("RAVN_VALKYRIE_SKULD_ROOM_TIMEOUT_SECONDS", "4")
-        monkeypatch.setenv("RAVN_VALKYRIE_BRIEF_INTERVAL_SECONDS", "0")
-
-        settings = Settings()
-
-        assert settings.valkyrie.telemetry.nats_url == "tls://nats:4222"
-        assert settings.valkyrie.telemetry.retry_seconds == 17
-        assert settings.valkyrie.telemetry.tls_handshake_first is True
-        assert settings.valkyrie.command.ensure_stream is True
-        assert settings.valkyrie.command.start_timeout_seconds == 2.5
-        assert settings.valkyrie.room.url == "http://skuld:8081"
-        assert settings.valkyrie.room.timeout_seconds == 4.0
-        assert settings.valkyrie.brief_interval_seconds == 0
-
-    def test_canonical_nested_configuration(self) -> None:
-        settings = Settings(
-            valkyrie={
-                "telemetry": {
-                    "nats_url": "nats://configured:4222",
-                    "replay_seconds": 120,
-                },
-                "command": {"subject_prefix": "ravn.commands"},
-                "room": {"url": "http://room:8081"},
-                "brief_interval_seconds": 0,
-            }
-        )
-
-        assert settings.valkyrie.telemetry.nats_url == "nats://configured:4222"
-        assert settings.valkyrie.telemetry.replay_seconds == 120
-        assert settings.valkyrie.command.subject_prefix == "ravn.commands"
-        assert settings.valkyrie.room.url == "http://room:8081"
-        assert settings.valkyrie.brief_interval_seconds == 0
-
-    def test_odin_review_legacy_aliases_are_typed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("RAVN_ODIN_REVIEW_DEFAULT_TTL_SECONDS", "12.5")
-        monkeypatch.setenv("RAVN_ODIN_REVIEW_TTL_SECONDS_FLOCK_LEARNING", "7")
-        monkeypatch.setenv("RAVN_ODIN_REVIEW_SWEEP_INTERVAL_SECONDS", "2")
-
-        config = Settings().valkyrie.odin_reviews
-
-        assert config.default_ttl_seconds == 12.5
-        assert config.ttl_seconds_by_kind() == {"flock_learning": 7.0}
-        assert config.sweep_interval_seconds == 2.0
-
-    def test_malformed_odin_review_value_fails_loudly(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("RAVN_ODIN_REVIEW_SWEEP_INTERVAL_SECONDS", "never")
-
-        with pytest.raises(ValueError, match="sweep_interval_seconds"):
-            Settings()
-
-    def test_malformed_legacy_value_fails_loudly(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_REPLAY_SECONDS", "not-an-int")
-
-        with pytest.raises(ValueError, match="replay_seconds"):
-            Settings()
-
-    @pytest.mark.parametrize(
-        ("section", "field", "value"),
-        [
-            ("telemetry", "retry_seconds", 0),
-            ("telemetry", "connect_timeout_seconds", 0),
-            ("command", "start_timeout_seconds", 0),
-            ("room", "timeout_seconds", -1),
-        ],
-    )
-    def test_invalid_canonical_ranges_fail(self, section: str, field: str, value: int) -> None:
-        with pytest.raises(ValueError, match=field):
-            Settings(valkyrie={section: {field: value}})
-
-
 class TestPlatformAccessToken:
     """``gateway.platform.access_token`` carries any platform bearer, not only a PAT."""
 
@@ -1198,66 +996,3 @@ class TestPromptBudgetDerivation:
             context_management={"context_window_tokens": 131072, "max_prompt_tokens": 100000}
         )
         assert settings.effective_max_tokens() is None
-
-
-class TestRemovedContinuationCaps:
-    """Rechecks are bounded by the daily budget, one turn per wake and the decision guard."""
-
-    @pytest.mark.parametrize("key", ["continuation_max_turns", "continuation_max_tokens"])
-    def test_a_config_still_setting_it_is_refused(self, key: str) -> None:
-        with pytest.raises(ValueError, match=f"resident_state.{key} no longer exist"):
-            Settings(resident_state={key: 3})
-
-
-class TestRemovedCharacterCaps:
-    """Content a resident carries is bounded by the model's window, not a character guess."""
-
-    @pytest.mark.parametrize(
-        "key",
-        [
-            "continuation_context_max_chars",
-            "continuation_tool_result_max_chars",
-            "directed_message_context_max_chars",
-        ],
-    )
-    def test_a_resident_state_config_still_setting_it_is_refused(self, key: str) -> None:
-        with pytest.raises(ValueError) as refused:
-            Settings(resident_state={key: 4000})
-
-        message = str(refused.value)
-        assert f"resident_state.{key} no longer exists" in message
-        assert "context_management.max_prompt_tokens" in message
-        assert "remove the key" in message
-
-    def test_a_reflection_config_still_setting_the_context_cap_is_refused(self) -> None:
-        with pytest.raises(ValueError) as refused:
-            Settings(reflection={"context_max_chars": 12000})
-
-        message = str(refused.value)
-        assert "reflection.context_max_chars no longer exists" in message
-        assert "sent to the reflection model whole" in message
-        assert "remove the key" in message
-
-    def test_every_removed_key_is_named_when_several_are_set(self) -> None:
-        with pytest.raises(ValueError) as refused:
-            Settings(
-                resident_state={
-                    "continuation_context_max_chars": 1,
-                    "continuation_tool_result_max_chars": 1,
-                }
-            )
-
-        message = str(refused.value)
-        assert "resident_state.continuation_context_max_chars no longer exists" in message
-        assert "resident_state.continuation_tool_result_max_chars no longer exists" in message
-
-    def test_the_defaults_carry_none_of_the_removed_keys(self) -> None:
-        settings = Settings()
-
-        for key in (
-            "continuation_context_max_chars",
-            "continuation_tool_result_max_chars",
-            "directed_message_context_max_chars",
-        ):
-            assert not hasattr(settings.resident_state, key)
-        assert not hasattr(settings.reflection, "context_max_chars")

@@ -8,8 +8,7 @@ import {
   createRoute,
   createRouter,
 } from '@tanstack/react-router';
-import type { Ravn } from '@niuulabs/plugin-ravn';
-import type { RealmSummary, ValkyrieResident } from '@niuulabs/plugin-valkyrie';
+import type { RealmSummary } from '../domain/governance';
 import { RealmCard, type RealmCardProps } from './RealmCard';
 
 const realm: RealmSummary = {
@@ -29,16 +28,7 @@ function mount(props: Partial<RealmCardProps>) {
   const index = createRoute({
     getParentRoute: () => rootRoute,
     path: '/',
-    component: () => (
-      <RealmCard
-        realm={realm}
-        resident={null}
-        ravn={null}
-        pendingReviews={0}
-        runningSessions={0}
-        {...props}
-      />
-    ),
+    component: () => <RealmCard realm={realm} runningSessions={0} {...props} />,
   });
   const router = createRouter({
     routeTree: rootRoute.addChildren([index]),
@@ -50,37 +40,20 @@ function mount(props: Partial<RealmCardProps>) {
 describe('RealmCard', () => {
   afterEach(cleanup);
 
-  it('says when a realm has no resident yet', async () => {
+  it('says when nothing is bound yet', async () => {
     mount({});
-    expect(await screen.findByText('no resident yet')).toBeInTheDocument();
+    expect(await screen.findByText('nothing bound yet')).toBeInTheDocument();
     expect(screen.getByText('balanced')).toBeInTheDocument();
     expect(screen.getByText('Open ›')).toBeInTheDocument();
-    expect(screen.getByText('nothing bound yet')).toBeInTheDocument();
   });
 
-  it('shows the ravn status when only the fleet knows the resident', async () => {
-    mount({ ravn: { status: 'active' } as Ravn });
-    expect(await screen.findByText('active')).toBeInTheDocument();
+  it('shows the running sessions', async () => {
+    mount({ runningSessions: 3 });
+    expect(await screen.findByText('3')).toBeInTheDocument();
+    expect(screen.getByText('in sessions')).toBeInTheDocument();
   });
 
-  it('shows wakefulness, tools, last action and the review count', async () => {
-    const resident = {
-      wakefulness: 'dreaming',
-      toolCount: 4,
-      lastActionAt: '2026-09-13T09:41:00Z',
-    } as ValkyrieResident;
-    mount({
-      resident,
-      pendingReviews: 2,
-      runningSessions: 3,
-    });
-    expect(await screen.findByText('Review 2')).toBeInTheDocument();
-    expect(screen.getByText('tools')).toBeInTheDocument();
-    expect(screen.getByText(/last acted .* ago/)).toBeInTheDocument();
-    expect(screen.getByText('3')).toBeInTheDocument();
-  });
-
-  it('shows what the realm is bound to and the environment health', async () => {
+  it('shows what the realm is bound to', async () => {
     mount({
       binding: {
         template: 'qa-resident',
@@ -90,12 +63,10 @@ describe('RealmCard', () => {
         bugBoard: 'QA',
         mountTarget: 'ymir',
       },
-      environment: { health: 'degraded', unresolvedSignalCount: 2 } as never,
     });
-    expect(await screen.findByText('QA resident · niuulabs/lexi-api')).toBeInTheDocument();
+    expect(await screen.findByText('QA workspace · niuulabs/lexi-api')).toBeInTheDocument();
     expect(screen.getByText('board LXA')).toBeInTheDocument();
     expect(screen.getByText('bugs QA')).toBeInTheDocument();
-    expect(screen.getByText('2 open signals')).toBeInTheDocument();
   });
 
   it('names the board, and counts tickets waiting with the questions', async () => {
@@ -106,10 +77,5 @@ describe('RealmCard', () => {
     });
     expect(await screen.findByText('board Spring board')).toBeInTheDocument();
     expect(screen.getByText('Review 2')).toBeInTheDocument();
-  });
-
-  it('falls back to an unknown dot for an unexpected wakefulness value', async () => {
-    mount({ resident: { wakefulness: 'odd', toolCount: 0 } as unknown as ValkyrieResident });
-    expect(await screen.findByTestId('realm-card-lexi-api')).toBeInTheDocument();
   });
 });

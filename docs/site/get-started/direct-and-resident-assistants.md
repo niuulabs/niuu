@@ -63,7 +63,7 @@ advertise the controls you need. Verify chat, logs, waiting-for-input behavior,
 and persistence across a restart. Check the case that is waiting before sending
 an answer; continuation belongs to that case.
 
-The [Ravn CLI reference](../reference/cli-ravn.md) covers rooms, flocks, personas,
-and wardens. [Architecture](../concepts/platform-model.md) explains the boundary
+The [Ravn CLI reference](../reference/cli-ravn.md) covers rooms, flocks, and
+personas. [Architecture](../concepts/platform-model.md) explains the boundary
 between Ravn judgment and shared Niuu infrastructure. Live resident deployment is
 separate from the validated local Forge bootstrap.

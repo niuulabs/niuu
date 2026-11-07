@@ -9,7 +9,7 @@
  *
  * Height comes from the node's type rather than from its measured depth in the
  * parent chain. Depth would make the same kind of thing sit at different
- * heights in different realms — a warden directly under a cluster and a warden
+ * heights in different realms — a service directly under a cluster and a service
  * under a namespace would end up on separate decks, and the decks would stop
  * meaning anything.
  */

@@ -11,9 +11,7 @@ export interface UseLintReturn {
   isError: boolean;
   error: unknown;
   runAutoFix: (issueIds?: string[]) => void;
-  reassignIssues: (issueIds: string[], assignee: string) => void;
   isFixing: boolean;
-  isReassigning: boolean;
 }
 
 export function useLint(mountName?: string): UseLintReturn {
@@ -38,14 +36,6 @@ export function useLint(mountName?: string): UseLintReturn {
     },
   });
 
-  const reassignMutation = useMutation({
-    mutationFn: ({ issueIds, assignee }: { issueIds: string[]; assignee: string }) =>
-      service.lint.reassignIssues(issueIds, assignee),
-    onSuccess: (updated) => {
-      queryClient.setQueryData(queryKey, updated);
-    },
-  });
-
   return {
     report,
     issues: report?.issues ?? [],
@@ -54,9 +44,6 @@ export function useLint(mountName?: string): UseLintReturn {
     isError,
     error,
     runAutoFix: (issueIds?: string[]) => autoFixMutation.mutate(issueIds),
-    reassignIssues: (issueIds: string[], assignee: string) =>
-      reassignMutation.mutate({ issueIds, assignee }),
     isFixing: autoFixMutation.isPending,
-    isReassigning: reassignMutation.isPending,
   };
 }

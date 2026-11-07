@@ -1,9 +1,8 @@
 /**
- * Mímir lint domain — issue catalog and dream-cycle records.
+ * Mímir lint domain — issue catalog.
  *
  * The lint engine runs rules L01–L12 across all mounts and surfaces issues
- * for human review or automated fixing. Dream cycles are the idle-time
- * synthesis passes that update pages, create entities, and apply lint fixes.
+ * for human review or automated fixing.
  */
 
 // ---------------------------------------------------------------------------
@@ -39,8 +38,6 @@ export interface LintIssue {
   page: string;
   /** Name of the mount the page lives on. */
   mount: string;
-  /** Ravn assigned to resolve this issue. */
-  assignee?: string;
   /** Whether the engine can apply a fix automatically. */
   autoFix: boolean;
   message: string;
@@ -71,7 +68,7 @@ export interface LintReport {
 // Activity events
 // ---------------------------------------------------------------------------
 
-export type ActivityEventKind = 'write' | 'ingest' | 'lint' | 'dream' | 'query';
+export type ActivityEventKind = 'write' | 'ingest' | 'lint' | 'query';
 
 export interface ActivityEvent {
   id: string;
@@ -85,25 +82,6 @@ export interface ActivityEvent {
   message: string;
   /** Page path, if the event relates to a specific page. */
   page?: string;
-}
-
-// ---------------------------------------------------------------------------
-// Dream cycles
-// ---------------------------------------------------------------------------
-
-export interface DreamCycle {
-  id: string;
-  /** ISO-8601 timestamp when the cycle ran. */
-  timestamp: string;
-  /** ID of the ravn that ran the cycle. */
-  ravn: string;
-  /** Names of the mounts touched during the cycle. */
-  mounts: string[];
-  pagesUpdated: number;
-  entitiesCreated: number;
-  lintFixes: number;
-  /** Wall-clock duration of the cycle in milliseconds. */
-  durationMs: number;
 }
 
 // ---------------------------------------------------------------------------

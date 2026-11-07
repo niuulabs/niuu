@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import pytest
 
 from ravn.context.autonomy import (
@@ -11,14 +9,6 @@ from ravn.context.autonomy import (
     JsonProposalStore,
     ProposalStatus,
     SelfImprovementProposal,
-    evaluate_and_store_proposals,
-    proposals_from_evolution,
-)
-from ravn.context.evolution import (
-    PromptEvolution,
-    SkillSuggestion,
-    StrategyInjection,
-    SystemWarning,
 )
 
 
@@ -102,55 +92,6 @@ async def test_json_store_records_apply_and_rollback(tmp_path) -> None:
     assert rolled_back.status == ProposalStatus.ROLLED_BACK.value
     assert reloaded.status == ProposalStatus.ROLLED_BACK.value
     assert reloaded.applied_artifact_refs["skill"] == "k8s probe"
-
-
-@pytest.mark.asyncio
-async def test_evolution_proposals_preserve_source_scope_and_policy(tmp_path) -> None:
-    evolution = PromptEvolution(
-        extracted_at=datetime.now(UTC),
-        episodes_analyzed=3,
-        outcomes_analyzed=1,
-        suggested_skills=[
-            SkillSuggestion(
-                tool_pattern=("kubectl", "mimir_write"),
-                description="Probe pods and record evidence.",
-                source_episode_ids=["ep-1", "ep-2"],
-                occurrence_count=2,
-            )
-        ],
-        system_warnings=[
-            SystemWarning(
-                warning_text="Do not mutate global doctrine silently.",
-                source_outcome_ids=["ep-3"],
-                occurrence_count=1,
-            )
-        ],
-        strategy_injections=[
-            StrategyInjection(
-                task_type="k8s",
-                strategy_text="Check events before restarting anything.",
-                source_episode_ids=["ep-4"],
-                success_count=1,
-            )
-        ],
-    )
-    store = JsonProposalStore(tmp_path / "proposals.json")
-
-    proposals = proposals_from_evolution(
-        evolution,
-        mode="yolo",
-        scope="environment",
-        environment_id="cluster-a",
-        domain="k8s",
-    )
-    saved = await evaluate_and_store_proposals(proposals, store=store)
-
-    assert len(saved) == 3
-    assert saved[0].source_episode_ids == ["ep-1", "ep-2"]
-    assert saved[0].status == ProposalStatus.PROPOSED.value
-    assert saved[1].status == ProposalStatus.NEEDS_REVIEW.value
-    assert saved[1].scope == "global"
-    assert saved[2].environment_id == "cluster-a"
 
 
 def test_negated_disclaimers_do_not_trip_gated_boundaries() -> None:
