@@ -32,6 +32,13 @@ from volundr.domain.models import Session, SessionSpec, SessionStatus
 from volundr.domain.ports import PodManager, PodStartResult, SessionCapacity
 from volundr.domain.services.compute_leases import ComputeLeaseService
 from volundr.domain.services.execution_catalog import ExecutionPlanResolver
+from volundr.domain.session_runtimes import (
+    ReadinessState,
+    RuntimeReadiness,
+    SessionRuntimeKind,
+    SessionRuntimeOffer,
+    requested_grants,
+)
 from volundr.domain.session_startup import SessionStartup, StartupStage, StartupStageState
 from volundr.domain.vm_runtime import (
     ForgeSessionVmRuntime,
@@ -92,6 +99,9 @@ class VmPodManager(PodManager):
         self._execution_resolver: ExecutionPlanResolver | None = None
         self._execution_runtimes: dict[str, VmRuntime] = {}
         self._execution_preparations: dict[str, HostPreparation] = {}
+        # The executions a launch may choose, in the catalog's order, and the default's ref.
+        self._launch_plans: tuple[ResolvedExecutionPlan, ...] = ()
+        self._default_execution: CatalogRef | None = None
         self._defaults = MachineBootstrap()
         self._pool_service = None
         self._owns_runtime = True
@@ -159,9 +169,28 @@ class VmPodManager(PodManager):
             not isinstance(preparation, HostPreparation) for preparation in preparations.values()
         ):
             raise TypeError("Execution preparation registry values must implement HostPreparation")
+        default, launch_plans = resolver.launch_plans()
+        offered: dict[SessionRuntimeKind, ResolvedExecutionPlan] = {}
+        for plan in launch_plans:
+            kind = runtimes[plan.plan_digest].session_runtime
+            if kind is None:
+                raise ValueError(
+                    f"Launch execution {plan.execution} uses "
+                    f"{type(runtimes[plan.plan_digest]).__name__}, which cannot be offered "
+                    "as a launch choice; remove it from catalog.yaml launch_executions"
+                )
+            if kind in offered:
+                raise ValueError(
+                    f"Launch executions {offered[kind].execution} and {plan.execution} both "
+                    f"run sessions as {kind}; offer one execution per runtime in "
+                    "catalog.yaml launch_executions"
+                )
+            offered[kind] = plan
         self._execution_resolver = resolver
         self._execution_runtimes = dict(runtimes)
         self._execution_preparations = dict(preparations)
+        self._launch_plans = launch_plans
+        self._default_execution = default
 
     def _configured(self):
         if self._service is None or self._repository is None or self._runtime is None:
@@ -175,6 +204,23 @@ class VmPodManager(PodManager):
         return f"{origin}/s/{session.id}/session"
 
     async def resolve_execution(self, session: Session) -> ResolvedExecutionPlan | None:
+        try:
+            grants = requested_grants(session.workload_config)
+        except ValueError as exc:
+            raise ExecutionSelectionError(str(exc)) from exc
+        plan = await self._resolve_selected_execution(session)
+        if not grants:
+            return plan
+        offered = set(self._execution_runtimes[plan.plan_digest].session_grants) if plan else set()
+        refused = sorted(grant.value for grant in grants - offered)
+        if refused:
+            raise ExecutionSelectionError(
+                f"The selected runtime does not offer runtime_grants {refused}; "
+                "choose a runtime that offers them or drop the grants"
+            )
+        return plan
+
+    async def _resolve_selected_execution(self, session: Session) -> ResolvedExecutionPlan | None:
         resolver = self._require_execution_resolver()
         _, repository, _ = self._configured()
         existing = await repository.active_for_session(self._pool_id, session.id)
@@ -379,6 +425,44 @@ class VmPodManager(PodManager):
             active=max(capacity.active - 1, 0),
             remedy=capacity.remedy,
         )
+
+    async def session_runtimes(self) -> tuple[SessionRuntimeOffer, ...]:
+        if not self._launch_plans:
+            return ()
+        service, repository, _ = self._configured()
+        leases = await repository.list(self._pool_id, include_released=False)
+        capacity = await self.capacity()
+        offers = []
+        for plan in self._launch_plans:
+            runtime = self._execution_runtimes[plan.plan_digest]
+            warm = sum(
+                lease.state == LeaseState.IDLE
+                and lease.session_id is None
+                and lease.profile == plan.provider_profile
+                and lease.execution_plan is not None
+                and lease.execution_plan.host_compatibility_digest == plan.host_compatibility_digest
+                and service.provider_compatible(lease)
+                for lease in leases
+            )
+            if warm:
+                readiness = RuntimeReadiness(state=ReadinessState.WARM, warm=warm)
+            elif capacity.available > 0:
+                readiness = RuntimeReadiness(state=ReadinessState.BOOT, warm=0)
+            else:
+                readiness = RuntimeReadiness(
+                    state=ReadinessState.FULL, warm=0, remedy=capacity.remedy
+                )
+            offers.append(
+                SessionRuntimeOffer(
+                    # Validated when the execution catalog was configured.
+                    runtime=runtime.session_runtime,  # type: ignore[arg-type]
+                    execution_profile=str(plan.execution),
+                    default=plan.execution == self._default_execution,
+                    grants=runtime.session_grants,
+                    readiness=readiness,
+                )
+            )
+        return tuple(offers)
 
     @property
     def reports_startup_stages(self) -> bool:

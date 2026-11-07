@@ -27,6 +27,7 @@ from volundr.adapters.outbound.ssh_vm_runtime import (
 )
 from volundr.domain.compute import BootstrapFile, MachineBootstrap
 from volundr.domain.models import PodSpecAdditions, Session, SessionSpec
+from volundr.domain.session_runtimes import SessionRuntimeKind
 from volundr.domain.vm_runtime import VmRuntimeUnavailableError
 
 _SPEC = "/etc/niuu/openshell-session.json"
@@ -75,6 +76,10 @@ class OpenShellVmRuntime(SshContainerVmRuntime):
     # The OpenShell gateway owns the sandbox: no Docker sidecars or token volumes,
     # and its broker keeps its own Forge credential.
     _runs_pod_containers = False
+
+    @property
+    def session_runtime(self) -> SessionRuntimeKind | None:
+        return SessionRuntimeKind.OPENSHELL
 
     @property
     def delivers_forge_session_token(self) -> bool:

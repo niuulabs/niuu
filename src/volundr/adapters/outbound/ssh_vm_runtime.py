@@ -39,6 +39,7 @@ from volundr.domain.compute import BootstrapFile, ComputeLease, MachineBootstrap
 from volundr.domain.guest_access import GuestAccess
 from volundr.domain.guest_credentials import GuestCredentialDelivery, GuestCredentialPlan
 from volundr.domain.models import Session, SessionSpec
+from volundr.domain.session_runtimes import SessionRuntimeKind
 from volundr.domain.vm_runtime import StartupStepReport, VmRuntime
 
 # cloud-init's SSH module deletes/recreates keys at /etc/ssh/ssh_host_*.
@@ -417,6 +418,10 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
 
     #: Whether the guest runs the pod's init containers and sidecars next to Skuld.
     _runs_pod_containers = True
+
+    @property
+    def session_runtime(self) -> SessionRuntimeKind | None:
+        return SessionRuntimeKind.CONTAINER
 
     def stage_forge_session(self, session_id: UUID, credential: IssuedForgeSessionToken) -> None:
         """Hand over the credential the next start of ``session_id`` delivers."""

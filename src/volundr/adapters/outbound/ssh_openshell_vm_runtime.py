@@ -25,6 +25,7 @@ from volundr.adapters.outbound.ssh_vm_runtime import (
 )
 from volundr.domain.compute import ComputeLease, MachineBootstrap
 from volundr.domain.models import Session, SessionSpec
+from volundr.domain.session_runtimes import SessionRuntimeKind
 
 _OPEN_SHELL_ERROR_PREFIX = "NIIU_OPEN_SHELL_STAGE:"
 _OPEN_SHELL_DETAIL_PREFIX = "NIIU_OPEN_SHELL_DETAIL:"
@@ -702,6 +703,10 @@ for provider in json.loads(sys.argv[5]):
 
 class SshOpenShellVmRuntime(SshContainerVmRuntime):
     """Use official OpenShell on the allocated host instead of raw Docker."""
+
+    @property
+    def session_runtime(self) -> SessionRuntimeKind | None:
+        return SessionRuntimeKind.OPENSHELL
 
     def __init__(
         self,
