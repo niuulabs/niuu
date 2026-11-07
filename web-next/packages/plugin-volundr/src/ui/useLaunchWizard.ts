@@ -21,6 +21,7 @@ import type {
 
 import { availableEngines, withEngineProvider } from './launchEngines';
 import { errorText } from './errorText';
+import { useRunsAs } from './hooks/useRunsAs';
 import {
   buildPresetComparisonPayload,
   buildPresetPayload,
@@ -471,7 +472,12 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
     (form.sourcetype === 'git'
       ? Boolean(form.repo.trim()) && Boolean(form.branch.trim())
       : Boolean(form.mountPath.trim()));
+  const runsAs = useRunsAs(
+    form.targetMode === 'instance' ? form.instanceId || undefined : undefined,
+  );
   const canLaunch =
+    !runsAs.loading &&
+    !runsAs.error &&
     Boolean(form.model.trim()) &&
     sourceReady &&
     !sessionNameError &&
@@ -545,7 +551,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
         resourceConfig: buildResourceConfig(form),
         systemPrompt: form.systemPrompt.trim() || undefined,
         initialPrompt: form.initialPrompt.trim() || undefined,
-        workloadConfig: buildWorkloadConfig(form),
+        workloadConfig: { ...buildWorkloadConfig(form), ...runsAs.workloadConfig },
       });
 
       setCreatedSessionId(session.id);
@@ -593,6 +599,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
   }, [open]);
 
   return {
+    runsAs,
     availableMcpServers,
     bootProgress,
     bootStep,

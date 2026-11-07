@@ -82,6 +82,8 @@ async function advanceToConfirm() {
   await advanceToRuntime();
   fireEvent.click(screen.getByTestId('wizard-next'));
   await screen.findByTestId('step-confirm-content');
+  // The launch waits until the host has said what it may run as.
+  await waitFor(() => expect(screen.getByTestId('wizard-next')).toBeEnabled());
 }
 
 describe('LaunchWizard', () => {
@@ -316,6 +318,60 @@ describe('LaunchWizard', () => {
     expect(screen.getAllByTestId('boot-step').length).toBe(8);
   });
 
+  it('launches with the runtime chosen on a host that offers a choice', async () => {
+    const service = createMockVolundrService();
+    service.getSessionRuntimes = vi.fn(async () => [
+      {
+        runtime: 'container' as const,
+        executionProfile: 'vm-container@1',
+        isDefault: true,
+        grants: [],
+        readiness: { state: 'warm' as const, warm: 2, remedy: null },
+      },
+      {
+        runtime: 'openshell' as const,
+        executionProfile: 'vm-openshell@1',
+        isDefault: false,
+        grants: [],
+        readiness: { state: 'boot' as const, warm: 0, remedy: null },
+      },
+    ]);
+    const startSession = vi.spyOn(service, 'startSession');
+    wrap(true, vi.fn(), service);
+    await advanceToRuntime();
+    expect(await screen.findByRole('group', { name: 'Runs as' })).toBeInTheDocument();
+    expect(service.getSessionRuntimes).toHaveBeenCalledWith('mock-volundr-default');
+    expect(screen.getByTestId('runs-as-readiness')).toHaveTextContent('2 free slots ready');
+    fireEvent.click(screen.getByRole('button', { name: /OpenShell/ }));
+    fireEvent.click(screen.getByTestId('wizard-next'));
+    await screen.findByTestId('step-confirm-content');
+    expect(screen.getByText('OpenShell')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('wizard-next'));
+    await waitFor(() =>
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          instanceId: 'mock-volundr-default',
+          workloadConfig: { execution_profile: 'vm-openshell@1' },
+        }),
+      ),
+    );
+  });
+
+  it('holds the launch while the host cannot say how it runs sessions', async () => {
+    const service = createMockVolundrService();
+    service.getSessionRuntimes = vi.fn(async () => {
+      throw new Error('forge down');
+    });
+    wrap(true, vi.fn(), service);
+    await advanceToRuntime();
+    expect(
+      await screen.findByText('Could not read how this host runs sessions: forge down'),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('wizard-next'));
+    await screen.findByTestId('step-confirm-content');
+    expect(screen.getByTestId('wizard-next')).toBeDisabled();
+  });
+
   it('attaches a catalog persona to the launched session', async () => {
     const service = createMockVolundrService();
     const startSession = vi.spyOn(service, 'startSession');
@@ -375,6 +431,7 @@ describe('LaunchWizard', () => {
 
     fireEvent.click(screen.getByTestId('wizard-next'));
     await screen.findByTestId('step-confirm-content');
+    await waitFor(() => expect(screen.getByTestId('wizard-next')).toBeEnabled());
     fireEvent.click(screen.getByTestId('wizard-next'));
 
     await waitFor(() => expect(saveLaunchSpec).toHaveBeenCalledTimes(1));
@@ -502,6 +559,7 @@ source:
     fireEvent.click(screen.getByText('form view'));
     fireEvent.click(screen.getByTestId('wizard-next'));
     await screen.findByTestId('step-confirm-content');
+    await waitFor(() => expect(screen.getByTestId('wizard-next')).toBeEnabled());
     fireEvent.click(screen.getByTestId('wizard-next'));
 
     await waitFor(() =>
@@ -581,6 +639,7 @@ source:
 
     fireEvent.click(screen.getByTestId('wizard-next'));
     await screen.findByTestId('step-confirm-content');
+    await waitFor(() => expect(screen.getByTestId('wizard-next')).toBeEnabled());
     fireEvent.click(screen.getByTestId('wizard-next'));
 
     await waitFor(() =>

@@ -1330,6 +1330,8 @@ export function createMockVolundrService(): IVolundrService {
       originTemplate: 'http://{port}--{session_id}.localhost:8080',
     }),
 
+    getSessionRuntimes: async () => [],
+
     getSessionDefinitions: async () => [...SEED_SESSION_DEFINITIONS],
 
     getSessions: async () => sessions,

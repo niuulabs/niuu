@@ -48,6 +48,7 @@ export function AdvancedLaunchWizard(props: LaunchWizardProps) {
     presets,
     providerError,
     repos,
+    runsAs,
     sessionDefinitions,
     step,
     targets,
@@ -108,6 +109,7 @@ export function AdvancedLaunchWizard(props: LaunchWizardProps) {
               providerError={providerError}
               onApplyPreset={handleApplyPreset}
               onSavePreset={handleSavePreset}
+              runsAs={runsAs}
             />
           )}
           {step === 'confirm' && (
@@ -119,6 +121,7 @@ export function AdvancedLaunchWizard(props: LaunchWizardProps) {
                 sessionDefinitions.length > 0 ? sessionDefinitions : FALLBACK_SESSION_DEFINITIONS
               }
               targets={targets}
+              runsAs={runsAs.offer}
             />
           )}
           {step === 'booting' && <BootingStep bootStep={bootStep} progress={bootProgress} />}

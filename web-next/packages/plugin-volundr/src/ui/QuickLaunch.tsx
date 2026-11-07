@@ -22,6 +22,8 @@ import {
   selectedEngineProvider,
 } from './launchEngines';
 import { useForgePreference } from './useForgePreference';
+import { useRunsAs } from './hooks/useRunsAs';
+import { RunsAsChoice, RunsAsReadiness } from './RunsAsChoice';
 import './QuickLaunch.css';
 
 type RepoCatalog = {
@@ -88,6 +90,8 @@ export function QuickLaunch({
     placeholderData: keepPreviousData,
   });
   const localMountsEnabled = Boolean(features.data?.localMountsEnabled);
+  // A VM Forge offers what its sessions run as; other hosts offer no choice.
+  const runsAs = useRunsAs(host?.id);
   const [pickedSource, setPickedSource] = useState<'git' | 'local_mount' | null>(null);
   const sourceType =
     pickedSource ?? (features.data?.miniMode && localMountsEnabled ? 'local_mount' : 'git');
@@ -124,6 +128,7 @@ export function QuickLaunch({
     catalog.error ??
     definitions.error ??
     features.error ??
+    runsAs.error ??
     integrations.error ??
     integrationCatalog.error;
   const available = model?.enabled && definitions.data?.some((d) => d.key === standard.definition);
@@ -138,6 +143,7 @@ export function QuickLaunch({
     validSource &&
     features.data &&
     !features.isPlaceholderData &&
+    !runsAs.loading &&
     !nameError &&
     !loadError &&
     !launching,
@@ -184,7 +190,14 @@ export function QuickLaunch({
                 paths: [{ host_path: folder.trim(), mount_path: '/workspace', read_only: false }],
               }
             : { type: 'git', repo: repo.trim(), branch: branch.trim() },
-        ...(effort ? { workloadConfig: { reasoningEffort: effort } } : {}),
+        ...(effort || runsAs.offer
+          ? {
+              workloadConfig: {
+                ...(effort ? { reasoningEffort: effort } : {}),
+                ...runsAs.workloadConfig,
+              },
+            }
+          : {}),
         ...(grants.size
           ? {
               forgeMcp: {
@@ -335,6 +348,13 @@ export function QuickLaunch({
               )}
             </>
           )}
+          <RunsAsChoice
+            offers={runsAs.offers}
+            offer={runsAs.offer}
+            grants={runsAs.grants}
+            onSelect={runsAs.select}
+            onGrantsChange={runsAs.setGrants}
+          />
         </section>
         <section className="vol-quick__section">
           <h2>{standard.name} standard</h2>
@@ -447,13 +467,16 @@ export function QuickLaunch({
         >
           Advanced launch
         </button>
-        <button
-          type="submit"
-          className="vol-quick__button vol-quick__primary"
-          disabled={!canLaunch}
-        >
-          {launching ? 'Starting session…' : `Launch ${standard.name}`}
-        </button>
+        <div className="vol-quick__launch-side">
+          <RunsAsReadiness offer={runsAs.offer} />
+          <button
+            type="submit"
+            className="vol-quick__button vol-quick__primary"
+            disabled={!canLaunch}
+          >
+            {launching ? 'Starting session…' : `Launch ${standard.name}`}
+          </button>
+        </div>
       </div>
     </form>
   );
