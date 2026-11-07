@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from pydantic import ValidationError
+
+from volundr.domain.compute import HostSelector
+
 
 class SessionRuntimeKind(StrEnum):
     """What a session runs in on its machine."""
@@ -27,6 +31,10 @@ class SessionGrant(StrEnum):
 
 #: The workload_config key a launch names its grants in.
 RUNTIME_GRANTS_KEY = "runtime_grants"
+
+#: The workload_config key naming the tags a session's machine must carry. The Guild puts
+#: the part of a ``target_tags`` selector the chosen Forge's own tags do not cover here.
+HOST_SELECTOR_KEY = "host_selector"
 
 
 class ReadinessState(StrEnum):
@@ -72,3 +80,16 @@ def requested_grants(workload_config: dict) -> frozenset[SessionGrant]:
     except ValueError as exc:
         known = ", ".join(grant.value for grant in SessionGrant)
         raise ValueError(f"Unknown {RUNTIME_GRANTS_KEY} entry; known grants: {known}") from exc
+
+
+def requested_host_selector(workload_config: dict) -> HostSelector:
+    """The tags a launch's machine must carry; raises ValueError on a malformed request."""
+    raw = workload_config.get(HOST_SELECTOR_KEY)
+    if raw is None:
+        return HostSelector()
+    if not isinstance(raw, dict):
+        raise ValueError(f'{HOST_SELECTOR_KEY} must be {{"tags": [...], "match": "all"|"any"}}')
+    try:
+        return HostSelector.model_validate(raw)
+    except ValidationError as exc:
+        raise ValueError(f"{HOST_SELECTOR_KEY} is invalid: {exc.errors()[0]['msg']}") from exc

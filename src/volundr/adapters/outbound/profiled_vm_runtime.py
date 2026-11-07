@@ -60,6 +60,10 @@ class ProfiledVmRuntime(VmRuntime):
         return (self._default, *self._profiles.values())
 
     @property
+    def requires_root_daemon(self) -> bool:
+        return any(runtime.requires_root_daemon for runtime in self._all())
+
+    @property
     def delivers_forge_session_token(self) -> bool:
         return all(
             isinstance(runtime, ForgeSessionVmRuntime) and runtime.delivers_forge_session_token

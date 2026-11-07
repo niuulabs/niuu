@@ -33,9 +33,12 @@ from volundr.domain.compute import (
     MachineProvider,
     MachineState,
 )
+from volundr.domain.compute_hosts import HostConnector, HostInspector, RegisteredHostRepository
 from volundr.domain.guest_credentials import GuestCredentialDelivery, GuestIdentity
 from volundr.domain.service_account_tokens import ServiceAccountTokenPort
+from volundr.domain.services.compute_hosts import HostExecution
 from volundr.domain.services.compute_leases import ComputeLeaseService
+from volundr.domain.session_runtimes import SessionRuntimeKind
 from volundr.external_modules import load_external_module_manifests
 
 if TYPE_CHECKING:
@@ -46,7 +49,14 @@ if TYPE_CHECKING:
     from volundr.domain.vm_runtime import VmRuntime
 
 
-def build_provider(config: ComputeConfig) -> MachineProvider:
+def build_provider(
+    config: ComputeConfig, ports: Mapping[str, object] | None = None
+) -> MachineProvider:
+    """Construct the provider from config kwargs plus the ports its constructor declares.
+
+    A registered-host provider declares its inventory, connectors and inspector; a VM
+    provider declares none and receives none.
+    """
     kwargs = resolve_secret_kwargs(
         copy.deepcopy(config.provider.kwargs), config.provider.secret_kwargs_env
     )
@@ -58,10 +68,120 @@ def build_provider(config: ComputeConfig) -> MachineProvider:
             )
         )
     provider_cls = import_class(config.provider.adapter)
-    provider = provider_cls(**kwargs)
+    declared = {p.name for p in inspect.signature(provider_cls).parameters.values()}
+    provider = provider_cls(
+        **kwargs, **{name: port for name, port in (ports or {}).items() if name in declared}
+    )
     if not isinstance(provider, MachineProvider):
         raise TypeError("Configured compute provider must implement MachineProvider")
+    if provider.fixed_inventory != (config.hosts is not None):
+        raise ValueError(
+            "compute.hosts configures registered hosts and needs a registered-host provider "
+            "(volundr.adapters.outbound.registered_hosts.RegisteredHostMachineProvider); "
+            "set both or neither"
+        )
     return provider
+
+
+@dataclass(frozen=True)
+class RegisteredHostComponents:
+    """Registered-host collaborators, owned by the composition root."""
+
+    repository: RegisteredHostRepository
+    connectors: dict[str, HostConnector]
+    inspector: HostInspector
+    executions: dict[str, HostExecution]
+
+    def provider_ports(self, pool_id: str) -> dict[str, object]:
+        return {
+            "pool_id": pool_id,
+            "host_repository": self.repository,
+            "host_connectors": self.connectors,
+            "host_inspector": self.inspector,
+        }
+
+
+def build_registered_hosts(
+    config: ComputeConfig,
+    database_pool: asyncpg.Pool,
+    execution: ExecutionComponents | None,
+) -> RegisteredHostComponents:
+    """Compose the host inventory, its connectors and the inspector for each execution."""
+    from volundr.adapters.outbound.host_checks import SshHostInspector
+    from volundr.adapters.outbound.postgres_compute_hosts import (
+        PostgresRegisteredHostRepository,
+    )
+    from volundr.adapters.outbound.ssh_guest_access import SshGuestAccess
+
+    hosts = config.hosts
+    if hosts is None:
+        raise ValueError("compute.hosts is not configured")
+    if execution is None:
+        raise ValueError(
+            "Registered hosts need compute.execution_catalog: each host runs one catalog execution"
+        )
+    connectors: dict[str, HostConnector] = {}
+    for binding in hosts.connectors:
+        connector = import_class(binding.adapter)(
+            **resolve_secret_kwargs(copy.deepcopy(binding.kwargs), binding.secret_kwargs_env)
+        )
+        if not isinstance(connector, HostConnector):
+            raise TypeError(f"Connector {binding.binding_id} must implement HostConnector")
+        connectors[binding.binding_id] = connector
+    executions: dict[str, HostExecution] = {}
+    accesses: dict[str, GuestAccess] = {}
+    for plan in execution.resolver.plans():
+        access = execution.accesses_by_plan[plan.plan_digest]
+        if not isinstance(access, SshGuestAccess):
+            raise TypeError(
+                f"Execution {plan.execution} reaches its hosts through "
+                f"{type(access).__name__}; registered hosts need SshGuestAccess"
+            )
+        runtime = execution.runtimes[plan.plan_digest]
+        kind = runtime.session_runtime
+        executions[str(plan.execution)] = HostExecution(
+            execution=str(plan.execution),
+            profile=plan.provider_profile,
+            runtime=kind,
+            label=_RUNTIME_LABELS.get(kind, type(runtime).__name__)
+            if kind
+            else str(plan.execution),
+            supports_slots=runtime.supports_slots,
+            requires_root_daemon=runtime.requires_root_daemon,
+            slot_limits=runtime.slot_limits,
+            forge_public_key=access.public_key,
+            ssh_user=access.principal,
+        )
+        accesses[str(plan.execution)] = access
+
+    def access_for(host):
+        return accesses[host.execution]
+
+    def uid_base_for(host):
+        limits = executions[host.execution].slot_limits
+        return limits.uid_base if limits is not None else None
+
+    inspector = SshHostInspector(
+        access_for=access_for,
+        uid_base_for=uid_base_for,
+        connectors=connectors,
+        min_free_disk_mib=hosts.min_free_disk_mib,
+        command_timeout_seconds=hosts.command_timeout_seconds,
+    )
+    return RegisteredHostComponents(
+        repository=PostgresRegisteredHostRepository(database_pool),
+        connectors=connectors,
+        inspector=inspector,
+        executions=executions,
+    )
+
+
+#: What the Add host form calls each runtime a host can run.
+_RUNTIME_LABELS = {
+    SessionRuntimeKind.HOST: "Host · Nix + rootless Podman",
+    SessionRuntimeKind.CONTAINER: "Container (Docker)",
+    SessionRuntimeKind.OPENSHELL: "OpenShell",
+}
 
 
 @dataclass(frozen=True)
@@ -197,6 +317,7 @@ class ExecutionComponents:
     runtimes: dict[str, VmRuntime]
     preparations: dict[str, HostPreparation]
     accesses: tuple[GuestAccess, ...]
+    accesses_by_plan: dict[str, GuestAccess]
 
 
 def provider_fingerprint(config: ComputeConfig) -> str:
@@ -252,6 +373,7 @@ async def build_execution_components(
     runtimes, preparations = {}, {}
     opened = []
     accesses = []
+    accesses_by_plan = {}
     try:
         for plan in plans:
             if plan.pool_id != config.pool_id or plan.provider_binding != config.provider_binding:
@@ -264,6 +386,7 @@ async def build_execution_components(
                 raise TypeError("Configured guest access must implement GuestAccess")
             opened.append(access)
             accesses.append(access)
+            accesses_by_plan[plan.plan_digest] = access
             access.configure_trust(
                 principal=plan.access.principal,
                 mode=plan.access.trust.mode.value,
@@ -286,7 +409,9 @@ async def build_execution_components(
     except BaseException:
         await asyncio.gather(*(item.close() for item in reversed(opened)), return_exceptions=True)
         raise
-    return ExecutionComponents(resolver, default, runtimes, preparations, tuple(accesses))
+    return ExecutionComponents(
+        resolver, default, runtimes, preparations, tuple(accesses), accesses_by_plan
+    )
 
 
 def emit(event: str, **data) -> None:

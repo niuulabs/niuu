@@ -60,7 +60,7 @@ from volundr.domain.guest_access import GuestAccess
 from volundr.domain.guest_credentials import GuestCredentialDelivery, GuestCredentialPlan
 from volundr.domain.models import Session, SessionSpec
 from volundr.domain.session_runtimes import SessionRuntimeKind
-from volundr.domain.vm_runtime import StartupStepReport, VmRuntime
+from volundr.domain.vm_runtime import SlotLimits, StartupStepReport, VmRuntime
 
 # cloud-init's SSH module deletes/recreates keys at /etc/ssh/ssh_host_*.
 _HOST_KEY = HOST_KEY_PATH
@@ -525,6 +525,23 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
     @property
     def session_runtime(self) -> SessionRuntimeKind | None:
         return SessionRuntimeKind.CONTAINER
+
+    @property
+    def requires_root_daemon(self) -> bool:
+        """Skuld, its sidecars and the slot holders run under the guest's root Docker."""
+        return True
+
+    @property
+    def slot_limits(self) -> SlotLimits | None:
+        isolation = self._slot_isolation
+        if isolation is None:
+            return None
+        return SlotLimits(
+            uid_base=isolation.uid_base,
+            cpu=isolation.cpu,
+            memory_mib=isolation.memory_mib,
+            pids=isolation.pids,
+        )
 
     def stage_forge_session(self, session_id: UUID, credential: IssuedForgeSessionToken) -> None:
         """Hand over the credential the next start of ``session_id`` delivers."""

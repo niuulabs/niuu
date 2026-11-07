@@ -22,6 +22,7 @@ from volundr.domain.compute import (
     ComputeLeaseBusyError,
     ComputeLeaseRepository,
     ComputeSlot,
+    HostSelector,
     LeaseState,
     Machine,
     MachineBootstrap,
@@ -134,6 +135,7 @@ class ComputeLeaseService:
         execution_plan: ResolvedExecutionPlan | None = None,
         timeout_seconds: float | None = None,
         slots: int = 1,
+        host_selector: HostSelector | None = None,
     ) -> SlotLease:
         """Reserve a new machine with the session bound to its slot 0."""
         if not tenant_id or not owner_id:
@@ -148,6 +150,7 @@ class ComputeLeaseService:
             execution_plan=execution_plan,
             timeout_seconds=timeout_seconds,
             slots=slots,
+            host_selector=host_selector or HostSelector(),
         )
         return SlotLease(allocation=machine, binding=binding)
 
@@ -171,6 +174,7 @@ class ComputeLeaseService:
             execution_plan=execution_plan,
             timeout_seconds=timeout_seconds,
             slots=slots,
+            host_selector=HostSelector(),
         )
         return machine
 
@@ -186,6 +190,7 @@ class ComputeLeaseService:
         execution_plan: ResolvedExecutionPlan | None,
         timeout_seconds: float | None,
         slots: int,
+        host_selector: HostSelector,
     ) -> tuple[ComputeLease, ComputeSlot | None]:
         if bootstrap is not None and self._bootstrap_store is None:
             raise ValueError("Per-session bootstrap requires a durable credential store")
@@ -219,6 +224,7 @@ class ComputeLeaseService:
                 tenant_id=tenant_id,
                 owner_id=owner_id,
                 execution_plan=execution_plan,
+                host_selector=host_selector,
                 session_bootstrap_ref=(
                     self._session_reference(allocation_id, session_id)
                     if session_bootstrap is not None
@@ -433,9 +439,14 @@ class ComputeLeaseService:
                             # included in MachineRequest.
                             await self.bootstrap_for(SlotLease(allocation=lease, binding=binding))
                     # create is idempotent and repairs partially completed allocation operations.
+                    # A machine reserved for a session is claimed for that session's selector.
+                    selector = next((binding.host_selector for binding in live), HostSelector())
                     machine = await self._provider.create(
                         MachineRequest(
-                            allocation_id=lease.id, profile=lease.profile, bootstrap=bootstrap
+                            allocation_id=lease.id,
+                            profile=lease.profile,
+                            bootstrap=bootstrap,
+                            selector=selector,
                         )
                     )
                 if machine is None:
@@ -470,6 +481,7 @@ class ComputeLeaseService:
                         update={
                             "state": next_state,
                             "machine": machine,
+                            "slots": self._slots_from(lease, machine),
                             "retry_after": None,
                             "failures": 0,
                             "error": machine.status_detail,
@@ -488,6 +500,36 @@ class ComputeLeaseService:
                     )
                 )
                 raise
+
+    @staticmethod
+    def _slots_from(lease: ComputeLease, machine: Machine) -> int:
+        """A machine's slots: the provider's own number for it, fixed once it is known.
+
+        A provider that sets slots per machine (a registered host) only names the machine at
+        claim, so the reserve used the pool default. The machine's number replaces it while
+        the claim is provisioning and never changes after.
+        """
+        if machine.slots is None or lease.state != LeaseState.PROVISIONING:
+            return lease.slots
+        return machine.slots
+
+    async def refresh_machine(self, lease_id: UUID) -> ComputeLease:
+        """Re-read a machine in service from its provider, without moving the lease.
+
+        A registered host can stop accepting sessions (drained, quarantined, disconnected)
+        while it serves others; placement reads ``machine.accepting`` from the stored
+        snapshot, so the snapshot of a machine with live sessions is kept current here.
+        """
+        async with self._repository.operation(lease_id):
+            lease = await self._get(lease_id)
+            if lease.state not in {LeaseState.READY, LeaseState.IDLE}:
+                return lease
+            machine = await self._provider.get(lease.id)
+            if machine is None or machine == lease.machine:
+                return lease
+            lease = lease.model_copy(update={"machine": machine})
+            await self._repository.save(lease)
+            return lease
 
     async def mark_busy(self, allocation_id: UUID, binding_id: UUID) -> SlotLease:
         """Called only after the runtime controller has verified session readiness."""

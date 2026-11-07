@@ -1071,6 +1071,8 @@ def create_app(
             compute_provider = None
             compute_pool = None
             compute_pool_task = None
+            compute_host_service = None
+            compute_hosts_task = None
             execution_components = None
             guest_metadata_service = None
             if settings.compute is not None:
@@ -1084,6 +1086,7 @@ def create_app(
                     build_execution_components,
                     build_guest_credentials,
                     build_provider,
+                    build_registered_hosts,
                     build_runtime,
                     provider_fingerprint,
                 )
@@ -1111,8 +1114,6 @@ def create_app(
                     compute_resources.push_async_callback(runtime.close)
                     if isinstance(runtime, CredentialAwareVmRuntime):
                         runtime.configure_credentials(credential_store)
-                compute_provider = build_provider(compute)
-                compute_resources.push_async_callback(compute_provider.close)
                 compute_repository = PostgresComputeLeaseRepository(pool)
                 if compute.execution_catalog is not None:
                     if runtime is None:
@@ -1136,6 +1137,16 @@ def create_app(
                         runtime = execution_components.runtimes[
                             execution_components.default_plan.plan_digest
                         ]
+                host_components = (
+                    build_registered_hosts(compute, pool, execution_components)
+                    if compute.hosts is not None
+                    else None
+                )
+                compute_provider = build_provider(
+                    compute,
+                    host_components.provider_ports(compute.pool_id) if host_components else None,
+                )
+                compute_resources.push_async_callback(compute_provider.close)
                 compute_service = ComputeLeaseService(
                     compute_repository,
                     compute_provider,
@@ -1156,11 +1167,18 @@ def create_app(
                         return None
                     return await compute_service.machine_bootstrap_for(lease)
 
+                async def machine_for(lease_id):
+                    lease = await compute_repository.get(lease_id)
+                    if lease is None or lease.pool_id != compute.pool_id:
+                        return None
+                    return lease.machine
+
                 guest_credentials = build_guest_credentials(
                     compute,
                     {
                         "pool_id": compute.pool_id,
                         "machine_bootstrap_for": machine_bootstrap_for,
+                        "machine_for": machine_for,
                         "watermarks": PostgresGuestRequestWatermarks(pool),
                         "machine_provider": compute_provider,
                     },
@@ -1261,6 +1279,27 @@ def create_app(
                     )
                 await compute_pool.validate_policy(await compute_pool.policy())
                 pod_manager.configure_pool(compute_pool)
+                if host_components is not None:
+                    from volundr.domain.services.compute_hosts import ComputeHostService
+
+                    hosts_config = compute.hosts
+                    compute_host_service = ComputeHostService(
+                        pool_id=compute.pool_id,
+                        repository=host_components.repository,
+                        compute_repository=compute_repository,
+                        connectors=host_components.connectors,
+                        inspector=host_components.inspector,
+                        executions=host_components.executions,
+                        token_issuer=workload_identity_service,
+                        join_url=hosts_config.join_url,
+                        pairing_code_ttl_seconds=hosts_config.pairing_code_ttl_seconds,
+                        check_interval_seconds=hosts_config.check_interval_seconds,
+                        pending_check_interval_seconds=(
+                            hosts_config.pending_check_interval_seconds
+                        ),
+                        reserved_cpu=hosts_config.reserved_cpu,
+                        reserved_memory_mib=hosts_config.reserved_memory_mib,
+                    )
             codex_credential_broker = _create_codex_credential_broker(
                 settings,
                 credential_store=credential_store,
@@ -1957,6 +1996,12 @@ def create_app(
 
             if guest_metadata_service is not None:
                 app.include_router(create_compute_metadata_router(guest_metadata_service))
+            if compute_host_service is not None:
+                from volundr.adapters.inbound.rest_compute_hosts import (
+                    create_compute_hosts_router,
+                )
+
+                app.include_router(create_compute_hosts_router(compute_host_service, compute_pool))
 
             app.include_router(catalog.router)
 
@@ -2401,6 +2446,8 @@ def create_app(
 
             if compute_pool is not None:
                 compute_pool_task = asyncio.create_task(compute_pool.run())
+            if compute_host_service is not None:
+                compute_hosts_task = asyncio.create_task(compute_host_service.run())
             try:
                 yield
             finally:
@@ -2414,6 +2461,9 @@ def create_app(
                 if compute_pool_task is not None:
                     compute_pool_task.cancel()
                     await asyncio.gather(compute_pool_task, return_exceptions=True)
+                if compute_hosts_task is not None:
+                    compute_hosts_task.cancel()
+                    await asyncio.gather(compute_hosts_task, return_exceptions=True)
                 if bifrost_catalog_task is not None:
                     bifrost_catalog_task.cancel()
                     await asyncio.gather(bifrost_catalog_task, return_exceptions=True)
