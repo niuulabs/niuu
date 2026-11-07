@@ -34,6 +34,11 @@ class TransportCapabilities:
     terminal_keys: bool = False
     terminal_resize: bool = False
     terminal_panes: bool = False
+    #: The CLI says it is ready (``system/init``) on its own, before any message.
+    #: False for a CLI that announces itself only once it reads its first turn
+    #: (``claude -p --input-format stream-json``): the broker then reports the
+    #: session idle as soon as it is ready to take that turn.
+    announces_ready: bool = True
 
 
 class CLITransport(ABC):
