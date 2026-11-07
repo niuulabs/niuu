@@ -1243,6 +1243,9 @@ def create_app(
                             else pod_manager.profile
                         ),
                         max_machines=compute.max_machines,
+                        slots_per_machine=compute.slots_per_machine,
+                        max_sessions_per_machine=compute.max_sessions_per_machine,
+                        max_machine_age_seconds=compute.max_machine_age_seconds,
                         warm_min=compute.warm_min,
                         reuse_policy=compute.reuse_policy,
                         max_provisioning=compute.max_provisioning,

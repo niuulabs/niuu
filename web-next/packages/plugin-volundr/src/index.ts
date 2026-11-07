@@ -234,6 +234,13 @@ export {
 } from './domain/session';
 export { toLifecycleState } from './ui/utils/toLifecycleState';
 export type { ExecEntry, ExecStatus } from './domain/exec';
+export type {
+  RunsAsSelection,
+  RuntimeReadiness,
+  SessionGrant,
+  SessionRuntimeKind,
+  SessionRuntimeOffer,
+} from './domain/sessionRuntimes';
 export { appendExecEntry, updateExecEntry } from './domain/exec';
 export type { PodSpec, Mount, MountSource, ResourceSpec, MountKind } from './domain/pod';
 export type { Cluster, ClusterNode, ClusterCapacity, NodeStatus } from './domain/cluster';

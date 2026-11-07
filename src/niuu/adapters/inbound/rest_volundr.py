@@ -2649,6 +2649,24 @@ def create_volundr_router(
         _ensure_remote_success(response)
         return response.json()
 
+    @router.get("/session-runtimes")
+    async def get_session_runtimes(
+        request: Request,
+        instance_id: str | None = Query(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """What a launch on the node may run as: each Forge offers its own runtimes."""
+        instance = await _resolve_target_instance(service, principal, instance_id)
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path="/session-runtimes",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return response.json()
+
     async def _push_gateway_capabilities(
         request: Request,
         principal: Principal,

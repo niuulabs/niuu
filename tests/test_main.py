@@ -384,10 +384,12 @@ class TestLifespan:
         )
 
     @staticmethod
-    def _run_guest_compute_app(settings, runtime, request=None):
+    def _run_guest_compute_app(settings, runtime, request=None, repository=None):
         from fastapi.testclient import TestClient
 
         from tests.compute_fakes import LeaseRepository, Provider
+
+        repository = repository or LeaseRepository()
 
         mock_pool = AsyncMock()
         mock_pool.get_max_size = MagicMock(return_value=10)
@@ -422,7 +424,7 @@ class TestLifespan:
             patch("volundr.compute.main.build_provider", return_value=Provider()),
             patch(
                 "volundr.adapters.outbound.postgres_compute_leases.PostgresComputeLeaseRepository",
-                return_value=LeaseRepository(),
+                return_value=repository,
             ),
             patch("volundr.compute.main.build_runtime", return_value=runtime),
         ):
@@ -480,6 +482,52 @@ class TestLifespan:
         settings = self._guest_compute_settings(guest_identity=self._METADATA["guest_identity"])
         with pytest.raises(ValueError, match="compute.service_account_tokens"):
             self._run_guest_compute_app(settings, AsyncMock(spec=SshContainerVmRuntime))
+
+    def test_lifespan_starts_the_pool_with_the_configured_slot_settings(self) -> None:
+        from tests.compute_fakes import LeaseRepository
+        from volundr.domain.vm_runtime import VmRuntime
+
+        runtime = AsyncMock(spec=VmRuntime)
+        runtime.supports_reuse = True
+        repository = LeaseRepository()
+        settings = self._guest_compute_settings(
+            slots_per_machine=1, max_sessions_per_machine=3, max_machine_age_seconds=3600
+        )
+
+        self._run_guest_compute_app(settings, runtime, repository=repository)
+
+        policy = repository.policies["test-pool"]
+        assert (policy.slots_per_machine, policy.max_sessions_per_machine) == (1, 3)
+        assert policy.max_machine_age_seconds == 3600
+
+    def test_lifespan_defaults_to_one_session_per_machine(self) -> None:
+        from tests.compute_fakes import LeaseRepository
+        from volundr.domain.vm_runtime import VmRuntime
+
+        repository = LeaseRepository()
+
+        self._run_guest_compute_app(
+            self._guest_compute_settings(), AsyncMock(spec=VmRuntime), repository=repository
+        )
+
+        policy = repository.policies["test-pool"]
+        assert (policy.slots_per_machine, policy.max_sessions_per_machine) == (1, None)
+
+    def test_lifespan_refuses_more_slots_than_the_runtime_supports(self) -> None:
+        from tests.compute_fakes import LeaseRepository
+        from volundr.domain.vm_runtime import VmRuntime
+
+        runtime = AsyncMock(spec=VmRuntime)
+        runtime.supports_slots = False
+        repository = LeaseRepository()
+        settings = self._guest_compute_settings(slots_per_machine=2)
+
+        with pytest.raises(ValueError, match="slots_per_machine=2") as refused:
+            self._run_guest_compute_app(settings, runtime, repository=repository)
+
+        # Startup names the remedy, and the refused default never became the stored policy.
+        assert "supports slots" in str(refused.value)
+        assert repository.policies == {}
 
     def test_lifespan_initializes_audit_subscriber(self):
         """Lifespan must run startup/shutdown without error when sleipnir is disabled.

@@ -35,10 +35,17 @@ from volundr.adapters.outbound.ssh_guest_access import (
     HOST_KEY_PATH,
     SshGuestAccess,
 )
-from volundr.domain.compute import BootstrapFile, ComputeLease, MachineBootstrap
+from volundr.domain.compute import (
+    AllocationRef,
+    BootstrapFile,
+    ComputeLease,
+    MachineBootstrap,
+    SlotLease,
+)
 from volundr.domain.guest_access import GuestAccess
 from volundr.domain.guest_credentials import GuestCredentialDelivery, GuestCredentialPlan
 from volundr.domain.models import Session, SessionSpec
+from volundr.domain.session_runtimes import SessionRuntimeKind
 from volundr.domain.vm_runtime import StartupStepReport, VmRuntime
 
 # cloud-init's SSH module deletes/recreates keys at /etc/ssh/ssh_host_*.
@@ -404,8 +411,8 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         """Name each step of ``start`` as it begins, for the session's launch stages."""
         self._report_startup = report
 
-    def _step(self, lease: ComputeLease, key: str, label: str) -> None:
-        if self._report_startup is not None and lease.session_id is not None:
+    def _step(self, lease: SlotLease, key: str, label: str) -> None:
+        if self._report_startup is not None:
             self._report_startup(lease.session_id, key, label)
 
     def configure_credential_delivery(self, delivery: GuestCredentialDelivery) -> None:
@@ -421,6 +428,10 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
     #: Whether the guest runs the pod's init containers and sidecars next to Skuld.
     _runs_pod_containers = True
 
+    @property
+    def session_runtime(self) -> SessionRuntimeKind | None:
+        return SessionRuntimeKind.CONTAINER
+
     def stage_forge_session(self, session_id: UUID, credential: IssuedForgeSessionToken) -> None:
         """Hand over the credential the next start of ``session_id`` delivers."""
         if self._credential_delivery is not None:
@@ -431,14 +442,14 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             self._credential_delivery.discard_forge_session(session_id)
 
     async def write_files(
-        self, lease: ComputeLease, bootstrap: MachineBootstrap, items: list[dict]
+        self, lease: AllocationRef, bootstrap: MachineBootstrap, items: list[dict]
     ) -> None:
         await self._guest_access.execute(
             lease, bootstrap, self._python(_REFRESHED_FILES), data=json.dumps(items).encode()
         )
 
     async def file_exists(
-        self, lease: ComputeLease, bootstrap: MachineBootstrap, path: str
+        self, lease: AllocationRef, bootstrap: MachineBootstrap, path: str
     ) -> bool:
         result = await self._guest_access.execute(
             lease,
@@ -832,32 +843,32 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             "mounts": [{**m, "readonly": True} for m in secret] + volume,
         }
 
-    def _ssh(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> list[str]:
+    def _ssh(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> list[str]:
         if not isinstance(self._guest_access, SshGuestAccess):
             raise TypeError("Raw SSH command inspection requires SshGuestAccess")
         return self._guest_access.command_argv(lease, bootstrap)
 
-    def _bootstrap_ssh(self, lease: ComputeLease) -> list[str]:
+    def _bootstrap_ssh(self, lease: AllocationRef) -> list[str]:
         """Build the explicit first-contact SSH command for post-connect bootstrap."""
         if not isinstance(self._guest_access, SshGuestAccess):
             raise TypeError("Raw SSH command inspection requires SshGuestAccess")
         return self._guest_access.bootstrap_argv(lease)
 
-    def _bootstrap_verified_marker(self, lease: ComputeLease) -> Path:
+    def _bootstrap_verified_marker(self, lease: AllocationRef) -> Path:
         if not isinstance(self._guest_access, SshGuestAccess):
             raise TypeError("SSH bootstrap markers require SshGuestAccess")
         return self._guest_access.bootstrap_verified_marker(lease)
 
-    def _allocation_directory(self, lease: ComputeLease) -> Path:
+    def _allocation_directory(self, lease: AllocationRef) -> Path:
         return self._data / str(lease.id)
 
-    def _has_host_pin(self, lease: ComputeLease) -> bool:
+    def _has_host_pin(self, lease: AllocationRef) -> bool:
         if not isinstance(self._guest_access, SshGuestAccess):
             raise TypeError("SSH host pin inspection requires SshGuestAccess")
         return self._guest_access._has_host_pin(lease)
 
     @staticmethod
-    def _host_alias(lease: ComputeLease) -> str:
+    def _host_alias(lease: AllocationRef) -> str:
         return SshGuestAccess._host_alias(lease)
 
     @staticmethod
@@ -875,7 +886,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         )
 
     async def _deliver_bootstrap_over_ssh(
-        self, lease: ComputeLease, bootstrap: MachineBootstrap
+        self, lease: AllocationRef, bootstrap: MachineBootstrap
     ) -> None:
         machine = self._ssh_machine_bootstrap(bootstrap)
         await self._guest_access.ensure(lease, machine)
@@ -926,7 +937,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             "SKULD__PREVIEW__ROUTER_AUTH": json.dumps(self._preview_router_auth),
         }
 
-    async def target(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> SessionProxyTarget:
+    async def target(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> SessionProxyTarget:
         target = await self._guest_access.open_tunnel(
             lease,
             bootstrap,
@@ -944,9 +955,12 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         launch = next((f.content for f in bootstrap.files if f.path == _LAUNCH), None)
         return json.loads(launch) if launch is not None else None
 
-    async def _resume_delivery(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def _resume_delivery(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:
+        # A machine with no session has no credentials to resume.
+        if not isinstance(lease, SlotLease):
+            return
         launch = self._launch(bootstrap)
-        if self._credential_delivery is None or lease.session_id is None or launch is None:
+        if self._credential_delivery is None or launch is None:
             return
         plan = GuestCredentialPlan.from_launch(launch)
         if not plan.empty:
@@ -961,7 +975,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             f"127.0.0.1:{self._guest_platform_port}:{self._platform_host}:{self._platform_port}",
         ]
 
-    async def prepare(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def prepare(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:
         if self._host_prepared:
             await self._guest_access.execute(lease, bootstrap, "true")
             return
@@ -970,9 +984,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             access_bootstrap = self._ssh_machine_bootstrap(bootstrap)
         await self._guest_access.ensure(lease, access_bootstrap)
 
-    async def start(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
-        if lease.session_id is None:
-            raise ValueError("Cannot start an unbound guest")
+    async def start(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         session_directory = self._data / str(lease.session_id)
         session_directory.mkdir(mode=0o700, exist_ok=True, parents=True)
         # Warm machines were created without session secrets. Deliver them only
@@ -1014,7 +1026,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             data=json.dumps(payload).encode(),
         )
 
-    async def _restore_data(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def _restore_data(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         archive = self._data / str(lease.session_id) / "session.tar"
         if archive.exists():
             self._step(lease, "guest_restore", "Restoring the workspace")
@@ -1034,7 +1046,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 self._python(_PREPARE, str(lease.id), "empty", json.dumps(self._archive_excludes)),
             )
 
-    async def ready(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> bool:
+    async def ready(self, lease: SlotLease, bootstrap: MachineBootstrap) -> bool:
         target = await self.target(lease, bootstrap)
         try:
             async with httpx.AsyncClient(timeout=self._health_timeout) as client:
@@ -1043,14 +1055,14 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             return False
         return response.status_code == 200
 
-    async def stop(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         result = await self._guest_access.execute(
             lease,
             bootstrap,
             self._python(_STOP, str(lease.id), str(self._stop_timeout)),
             expected_exit_codes=(0, 42),
         )
-        if self._credential_delivery is not None and lease.session_id is not None:
+        if self._credential_delivery is not None:
             await self._credential_delivery.stop(lease, bootstrap)
         if result.exit_code == 42:
             # Cancelled before storage restore: retain any previous local archive.
@@ -1059,8 +1071,8 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         await self._archive_data(lease, bootstrap)
         await self._close_tunnel(str(lease.id))
 
-    async def _archive_data(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
-        directory = self._data / str(lease.session_id or lease.id)
+    async def _archive_data(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
+        directory = self._data / str(lease.session_id)
         directory.mkdir(mode=0o700, exist_ok=True, parents=True)
         fd, temporary = tempfile.mkstemp(prefix="session-", suffix=".tar", dir=directory)
         try:

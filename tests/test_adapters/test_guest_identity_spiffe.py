@@ -84,9 +84,6 @@ def _lease(allocation: UUID | None = None, pool: str = POOL) -> ComputeLease:
     return ComputeLease(
         id=allocation or uuid4(),
         pool_id=pool,
-        session_id=uuid4(),
-        tenant_id="t",
-        owner_id="o",
         profile="p",
         request_fingerprint="f",
     )

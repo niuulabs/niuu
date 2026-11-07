@@ -20,7 +20,7 @@ from uuid import UUID
 
 from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from niuu.observability import get_observability
-from volundr.domain.compute import ComputeLease, MachineBootstrap
+from volundr.domain.compute import MachineBootstrap, SlotLease
 from volundr.domain.guest_credentials import (
     METADATA_ADDRESS,
     GuestContainers,
@@ -75,7 +75,7 @@ class SshPushCredentialDelivery(GuestCredentialDelivery):
 
     async def _deliver_tokens(
         self,
-        lease: ComputeLease,
+        lease: SlotLease,
         bootstrap: MachineBootstrap,
         plan: GuestCredentialPlan,
         files: GuestFiles,
@@ -101,7 +101,7 @@ class SshPushCredentialDelivery(GuestCredentialDelivery):
 
     async def _ensure_refresh(
         self,
-        lease: ComputeLease,
+        lease: SlotLease,
         bootstrap: MachineBootstrap,
         plan: GuestCredentialPlan,
         files: GuestFiles,
@@ -119,7 +119,7 @@ class SshPushCredentialDelivery(GuestCredentialDelivery):
 
     async def _refresh(
         self,
-        lease: ComputeLease,
+        lease: SlotLease,
         bootstrap: MachineBootstrap,
         plan: GuestCredentialPlan,
         files: GuestFiles,
@@ -153,7 +153,7 @@ class SshPushCredentialDelivery(GuestCredentialDelivery):
 
     async def start(
         self,
-        lease: ComputeLease,
+        lease: SlotLease,
         bootstrap: MachineBootstrap,
         plan: GuestCredentialPlan,
         launch: dict,
@@ -190,7 +190,7 @@ class SshPushCredentialDelivery(GuestCredentialDelivery):
 
     async def resume(
         self,
-        lease: ComputeLease,
+        lease: SlotLease,
         bootstrap: MachineBootstrap,
         plan: GuestCredentialPlan,
         files: GuestFiles,
@@ -199,7 +199,7 @@ class SshPushCredentialDelivery(GuestCredentialDelivery):
         # its refresh, delivering fresh tokens before it returns.
         await self._ensure_refresh(lease, bootstrap, plan, files)
 
-    async def stop(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         task = self._refreshers.pop(str(lease.id), None)
         if task is None:
             return
@@ -315,7 +315,7 @@ class MetadataCredentialDelivery(GuestCredentialDelivery):
 
     async def start(
         self,
-        lease: ComputeLease,
+        lease: SlotLease,
         bootstrap: MachineBootstrap,
         plan: GuestCredentialPlan,
         launch: dict,
@@ -363,5 +363,5 @@ class MetadataCredentialDelivery(GuestCredentialDelivery):
             # a broker still running from the previous launch must re-read it.
             launch["relaunch"] = True
 
-    async def stop(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         await self._identity.unregister(lease, bootstrap)

@@ -177,6 +177,14 @@
   background: var(--color-bg-primary);
   z-index: 1;
 }
+.vol-quick__launch-side {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px;
+  min-width: 0;
+}
 .vol-quick label.vol-quick__toggle {
   flex-direction: row;
   align-items: flex-start;

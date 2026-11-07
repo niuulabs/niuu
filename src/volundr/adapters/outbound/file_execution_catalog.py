@@ -71,6 +71,7 @@ class _CatalogManifest(BaseModel):
 
     default_execution: CatalogRef
     legacy_compute_profiles: dict[str, CatalogRef] = Field(default_factory=dict)
+    launch_executions: tuple[CatalogRef, ...] = ()
 
 
 class _RawArtifact(BaseModel):
@@ -118,6 +119,7 @@ class FileExecutionCatalog(ExecutionCatalogPort):
         snapshot = ExecutionCatalogSnapshot(
             default_execution=manifest.default_execution,
             legacy_compute_profiles=manifest.legacy_compute_profiles,
+            launch_executions=manifest.launch_executions,
             machines=machines,
             host_recipes=recipes,
             access_configurations=access,
@@ -238,6 +240,9 @@ class FileExecutionCatalog(ExecutionCatalogPort):
                 raise ExecutionCatalogError(
                     f"Legacy compute profile {profile!r} references unknown execution: {reference}"
                 )
+        for reference in snapshot.launch_executions:
+            if (reference.id, reference.revision) not in executions:
+                raise ExecutionCatalogError(f"Launch execution does not exist: {reference}")
         catalogs = {
             "machine": {(entry.id, entry.revision) for entry in snapshot.machines},
             "host recipe": {(entry.id, entry.revision) for entry in snapshot.host_recipes},

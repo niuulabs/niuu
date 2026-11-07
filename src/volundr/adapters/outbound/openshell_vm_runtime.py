@@ -25,8 +25,9 @@ from volundr.adapters.outbound.ssh_vm_runtime import (
     _SESSION_FILES,
     SshContainerVmRuntime,
 )
-from volundr.domain.compute import BootstrapFile, MachineBootstrap
+from volundr.domain.compute import BootstrapFile, MachineBootstrap, SlotLease
 from volundr.domain.models import PodSpecAdditions, Session, SessionSpec
+from volundr.domain.session_runtimes import SessionRuntimeKind
 from volundr.domain.vm_runtime import VmRuntimeUnavailableError
 
 _SPEC = "/etc/niuu/openshell-session.json"
@@ -75,6 +76,10 @@ class OpenShellVmRuntime(SshContainerVmRuntime):
     # The OpenShell gateway owns the sandbox: no Docker sidecars or token volumes,
     # and its broker keeps its own Forge credential.
     _runs_pod_containers = False
+
+    @property
+    def session_runtime(self) -> SessionRuntimeKind | None:
+        return SessionRuntimeKind.OPENSHELL
 
     @property
     def delivers_forge_session_token(self) -> bool:
@@ -272,7 +277,9 @@ systemctl enable --now openshell-gateway
         target = await super().target(lease, bootstrap)
         key = str(lease.id)
         endpoint = f"{target.connect_host}:{target.connect_port}"
-        identity = f"{endpoint}/{lease.session_id}"
+        # A warm machine is probed with a bare ComputeLease: no session yet.
+        session_id = lease.session_id if isinstance(lease, SlotLease) else None
+        identity = f"{endpoint}/{session_id}"
         previous = self._managers.get(key)
         if previous and previous[0] == identity:
             await self._gateway_ready(previous[1])
@@ -288,7 +295,7 @@ systemctl enable --now openshell-gateway
             }
             for name in ("workspace", "home")
         ]
-        if lease.session_id is not None:
+        if session_id is not None:
             launch = json.loads(next(f.content for f in bootstrap.files if f.path == _LAUNCH))
             mounts.extend(
                 {"type": "bind", "source": m["source"], "target": m["target"], "read_only": True}
@@ -335,8 +342,6 @@ systemctl enable --now openshell-gateway
             await self._close_tunnel(str(lease.id))
 
     async def start(self, lease, bootstrap):
-        if lease.session_id is None:
-            raise ValueError("Cannot start an unbound OpenShell guest")
         files = [
             f.model_dump()
             for f in bootstrap.files

@@ -174,6 +174,7 @@ from volundr.domain.session_read_state import (
     SessionReadStateChange,
     SessionReadStateConflictError,
 )
+from volundr.domain.session_runtimes import SessionRuntimeOffer
 from volundr.domain.session_startup import SessionStartup
 from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import load_workspace_transcript
@@ -573,6 +574,48 @@ class ForgeMcpGrantsUpdate(BaseModel):
             "The session's own Forge MCP grants, replacing the stored ones: 'message' "
             "and/or 'lifecycle'. [] removes them. They apply at the next start."
         ),
+    )
+
+
+class RuntimeReadinessResponse(BaseModel):
+    state: str = Field(
+        description="'warm': a prepared machine is free, the session starts in seconds; "
+        "'boot': a machine boots first (minutes); 'full': no capacity for a new session"
+    )
+    warm: int = Field(description="Free prepared machines that can take this runtime now")
+    remedy: str | None = Field(default=None, description="Where capacity is raised when full")
+
+
+class SessionRuntimeResponse(BaseModel):
+    runtime: str = Field(description="'container', 'openshell' or 'host'")
+    execution_profile: str = Field(
+        description="Send as workload_config.execution_profile to launch with this runtime"
+    )
+    default: bool = Field(description="Sessions that choose nothing run this one")
+    grants: list[str] = Field(
+        description="Extra access ('sudo', 'docker') this runtime can give a session; send "
+        "the chosen ones as workload_config.runtime_grants"
+    )
+    readiness: RuntimeReadinessResponse
+
+    @classmethod
+    def from_offer(cls, offer: SessionRuntimeOffer) -> "SessionRuntimeResponse":
+        return cls(
+            runtime=offer.runtime.value,
+            execution_profile=offer.execution_profile,
+            default=offer.default,
+            grants=[grant.value for grant in offer.grants],
+            readiness=RuntimeReadinessResponse(
+                state=offer.readiness.state.value,
+                warm=offer.readiness.warm,
+                remedy=offer.readiness.remedy,
+            ),
+        )
+
+
+class SessionRuntimesResponse(BaseModel):
+    runtimes: list[SessionRuntimeResponse] = Field(
+        description="Runtimes a launch may choose between; empty when the host offers no choice"
     )
 
 
@@ -2243,6 +2286,14 @@ def create_router(
 
         router.include_router(create_projects_router(project_service, project_principal))
         router.include_router(create_session_projects_router(project_service, project_principal))
+
+    @router.get("/session-runtimes", tags=["Sessions"], response_model=SessionRuntimesResponse)
+    async def get_session_runtimes() -> SessionRuntimesResponse:
+        """What a launch on this host may run as, with current warm readiness."""
+        offers = await session_service.session_runtimes()
+        return SessionRuntimesResponse(
+            runtimes=[SessionRuntimeResponse.from_offer(offer) for offer in offers]
+        )
 
     @router.get("/feature-flags", tags=["Features"])
     async def get_feature_flags(request: Request) -> dict:
