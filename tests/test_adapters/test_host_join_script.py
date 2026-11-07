@@ -39,7 +39,10 @@ def test_an_unpinned_join_script_has_an_empty_pin_and_keeps_wget():
 def test_a_pinned_join_script_posts_only_through_curl_with_the_pin():
     script = render_join_script(forge_url="https://f:8443", code="c", pin="sha256//a+b/c=")
     assert "PIN=sha256//a+b/c=" in script
-    pinned = script[script.index('if [ -n "$PIN" ]; then') : script.index("elif command -v curl")]
+    linux = script.index('[ "$(uname -s)" = Linux ]')
+    pinned = script[
+        script.index('if [ -n "$PIN" ]; then', linux) : script.index("elif command -v curl", linux)
+    ]
     assert "only curl checks a pin" in pinned
     assert '-k --pinnedpubkey "$PIN"' in pinned
     assert "wget -" not in pinned
@@ -50,7 +53,10 @@ def test_a_pinned_join_without_curl_says_so_and_changes_nothing(tmp_path):
     # Only the tool block, with a PATH that has no curl: it fails before anything is written.
     script = render_join_script(forge_url="https://f", code="c", pin="sha256//x=")
     block = script[script.index("say() {") : script.index("\n", script.index("ok() {"))]
-    pinned = script[script.index('if [ -n "$PIN" ]; then') : script.index("elif command -v curl")]
+    linux = script.index('[ "$(uname -s)" = Linux ]')
+    pinned = script[
+        script.index('if [ -n "$PIN" ]; then', linux) : script.index("elif command -v curl", linux)
+    ]
     probe = f"PIN=sha256//x=\n{block}\n{pinned}fi\necho reached\n"
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
