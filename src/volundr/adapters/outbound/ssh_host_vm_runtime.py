@@ -35,7 +35,15 @@ from pathlib import PurePosixPath
 from pydantic import BaseModel, ConfigDict, Field
 
 from volundr.adapters.outbound.ssh_vm_runtime import _START, SshContainerVmRuntime
-from volundr.adapters.outbound.vm_slot_layout import SESSION_LAUNCH, SlotLayout
+from volundr.adapters.outbound.vm_slot_layout import (
+    FORGE_SESSION_DIRECTORY,
+    GUEST_AGENT_DIRECTORY,
+    SESSION_DATA,
+    SESSION_LAUNCH,
+    SESSION_RUNTIME,
+    SESSION_SECRETS,
+    SlotLayout,
+)
 from volundr.domain.compute import BootstrapFile, MachineBootstrap, SlotLease
 from volundr.domain.models import Session, SessionSpec
 from volundr.domain.session_runtimes import SessionRuntimeKind
@@ -212,13 +220,14 @@ if child:
     os.replace(temporary, pidfile)
     os._exit(0)
 mount('-t', 'proc', 'proc', '/proc')
-for path in spec['masked']:
-    # The VM's own credentials (its identity token, Forge's host key): an empty,
-    # read-only tree in their place, whatever their modes on the VM.
-    if os.path.isdir(path):
-        mount('-t', 'tmpfs', '-o', 'ro,mode=0755', 'tmpfs', path)
 for item in spec['mounts']:
     mount('--bind', *(['-o', 'ro'] if item['readonly'] else []), item['source'], item['target'])
+for path in spec['masked']:
+    # The VM's own credentials (its identity token, Forge's host key) and the slots'
+    # root-owned state: an empty, read-only tree in their place, whatever their modes.
+    # After the binds, whose sources (the slot's secrets) live there.
+    if os.path.isdir(path):
+        mount('-t', 'tmpfs', '-o', 'ro,mode=0755', 'tmpfs', path)
 mount('--make-rshared', '/')
 session = os.fork()
 if not session:
@@ -282,12 +291,32 @@ def running():
         return None
     return pid if ours else None
 def end(pid):
-    os.kill(pid, signal.SIGTERM)
-    deadline = time.monotonic() + h['stop_timeout']
-    while os.path.exists('/proc/%d' % pid) and time.monotonic() < deadline:
-        time.sleep(h['poll'])
-    if os.path.exists('/proc/%d' % pid):
-        os.kill(pid, signal.SIGKILL)
+    # Root touches the slot's storage next: nothing of the old session may still run.
+    for signum in (signal.SIGTERM, signal.SIGKILL):
+        os.kill(pid, signum)
+        deadline = time.monotonic() + h['stop_timeout']
+        while os.path.exists('/proc/%d' % pid) and time.monotonic() < deadline:
+            time.sleep(h['poll'])
+        if not os.path.exists('/proc/%d' % pid):
+            return
+    raise RuntimeError('The previous host session survived SIGKILL')
+def owned(path, mode):
+    # The slot owns the parent and could have left a link here: never follow one.
+    parent = os.open(os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            os.mkdir(os.path.basename(path), mode, dir_fd=parent)
+        except FileExistsError:
+            pass
+        fd = os.open(os.path.basename(path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent)
+        try:
+            os.fchown(fd, s['uid'], s['uid'])
+            os.fchmod(fd, mode)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent)
 current = running()
 if current and not p.get('relaunch'):
     sys.exit(0)
@@ -301,23 +330,23 @@ if not marker.exists():
 if marker.read_text() != s['marker']:
     raise RuntimeError('Workspace allocation mismatch')
 workspace, home = root / 'workspace', root / 'home'
-workspace.mkdir(exist_ok=True)
-home.mkdir(exist_ok=True)
-if p['repo'] and not (workspace / '.git').exists():
-    args = ['git', 'clone']
+owned(str(workspace), 0o700)
+owned(str(home), 0o700)
+if p['repo'] and not os.path.lexists(workspace / '.git'):
+    # As the slot's user: root never writes into storage the slot owns.
+    args = ['setpriv', '--reuid', str(s['uid']), '--regid', str(s['uid']), '--clear-groups',
+        '--', 'git', 'clone']
     if p['branch']:
         args += ['--branch', p['branch']]
-    subprocess.run([*args, '--', p['repo'], str(workspace)], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run([*args, '--', p['repo'], str(workspace)], check=True, stdout=subprocess.DEVNULL,
+        env={'PATH': '/usr/bin:/bin', 'HOME': str(home)}, cwd=str(home))
 owner = '%d:%d' % (s['uid'], s['uid'])
 # -h: a link the session left in its storage names its own path, never a target.
 # Container storage keeps the owners its subordinate ids gave it.
 prune = [a for path in h['keep_owners'] for a in ('-path', str(root / path), '-prune', '-o')]
 subprocess.run(['find', str(root), *prune, '-exec', 'chown', '-h', owner, '{}', '+'], check=True)
 for directory in h['private']:
-    path = pathlib.Path(directory)
-    path.mkdir(parents=True, exist_ok=True)
-    os.chown(path, s['uid'], s['uid'])
-    path.chmod(0o700)
+    owned(directory, 0o700)
 c = h['containers']
 if c:
     if not os.path.exists('/usr/bin/podman') or not os.path.exists('/usr/bin/newuidmap'):
@@ -441,6 +470,29 @@ if c:
 """
 
 
+class HostSlotLayout(SlotLayout):
+    """A host-mode slot: whatever root writes for it lives in root's directory.
+
+    A host session runs on the VM as the slot's user, who owns the slot's data and
+    runtime directories and could swap anything in them for a link. So the launch
+    file, the secrets, the Forge session credential, the guest agent's configuration
+    and the token and volume directories, which root and the credential agents write
+    while the session runs, live under the slot's root-owned ``agent_root``
+    (``root:<slot group> 0750``: closed to other slots too). Only the session's own
+    storage, its home and workspace, stays in the slot's data directory.
+    """
+
+    def _roots(self) -> tuple[tuple[str, str], ...]:
+        return (
+            (SESSION_DATA, self.session_data),
+            (SESSION_LAUNCH, f"{self.agent_root}/session-launch.json"),
+            (SESSION_SECRETS, f"{self.agent_root}/session-secrets"),
+            (FORGE_SESSION_DIRECTORY, f"{self.agent_root}/forge-session"),
+            (GUEST_AGENT_DIRECTORY, f"{self.agent_root}/guest-agent"),
+            (SESSION_RUNTIME, f"{self.agent_root}/run"),
+        )
+
+
 class RootlessContainers(BaseModel):
     """``compute.runtime.kwargs.containers``: rootless Podman in every slot.
 
@@ -522,6 +574,8 @@ class SshHostVmRuntime(SshContainerVmRuntime):
             # Container storage is the machine's: its files carry subordinate ids, and
             # a session's images are pulled again on its next machine.
             self._archive_excludes = (*self._archive_excludes, *_CONTAINER_STATE)
+
+    _layout_class = HostSlotLayout
 
     @property
     def session_runtime(self) -> SessionRuntimeKind | None:

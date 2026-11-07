@@ -528,3 +528,72 @@ def test_host_mode_serves_slots_only_with_a_delivery_that_serves_them(tmp_path):
     runtime.configure_credential_delivery(delivery)
 
     assert runtime.supports_slots is False
+
+
+# -- what root writes for a host slot stays out of the slot's reach ---------------------------
+
+
+def test_root_written_slot_state_lives_in_the_slots_root_owned_directory(host):
+    runtime, _, lease = host
+
+    layout = runtime._slot(lease)
+
+    assert isinstance(layout, module.HostSlotLayout)
+    assert layout.relocate("/etc/niuu/session-launch.json") == (
+        "/etc/niuu/slots/2/session-launch.json"
+    )
+    assert layout.relocate("/etc/niuu/session-secrets/0") == "/etc/niuu/slots/2/session-secrets/0"
+    assert layout.relocate("/etc/niuu/forge-session") == "/etc/niuu/slots/2/forge-session"
+    assert layout.relocate("/etc/niuu/guest-agent") == "/etc/niuu/slots/2/guest-agent"
+    assert layout.relocate("/run/niuu/session/tokens/sa") == "/etc/niuu/slots/2/run/tokens/sa"
+    # Only the session's own storage is in the directory the slot owns.
+    assert layout.relocate("/var/lib/niuu/session/home") == "/var/lib/niuu/slots/2/session/home"
+
+
+async def test_host_session_files_are_written_where_the_slot_cannot_redirect_them(host):
+    runtime, bootstrap, lease = host
+
+    await runtime.start(lease, bootstrap)
+
+    files = json.loads(_calls(runtime)[1].kwargs["data"])
+    assert [item["path"] for item in files] == ["/etc/niuu/slots/2/session-launch.json"]
+
+
+def _prepare(root: Path, *args: str, archive: bytes = b"") -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-c", ssh_vm_runtime._PREPARE, "key", *args, "[]", str(root)],
+        input=archive,
+        capture_output=True,
+    )
+
+
+def test_prepare_never_writes_through_a_marker_the_slot_turned_into_a_link(tmp_path):
+    root, victim = tmp_path / "session", tmp_path / "victim"
+    root.mkdir()
+    (root / ".allocation").symlink_to(victim)
+
+    result = _prepare(root, "empty")
+
+    assert result.returncode != 0
+    assert not victim.exists()
+
+
+def test_prepare_refuses_storage_the_slot_turned_into_a_link(tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / "session").symlink_to(elsewhere)
+
+    result = _prepare(tmp_path / "session", "empty")
+
+    assert result.returncode != 0
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_prepare_marks_fresh_storage_once_and_checks_it_after(tmp_path):
+    root = tmp_path / "session"
+
+    assert _prepare(root, "empty").returncode == 0
+    assert (root / ".allocation").read_text() == "key"
+    assert _prepare(root, "empty").returncode == 0
+    (root / ".allocation").write_text("other")
+    assert b"allocation mismatch" in _prepare(root, "empty").stderr

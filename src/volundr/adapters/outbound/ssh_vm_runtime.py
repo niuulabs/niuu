@@ -194,17 +194,24 @@ run('docker','run','--detach',*init,'--name',name,*placement(),
 """
 
 _PREPARE = r"""
-import json,pathlib,sys,tarfile
+import json,os,pathlib,sys,tarfile
 # argv: storage key, restore|empty, exclusions, a slot's storage root, and
 # 'absolute-links' where the session's links to absolute paths are restored too.
 root=pathlib.Path(sys.argv[4]) if len(sys.argv)>4 else pathlib.Path('/var/lib/niuu/session')
 absolute_links=len(sys.argv)>5 and sys.argv[5]=='absolute-links'
-marker=root/'.allocation'
 allocation=sys.argv[1]
 root.mkdir(parents=True,exist_ok=True)
-if marker.exists():
-    if marker.read_text() != allocation:
-        raise RuntimeError('Workspace allocation mismatch')
+# A slot owns its storage and may have turned it, or the marker, into a link: the
+# root is held open without following one, and everything below goes through it.
+fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+try:
+    existing=os.open('.allocation',os.O_RDONLY|os.O_NOFOLLOW,dir_fd=fd)
+except FileNotFoundError:
+    existing=None
+if existing is not None:
+    with os.fdopen(existing) as current:
+        if current.read() != allocation:
+            raise RuntimeError('Workspace allocation mismatch')
     sys.exit(0)
 excludes=[pathlib.PurePosixPath(p) for p in json.loads(sys.argv[3])]
 def restore_member(member,destination):
@@ -220,9 +227,13 @@ def restore_member(member,destination):
         return tarfile.tar_filter(member,destination)
     return tarfile.data_filter(member,destination)
 if sys.argv[2]=='restore':
+    # Through the held descriptor on Linux (the guest); macOS runs this only in tests.
+    held='/proc/self/fd/%d' % fd if sys.platform=='linux' else str(root)
     with tarfile.open(fileobj=sys.stdin.buffer,mode='r|') as archive:
-        archive.extractall(root,filter=restore_member)
-marker.write_text(allocation)
+        archive.extractall(held,filter=restore_member)
+marker=os.open('.allocation',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o644,dir_fd=fd)
+with os.fdopen(marker,'w') as written:
+    written.write(allocation)
 """
 
 _SESSION_FILES = r"""
@@ -510,6 +521,8 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
 
     #: Whether the guest runs the pod's init containers and sidecars next to Skuld.
     _runs_pod_containers = True
+    #: Where a slot's guest paths live (``vm_slot_layout.SlotLayout``).
+    _layout_class: type[SlotLayout] = SlotLayout
     #: Whether ``slot_isolation`` applies: runtimes with their own sandbox refuse it.
     _separates_slots = True
 
@@ -523,7 +536,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                     "compute.runtime.kwargs.slot_isolation"
                 )
             return None
-        return SlotLayout.for_lease(self._slot_isolation, lease)
+        return self._layout_class.for_lease(self._slot_isolation, lease)
 
     async def _supervise(
         self, lease: SlotLease, bootstrap: MachineBootstrap, layout: SlotLayout, action: str

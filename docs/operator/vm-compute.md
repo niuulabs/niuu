@@ -592,6 +592,18 @@ How a session runs, all over SSH as every other guest step, never as a service:
    It then runs Skuld as the slot's uid. When Skuld ends, PID 1 ends, and with
    it every process the session left.
 
+A host session runs on the VM as the slot's user, who owns the slot's data and
+runtime directories and could swap anything in them for a link. So whatever
+root or the credential agents write for the slot (the launch file, secrets, the
+Forge session credential, the guest agent's configuration, the token and volume
+directories) lives in the slot's root-owned `/etc/niuu/slots/<n>`
+(`root:<slot group> 0750`, closed to other slots too), and only the session's
+home and workspace stay in `/var/lib/niuu/slots/<n>`. The supervisor creates
+and owns the slot's directories, and writes its identity files, through
+directory descriptors that never follow a link; the workspace marker and the
+restore do the same, the start clones the repository as the slot's user, and
+it touches the slot's storage only once a replaced session has exited.
+
 `PATH` is the image's agent CLIs first (the pinned versions), then the
 `docker` shim (rootless Podman), then Nix's profiles (`~/.nix-profile/bin`, the default profile), then the VM's own
 directories, then the image's fallback tools. The agent's system prompt says it

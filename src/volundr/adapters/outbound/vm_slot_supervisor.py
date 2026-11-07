@@ -199,6 +199,11 @@ class SlotSupervisor:
         )
 
     def _ensure_directories(self) -> None:
+        # The slot's own directories: what the slot owns, it may rename or replace,
+        # so each is created and owned through a descriptor, never through a path a
+        # slot could have turned into a link (a host-mode session runs on the VM).
+        for path in (self.data_root, self.run_root):
+            path.parent.mkdir(parents=True, exist_ok=True)
         for path in (
             self.data_root,
             self.data_root / "session",
@@ -207,17 +212,37 @@ class SlotSupervisor:
             self.identity_directory,
             self.run_root,
         ):
-            path.mkdir(mode=0o700, parents=True, exist_ok=True)
-            if path.is_symlink():
-                raise SlotError(f"Slot directory {path} is a symbolic link")
-            os.chown(path, self.uid, self.uid)
-            path.chmod(0o700)
-        # The slot's root agents read their configuration here; the slot cannot write it.
-        self.agent_root.mkdir(mode=0o755, parents=True, exist_ok=True)
-        if self.agent_root.is_symlink():
-            raise SlotError(f"Slot directory {self.agent_root} is a symbolic link")
-        os.chown(self.agent_root, 0, 0)
-        self.agent_root.chmod(0o755)
+            self._own_directory(path, self.uid, self.uid, 0o700)
+        # The slot's root agents' state: root's, readable by the slot's group only, so
+        # neither this slot can change it nor another slot reach it.
+        self.agent_root.parent.mkdir(parents=True, exist_ok=True)
+        self._own_directory(self.agent_root, 0, self.uid, 0o750)
+
+    def _own_directory(self, path: pathlib.Path, uid: int, gid: int, mode: int) -> None:
+        """Create ``path`` (if missing) and give it ``uid:gid`` and ``mode``, never via a link."""
+        parent = self._open_directory(path.parent)
+        try:
+            try:
+                os.mkdir(path.name, mode, dir_fd=parent)
+            except FileExistsError:
+                pass
+            fd = self._open_directory(pathlib.Path(path.name), dir_fd=parent, shown=path)
+            try:
+                os.fchown(fd, uid, gid)
+                os.fchmod(fd, mode)
+            finally:
+                os.close(fd)
+        finally:
+            os.close(parent)
+
+    @staticmethod
+    def _open_directory(
+        path: pathlib.Path, *, dir_fd: int | None = None, shown: pathlib.Path | None = None
+    ) -> int:
+        try:
+            return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+        except OSError as exc:
+            raise SlotError(f"Slot directory {shown or path} is a symbolic link") from exc
 
     def _ensure_image_identity(self) -> None:
         """Give the image's session account the slot's id inside the slot's containers.
@@ -254,11 +279,28 @@ class SlotSupervisor:
                     f"Image {self.image} has no {name} entry {self.image_user!r}; "
                     "set slot_isolation.image_user"
                 )
-            target = self.identity_directory / name
-            temporary = target.with_name(name + ".niuu-tmp")
-            temporary.write_text("\n".join(lines) + "\n")
-            temporary.chmod(0o644)
-            os.replace(temporary, target)
+            self._write_identity(name, "\n".join(lines) + "\n")
+
+    def _write_identity(self, name: str, content: str) -> None:
+        """Replace ``identity/<name>`` through the directory's descriptor, never a link."""
+        directory = self._open_directory(self.identity_directory)
+        temporary = name + ".niuu-tmp"
+        try:
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+            fd = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o644,
+                dir_fd=directory,
+            )
+            with os.fdopen(fd, "w") as stream:
+                stream.write(content)
+            os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+        finally:
+            os.close(directory)
 
     def _ensure_slice(self) -> None:
         cpu = self.limits.get("cpu")
