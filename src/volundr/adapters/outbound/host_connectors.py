@@ -16,6 +16,7 @@ from volundr.domain.compute_hosts import (
     HostConnector,
     HostHealth,
     HostJoinSetup,
+    HostPlatform,
     RegisteredHost,
     SshDial,
 )
@@ -61,6 +62,11 @@ class DirectSshConnector(HostConnector):
         options.extend(f'permitopen="{target}"' for target in self._permit_open)
         options.extend(f'permitlisten="{target}"' for target in self._permit_listen)
         return HostJoinSetup(kind=self.kind, authorized_key_options=",".join(options))
+
+    @property
+    def platforms(self) -> frozenset[HostPlatform]:
+        # Its setup is only Forge's line in authorized_keys, which any OpenSSH reads.
+        return frozenset(HostPlatform)
 
     async def admit(
         self, host: RegisteredHost, offered: Mapping[str, JsonValue]

@@ -14,6 +14,7 @@ from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.compute import ComputeLease, MachineBootstrap, SlotLease
+from volundr.domain.compute_hosts import HostPlatform
 from volundr.domain.guest_credentials import GuestCredentialDelivery
 from volundr.domain.models import Session, SessionSpec
 from volundr.domain.vm_runtime import (
@@ -62,6 +63,10 @@ class ProfiledVmRuntime(VmRuntime):
     @property
     def requires_root_daemon(self) -> bool:
         return any(runtime.requires_root_daemon for runtime in self._all())
+
+    @property
+    def host_platforms(self) -> frozenset[HostPlatform]:
+        return frozenset.intersection(*(runtime.host_platforms for runtime in self._all()))
 
     @property
     def delivers_forge_session_token(self) -> bool:

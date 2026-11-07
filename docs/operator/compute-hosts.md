@@ -166,4 +166,6 @@ is retried. Capacity is never freed on a host nobody checked.
 - `warm_targets` per tag selector. `warm_min` counts free slots across the pool.
 - **Re-prepare.** After a recipe change, drain the host and resume it; the next claim
   runs the new recipe.
-- macOS hosts.
+- **Sessions on a Mac.** A Mac runs the same join line and is checked and audited
+  (design: "macOS hosts"), always with one slot, but no runtime runs on macOS yet,
+  so the join refuses it: "… does not run sessions on macOS hosts".
