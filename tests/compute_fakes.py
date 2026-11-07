@@ -7,6 +7,7 @@ from volundr.domain.compute import (
     ComputePoolFullError,
     LeaseState,
     Machine,
+    MachineProvider,
     MachineState,
     SlotLease,
     SlotState,
@@ -135,7 +136,7 @@ class LeaseRepository:
             self.locked = None
 
 
-class Provider:
+class Provider(MachineProvider):
     async def profiles(self):
         from volundr.domain.compute import MachineProfile
 
