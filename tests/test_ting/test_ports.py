@@ -95,6 +95,7 @@ class TestVolundrPort:
             "join_room",
             "leave_room",
             "list_integration_ids",
+            "host_tag_sets",
             "list_repos",
             "get_conversation",
             "get_public_session_log_page",
