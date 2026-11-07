@@ -13,8 +13,8 @@ import logging
 
 from niuu.domain.tool import ToolResult
 from niuu.ports.tool import ToolPort
-from ravn.adapters.tools.platform_tools import _err, _ok
 from ravn.session_join import SessionJoinManager
+from tracker.platform_client import tool_err, tool_ok
 
 logger = logging.getLogger(__name__)
 
@@ -96,36 +96,36 @@ class SessionJoinTool(ToolPort):
                 case "leave":
                     return await self._leave(input)
                 case "list":
-                    return _ok(self._manager.joined())
+                    return tool_ok(self._manager.joined())
                 case "post":
                     return await self._post(input)
                 case _:
-                    return _err(f"Unknown action: {action!r}")
+                    return tool_err(f"Unknown action: {action!r}")
         except (ValueError, RuntimeError) as exc:
-            return _err(str(exc))
+            return tool_err(str(exc))
 
     async def _join(self, input: dict) -> ToolResult:
         session_id = str(input.get("session_id") or "").strip()
         chat_endpoint = str(input.get("chat_endpoint") or "").strip()
         if not session_id or not chat_endpoint:
-            return _err("session_id and chat_endpoint are required for join")
-        return _ok(await self._manager.join(session_id, chat_endpoint))
+            return tool_err("session_id and chat_endpoint are required for join")
+        return tool_ok(await self._manager.join(session_id, chat_endpoint))
 
     async def _leave(self, input: dict) -> ToolResult:
         session_id = str(input.get("session_id") or "").strip()
         if not session_id:
-            return _err("session_id is required for leave")
+            return tool_err("session_id is required for leave")
         left = await self._manager.leave(session_id)
         if not left:
-            return _err(f"Not joined to session {session_id}")
-        return _ok({"left": session_id})
+            return tool_err(f"Not joined to session {session_id}")
+        return tool_ok({"left": session_id})
 
     async def _post(self, input: dict) -> ToolResult:
         session_id = str(input.get("session_id") or "").strip()
         text = str(input.get("text") or "").strip()
         if not session_id or not text:
-            return _err("session_id and text are required for post")
+            return tool_err("session_id and text are required for post")
         posted = await self._manager.post(session_id, text)
         if not posted:
-            return _err(f"Not joined to session {session_id} — join it first")
-        return _ok({"posted": session_id})
+            return tool_err(f"Not joined to session {session_id} — join it first")
+        return tool_ok({"posted": session_id})

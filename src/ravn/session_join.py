@@ -340,11 +340,9 @@ def _build_token_provider(settings: Any) -> AuthTokenProvider | None:
             return str(cached["token"])
 
         from niuu.ws_identity import decode_jwt_claims  # noqa: PLC0415
-        from ravn.adapters.tools.platform_tools import (  # noqa: PLC0415
-            _exchange_workload_token,
-        )
+        from tracker.platform_client import exchange_workload_token  # noqa: PLC0415
 
-        token = await _exchange_workload_token(
+        token = await exchange_workload_token(
             platform.base_url,
             platform.timeout,
             workload_token_file=platform.workload_token_file,

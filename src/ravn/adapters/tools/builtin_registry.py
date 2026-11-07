@@ -378,7 +378,7 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         kwargs_fn=_ting_workflow_kwargs,
     ),
     "tracker_issue": BuiltinToolDef(
-        adapter="ravn.adapters.tools.platform_tools.TrackerIssueTool",
+        adapter="tracker.tool.TrackerIssueTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
         kwargs_fn=lambda s, ctx: _platform_kwargs(s),

@@ -7,8 +7,8 @@ import httpx
 import pytest
 import respx
 
-from ravn.cli import tracker_bridge
-from ravn.config import Settings
+from tracker import bridge as tracker_bridge
+from tracker.client_settings import PlatformClientSettings
 
 
 @pytest.mark.asyncio
@@ -24,7 +24,7 @@ async def test_tracker_bridge_exchanges_projected_identity(
         "https://platform.test/api/v1/tokens/workload/exchange",
     )
     monkeypatch.delenv("SKULD__VOLUNDR_API_URL", raising=False)
-    monkeypatch.setattr(tracker_bridge, "_settings", Settings)
+    monkeypatch.setattr(tracker_bridge, "_settings", PlatformClientSettings)
     path = "/api/v1/tracker/issues" + ("" if operation == "search" else "/issue-1")
     method = "PATCH" if operation == "update_status" else "GET"
     with respx.mock as router:
@@ -48,7 +48,7 @@ async def test_tracker_bridge_uses_openshell_platform_proxy(tmp_path, monkeypatc
     monkeypatch.setenv("SKULD__VOLUNDR_API_URL", "https://proxy.test")
     monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_TOKEN_FILE", str(tmp_path / "absent"))
     monkeypatch.delenv("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", raising=False)
-    monkeypatch.setattr(tracker_bridge, "_settings", Settings)
+    monkeypatch.setattr(tracker_bridge, "_settings", PlatformClientSettings)
     with respx.mock as router:
         route = router.get("https://proxy.test/api/v1/tracker/issues").mock(
             return_value=httpx.Response(200, json=[])

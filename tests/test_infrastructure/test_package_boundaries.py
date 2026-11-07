@@ -59,6 +59,12 @@ def test_mimir_does_not_import_ravn() -> None:
     assert actual == set()
 
 
+def test_tracker_does_not_import_ravn() -> None:
+    actual = {path for path, imported in _external_package_imports("tracker") if imported == "ravn"}
+
+    assert actual == set()
+
+
 def test_domain_layers_do_not_read_process_environment() -> None:
     violations: set[str] = set()
 

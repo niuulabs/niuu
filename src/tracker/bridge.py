@@ -15,17 +15,16 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-from ravn.config import Settings
+from tracker.client_settings import PlatformClientSettings
+from tracker.platform_client import platform_client
+from tracker.tool import TRACKER_ISSUES_PATH
 
-_TRACKER_ISSUES_PATH = "/api/v1/tracker/issues"
 
-
-def _settings() -> Settings:
-    return Settings()
+def _settings() -> PlatformClientSettings:
+    return PlatformClientSettings()
 
 
 async def _client() -> httpx.AsyncClient:
-    from ravn.adapters.tools.platform_tools import _client as platform_client
     from skuld.config import SkuldSettings
 
     platform = _settings().gateway.platform
@@ -62,14 +61,14 @@ def _write_payload(payload: object, *, is_error: bool = False) -> int:
 
 async def _run_search(args: argparse.Namespace) -> int:
     async with await _client() as client:
-        response = await client.get(_TRACKER_ISSUES_PATH, params={"q": args.query})
+        response = await client.get(TRACKER_ISSUES_PATH, params={"q": args.query})
         response.raise_for_status()
         return _write_payload(response.json())
 
 
 async def _run_get(args: argparse.Namespace) -> int:
     async with await _client() as client:
-        response = await client.get(f"{_TRACKER_ISSUES_PATH}/{args.issue_id}")
+        response = await client.get(f"{TRACKER_ISSUES_PATH}/{args.issue_id}")
         response.raise_for_status()
         return _write_payload(response.json())
 
@@ -77,7 +76,7 @@ async def _run_get(args: argparse.Namespace) -> int:
 async def _run_update_status(args: argparse.Namespace) -> int:
     async with await _client() as client:
         response = await client.patch(
-            f"{_TRACKER_ISSUES_PATH}/{args.issue_id}",
+            f"{TRACKER_ISSUES_PATH}/{args.issue_id}",
             json={"status": args.status},
         )
         response.raise_for_status()

@@ -356,7 +356,7 @@ def ensure_codex_tool_shims(
     _install_request_secret_shim(bin_dir)
 
     commands: dict[str, tuple[str, str, str]] = {
-        "tracker_issue": ("ravn.cli.tracker_bridge", "", "Search, read and update tracker issues."),
+        "tracker_issue": ("tracker.bridge", "", "Search, read and update tracker issues."),
     }
     if mimir_configured:
         commands.update(
