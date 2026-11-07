@@ -86,6 +86,23 @@ route — scoped tokens are only as narrow as the enforcement coverage.
 `tests/test_niuu/test_token_scope.py` fails if the two drift apart in either
 direction.
 
+### Registered-host pairing codes (`compute_host_join`)
+
+A bare-metal host joins a Forge's compute pool with a pairing code minted by
+that Forge (`volundr.domain.services.compute_hosts.ComputeHostService.mint`),
+through the scoped-workload-token mechanism above: `token_use:
+"valkyrie_build"`, `scopes: ["compute_host_join"]`, an empty roles claim, and
+single use — the code's hash, expiry and consumption live in
+`compute_host_pairing_codes`, and everything the host will be (pool,
+execution, connector, tags, slots) is fixed there by the admin, never taken
+from the joining host. `compute_host_join` is issuer-only (`ISSUER_ONLY_SCOPES`):
+the exchange never grants it. Its two routes, `GET …/compute/hosts/join.sh` and
+`POST …/compute/hosts/join`, carry `require_scope("compute_host_join")`, and
+the service also verifies the code's signature and looks up its hash, so a
+mini-mode Forge without Envoy admits nothing else. A joined host calls no
+other route: Forge reaches it over SSH and reads its health itself, so the
+node-signing exception below is not extended to hosts.
+
 ### Exception: session-bound Forge credentials (`forge_session`)
 
 Forge mints a second kind of scoped workload token itself, each time it
@@ -220,6 +237,17 @@ and Forge never tries another.
     allocation that exists from one that does not.
   - The signature covers method, path, timestamp and body hash; omitting any
     would let a captured signature be replayed against another route or body.
+  - **A registered host** (`RegisteredHostMachineProvider`, configured with
+    `key_source: registered` on the identity) is the one case where Forge did
+    not generate the key: it is the host's own sshd Ed25519 key, and Forge
+    stores only its public half, on the `compute_hosts` row, received with a
+    single-use `compute_host_join` pairing code (below). Forge never holds
+    that private key. The key belongs to the host, not to one allocation, so
+    the limits still bind to the allocation: the body names the allocation
+    (a mismatch is the identical 401, so a captured request of an earlier
+    allocation of the same host cannot be replayed under a later one), the
+    watermark is per allocation, and only the allocation currently holding the
+    host gets an answer. Removing the host revokes it.
 - **Provider attestation** (`volundr.adapters.outbound.guest_identity_provider`,
   the Harvester default). The provider puts a token into the guest and vouches
   for it: on Harvester, the VM's virt-launcher pod ServiceAccount token shared

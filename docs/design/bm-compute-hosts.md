@@ -1,6 +1,6 @@
 # Bare-metal hosts as Forge compute
 
-Status: accepted (decisions settled 2026-11-07); nothing built yet. Mockup, awaiting review:
+Status: accepted (decisions settled 2026-11-07); being built (see "What is built"). Mockup:
 [`docs/mockups/bm-compute-hosts/index.html`](../mockups/bm-compute-hosts/index.html).
 
 Builds on [VM session slots](vm-session-slots.md) (the slot ledger, placement,
@@ -697,6 +697,24 @@ configured.
 
 Later, separately: the agent connector (option 3), multi-pool Forge (decision 2),
 the forced-command host agent (decision 1, option B), and macOS one-slot hosts.
+
+## What is built (2026-11-07)
+
+On branch `docs/bm-compute-hosts`. Operator guide: [docs/operator/compute-hosts.md](../operator/compute-hosts.md).
+
+- Inventory, pairing, join, the registered-host provider, direct SSH, checks and audit,
+  admin routes, tags through the Guild facade and Ting dispatch, the web Hosts view.
+- The Postgres pairing table is Forge's own (`compute_host_pairing_codes`), not the
+  Guild's `niuu_pairing_codes`. That table belongs to Guild nodes and has a key into
+  `niuu_nodes`.
+- The host key is **sshd's own Ed25519 key**, linked as
+  `/etc/niuu/ssh_host_ed25519_key`. An extra `HostKey` line would make sshd drop the
+  host's other keys and break every operator's `known_hosts`.
+- The recipe runs when the pool first claims a host, through the existing
+  `_ensure_host_prepared` path. It does not run at registration. Registration only
+  reaches the host and audits it.
+- The audit checks free disk only; there is no memory floor.
+- Not built yet: the reverse SSH connector, `warm_targets` per selector, macOS hosts.
 
 ## Decisions (settled 2026-11-07)
 
