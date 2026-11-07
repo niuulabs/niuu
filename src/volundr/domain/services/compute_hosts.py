@@ -240,11 +240,6 @@ class ComputeHostService:
     ) -> MintedHostCode:
         if "volundr:admin" not in principal.roles:
             raise ComputeHostAccessError("Only admins may add hosts")
-        if not self._issuer.enabled:
-            raise ComputeHostError(
-                "Cannot mint a host pairing code: workload identity is disabled. Set "
-                "workload_identity.enabled: true on this Forge"
-            )
         chosen = self._execution(execution)
         if chosen.refusal is not None:
             raise ComputeHostError(f"{execution} cannot run on registered hosts: {chosen.refusal}")

@@ -173,6 +173,7 @@ from volundr.composition_builders import (  # noqa: F401
     _create_forge_session_projection,
     _create_forge_session_tokens,
     _create_gateway_adapter,
+    _create_host_pairing_signer,
     _create_http_auth_adapter,
     _create_pod_manager,
     _create_resident_controllers,
@@ -1290,7 +1291,9 @@ def create_app(
                         connectors=host_components.connectors,
                         inspector=host_components.inspector,
                         executions=host_components.executions,
-                        token_issuer=workload_identity_service,
+                        token_issuer=_create_host_pairing_signer(
+                            settings, workload_identity_service
+                        ),
                         join_url=hosts_config.join_url,
                         pairing_code_ttl_seconds=hosts_config.pairing_code_ttl_seconds,
                         check_interval_seconds=hosts_config.check_interval_seconds,

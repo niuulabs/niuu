@@ -196,6 +196,10 @@ the session's record, so restarts and recovery keep it.
 
 ### Warm capacity: per pool, plus optional targets per selector
 
+> **Dropped (2026-11-07).** Jozef decided per-selector `warm_targets` are not needed.
+> `warm_min` stays per pool, and a pool on registered hosts reports a shortfall when
+> it cannot claim enough hosts. The rest of this section is kept as the record.
+
 `warm_min` stays per pool: the count of free ready slots, whatever their tags. A
 pool-wide count alone can be met entirely by hosts that do not match a `gpu`
 request, so the pool also gets an optional list:
@@ -759,8 +763,8 @@ configured.
    row, `requires_root_daemon`, and the architecture rule amendment.
 6. **Tags and targeting**: `residual_selector`, Guild forwarding
    `workload_config.host_selector` (facade and Ting dispatch), the Forge's host tag
-   sets in its health, placement filtering, the 422 for an unsatisfiable selector,
-   `warm_targets`, and readiness per selector.
+   sets in its health, placement filtering, and the 422 for an unsatisfiable
+   selector.
 7. **Verified recycling**: the slot `down` additions, the whole-host `audit` verb,
    quarantine, the audit interval knob, the counters, and `supports_reuse` on the
    host runtime when verified cleanup is on. Live proof on a throwaway host: plant
@@ -799,10 +803,19 @@ On branch `docs/bm-compute-hosts`. Operator guide: [docs/operator/compute-hosts.
   `_ensure_host_prepared` path. It does not run at registration. Registration only
   reaches the host and audits it.
 - The audit checks free disk only; there is no memory floor.
-- Not built yet: the reverse SSH connector, `warm_targets` per selector, the
-  Re-prepare action (a recipe change today needs drain, then resume), and a
-  runtime that runs on macOS. The macOS join, facts, audit and one-slot rule are
-  built; every Mac is refused at join until a runtime names `darwin`.
+- Pairing codes need no identity infrastructure on a local mini-mode Forge. Where
+  workload identity has a configured key, it signs them, as Envoy needs. Otherwise,
+  only with the allow-all identity adapter of mini mode, Forge signs them with its own
+  key file (`compute.hosts.pairing_signing_key_file`), as it already does for session
+  credentials. Anything else is a startup error, because a code the identity layer
+  cannot verify would be refused before it reached Forge.
+- The edge (`credential_allows_route`) admits a `compute_host_join` code on exactly
+  `GET …/hosts/join.sh` and `POST …/hosts/join`.
+- `warm_targets` per selector were dropped (decision 6).
+- Not built yet: the reverse SSH connector, the Re-prepare action (a recipe change
+  today needs drain, then resume), and a runtime that runs on macOS. The macOS
+  join, facts, audit and one-slot rule are built; every Mac is refused at join until
+  a runtime names `darwin`.
 
 ## Decisions (settled 2026-11-07)
 
@@ -820,8 +833,8 @@ Jozef accepted the recommendations:
    `allowed_lan_cidrs` as the allowlist.
 5. **Slots are reused in place** after a verified clean `down`; a host is not
    drained to recycle.
-6. **Warm capacity** is per pool, plus optional `warm_targets` per selector, which
-   only report a shortfall for registered hosts.
+6. **Warm capacity** is per pool. Optional `warm_targets` per selector were
+   accepted at first, then dropped on 2026-11-07 as not needed.
 7. **The first host-initiated connector** is reverse SSH to an endpoint sidecar in
    the Forge pod. The multiplexed agent comes later.
 8. **Registration** is `curl … | sudo sh` with the download authenticated by the

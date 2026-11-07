@@ -99,7 +99,13 @@ from the joining host. `compute_host_join` is issuer-only (`ISSUER_ONLY_SCOPES`)
 the exchange never grants it. Its two routes, `GET …/compute/hosts/join.sh` and
 `POST …/compute/hosts/join`, carry `require_scope("compute_host_join")`, and
 the service also verifies the code's signature and looks up its hash, so a
-mini-mode Forge without Envoy admits nothing else. A joined host calls no
+mini-mode Forge without Envoy admits nothing else. At the edge
+(`credential_allows_route`) the code is admitted on exactly those two routes.
+It is signed by the workload-identity issuer when that has a configured key,
+otherwise by Forge's own key file (`compute.hosts.pairing_signing_key_file`)
+— and the key file only with the allow-all identity adapter of local mini
+mode, where nothing but Forge checks the bearer. Any other combination is
+fatal at startup (`_create_host_pairing_signer`). A joined host calls no
 other route: Forge reaches it over SSH and reads its health itself, so the
 node-signing exception below is not extended to hosts.
 
