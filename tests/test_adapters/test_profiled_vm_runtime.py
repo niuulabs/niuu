@@ -4,7 +4,7 @@ import pytest
 
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.profiled_vm_runtime import ProfiledVmRuntime
-from volundr.domain.compute import ComputeLease, MachineBootstrap
+from volundr.domain.compute import ComputeLease, ComputeSlot, MachineBootstrap, SlotLease
 from volundr.domain.models import PodSpecAdditions, Session, SessionSpec
 from volundr.domain.vm_runtime import VmRuntime
 
@@ -71,21 +71,30 @@ async def test_routes_session_and_lease_operations_by_profile():
         workload_config={"compute_profile": "openshell"},
     )
     spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
-    lease = ComputeLease(
+    machine = ComputeLease(
         id=uuid4(),
         pool_id="pool",
-        session_id=session.id,
-        tenant_id="tenant",
-        owner_id="owner",
         profile="openshell",
         request_fingerprint="fingerprint",
+    )
+    lease = SlotLease(
+        allocation=machine,
+        binding=ComputeSlot(
+            id=uuid4(),
+            allocation_id=machine.id,
+            slot=0,
+            pool_id="pool",
+            session_id=session.id,
+            tenant_id="tenant",
+            owner_id="owner",
+        ),
     )
     bootstrap = MachineBootstrap()
 
     runtime.machine_bootstrap(bootstrap)
     runtime.session_bootstrap(session, spec, bootstrap)
     runtime.bootstrap(session, spec, bootstrap)
-    await runtime.warm(lease, bootstrap)
+    await runtime.warm(machine, bootstrap)
     await runtime.prepare(lease, bootstrap)
     await runtime.start(lease, bootstrap)
     assert (await runtime.target(lease, bootstrap)).connect_host == "openshell"

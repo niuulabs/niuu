@@ -29,7 +29,14 @@ from volundr.adapters.outbound.local_process import (
 from volundr.adapters.outbound.ssh_vm_runtime import SshContainerVmRuntime
 from volundr.compute.config import ComputeConfig
 from volundr.compute.main import build_guest_credentials
-from volundr.domain.compute import ComputeLease, Machine, MachineBootstrap, MachineState
+from volundr.domain.compute import (
+    ComputeLease,
+    ComputeSlot,
+    Machine,
+    MachineBootstrap,
+    MachineState,
+    SlotLease,
+)
 from volundr.domain.guest_access import GuestCommandResult
 from volundr.domain.guest_credentials import (
     METADATA_ADDRESS,
@@ -154,13 +161,10 @@ def session():
 
 def _lease(session):
     allocation = uuid4()
-    return ComputeLease(
+    machine = ComputeLease(
         id=allocation,
-        session_id=session.id,
         pool_id="pool",
         profile="small",
-        owner_id="owner",
-        tenant_id="tenant",
         request_fingerprint="test",
         machine=Machine(
             allocation_id=allocation,
@@ -169,6 +173,16 @@ def _lease(session):
             addresses=("192.0.2.10",),
         ),
     )
+    binding = ComputeSlot(
+        id=uuid4(),
+        allocation_id=allocation,
+        slot=0,
+        pool_id="pool",
+        session_id=session.id,
+        owner_id="owner",
+        tenant_id="tenant",
+    )
+    return SlotLease(allocation=machine, binding=binding)
 
 
 def _launch(bootstrap):

@@ -303,16 +303,18 @@ async def prove(
     owner_id: str,
     tenant_id: str,
 ) -> None:
-    if any(lease.session_id == session_id for lease in await repository.list(config.pool_id)):
+    slots = await repository.list_slots(config.pool_id, live_only=False)
+    if any(slot.session_id == session_id for slot in slots):
         raise ValueError("Proof requires a new session_id; refusing to touch an existing claim")
     # Print the durable claim key before making any external provisioning request.
     emit("proof_started", pool_id=config.pool_id, session_id=session_id)
     lease_id = None
     try:
         async with asyncio.timeout(config.provisioning_timeout_seconds):
-            lease = await service.acquire(
+            claim = await service.acquire(
                 session_id=session_id, owner_id=owner_id, tenant_id=tenant_id, profile=profile
             )
+            lease = claim.allocation
             lease_id = lease.id
             emit(
                 "allocation_created",
@@ -335,17 +337,19 @@ async def prove(
         emit("vm_ready", lease_id=lease.id, machine=lease.machine.model_dump(mode="json"))
     finally:
         if lease_id is None:
-            # A provider may have failed after admission but before acquire returned.
-            candidates = [
-                lease
-                for lease in await repository.list(config.pool_id)
-                if lease.session_id == session_id
-                and lease.owner_id == owner_id
-                and lease.tenant_id == tenant_id
-                and lease.state != LeaseState.RELEASED
-            ]
-            if candidates:
-                lease_id = candidates[0].id
+            # A provider may have failed after admission but before acquire returned: find
+            # the allocation through the session's binding.
+            for slot in await repository.list_slots(config.pool_id, live_only=False):
+                if (
+                    slot.session_id != session_id
+                    or slot.owner_id != owner_id
+                    or slot.tenant_id != tenant_id
+                ):
+                    continue
+                machine = await repository.get(slot.allocation_id)
+                if machine is not None and machine.state != LeaseState.RELEASED:
+                    lease_id = machine.id
+                    break
         if lease_id is not None:
             emit("cleanup_started", lease_id=lease_id)
             async with asyncio.timeout(config.cleanup_timeout_seconds):
@@ -404,6 +408,10 @@ async def run(args) -> None:
                     leases=[
                         lease.model_dump(mode="json")
                         for lease in await repository.list(config.pool_id)
+                    ],
+                    slots=[
+                        slot.model_dump(mode="json")
+                        for slot in await repository.list_slots(config.pool_id, live_only=False)
                     ],
                 )
                 return

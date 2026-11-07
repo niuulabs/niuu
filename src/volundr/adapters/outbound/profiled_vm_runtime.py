@@ -13,7 +13,7 @@ from uuid import UUID
 from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.session_proxy import SessionProxyTarget
-from volundr.domain.compute import ComputeLease, MachineBootstrap
+from volundr.domain.compute import ComputeLease, MachineBootstrap, SlotLease
 from volundr.domain.guest_credentials import GuestCredentialDelivery
 from volundr.domain.models import Session, SessionSpec
 from volundr.domain.vm_runtime import (
@@ -133,19 +133,19 @@ class ProfiledVmRuntime(VmRuntime):
     async def warm(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
         await self._for_profile(lease.profile).warm(lease, bootstrap)
 
-    async def prepare(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def prepare(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         await self._for_profile(lease.profile).prepare(lease, bootstrap)
 
-    async def start(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def start(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         await self._for_profile(lease.profile).start(lease, bootstrap)
 
-    async def target(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> SessionProxyTarget:
+    async def target(self, lease: SlotLease, bootstrap: MachineBootstrap) -> SessionProxyTarget:
         return await self._for_profile(lease.profile).target(lease, bootstrap)
 
-    async def ready(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> bool:
+    async def ready(self, lease: SlotLease, bootstrap: MachineBootstrap) -> bool:
         return await self._for_profile(lease.profile).ready(lease, bootstrap)
 
-    async def stop(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         await self._for_profile(lease.profile).stop(lease, bootstrap)
 
     async def close(self) -> None:

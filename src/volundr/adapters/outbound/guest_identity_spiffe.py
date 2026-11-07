@@ -76,7 +76,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from cryptography.x509.oid import NameOID
 
 from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
-from volundr.domain.compute import BootstrapFile, ComputeLease, MachineBootstrap
+from volundr.domain.compute import AllocationRef, BootstrapFile, MachineBootstrap
 from volundr.domain.guest_credentials import (
     GuestAuthenticationError,
     GuestIdentity,
@@ -648,7 +648,7 @@ class SpiffeGuestIdentity(GuestIdentity):
 
     # -- registration -------------------------------------------------------------
 
-    def _parent_id(self, lease: ComputeLease, machine: MachineBootstrap) -> str:
+    def _parent_id(self, lease: AllocationRef, machine: MachineBootstrap) -> str:
         if self._node_attestation == "provider":
             return self._render(self._parent_template, lease.pool_id, lease.id)
         certificates = [file for file in machine.files if file.path == NODE_CERT_PATH]
@@ -666,7 +666,7 @@ class SpiffeGuestIdentity(GuestIdentity):
             node_id = node.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
         return f"spiffe://{self._trust_domain}/spire/agent/x509pop/{node_id}"
 
-    def _entry(self, lease: ComputeLease, machine: MachineBootstrap) -> dict[str, Any]:
+    def _entry(self, lease: AllocationRef, machine: MachineBootstrap) -> dict[str, Any]:
         spiffe_id = self._render(self._id_template, lease.pool_id, lease.id)
         parent_id = self._parent_id(lease, machine)
         for name, value in (("SPIFFE ID", spiffe_id), ("parent ID", parent_id)):
@@ -719,7 +719,7 @@ class SpiffeGuestIdentity(GuestIdentity):
             f"{ENTRY_PLURAL}.{ENTRY_GROUP}"
         )
 
-    async def register(self, lease: ComputeLease, machine: MachineBootstrap) -> None:
+    async def register(self, lease: AllocationRef, machine: MachineBootstrap) -> None:
         from kubernetes_asyncio.client.exceptions import ApiException
 
         body = self._entry(lease, machine)
@@ -745,7 +745,7 @@ class SpiffeGuestIdentity(GuestIdentity):
         except ApiException as exc:
             raise self._refused("write", name, exc.status) from None
 
-    async def unregister(self, lease: ComputeLease, machine: MachineBootstrap) -> None:
+    async def unregister(self, lease: AllocationRef, machine: MachineBootstrap) -> None:
         from kubernetes_asyncio.client.exceptions import ApiException
 
         name = f"{ENTRY_NAME_PREFIX}{lease.id}"

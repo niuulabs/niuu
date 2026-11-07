@@ -23,7 +23,7 @@ from volundr.adapters.outbound.ssh_vm_runtime import (
     _SESSION_FILES,
     SshContainerVmRuntime,
 )
-from volundr.domain.compute import ComputeLease, MachineBootstrap
+from volundr.domain.compute import AllocationRef, ComputeLease, MachineBootstrap, SlotLease
 from volundr.domain.models import Session, SessionSpec
 
 _OPEN_SHELL_ERROR_PREFIX = "NIIU_OPEN_SHELL_STAGE:"
@@ -754,7 +754,7 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
 
     async def _execute_remote(
         self,
-        lease: ComputeLease,
+        lease: AllocationRef,
         bootstrap: MachineBootstrap,
         command: str,
         **kwargs,
@@ -809,7 +809,7 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
         )
         return bootstrap.model_copy(update={"files": tuple(files)})
 
-    async def _ensure_openshell(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def _ensure_openshell(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:
         program = (
             _VERIFY_OPENSHELL if getattr(self, "_host_prepared", False) else _INSTALL_OPENSHELL
         )
@@ -830,24 +830,24 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
             shlex.join(["podman", "pull", self._image]),
         )
 
-    async def prepare(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def prepare(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:
         await super().prepare(lease, bootstrap)
         await self._ensure_openshell(lease, bootstrap)
 
     @staticmethod
-    def _sandbox_name(lease: ComputeLease) -> str:
+    def _sandbox_name(lease: AllocationRef) -> str:
         # OpenShell routes sandbox names through a field capped at 19 characters.
         # Keep the allocation-derived name deterministic without sending the full
         # UUID (the previous ``niuu-<uuid>`` form was 41 characters).
         return "niuu-" + lease.id.hex[:14]
 
     @staticmethod
-    def _workload_unit(lease: ComputeLease) -> str:
+    def _workload_unit(lease: AllocationRef) -> str:
         return "niuu-skuld-" + str(lease.id)
 
     async def _configure_native_providers(
         self,
-        lease: ComputeLease,
+        lease: SlotLease,
         bootstrap: MachineBootstrap,
         payload: dict[str, Any],
     ) -> list[str]:
@@ -891,9 +891,7 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
                 spec.pop("credential_value", None)
         return [spec["name"] for spec in specs]
 
-    async def start(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
-        if lease.session_id is None:
-            raise ValueError("Cannot start an unbound guest")
+    async def start(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         session_directory = self._data / str(lease.session_id)
         session_directory.mkdir(mode=0o700, exist_ok=True, parents=True)
         files = [
@@ -950,7 +948,7 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
             safe_detail_prefix=_OPEN_SHELL_DETAIL_PREFIX,
         )
 
-    async def stop(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         payload = json.loads(next(item.content for item in bootstrap.files if item.path == _LAUNCH))
         providers = [
             spec["name"]

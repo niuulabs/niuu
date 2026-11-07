@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import BinaryIO
 
 from niuu.ports.session_proxy import SessionProxyTarget
-from volundr.domain.compute import ComputeLease, MachineBootstrap
+from volundr.domain.compute import AllocationRef, MachineBootstrap
 
 
 @dataclass(frozen=True)
@@ -39,13 +39,13 @@ class GuestAccess(ABC):
         """Add only the minimum identity material needed for guest access."""
 
     @abstractmethod
-    async def ensure(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+    async def ensure(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:
         """Wait for access and prove that the allocation's pinned identity is reusable."""
 
     @abstractmethod
     async def execute(
         self,
-        lease: ComputeLease,
+        lease: AllocationRef,
         bootstrap: MachineBootstrap,
         command: str,
         *,
@@ -63,7 +63,7 @@ class GuestAccess(ABC):
     @abstractmethod
     async def open_tunnel(
         self,
-        lease: ComputeLease,
+        lease: AllocationRef,
         bootstrap: MachineBootstrap,
         *,
         remote_port: int,

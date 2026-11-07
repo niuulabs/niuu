@@ -2,24 +2,38 @@
 
 from contextlib import asynccontextmanager
 
-from volundr.domain.compute import ComputeCapacityError, LeaseState, Machine, MachineState
+from volundr.domain.compute import (
+    LIVE_SLOT_STATES,
+    ComputePoolFullError,
+    LeaseState,
+    Machine,
+    MachineState,
+    SlotLease,
+    SlotState,
+)
 
 
 class LeaseRepository:
+    """In-memory ledger with the Postgres adapter's slot semantics."""
+
     def __init__(self):
         self.leases = {}
+        self.bindings = {}
         self.locked = None
         self.policies = {}
 
-    async def reserve(self, lease, limit):
+    async def reserve(self, lease, limit, binding=None):
+        if binding is not None:
+            for existing in self.bindings.values():
+                if existing.session_id == binding.session_id and existing.state in LIVE_SLOT_STATES:
+                    return self.leases[existing.allocation_id], existing
         active = [item for item in self.leases.values() if item.state != LeaseState.RELEASED]
-        for existing in active:
-            if lease.session_id is not None and existing.session_id == lease.session_id:
-                return existing
         if len(active) >= limit:
-            raise ComputeCapacityError()
+            raise ComputePoolFullError()
         self.leases[lease.id] = lease
-        return lease
+        if binding is not None:
+            self.bindings[binding.id] = binding
+        return lease, binding
 
     async def policy(self, pool_id, default):
         return self.policies.setdefault(pool_id, default)
@@ -27,11 +41,13 @@ class LeaseRepository:
     async def set_policy(self, pool_id, policy):
         self.policies[pool_id] = policy
 
-    async def bind(self, lease):
-        assert self.locked == lease.id
-        assert self.leases[lease.id].state == LeaseState.IDLE
-        self.leases[lease.id] = lease
-        return lease
+    async def bind(self, machine, binding):
+        assert self.locked == machine.id
+        assert self.leases[machine.id].state == LeaseState.IDLE
+        self.bindings[binding.id] = binding
+        updated = self.leases[machine.id].model_copy(update={"idle_since": None})
+        self.leases[machine.id] = updated
+        return SlotLease(allocation=updated, binding=binding)
 
     async def quarantine(self, lease):
         self.leases.setdefault(lease.id, lease)
@@ -49,6 +65,57 @@ class LeaseRepository:
     async def save(self, lease):
         assert self.locked == lease.id
         self.leases[lease.id] = lease
+        if lease.state == LeaseState.RELEASED:
+            for binding in list(self.bindings.values()):
+                if binding.allocation_id == lease.id and binding.state in LIVE_SLOT_STATES:
+                    self.bindings[binding.id] = binding.model_copy(
+                        update={"state": SlotState.RETIRED}
+                    )
+
+    async def save_slot(self, binding):
+        assert self.locked == binding.allocation_id
+        assert binding.id in self.bindings
+        self.bindings[binding.id] = binding
+
+    async def get_slot(self, slot_id):
+        return self.bindings.get(slot_id)
+
+    async def slot(self, allocation_id, slot):
+        return next(
+            (
+                item
+                for item in self.bindings.values()
+                if item.allocation_id == allocation_id
+                and item.slot == slot
+                and item.state in LIVE_SLOT_STATES
+            ),
+            None,
+        )
+
+    async def slots(self, allocation_id):
+        return [item for item in self.bindings.values() if item.allocation_id == allocation_id]
+
+    async def list_slots(self, pool_id, *, live_only=True):
+        return [
+            item
+            for item in self.bindings.values()
+            if item.pool_id == pool_id and (not live_only or item.state in LIVE_SLOT_STATES)
+        ]
+
+    async def active_for_session(self, pool_id, session_id):
+        binding = next(
+            (
+                item
+                for item in self.bindings.values()
+                if item.pool_id == pool_id
+                and item.session_id == session_id
+                and item.state in LIVE_SLOT_STATES
+            ),
+            None,
+        )
+        if binding is None:
+            return None
+        return SlotLease(allocation=self.leases[binding.allocation_id], binding=binding)
 
     @asynccontextmanager
     async def operation(self, lease_id):

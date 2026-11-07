@@ -231,7 +231,8 @@ async def test_manager_cache_tracks_endpoint_and_session_binding(setup, monkeypa
         == "/var/lib/niuu/session/workspace"
     )
     assert factory.call_args.kwargs["codex_auth_adapter"] == runtime._codex_auth_adapter
-    await runtime._manager(lease.model_copy(update={"session_id": None}), bootstrap)
+    # A warm machine is probed with its machine record: no session, no secret mounts.
+    await runtime._manager(lease.allocation, bootstrap)
     assert factory.call_count == 2
     manager.close.assert_awaited_once()
     await runtime.close()
@@ -271,8 +272,6 @@ async def test_readiness_checks_skuld_and_unavailable_sandbox(setup, respx_mock)
     assert not await runtime.ready(lease, bootstrap)
     manager._client.get_sandbox.return_value = None
     assert not await runtime.ready(lease, bootstrap)
-    with pytest.raises(ValueError, match="unbound"):
-        await runtime.start(lease.model_copy(update={"session_id": None}), bootstrap)
 
 
 def test_bootstrap_conflicts_and_unsupported_identity_contract_fail_explicitly(setup):

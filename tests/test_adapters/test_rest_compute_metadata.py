@@ -24,7 +24,14 @@ from volundr.adapters.inbound.rest_compute_metadata import (
 )
 from volundr.adapters.outbound.guest_identity_host_key import HostKeyGuestIdentity
 from volundr.adapters.outbound.ssh_guest_access import HOST_KEY_PATH
-from volundr.domain.compute import BootstrapFile, ComputeLease, LeaseState, MachineBootstrap
+from volundr.domain.compute import (
+    BootstrapFile,
+    ComputeLease,
+    ComputeSlot,
+    LeaseState,
+    MachineBootstrap,
+    SlotState,
+)
 from volundr.domain.guest_credentials import (
     METADATA_CREDENTIALS_PATH,
     GuestAuthenticationError,
@@ -137,7 +144,9 @@ def test_an_unreadable_authenticated_body_is_a_400_without_the_exception_text():
     )
 
     assert response.status_code == 400
-    assert response.json() == {"error": 'The request body must be {"allocation_id": "<uuid>"}'}
+    assert response.json() == {
+        "error": 'The request body must be {"allocation_id": "<uuid>", "slot": <index>}'
+    }
 
 
 def test_a_body_over_64_kib_is_refused_before_authentication():
@@ -187,12 +196,19 @@ class SignedGuest:
         self.lease = ComputeLease(
             id=uuid4(),
             pool_id="pool",
+            profile="p",
+            request_fingerprint="f",
+            state=LeaseState.IDLE,
+        )
+        self.binding = ComputeSlot(
+            id=uuid4(),
+            allocation_id=self.lease.id,
+            slot=0,
+            pool_id="pool",
             session_id=uuid4(),
             tenant_id="t",
             owner_id="o",
-            profile="p",
-            request_fingerprint="f",
-            state=LeaseState.BUSY,
+            state=SlotState.BUSY,
         )
         public = (
             self.key.public_key()
@@ -226,11 +242,14 @@ class SignedGuest:
         repository.get.side_effect = lambda lease_id: (
             self.lease if lease_id == self.lease.id else None
         )
+        repository.slot.side_effect = lambda allocation_id, slot: (
+            self.binding if (allocation_id, slot) == (self.lease.id, 0) else None
+        )
         self.forge_session = AsyncMock(
             return_value=IssuedForgeSessionToken(
                 token="forge-secret",
                 expires_at=1,
-                session_id=str(self.lease.session_id),
+                session_id=str(self.binding.session_id),
                 launch_id="l",
                 scopes=(),
                 grants=(ForgeMcpGrant.MESSAGE,),
@@ -252,8 +271,15 @@ class SignedGuest:
         )
         self.client = client_for(service)
 
-    def post(self, *, key=None, timestamp_ms: int | None = None, allocation: UUID | None = None):
-        body = json.dumps({"allocation_id": str(self.lease.id)}).encode()
+    def post(
+        self,
+        *,
+        key=None,
+        timestamp_ms: int | None = None,
+        allocation: UUID | None = None,
+        **body_fields,
+    ):
+        body = json.dumps({"allocation_id": str(self.lease.id), **body_fields}).encode()
         timestamp_ms = int(time.time() * 1000) if timestamp_ms is None else timestamp_ms
         signature = (key or self.key).sign(
             signing_message("POST", METADATA_CREDENTIALS_PATH, timestamp_ms, body)
@@ -276,7 +302,7 @@ def test_a_signed_request_is_answered_for_the_bound_session_only():
 
     assert response.status_code == 200
     assert response.json()["forge_session"] == {"token": "forge-secret", "grants": ["message"]}
-    guest.forge_session.assert_awaited_once_with(guest.lease.session_id)
+    guest.forge_session.assert_awaited_once_with(guest.binding.session_id)
 
 
 def test_replay_wrong_key_and_unknown_allocation_are_indistinguishable_401s():
@@ -296,7 +322,7 @@ def test_replay_wrong_key_and_unknown_allocation_are_indistinguishable_401s():
 
 def test_a_stopped_session_is_a_409_even_with_a_valid_signature():
     guest = SignedGuest()
-    guest.lease = guest.lease.model_copy(update={"stop_requested": True})
+    guest.binding = guest.binding.model_copy(update={"stop_requested": True})
 
     response = guest.post()
 
@@ -312,6 +338,27 @@ def test_a_missing_forge_session_is_a_409_not_a_partial_answer():
 
     assert response.status_code == 409
     assert response.json() == {"error": "forge_session_unavailable"}
+
+
+def test_the_slot_is_named_in_the_signed_body_and_must_exist():
+    guest = SignedGuest()
+
+    assert guest.post(slot=0).status_code == 200
+
+    # A slot the single-slot allocation does not have is a 400 after authentication.
+    rejected = guest.post(slot=1)
+    assert rejected.status_code == 400
+    assert "slot" in rejected.json()["error"]
+
+
+def test_a_free_slot_is_a_409_with_the_unbound_reason():
+    guest = SignedGuest()
+    guest.binding = None
+
+    response = guest.post()
+
+    assert response.status_code == 409
+    assert response.json() == {"error": "no_bound_session"}
 
 
 @pytest.mark.parametrize("headers", [{}, {"Niuu-Guest-Allocation": "x"}])
