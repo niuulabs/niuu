@@ -2831,3 +2831,21 @@ class TestComputeHosts:
             and any("helmreleases" in rule.get("resources", []) for rule in doc.get("rules", []))
         ]
         assert not flux, names
+
+
+def test_forge_keeps_its_private_files_private_across_restarts():
+    """A recursive fsGroup change on every start would make Forge's 0600 keys 0660."""
+    result = subprocess.run(
+        ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    deployment = next(
+        doc
+        for doc in yaml.safe_load_all(result.stdout)
+        if doc and doc.get("kind") == "Deployment" and doc["metadata"]["name"] == "test-volundr"
+    )
+    assert deployment["spec"]["template"]["spec"]["securityContext"]["fsGroupChangePolicy"] == (
+        "OnRootMismatch"
+    )

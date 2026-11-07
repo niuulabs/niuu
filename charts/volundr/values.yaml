@@ -2485,6 +2485,10 @@ podSecurityContext:
   runAsNonRoot: true
   runAsUser: 1000
   fsGroup: 1000
+  # Only when the volume's root does not already belong to fsGroup: a recursive change on
+  # every start makes Forge's private files group-readable (its generated host SSH key,
+  # which OpenSSH and Forge then refuse) and slows mounting a large sessions volume.
+  fsGroupChangePolicy: OnRootMismatch
   seccompProfile:
     type: RuntimeDefault
 
