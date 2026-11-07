@@ -80,7 +80,9 @@ async def test_every_host_statement_runs_on_postgres(db_pool):
         assert checked.facts == {"cpus": 8}
         await repository.follow_execution(host.id, execution="host@2", profile="bm")
         followed = await repository.get(host.id)
-        assert (followed.execution, followed.profile, followed.tags) == (
+        assert (followed.execution, followed.profile) == ("host@2", "bm")
+        # Only the execution moves: the operator's edit and the check stay as stored.
+        assert set(followed.tags) == {"gpu", "big"} and followed.facts == {"cpus": 8}
             "host@2",
             "bm",
             ("gpu", "big"),

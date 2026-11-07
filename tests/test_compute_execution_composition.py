@@ -851,9 +851,7 @@ async def test_only_the_configured_session_image_is_pinned(pinned):
 async def test_native_images_are_handed_on_as_configured_and_pinned_by_nobody(pinned):
     bao = "quay.io/openbao/openbao@sha256:" + "c" * 64
 
-    images = await module.resolve_session_images(
-        _provider_config(session_images={"native": [bao]})
-    )
+    images = await module.resolve_session_images(_provider_config(session_images={"native": [bao]}))
 
     assert images == SessionImages(native=(bao,))
     assert pinned == []
