@@ -39,7 +39,7 @@ from volundr.domain.compute import BootstrapFile, ComputeLease, MachineBootstrap
 from volundr.domain.guest_access import GuestAccess
 from volundr.domain.guest_credentials import GuestCredentialDelivery, GuestCredentialPlan
 from volundr.domain.models import Session, SessionSpec
-from volundr.domain.vm_runtime import VmRuntime
+from volundr.domain.vm_runtime import StartupStepReport, VmRuntime
 
 # cloud-init's SSH module deletes/recreates keys at /etc/ssh/ssh_host_*.
 _HOST_KEY = HOST_KEY_PATH
@@ -395,6 +395,15 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         self._host_prepared = host_prepared
         self._default_service_account = default_service_account
         self._credential_delivery: GuestCredentialDelivery | None = None
+        self._report_startup: StartupStepReport | None = None
+
+    def report_startup_to(self, report: StartupStepReport) -> None:
+        """Name each step of ``start`` as it begins, for the session's launch stages."""
+        self._report_startup = report
+
+    def _step(self, lease: ComputeLease, key: str, label: str) -> None:
+        if self._report_startup is not None and lease.session_id is not None:
+            self._report_startup(lease.session_id, key, label)
 
     def configure_credential_delivery(self, delivery: GuestCredentialDelivery) -> None:
         """Attach the configured delivery of ServiceAccount and Forge session credentials."""
@@ -966,6 +975,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             for f in bootstrap.files
             if f.path == _LAUNCH or f.path.startswith("/etc/niuu/session-secrets/")
         ]
+        self._step(lease, "guest_files", "Delivering session files")
         await self._guest_access.execute(
             lease,
             bootstrap,
@@ -973,6 +983,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             data=json.dumps(files).encode(),
         )
         await self._restore_data(lease, bootstrap)
+        self._step(lease, "guest_tunnel", "Opening the tunnel to Forge")
         await self.target(lease, bootstrap)
         payload = json.loads(next(f.content for f in bootstrap.files if f.path == _LAUNCH))
         payload["allocation_id"] = str(lease.id)
@@ -983,10 +994,12 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                     "This VM session needs delivered credentials; configure "
                     "compute.credential_delivery"
                 )
+            self._step(lease, "guest_credentials", "Delivering credentials")
             await self._credential_delivery.start(lease, bootstrap, plan, payload, self)
             grants = payload.pop("forge_session_grants", None)
             if grants is not None:
                 payload["environment"][FORGE_MCP_GRANTS_ENV] = ",".join(grants)
+        self._step(lease, "guest_skuld", "Pulling and starting Skuld")
         await self._guest_access.execute(
             lease,
             bootstrap,
@@ -997,6 +1010,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
     async def _restore_data(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
         archive = self._data / str(lease.session_id) / "session.tar"
         if archive.exists():
+            self._step(lease, "guest_restore", "Restoring the workspace")
             with archive.open("rb") as src:
                 await self._guest_access.execute(
                     lease,

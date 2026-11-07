@@ -237,6 +237,14 @@ class ProvisioningConfig(BaseModel):
         default=5.0,
         description="Initial delay before starting readiness polls in seconds.",
     )
+    startup_poll_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        description=(
+            "How often Forge reads a starting session's launch stages from its runtime "
+            "backend (pod conditions and events, VM state) while the session starts."
+        ),
+    )
 
 
 def _default_auto_approval_allowlist() -> list[str]:

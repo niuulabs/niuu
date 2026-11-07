@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
@@ -42,6 +43,18 @@ class CredentialDeliveryVmRuntime(Protocol):
 
     def configure_credential_delivery(self, delivery: GuestCredentialDelivery) -> None:
         """Attach the configured ``GuestCredentialDelivery``."""
+
+
+#: ``(session_id, key, label)``: a guest runtime began the named step of a start.
+StartupStepReport = Callable[[UUID, str, str], None]
+
+
+@runtime_checkable
+class StartupReportingVmRuntime(Protocol):
+    """A runtime that names each step of ``start`` as it begins it."""
+
+    def report_startup_to(self, report: StartupStepReport) -> None:
+        """Call ``report`` at the start of every step of a session's ``start``."""
 
 
 @runtime_checkable

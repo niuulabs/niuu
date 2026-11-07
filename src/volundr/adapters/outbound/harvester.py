@@ -540,6 +540,7 @@ class HarvesterMachineProvider(MachineProvider):
         vmi = await self._read(f"{self._vmi_path}/{name}")
         addresses: list[str] = []
         state = MachineState.PROVISIONING
+        phase = _vm_phase(vm, vmi)
         if vmi is not None:
             self._owned(vmi, allocation_id)
             status = vmi.get("status", {})
@@ -568,6 +569,7 @@ class HarvesterMachineProvider(MachineProvider):
             resource_id=name,
             state=state,
             addresses=tuple(dict.fromkeys(addresses)),
+            phase=phase,
         )
 
     async def _inventory(self, path: str) -> list[dict]:
@@ -643,3 +645,12 @@ class HarvesterMachineProvider(MachineProvider):
         )
         secret_deleted = await self._delete(f"{self._core}/secrets/{name}-init", allocation_id)
         return disk_deleted and secret_deleted
+
+
+def _vm_phase(vm: dict, vmi: dict | None) -> str | None:
+    """KubeVirt's own words for where the VM is: its printable status and node."""
+    printable = (vm.get("status") or {}).get("printableStatus")
+    node = ((vmi or {}).get("status") or {}).get("nodeName")
+    if printable and node:
+        return f"{printable} on {node}"
+    return printable or None

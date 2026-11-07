@@ -1523,6 +1523,7 @@ def create_app(
                 contributors=contributors if contributors else None,
                 provisioning_timeout=settings.provisioning.timeout_seconds,
                 provisioning_initial_delay=settings.provisioning.initial_delay_seconds,
+                startup_poll_seconds=settings.provisioning.startup_poll_seconds,
                 integration_repo=integration_repo,
                 storage=storage_adapter,
                 communication_route_repository=communication_route_repository,

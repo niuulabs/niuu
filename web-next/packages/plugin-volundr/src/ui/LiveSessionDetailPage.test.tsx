@@ -2932,6 +2932,71 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.queryByTestId('session-failure-reason')).not.toBeInTheDocument();
     });
 
+    it('shows the launch stages instead of a spinner while starting', async () => {
+      const waitingSession: VolundrSession = {
+        ...STARTING_SESSION,
+        status: 'provisioning',
+        error: 'No CPU hosts available.',
+        startup: {
+          startedAt: '2026-11-06T12:00:00Z',
+          progressError: null,
+          stages: [
+            {
+              key: 'schedule',
+              label: 'Scheduling',
+              state: 'active',
+              detail: '0/9 nodes are available: 9 Insufficient memory.',
+              startedAt: '2026-11-06T12:00:02Z',
+              finishedAt: null,
+            },
+          ],
+        },
+      };
+      const service = buildVolundrService(waitingSession);
+      service.getSession = vi.fn().mockResolvedValue(waitingSession);
+      wrap('test-session-id-1234', { session: waitingSession, volundr: service });
+
+      await screen.findByTestId('live-session-detail-page');
+      const progress = await screen.findByTestId('session-startup-progress');
+      expect(progress).toHaveTextContent('Scheduling');
+      expect(progress).toHaveTextContent('9 Insufficient memory');
+      expect(screen.queryByText('Session is starting…')).not.toBeInTheDocument();
+      // The stages carry the backend's detail; the one-line banner would repeat it.
+      expect(screen.queryByTestId('session-provisioning-detail')).not.toBeInTheDocument();
+    });
+
+    it('shows the stage a launch failed in', async () => {
+      const failedSession: VolundrSession = {
+        ...STOPPED_SESSION,
+        status: 'failed',
+        messageCount: 0,
+        error: 'Scheduling failed: Insufficient memory',
+        startup: {
+          startedAt: '2026-11-06T12:00:00Z',
+          progressError: null,
+          stages: [
+            {
+              key: 'schedule',
+              label: 'Scheduling',
+              state: 'active',
+              detail: '0/9 nodes are available: 9 Insufficient memory.',
+              startedAt: '2026-11-06T12:00:02Z',
+              finishedAt: null,
+            },
+          ],
+        },
+      };
+      const service = buildVolundrService(failedSession);
+      service.getSession = vi.fn().mockResolvedValue(failedSession);
+      wrap('test-session-id-1234', { session: failedSession, volundr: service });
+
+      await screen.findByTestId('live-session-detail-page');
+      const stage = await screen.findByTestId('startup-stage-schedule');
+      expect(stage).toHaveAttribute('data-state', 'failed');
+      expect(stage).toHaveTextContent('Scheduling failed: Insufficient memory');
+      expect(screen.queryByTestId('failed-before-start')).not.toBeInTheDocument();
+    });
+
     it('shows delete button', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');

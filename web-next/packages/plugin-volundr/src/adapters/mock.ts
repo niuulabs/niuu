@@ -601,7 +601,36 @@ const SEED_DOMAIN_SESSIONS: Session[] = [
     state: 'provisioning',
     startedAt: new Date(Date.now() - 60_000).toISOString(),
     connectionType: 'cli',
-    bootProgress: 0.3,
+    startup: {
+      startedAt: new Date(Date.now() - 60_000).toISOString(),
+      progressError: null,
+      stages: [
+        {
+          key: 'launch',
+          label: 'Preparing launch',
+          state: 'done',
+          detail: null,
+          startedAt: new Date(Date.now() - 60_000).toISOString(),
+          finishedAt: new Date(Date.now() - 58_000).toISOString(),
+        },
+        {
+          key: 'volumes',
+          label: 'Attaching volumes',
+          state: 'active',
+          detail: 'AttachVolume.Attach succeeded for volume "pvc-mock"',
+          startedAt: new Date(Date.now() - 58_000).toISOString(),
+          finishedAt: null,
+        },
+        {
+          key: 'containers',
+          label: 'Starting containers',
+          state: 'pending',
+          detail: null,
+          startedAt: null,
+          finishedAt: null,
+        },
+      ],
+    },
     preview: 'cloning',
     resources: {
       cpuRequest: 2,
@@ -934,7 +963,6 @@ const SEED_DOMAIN_SESSIONS: Session[] = [
     state: 'provisioning',
     startedAt: new Date(Date.now() - 120_000).toISOString(),
     connectionType: 'api',
-    bootProgress: 0.45,
     resources: {
       cpuRequest: 2,
       cpuLimit: 4,

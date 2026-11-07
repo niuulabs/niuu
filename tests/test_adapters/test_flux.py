@@ -2918,6 +2918,153 @@ class TestStatusDetail:
             await pod_manager.status_detail(sample_session)
 
 
+def _owned_pod(
+    release: str,
+    suffix: str,
+    *,
+    minute: int,
+    template_hash: str | None = "abc",
+    owner_kind: str = "ReplicaSet",
+    owner_name: str | None = None,
+    deleting: bool = False,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        metadata=SimpleNamespace(
+            name=f"{release}-{suffix}",
+            creation_timestamp=datetime(2026, 11, 6, 12, minute, tzinfo=UTC),
+            deletion_timestamp=datetime(2026, 11, 6, 13, 0, tzinfo=UTC) if deleting else None,
+            labels={"pod-template-hash": template_hash} if template_hash else {},
+            owner_references=[
+                SimpleNamespace(
+                    kind=owner_kind,
+                    name=owner_name or f"{release}-{template_hash}",
+                )
+            ],
+        )
+    )
+
+
+class TestStartupStages:
+    """The launch stages of a Flux session, read from its release, pod and events."""
+
+    def test_flux_reports_startup_stages(self, pod_manager: FluxPodManager) -> None:
+        assert pod_manager.reports_startup_stages is True
+
+    async def test_no_helmrelease_is_an_empty_launch(
+        self, pod_manager: FluxPodManager, sample_session: Session, core_api: AsyncMock
+    ) -> None:
+        with patch.object(pod_manager, "_get_helmrelease", AsyncMock(return_value=None)):
+            assert await pod_manager.startup_stages(sample_session) == ()
+        core_api.list_namespaced_pod.assert_not_awaited()
+        core_api.list_namespaced_event.assert_not_awaited()
+
+    async def test_release_without_a_pod_reads_no_events(
+        self, pod_manager: FluxPodManager, sample_session: Session, core_api: AsyncMock
+    ) -> None:
+        release = {"metadata": {"creationTimestamp": "2026-11-06T12:00:00Z"}}
+        core_api.list_namespaced_pod.return_value = SimpleNamespace(items=[])
+        with patch.object(pod_manager, "_get_helmrelease", AsyncMock(return_value=release)):
+            stages = await pod_manager.startup_stages(sample_session)
+
+        assert [s.key for s in stages] == ["release", "schedule", "containers", "release_ready"]
+        assert stages[0].state.value == "active"
+        core_api.list_namespaced_event.assert_not_awaited()
+
+    async def test_stages_come_from_the_newest_session_pod_and_its_events(
+        self, pod_manager: FluxPodManager, sample_session: Session, core_api: AsyncMock
+    ) -> None:
+        name = f"skuld-{sample_session.id}"
+        older = _owned_pod(name, "old", minute=1)
+        newest = _owned_pod(name, "new", minute=5)
+        events = [object()]
+        release = {"metadata": {"creationTimestamp": "2026-11-06T12:00:00Z"}}
+        core_api.list_namespaced_pod.return_value = SimpleNamespace(items=[older, newest])
+        core_api.list_namespaced_event.return_value = SimpleNamespace(items=events)
+        sentinel = (object(),)
+        with (
+            patch.object(pod_manager, "_get_helmrelease", AsyncMock(return_value=release)),
+            patch(
+                "volundr.adapters.outbound.flux.pod_startup_stages", return_value=sentinel
+            ) as stages,
+        ):
+            result = await pod_manager.startup_stages(sample_session)
+
+        assert result is sentinel
+        stages.assert_called_once_with(release, newest, events)
+        core_api.list_namespaced_pod.assert_awaited_once_with(
+            "test-ns", label_selector=f"app.kubernetes.io/instance={name}"
+        )
+        core_api.list_namespaced_event.assert_awaited_once_with(
+            "test-ns",
+            field_selector=f"involvedObject.kind=Pod,involvedObject.name={name}-new",
+        )
+
+    async def test_session_pod_ignores_gateway_deleting_and_foreign_pods(
+        self, pod_manager: FluxPodManager, sample_session: Session, core_api: AsyncMock
+    ) -> None:
+        name = f"skuld-{sample_session.id}"
+        mine = _owned_pod(name, "mine", minute=1)
+        core_api.list_namespaced_pod.return_value = SimpleNamespace(
+            items=[
+                mine,
+                # The room gateway pod is a different Deployment of the same release.
+                _owned_pod(
+                    name, "gw", minute=9, template_hash="def", owner_name=f"{name}-gateway-def"
+                ),
+                _owned_pod(name, "dying", minute=8, deleting=True),
+                _owned_pod(name, "other", minute=7, owner_name="skuld-someone-else-abc"),
+                _owned_pod(name, "job", minute=6, owner_kind="Job"),
+                _owned_pod(name, "unhashed", minute=5, template_hash=None),
+            ]
+        )
+
+        assert await pod_manager._session_pod(core_api, name) is mine
+
+    async def test_session_pod_without_a_match_is_none(
+        self, pod_manager: FluxPodManager, sample_session: Session, core_api: AsyncMock
+    ) -> None:
+        name = f"skuld-{sample_session.id}"
+        core_api.list_namespaced_pod.return_value = SimpleNamespace(
+            items=[_owned_pod(name, "dying", minute=1, deleting=True)]
+        )
+
+        assert await pod_manager._session_pod(core_api, name) is None
+
+    async def test_forbidden_events_name_the_missing_grant(
+        self, pod_manager: FluxPodManager, sample_session: Session, core_api: AsyncMock
+    ) -> None:
+        name = f"skuld-{sample_session.id}"
+        forbidden = Exception("Forbidden")
+        forbidden.status = 403
+        core_api.list_namespaced_pod.return_value = SimpleNamespace(
+            items=[_owned_pod(name, "mine", minute=1)]
+        )
+        core_api.list_namespaced_event.side_effect = forbidden
+        with (
+            patch.object(pod_manager, "_get_helmrelease", AsyncMock(return_value={})),
+            pytest.raises(RuntimeError, match="grant events get/list"),
+        ):
+            await pod_manager.startup_stages(sample_session)
+
+    async def test_other_event_errors_are_not_retyped(
+        self, pod_manager: FluxPodManager, sample_session: Session, core_api: AsyncMock
+    ) -> None:
+        name = f"skuld-{sample_session.id}"
+        broken = Exception("etcd timeout")
+        broken.status = 500
+        core_api.list_namespaced_pod.return_value = SimpleNamespace(
+            items=[_owned_pod(name, "mine", minute=1)]
+        )
+        core_api.list_namespaced_event.side_effect = broken
+        with (
+            patch.object(pod_manager, "_get_helmrelease", AsyncMock(return_value={})),
+            pytest.raises(Exception, match="etcd timeout") as raised,
+        ):
+            await pod_manager.startup_stages(sample_session)
+
+        assert raised.value is broken
+
+
 class TestPlannedBackendRef:
     """The create response names the resident's release before the deploy makes it."""
 

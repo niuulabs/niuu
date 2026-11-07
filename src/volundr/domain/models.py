@@ -31,6 +31,7 @@ from tracker.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue
 from volundr.domain.projects import SessionCoordination
 from volundr.domain.push import PushEnvironment, PushTokenKind
 from volundr.domain.session_read_state import SessionReadState
+from volundr.domain.session_startup import SessionStartup
 
 CIStatus = shared_models.CIStatus
 GitProviderType = shared_models.GitProviderType
@@ -452,6 +453,13 @@ class Session(BaseModel):
         default=None,
         exclude=True,
         description="Private durable usage projection, including internal reducer state",
+    )
+    startup: SessionStartup | None = Field(
+        default=None,
+        description=(
+            "Stages of the latest launch as the runtime backend reported them; "
+            "written only by the startup recorder, never by a lifecycle update"
+        ),
     )
 
     @property

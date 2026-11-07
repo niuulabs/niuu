@@ -20,6 +20,8 @@ from volundr.domain.vm_runtime import (
     CredentialAwareVmRuntime,
     CredentialDeliveryVmRuntime,
     ForgeSessionVmRuntime,
+    StartupReportingVmRuntime,
+    StartupStepReport,
     VmRuntime,
 )
 
@@ -73,6 +75,11 @@ class ProfiledVmRuntime(VmRuntime):
         for runtime in self._all():
             if isinstance(runtime, ForgeSessionVmRuntime):
                 runtime.discard_forge_session(session_id)
+
+    def report_startup_to(self, report: StartupStepReport) -> None:
+        for runtime in self._all():
+            if isinstance(runtime, StartupReportingVmRuntime):
+                runtime.report_startup_to(report)
 
     def configure_credential_delivery(self, delivery: GuestCredentialDelivery) -> None:
         for runtime in self._all():

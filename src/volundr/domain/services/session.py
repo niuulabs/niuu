@@ -79,6 +79,7 @@ from volundr.domain.services.forge_session_launch import (
     with_forge_mcp,
     without_forge_mcp,
 )
+from volundr.domain.services.session_startup import SessionStartupRecorder
 from volundr.domain.session_changes import SessionChanges
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjectionPort
@@ -178,6 +179,7 @@ class SessionService:
         contributors: list[SessionContributor] | None = None,
         provisioning_timeout: float = 300.0,
         provisioning_initial_delay: float = 5.0,
+        startup_poll_seconds: float = 2.0,
         integration_repo: IntegrationRepository | None = None,
         storage: StoragePort | None = None,
         chronicle_repository: ChronicleRepository | None = None,
@@ -219,6 +221,9 @@ class SessionService:
         self._provisioning_timeout = provisioning_timeout
         self._provisioning_initial_delay = provisioning_initial_delay
         self._provisioning_tasks: dict[UUID, asyncio.Task] = {}
+        self._startup = SessionStartupRecorder(
+            repository, pod_manager, broadcaster, startup_poll_seconds
+        )
         self._activity_stop_tasks: set[asyncio.Task[None]] = set()
         self._integration_repo = integration_repo
         self._storage = storage
@@ -1380,6 +1385,8 @@ class SessionService:
             }
         )
         stored = await self._repository.update(starting)
+        # A new launch: the previous launch's stages are history.
+        stored = await self._startup.begin(stored) or stored
 
         if self._broadcaster is not None:
             await self._broadcaster.publish_session_updated(stored)
@@ -1406,6 +1413,7 @@ class SessionService:
         )
         self._provisioning_tasks[session_id] = task
         task.add_done_callback(lambda t: self._provisioning_tasks.pop(session_id, None))
+        self._startup.watch(session_id)
 
         return starting
 
@@ -1625,6 +1633,7 @@ class SessionService:
                 part for part in (existing_prompt, project_context) if part
             )
         self._overlay_resume_session(session, spec)
+        await self._startup.handing_off(session.id)
         return await self._pod_manager.start(session, spec=spec)
 
     def check_forge_mcp_grants(
@@ -2248,8 +2257,12 @@ class SessionService:
         Called on application startup to handle sessions that were left
         in PROVISIONING state after a restart.
         """
+        for starting in await self._repository.list(status=SessionStatus.STARTING):
+            # Its launch stages close as soon as reconciliation settles the row.
+            self._startup.watch(starting.id)
         sessions = await self._repository.list(status=SessionStatus.PROVISIONING)
         for session in sessions:
+            self._startup.watch(session.id)
             logger.info(
                 "Reconciling stuck PROVISIONING session %s, re-launching readiness poll",
                 session.id,
