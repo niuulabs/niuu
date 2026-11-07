@@ -194,6 +194,12 @@ describe('compute hosts over HTTP', () => {
       code: 'jwt',
       command: 'curl … | sudo sh',
       command_wget: 'wget … | sudo sh',
+      script: {
+        filename: 'niuu-join.sh',
+        sha256: 'ab12',
+        content: '#!/bin/sh\n',
+        commands: ['curl -fsSL -o niuu-join.sh …', 'sudo sh niuu-join.sh'],
+      },
     });
     const created = await buildVolundrHttpAdapter(client).createPairingCode('forge', {
       execution: 'host@2026-11-07',
@@ -213,7 +219,31 @@ describe('compute hosts over HTTP', () => {
       command: 'curl … | sudo sh',
       commandWget: 'wget … | sudo sh',
       expiresAt: '2026-11-06T12:10:00Z',
+      script: {
+        filename: 'niuu-join.sh',
+        sha256: 'ab12',
+        content: '#!/bin/sh\n',
+        commands: ['curl -fsSL -o niuu-join.sh …', 'sudo sh niuu-join.sh'],
+      },
     });
+  });
+
+  it('refuses a minted code without the script to read first', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      ...listPayload.pairing_codes[0],
+      code: 'jwt',
+      command: 'curl … | sudo sh',
+      command_wget: 'wget … | sudo sh',
+    });
+    await expect(
+      buildVolundrHttpAdapter(client).createPairingCode('forge', {
+        execution: 'x',
+        connector: 'y',
+        tags: [],
+        slots: null,
+      }),
+    ).rejects.toThrow('Invalid pairing code from forge');
   });
 
   it('lets a refused pairing code reject with the platform reason', async () => {
@@ -281,6 +311,8 @@ describe('compute hosts over HTTP', () => {
     expect(client.post).toHaveBeenLastCalledWith('/compute/hosts/h-1/resume?instance_id=forge');
     await service.checkComputeHost('forge', 'h-1');
     expect(client.post).toHaveBeenLastCalledWith('/compute/hosts/h-1/check?instance_id=forge');
+    await service.reprepareComputeHost('forge', 'h-1');
+    expect(client.post).toHaveBeenLastCalledWith('/compute/hosts/h-1/reprepare?instance_id=forge');
   });
 
   it('refuses an action answer that is not a host', async () => {

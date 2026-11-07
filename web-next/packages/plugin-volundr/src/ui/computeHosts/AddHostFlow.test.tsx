@@ -31,6 +31,12 @@ function newCode(overrides: Partial<NewPairingCode> = {}): NewPairingCode {
     code: 'jwt-code-0123456789-abcdefghij',
     command: "curl -H 'Authorization: Bearer jwt-code-0123456789-abcdefghij' x | sudo sh",
     commandWget: "wget --header='Authorization: Bearer jwt-code-0123456789-abcdefghij' x | sudo sh",
+    script: {
+      filename: 'niuu-join.sh',
+      sha256: '0'.repeat(64),
+      content: '#!/bin/sh\n',
+      commands: ['sudo sh niuu-join.sh'],
+    },
     ...overrides,
   };
 }

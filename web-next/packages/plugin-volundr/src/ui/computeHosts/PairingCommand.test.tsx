@@ -17,6 +17,17 @@ const code: NewPairingCode = {
   code: CODE,
   command: `curl -fsSL -H 'Authorization: Bearer ${CODE}' https://forge/join.sh | sudo sh`,
   commandWget: `wget -qO- --header='Authorization: Bearer ${CODE}' https://forge/join.sh | sudo sh`,
+  script: {
+    filename: 'niuu-join.sh',
+    sha256: 'c0ffee'.padEnd(64, '0'),
+    content: `#!/bin/sh\nCODE='${CODE}'\n`,
+    commands: [
+      `curl -fsSL -o niuu-join.sh -H 'Authorization: Bearer ${CODE}' https://forge/join.sh`,
+      `echo '${'c0ffee'.padEnd(64, '0')}  niuu-join.sh' | sha256sum -c -`,
+      'less niuu-join.sh',
+      'sudo sh niuu-join.sh',
+    ],
+  },
 };
 
 beforeEach(() => {
@@ -48,6 +59,49 @@ describe('PairingCommand', () => {
       "curl -fsSL -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9…'",
     );
     expect(command).not.toHaveTextContent('signature');
+  });
+
+  it('offers the script to read first, with its digest and the commands to check and run it', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    renderCommand();
+    fireEvent.click(screen.getByRole('button', { name: 'Download and read first' }));
+    const command = screen.getByLabelText('Join command');
+    expect(command).toHaveTextContent('curl -fsSL -o niuu-join.sh');
+    expect(command).toHaveTextContent('sha256sum -c -');
+    expect(command).toHaveTextContent('sudo sh niuu-join.sh');
+    expect(command).not.toHaveTextContent('signature');
+    expect(screen.getByLabelText('Script SHA-256')).toHaveTextContent(code.script.sha256);
+    expect(screen.queryByRole('button', { name: 'Use wget' })).not.toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
+    });
+    expect(writeText).toHaveBeenCalledWith(code.script.commands.join('\n'));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy SHA-256' }));
+    });
+    expect(writeText).toHaveBeenLastCalledWith(code.script.sha256);
+    Reflect.deleteProperty(navigator, 'clipboard');
+    fireEvent.click(screen.getByRole('button', { name: 'Use one line' }));
+    expect(screen.getByLabelText('Join command')).toHaveTextContent('| sudo sh');
+    expect(screen.queryByLabelText('Script SHA-256')).not.toBeInTheDocument();
+  });
+
+  it('downloads the same script as a file', () => {
+    const createObjectURL = vi.fn().mockReturnValue('blob:join');
+    const revokeObjectURL = vi.fn();
+    Object.assign(URL, { createObjectURL, revokeObjectURL });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    renderCommand();
+    fireEvent.click(screen.getByRole('button', { name: 'Download and read first' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Download niuu-join.sh' }));
+    const [blob] = createObjectURL.mock.calls[0] as [Blob];
+    expect(blob.type).toBe('text/x-shellscript');
+    expect(blob.size).toBe(new TextEncoder().encode(code.script.content).length);
+    const link = click.mock.instances[0] as unknown as HTMLAnchorElement;
+    expect(link.download).toBe('niuu-join.sh');
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:join');
+    click.mockRestore();
   });
 
   it('counts down to expiry', () => {

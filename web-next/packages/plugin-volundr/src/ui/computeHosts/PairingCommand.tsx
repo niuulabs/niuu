@@ -3,6 +3,7 @@ import {
   countdownLabel,
   secondsUntil,
   truncateCode,
+  type JoinScript,
   type NewPairingCode,
 } from '../../domain/computeHosts';
 import { CopyButton } from './CopyButton';
@@ -22,6 +23,16 @@ function useSecondClock(): number {
   return now;
 }
 
+/** Saves the join script as a file, for reading on this machine before running it. */
+function downloadScript(script: JoinScript): void {
+  const url = URL.createObjectURL(new Blob([script.content], { type: 'text/x-shellscript' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = script.filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 const GHOST =
   'niuu:rounded-md niuu:px-2.5 niuu:py-1.5 niuu:text-sm niuu:text-text-secondary niuu:hover:bg-bg-tertiary';
 
@@ -36,7 +47,9 @@ export interface PairingCommandProps {
 
 /**
  * The one-line command that joins a host, with a countdown to its expiry and Revoke. The
- * code is single use and short lived; the page waits for the host to run it.
+ * code is single use and short lived; the page waits for the host to run it. "Download and
+ * read first" offers the same script as a file with its SHA-256, and the commands that
+ * fetch it on the host, check the digest, show it and only then run it.
  */
 export function PairingCommand({
   code,
@@ -47,9 +60,14 @@ export function PairingCommand({
 }: PairingCommandProps) {
   const now = useSecondClock();
   const [useWget, setUseWget] = useState(false);
+  const [readFirst, setReadFirst] = useState(false);
   const remaining = secondsUntil(code.expiresAt, now);
   const expired = remaining === 0;
-  const command = useWget ? code.commandWget : code.command;
+  const command = readFirst
+    ? code.script.commands.join('\n')
+    : useWget
+      ? code.commandWget
+      : code.command;
 
   return (
     <div className="niuu:space-y-3">
@@ -64,10 +82,35 @@ export function PairingCommand({
       </div>
       <pre
         aria-label="Join command"
-        className="niuu:m-0 niuu:overflow-x-auto niuu:whitespace-nowrap niuu:rounded-lg niuu:border niuu:border-brand/35 niuu:bg-bg-primary niuu:p-3 niuu:font-mono niuu:text-xs niuu:text-text-primary"
+        className="niuu:m-0 niuu:overflow-x-auto niuu:whitespace-pre niuu:rounded-lg niuu:border niuu:border-brand/35 niuu:bg-bg-primary niuu:p-3 niuu:font-mono niuu:text-xs niuu:text-text-primary"
       >
         {truncateCode(command, code.code, VISIBLE_CODE_CHARS)}
       </pre>
+      {readFirst ? (
+        <div className="niuu:space-y-2 niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3">
+          <p className="niuu:text-sm niuu:text-text-secondary">
+            These fetch the script on the host, check its SHA-256, show it, and run it only after
+            you have read it. To read it here first, download the same file.
+          </p>
+          <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
+            <span className="niuu:text-xs niuu:text-text-muted">SHA-256</span>
+            <code
+              aria-label="Script SHA-256"
+              className="niuu:break-all niuu:font-mono niuu:text-xs niuu:text-text-primary"
+            >
+              {code.script.sha256}
+            </code>
+            <CopyButton text={code.script.sha256} label="Copy SHA-256" />
+          </div>
+          <button
+            type="button"
+            className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-3 niuu:py-1.5 niuu:text-sm niuu:text-text-primary"
+            onClick={() => downloadScript(code.script)}
+          >
+            Download {code.script.filename}
+          </button>
+        </div>
+      ) : null}
       <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:justify-between niuu:gap-2">
         {expired ? (
           <span role="status" className="niuu:text-xs niuu:text-critical-fg">
@@ -79,8 +122,13 @@ export function PairingCommand({
           </span>
         )}
         <span className="niuu:flex niuu:items-center niuu:gap-1">
-          <button type="button" className={GHOST} onClick={() => setUseWget((value) => !value)}>
-            {useWget ? 'Use curl' : 'Use wget'}
+          {readFirst ? null : (
+            <button type="button" className={GHOST} onClick={() => setUseWget((value) => !value)}>
+              {useWget ? 'Use curl' : 'Use wget'}
+            </button>
+          )}
+          <button type="button" className={GHOST} onClick={() => setReadFirst((value) => !value)}>
+            {readFirst ? 'Use one line' : 'Download and read first'}
           </button>
           <CopyButton text={command} primary />
         </span>

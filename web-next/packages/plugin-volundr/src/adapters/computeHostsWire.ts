@@ -86,6 +86,12 @@ export interface NewPairingCodePayload extends PairingCodePayload {
   code: string;
   command: string;
   command_wget: string;
+  script: {
+    filename: string;
+    sha256: string;
+    content: string;
+    commands: string[];
+  };
 }
 
 export interface ComputeHostsPayload {
@@ -177,12 +183,32 @@ export function toPairingCode(code: PairingCodePayload): PairingCode {
   };
 }
 
-export function toNewPairingCode(code: NewPairingCodePayload): NewPairingCode {
+export function toNewPairingCode(
+  code: NewPairingCodePayload | undefined,
+  source: string,
+): NewPairingCode {
+  const script = code?.script;
+  if (
+    !code ||
+    typeof code.code !== 'string' ||
+    !script ||
+    typeof script.sha256 !== 'string' ||
+    typeof script.content !== 'string' ||
+    !Array.isArray(script.commands)
+  ) {
+    throw invalidPayload('pairing code', source);
+  }
   return {
     ...toPairingCode(code),
     code: code.code,
     command: code.command,
     commandWget: code.command_wget,
+    script: {
+      filename: script.filename,
+      sha256: script.sha256,
+      content: script.content,
+      commands: script.commands,
+    },
   };
 }
 
