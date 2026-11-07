@@ -1,6 +1,6 @@
 # VM session slots and runtimes
 
-Status: proposal, for review. Nothing here is built yet.
+Status: accepted; being built. PR 1 (slot ledger) is in progress.
 
 Today a VM Forge runs one session per VM, and only one runtime: Skuld in Docker
 with host networking (`SshContainerVmRuntime`). This proposal lets one VM serve
@@ -61,13 +61,18 @@ cgroup and credential files. The VM keeps serving its other slots.
 
 Machine lifecycle, per policy:
 
-- `replace` (default): a machine accepts new sessions until it has served
-  `max_sessions_per_machine` sessions or reached `max_machine_age_seconds`
-  (both optional; unset means no limit), then **drains**: it takes no new
-  sessions and is deleted once its last slot is free. A drained machine's
-  capacity is replaced by the warm-capacity rule above. This keeps long-lived VMs
-  from drifting (left-over packages, disk fill) without interrupting anyone.
+- `replace` (default): a machine accepts new sessions until it has served its
+  session limit or reached `max_machine_age_seconds` (optional; unset means no
+  age limit), then **drains**: it takes no new sessions and is deleted once its
+  last slot is free. The session limit is `max_sessions_per_machine` when set,
+  otherwise `slots_per_machine`: by default each slot serves one session, which
+  at one slot is exactly today's "replace after every session". A limit above
+  `slots_per_machine` reuses cleaned slots in place and so needs a runtime that
+  supports reuse. A drained machine's capacity is replaced by the warm-capacity
+  rule above. This keeps long-lived VMs from drifting (left-over packages, disk
+  fill) without interrupting anyone.
 - `reuse`: freed slots return to the pool; the machine lives until idle expiry.
+  The drain limits apply to `replace` only and are rejected under `reuse`.
 - An empty machine above the warm target expires after `idle_timeout_seconds`,
   as today. Lowering capacity or draining never stops an active session.
 
