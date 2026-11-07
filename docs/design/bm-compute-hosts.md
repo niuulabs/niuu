@@ -271,7 +271,8 @@ The script, in order:
    no existing registration. Each missing item prints its fix, and nothing is
    changed. It reports the host's init as a fact: `init systemd` when PID 1 is
    systemd (`/run/systemd/system` exists, the test `sd_booted()` uses), otherwise
-   `init other`. A host without systemd is not refused.
+   `init other`, plus `cgroup_v2` and `cgroup_kill`. A host without systemd, or
+   without cgroups, is not refused: the code's isolation mode decides (below).
 2. Generates the host's Ed25519 key at `/etc/niuu/ssh_host_ed25519_key`
    (`umask 077`, refuse to overwrite), the same path VMs use.
 3. Sends `name`, `facts` (a few `/proc` reads) and the public key to
@@ -372,31 +373,71 @@ niuu remote leave HOST [--ssh DEST] [-p PORT] [-J JUMP] [--url URL] [--forge FOR
 Exit codes: 0 for success; 1 for a failure, with the reason (Forge's answer,
 `ssh`'s, the script's, or the timeout knob); 2 for a usage error (Typer's own).
 
-### Hosts without systemd
+### Hosts without systemd, or without cgroups
 
-The real requirement is **cgroup v2** (the unified hierarchy, with the `cpu`,
-`memory` and `pids` controllers). systemd is one way to manage it, not a
-requirement. A host on Alpine with OpenRC, Void with runit, or any other init
-joins the same way.
+systemd is one way to manage cgroups, and cgroups are one way to keep slots apart.
+Neither is required. Every host has one **slot isolation** mode, fixed for its
+lifetime:
 
-**The cgroup manager is fixed per host at join.** Forge derives it from the `init`
-fact the join reports and records it on the host as `cgroup_manager`:
-
-| `init` at join | `cgroup_manager` | A slot's cgroup |
+| Mode | Needs | What a slot gets |
 |---|---|---|
-| `systemd` | `systemd` | the transient slice `niuu_slot_<n>.slice` |
-| `other` | `cgroupfs` | the directory `/sys/fs/cgroup/niuu.slots/slot-<n>` |
+| `systemd` | systemd as PID 1, cgroup v2 | its user, network and PID namespaces, and the transient slice `niuu_slot_<n>.slice` with its limits |
+| `cgroupfs` | cgroup v2 with `cpu`, `memory`, `pids` and `cgroup.kill` (Linux 5.14+); any init | the same, with the cgroup `/sys/fs/cgroup/niuu.slots/slot-<n>` that Forge writes itself |
+| `none` | nothing beyond the join's tools | its user and directories only; the session runs straight on the machine |
 
-The manager is never chosen at runtime by trying one and then the other
-(`.claude/rules/no-fallbacks.md`). The host's machine record carries it to the slot
-supervisor, which runs only the recorded form. Every check compares the `init` it
-measures with the one the host joined with; a change (the host was reinstalled
-with another init) is a finding, "remove the host and join it again", and the host
-takes no sessions until then. A host registered before this fact existed has no
-manager and is quarantined with the same remedy. VM providers report `systemd`,
-because Forge's VM images boot systemd.
+**Choosing the mode.** The admin picks it when minting the code (UI, or
+`niuu remote join --isolation`). The default, `measured`, lets the join decide from
+the facts it reports: `systemd` when PID 1 is systemd, otherwise `cgroupfs` when the
+host has cgroup v2 with `cgroup.kill`. `measured` never yields `none`: a host with
+neither is refused at join with "mint the code with isolation `none`, or enable
+cgroup v2". `none` gives up guarantees, so it is only ever an explicit choice. An
+explicit mode the host cannot provide (`systemd` on an OpenRC host) is refused at
+join, naming the missing fact; Forge never substitutes another mode.
 
-The two forms do the same things:
+The join records the result on the host as `isolation`. The host's machine record
+carries it to the slot supervisor, which runs only that form. It is never chosen at
+runtime by trying one and then the other (`.claude/rules/no-fallbacks.md`). Every
+check compares the facts it measures with what the mode needs; if the host no
+longer provides them (reinstalled with another init, or booted with cgroup v1),
+that is a finding, "remove the host and join it again", and the host takes no
+sessions until then. A host registered before this field existed is quarantined
+with the same remedy. VM providers report `systemd`, because Forge's VM images boot
+systemd.
+
+**What `none` limits.** It is the "just run it" mode for a spare workstation, a
+container-like environment or an old kernel:
+
+- **One slot.** The code must be minted with slots 1 or open, and the slot count
+  cannot be raised. Nothing bounds one session's CPU or memory against another's.
+- **No limits.** An execution whose `slot_isolation` sets `cpu`, `memory_mib` or
+  `pids` is refused for a `none` host at mint and at join, naming the limit ("set
+  it to `null` for hosts without cgroups").
+- **The host's network and process table.** There is no holder container, so no
+  network namespace, no slot NAT or egress rules, and no PID namespace. The session
+  sees the host's network and other processes, and the LAN deny of decision 4
+  cannot be enforced. A `none` host joins only a pool whose egress policy says so
+  explicitly (`egress: unrestricted`); with the default deny, the join is refused
+  naming that setting.
+- **No containers in the session.** Docker and Podman both need cgroups for what a
+  slot gives them, so the session gets no `docker`/`podman`. Nix still works.
+- **What stays:** the session never runs as root or as the SSH user. It runs as
+  `niuu-slot-0`, in its own `0700` directories, with private `/tmp`, `/var/tmp` and
+  `/dev/shm` where the kernel allows mount namespaces, and with the same credential
+  files as other slots. The host key and Forge's key stay root-only.
+- **Teardown** cannot use a cgroup, so it reaps by uid: `pkill -KILL -u
+  niuu-slot-0` until `pgrep -u` finds nothing (a process cannot leave its uid
+  without privilege, and the slot has none), then removes the user and directories
+  and runs the same leftover checks as every other mode. Anything left fails
+  `down`.
+- **Runtimes declare it.** A runtime lists the modes it can run in
+  (`VmRuntime.isolation_modes`); host mode needs a variant that starts the session
+  without a holder container for `none`. A code is refused at mint for a mode its
+  execution's runtime does not list.
+
+The UI and CLI show the mode on every host row, and `none` hosts carry a visible
+"no isolation" badge.
+
+**The two cgroup modes** do the same things in different ways:
 
 | Step | `systemd` | `cgroupfs` |
 |---|---|---|
@@ -406,11 +447,9 @@ The two forms do the same things:
 | Teardown | `systemctl stop` and `systemctl revert` | write `1` to `cgroup.kill`, wait on `cgroup.events` until `populated 0`, then remove the slot's directories bottom up |
 | Verify | the slice is not active, has no settings left and its cgroup is gone | the slot's directory is gone |
 
-`cgroupfs` needs `cgroup.kill`, so Linux 5.14 or later; the join reports
-`cgroup_kill` as a fact and the supervisor refuses a slot without it, naming the
-kernel. Containers inside a slot (rootless Podman in host mode) already use
-`cgroupfs` in a subtree delegated to the slot's user inside the slot's cgroup,
-so they do not depend on the init.
+Containers inside a slot (rootless Podman in host mode) already use `cgroupfs` in a
+subtree delegated to the slot's user inside the slot's cgroup, so they do not
+depend on the init.
 
 **Long-lived host processes.** Anything that must keep running on the host
 outside a session (the reverse-SSH tunnel, the Nix daemon on a host without
@@ -624,10 +663,11 @@ connector, and a new connector adds a reachability path, not a trust path.
 The slot supervisor already tears a slot down and checks it (#1261): it removes the
 containers, rules, interface, namespace, cgroup, directories, user and group, then
 fails `slot-down` naming anything left, and the stop is retried. The cgroup is
-removed in the host's recorded form: a systemd host stops and reverts the slice; a
-`cgroupfs` host kills everything left in the slot's cgroup through `cgroup.kill`,
+removed in the host's isolation mode: a `systemd` host stops and reverts the slice;
+a `cgroupfs` host kills everything left in the slot's cgroup through `cgroup.kill`,
 waits until the kernel reports it empty and removes the directory, and a directory
-that is still there fails `down`. For hosts the same `down` also checks:
+that is still there fails `down`; a `none` host reaps the slot's uid. For hosts the
+same `down` also checks:
 
 - no process with the slot's uid (including rootless Podman's `conmon` and
   `pasta`);
@@ -656,9 +696,9 @@ host checks:
 
 - the recipe digest still matches;
 - no `niuu-slot-*` users, groups, netns, veths, nft rules or slot cgroups (slices
-  on systemd hosts, `niuu.slots/slot-<n>` on `cgroupfs` hosts) exist beyond those
+  on `systemd` hosts, `niuu.slots/slot-<n>` on `cgroupfs` hosts) exist beyond those
   of live bindings;
-- the host's init is still the one it joined with, and every host service
+- the host still provides what its isolation mode needs, and every host service
   recorded by `niuu-host-service` is running;
 - no slot user is in the `docker`, `sudo`, `wheel` or `adm` groups;
 - Nix `trusted-users` is root only;
@@ -680,7 +720,8 @@ There is no "ignore": a finding clears when the audit stops seeing it.
   slot = 11"). The admin confirms it; Forge never picks silently.
 - **Per-slot limits** come from the host's execution (`slot_isolation`: `cpu`,
   `memory_mib`, `pids`, each set or `null`), as on VMs. They are cgroup v2 limits
-  on the slot's cgroup (its slice, or its `cgroupfs` directory). Limit hits are counted on `volundr.compute.slot.limit_hits`.
+  on the slot's cgroup (its slice, or its `cgroupfs` directory); `none` hosts take
+  no limits and one slot. Limit hits are counted on `volundr.compute.slot.limit_hits`.
 - **System reserve.** The provider has kwargs `reserved_cpu` and
   `reserved_memory_mib` (no defaults; write them per host class). Forge refuses
   `slots × limit > facts − reserve` for any limit that is set, with the arithmetic
@@ -809,6 +850,10 @@ settles it: a narrowed root SSH login now, a forced-command agent later. In both
   session subtree inside it is delegated (host mode), as on systemd hosts.
   `niuu.slots` is Forge's alone, and the audit reports any slot directory there
   without a live binding.
+- **`none` hosts** keep only the slot user as the boundary. That still keeps the
+  session away from root, Forge's key and the host key, but not from the host's
+  network or its other processes; the mode is explicit, shown on the host, and
+  refused unless the pool's egress policy is explicitly unrestricted.
 - **Host services** run as root, from argv Forge wrote through its own SSH login
   (`/etc/niuu/services`, root-only). Slots can neither read nor change them.
 - **Egress**: slots NAT out of the host's default route, and nft rules deny the
@@ -907,9 +952,11 @@ On branch `docs/bm-compute-hosts`. Operator guide: [docs/operator/compute-hosts.
 - The edge (`credential_allows_route`) admits a `compute_host_join` code on exactly
   `GET …/hosts/join.sh` and `POST …/hosts/join`.
 - `warm_targets` per selector were dropped (decision 6).
-- systemd is optional: the join reports `init`, the host records `cgroup_manager`,
-  the slot supervisor has a `cgroupfs` form, the audit checks whichever form the
-  host uses, and `niuu-host-service` runs host services with or without systemd.
+- systemd and cgroups are optional: the join reports `init`, `cgroup_v2` and
+  `cgroup_kill`, the code's isolation mode (`measured`, `systemd`, `cgroupfs`,
+  `none`) is resolved at join and recorded on the host, the slot supervisor has a
+  `cgroupfs` and a `none` form, the audit checks whichever form the host uses, and
+  `niuu-host-service` runs host services with or without systemd.
 - Not built yet: the reverse SSH connector, the Re-prepare action (a recipe change
   today needs drain, then resume), macOS hosts, and the Nix stage and resolver
   changes for hosts without systemd (host-mode branch).
