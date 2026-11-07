@@ -1,4 +1,4 @@
-"""Shared resident container mesh configuration tests."""
+"""Shared resident container materialization tests."""
 
 import json
 from uuid import uuid4
@@ -7,18 +7,12 @@ import pytest
 import yaml
 
 from volundr.adapters.outbound.resident_container_spec import (
-    enable_resident_openclaw_shim,
     image_from_values,
     materialize_resident_container,
     materialize_resident_runtime,
     resident_attribution_headers,
     resident_flock_environment,
     resident_flock_labels,
-    resident_flock_profile_configured,
-    resident_flock_runtime_config,
-    resident_flock_skuld_config,
-    resident_mesh_pod_metadata,
-    resident_openclaw_shim_enabled,
     resident_process_files,
     resident_profile_values,
     resident_runtime_section,
@@ -28,7 +22,6 @@ from volundr.adapters.outbound.resident_container_spec import (
 from volundr.domain.models import (
     ResidentBackend,
     ResidentCapability,
-    ResidentDeploymentProfile,
     ResidentEngine,
     ResidentRuntime,
 )
@@ -42,150 +35,37 @@ def _runtime(*, flock: bool = True) -> ResidentRuntime:
         name="Muninn",
         persona_name="product-steward",
         backend=ResidentBackend.OPENSHELL,
-        engine=ResidentEngine.RAVN,
-        profile_id="ravn-openshell",
+        engine=ResidentEngine.OPENCLAW,
+        profile_id="openclaw-openshell",
         capabilities=[ResidentCapability.CHAT, ResidentCapability.FLOCK],
         flock_id=uuid4() if flock else None,
         flock_member_id=uuid4() if flock else None,
         flock_role="coordinator" if flock else "",
-        flock_peer_id="ravn-coordinator" if flock else "",
+        flock_peer_id="openclaw-coordinator" if flock else "",
     )
 
 
-def _profile(
-    *,
-    engine: ResidentEngine = ResidentEngine.RAVN,
-    capabilities: list[ResidentCapability] | None = None,
-) -> ResidentDeploymentProfile:
-    return ResidentDeploymentProfile(
-        id="resident",
-        display_name="Resident",
-        backend=ResidentBackend.OPENSHELL,
-        engine=engine,
-        capabilities=capabilities or [ResidentCapability.CHAT],
-    )
-
-
-def _flock_values() -> dict:
-    return {
-        "resident": {
-            "flock": {
-                "mesh": {
-                    "adapters": ["niuu.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter"],
-                    "nats": {"servers": ["nats://nats:4222"]},
-                },
-                "discovery": {
-                    "adapters": ["niuu.adapters.discovery.event_bus.EventBusDiscoveryAdapter"]
-                },
-            }
-        }
-    }
-
-
-def test_flock_identity_is_shared_by_container_and_kubernetes_backends() -> None:
+def test_flock_identity_is_shared_by_container_backends() -> None:
     plain = _runtime(flock=False)
     assert resident_flock_labels(plain, prefix="volundr.niuu.io") == {}
     assert resident_flock_environment(plain) == {}
-    assert resident_mesh_pod_metadata(plain) == ({}, {})
 
     runtime = _runtime()
     labels = resident_flock_labels(runtime, prefix="volundr.niuu.io")
     environment = resident_flock_environment(runtime)
-    pod_labels, annotations = resident_mesh_pod_metadata(runtime)
 
     assert labels == {
         "volundr.niuu.io/flock-id": str(runtime.flock_id),
         "volundr.niuu.io/flock-member-id": str(runtime.flock_member_id),
         "volundr.niuu.io/flock-role": "coordinator",
-        "volundr.niuu.io/flock-peer-id": "ravn-coordinator",
+        "volundr.niuu.io/flock-peer-id": "openclaw-coordinator",
     }
     assert environment == {
         "NIUU_FLOCK_ID": str(runtime.flock_id),
         "NIUU_FLOCK_MEMBER_ID": str(runtime.flock_member_id),
         "NIUU_FLOCK_ROLE": "coordinator",
-        "NIUU_FLOCK_PEER_ID": "ravn-coordinator",
+        "NIUU_FLOCK_PEER_ID": "openclaw-coordinator",
     }
-    assert pod_labels == {
-        "ravn.niuu.world/realm": str(runtime.flock_id),
-        "ravn.niuu.world/role": "agent",
-    }
-    assert annotations == {
-        "ravn.niuu.world/peer-id": "ravn-coordinator",
-        "ravn.niuu.world/persona": "product-steward",
-        "ravn.niuu.world/capabilities": "chat,flock",
-        "ravn.niuu.world/permission-mode": "permissive",
-    }
-
-
-def test_profile_selected_transport_configures_ravn_and_skuld() -> None:
-    runtime = _runtime()
-    values = _flock_values()
-    ravn_config = {
-        "mesh": {"adapter": "legacy"},
-        "discovery": {"adapters": ["local"]},
-    }
-    skuld_config = {
-        "mesh": {
-            "adapters": ["local"],
-            "discovery_adapters": ["local"],
-        }
-    }
-
-    resident_flock_runtime_config(ravn_config, runtime, values)
-    resident_flock_skuld_config(skuld_config, runtime, values)
-
-    assert ravn_config["mesh"] == {
-        "adapters": ["niuu.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter"],
-        "nats": {"servers": ["nats://nats:4222"]},
-        "own_peer_id": "ravn-coordinator",
-    }
-    assert ravn_config["discovery"] == {
-        "adapters": [
-            "local",
-            "niuu.adapters.discovery.event_bus.EventBusDiscoveryAdapter",
-        ],
-        "realm_id": str(runtime.flock_id),
-    }
-    assert skuld_config["mesh"] == {
-        "adapters": ["niuu.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter"],
-        "discovery_adapters": [
-            "local",
-            "niuu.adapters.discovery.event_bus.EventBusDiscoveryAdapter",
-        ],
-        "nats": {"servers": ["nats://nats:4222"]},
-        "realm_id": str(runtime.flock_id),
-    }
-
-
-def test_flock_profile_requires_real_ravn_transport_configuration() -> None:
-    flock_profile = _profile(capabilities=[ResidentCapability.CHAT, ResidentCapability.FLOCK])
-
-    assert not resident_flock_profile_configured(flock_profile, {})
-    assert not resident_flock_profile_configured(
-        flock_profile,
-        {"resident": {"flock": {"mesh": {"adapters": ["mesh"]}}}},
-    )
-    assert resident_flock_profile_configured(flock_profile, _flock_values())
-    assert resident_flock_profile_configured(_profile(), {})
-    assert resident_flock_profile_configured(
-        _profile(
-            engine=ResidentEngine.HERMES,
-            capabilities=[ResidentCapability.CHAT, ResidentCapability.FLOCK],
-        ),
-        {},
-    )
-
-
-def test_non_flock_runtime_leaves_runtime_configs_unchanged() -> None:
-    runtime = _runtime(flock=False)
-    ravn_config = {"mesh": {"adapter": "local"}, "discovery": {"adapters": []}}
-    skuld_config = {"mesh": {"adapters": ["local"]}}
-
-    resident_flock_runtime_config(ravn_config, runtime, _flock_values())
-    resident_flock_skuld_config(skuld_config, runtime, _flock_values())
-
-    assert ravn_config == {"mesh": {"adapter": "local"}, "discovery": {"adapters": []}}
-    assert skuld_config == {"mesh": {"adapters": ["local"]}}
 
 
 def test_profile_image_runtime_and_service_helpers_cover_supported_shapes() -> None:
@@ -370,8 +250,6 @@ def test_materialize_hermes_container_uses_provider_and_permissive_runtime() -> 
         default_image="",
         default_service_name="resident",
         default_service_port=9200,
-        volundr_api_url="http://volundr",
-        sandbox_command=("skuld", "serve"),
     )
     config = yaml.safe_load(spec.files["/sandbox/workspace/.hermes/config.yaml"])
 
@@ -382,179 +260,6 @@ def test_materialize_hermes_container_uses_provider_and_permissive_runtime() -> 
     assert spec.environment["SKULD__SKIP_PERMISSIONS"] == "true"
     assert config["model"]["base_url"] == "http://bifrost/v1"
     assert config["approvals"] == {"mode": "off"}
-
-
-def test_materialize_ravn_container_extends_shared_mesh_configuration() -> None:
-    runtime = _runtime()
-    values = _flock_values() | {
-        "image": "example.test/ravn@sha256:123",
-        "resident": {
-            **_flock_values()["resident"],
-            "llm": {"temperature": 0.2},
-            "platform": {"baseUrl": "http://platform"},
-        },
-        "runtime": {"service": {"name": "skuld", "port": 9200}},
-    }
-
-    spec = materialize_resident_container(
-        runtime,
-        values,
-        default_image="",
-        default_service_name="resident",
-        default_service_port=9000,
-        volundr_api_url="http://volundr",
-        sandbox_command=("skuld", "serve"),
-    )
-    ravn_config = yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])
-    skuld_config = yaml.safe_load(spec.files["/sandbox/.volundr/skuld.yaml"])
-
-    assert [process.name for process in spec.processes] == ["skuld", "ravn"]
-    assert ravn_config["llm"] == {"temperature": 0.2}
-    assert ravn_config["mesh"]["own_peer_id"] == runtime.flock_peer_id
-    assert skuld_config["mesh"]["realm_id"] == str(runtime.flock_id)
-
-
-def test_materialize_ravn_container_passes_the_profile_persona_source() -> None:
-    source = {"adapter": "ravn.adapters.personas.http.HttpPersonaAdapter", "kwargs": {}}
-    values = _flock_values() | {
-        "image": "example.test/ravn@sha256:123",
-        "resident": {**_flock_values()["resident"], "personaSource": source},
-    }
-
-    spec = materialize_resident_container(
-        _runtime(),
-        values,
-        default_image="",
-        default_service_name="resident",
-        default_service_port=9000,
-        volundr_api_url="http://volundr",
-        sandbox_command=("skuld", "serve"),
-    )
-
-    assert yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])["persona_source"] == source
-
-
-def test_materialize_ravn_container_without_realm_slug_omits_realm_binding() -> None:
-    runtime = _runtime()
-    spec = materialize_resident_container(
-        runtime,
-        {"image": "example.test/ravn@sha256:123", **_flock_values()},
-        default_image="",
-        default_service_name="resident",
-        default_service_port=9000,
-        volundr_api_url="http://volundr",
-        sandbox_command=("skuld", "serve"),
-    )
-    ravn_config = yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])
-    assert "realm_slug" not in ravn_config["environment"]
-
-
-def test_materialize_ravn_container_renders_realm_binding() -> None:
-    runtime = _runtime()
-    values = {
-        "image": "example.test/ravn@sha256:123",
-        **_flock_values(),
-        "resident": {
-            **_flock_values()["resident"],
-            "mimir": {
-                "instances": [
-                    {"name": "realm-workshop", "adapter": "mimir.adapters.markdown"},
-                    {"name": "other-mount", "adapter": "mimir.adapters.markdown"},
-                ]
-            },
-        },
-    }
-
-    spec = materialize_resident_container(
-        runtime,
-        values,
-        default_image="",
-        default_service_name="resident",
-        default_service_port=9000,
-        volundr_api_url="http://volundr",
-        sandbox_command=("skuld", "serve"),
-        realm_slug="workshop",
-    )
-    ravn_config = yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])
-
-    assert [inst["name"] for inst in ravn_config["mimir"]["instances"]] == [
-        "realm-workshop",
-        "other-mount",
-    ]
-    assert ravn_config["mimir"]["write_routing"]["default"] == ["realm-workshop"]
-    assert ravn_config["mimir"]["write_routing"]["rules"] == [
-        ["realms/workshop/", ["realm-workshop"]]
-    ]
-
-
-def test_materialize_ravn_container_preserves_profile_write_routing_without_realm_mount() -> None:
-    """The normal hub-Mímir case: no mount is named realm-<slug>.
-
-    The profile's own write_routing must survive, not be discarded for an
-    empty default (the bug that sent resident writes nowhere without error).
-    """
-    runtime = _runtime()
-    values = {
-        "image": "example.test/ravn@sha256:123",
-        **_flock_values(),
-        "resident": {
-            **_flock_values()["resident"],
-            "mimir": {
-                "instances": [
-                    {"name": "hub-a", "adapter": "mimir.adapters.markdown"},
-                    {"name": "hub-b", "adapter": "mimir.adapters.markdown"},
-                ],
-                "writeRouting": {
-                    "rules": [["shared/", ["hub-b"]]],
-                    "default": ["hub-a"],
-                },
-            },
-        },
-    }
-
-    spec = materialize_resident_container(
-        runtime,
-        values,
-        default_image="",
-        default_service_name="resident",
-        default_service_port=9000,
-        volundr_api_url="http://volundr",
-        sandbox_command=("skuld", "serve"),
-        realm_slug="workshop",
-    )
-    ravn_config = yaml.safe_load(spec.files["/sandbox/.volundr/ravn.yaml"])
-
-    assert ravn_config["mimir"]["write_routing"]["default"] == ["hub-a"]
-    assert ravn_config["mimir"]["write_routing"]["rules"] == [["shared/", ["hub-b"]]]
-
-
-def test_materialize_ravn_container_raises_when_no_mimir_write_target_resolves() -> None:
-    runtime = _runtime()
-    values = {
-        "image": "example.test/ravn@sha256:123",
-        **_flock_values(),
-        "resident": {
-            **_flock_values()["resident"],
-            "mimir": {
-                "instances": [
-                    {"name": "hub-a", "adapter": "mimir.adapters.markdown"},
-                    {"name": "hub-b", "adapter": "mimir.adapters.markdown"},
-                ],
-            },
-        },
-    }
-
-    with pytest.raises(RuntimeError, match="no write target resolves"):
-        materialize_resident_container(
-            runtime,
-            values,
-            default_image="",
-            default_service_name="resident",
-            default_service_port=9000,
-            volundr_api_url="http://volundr",
-            sandbox_command=("skuld", "serve"),
-            realm_slug="workshop",
-        )
 
 
 @pytest.mark.parametrize(
@@ -596,93 +301,42 @@ def test_materialize_resident_container_rejects_incomplete_profiles(
             default_image="",
             default_service_name="resident",
             default_service_port=9200,
-            volundr_api_url="http://volundr",
-            sandbox_command=("skuld", "serve"),
         )
 
 
-def test_ravn_processes_are_identical_with_and_without_an_image() -> None:
-    runtime = _runtime(flock=False).model_copy(update={"persona_name": "night watch"})
-    values = {"runtime": {"service": {"name": "skuld", "port": 9200}}}
-    options = {
-        "default_service_name": "resident",
-        "default_service_port": 9000,
-        "volundr_api_url": "http://volundr",
-        "sandbox_command": ("skuld", "serve"),
+def test_openclaw_processes_are_identical_with_and_without_an_image() -> None:
+    runtime = _runtime(flock=False).model_copy(update={"model": "niuu/nemotron"})
+    config = json.dumps({"models": {"providers": {"niuu": {"baseUrl": "http://bifrost/v1"}}}})
+    values = {
+        "runtime": {
+            "processMode": "replace",
+            "service": {"name": "openclaw", "port": 18789},
+            "processes": [
+                {
+                    "name": "openclaw",
+                    "command": ["openclaw", "gateway", "run"],
+                    "files": {"/sandbox/workspace/.openclaw/openclaw.json": config},
+                }
+            ],
+        }
     }
+    options = {"default_service_name": "resident", "default_service_port": 9000}
 
     container = materialize_resident_container(
         runtime,
-        values | {"image": "example.test/ravn@sha256:123"},
+        values | {"image": "example.test/openclaw@sha256:123"},
         default_image="",
         **options,
     )
     imageless = materialize_resident_runtime(runtime, values, **options)
 
-    assert container.image == "example.test/ravn@sha256:123"
+    assert container.image == "example.test/openclaw@sha256:123"
     assert imageless.image == ""
     assert imageless.processes == container.processes
     assert imageless.files == container.files
-    skuld, ravn = container.processes
-    assert skuld.env == {"NIUU_CONFIG": "/sandbox/.volundr/skuld.yaml"}
-    assert (skuld.log_path, ravn.log_path) == (
-        "/sandbox/.volundr/skuld.log",
-        "/sandbox/.volundr/ravn.log",
-    )
-    assert ravn.command == (
-        "sh",
-        "-lc",
-        'export RAVN_GATEWAY__PLATFORM__ACCESS_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
-        "exec /opt/niuu/bin/python -m ravn daemon --config /sandbox/.volundr/ravn.yaml "
-        "--persona 'night watch'",
-    )
-
-
-class TestResidentOpenClawShim:
-    """A Ravn resident's sessions ("channels") follow from the wiring, not the profile."""
-
-    @pytest.mark.parametrize(
-        ("shim", "provisioned", "expected"),
-        [
-            (None, True, True),
-            (None, False, False),
-            ({"enabled": False}, True, False),
-            ({"enabled": True}, True, True),
-            ({"enabled": False}, False, False),
-        ],
-    )
-    def test_on_by_default_where_tokens_are_provisioned(self, shim, provisioned, expected):
-        values = {"resident": {"openclaw": shim}} if shim is not None else {}
-        assert (
-            resident_openclaw_shim_enabled(_runtime(), values, tokens_provisioned=provisioned)
-            is expected
-        )
-
-    def test_asking_for_it_without_a_token_is_fatal(self):
-        with pytest.raises(ValueError, match="ravn_sessions_enabled"):
-            resident_openclaw_shim_enabled(
-                _runtime(),
-                {"resident": {"openclaw": {"enabled": True}}},
-                tokens_provisioned=False,
-            )
-
-    def test_only_ravn_residents_run_it(self):
-        hermes = _runtime().model_copy(update={"engine": ResidentEngine.HERMES})
-        assert not resident_openclaw_shim_enabled(hermes, {}, tokens_provisioned=True)
-
-    def test_profile_overrides_reach_the_channel(self):
-        config: dict = {"gateway": {"channels": {"http": {"enabled": True}}}}
-        enable_resident_openclaw_shim(
-            config,
-            {"resident": {"openclaw": {"port": 18800, "maxSessions": 8, "storePath": "/s.db"}}},
-        )
-        assert config["gateway"]["channels"]["http"] == {"enabled": True}
-        assert config["gateway"]["channels"]["openclaw"] == {
-            "enabled": True,
-            "host": "0.0.0.0",
-            "port": 18800,
-            "token_env": "RAVN_OPENCLAW_TOKEN",
-            "agent_id": "main",
-            "max_live_sessions": 8,
-            "store_path": "/s.db",
-        }
+    [process] = container.processes
+    assert process.command == ("openclaw", "gateway", "run")
+    assert process.log_path == "/sandbox/.volundr/openclaw.log"
+    assert (container.service_name, container.service_port) == ("openclaw", 18789)
+    assert "RAVN_STATE_DIR" not in container.environment
+    assert set(container.files) == {"/sandbox/workspace/.openclaw/openclaw.json"}

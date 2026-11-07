@@ -28,7 +28,7 @@ class WorkloadConfigContributor(SessionContributor):
     """Applies explicit runtime overrides from ``SessionContext.workload_config``.
 
     This intentionally accepts only a small set of top-level runtime knobs. The
-    workload config bag is also used by higher-level flock/session MCP features,
+    workload config bag is also used by higher-level session MCP features,
     so it should not be blindly merged into Helm values.
     """
 

@@ -68,7 +68,6 @@ from volundr.domain.models import (
     Principal,
     ResidentCapability,
     ResidentEndpoint,
-    ResidentEngine,
     ResidentRuntime,
     ResidentSession,
     ResidentSessionStatus,
@@ -89,7 +88,6 @@ A2A_CARD_ENDPOINT_KIND = "a2a-card"
 A2A_ENDPOINT_KIND = "a2a"
 BEARER_SECURITY_SCHEME = "platformBearer"
 CONTEXT_TITLE_PREFIX = "A2A · "
-_DEFAULT_RAVN_PERSONA = "product-steward"
 _HISTORY_FRAME_TIMEOUT_SECONDS = 15.0
 _TITLE_MAX_CHARS = 120
 _SKILL_SUMMARY_MAX_CHARS = 600
@@ -162,9 +160,7 @@ def build_resident_agent_card(
     persona_prompt: str = "",
 ) -> AgentCard:
     """Project one resident and its persona onto an A2A Agent Card."""
-    persona = runtime.persona_name or (
-        _DEFAULT_RAVN_PERSONA if runtime.engine == ResidentEngine.RAVN else ""
-    )
+    persona = runtime.persona_name
     summary = _persona_summary(persona_prompt)
     description = summary or (
         f"{runtime.name} is a long-lived resident agent"
@@ -631,9 +627,7 @@ def create_resident_a2a_router(
     ) -> Response:
         runtime = await _resident(principal, runtime_id)
         persona_prompt = ""
-        persona_name = runtime.persona_name or (
-            _DEFAULT_RAVN_PERSONA if runtime.engine == ResidentEngine.RAVN else ""
-        )
+        persona_name = runtime.persona_name
         if persona_provider is not None and persona_name:
             with suppress(Exception):
                 persona = await persona_provider.get(runtime.owner_id, persona_name)

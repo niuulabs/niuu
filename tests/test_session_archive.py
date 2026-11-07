@@ -62,11 +62,6 @@ def test_write_session_archive_writes_normalized_artifacts(tmp_path):
         "2026-01-01 12:00:00 skuld INFO hello\n",
         encoding="utf-8",
     )
-    (workspace / ".flock" / "logs").mkdir(parents=True, exist_ok=True)
-    (workspace / ".flock" / "logs" / "worker.log").write_text(
-        "2026-01-01 12:00:01 ravn INFO worker hello\n",
-        encoding="utf-8",
-    )
     (workspace / ".services" / "logs").mkdir(parents=True, exist_ok=True)
     (workspace / ".services" / "logs" / "api.log").write_text(
         "2026-01-01 12:00:02 service INFO api hello\n",
@@ -109,13 +104,12 @@ def test_write_session_archive_writes_normalized_artifacts(tmp_path):
 
     assert manifest["session_id"] == session_id
     assert manifest["counts"]["turns"] == 1
-    assert manifest["counts"]["raw_logs"] == 3
+    assert manifest["counts"]["raw_logs"] == 2
     assert manifest["counts"]["raw_event_streams"] == 1
 
     stored_manifest = json.loads(archive_manifest_path(workspace).read_text(encoding="utf-8"))
     assert stored_manifest["artifacts"]["transcript_json"] == "transcript.json"
     assert stored_manifest["artifacts"]["chronicle"] == "chronicle.json"
-    assert "logs/raw/flock/worker.log" in stored_manifest["sources"]["workspace_logs"]
     assert "logs/raw/services/api.log" in stored_manifest["sources"]["workspace_logs"]
 
     markdown = archive_transcript_markdown_path(workspace).read_text(encoding="utf-8")

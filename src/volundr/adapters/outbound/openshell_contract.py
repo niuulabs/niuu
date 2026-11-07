@@ -1,7 +1,7 @@
 """OpenShell request rules Völundr checks before it sends anything to a gateway.
 
-Pure Python, no SDK import: the flock contributor and the CLI-driven VM runtime
-use these rules without the ``openshell`` extra. Each rule mirrors one the
+Pure Python, no SDK import: the OpenShell gateway adapter and the CLI-driven VM
+runtime use these rules without the ``openshell`` extra. Each rule mirrors one the
 pinned OpenShell gateway (or its Kubernetes driver) enforces, so a bad request
 fails here with the remedy instead of as an opaque gRPC rejection.
 """
@@ -208,7 +208,7 @@ def check_peer_workloads(
     if len(workloads) > MAX_PEER_WORKLOADS:
         raise ValueError(
             f"OpenShell supports at most {MAX_PEER_WORKLOADS} peer workloads per sandbox, "
-            f"got {len(workloads)}; split the flock across sandboxes"
+            f"got {len(workloads)}; split the workloads across sandboxes"
         )
     volume_read_only = _check_volumes(volumes)
     names: set[str] = set()

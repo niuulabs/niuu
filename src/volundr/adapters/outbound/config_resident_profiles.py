@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from volundr.config import ResidentProfileConfig
-from volundr.domain.models import ResidentBackend, ResidentDeploymentProfile
+from volundr.domain.models import ResidentDeploymentProfile
 from volundr.domain.ports import PricingProvider, ResidentDeploymentProfileProvider
 
 
@@ -34,9 +34,7 @@ class ConfigResidentDeploymentProfileProvider(ResidentDeploymentProfileProvider)
     def _resolve(self, config: ResidentProfileConfig) -> ResidentDeploymentProfile | None:
         allowed_models = list(config.allowed_models)
         default_model = config.default_model
-        # A discovered resident runs whatever model it was deployed with; the
-        # catalog governs only the models the Forge deploys residents on.
-        if self._model_catalog is not None and config.backend is not ResidentBackend.DISCOVERED:
+        if self._model_catalog is not None:
             allowed_models = self._catalog_models(config)
             if not allowed_models:
                 return None

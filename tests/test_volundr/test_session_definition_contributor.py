@@ -294,7 +294,7 @@ class TestVmPodStorageDefaults:
     @pytest.mark.asyncio
     async def test_chart_session_definitions_pass_the_vm_runtime_storage_check(self):
         """Every built-in chart definition reaches a VM session without the values
-        SshContainerVmRuntime refuses as configured storage or flock topology."""
+        SshContainerVmRuntime refuses as configured storage."""
         values = yaml.safe_load((CHART_VALUES).read_text())
         definitions = {
             key: SessionDefinitionConfig(enabled=True, defaults=entry.get("defaults", {}))
@@ -307,9 +307,5 @@ class TestVmPodStorageDefaults:
             result = await contributor.contribute(
                 _mock_session(), SessionContext(definition=key, runtime_backend="vm")
             )
-            refused = [
-                name
-                for name in ("homeVolume", "persistence", "flock", "ravnFlock")
-                if result.values.get(name)
-            ]
+            refused = [name for name in ("homeVolume", "persistence") if result.values.get(name)]
             assert refused == [], key

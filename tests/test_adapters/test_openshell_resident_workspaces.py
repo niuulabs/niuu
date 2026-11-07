@@ -24,6 +24,7 @@ from tests.test_adapters.test_openshell_gateway import (
     _hermes_profile,
     _hermes_runtime,
     _import_adapter,
+    _openclaw_credential_store,
     _resident_profile,
     _resident_runtime,
 )
@@ -432,18 +433,14 @@ class _Harness:
         )
         sandbox.workspace.update(
             {
-                ".ravn/openclaw/state.db": b"notification outbox",
+                ".openclaw/agents/main/state.db": b"agent state",
                 ".skuld/conversation_1.json": b'{"turns": 3}',
+                "memory.db": b"episodes",
+                "daemon/queue.json": b"[]",
                 "notes/plan.md": b"# plan",
             }
         )
-        sandbox.home.update(
-            {
-                "/sandbox/.ravn/memory.db": b"episodes",
-                "/sandbox/.ravn/daemon/queue.json": b"[]",
-                "/sandbox/.volundr/ravn.yaml": b"rendered",
-            }
-        )
+        sandbox.home.update({"/sandbox/.volundr/openclaw.yaml": b"rendered"})
         sandbox.running = True
         return sandbox
 
@@ -525,16 +522,13 @@ async def test_new_resident_gets_its_own_claim_mounted_at_the_workspace(monkeypa
         {"name": "resident-workspace", "mount_path": VOLUME, "read_only": False}
     ]
     assert created["policy"].filesystem.read_write == ["/sandbox", "/tmp", VOLUME]
-    # Ravn's ~/.ravn state (memory.db, the queue, cron) is kept on the claim too.
     sandbox = harness.client.sandboxes[created["name"]]
-    assert sandbox.links == {WORKSPACE: VOLUME, "/sandbox/.ravn": f"{WORKSPACE}/.ravn-home"}
+    assert sandbox.links == {WORKSPACE: VOLUME}
     events = harness.events
     assert events.index(f"linked:{sandbox.name}:{WORKSPACE}") < events.index(
         f"written:{sandbox.name}"
     )
-    assert events.index(f"linked:{sandbox.name}:/sandbox/.ravn") < events.index(
-        f"launched:{sandbox.name}"
-    )
+    assert events.index(f"written:{sandbox.name}") < events.index(f"launched:{sandbox.name}")
     assert observation.backend_ref["workspace_claim"] == _claim_name(runtime)
     assert observation.observed_state is ResidentObservedState.ACTIVE
 
@@ -621,23 +615,18 @@ async def test_existing_resident_is_migrated_verified_then_started_on_its_claim(
     # Archive with the processes stopped, restore and verify, start the resident
     # in the new sandbox, and only once it is healthy remove the old one.
     assert events.index(f"stopped:{old.name}") < events.index(f"archived:{old.name}:{WORKSPACE}")
-    assert events.index(f"archived:{old.name}:/sandbox/.ravn") < events.index(f"created:{new_name}")
+    assert events.index(f"archived:{old.name}:{WORKSPACE}") < events.index(f"created:{new_name}")
     assert events.index(f"linked:{new_name}:{WORKSPACE}") < events.index(
         f"restored:{new_name}:{WORKSPACE}"
     )
-    assert events.index(f"restored:{new_name}:{WORKSPACE}") < events.index(
-        f"restored:{new_name}:{WORKSPACE}/.ravn-home"
-    )
-    assert events.index(f"restored:{new_name}:{WORKSPACE}/.ravn-home") < events.index(
-        f"launched:{new_name}"
-    )
+    assert events.index(f"restored:{new_name}:{WORKSPACE}") < events.index(f"launched:{new_name}")
     assert events.index(f"launched:{new_name}") < events.index(f"deleted:{old.name}")
     assert old.name not in harness.client.sandboxes
     files = harness.client.claim_files[_claim_name(runtime)]
-    assert files[".ravn/openclaw/state.db"] == b"notification outbox"
+    assert files[".openclaw/agents/main/state.db"] == b"agent state"
     assert files[".skuld/conversation_1.json"] == b'{"turns": 3}'
-    assert files[".ravn-home/memory.db"] == b"episodes"
-    assert files[".ravn-home/daemon/queue.json"] == b"[]"
+    assert files["memory.db"] == b"episodes"
+    assert files["daemon/queue.json"] == b"[]"
     claim = harness.core.pvcs[_claim_name(runtime)]
     annotations = claim.metadata.annotations
     assert annotations[workspace_module.ANNOTATION_MIGRATION_PHASE] == "complete"
@@ -647,7 +636,7 @@ async def test_existing_resident_is_migrated_verified_then_started_on_its_claim(
     new = harness.client.sandboxes[new_name]
     assert new.image == TARGET_IMAGE
     assert new.annotations["volundr.niuu.io/replaced-image"] == OLD_IMAGE
-    assert new.links == {WORKSPACE: VOLUME, "/sandbox/.ravn": f"{WORKSPACE}/.ravn-home"}
+    assert new.links == {WORKSPACE: VOLUME}
     # The resident's grants stayed in place for both sandboxes; nothing was revoked.
     assert harness.client.deleted_grants == []
     assert harness.credentials.deletes == []
@@ -681,7 +670,7 @@ async def test_failed_copy_keeps_the_old_sandbox_and_reports_why(monkeypatch):
     new_name = f"m-{runtime.id.hex[:17]}"
     assert old.name in harness.client.sandboxes
     assert new_name not in harness.client.sandboxes
-    assert old.home["/sandbox/.ravn/memory.db"] == b"episodes"
+    assert old.workspace["memory.db"] == b"episodes"
     assert old.running  # its processes were started again
     assert harness.client.deleted_grants == []
     assert harness.credentials.deletes == []
@@ -787,7 +776,7 @@ async def test_migration_resumes_after_volundr_restarts_mid_copy(monkeypatch):
     assert harness.events.count(f"deleted:{new_name}") == 1
     assert harness.core.phase(_claim_name(runtime)) == "complete"
     files = harness.client.claim_files[_claim_name(runtime)]
-    assert files[".ravn-home/memory.db"] == b"episodes"
+    assert files["memory.db"] == b"episodes"
     assert files["notes/plan.md"] == b"# plan"
 
 
@@ -960,7 +949,7 @@ async def test_upgrade_proceeds_once_the_resident_is_on_its_claim(monkeypatch):
     redeployed = await harness.manager.deploy(_awaiting_deployment(runtime), newer)
     assert redeployed.backend_ref["image"] == "ghcr.io/niuulabs/openshell:dev-newer"
     assert redeployed.backend_ref["name"] == f"r-{runtime.id.hex[:17]}"
-    assert harness.client.claim_files[_claim_name(runtime)][".ravn-home/memory.db"] == b"episodes"
+    assert harness.client.claim_files[_claim_name(runtime)]["memory.db"] == b"episodes"
     assert _claim_name(runtime) in harness.core.pvcs
 
 
@@ -1237,7 +1226,7 @@ async def test_a_relay_failure_while_restoring_keeps_the_old_sandbox(monkeypatch
     assert old.name not in harness.client.sandboxes
     assert harness.core.phase(_claim_name(runtime)) == "complete"
     files = harness.client.claim_files[_claim_name(runtime)]
-    assert files[".ravn-home/memory.db"] == b"episodes"
+    assert files["memory.db"] == b"episodes"
 
 
 def _relay_error(harness):
@@ -1560,19 +1549,20 @@ def test_manifest_rejects_a_hard_link_to_nothing():
 
 
 @pytest.mark.asyncio
-async def test_restart_on_the_claim_keeps_ravn_home_on_it(monkeypatch):
+async def test_restart_on_the_claim_keeps_the_workspace_on_it(monkeypatch):
     harness = _Harness(monkeypatch)
     runtime = _resident_runtime()
     sandbox = harness.old_sandbox(runtime, image=TARGET_IMAGE)
     sandbox.annotations["volundr.niuu.io/workspace-claim"] = _claim_name(runtime)
     sandbox.links[WORKSPACE] = VOLUME
     runtime = _running(runtime, sandbox.name)
+    harness.credentials.values.update(_openclaw_credential_store().values)
 
     observation = await harness.manager.restart(runtime, _resident_profile())
 
-    assert sandbox.links == {WORKSPACE: VOLUME, "/sandbox/.ravn": f"{WORKSPACE}/.ravn-home"}
+    assert sandbox.links == {WORKSPACE: VOLUME}
     assert harness.events.index(f"stopped:{sandbox.name}") < harness.events.index(
-        f"linked:{sandbox.name}:/sandbox/.ravn"
+        f"launched:{sandbox.name}"
     )
     assert observation.backend_ref["name"] == sandbox.name
     assert set(harness.client.sandboxes) == {sandbox.name}
@@ -1618,7 +1608,7 @@ async def test_a_failure_after_the_copy_keeps_the_old_sandbox_and_its_processes(
     assert events.index(f"deleted:{new_name}") < len(events) - 1 - events[::-1].index(
         f"launched:{old.name}"
     )
-    assert old.home["/sandbox/.ravn/memory.db"] == b"episodes"
+    assert old.workspace["memory.db"] == b"episodes"
     assert observation.backend_ref["name"] == old.name
     assert observation.observed_state is ResidentObservedState.ACTIVE
     assert _condition(observation, "WorkspaceMigration").reason == "MigrationFailed"
@@ -1629,7 +1619,7 @@ async def test_a_failure_after_the_copy_keeps_the_old_sandbox_and_its_processes(
     assert annotations[workspace_module.ANNOTATION_MIGRATION_SOURCE] == old.name
     assert annotations[workspace_module.ANNOTATION_MIGRATION_DIGEST].startswith("files=5 ")
     assert workspace_module.ANNOTATION_MIGRATION_HOLDER not in annotations
-    assert harness.client.claim_files[_claim_name(runtime)][".ravn-home/memory.db"] == b"episodes"
+    assert harness.client.claim_files[_claim_name(runtime)]["memory.db"] == b"episodes"
     assert harness.client.deleted_grants == []
     assert harness.credentials.deletes == []
 
@@ -1667,7 +1657,7 @@ async def test_a_complete_claim_is_handed_over_without_a_copy_and_the_old_sandbo
     assert harness.core.phase(_claim_name(runtime)) == "complete"
     assert claim.metadata.annotations[workspace_module.ANNOTATION_MIGRATION_DIGEST] == digest
     assert workspace_module.ANNOTATION_MIGRATION_HOLDER not in claim.metadata.annotations
-    assert harness.client.claim_files[_claim_name(runtime)][".ravn-home/memory.db"] == b"episodes"
+    assert harness.client.claim_files[_claim_name(runtime)]["memory.db"] == b"episodes"
 
 
 @pytest.mark.asyncio
@@ -1680,7 +1670,7 @@ async def test_a_handover_copies_again_when_the_old_sandbox_ran_on(monkeypatch):
     new_name = f"m-{runtime.id.hex[:17]}"
     failed = await _failed_after_the_copy(harness, runtime, profile, at="file projection")
     # Back on its old sandbox, the resident remembers more before the retry.
-    old.home["/sandbox/.ravn/memory.db"] = b"episodes and one more"
+    old.workspace["memory.db"] = b"episodes and one more"
     retry_from = len(harness.events)
 
     restarted = await harness.manager.restart(
@@ -1691,7 +1681,7 @@ async def test_a_handover_copies_again_when_the_old_sandbox_ran_on(monkeypatch):
     assert retry.index(f"stopped:{old.name}") < retry.index(f"restored:{new_name}:{WORKSPACE}")
     assert retry.index(f"launched:{new_name}") < retry.index(f"deleted:{old.name}")
     files = harness.client.claim_files[_claim_name(runtime)]
-    assert files[".ravn-home/memory.db"] == b"episodes and one more"
+    assert files["memory.db"] == b"episodes and one more"
     assert restarted.backend_ref["name"] == new_name
     assert harness.core.phase(_claim_name(runtime)) == "complete"
 
@@ -1789,7 +1779,7 @@ async def test_a_complete_claim_without_its_old_sandbox_is_deployed_without_a_co
         workspace_module.ANNOTATION_MIGRATION_DIGEST: "files=2 bytes=14 sha256=abc",
     }
     harness.core.pvcs[claim_name].metadata.annotations = dict(annotations)
-    state = {".ravn-home/memory.db": b"episodes", "notes/plan.md": b"# plan"}
+    state = {"memory.db": b"episodes", "notes/plan.md": b"# plan"}
     harness.client.claim_files[claim_name] = dict(state)
     failed = runtime.model_copy(
         update={"observed_state": ResidentObservedState.FAILED, "backend_ref": {}}
@@ -1837,7 +1827,7 @@ def test_restore_never_changes_the_claims_own_root(monkeypatch, tmp_path):
         top.type = tarfile.DIRTYPE
         top.mode = 0o700  # restoring this onto the root is what failed for NemoClaw
         tar.addfile(top)
-        for name, data in {"./notes/plan.md": b"# plan", "./.ravn/state.db": b"db"}.items():
+        for name, data in {"./notes/plan.md": b"# plan", "./.openclaw/state.db": b"db"}.items():
             info = tarfile.TarInfo(name)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
@@ -1846,8 +1836,8 @@ def test_restore_never_changes_the_claims_own_root(monkeypatch, tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert (root / "notes/plan.md").read_bytes() == b"# plan"
-    assert (root / ".ravn/state.db").read_bytes() == b"db"
-    assert sorted(path.name for path in root.iterdir()) == [".ravn", "notes"]
+    assert (root / ".openclaw/state.db").read_bytes() == b"db"
+    assert sorted(path.name for path in root.iterdir()) == [".openclaw", "notes"]
     assert root.stat().st_mode & 0o7777 == 0o2775
 
 
@@ -1930,7 +1920,6 @@ def _openclaw_profile() -> ResidentDeploymentProfile:
 
 
 _ENGINES = {
-    "ravn": (_resident_runtime, _resident_profile, "/sandbox/.volundr/ravn.yaml"),
     "openclaw": (_openclaw_runtime, _openclaw_profile, OPENCLAW_CONFIG),
     "hermes": (_hermes_runtime, _hermes_profile, f"{WORKSPACE}/.hermes/config.yaml"),
 }
@@ -1942,8 +1931,7 @@ def test_file_projection_never_carries_a_directory_entry_for_a_link(monkeypatch)
         {
             OPENCLAW_CONFIG: b"{}",
             f"{WORKSPACE}/.hermes/config.yaml": b"model: x",
-            "/sandbox/.ravn/skills/note.md": b"skill",
-            "/sandbox/.volundr/ravn.yaml": b"rendered",
+            "/sandbox/.volundr/openclaw.yaml": b"rendered",
         }
     )
 
@@ -1952,10 +1940,9 @@ def test_file_projection_never_carries_a_directory_entry_for_a_link(monkeypatch)
     with tarfile.open(fileobj=io.BytesIO(data), mode="r") as tar:
         directories = {member.name for member in tar.getmembers() if member.isdir()}
         files = {member.name for member in tar.getmembers() if member.isfile()}
-    # GNU tar would replace the workspace and ~/.ravn links with new directories.
+    # GNU tar would replace the workspace link with a new directory.
     assert "workspace" not in directories
-    assert ".ravn" not in directories
-    assert {"workspace/.openclaw", "workspace/.hermes", ".ravn/skills", ".volundr"} <= directories
+    assert {"workspace/.openclaw", "workspace/.hermes", ".volundr"} <= directories
     assert "workspace/.openclaw/openclaw.json" in files
 
 
@@ -2130,7 +2117,7 @@ def test_workspace_link_moves_a_directory_with_state_aside(monkeypatch, tmp_path
 NEWER_IMAGE = "ghcr.io/niuulabs/openshell:dev-newer"
 #: The resident's own state on its claim, which no upgrade may copy over or change.
 HEIMDALL_STATE = {
-    ".ravn-home/memory.db": b"episodes",
+    "memory.db": b"episodes",
     ".skuld/conversation_1.json": b'{"turns": 3}',
     "notes/plan.md": b"# plan",
 }

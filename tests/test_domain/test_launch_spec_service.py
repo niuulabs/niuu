@@ -74,8 +74,8 @@ def _provider() -> ConfigLaunchSpecProvider:
                 cli_tool="skuld",
             ),
             LaunchSpecConfig(
-                name="flock",
-                workload_type="ravn_flock",
+                name="batch",
+                workload_type="batch",
                 workload_config={"nodes": [{"id": "coordinator"}]},
             ),
         ]
@@ -86,7 +86,7 @@ def test_config_provider_maps_filters_and_defaults() -> None:
     provider = _provider()
 
     assert provider.get("standard").scope is LaunchScope.SYSTEM
-    assert [spec.name for spec in provider.list()] == ["flock", "standard"]
+    assert [spec.name for spec in provider.list()] == ["batch", "standard"]
     assert [spec.name for spec in provider.list(workload_type="session")] == ["standard"]
     assert provider.get_default("session").name == "standard"
     assert provider.get_default("missing") is None
@@ -97,10 +97,10 @@ async def test_service_reads_system_and_handles_missing_user_store() -> None:
 
     assert service.get_system("standard").model == "claude-sonnet-4-6"
     assert service.get_default().name == "standard"
-    assert [spec.name for spec in service.list_system("ravn_flock")] == ["flock"]
+    assert [spec.name for spec in service.list_system("batch")] == ["batch"]
     assert await service.list_user() == []
     assert [spec.name for spec in await service.list_all(scope=LaunchScope.SYSTEM)] == [
-        "flock",
+        "batch",
         "standard",
     ]
 

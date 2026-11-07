@@ -41,8 +41,8 @@ def _resident(**update) -> ResidentRuntime:
         name="Muninn",
         model="gpt-5.6-sol",
         backend=ResidentBackend.HELMRELEASE,
-        engine=ResidentEngine.RAVN,
-        profile_id="ravn-helm",
+        engine=ResidentEngine.OPENCLAW,
+        profile_id="openclaw-helm",
     )
     return resident.model_copy(update=update)
 
@@ -91,7 +91,7 @@ class TestResidentAttention:
         assert first.id == notification_id(resident_attention_dedupe_key(resident.id, None, "q1"))
         assert (first.owner_id, first.tenant_id) == ("owner-a", "tenant-a")
         assert first.session_id is None and first.session_name == "Muninn"
-        assert (first.engine, first.model) == ("ravn", "gpt-5.6-sol")
+        assert (first.engine, first.model) == ("openclaw", "gpt-5.6-sol")
         assert other.body == "The agent needs permission to continue"
         assert len(broadcaster.events) == 2
         assert broadcaster.events[0].type is EventType.SESSION_NOTIFICATION

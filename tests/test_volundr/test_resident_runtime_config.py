@@ -24,10 +24,10 @@ def test_settings_parse_resident_profiles() -> None:
             "resident_runtimes": {
                 "profiles": [
                     {
-                        "id": "ravn-helm",
-                        "display_name": "Resident Ravn",
-                        "backend": "helmrelease",
-                        "engine": "ravn",
+                        "id": "openclaw-local",
+                        "display_name": "Resident OpenClaw",
+                        "backend": "local",
+                        "engine": "openclaw",
                         "capabilities": ["chat", "runtime.suspend"],
                     }
                 ]
@@ -36,8 +36,9 @@ def test_settings_parse_resident_profiles() -> None:
     )
 
     profile = settings.resident_runtimes.profiles[0]
-    assert profile.id == "ravn-helm"
-    assert profile.backend.value == "helmrelease"
+    assert profile.id == "openclaw-local"
+    assert profile.backend.value == "local"
+    assert profile.engine.value == "openclaw"
     assert [capability.value for capability in profile.capabilities] == [
         "chat",
         "runtime.suspend",
@@ -100,17 +101,57 @@ def test_duplicate_profile_ids_fail_configuration() -> None:
                         "id": "same",
                         "display_name": "First",
                         "backend": "openshell",
-                        "engine": "ravn",
+                        "engine": "openclaw",
                     },
                     {
                         "id": "same",
                         "display_name": "Second",
-                        "backend": "helmrelease",
-                        "engine": "ravn",
+                        "backend": "openshell",
+                        "engine": "hermes",
                     },
                 ]
             }
         )
+
+
+@pytest.mark.parametrize("spelling", ["ravn", "Ravn", " ravn "])
+def test_a_profile_with_the_removed_ravn_engine_is_refused_with_the_remedy(spelling: str) -> None:
+    with pytest.raises(ValidationError) as raised:
+        Settings.model_validate(
+            {
+                "resident_runtimes": {
+                    "profiles": [
+                        {
+                            "id": "ravn-helm",
+                            "display_name": "Resident Ravn",
+                            "backend": "helmrelease",
+                            "engine": spelling,
+                        }
+                    ]
+                }
+            }
+        )
+
+    message = str(raised.value)
+    assert "the ravn resident engine was removed" in message
+    assert "openclaw or hermes" in message
+
+
+def test_an_unknown_engine_is_still_a_plain_validation_error() -> None:
+    with pytest.raises(ValidationError, match="Input should be 'openclaw' or 'hermes'"):
+        ResidentRuntimesConfig.model_validate(
+            {"profiles": [{"id": "x", "display_name": "X", "backend": "local", "engine": "other"}]}
+        )
+
+
+def test_migration_drops_the_resident_runtimes_of_the_removed_ravn_engine() -> None:
+    root = Path(__file__).resolve().parents[2]
+    up = (root / "migrations/000111_drop_ravn_resident_runtimes.up.sql").read_text()
+    down = (root / "migrations/000111_drop_ravn_resident_runtimes.down.sql").read_text()
+
+    statements = [line for line in up.splitlines() if not line.startswith("--") and line.strip()]
+    assert statements == ["DELETE FROM resident_runtimes", "WHERE engine = 'ravn';"]
+    assert "cannot be restored" in down
 
 
 def test_chart_contains_profile_config_and_migrations() -> None:

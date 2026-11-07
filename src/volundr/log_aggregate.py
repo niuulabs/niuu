@@ -1,4 +1,4 @@
-"""Helpers for aggregating broker, flock, and service logs from a workspace."""
+"""Helpers for aggregating broker and service logs from a workspace."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ _STANDARD_LOG_RE = re.compile(
 )
 _UVICORN_LOG_RE = re.compile(r"^(?P<level>INFO|ERROR|WARNING|DEBUG|CRITICAL):\s+(?P<message>.*)$")
 
-ParticipantKind = Literal["broker", "ravn", "service"]
+ParticipantKind = Literal["broker", "service"]
 
 _LEVELS = {
     "DEBUG": logging.DEBUG,
@@ -77,7 +77,7 @@ def aggregate_workspace_logs(
     participants: set[str] | None = None,
     query: str = "",
 ) -> dict[str, object]:
-    """Return a merged, filtered view of broker + flock + service logs for a workspace."""
+    """Return a merged, filtered view of broker + service logs for a workspace."""
     workspace = Path(workspace_dir).expanduser()
     all_entries: list[AggregateLogEntry] = []
     available: dict[str, AggregateParticipant] = {}
@@ -136,22 +136,6 @@ def _discover_log_files(
                 "skuld.log",
             )
         )
-
-    flock_dir = workspace / ".flock" / "logs"
-    if flock_dir.is_dir():
-        for path in sorted(flock_dir.glob("*.log")):
-            participant_id = path.stem
-            files.append(
-                (
-                    path,
-                    AggregateParticipant(
-                        id=participant_id,
-                        label=participant_id.replace("-", " ").title(),
-                        kind="ravn",
-                    ),
-                    f".flock/logs/{path.name}",
-                )
-            )
 
     services_dir = workspace / ".services" / "logs"
     if services_dir.is_dir():

@@ -15,7 +15,6 @@ from typing import Any
 import docker
 from docker.errors import DockerException, ImageNotFound, NotFound
 
-from niuu.ports.realm_repository import RealmRepository
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.local_resident_storage import (
     LOCAL_PLATFORM_ACCESS_TOKEN,
@@ -32,7 +31,6 @@ from volundr.adapters.outbound.resident_container_spec import (
     materialize_resident_container,
     resident_flock_environment,
     resident_flock_labels,
-    resident_flock_profile_configured,
     resident_profile_values,
     resident_runtime_section,
     runtime_processes_from_values,
@@ -64,7 +62,6 @@ DEFAULT_SERVICE_PORT = 9200
 DEFAULT_READY_TIMEOUT = 180.0
 DEFAULT_READY_POLL_INTERVAL = 1.0
 DEFAULT_STOP_TIMEOUT = 15
-DEFAULT_SANDBOX_COMMAND = ("/usr/local/bin/openshell-run-installed-skuld",)
 MANAGED_BY_LABEL = "volundr.niuu.io/managed-by"
 RUNTIME_ID_LABEL = "volundr.niuu.io/resident"
 SPEC_HASH_LABEL = "volundr.niuu.io/spec-hash"
@@ -84,33 +81,26 @@ class LocalContainerResidentRuntimeController(
         residents_dir: str = DEFAULT_RESIDENTS_DIR,
         host_home_dir: str = "~",
         mount_agent_credentials: bool = True,
-        volundr_api_url: str = "http://host.docker.internal:8080",
         default_image: str = "",
         service_port: int = DEFAULT_SERVICE_PORT,
         service_name: str = "skuld",
-        sandbox_command: list[str] | tuple[str, ...] | None = None,
         ready_timeout: float = DEFAULT_READY_TIMEOUT,
         ready_poll_interval: float = DEFAULT_READY_POLL_INTERVAL,
         stop_timeout: int = DEFAULT_STOP_TIMEOUT,
         retain_data_on_delete: bool = False,
         docker_base_url: str = "",
-        **_extra: object,
     ) -> None:
         self._residents_dir = Path(residents_dir).expanduser().resolve()
         self._host_home_dir = Path(host_home_dir).expanduser().resolve()
         self._mount_agent_credentials = bool(mount_agent_credentials)
-        self._volundr_api_url = volundr_api_url.rstrip("/")
         self._default_image = default_image
         self._service_port = int(service_port)
         self._service_name = service_name
-        self._sandbox_command = tuple(sandbox_command or DEFAULT_SANDBOX_COMMAND)
         self._ready_timeout = float(ready_timeout)
         self._ready_poll_interval = float(ready_poll_interval)
         self._stop_timeout = int(stop_timeout)
         self._retain_data_on_delete = bool(retain_data_on_delete)
         self._credential_store: CredentialStorePort | None = None
-        self._skuld_registry: Any | None = None
-        self._realm_repository: RealmRepository | None = None
         try:
             self._client = (
                 docker.DockerClient(base_url=docker_base_url)
@@ -120,9 +110,7 @@ class LocalContainerResidentRuntimeController(
         except DockerException as exc:
             raise RuntimeError(
                 f"Local container residents cannot reach the Docker Engine ({exc}). Start "
-                "Docker, or configure a resident runtime that does not need it: niuu mini "
-                "mode runs Ravn residents as host processes unless ~/.niuu/config.yaml sets "
-                "residents.runtime: docker."
+                "Docker, or configure a resident runtime that does not need it."
             ) from exc
 
     @property
@@ -132,18 +120,6 @@ class LocalContainerResidentRuntimeController(
     def set_credential_store(self, store: CredentialStorePort) -> None:
         self._credential_store = store
 
-    def set_skuld_registry(self, registry: Any) -> None:
-        self._skuld_registry = registry
-
-    def set_realm_repository(self, repository: RealmRepository) -> None:
-        """Enable resolving a resident's realm slug for its container config.
-
-        Optional: without it, deploying a resident with ``realm_id`` set
-        raises in ``_resolve_realm_slug`` rather than silently deploying with
-        no realm/charter binding.
-        """
-        self._realm_repository = repository
-
     def supports(self, profile: ResidentDeploymentProfile) -> bool:
         if profile.backend is not ResidentBackend.LOCAL:
             return False
@@ -151,10 +127,6 @@ class LocalContainerResidentRuntimeController(
             values = resident_profile_values(profile.id, profile.deployment)
             if not values.get("image") and not self._default_image:
                 return False
-            if not resident_flock_profile_configured(profile, values):
-                return False
-            if profile.engine is ResidentEngine.RAVN:
-                return True
             if profile.engine not in {ResidentEngine.OPENCLAW, ResidentEngine.HERMES}:
                 return False
             return resident_runtime_section(values).get("processMode") == "replace" and bool(
@@ -315,7 +287,6 @@ class LocalContainerResidentRuntimeController(
         if not self._retain_data_on_delete:
             await asyncio.to_thread(shutil.rmtree, self._runtime_root(runtime).parent, True)
         await self._delete_machine_credentials(runtime)
-        self._unregister_skuld(runtime)
         return existed
 
     async def logs(
@@ -386,38 +357,9 @@ class LocalContainerResidentRuntimeController(
             default_image=self._default_image,
             default_service_name=self._service_name,
             default_service_port=self._service_port,
-            volundr_api_url=self._volundr_api_url,
-            sandbox_command=self._sandbox_command,
-            realm_slug=await self._resolve_realm_slug(runtime),
         )
 
-    async def _resolve_realm_slug(self, runtime: ResidentRuntime) -> str:
-        """Return the slug of the realm this resident is bound to, or "".
-
-        A configured ``realm_id`` whose realm no longer resolves is a real
-        misconfiguration (the realm was deleted out from under a resident
-        that still names it) and fails loudly rather than deploying with a
-        silently dropped charter/realm binding.
-        """
-        if runtime.realm_id is None:
-            return ""
-        if self._realm_repository is None:
-            raise RuntimeError(
-                f"resident {runtime.name!r} has realm_id={runtime.realm_id} but this "
-                "controller has no realm repository configured; call set_realm_repository "
-                "at composition time."
-            )
-        realm = await self._realm_repository.get_realm(runtime.realm_id)
-        if realm is None:
-            raise RuntimeError(
-                f"resident {runtime.name!r} names realm_id={runtime.realm_id}, but no "
-                "such realm exists; clear the resident's realm binding or restore the realm."
-            )
-        return realm.slug
-
     async def _machine_environment(self, runtime: ResidentRuntime) -> dict[str, str]:
-        if runtime.engine is ResidentEngine.RAVN:
-            return {}
         if self._credential_store is None:
             raise RuntimeError(f"{runtime.engine.value} residents require a credential store")
         if runtime.engine is ResidentEngine.OPENCLAW:
@@ -508,15 +450,7 @@ class LocalContainerResidentRuntimeController(
         state = _observed_state(container.status)
         ready = state is ResidentObservedState.ACTIVE and bool(host_port)
         endpoints: list[ResidentEndpoint] = []
-        if ready and runtime.engine is ResidentEngine.RAVN:
-            endpoints.append(
-                ResidentEndpoint(
-                    kind="chat",
-                    protocol="skuld-v1",
-                    url=f"/s/{runtime.id}/session",
-                )
-            )
-        elif ready:
+        if ready:
             protocol = (
                 "openclaw-gateway-v4"
                 if runtime.engine is ResidentEngine.OPENCLAW
@@ -551,25 +485,7 @@ class LocalContainerResidentRuntimeController(
                 )
             ],
         )
-        self._sync_skuld_registration(runtime, observation)
         return observation
-
-    def _sync_skuld_registration(
-        self,
-        runtime: ResidentRuntime,
-        observation: ResidentRuntimeObservation,
-    ) -> None:
-        if self._skuld_registry is None or runtime.engine is not ResidentEngine.RAVN:
-            return
-        host_port = int(observation.backend_ref.get("host_port") or 0)
-        if observation.observed_state is ResidentObservedState.ACTIVE and host_port:
-            self._skuld_registry.register(str(runtime.id), host_port)
-        else:
-            self._unregister_skuld(runtime)
-
-    def _unregister_skuld(self, runtime: ResidentRuntime) -> None:
-        if self._skuld_registry is not None and runtime.engine is ResidentEngine.RAVN:
-            self._skuld_registry.unregister(str(runtime.id))
 
     def _get_container(self, runtime: ResidentRuntime) -> Any | None:
         try:

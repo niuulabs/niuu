@@ -27,7 +27,6 @@ from volundr.adapters.outbound.contributors.workflow_execution_credentials impor
     WorkflowExecutionCredentialContributor,
 )
 from volundr.config import ALLOW_ALL_IDENTITY_ADAPTERS, Settings
-from volundr.domain.models import ResidentBackend, ResidentEngine
 from volundr.domain.ports import (
     ArchiveStorePort,
     AuthorizationPort,
@@ -38,7 +37,6 @@ from volundr.domain.ports import (
     GatewayPort,
     IntegrationRepository,
     PodManager,
-    ResidentOpenClawShimHost,
     ResidentRuntimeController,
     ResidentSessionController,
     ResourceProvider,
@@ -569,10 +567,7 @@ def _create_resident_session_controllers(
     runtime_controllers: list[ResidentRuntimeController],
     credential_store: CredentialStorePort,
 ) -> list[ResidentSessionController]:
-    """Create configured engine adapters against their owning runtime backend.
-
-    Plus the default Ravn session controllers (``_default_ravn_session_controllers``).
-    """
+    """Create configured engine adapters against their owning runtime backend."""
     controllers_by_backend = {controller.backend: controller for controller in runtime_controllers}
     session_controllers: list[ResidentSessionController] = []
     for config in settings.resident_runtimes.session_controllers:
@@ -598,59 +593,7 @@ def _create_resident_session_controllers(
             )
         session_controllers.append(instance)
         logger.info("Resident session controller: %s", config.adapter.rsplit(".", 1)[-1])
-    session_controllers.extend(
-        _default_ravn_session_controllers(
-            settings,
-            runtime_controllers,
-            session_controllers,
-            credential_store,
-        )
-    )
     return session_controllers
-
-
-def _ravn_session_hosts(
-    settings: Settings,
-    runtime_controllers: list[ResidentRuntimeController],
-    configured_backends: set[ResidentBackend | None],
-) -> list[ResidentRuntimeController]:
-    """The shim-hosting backends that get a default Ravn session controller."""
-    if not settings.resident_runtimes.ravn_sessions_enabled or None in configured_backends:
-        return []
-    return [
-        controller
-        for controller in runtime_controllers
-        if isinstance(controller, ResidentOpenClawShimHost)
-        and controller.backend not in configured_backends
-    ]
-
-
-def _default_ravn_session_controllers(
-    settings: Settings,
-    runtime_controllers: list[ResidentRuntimeController],
-    configured: list[ResidentSessionController],
-    credential_store: CredentialStorePort,
-) -> list[ResidentSessionController]:
-    """Ravn sessions on every backend that hosts the Ravn OpenClaw shim.
-
-    A Ravn resident's sessions ("channels") need no per-cluster wiring and no
-    secret: each shim-hosting backend gets a RavnResidentSessionController unless
-    session_controllers already names a Ravn controller for it, which wins. Each
-    resident's shim token is its own, kept in the credential store.
-    """
-    from volundr.adapters.outbound.ravn_gateway import RavnResidentSessionController
-
-    wired = {
-        controller.runtime_backend
-        for controller in configured
-        if controller.engine is ResidentEngine.RAVN
-    }
-    hosts = _ravn_session_hosts(settings, runtime_controllers, wired)
-    defaults: list[ResidentSessionController] = []
-    for controller in hosts:
-        defaults.append(RavnResidentSessionController(controller, credential_store))
-        logger.info("Resident session controller: Ravn on %s (default)", controller.backend.value)
-    return defaults
 
 
 def _runtime_backend(settings: Settings, pod_manager: PodManager) -> str:
@@ -866,14 +809,7 @@ def _create_contributors(
 
     # Always wire the prompt contributor so system_prompt/initial_prompt
     # from the launch request (or dispatch) are injected into the spec.
-    from volundr.adapters.outbound.contributors.notification_channels import (
-        NotificationChannelContributor,
-    )
     from volundr.adapters.outbound.contributors.prompt import PromptContributor
-
-    if not _has_contributor("notification_channels"):
-        contributors.append(NotificationChannelContributor(**ports))
-        logger.info("Session contributor: notification_channels (auto-wired)")
 
     persona_provider = ports.get("persona_provider")
     if persona_provider is not None and not _has_contributor("persona"):
@@ -884,24 +820,7 @@ def _create_contributors(
 
     contributors.append(PromptContributor())
 
-    # Auto-wire RavnFlockContributor so ravn_flock workloads spawn
-    # multi-sidecar sessions (locally via ravn flock init/start).
-    from volundr.adapters.outbound.contributors.ravn_flock import RavnFlockContributor
     from volundr.adapters.outbound.contributors.session_mcp import SessionMCPContributor
-
-    if not _has_contributor("ravn_flock"):
-        ravn_kwargs = dict(ports)
-        if settings.ravn_flock_image:
-            ravn_kwargs["ravn_image"] = settings.ravn_flock_image
-        if settings.ravn_flock_init_writer_image:
-            ravn_kwargs["init_writer_image"] = settings.ravn_flock_init_writer_image
-        if settings.ravn_flock_llm_config:
-            ravn_kwargs["default_llm_config"] = settings.ravn_flock_llm_config
-        ravn_kwargs["llm_config_by_definition"] = settings.ravn_flock_llm_config_by_definition
-        ravn_kwargs["session_definitions"] = settings.session_definitions
-        ravn_kwargs["default_definition"] = settings.default_definition
-        contributors.append(RavnFlockContributor(**ravn_kwargs))
-        logger.info("Session contributor: ravn_flock (auto-wired)")
 
     if not _has_contributor("session_mcp"):
         contributors.append(SessionMCPContributor(**ports))

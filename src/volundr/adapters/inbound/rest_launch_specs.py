@@ -12,11 +12,11 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Path, Query, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 from volundr.config import SessionDefinitionConfig
-from volundr.domain.models import LaunchScope, LaunchSpec
+from volundr.domain.models import LaunchScope, LaunchSpec, require_workload_type_available
 from volundr.domain.services.launch_spec import (
     LaunchSpecDuplicateNameError,
     LaunchSpecNotFoundError,
@@ -56,6 +56,11 @@ class LaunchSpecCreate(BaseModel):
     workspace_layout: dict = Field(default_factory=dict)
     workload_config: dict = Field(default_factory=dict)
 
+    @field_validator("workload_type")
+    @classmethod
+    def _workload_type_still_exists(cls, value: str) -> str:
+        return require_workload_type_available(value)
+
 
 class LaunchSpecUpdate(BaseModel):
     """Request body for updating a user-scope launch spec (all optional)."""
@@ -83,6 +88,13 @@ class LaunchSpecUpdate(BaseModel):
     setup_scripts: list[str] | None = None
     workspace_layout: dict | None = None
     workload_config: dict | None = None
+
+    @field_validator("workload_type")
+    @classmethod
+    def _workload_type_still_exists(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return require_workload_type_available(value)
 
 
 class SessionDefinitionResponse(BaseModel):

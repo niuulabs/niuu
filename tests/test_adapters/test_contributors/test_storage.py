@@ -136,15 +136,15 @@ class TestStorageContributor:
         storage.create_session_workspace.return_value = PVCRef(name="ws-pvc")
         storage.get_workspace_by_session.return_value = None
         contributor = StorageContributor(
-            storage=storage, home_excluded_workload_types=["ravn_flock"], home_colocate=True
+            storage=storage, home_excluded_workload_types=["batch"], home_colocate=True
         )
 
         result = await contributor.contribute(
-            session.model_copy(update={"workload_type": "ravn_flock"}), SessionContext()
+            session.model_copy(update={"workload_type": "batch"}), SessionContext()
         )
 
         # Explicitly off: valhalla's session defaults enable the home volume,
-        # and without a claim every flock pod failed Deployment admission.
+        # and without a claim every pod of an excluded workload type failed Deployment admission.
         assert result.values["homeVolume"] == {"enabled": False}
         assert "affinity" not in result.values
         assert result.values["persistence"]["existingClaim"] == "ws-pvc"
@@ -156,7 +156,7 @@ class TestStorageContributor:
         storage.provision_user_storage.return_value = PVCRef(name="home-pvc")
         storage.get_workspace_by_session.return_value = None
         contributor = StorageContributor(
-            storage=storage, home_excluded_workload_types=["ravn_flock"], home_colocate=True
+            storage=storage, home_excluded_workload_types=["batch"], home_colocate=True
         )
 
         result = await contributor.contribute(session, SessionContext())

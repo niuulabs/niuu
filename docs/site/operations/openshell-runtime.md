@@ -108,12 +108,10 @@ sandbox policy must allow `/mimir/local` when that capability is configured. The
 driver makes each peer's entrypoint OpenShell's subordinate runtime
 (`openshell-sandbox peer`), which applies the sandbox's Landlock, seccomp and
 network mediation to the persona's command, so peers add no isolation boundary
-of their own. Set `volundr.ravnFlockImage` (service configuration:
-`ravn_flock_image`) to a pinned image containing Niuu and Python.
+of their own. The image comes from the launch that declares the peer.
 
-The contributor emits `openshell.workloads`, `openshell.volumes`, and
-`openshell.volumeMounts`; Völundr maps them to the Kubernetes driver
-configuration and checks them against the driver's rules before it creates the
+Völundr maps `openshell.workloads`, `openshell.volumes`, and
+`openshell.volumeMounts` to the Kubernetes driver configuration and checks them against the driver's rules before it creates the
 sandbox (`volundr.adapters.outbound.openshell_contract`):
 
 - A peer carries exactly `name`, `image`, `command`, `environment`, `resources`

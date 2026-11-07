@@ -23,11 +23,6 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import IO, Any
 
-from volundr.adapters.outbound.flux import (
-    LABEL_RESIDENT_ID,
-    LABEL_RESIDENT_OWNER_ID,
-    LABEL_RESIDENT_TENANT_ID,
-)
 from volundr.adapters.outbound.k8s_storage_adapter import _storage_bytes, build_pvc_manifest
 from volundr.domain.models import (
     LABEL_MANAGED_BY,
@@ -37,6 +32,13 @@ from volundr.domain.models import (
 )
 
 MANAGED_BY = "volundr"
+LABEL_RESIDENT_ID = "niuu.world/resident-id"
+# Deliberately not volundr/owner: the resident pod does not carry that label
+# (Valhalla's session podAffinity co-locates a user's skuld pods by it), so an
+# owner-labelled claim would fail the PVC isolation policy (charts/volundr
+# kyverno-pvc-isolation.yaml).
+LABEL_RESIDENT_OWNER_ID = "niuu.world/owner-id"
+LABEL_RESIDENT_TENANT_ID = "niuu.world/tenant-id"
 #: Not "workspace": that is the session workspaces K8sStorageAdapter lists and manages.
 RESIDENT_WORKSPACE_PVC_TYPE = "resident-workspace"
 WORKSPACE_VOLUME_SETTINGS = frozenset({"storageClass", "size", "accessMode"})

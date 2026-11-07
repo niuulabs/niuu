@@ -1265,67 +1265,16 @@ def test_jira_catalog_supports_api_tokens_and_oauth_authorization_code():
     assert "offline_access" in jira.oauth.scopes
 
 
-def test_ravn_flock_llm_config_loads_from_the_shared_config_file(monkeypatch, tmp_path):
-    """Mini mode: Volundr reads its own key from the file Ting also reads."""
-    config_file = tmp_path / "config.yaml"
-    config_file.write_text(
-        """
-dispatch:
-  flock:
-    llm_config:
-      model: ting/dispatch-model
-ravn_flock_llm_config:
-  model: Qwen/Qwen3.8-27B
-  max_tokens: 8192
-  provider:
-    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
-    kwargs:
-      base_url: https://vllm.example.test
-"""
-    )
-    _clear_settings_env(monkeypatch)
-    monkeypatch.setenv("NIUU_CONFIG", str(config_file))
-
-    settings = Settings()
-
-    assert settings.ravn_flock_llm_config["model"] == "Qwen/Qwen3.8-27B"
-    assert settings.ravn_flock_llm_config["provider"]["kwargs"] == {
-        "base_url": "https://vllm.example.test"
-    }
-
-
-def test_ravn_flock_llm_config_defaults_to_no_forge_default(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    _clear_settings_env(monkeypatch)
-
-    assert Settings().ravn_flock_llm_config == {}
-
-
-def test_ravn_flock_llm_config_rejects_a_block_ravn_cannot_load():
+def test_a_launch_spec_for_the_removed_ravn_flock_workload_is_refused_at_startup():
     import pytest
 
-    with pytest.raises(ValueError, match="max_tokens"):
-        Settings(ravn_flock_llm_config={"model": "Qwen/Qwen3.8-27B", "max_tokens": "lots"})
+    with pytest.raises(ValueError, match="workload type ravn_flock was removed") as caught:
+        Settings(launch_specs=[{"name": "flock", "workload_type": "ravn_flock"}])
+
+    assert "workflow steps will run on harness sessions (NIU-1198)" in str(caught.value)
 
 
-def test_ravn_flock_llm_config_by_definition_names_known_definitions():
-    import pytest
+def test_a_launch_spec_for_a_custom_workload_type_is_accepted():
+    settings = Settings(launch_specs=[{"name": "batch", "workload_type": "batch"}])
 
-    settings = Settings(
-        ravn_flock_llm_config_by_definition={"skuldCodex": {"model": "gpt-5.6-terra"}}
-    )
-    assert settings.ravn_flock_llm_config_by_definition["skuldCodex"]["model"] == "gpt-5.6-terra"
-
-    with pytest.raises(ValueError, match="unknown session definition"):
-        Settings(ravn_flock_llm_config_by_definition={"skuldCodx": {"model": "gpt-5.6-terra"}})
-
-
-def test_ravn_flock_llm_config_by_definition_rejects_a_block_ravn_cannot_load():
-    import pytest
-
-    with pytest.raises(ValueError, match="max_tokens"):
-        Settings(
-            ravn_flock_llm_config_by_definition={
-                "skuldCodex": {"model": "gpt-5.6-terra", "max_tokens": "lots"}
-            }
-        )
+    assert [spec.workload_type for spec in settings.launch_specs] == ["batch"]

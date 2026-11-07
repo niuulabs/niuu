@@ -144,10 +144,6 @@ from volundr.adapters.outbound.postgres_tokens import PostgresTokenTracker
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.adapters.outbound.resident_flock import ResidentFlockAdapter
-from volundr.adapters.outbound.resident_notification_relay import (
-    RelaySettings,
-    ResidentNotificationRelay,
-)
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
 from volundr.app_shell import build_app_shell
 from volundr.artifact_runtime import (
@@ -320,32 +316,6 @@ async def _refresh_bifrost_catalog(
             retry_max_seconds=retry_max_seconds,
         )
         await asyncio.sleep(interval_seconds)
-
-
-def _create_resident_notification_relay(
-    settings: Settings,
-    repository: Any,
-    session_controllers: list[Any],
-    notification_service: NotificationService | None,
-) -> ResidentNotificationRelay | None:
-    """Follow residents' notification outboxes into the feed (``resident_runtimes.notifications``).
-
-    Off with the feed itself: there is nowhere to record them without it.
-    """
-    config = settings.resident_runtimes.notifications
-    if notification_service is None or not config.enabled:
-        return None
-    return ResidentNotificationRelay(
-        repository,
-        session_controllers,
-        notification_service,
-        RelaySettings(
-            batch_size=config.batch_size,
-            idle_resync_seconds=config.idle_resync_seconds,
-            reconnect_initial_seconds=config.reconnect_initial_seconds,
-            reconnect_max_seconds=config.reconnect_max_seconds,
-        ),
-    )
 
 
 async def _retire_unserved_push_rules(
@@ -616,7 +586,6 @@ async def _reconcile_resident_runtimes_loop(
     *,
     interval_seconds: float,
     flock_adapter: ResidentFlockAdapter | None = None,
-    notification_relay: ResidentNotificationRelay | None = None,
 ) -> None:
     """Converge durable resident records with backend state, starting at once.
 
@@ -635,8 +604,6 @@ async def _reconcile_resident_runtimes_loop(
             await service.reconcile_all()
             if flock_adapter is not None:
                 await flock_adapter.sync()
-            if notification_relay is not None:
-                await notification_relay.sync()
         except asyncio.CancelledError:
             logger.info("Resident runtime reconcile loop cancelled")
             break
@@ -942,10 +909,6 @@ def create_app(
             skuld_reg = skuld_registry
             if skuld_reg is not None and hasattr(pod_manager, "set_skuld_registry"):
                 pod_manager.set_skuld_registry(skuld_reg)
-            if skuld_reg is not None:
-                for controller in resident_controllers:
-                    if hasattr(controller, "set_skuld_registry"):
-                        controller.set_skuld_registry(skuld_reg)
 
             if skuld_reg is None:
                 # Standalone deployment (K8s / bare uvicorn): no CLI root app
@@ -1338,8 +1301,6 @@ def create_app(
                 if sleipnir_bus is not None
                 else None
             )
-            if hasattr(pod_manager, "set_persona_registry"):
-                pod_manager.set_persona_registry(persona_registry)
 
             # Integration registry + repository
             from volundr.domain.services.integration_registry import (
@@ -1408,13 +1369,6 @@ def create_app(
             )
             notification_service, notification_image_worker = notification_feed or (None, None)
             app.state.notification_service = notification_service
-            resident_notification_relay = _create_resident_notification_relay(
-                settings,
-                resident_runtime_repository,
-                resident_session_controllers,
-                notification_service,
-            )
-            app.state.resident_notification_relay = resident_notification_relay
             app.state.notification_image_worker = notification_image_worker
             notification_delivery = _create_notification_delivery(
                 settings,
@@ -2072,12 +2026,6 @@ def create_app(
                     stream_interval_seconds=settings.realm_detail_stream_interval_seconds,
                 )
             )
-            # Let resident deployment controllers resolve a resident's realm slug
-            # (for realm_slug/charter binding in the rendered container config).
-            for controller in resident_controllers:
-                if hasattr(controller, "set_realm_repository"):
-                    controller.set_realm_repository(realm_repository)
-
             git_router = create_git_router(
                 git_workflow_service,
                 prefix="/api/v1/forge",
@@ -2399,7 +2347,6 @@ def create_app(
                     resident_runtime_service,
                     interval_seconds=settings.resident_runtimes.reconciliation_interval_seconds,
                     flock_adapter=resident_flock_adapter,
-                    notification_relay=resident_notification_relay,
                 )
             )
             if notification_delivery is not None:
@@ -2497,8 +2444,6 @@ def create_app(
                     pass
                 if resident_flock_adapter is not None:
                     await resident_flock_adapter.stop()
-                if resident_notification_relay is not None:
-                    await resident_notification_relay.stop()
                 await resident_runtime_service.close()
                 await event_ingestion.close_all()
                 if settings.compute is None and hasattr(pod_manager, "close"):

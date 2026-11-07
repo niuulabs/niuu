@@ -382,7 +382,7 @@ identity, workspace attachment, Git checkout, configured integrations and
 short-lived workload credentials through existing identity ports where possible.
 Define token renewal and cleanup for sessions longer than token lifetime.
 
-Audit storage, secrets, workload identity, resources and Ravn-flock contributors
+Audit storage, secrets, workload identity and resources contributors
 against the VM contract. `composition_builders._runtime_backend()` currently
 uses adapter-name inference and defaults to Kubernetes; make VM backend identity
 explicit through configuration/adapter metadata rather than another name test.

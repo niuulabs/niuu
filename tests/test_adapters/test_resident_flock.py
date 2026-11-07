@@ -1,4 +1,4 @@
-"""Resident session controllers participating in the Ravn mesh."""
+"""Resident session controllers participating in the flock mesh."""
 
 from __future__ import annotations
 
@@ -608,24 +608,3 @@ async def test_stop_cancels_running_native_reaction() -> None:
 
     assert reaction.status == "cancelled"
     assert reaction.connection is None
-
-
-class _RavnController(_Controller):
-    engine = ResidentEngine.RAVN
-
-
-async def test_ravn_residents_are_not_bridged_onto_the_flock_mesh() -> None:
-    """A Ravn resident is its own mesh peer; bridging it would join its peer id twice."""
-    runtime = _runtime(flock_id=uuid4()).model_copy(
-        update={
-            "engine": ResidentEngine.RAVN,
-            "backend": ResidentBackend.HELMRELEASE,
-            "profile_id": "ravn-helm",
-        }
-    )
-    resident = ResidentFlockAdapter(_Repository(runtime), [_RavnController()], InProcessBus())
-
-    await resident.sync()
-
-    assert resident._peers == {}
-    await resident.stop()

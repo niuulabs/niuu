@@ -386,6 +386,29 @@ class TestCreateSession:
         )
         assert response.status_code == 422
 
+    def test_create_session_refuses_the_removed_ravn_flock_workload(
+        self, client: TestClient, pod_manager: MockPodManager
+    ):
+        """A removed workload type is a 422 naming the replacement, never a plain session."""
+        response = client.post(
+            "/api/v1/forge/sessions",
+            json={
+                "name": "flock",
+                "model": "claude-sonnet-4",
+                "source": {"type": "git", "repo": "https://github.com/org/repo", "branch": "main"},
+                "workload_type": "ravn_flock",
+            },
+        )
+        assert response.status_code == 422
+        assert (
+            "workload type ravn_flock was removed: workflow steps will run on "
+            "harness sessions (NIU-1198)"
+        ) in response.text
+        assert pod_manager.start_calls == []
+        listed = client.get("/api/v1/forge/sessions").json()
+        items = listed if isinstance(listed, list) else listed.get("items", [])
+        assert "flock" not in [s["name"] for s in items]
+
     def test_create_session_missing_field(self, client: TestClient):
         """Returns 422 for missing required field (name)."""
         response = client.post(
@@ -396,6 +419,25 @@ class TestCreateSession:
             },
         )
         assert response.status_code == 422
+
+    async def test_start_refuses_a_stored_ravn_flock_session(
+        self, client: TestClient, service: SessionService, pod_manager: MockPodManager
+    ):
+        session = await service.create_session(
+            "Flock",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        await service._repository.update(session.model_copy(update={"workload_type": "ravn_flock"}))
+
+        response = client.post(f"/api/v1/forge/sessions/{session.id}/start")
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == (
+            "workload type ravn_flock was removed: workflow steps will run on "
+            "harness sessions (NIU-1198)"
+        )
+        assert pod_manager.start_calls == []
 
     @pytest.mark.parametrize(
         ("error", "expected_status", "expected_detail"),
@@ -1435,13 +1477,13 @@ class TestSessionLogAggregationProxy:
         tmp_path,
     ) -> None:
         workspace = tmp_path / "workspace"
-        flock_logs = workspace / ".flock" / "logs"
-        flock_logs.mkdir(parents=True)
+        service_logs = workspace / ".services" / "logs"
+        service_logs.mkdir(parents=True)
         (workspace / ".skuld.log").write_text(
             "2026-05-01 15:19:48,121 - skuld.broker - INFO - Starting Skuld broker\n",
             encoding="utf-8",
         )
-        (flock_logs / "coder.log").write_text(
+        (service_logs / "coder.log").write_text(
             "2026-05-01 15:19:58,326 ravn.drive_loop ERROR "
             "drive_loop: task failed after 3 retries\n",
             encoding="utf-8",
@@ -1481,9 +1523,9 @@ class TestSessionLogAggregationProxy:
         assert data["session_id"] == str(session.id)
         assert {participant["id"] for participant in data["available_participants"]} == {
             "skuld",
-            "coder",
+            "service:coder",
         }
-        assert [line["participant"] for line in data["lines"]] == ["skuld", "coder"]
+        assert [line["participant"] for line in data["lines"]] == ["skuld", "service:coder"]
 
     @pytest.mark.asyncio
     async def test_get_conversation_falls_back_to_local_workspace_without_archive_service(

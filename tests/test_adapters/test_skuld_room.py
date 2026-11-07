@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 import httpx
+import pytest
 import respx
 
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
@@ -92,6 +93,21 @@ async def test_list_room_participants_uses_internal_skuld_endpoint():
 
     assert participants[0].peer_id == "peer-coder"
     assert participants[0].persona == "coder"
+
+
+@respx.mock
+async def test_list_room_participants_refuses_a_participant_without_a_type():
+    session = _session()
+    respx.get(f"http://127.0.0.1:8080/s/{session.id}/api/room/participants").mock(
+        return_value=httpx.Response(
+            200,
+            json={"participants": [{"peer_id": "peer-coder", "persona": "coder"}]},
+        )
+    )
+    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+
+    with pytest.raises(ValueError, match="peer-coder.*participant_type"):
+        await adapter.list_room_participants(session.id)
 
 
 @respx.mock

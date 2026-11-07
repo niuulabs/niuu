@@ -112,9 +112,6 @@ spec:
                   name: {{ .Values.pat.issuerSecretName }}
                   key: {{ .Values.pat.issuerSecretKey | default "client-secret" }}
             {{- end }}
-            # Ravn residents' sessions by default (resident_runtimes.ravn_sessions_enabled)
-            - name: RESIDENT_RUNTIMES__RAVN_SESSIONS_ENABLED
-              value: {{ .Values.ravnResidentSessions.enabled | quote }}
             {{- if and .Values.workloadIdentity .Values.workloadIdentity.signingKey.existingSecret }}
             - name: NIUU_WORKLOAD_IDENTITY_SIGNING_KEY
               valueFrom:

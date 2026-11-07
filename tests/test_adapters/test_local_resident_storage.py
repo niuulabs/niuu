@@ -26,7 +26,7 @@ def test_sandbox_paths_map_onto_the_durable_resident_layout(tmp_path: Path) -> N
         root / "workspace" / "project" / "file.txt"
     )
     assert host_runtime_path(root, "/sandbox/workspace") == root / "workspace"
-    assert host_runtime_path(root, "/sandbox/.volundr/skuld.yaml") == root / "config" / "skuld.yaml"
+    assert host_runtime_path(root, "/sandbox/.volundr/agent.yaml") == root / "config" / "agent.yaml"
     assert host_runtime_path(root, "/sandbox/.codex") == root / "home" / ".codex"
     with pytest.raises(RuntimeError, match="not backed"):
         host_runtime_path(root, "/tmp/file")
@@ -37,9 +37,9 @@ def test_sandbox_paths_map_onto_the_durable_resident_layout(tmp_path: Path) -> N
 def test_resident_files_are_written_privately(tmp_path: Path) -> None:
     root = tmp_path / "sandbox"
 
-    write_resident_files(root, {"/sandbox/.volundr/ravn.yaml": b"persona: steward\n"})
+    write_resident_files(root, {"/sandbox/.volundr/agent.yaml": b"persona: steward\n"})
 
-    written = root / "config" / "ravn.yaml"
+    written = root / "config" / "agent.yaml"
     assert written.read_bytes() == b"persona: steward\n"
     assert written.stat().st_mode & 0o777 == 0o600
     assert (root / "workspace").is_dir()

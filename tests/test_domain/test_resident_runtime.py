@@ -189,7 +189,7 @@ class ProxyResidentRuntimeController(
 
 
 class MemoryResidentSessionController(ResidentSessionController):
-    engine = ResidentEngine.RAVN
+    engine = ResidentEngine.OPENCLAW
 
     def __init__(self) -> None:
         self.sessions: dict[UUID, ResidentSession] = {}
@@ -263,10 +263,10 @@ def _profiles() -> ConfigResidentDeploymentProfileProvider:
     return ConfigResidentDeploymentProfileProvider(
         [
             ResidentProfileConfig(
-                id="ravn-openshell",
-                display_name="Ravn on OpenShell",
+                id="openclaw-openshell",
+                display_name="OpenClaw on OpenShell",
                 backend=ResidentBackend.OPENSHELL,
-                engine=ResidentEngine.RAVN,
+                engine=ResidentEngine.OPENCLAW,
                 capabilities=[
                     ResidentCapability.CHAT,
                     ResidentCapability.LOGS,
@@ -281,7 +281,7 @@ def _profiles() -> ConfigResidentDeploymentProfileProvider:
                 enabled=False,
                 display_name="Disabled",
                 backend=ResidentBackend.HELMRELEASE,
-                engine=ResidentEngine.RAVN,
+                engine=ResidentEngine.OPENCLAW,
             ),
         ]
     )
@@ -291,10 +291,10 @@ def _session_profiles() -> ConfigResidentDeploymentProfileProvider:
     return ConfigResidentDeploymentProfileProvider(
         [
             ResidentProfileConfig(
-                id="ravn-native",
-                display_name="Native Ravn",
+                id="openclaw-native",
+                display_name="Native OpenClaw",
                 backend=ResidentBackend.OPENSHELL,
-                engine=ResidentEngine.RAVN,
+                engine=ResidentEngine.OPENCLAW,
                 capabilities=[
                     ResidentCapability.CHAT,
                     ResidentCapability.SESSION_LIST,
@@ -323,7 +323,7 @@ def test_profiles_resolve_model_options_from_bifrost_catalog() -> None:
                 id="codex",
                 display_name="Codex",
                 backend=ResidentBackend.OPENSHELL,
-                engine=ResidentEngine.RAVN,
+                engine=ResidentEngine.OPENCLAW,
                 default_model="gpt-5.6-sol",
                 catalog_vendors=["openai"],
             ),
@@ -385,7 +385,7 @@ def test_profiles_fail_closed_until_default_model_is_available() -> None:
                 id="codex",
                 display_name="Codex",
                 backend=ResidentBackend.OPENSHELL,
-                engine=ResidentEngine.RAVN,
+                engine=ResidentEngine.OPENCLAW,
                 default_model="gpt-5.6-sol",
                 catalog_vendors=["openai"],
             )
@@ -412,18 +412,18 @@ async def test_create_record_derives_identity_and_runtime_from_profile(runtime_s
     runtime = await service.create_record(
         _principal(),
         name="Muninn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
         persona_name="product-steward",
         flock_id=flock_id,
         flock_member_id=member_id,
         flock_role="coordinator",
-        flock_peer_id="ravn-coordinator",
+        flock_peer_id="openclaw-coordinator",
     )
 
     assert runtime.owner_id == "user-a"
     assert runtime.tenant_id == "tenant-a"
     assert runtime.backend is ResidentBackend.OPENSHELL
-    assert runtime.engine is ResidentEngine.RAVN
+    assert runtime.engine is ResidentEngine.OPENCLAW
     assert runtime.model == "gpt-5.6"
     assert runtime.capabilities == [
         ResidentCapability.CHAT,
@@ -433,7 +433,7 @@ async def test_create_record_derives_identity_and_runtime_from_profile(runtime_s
     assert runtime.flock_id == flock_id
     assert runtime.flock_member_id == member_id
     assert runtime.flock_role == "coordinator"
-    assert runtime.flock_peer_id == "ravn-coordinator"
+    assert runtime.flock_peer_id == "openclaw-coordinator"
 
 
 async def test_create_record_persists_the_realm_binding(runtime_service) -> None:
@@ -443,7 +443,7 @@ async def test_create_record_persists_the_realm_binding(runtime_service) -> None
     runtime = await service.create_record(
         _principal(),
         name="Realm resident",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
         persona_name="realm-workshop",
         realm_id=realm_id,
     )
@@ -472,7 +472,7 @@ async def test_create_record_rejects_unknown_realm_when_repository_is_configured
         await service.create_record(
             _principal(),
             name="Realm resident",
-            profile_id="ravn-openshell",
+            profile_id="openclaw-openshell",
             realm_id=uuid4(),
         )
 
@@ -496,7 +496,7 @@ async def test_create_record_accepts_a_realm_the_repository_resolves() -> None:
     runtime = await service.create_record(
         _principal(),
         name="Realm resident",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
         realm_id=resolved_realm_id,
     )
     assert runtime.realm_id == resolved_realm_id
@@ -520,7 +520,7 @@ async def test_create_record_rejects_a_realm_in_another_tenant() -> None:
         await service.create_record(
             _principal(tenant_id="tenant-a"),
             name="Realm resident",
-            profile_id="ravn-openshell",
+            profile_id="openclaw-openshell",
             realm_id=realm_id,
         )
 
@@ -531,7 +531,7 @@ async def test_create_deploys_and_persists_real_observation(runtime_service) -> 
     runtime = await service.create(
         _principal(),
         name="Muninn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
         persona_name="product-steward",
     )
 
@@ -551,7 +551,7 @@ async def test_create_binds_declared_integrations_in_the_owners_request() -> Non
     controller.bindings = {"xai": "xai-key"}
     service = ResidentRuntimeService(repository, _profiles(), [controller])
 
-    runtime = await service.create(_principal(), name="Muninn", profile_id="ravn-openshell")
+    runtime = await service.create(_principal(), name="Muninn", profile_id="openclaw-openshell")
     await asyncio.gather(*tuple(service._deployment_tasks.values()))
 
     assert controller.bound_for == ["user-a"]
@@ -567,7 +567,7 @@ async def test_create_answers_with_the_planned_backend_ref() -> None:
     controller.planned_ref = {"kind": "HelmRelease", "namespace": "skuld", "name": "resident-x"}
     service = ResidentRuntimeService(repository, _profiles(), [controller])
 
-    runtime = await service.create(_principal(), name="Muninn", profile_id="ravn-openshell")
+    runtime = await service.create(_principal(), name="Muninn", profile_id="openclaw-openshell")
 
     assert runtime.observed_state is ResidentObservedState.DEPLOYING
     assert runtime.backend_ref == controller.planned_ref
@@ -590,7 +590,7 @@ async def test_reconcile_does_not_deploy_again_while_the_create_deploy_runs() ->
     controller.planned_ref = {"kind": "HelmRelease", "namespace": "skuld", "name": "resident-x"}
     service = ResidentRuntimeService(repository, _profiles(), [controller])
 
-    runtime = await service.create(_principal(), name="Muninn", profile_id="ravn-openshell")
+    runtime = await service.create(_principal(), name="Muninn", profile_id="openclaw-openshell")
     await deployment_started.wait()
     await service.reconcile(runtime.id)
     finish_deployment.set()
@@ -606,7 +606,7 @@ async def test_create_rejects_an_unbindable_integration_before_recording_anythin
     service = ResidentRuntimeService(repository, _profiles(), [controller])
 
     with pytest.raises(ResidentRuntimeValidationError, match="exactly one enabled xai"):
-        await service.create(_principal(), name="Muninn", profile_id="ravn-openshell")
+        await service.create(_principal(), name="Muninn", profile_id="openclaw-openshell")
 
     assert repository.items == {}
     assert controller.actions == []
@@ -626,7 +626,7 @@ async def test_create_retains_failed_record_when_background_deployment_fails() -
     runtime = await service.create(
         _principal(),
         name="Muninn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
     )
     await asyncio.gather(*tuple(service._deployment_tasks.values()))
 
@@ -648,7 +648,7 @@ async def test_background_deployment_records_controller_loss() -> None:
     runtime = await service.create(
         _principal(),
         name="Muninn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
     )
     service._controllers.clear()
     await asyncio.gather(*tuple(service._deployment_tasks.values()))
@@ -660,7 +660,9 @@ async def test_background_deployment_records_controller_loss() -> None:
 
 async def test_reconcile_refreshes_capabilities_from_profile(runtime_service) -> None:
     service, repository = runtime_service
-    runtime = await service.create_record(_principal(), name="Muninn", profile_id="ravn-openshell")
+    runtime = await service.create_record(
+        _principal(), name="Muninn", profile_id="openclaw-openshell"
+    )
     repository.items[runtime.id] = runtime.model_copy(
         update={
             "observed_state": ResidentObservedState.ACTIVE,
@@ -681,7 +683,9 @@ async def test_reconcile_refreshes_capabilities_from_profile(runtime_service) ->
 
 async def test_reconcile_resumes_unfinished_background_deployment(runtime_service) -> None:
     service, repository = runtime_service
-    runtime = await service.create_record(_principal(), name="Muninn", profile_id="ravn-openshell")
+    runtime = await service.create_record(
+        _principal(), name="Muninn", profile_id="openclaw-openshell"
+    )
 
     reconciled = await service.reconcile(runtime.id)
 
@@ -697,7 +701,9 @@ async def test_reconcile_redeploys_backend_the_controller_found_missing() -> Non
         return_value=ResidentRuntimeObservation(observed_state=ResidentObservedState.PENDING)
     )
     service = ResidentRuntimeService(repository, _profiles(), [controller])
-    runtime = await service.create_record(_principal(), name="Muninn", profile_id="ravn-openshell")
+    runtime = await service.create_record(
+        _principal(), name="Muninn", profile_id="openclaw-openshell"
+    )
     repository.items[runtime.id] = runtime.model_copy(
         update={
             "observed_state": ResidentObservedState.FAILED,
@@ -722,7 +728,7 @@ async def test_reconcile_all_records_unavailable_controller_and_continues() -> N
     runtime = await service.create_record(
         _principal(),
         name="Muninn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
     )
 
     await service.reconcile_all()
@@ -740,31 +746,31 @@ async def test_create_record_rejects_unavailable_profile_and_model(runtime_servi
         await service.create_record(
             _principal(),
             name="Muninn",
-            profile_id="ravn-openshell",
+            profile_id="openclaw-openshell",
             model="not-allowed",
         )
     with pytest.raises(ResidentRuntimeValidationError, match="require flock_id"):
         await service.create_record(
             _principal(),
             name="Partial flock",
-            profile_id="ravn-openshell",
+            profile_id="openclaw-openshell",
             flock_peer_id="partial",
         )
     with pytest.raises(ResidentRuntimeValidationError, match="requires member id"):
         await service.create_record(
             _principal(),
             name="Missing member",
-            profile_id="ravn-openshell",
+            profile_id="openclaw-openshell",
             flock_id=UUID("33333333-3333-3333-3333-333333333333"),
         )
 
 
 async def test_owner_name_is_unique(runtime_service) -> None:
     service, _ = runtime_service
-    await service.create_record(_principal(), name="Muninn", profile_id="ravn-openshell")
+    await service.create_record(_principal(), name="Muninn", profile_id="openclaw-openshell")
 
     with pytest.raises(ResidentRuntimeConflictError):
-        await service.create_record(_principal(), name="Muninn", profile_id="ravn-openshell")
+        await service.create_record(_principal(), name="Muninn", profile_id="openclaw-openshell")
 
 
 async def test_database_uniqueness_race_becomes_domain_conflict() -> None:
@@ -784,17 +790,19 @@ async def test_database_uniqueness_race_becomes_domain_conflict() -> None:
         await service.create_record(
             _principal(),
             name="Muninn",
-            profile_id="ravn-openshell",
+            profile_id="openclaw-openshell",
         )
 
 
 async def test_viewer_cannot_create_or_mutate_resident(runtime_service) -> None:
     service, _ = runtime_service
     viewer = _principal(roles=["volundr:viewer"])
-    runtime = await service.create_record(_principal(), name="Muninn", profile_id="ravn-openshell")
+    runtime = await service.create_record(
+        _principal(), name="Muninn", profile_id="openclaw-openshell"
+    )
 
     with pytest.raises(ResidentRuntimeAccessError):
-        await service.create_record(viewer, name="Huginn", profile_id="ravn-openshell")
+        await service.create_record(viewer, name="Huginn", profile_id="openclaw-openshell")
     with pytest.raises(ResidentRuntimeAccessError):
         await service.set_desired_state(viewer, runtime.id, ResidentDesiredState.SUSPENDED)
 
@@ -802,13 +810,13 @@ async def test_viewer_cannot_create_or_mutate_resident(runtime_service) -> None:
 async def test_list_and_get_enforce_owner_tenant_and_admin_scope(runtime_service) -> None:
     service, _ = runtime_service
     mine = await service.create_record(
-        _principal("user-a"), name="Muninn", profile_id="ravn-openshell"
+        _principal("user-a"), name="Muninn", profile_id="openclaw-openshell"
     )
     theirs = await service.create_record(
-        _principal("user-b"), name="Huginn", profile_id="ravn-openshell"
+        _principal("user-b"), name="Huginn", profile_id="openclaw-openshell"
     )
     await service.create_record(
-        _principal("user-c", "tenant-b"), name="Other", profile_id="ravn-openshell"
+        _principal("user-c", "tenant-b"), name="Other", profile_id="openclaw-openshell"
     )
 
     assert [runtime.id for runtime in await service.list(_principal("user-a"))] == [mine.id]
@@ -822,7 +830,7 @@ async def test_list_and_get_enforce_owner_tenant_and_admin_scope(runtime_service
 async def test_lifecycle_observation_and_delete_use_one_record(runtime_service) -> None:
     service, repository = runtime_service
     principal = _principal()
-    runtime = await service.create_record(principal, name="Muninn", profile_id="ravn-openshell")
+    runtime = await service.create_record(principal, name="Muninn", profile_id="openclaw-openshell")
 
     observed = await service.update_observation(
         runtime.id,
@@ -857,7 +865,7 @@ async def test_resume_hands_the_controller_the_profile_to_render_it_on() -> None
     controller = MemoryResidentRuntimeController()
     service = ResidentRuntimeService(repository, _profiles(), [controller])
     principal = _principal()
-    runtime = await service.create_record(principal, name="Muninn", profile_id="ravn-openshell")
+    runtime = await service.create_record(principal, name="Muninn", profile_id="openclaw-openshell")
     await service.update_observation(
         runtime.id,
         observed_state=ResidentObservedState.SUSPENDED,
@@ -870,7 +878,7 @@ async def test_resume_hands_the_controller_the_profile_to_render_it_on() -> None
 
     assert controller.actions[-1] == "resume"
     assert controller.resumed_with is not None
-    assert controller.resumed_with.id == "ravn-openshell"
+    assert controller.resumed_with.id == "openclaw-openshell"
 
 
 async def test_delete_record_removes_resident_trace_spans() -> None:
@@ -884,7 +892,7 @@ async def test_delete_record_removes_resident_trace_spans() -> None:
         event_repository=events,
     )
     principal = _principal()
-    runtime = await service.create_record(principal, name="Muninn", profile_id="ravn-openshell")
+    runtime = await service.create_record(principal, name="Muninn", profile_id="openclaw-openshell")
 
     assert await service.delete_record(principal, runtime.id)
 
@@ -905,7 +913,7 @@ async def test_delete_removes_resident_trace_spans_after_backend_cleanup() -> No
         event_repository=events,
     )
     principal = _principal()
-    runtime = await service.create_record(principal, name="Muninn", profile_id="ravn-openshell")
+    runtime = await service.create_record(principal, name="Muninn", profile_id="openclaw-openshell")
 
     deleted = await service.delete(principal, runtime.id)
 
@@ -934,7 +942,7 @@ async def test_delete_waits_for_in_flight_deployment_before_cleanup() -> None:
     runtime = await service.create(
         principal,
         name="Muninn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
     )
     await deployment_started.wait()
 
@@ -953,7 +961,7 @@ async def test_reconcile_converges_through_runtime_profile(runtime_service) -> N
     runtime = await service.create_record(
         _principal(),
         name="Muninn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
     )
     repository.items[runtime.id] = runtime.model_copy(
         update={
@@ -971,7 +979,7 @@ async def test_reconcile_converges_through_runtime_profile(runtime_service) -> N
 async def test_lifecycle_rejects_suspend_without_backend_capability(runtime_service) -> None:
     service, _ = runtime_service
     principal = _principal()
-    runtime = await service.create_record(principal, name="Muninn", profile_id="ravn-openshell")
+    runtime = await service.create_record(principal, name="Muninn", profile_id="openclaw-openshell")
 
     with pytest.raises(ResidentRuntimeValidationError, match="does not support suspension"):
         await service.set_desired_state(
@@ -995,8 +1003,8 @@ async def test_lifecycle_rejects_suspend_without_backend_capability(runtime_serv
 def test_profile_provider_hides_disabled_and_keeps_deployment_private() -> None:
     provider = _profiles()
 
-    assert [profile.id for profile in provider.list()] == ["ravn-openshell"]
-    profile = provider.get("ravn-openshell")
+    assert [profile.id for profile in provider.list()] == ["openclaw-openshell"]
+    profile = provider.get("openclaw-openshell")
     assert profile is not None
     assert profile.deployment["image"].endswith("@sha256:real")
     assert "deployment" not in profile.model_dump()
@@ -1027,7 +1035,7 @@ async def test_logs_are_authorized_and_read_through_backend_port() -> None:
     runtime = await service.create_record(
         _principal(),
         name="Muninn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
     )
 
     page = await service.logs(
@@ -1055,8 +1063,8 @@ def test_profile_advertising_logs_needs_a_backend_that_reads_them() -> None:
 
     assert lifecycle_only.list_profiles() == []
     with pytest.raises(ResidentProfileNotFoundError, match="not deployable"):
-        lifecycle_only._require_controller(_profiles().get("ravn-openshell"))
-    assert [profile.id for profile in with_logs.list_profiles()] == ["ravn-openshell"]
+        lifecycle_only._require_controller(_profiles().get("openclaw-openshell"))
+    assert [profile.id for profile in with_logs.list_profiles()] == ["openclaw-openshell"]
 
 
 async def test_logs_unavailable_in_the_resident_state_is_a_state_error() -> None:
@@ -1066,7 +1074,9 @@ async def test_logs_unavailable_in_the_resident_state_is_a_state_error() -> None
 
     repository = MemoryResidentRuntimeRepository()
     service = ResidentRuntimeService(repository, _profiles(), [NoPodController()])
-    runtime = await service.create_record(_principal(), name="Muninn", profile_id="ravn-openshell")
+    runtime = await service.create_record(
+        _principal(), name="Muninn", profile_id="openclaw-openshell"
+    )
 
     with pytest.raises(ResidentRuntimeStateError, match="has no pod in namespace skuld"):
         await service.logs(_principal(), runtime.id, lines=10)
@@ -1082,7 +1092,7 @@ async def test_proxy_target_is_resolved_through_runtime_backend_port() -> None:
     runtime = await service.create_record(
         _principal(),
         name="Muninn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
     )
 
     target = await service.proxy_target(runtime.id)
@@ -1103,7 +1113,7 @@ async def test_usage_is_atomically_recorded_on_resident() -> None:
     runtime = await service.create_record(
         principal,
         name="Muninn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
     )
     runtime = runtime.model_copy(
         update={"capabilities": [*runtime.capabilities, ResidentCapability.USAGE]}
@@ -1132,12 +1142,12 @@ async def test_native_session_api_round_trip_uses_engine_controller() -> None:
         [MemoryResidentRuntimeController()],
         [sessions],
     )
-    assert [profile.id for profile in service.list_profiles()] == ["ravn-native"]
+    assert [profile.id for profile in service.list_profiles()] == ["openclaw-native"]
     principal = _principal()
     runtime = await service.create_record(
         principal,
         name="Muninn",
-        profile_id="ravn-native",
+        profile_id="openclaw-native",
     )
 
     created = await service.create_session(
@@ -1173,7 +1183,7 @@ async def test_native_session_api_maps_engine_failures() -> None:
     runtime = await service.create_record(
         principal,
         name="Muninn",
-        profile_id="ravn-native",
+        profile_id="openclaw-native",
     )
     session_id = uuid4()
 
@@ -1204,7 +1214,7 @@ async def test_native_session_api_enforces_profile_contract() -> None:
     runtime = await service.create_record(
         principal,
         name="Muninn",
-        profile_id="ravn-native",
+        profile_id="openclaw-native",
     )
 
     with pytest.raises(ResidentRuntimeValidationError, match="not allowed"):
@@ -1238,7 +1248,7 @@ async def test_native_session_api_enforces_profile_contract() -> None:
         await unavailable.create(
             principal,
             name="Huginn",
-            profile_id="ravn-native",
+            profile_id="openclaw-native",
         )
 
 
@@ -1264,15 +1274,15 @@ class _BackendSessionController(MemoryResidentSessionController):
         return self._backend
 
 
-def _plain_ravn_profiles() -> ConfigResidentDeploymentProfileProvider:
-    """A Ravn profile that lists no session capability: the wiring provides them."""
+def _plain_openclaw_profiles() -> ConfigResidentDeploymentProfileProvider:
+    """An OpenClaw profile that lists no session capability: the wiring provides them."""
     return ConfigResidentDeploymentProfileProvider(
         [
             ResidentProfileConfig(
-                id="ravn-plain",
-                display_name="Plain Ravn",
+                id="openclaw-plain",
+                display_name="Plain OpenClaw",
                 backend=ResidentBackend.OPENSHELL,
-                engine=ResidentEngine.RAVN,
+                engine=ResidentEngine.OPENCLAW,
                 capabilities=[ResidentCapability.CHAT, ResidentCapability.LOGS],
                 default_model="gpt-5.6",
                 allowed_models=["gpt-5.6"],
@@ -1293,13 +1303,13 @@ async def test_session_capabilities_follow_from_the_wired_controller() -> None:
     repository = MemoryResidentRuntimeRepository()
     wired = ResidentRuntimeService(
         repository,
-        _plain_ravn_profiles(),
+        _plain_openclaw_profiles(),
         [MemoryResidentRuntimeController()],
         [_BackendSessionController(ResidentBackend.OPENSHELL)],
     )
     unwired = ResidentRuntimeService(
         repository,
-        _plain_ravn_profiles(),
+        _plain_openclaw_profiles(),
         [MemoryResidentRuntimeController()],
         [_BackendSessionController(ResidentBackend.HELMRELEASE)],
     )
@@ -1313,34 +1323,17 @@ async def test_session_capabilities_follow_from_the_wired_controller() -> None:
     [plain] = unwired.list_profiles()
     assert plain.capabilities == [ResidentCapability.CHAT, ResidentCapability.LOGS]
 
-    runtime = await wired.create_record(_principal(), name="Heimdall", profile_id="ravn-plain")
+    runtime = await wired.create_record(_principal(), name="Heimdall", profile_id="openclaw-plain")
     assert set(_SESSION_API) <= set(runtime.capabilities)
     assert await wired.list_sessions(_principal(), runtime.id) == []
-
-
-def test_a_controller_can_decline_a_profiles_sessions() -> None:
-    """Ravn: a profile that switches its shim off advertises no session API."""
-
-    class _Declines(_BackendSessionController):
-        def provides_sessions(self, profile) -> bool:
-            return False
-
-    service = ResidentRuntimeService(
-        MemoryResidentRuntimeRepository(),
-        _plain_ravn_profiles(),
-        [MemoryResidentRuntimeController()],
-        [_Declines(ResidentBackend.OPENSHELL)],
-    )
-    [profile] = service.list_profiles()
-    assert profile.capabilities == [ResidentCapability.CHAT, ResidentCapability.LOGS]
 
 
 async def test_reconcile_gives_existing_residents_the_wired_session_api() -> None:
     repository = MemoryResidentRuntimeRepository()
     before = ResidentRuntimeService(
-        repository, _plain_ravn_profiles(), [MemoryResidentRuntimeController()]
+        repository, _plain_openclaw_profiles(), [MemoryResidentRuntimeController()]
     )
-    runtime = await before.create_record(_principal(), name="Bragi", profile_id="ravn-plain")
+    runtime = await before.create_record(_principal(), name="Bragi", profile_id="openclaw-plain")
     assert not set(_SESSION_API) & set(runtime.capabilities)
     await repository.update(
         runtime.model_copy(
@@ -1353,7 +1346,7 @@ async def test_reconcile_gives_existing_residents_the_wired_session_api() -> Non
 
     after = ResidentRuntimeService(
         repository,
-        _plain_ravn_profiles(),
+        _plain_openclaw_profiles(),
         [MemoryResidentRuntimeController()],
         [_BackendSessionController(ResidentBackend.OPENSHELL)],
     )
@@ -1365,18 +1358,18 @@ async def test_reconcile_gives_existing_residents_the_wired_session_api() -> Non
 def test_one_engine_has_a_session_controller_per_backend() -> None:
     service = ResidentRuntimeService(
         MemoryResidentRuntimeRepository(),
-        _plain_ravn_profiles(),
+        _plain_openclaw_profiles(),
         [MemoryResidentRuntimeController()],
         [
             _BackendSessionController(ResidentBackend.OPENSHELL),
             _BackendSessionController(ResidentBackend.HELMRELEASE),
         ],
     )
-    assert [profile.id for profile in service.list_profiles()] == ["ravn-plain"]
+    assert [profile.id for profile in service.list_profiles()] == ["openclaw-plain"]
     with pytest.raises(ValueError, match="unique per backend"):
         ResidentRuntimeService(
             MemoryResidentRuntimeRepository(),
-            _plain_ravn_profiles(),
+            _plain_openclaw_profiles(),
             [MemoryResidentRuntimeController()],
             [
                 _BackendSessionController(ResidentBackend.OPENSHELL),
@@ -1388,14 +1381,14 @@ def test_one_engine_has_a_session_controller_per_backend() -> None:
 async def test_session_api_names_engine_and_backend_when_unwired() -> None:
     repository = MemoryResidentRuntimeRepository()
     service = ResidentRuntimeService(
-        repository, _plain_ravn_profiles(), [MemoryResidentRuntimeController()]
+        repository, _plain_openclaw_profiles(), [MemoryResidentRuntimeController()]
     )
-    runtime = await service.create_record(_principal(), name="Kvasir", profile_id="ravn-plain")
+    runtime = await service.create_record(_principal(), name="Kvasir", profile_id="openclaw-plain")
     await repository.update(
         runtime.model_copy(update={"capabilities": [*runtime.capabilities, *_SESSION_API]})
     )
 
-    with pytest.raises(ResidentRuntimeDeploymentError, match="ravn on openshell"):
+    with pytest.raises(ResidentRuntimeDeploymentError, match="openclaw on openshell"):
         await service.list_sessions(_principal(), runtime.id)
 
 
@@ -1410,7 +1403,7 @@ async def test_optional_resident_ports_fail_closed() -> None:
     runtime = await service.create_record(
         principal,
         name="Muninn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
     )
 
     assert await service.proxy_target(uuid4()) is None
@@ -1449,7 +1442,7 @@ async def test_lifecycle_backend_failures_preserve_durable_failure_state() -> No
     restartable = await service.create_record(
         principal,
         name="Muninn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
     )
     restartable = restartable.model_copy(
         update={
@@ -1468,7 +1461,7 @@ async def test_lifecycle_backend_failures_preserve_durable_failure_state() -> No
     suspendable = await service.create_record(
         principal,
         name="Huginn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
     )
     suspendable = suspendable.model_copy(
         update={
@@ -1490,7 +1483,7 @@ async def test_lifecycle_backend_failures_preserve_durable_failure_state() -> No
     removable = await service.create_record(
         principal,
         name="Odin",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
     )
     with pytest.raises(ResidentRuntimeDeploymentError, match="delete unavailable"):
         await service.delete(principal, removable.id)
@@ -1503,7 +1496,7 @@ async def test_invalid_lifecycle_and_missing_records_fail_explicitly(runtime_ser
     runtime = await service.create_record(
         principal,
         name="Muninn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
     )
 
     with pytest.raises(ResidentRuntimeValidationError, match="Use delete"):
@@ -1543,11 +1536,11 @@ async def test_create_record_rejects_flock_on_non_flock_profile() -> None:
         await service.create_record(
             _principal(),
             name="Muninn",
-            profile_id="ravn-native",
+            profile_id="openclaw-native",
             flock_id=uuid4(),
             flock_member_id=uuid4(),
             flock_role="coordinator",
-            flock_peer_id="ravn-coordinator",
+            flock_peer_id="openclaw-coordinator",
         )
 
 
@@ -1566,7 +1559,7 @@ async def test_unexpected_repository_create_failure_is_not_hidden() -> None:
         await service.create_record(
             _principal(),
             name="Muninn",
-            profile_id="ravn-openshell",
+            profile_id="openclaw-openshell",
         )
 
 
@@ -1578,7 +1571,7 @@ async def test_restart_requires_capability_and_running_state_then_uses_backend()
     runtime = await service.create_record(
         principal,
         name="Muninn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
     )
 
     with pytest.raises(ResidentRuntimeValidationError, match="does not support restart"):
@@ -1616,7 +1609,7 @@ async def test_missing_optional_adapters_and_usage_record_fail_explicitly() -> N
     runtime = await no_backend.create_record(
         principal,
         name="Muninn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
     )
     with pytest.raises(ResidentRuntimeDeploymentError, match="backend is unavailable"):
         await no_backend.logs(principal, runtime.id, lines=10)
@@ -1642,7 +1635,7 @@ async def test_missing_optional_adapters_and_usage_record_fail_explicitly() -> N
     native = await no_session_api.create_record(
         principal,
         name="Huginn",
-        profile_id="ravn-native",
+        profile_id="openclaw-native",
     )
     with pytest.raises(ResidentRuntimeDeploymentError, match="session API is unavailable"):
         await no_session_api.list_sessions(principal, native.id)
@@ -1656,7 +1649,7 @@ async def test_access_checks_hide_missing_and_cross_tenant_residents(runtime_ser
     runtime = await service.create_record(
         _principal(),
         name="Muninn",
-        profile_id="ravn-openshell",
+        profile_id="openclaw-openshell",
     )
     with pytest.raises(ResidentRuntimeNotFoundError):
         await service.get(_principal(tenant_id="tenant-b"), runtime.id)
