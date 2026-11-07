@@ -138,3 +138,40 @@ def test_the_record_round_trips_as_json():
     startup = launch().with_stages([active("schedule", 2), pending("ready")]).handed_off(at(1))
 
     assert SessionStartup.model_validate_json(startup.model_dump_json()) == startup
+
+
+def test_a_stage_the_backend_names_later_takes_its_place_in_the_launch():
+    """Seen live: a pod's volumes and init stages were listed after the pending ones."""
+    startup = launch().with_stages(
+        [active("release", 1), pending("schedule"), pending("containers"), pending("ready")]
+    )
+
+    startup = startup.with_stages(
+        [
+            done("release", 1, 3),
+            active("schedule", 3),
+            pending("volumes"),
+            pending("init"),
+            pending("containers"),
+            pending("ready"),
+        ]
+    )
+
+    assert [s.key for s in startup.stages] == [
+        "launch",
+        "release",
+        "schedule",
+        "volumes",
+        "init",
+        "containers",
+        "ready",
+    ]
+
+
+def test_stages_outside_the_view_keep_their_place():
+    startup = launch().with_stages([active("schedule", 2)]).failed(at(9), "boom")
+
+    reordered = startup.with_stages([startup.stages[1]])
+
+    assert [s.key for s in reordered.stages] == ["launch", "schedule"]
+    assert reordered.stages[1].state is StartupStageState.FAILED

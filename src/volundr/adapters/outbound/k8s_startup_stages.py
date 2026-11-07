@@ -21,6 +21,9 @@ _CONTAINER_EVENT_REASONS = frozenset({"Pulling", "Pulled", "Created", "Started"}
 _VOLUME_EVENT_REASONS = frozenset(
     {"SuccessfulAttachVolume", "FailedAttachVolume", "FailedMount", "SuccessfulMountVolume"}
 )
+# What a finished volume stage is remembered by: the attach that succeeded, not a
+# retry warning the kubelet logged on the way there.
+_VOLUME_SUCCESS_REASONS = frozenset({"SuccessfulAttachVolume", "SuccessfulMountVolume"})
 # Waiting reasons that are the ordinary steps of starting a container, not news.
 _ROUTINE_WAITING_REASONS = frozenset({"PodInitializing", "ContainerCreating"})
 # Events that say what the kubelet is doing now, not that it finished something.
@@ -116,10 +119,18 @@ def _container_detail(statuses: Sequence[Any] | None, events: Sequence[Any]) -> 
     return latest.message if latest is not None else None
 
 
-def _since(events: Sequence[Any], start: datetime | None) -> list[Any]:
+def _since(
+    events: Sequence[Any], start: datetime | None, until: datetime | None = None
+) -> list[Any]:
+    """The events from ``start`` (and up to ``until``, when the stage has ended)."""
     if start is None:
         return []
-    return [e for e in events if (event_time(e) or start) >= start]
+    return [
+        e
+        for e in events
+        if (event_time(e) or start) >= start
+        and (until is None or (event_time(e) or start) <= until)
+    ]
 
 
 def pod_startup_stages(
@@ -162,7 +173,10 @@ def pod_startup_stages(
     containers_from = scheduled_at
     if any(v.persistent_volume_claim is not None for v in pod.spec.volumes or []):
         volumes_done = first_container_event if scheduled_at is not None else None
-        attach = _latest(_since(events, scheduled_at), _VOLUME_EVENT_REASONS)
+        attach = _latest(
+            _since(events, scheduled_at, volumes_done),
+            _VOLUME_SUCCESS_REASONS if volumes_done is not None else _VOLUME_EVENT_REASONS,
+        )
         stages.append(
             _stage(
                 "volumes",
@@ -182,7 +196,10 @@ def pod_startup_stages(
                 "Running init containers",
                 containers_from,
                 initialized_at if containers_from is not None else None,
-                _container_detail(
+                # A finished stage keeps no in-progress words (the next pull is not its).
+                None
+                if initialized_at is not None
+                else _container_detail(
                     pod.status.init_container_statuses, _since(events, containers_from)
                 ),
             )
@@ -196,7 +213,9 @@ def pod_startup_stages(
             "Starting containers",
             containers_from,
             containers_ready_at if containers_from is not None else None,
-            _container_detail(pod.status.container_statuses, _since(events, containers_from)),
+            None
+            if containers_ready_at is not None
+            else _container_detail(pod.status.container_statuses, _since(events, containers_from)),
         )
     )
 
