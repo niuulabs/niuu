@@ -19,7 +19,6 @@ from mimir.connections import normalize_mimir_workload_config, resolve_mimir_reg
 from niuu.domain.models import Principal
 from niuu.domain.services.token_scope import require_scope
 from niuu.domain.session_endpoint import public_session_endpoint
-from niuu.domain.tags import matches_tags
 from ting.adapters.inbound.auth import (
     extract_bearer_token,
     extract_principal,
@@ -45,8 +44,10 @@ from ting.domain.models import (
     WorkflowVersionSummary,
 )
 from ting.domain.services.dispatch_service import (
+    HostTagsUnreadableError,
     TargetSelectionError,
     _resolve_workflow_execution,
+    host_selector_config,
     select_adapter_by_tags,
 )
 from ting.domain.utils import _session_name, _slugify
@@ -868,6 +869,7 @@ async def launch_workflow_execution(
         principal=principal,
         connection_id=launch.connection_id,
         placement=placement,
+        auth_token=bearer_token,
     )
     if target_adapter is None:
         raise HTTPException(
@@ -960,6 +962,11 @@ async def launch_workflow_execution(
                     else {}
                 ),
                 **({"ravn_config": ravn_runtime_config} if ravn_runtime_config else {}),
+                **host_selector_config(
+                    target_adapter,
+                    placement.tags if placement else (),
+                    placement.match if placement else "all",
+                ),
                 **(
                     {"observability": settings.dispatch.flock.observability}
                     if settings.dispatch.flock.observability
@@ -1042,14 +1049,19 @@ async def _resolve_target_adapter(
     principal: Principal,
     connection_id: str | None = None,
     placement: WorkflowPlacement | None = None,
+    auth_token: str | None = None,
 ):
     adapters = await volundr_factory.for_principal(principal)
     if not adapters:
         return None
     normalized_connection_id = str(connection_id or "").strip()
     if normalized_connection_id and placement is not None:
-        return _resolve_pinned_connection_against_placement(
-            adapters, normalized_connection_id, placement
+        return await _resolve_pinned_connection_against_placement(
+            adapters,
+            normalized_connection_id,
+            placement,
+            principal=principal,
+            auth_token=auth_token,
         )
     if normalized_connection_id:
         for adapter in adapters:
@@ -1060,14 +1072,19 @@ async def _resolve_target_adapter(
             detail=f"Volundr target not found: {normalized_connection_id}",
         )
     if placement is not None:
-        return _resolve_placement_target(adapters, placement)
-    return select_adapter_by_tags(adapters)
+        return await _resolve_placement_target(
+            adapters, placement, principal=principal, auth_token=auth_token
+        )
+    return await select_adapter_by_tags(adapters)
 
 
-def _resolve_pinned_connection_against_placement(
+async def _resolve_pinned_connection_against_placement(
     adapters: list[VolundrPort],
     connection_id: str,
     placement: WorkflowPlacement,
+    *,
+    principal: Principal,
+    auth_token: str | None,
 ) -> VolundrPort:
     """An explicit connectionId must satisfy the workflow's pinned placement.
 
@@ -1098,8 +1115,19 @@ def _resolve_pinned_connection_against_placement(
                 f"instance={placement.instance!r}"
             ),
         )
-    if matches_tags(resolved.tags, placement.tags, placement.match):
-        return resolved
+    try:
+        # The pinned target satisfies the tags itself or through one of its hosts.
+        return await select_adapter_by_tags(
+            [resolved],
+            list(placement.tags),
+            placement.match,
+            auth_token=auth_token,
+            principal=principal,
+        )
+    except HostTagsUnreadableError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except TargetSelectionError:
+        pass
     raise HTTPException(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         detail=(
@@ -1109,9 +1137,12 @@ def _resolve_pinned_connection_against_placement(
     )
 
 
-def _resolve_placement_target(
+async def _resolve_placement_target(
     adapters: list[VolundrPort],
     placement: WorkflowPlacement,
+    *,
+    principal: Principal,
+    auth_token: str | None,
 ) -> VolundrPort:
     """Resolve the workflow's pinned graph.placement against visible Guild targets.
 
@@ -1131,7 +1162,15 @@ def _resolve_placement_target(
             detail=_placement_rejection_detail(placement, adapters),
         )
     try:
-        return select_adapter_by_tags(adapters, list(placement.tags), placement.match)
+        return await select_adapter_by_tags(
+            adapters,
+            list(placement.tags),
+            placement.match,
+            auth_token=auth_token,
+            principal=principal,
+        )
+    except HostTagsUnreadableError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     except TargetSelectionError:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

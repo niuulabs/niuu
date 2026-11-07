@@ -35,7 +35,7 @@ from ting.domain.models import (
     Saga,
     SagaStatus,
 )
-from ting.domain.services.dispatch_service import select_adapter_by_tags
+from ting.domain.services.dispatch_service import select_adapter_by_tags, with_host_selector
 from ting.domain.templates import (
     BUNDLED_TEMPLATES_DIR,
     SagaTemplate,
@@ -400,7 +400,7 @@ class EventTriggerAdapter:
             return
 
         for run, tpl_run in zip(runs, tpl_phase.runs):
-            volundr = select_adapter_by_tags(
+            volundr = await select_adapter_by_tags(
                 adapters,
                 saga.target_tags,
                 saga.target_match,
@@ -505,22 +505,26 @@ class EventTriggerAdapter:
         session_name = re.sub(r"[^a-z0-9]+", "-", run.name.lower()).strip("-")[:48]
         integration_ids = await self._resolve_integration_ids(volundr)
 
+        request = with_host_selector(
+            SpawnRequest(
+                name=session_name,
+                repo=repo,
+                branch=saga.feature_branch,
+                base_branch=saga.base_branch,
+                model=self._default_model,
+                tracker_issue_id=run.tracker_id,
+                tracker_issue_url="",
+                system_prompt="",
+                initial_prompt=tpl_run.prompt,
+                profile=tpl_run.persona or None,
+                integration_ids=integration_ids,
+            ),
+            volundr,
+            saga.target_tags,
+            saga.target_match,
+        )
         try:
-            session = await volundr.spawn_session(
-                request=SpawnRequest(
-                    name=session_name,
-                    repo=repo,
-                    branch=saga.feature_branch,
-                    base_branch=saga.base_branch,
-                    model=self._default_model,
-                    tracker_issue_id=run.tracker_id,
-                    tracker_issue_url="",
-                    system_prompt="",
-                    initial_prompt=tpl_run.prompt,
-                    profile=tpl_run.persona or None,
-                    integration_ids=integration_ids,
-                ),
-            )
+            session = await volundr.spawn_session(request=request)
 
             updated = Run(
                 id=run.id,

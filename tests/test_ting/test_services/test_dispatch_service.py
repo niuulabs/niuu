@@ -36,13 +36,18 @@ from ting.domain.services.dispatch_service import (
     DispatchConfig,
     DispatchItem,
     DispatchService,
+    HostTagsUnreadableError,
     TargetSelectionError,
     _format_persona_label,
     build_prompt,
+    host_selector_config,
+    host_selector_for,
     is_ready,
     select_adapter_by_tags,
+    with_host_selector,
 )
 from ting.domain.templates import TemplatePhase, TemplateRun
+from ting.ports.volundr import HostTagSetsUnreadableError, SpawnRequest
 from ting.ports.workflow_repository import WorkflowRepository
 from ting.system_workflows import load_system_workflows
 
@@ -254,25 +259,202 @@ class TestBuildPrompt:
         assert "niu-42" in prompt
 
 
+class HostedVolundr(MockVolundr):
+    """A Forge target with its own tags and, optionally, hosts that carry more tags."""
+
+    def __init__(
+        self,
+        name: str,
+        tags: list[str] | None = None,
+        *,
+        tag_sets: list[list[str]] | None = None,
+        unreadable: str | None = None,
+    ) -> None:
+        super().__init__()
+        self._name = name
+        self._tags = list(tags or [])
+        self._tag_sets = tag_sets or []
+        self._unreadable = unreadable
+        self.tag_set_reads: list[tuple[str | None, Principal | None]] = []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def tags(self) -> list[str]:
+        return self._tags
+
+    async def host_tag_sets(self, *, auth_token=None, principal=None) -> list[list[str]]:
+        self.tag_set_reads.append((auth_token, principal))
+        if self._unreadable:
+            raise HostTagSetsUnreadableError(f"{self._name}: {self._unreadable}")
+        return self._tag_sets
+
+
 class TestSelectAdapterByTags:
     @staticmethod
-    def _adapter(name: str, tags: list[str]):
-        return SimpleNamespace(name=name, target_id=name, tags=tags)
+    def _adapter(name: str, tags: list[str], **kwargs):
+        return HostedVolundr(name, tags, **kwargs)
 
-    def test_match_all_requires_every_tag(self):
+    @pytest.mark.asyncio
+    async def test_match_all_requires_every_tag(self):
         gpu = self._adapter("gpu", ["gpu", "us-west"])
         cpu = self._adapter("cpu", ["us-west"])
-        assert select_adapter_by_tags([cpu, gpu], ["gpu", "us-west"]) is gpu
+        assert await select_adapter_by_tags([cpu, gpu], ["gpu", "us-west"]) is gpu
 
-    def test_match_any_requires_one_tag(self):
+    @pytest.mark.asyncio
+    async def test_match_any_requires_one_tag(self):
         east = self._adapter("east", ["us-east"])
         west = self._adapter("west", ["us-west"])
-        assert select_adapter_by_tags([east, west], ["us-west"], match="any") is west
+        assert await select_adapter_by_tags([east, west], ["us-west"], match="any") is west
 
-    def test_no_match_fails_loud(self):
+    @pytest.mark.asyncio
+    async def test_no_match_fails_loud(self):
         cpu = self._adapter("cpu", ["us-west"])
-        with pytest.raises(TargetSelectionError):
-            select_adapter_by_tags([cpu], ["gpu"])
+        with pytest.raises(TargetSelectionError) as excinfo:
+            await select_adapter_by_tags([cpu], ["gpu"])
+        assert not isinstance(excinfo.value, HostTagsUnreadableError)
+
+    @pytest.mark.asyncio
+    async def test_a_hosts_tags_complete_the_instance_tags(self):
+        plain = self._adapter("plain", ["valhalla"])
+        hosted = self._adapter("hosted", ["valhalla"], tag_sets=[["site:a"], ["gpu"]])
+        assert await select_adapter_by_tags([plain, hosted], ["valhalla", "gpu"]) is hosted
+
+    @pytest.mark.asyncio
+    async def test_tag_sets_of_different_hosts_are_not_combined(self):
+        split = self._adapter("split", [], tag_sets=[["gpu"], ["arm64"]])
+        with pytest.raises(TargetSelectionError, match="gpu"):
+            await select_adapter_by_tags([split], ["gpu", "arm64"])
+        whole = self._adapter("whole", [], tag_sets=[["gpu"], ["arm64", "gpu"]])
+        assert await select_adapter_by_tags([split, whole], ["gpu", "arm64"]) is whole
+
+    @pytest.mark.asyncio
+    async def test_match_any_is_satisfied_by_one_host_tag(self):
+        hosted = self._adapter("hosted", ["x"], tag_sets=[["arm64"]])
+        assert await select_adapter_by_tags([hosted], ["arm64", "tpu"], match="any") is hosted
+
+    @pytest.mark.asyncio
+    async def test_only_a_target_that_falls_short_is_asked_for_its_hosts(self):
+        direct = self._adapter("direct", ["gpu"])
+        short = self._adapter("short", [], tag_sets=[["gpu"]])
+        await select_adapter_by_tags([direct, short], ["gpu"])
+        assert direct.tag_set_reads == []
+        assert len(short.tag_set_reads) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_selector_reads_no_host_tags(self):
+        short = self._adapter("short", [], unreadable="down")
+        assert await select_adapter_by_tags([short]) is short
+        assert short.tag_set_reads == []
+
+    @pytest.mark.asyncio
+    async def test_the_callers_credentials_reach_the_tag_set_read(self):
+        short = self._adapter("short", [], tag_sets=[["gpu"]])
+        principal = Principal(user_id="u", email="", tenant_id="t", roles=[])
+        await select_adapter_by_tags([short], ["gpu"], auth_token="tok", principal=principal)
+        assert short.tag_set_reads == [("tok", principal)]
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_target_is_named_never_read_as_no_match(self, caplog):
+        broken = self._adapter("broken", ["valhalla"], unreadable="HTTP 500")
+        plain = self._adapter("plain", ["valhalla"])
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(HostTagsUnreadableError) as excinfo:
+                await select_adapter_by_tags([broken, plain], ["valhalla", "gpu"])
+        message = str(excinfo.value)
+        assert "broken" in message and "HTTP 500" in message
+        assert "plain (" not in message
+        assert any("broken" in record.getMessage() for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_target_does_not_hide_a_match_elsewhere(self, caplog):
+        broken = self._adapter("broken", [], unreadable="HTTP 500")
+        gpu = self._adapter("gpu", ["gpu"])
+        with caplog.at_level(logging.ERROR):
+            assert await select_adapter_by_tags([broken, gpu], ["gpu"]) is gpu
+        # ...and the skipped target is reported, not dropped silently.
+        assert any("broken" in record.getMessage() for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_pinned_target_is_named(self):
+        broken = self._adapter("broken", [], unreadable="timeout")
+        with pytest.raises(HostTagsUnreadableError, match="timeout"):
+            await select_adapter_by_tags([broken], ["gpu"], connection_id="broken")
+
+    @pytest.mark.asyncio
+    async def test_a_pin_may_satisfy_the_selector_through_a_host(self):
+        hosted = self._adapter("hosted", [], tag_sets=[["gpu"]])
+        other = self._adapter("other", ["gpu"])
+        chosen = await select_adapter_by_tags([other, hosted], ["gpu"], connection_id="hosted")
+        assert chosen is hosted
+
+    @pytest.mark.asyncio
+    async def test_unknown_match_mode_is_refused(self):
+        with pytest.raises(TargetSelectionError, match="some"):
+            await select_adapter_by_tags([self._adapter("a", ["gpu"])], ["gpu"], match="some")
+
+
+class TestHostSelector:
+    def test_selector_is_the_residual_of_the_chosen_target(self):
+        target = HostedVolundr("t", ["valhalla"])
+        assert host_selector_for(target, ["valhalla", "gpu"], "all") == {
+            "tags": ["gpu"],
+            "match": "all",
+        }
+        assert host_selector_for(target, ["gpu", "arm64"], "any") == {
+            "tags": ["arm64", "gpu"],
+            "match": "any",
+        }
+
+    def test_no_residual_gives_no_selector(self):
+        target = HostedVolundr("t", ["valhalla", "gpu"])
+        assert host_selector_for(target, ["valhalla", "gpu"], "all") is None
+        assert host_selector_for(target, ["gpu", "arm64"], "any") is None
+        assert host_selector_for(target, [], "all") is None
+        assert host_selector_config(target, ["gpu"]) == {}
+
+    def test_config_entry_is_the_workload_config_key(self):
+        target = HostedVolundr("t", [])
+        assert host_selector_config(target, ["gpu"]) == {
+            "host_selector": {"tags": ["gpu"], "match": "all"}
+        }
+
+    def test_with_host_selector_adds_it_to_the_spawn_request(self):
+        target = HostedVolundr("t", [])
+        request = _spawn_request(workload_config={"personas": ["a"]})
+        sent = with_host_selector(request, target, ["gpu"], "all")
+        assert sent.workload_config == {
+            "personas": ["a"],
+            "host_selector": {"tags": ["gpu"], "match": "all"},
+        }
+        assert request.workload_config == {"personas": ["a"]}
+
+    def test_with_host_selector_leaves_a_request_without_residual_alone(self):
+        request = _spawn_request()
+        assert with_host_selector(request, HostedVolundr("t", ["gpu"]), ["gpu"]) is request
+        assert with_host_selector(request, HostedVolundr("t", []), []) is request
+
+    def test_a_second_host_selector_is_refused_not_merged(self):
+        request = _spawn_request(workload_config={"host_selector": {"tags": ["x"]}})
+        with pytest.raises(TargetSelectionError, match="host_selector"):
+            with_host_selector(request, HostedVolundr("t", []), ["gpu"])
+
+
+def _spawn_request(**overrides) -> SpawnRequest:
+    values = {
+        "name": "n",
+        "repo": "org/repo",
+        "branch": "b",
+        "model": "m",
+        "tracker_issue_id": "i",
+        "tracker_issue_url": "",
+        "system_prompt": "",
+        "initial_prompt": "p",
+        "base_branch": "main",
+    }
+    return SpawnRequest(**{**values, **overrides})
 
 
 # -------------------------------------------------------------------
@@ -1929,24 +2111,25 @@ class TestDispatchTemplatePhaseFlockFlow:
         assert final_runs[runs[2].tracker_id].status == RunStatus.QUEUED
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("tags,match", [((), "all"), (("gpu",), "all"), (("gpu", "cpu"), "any")])
-def test_selection_balances_only_eligible_targets(monkeypatch, tags, match):
-    first = SimpleNamespace(name="one", target_id="one", tags=["gpu"])
-    second = SimpleNamespace(name="two", target_id="two", tags=["gpu"])
-    excluded = SimpleNamespace(name="three", target_id="three", tags=["other"])
+async def test_selection_balances_only_eligible_targets(monkeypatch, tags, match):
+    first = HostedVolundr("one", ["gpu"])
+    second = HostedVolundr("two", ["gpu"])
+    excluded = HostedVolundr("three", ["other"])
     adapters = [first, second, excluded]
     eligible = adapters if not tags else [first, second]
     choice = Mock(side_effect=[first, second])
     monkeypatch.setattr("ting.domain.services.dispatch_service.random.choice", choice)
-    assert select_adapter_by_tags(adapters, tags, match) is first
-    assert select_adapter_by_tags(adapters, tags, match) is second
+    assert await select_adapter_by_tags(adapters, tags, match) is first
+    assert await select_adapter_by_tags(adapters, tags, match) is second
     assert all(call.args == (eligible,) for call in choice.call_args_list)
-    assert select_adapter_by_tags(adapters, tags, match, connection_id="two") is second
+    assert await select_adapter_by_tags(adapters, tags, match, connection_id="two") is second
     assert choice.call_count == 2
     with pytest.raises(TargetSelectionError):
-        select_adapter_by_tags(adapters, tags, match, connection_id="missing")
+        await select_adapter_by_tags(adapters, tags, match, connection_id="missing")
     with pytest.raises(TargetSelectionError):
-        select_adapter_by_tags(adapters, ["gpu"], connection_id="three")
+        await select_adapter_by_tags(adapters, ["gpu"], connection_id="three")
 
 
 @pytest.mark.asyncio
@@ -2061,3 +2244,70 @@ async def test_dispatch_uses_principal_visible_targets(service, saga_repo, monke
     assert results[0].status == "spawned"
     factory.for_principal.assert_awaited_once_with(principal)
     choice.assert_called_once_with([visible])
+
+
+@pytest.mark.asyncio
+async def test_dispatch_sends_the_residual_selector_to_the_chosen_target(service, saga_repo):
+    plain = HostedVolundr("plain", ["valhalla"])
+    hosted = HostedVolundr("hosted", ["valhalla"], tag_sets=[["gpu"]])
+    service._volundr_factory = MockVolundrFactory([plain, hosted])
+    item = DispatchItem(
+        saga_id=str(saga_repo.sagas[0].id),
+        issue_id="i-1",
+        repo="org/repo-a",
+        target_tags=("valhalla", "gpu"),
+    )
+
+    results = await service.dispatch_issues("dev-user", [item])
+
+    assert results[0].status == "spawned"
+    assert plain.spawned == []
+    assert hosted.spawned[0].workload_config["host_selector"] == {
+        "tags": ["gpu"],
+        "match": "all",
+    }
+
+
+@pytest.mark.asyncio
+async def test_dispatch_adds_no_selector_without_target_tags(service, saga_repo, volundr):
+    item = DispatchItem(saga_id=str(saga_repo.sagas[0].id), issue_id="i-1", repo="org/repo-a")
+
+    results = await service.dispatch_issues("dev-user", [item])
+
+    assert results[0].status == "spawned"
+    assert "host_selector" not in volundr.spawned[0].workload_config
+
+
+@pytest.mark.asyncio
+async def test_dispatch_fails_the_item_loudly_when_host_tags_are_unreadable(
+    service, saga_repo, caplog
+):
+    broken = HostedVolundr("broken", [], unreadable="HTTP 500")
+    service._volundr_factory = MockVolundrFactory([broken])
+    item = DispatchItem(
+        saga_id=str(saga_repo.sagas[0].id),
+        issue_id="i-1",
+        repo="org/repo-a",
+        target_tags=("gpu",),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        results = await service.dispatch_issues("dev-user", [item])
+
+    assert results[0].status == "failed"
+    assert broken.spawned == []
+    assert any("broken" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_template_phase_sends_the_residual_selector(service, saga_repo):
+    hosted = HostedVolundr("hosted", ["valhalla"], tag_sets=[["gpu"]])
+    service._volundr_factory = MockVolundrFactory([hosted])
+    saga = replace(_make_saga(), target_tags=["valhalla", "gpu"])
+    phase = _make_phase(saga.id)
+    runs = [_make_run(phase.id)]
+    template = _make_template_phase([_make_template_run()])
+
+    await service._dispatch_template_phase(saga, phase, runs, template, "dev-user")
+
+    assert hosted.spawned[0].workload_config["host_selector"] == {"tags": ["gpu"], "match": "all"}
