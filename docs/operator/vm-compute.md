@@ -357,6 +357,34 @@ definitions carry them), so a VM release needs no override for them. A definitio
 that names an `existingClaim`, and any template or profile that sets pod storage,
 is still refused.
 
+## Live preview in VM sessions
+
+A dev server a VM session starts opens at
+`https://<port>--<session-id>.<preview domain>` like a pod session's: the VM
+Forge's preview router signs a short-lived credential per request, reaches the
+guest's Skuld through the same SSH tunnel as chat, and Skuld forwards to the
+port on the guest's loopback. Turning it on takes:
+
+- `compute.runtime.kwargs.preview_router_auth` on `SshContainerVmRuntime`: Skuld's
+  router-credential check, normally
+  `skuld.preview_adapters.WorkloadJwtRouterAuth` with the workload issuer, the
+  router's audience and the issuer's JWKS URL. `preview_excluded_ports` adds
+  ports to the fixed exclusions (SSH, the resolver, the tunnel, the broker).
+  VM sessions offer only listeners owned by the session's own user, so the
+  guest's root services (containerd's stream server picks a random port per
+  boot) never appear as previews.
+- `workloadIdentity` on the VM Forge, with the shared signing key. Enabled, the
+  Forge also answers token exchanges, and Skuld in each guest exchanges its
+  session ServiceAccount token there for its calls back, so the release needs a
+  `mappings` entry admitting its session accounts
+  (`system:serviceaccount:<namespace>:openbao-session-` as `subject_prefix`).
+  Without it delivery claims are refused and messages stay unconfirmed.
+- `sessionGateway` and `sessionPreview` on the release, with a preview domain of
+  its own: another Forge's `*.<domain>` routes to that Forge's router, which
+  does not know these sessions. The Gateway needs a wildcard DNS record and a
+  DNS-01 certificate issuer, and the preview OIDC client needs the release's
+  callback host (`auth.<preview domain>`).
+
 ## VM session credentials
 
 A session pod gets its ServiceAccount's tokens from the kubelet and its Forge
@@ -597,8 +625,10 @@ credential store and workspace archive directory. SSH runtime controllers need
 access to the same controller key and local workspace disk.
 
 A spare has its own pinned SSH identity but no session binding, launch payload,
-model credentials, session container or workspace. A transaction assigns it
-to one session at a time. The default `replace` policy archives the workspace/home,
+model credentials, session container or workspace. With `SshContainerVmRuntime`
+it is booted, prepared over SSH and has the Skuld image pulled, so a session that
+claims it starts in seconds rather than the minutes a cold VM takes (boot,
+cloud-init, image pull). A transaction assigns it to one session at a time. The default `replace` policy archives the workspace/home,
 deletes the guest and root disk, then replenishes with a clean allocation. The
 `reuse` policy requires explicit runtime support: after archival and sandbox/data
 cleanup, the same guest returns to the pool with its previous binding cleared.
