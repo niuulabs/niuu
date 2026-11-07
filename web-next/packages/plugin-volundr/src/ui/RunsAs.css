@@ -4,44 +4,14 @@
   gap: 10px;
   min-width: 0;
 }
-.vol-runs-as__title {
+.vol-runs-as p.vol-runs-as__line {
+  margin: 0;
   font-size: 13px;
+  color: var(--color-text-primary);
+}
+.vol-runs-as__title {
   font-weight: 600;
-  color: var(--color-text-primary);
-}
-.vol-runs-as__cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 10px;
-}
-.vol-runs-as__card {
-  text-align: left;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  border: 1px solid var(--color-border-subtle);
-  border-left: 3px solid transparent;
-  border-radius: 8px;
-  background: var(--color-bg-secondary);
-  padding: 12px 14px;
-  color: var(--color-text-primary);
-  cursor: pointer;
-}
-.vol-runs-as__card strong {
-  font-size: 14px;
-  font-weight: 650;
-}
-.vol-runs-as__card span {
-  font-size: 12px;
   color: var(--color-text-secondary);
-}
-.vol-runs-as__card[aria-pressed='true'] {
-  border-left-color: var(--color-brand);
-  background: var(--color-bg-tertiary);
-}
-.vol-runs-as__card:focus-visible {
-  outline: 2px solid var(--color-brand);
-  outline-offset: 3px;
 }
 .vol-runs-as__grants {
   margin: 0;

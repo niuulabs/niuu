@@ -235,7 +235,6 @@ export {
 export { toLifecycleState } from './ui/utils/toLifecycleState';
 export type { ExecEntry, ExecStatus } from './domain/exec';
 export type {
-  RunsAsSelection,
   RuntimeReadiness,
   SessionGrant,
   SessionRuntimeKind,

@@ -212,7 +212,7 @@ export function ConfirmStep({
   integrations: IntegrationConnection[];
   sessionDefinitions: SessionDefinition[];
   targets: VolundrTarget[];
-  /** The runtime chosen on a host that offers a choice. */
+  /** What the chosen host runs this session as. */
   runsAs?: SessionRuntimeOffer;
 }) {
   const modelLabel = formatModelOption(form.model, models[form.model]);
