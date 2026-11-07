@@ -1706,11 +1706,12 @@ async def test_a_machine_busy_past_the_placement_wait_is_skipped_and_counted(
     manager._placement_lock_wait = 0.01
     attempts = 0
     counted = []
-    monkeypatch.setattr(
-        vm_pod_manager,
-        "get_observability",
-        lambda: type("O", (), {"count": lambda self, name, **kw: counted.append(name)})(),
-    )
+
+    class Observability:
+        def count(self, name, *args, **kwargs):
+            counted.append(name)
+
+    monkeypatch.setattr(vm_pod_manager, "get_observability", Observability)
 
     @asynccontextmanager
     async def contested(lease_id):
