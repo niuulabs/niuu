@@ -197,3 +197,11 @@ def test_a_pinned_mac_join_posts_with_the_pin():
     darwin = render_darwin_join_script()
     assert 'PIN="$PIN"' in script
     assert '--pinnedpubkey "$PIN"' in darwin
+
+
+def test_leave_runs_connector_hooks_before_removing_their_files():
+    script = render_leave_script()
+    hooks = script.index("for hook in /etc/niuu/leave.d/*.sh; do")
+    assert 'if [ -e "$hook" ]; then sh -eu "$hook"; fi' in script
+    assert hooks < script.index('for path in $SETUP_FILES; do rm -f "$path"; done')
+    assert "rmdir /etc/niuu/leave.d" in script

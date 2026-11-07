@@ -141,10 +141,17 @@ ARG OS_PACKAGES_REFRESH=
 # git: the platform clones session workspaces before a sandbox container starts.
 # openssh-client: VM-backed sessions bootstrap and tunnel to their guest over SSH.
 # curl: fetches the docker CLI below.
+# openssh-server: the volundr chart's host connect endpoint (hostConnect) runs this image's
+# sshd as a sidecar; registered hosts behind NAT log in as niuu-connect, which has no
+# password and no shell ('*' rather than a locked '!', which sshd would refuse). No sshd
+# runs otherwise, and the image carries no host keys: the endpoint mounts its own.
 RUN apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
-        git openssh-client libnss-wrapper ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/*
+        git openssh-client openssh-server libnss-wrapper ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub \
+    && useradd --system --no-create-home --home-dir /nonexistent \
+        --shell /usr/sbin/nologin niuu-connect \
+    && usermod -p '*' niuu-connect
 
 # docker CLI + compose plugin: in docker mode this image is also the host-side
 # CLI (`niuu up` runs from a container against the host's Docker socket, see
@@ -182,7 +189,8 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
 COPY --from=builder --chown=65532:65532 /dist-root/data /data
 
-RUN --network=none ssh -V
+RUN --network=none ssh -V && test -x /usr/sbin/sshd && id niuu-connect \
+    && test -z "$(ls /etc/ssh/ssh_host_* 2>/dev/null)"
 
 USER 65532:65532
 

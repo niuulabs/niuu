@@ -408,14 +408,18 @@ changing it is remove and join again.
    - **The endpoint** is an OpenSSH server in a sidecar container of the Forge
      pod. It shares the pod's loopback, so the forwarded port is reachable by Forge
      and by nothing else. A Gateway `TCPRoute` (or a LoadBalancer Service) exposes
-     its port. Forge is one replica (Recreate) already, so there is exactly one
-     endpoint.
+     its port. The endpoint needs one Forge pod with the Recreate strategy, so
+     there is exactly one endpoint; the chart refuses anything else.
    - **It authenticates the host by the key registered at pairing**:
      `AuthorizedKeysCommand` asks Forge, on a socket in the pod, for that key's
      line. Only a registered, not-removed `reverse-ssh` host gets one:
-     `restrict,port-forwarding,permitlisten="127.0.0.1:<that host's port>",permitopen="none",command="/usr/sbin/nologin"`.
+     `restrict,port-forwarding,permitlisten="127.0.0.1:<that host's port>",command="/usr/sbin/nologin"`.
      A host can only listen on its own port. It cannot open a port to reach
-     anything in the Forge pod (`permitopen="none"`) and gets no shell.
+     anything in the Forge pod and gets no shell. (authorized_keys has no
+     `permitopen="none"`: OpenSSH 10.2 drops a line with it as "bad key options:
+     invalid permission port", which would lock every host out. Local forwarding
+     is refused in the endpoint's `sshd_config` instead: `AllowTcpForwarding
+     remote` and `PermitOpen none`, for every key.)
      Another host's key cannot bind that port, and if something else ever
      answered on it, Forge's host-key pin would refuse it.
    - **Dial** is `127.0.0.1:<port>`. The port is assigned at `admit` from
@@ -651,9 +655,10 @@ and, live slot or not:
      so removing a host takes effect at once, and revoke also kills a live
      connection;
    - each key may only listen on its own assigned loopback port
-     (`permitlisten`), may open nothing (`permitopen="none"`), gets no shell, PTY,
-     agent or X11 forwarding (`restrict`), and the endpoint listens in the Forge
-     pod's network namespace only for this;
+     (`permitlisten`), may open nothing (the endpoint's `AllowTcpForwarding
+     remote` and `PermitOpen none`), gets no shell, PTY, agent or X11 forwarding
+     (`restrict`), and the endpoint listens in the Forge pod's network namespace
+     only for this;
    - what crosses it is an SSH session from Forge to the host's sshd, pinned to
      the same registered key, so the endpoint never carries trust of its own.
 4. **VM guest metadata exception, host-key identity: amended.** Today the key is
@@ -912,6 +917,17 @@ On branch `docs/bm-compute-hosts`. Operator guide: [docs/operator/compute-hosts.
   public host is a startup error, never a silent plaintext or unreachable URL. A key
   or port the listener cannot use is fatal at startup.
 - `warm_targets` per selector were dropped (decision 6).
+- The reverse SSH connector (`ReverseSshConnector`) and the chart's `hostConnect`
+  endpoint sidecar. Forge reads whether a tunnel is up from `/proc/net/tcp` of the
+  shared network namespace, so probing never touches the host. Revoke stops
+  answering for the key at once; to end a live connection, the endpoint's key
+  command records sshd's per-connection monitor process (its parent), and a reaper
+  in the sidecar kills it when Forge writes the host's id to a pipe. Proven against
+  a real OpenSSH 10.2 sshd: the key line admits only the host's own loopback port
+  (another port and a wildcard bind are refused, `-L` is refused, no command runs),
+  the rendered `niuu-host-connect.service` command tunnels with the endpoint key
+  pinned, and SIGTERM to the recorded monitor ends the tunnel. Not proven yet: a
+  host behind NAT on a cluster, through a Forge restart and a network drop.
 - **Re-prepare** (`POST …/hosts/{id}/reprepare`, also through the Guild facade) does
   not run the recipe itself. The preparation record is the allocation that holds the
   host: it pins the plan, carries the result and keys the checkpoint on the host. So
@@ -923,7 +939,6 @@ On branch `docs/bm-compute-hosts`. Operator guide: [docs/operator/compute-hosts.
   the script's SHA-256, the file, and the commands to fetch, verify, read and run it.
   The mint response carries the script and digest, rendered exactly as `join.sh`
   serves it for that code, so no extra route was needed.
-- Not built yet: the reverse SSH connector, macOS hosts.
 - The macOS join, facts, audit and one-slot rule are built; every Mac is refused at
   join until a runtime names `darwin`.
 

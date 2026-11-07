@@ -311,10 +311,93 @@ is retried. Capacity is never freed on a host nobody checked.
 | `compute.hosts.join_listener.cert_file` / `key_file` | `~/.niuu/forge-host-join-{cert,key}.pem` | The listener's certificate and the key the pin comes from | Unreadable, readable by others or not matching: startup fails |
 | `compute.hosts.join_listener.key_bits` | 2048 | Size of a generated key | — |
 
+## Hosts behind NAT: the reverse SSH connector
+
+A host Forge cannot dial keeps one outbound SSH connection to the Forge instead.
+`niuu-host-connect.service` on the host runs stock OpenSSH,
+`ssh -N -R 127.0.0.1:<port>:127.0.0.1:22 niuu-connect@<endpoint>`, logging in with the
+host's own key and pinning the endpoint's key, and restarts it whenever it drops. The
+endpoint is an sshd sidecar in the Forge pod, sharing Forge's loopback, so the forwarded
+port is reachable by Forge and nothing else. Forge then reaches the host's sshd through
+it with the host's registered key pinned, as for direct SSH.
+
+1. Create the endpoint's host key once, as a Secret:
+
+   ```bash
+   ssh-keygen -t ed25519 -N '' -C forge-connect -f forge-connect
+   kubectl -n <ns> create secret generic forge-connect-host-key --from-file=ssh_host_ed25519_key=forge-connect
+   ```
+
+2. Enable it in the volundr chart. It needs exactly one Forge pod:
+
+   ```yaml
+   replicaCount: 1
+   strategy:
+     type: Recreate        # a rolling update would split the tunnels between two pods
+   hostConnect:
+     enabled: true
+     hostKeySecret:
+       name: forge-connect-host-key
+     service:
+       type: LoadBalancer  # or tcpRoute.enabled with parentRefs to a TCP Gateway listener
+   ```
+
+   The sidecar runs as root (sshd separates each connection into the unprivileged
+   `niuu-connect` user), so the namespace must admit Pod Security `baseline`.
+
+3. Add the connector:
+
+   ```yaml
+   compute:
+     hosts:
+       connectors:
+         - binding_id: reverse-ssh
+           adapter: volundr.adapters.outbound.host_connectors.ReverseSshConnector
+           kwargs:
+             endpoint: hosts-connect.valhalla.asgard.niuu.world:2222  # as hosts dial it
+             endpoint_host_key: "ssh-ed25519 AAAA…"  # forge-connect.pub, without the comment
+             port_range: "20000-20999"
+   ```
+
+Hosts joining with this connector need nothing reachable from outside. On join, a
+host gets the next free port of `port_range`; Forge's key on the host is limited to
+`from="127.0.0.1,::1"`, where Forge's sessions arrive.
+
+**What the endpoint admits.** On every connection its `AuthorizedKeysCommand` asks
+Forge, on a socket in a volume only Forge and the sidecar mount, for the key's line.
+Only the key of a registered reverse-SSH host gets one, as `niuu-connect` only:
+`restrict,port-forwarding,permitlisten="127.0.0.1:<its port>",command="/usr/sbin/nologin"`.
+The sidecar's `sshd_config` also refuses local forwarding for everyone
+(`AllowTcpForwarding remote`, `PermitOpen none`). A host can listen on its own
+loopback port and do nothing else.
+
+**Health.** Forge reads every tunnel's listener on each maintenance tick. A dropped
+tunnel makes the host unreachable at once, is logged at error and counted on
+`volundr.compute.host.disconnects`. Its sessions keep running; when the unit
+reconnects, the next check makes the host healthy again.
+
+**Removing.** Removing the host stops Forge answering for its key at once, and asks the
+sidecar to end its live connection (a failure to do so is an error, counted on
+`volundr.compute.host.revoke_failures`). `niuu-host-leave` disables the unit and
+removes it and the endpoint's pinned key; it does not stop a running tunnel, since
+Forge may run leave through it. Without the pinned key the unit does not start again.
+To end it at once on the host: `sudo systemctl stop niuu-host-connect.service`.
+
+| Knob | Default | Bounds | On a hit |
+|---|---|---|---|
+| `port_range` (connector) | required | Ports on the endpoint's loopback, one per reverse-SSH host of the Forge | The join is refused (422) naming `port_range`, counted on `volundr.compute.host.port_range_full` |
+| `server_alive_interval_seconds` (connector) | 15 | How often the host's ssh checks the endpoint is there | — |
+| `reconnect_seconds` (connector) | 5 | Wait before the unit reconnects | — |
+| `revoke_timeout_seconds` (connector) | 10 | How long removal waits for the endpoint to end a connection | Removal fails with the reason, counted on `volundr.compute.host.revoke_failures` |
+| `hostConnect.keyLookupTimeoutSeconds` (chart) | 5 | One key lookup from sshd to Forge | The connection is refused; the host retries |
+| `hostConnect.clientAliveIntervalSeconds` × `clientAliveCountMax` (chart) | 15 × 3 | How long a silent host keeps its port | The connection is dropped; the host reconnects |
+
+Startup fails if the connector is configured without the endpoint (`runtime_dir` is
+missing), and the chart refuses `hostConnect` with more than one replica, autoscaling,
+a rolling update or no host key Secret.
+
 ## Not built yet
 
-- The reverse SSH connector for hosts behind NAT (design: "Connection"). Today a
-  host must be reachable from Forge.
 - macOS hosts.
 - **Sessions on a Mac.** A Mac runs the same join line and is checked and audited
   (design: "macOS hosts"), always with one slot, but no runtime runs on macOS yet,

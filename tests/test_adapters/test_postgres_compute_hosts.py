@@ -105,8 +105,37 @@ class TestPairingCodes:
         with pytest.raises(HostConflictError):
             await repo.consume_and_register("a" * 64, make_host())
 
+    async def test_a_raced_tunnel_port_says_to_join_again(self, setup):
+        repo, _, conn = setup
+        conn.fetchval.return_value = uuid4()
+        conflict = asyncpg.UniqueViolationError("dup")
+        conflict.constraint_name = "idx_compute_hosts_tunnel_port"
+        conn.execute.side_effect = conflict
+        with pytest.raises(HostConflictError, match="tunnel port"):
+            await repo.consume_and_register("a" * 64, make_host())
+
 
 class TestHosts:
+    async def test_a_host_by_its_key(self, setup):
+        repo, pool, _ = setup
+        host = make_host()
+        pool.fetchval.return_value = host.model_dump_json()
+        assert await repo.with_public_key(host.host_public_key) == host
+        sql, key = pool.fetchval.call_args.args
+        assert "WHERE host_public_key = $1" in sql
+        assert key == host.host_public_key
+        pool.fetchval.return_value = None
+        assert await repo.with_public_key(host.host_public_key) is None
+
+    async def test_one_connection_field_across_every_host(self, setup):
+        repo, pool, _ = setup
+        pool.fetch.return_value = [{"value": "20000"}, {"value": "20003"}]
+        assert await repo.connection_values("tunnel_port") == [20000, 20003]
+        sql, field = pool.fetch.call_args.args
+        assert "data->'connection' ? $1" in sql
+        assert "pool_id" not in sql  # the endpoint's loopback is the Forge's, not a pool's
+        assert field == "tunnel_port"
+
     async def test_reads(self, setup):
         repo, pool, _ = setup
         host = make_host()

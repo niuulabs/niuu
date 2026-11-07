@@ -37,6 +37,7 @@ from volundr.domain.compute import (
     ComputeSlot,
 )
 from volundr.domain.compute_hosts import (
+    EndpointKey,
     HostConflictError,
     HostConnector,
     HostHealth,
@@ -426,6 +427,24 @@ class ComputeHostService:
             setup_commands=setup.commands,
         )
 
+    async def endpoint_key(self, *, user: str, key_type: str, key: str) -> EndpointKey | None:
+        """The line a connect endpoint admits this key with, asked on every connection.
+
+        Only a registered host of this pool whose connector admits it at its endpoint gets
+        one; removing the host, or its connector revoking it, takes effect at once.
+        """
+        try:
+            public_key = validate_host_public_key(f"{key_type} {key}")
+        except ComputeHostError:
+            return None
+        host = await self._repository.with_public_key(public_key)
+        if host is None or host.pool_id != self._pool_id:
+            return None
+        options = self._connector(host.connector).endpoint_key_options(host, user)
+        if options is None:
+            return None
+        return EndpointKey(host_id=host.id, line=f"{options} {public_key}")
+
     # ── reads ────────────────────────────────────────────────────────────────
 
     async def hosts(self) -> list[RegisteredHost]:
@@ -676,7 +695,13 @@ class ComputeHostService:
         """One pass: reach pending and due hosts, and finish removals that are now empty."""
         now = datetime.now(UTC)
         due: list[RegisteredHost] = []
-        for host in await self._repository.list(self._pool_id):
+        hosts = await self._repository.list(self._pool_id)
+        # A connector that knows its connection (a tunnel) reports a drop here, every tick;
+        # the host is checked at once and goes unreachable instead of waiting for its audit.
+        statuses = await asyncio.gather(
+            *(self._connector(host.connector).status(host) for host in hosts)
+        )
+        for host, status in zip(hosts, statuses, strict=True):
             if host.service is HostService.REMOVING and host.allocation_id is None:
                 await self._remove(host)
                 continue
@@ -685,8 +710,13 @@ class ComputeHostService:
                 if host.health in {HostHealth.PENDING, HostHealth.UNREACHABLE}
                 else self._check_interval
             )
+            dropped = not status.connected and host.health in {
+                HostHealth.HEALTHY,
+                HostHealth.QUARANTINED,
+            }
             if (
-                host.last_checked_at is None
+                dropped
+                or host.last_checked_at is None
                 or (now - host.last_checked_at).total_seconds() >= interval
             ):
                 due.append(host)
