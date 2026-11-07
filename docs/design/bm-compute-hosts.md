@@ -290,8 +290,87 @@ The script, in order:
    `/etc/niuu/compute-host.env` (`INIT=systemd|other`).
 6. Prints "Registered as `glad`. Forge is preparing this host; follow it in the UI."
 
-The `niuu` CLI is not needed. `niuu join … --as-compute` may later wrap the same
-script for people who have the CLI, but it is not a second implementation.
+The host does not need the `niuu` CLI. An operator who has it can join a host from
+their own machine with `niuu remote join` (next section), which runs this same line
+over SSH.
+
+### From the operator's machine: `niuu remote`
+
+`niuu remote join <ssh destination>` does the UI's three steps from the operator's
+own terminal: mint a code, run the line on the host, follow the host. Nothing is
+pasted on the target. There is no second join: the CLI runs the `command` that the
+mint response carries, the same bytes the UI shows.
+
+```text
+niuu remote join DEST [-p PORT] [-J JUMP]
+                      [--url URL] [--forge FORGE]
+                      [--execution NAME] [--connector BINDING]
+                      [--tag TAG]... [--slots N|suggested]
+                      [--isolation measured|systemd|cgroupfs|none]
+                      [--no-follow] [--timeout SECONDS]
+niuu remote hosts [HOST] [--url URL] [--forge FORGE] [--json]
+niuu remote leave HOST [--ssh DEST] [-p PORT] [-J JUMP] [--url URL] [--forge FORGE]
+                       [--timeout SECONDS]
+```
+
+- **The target is an SSH destination**, as `ssh` takes it: `user@host`, an alias
+  from `~/.ssh/config`, or `ssh://user@host:port`. `-p` and `-J` are passed
+  to `ssh`; everything else (keys, agents, `ProxyCommand`) comes from the
+  operator's own SSH config. The CLI runs the user's own `ssh` binary, so a host
+  key prompt or a `sudo` password prompt reaches the operator's terminal (`ssh -t`
+  when stdin is a terminal). A destination that starts with `-` is refused.
+- **The Forge is reached through the Niuu host's facade**, as the UI does:
+  `/api/v1/forge/compute/hosts…?instance_id=<forge>`. `--url` (or
+  `remote.url` in `~/.niuu/config.yaml`, env `NIUU_REMOTE__URL`) is the Niuu host;
+  its default is this machine's own server (`server.host:server.port`), the mini
+  stack. `--forge` names the Forge by id, slug or name from
+  `GET /api/v1/niuu/instances`. It may be left out when exactly one Forge is
+  visible; with more, the error lists them.
+- **Auth is the operator's own login.** The bearer is the token `niuu login` stored
+  (refreshed once on a 401, as every CLI client does). No token is sent when there
+  is none, which a mini Forge with the allow-all adapter accepts; anything else
+  answers 401 and the CLI says to run `niuu login`. No PAT is involved, and the
+  pairing code is only ever the host's credential.
+- **Mint flags are the Add host form.** `--execution` and `--connector` may be left
+  out when the Forge offers exactly one allowed choice (read from
+  `GET …/compute/hosts`); with more, the error lists them. `--isolation` is sent
+  only when given; `measured` (the server's default) lets the join pick `systemd`
+  or `cgroupfs` from the facts, never `none`. A Forge that does not know a field
+  answers 422 and the CLI prints that answer.
+- **The run.** The CLI runs `sh -c '<command>'` on the host, so the host's login
+  shell does not matter, and the script's output streams straight to the terminal.
+  A non-zero exit is a failure, reported with the script's own last message.
+  `<fetch> | sudo sh` exits 0 when the fetch fails, so the run counts as a join only
+  once Forge lists a host that was not there before the run. None is "the join
+  did not register a host"; more than one is refused as ambiguous.
+- **Following.** The CLI polls `GET …/compute/hosts` (`remote.poll_interval_seconds`)
+  and prints a line each time the host moves through the UI's steps: *joined →
+  connected (key pinned) → preparing → audit → capacity → ready*. Each line uses
+  the same derivation as the UI (`joinSteps`). It ends:
+  - **ready**, exit 0, with the next steps (`niuu remote hosts <name>`, targeting
+    by its tags);
+  - **needs capacity** (audited, no slot count), exit 0, with Forge's suggested
+    count and its arithmetic, plus the command to set it. `--slots suggested`
+    accepts Forge's suggestion once the audit is done, through the same
+    `PATCH …/hosts/{id}` the UI's *Put in service* sends;
+  - **quarantined** or **unreachable**, exit 1, with Forge's findings or
+    connection error. Forge keeps retrying an unreachable host; the CLI stops
+    following it;
+  - after `--timeout` (`remote.follow_timeout_seconds`), exit 1, naming the knob
+    and the host's current step. Ctrl-C stops following and leaves the host as it is.
+- **`niuu remote hosts`** prints the pool: one row per host (name, state, slots
+  used/total, tags, execution, connection, last check), with findings under rows
+  that need an operator. `--json` prints Forge's answer unchanged.
+- **`niuu remote leave HOST`** (name or id) sends *Drain and remove*
+  (`POST …/{id}/drain {"remove": true}`) and waits until Forge has forgotten the
+  host, which happens once its sessions end. Forge removes its own key over its
+  connection. The CLI then runs `niuu-host-leave` over the operator's SSH
+  (`--ssh`, default the host's name), guarded on `/etc/niuu/compute-host.env`
+  naming this host's id. If Forge already cleaned the host, this is a no-op. A
+  config naming another host id is refused.
+
+Exit codes: 0 for success; 1 for a failure, with the reason (Forge's answer,
+`ssh`'s, the script's, or the timeout knob); 2 for a usage error (Typer's own).
 
 ### Hosts without systemd
 

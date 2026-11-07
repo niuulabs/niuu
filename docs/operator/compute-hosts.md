@@ -97,6 +97,53 @@ suggests a count from the facts and the runtime's per-slot limits, and shows the
 arithmetic. A slot count that does not fit is refused, or quarantines the host if
 the facts change later.
 
+### From your own machine: `niuu remote join`
+
+With the `niuu` CLI you can join a host from your own terminal over your own SSH.
+Nothing is pasted on the host:
+
+```bash
+niuu remote join admin@gpu-box --execution host-podman --tag gpu --slots suggested
+```
+
+The CLI mints a code as you, runs the same command the UI shows on the host
+(`sh -c '…'` over `ssh`, so `sudo` can ask for your password), then follows the host
+until it is ready:
+
+```text
+✓ minted pairing code 4f1c… for host-podman (expires 10:42)
+→ admin@gpu-box: running join.sh
+  ✓ Linux 6.8.0-49-generic, systemd, cgroup v2, OpenSSH, python3
+  ✓ registered as gpu-box with the Forge's pool hosts
+✓ joined       gpu-box
+✓ connected    key pinned
+✓ preparing    recipe host-podman
+✓ audit
+✓ capacity     6 slots (suggested)
+✓ ready        target it with tags: gpu
+```
+
+- **Which host:** any `ssh` destination: `user@host`, a `~/.ssh/config` alias, or
+  `ssh://user@host:port`. Use `-p` and `-J` for the port and a jump host; keys
+  come from your SSH config and agent.
+- **Which Forge:** `--url` is the Niuu host (default: this machine's own server, or
+  `remote.url` in `~/.niuu/config.yaml`). Use `--forge` to pick a Forge by id, slug
+  or name when the Niuu host has more than one.
+- **Login:** run `niuu login` first, unless the Forge is a local mini stack without
+  identity.
+- **Flags:** `--execution`, `--connector`, `--tag` (repeat it), `--slots N|suggested`
+  and `--isolation measured|systemd|cgroupfs|none`, as in the Add host form. You can
+  leave out `--execution` and `--connector` when the Forge offers only one of each.
+- **Exit codes:** 0 when the host is ready, or waits for its slot count (the CLI
+  prints the suggestion and the command to set it). 1 when the host is quarantined
+  or unreachable (with Forge's findings), when the script fails, or when it is not
+  ready within `--timeout` (default `remote.follow_timeout_seconds`).
+
+`niuu remote hosts` lists the pool (`--json` for scripts). `niuu remote leave <host>`
+drains and removes a host, waits until its sessions end and Forge has forgotten
+it, then runs `niuu-host-leave` on it over your SSH (`--ssh` when the host's name is
+not an SSH destination).
+
 ## States
 
 | State | Meaning |
