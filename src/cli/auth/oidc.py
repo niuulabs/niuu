@@ -170,6 +170,7 @@ class OIDCClient:
             token_type=data.get("token_type", "Bearer"),
             expires_at=expires_at,
             issuer=self._issuer,
+            client_id=self._client_id,
         )
 
     async def refresh(self) -> str | None:
@@ -211,6 +212,7 @@ class OIDCClient:
             token_type=data.get("token_type", "Bearer"),
             expires_at=expires_at,
             issuer=tokens.issuer,
+            client_id=tokens.client_id,
         )
         self._credential_store.store(new_tokens)
         return new_tokens.access_token

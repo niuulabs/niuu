@@ -17,6 +17,9 @@ New command tree (NIU-405):
   Identity:
     login / logout / whoami
 
+  Compute hosts:
+    remote  join|hosts|slots|leave  — join machines to a Forge over your own SSH
+
   Configuration:
     config  show|set
     context list|use|add|delete
@@ -361,6 +364,10 @@ def build_app(
     from cli.commands.guild import create_guild_commands
 
     app.add_typer(create_guild_commands(settings), name="guild")
+
+    from cli.commands.remote import create_remote_commands
+
+    app.add_typer(create_remote_commands(settings), name="remote")
 
     platform_app = create_platform_commands(registry, settings, manager)
     app.add_typer(platform_app, name="platform")

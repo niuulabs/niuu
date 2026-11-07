@@ -462,6 +462,42 @@ class ServerConfig(BaseModel):
     )
 
 
+class RemoteConfig(BaseModel):
+    """`niuu remote`: the Niuu host whose Forge registered hosts join, and how long to follow."""
+
+    url: str = Field(
+        default="",
+        description=(
+            "Base URL of the Niuu host whose Guild facade reaches the Forge "
+            "(/api/v1/forge/compute/hosts?instance_id=). Empty means this machine's own "
+            "server (server.host:server.port)."
+        ),
+    )
+    poll_interval_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        description="How often `niuu remote join`/`leave` re-read the host from Forge.",
+    )
+    follow_timeout_seconds: float = Field(
+        default=900.0,
+        gt=0,
+        description=(
+            "How long `niuu remote join` follows a host to ready. Bounded by the Forge's own "
+            "pending checks; a host not ready by then fails the command (exit 1), naming "
+            "its step. Override per run with --timeout."
+        ),
+    )
+    leave_timeout_seconds: float = Field(
+        default=3600.0,
+        gt=0,
+        description=(
+            "How long `niuu remote leave` waits for a draining host's sessions to end and "
+            "Forge to forget it. On a hit the command fails (exit 1); Forge still removes "
+            "the host once it is empty. Override per run with --timeout."
+        ),
+    )
+
+
 class ResidentsConfig(BaseModel):
     """How mini mode hosts long-lived residents on this machine."""
 
@@ -1078,6 +1114,7 @@ class CLISettings(BaseSettings):
     guild: GuildConfig = Field(default_factory=GuildConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    remote: RemoteConfig = Field(default_factory=RemoteConfig)
     residents: ResidentsConfig = Field(default_factory=ResidentsConfig)
     docker: DockerConfig = Field(default_factory=DockerConfig)
     plugins: PluginConfig = Field(default_factory=PluginConfig)
