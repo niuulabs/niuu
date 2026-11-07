@@ -31,6 +31,9 @@ GUEST_AGENT_DIRECTORY = "/etc/niuu/guest-agent"
 SESSION_RUNTIME = "/run/niuu/session"
 SLOT_DATA_BASE = "/var/lib/niuu/slots"
 SLOT_RUNTIME_BASE = "/run/niuu/slots"
+#: Root-owned per slot, out of the slot user's reach: what the slot's root agents
+#: act on (the guest agent's configuration names the slot it fetches for).
+SLOT_AGENT_BASE = "/etc/niuu/slots"
 #: Addresses per slot: network, gateway (the VM's end), the slot, broadcast.
 _ADDRESSES_PER_SLOT = 4
 _MAX_ID = 2**32 - 2
@@ -162,6 +165,10 @@ class SlotLayout:
         return f"{SLOT_RUNTIME_BASE}/{self.slot}"
 
     @property
+    def agent_root(self) -> str:
+        return f"{SLOT_AGENT_BASE}/{self.slot}"
+
+    @property
     def session_data(self) -> str:
         return f"{self.data_root}/session"
 
@@ -192,7 +199,9 @@ class SlotLayout:
             (SESSION_LAUNCH, f"{etc}/session-launch.json"),
             (SESSION_SECRETS, f"{etc}/session-secrets"),
             (FORGE_SESSION_DIRECTORY, f"{etc}/forge-session"),
-            (GUEST_AGENT_DIRECTORY, f"{etc}/guest-agent"),
+            # Never under the slot's own directories: a slot that could rewrite the
+            # agent's configuration could make it fetch another slot's credentials.
+            (GUEST_AGENT_DIRECTORY, f"{self.agent_root}/guest-agent"),
             (SESSION_RUNTIME, self.run_root),
         )
 
@@ -214,6 +223,7 @@ class SlotLayout:
             "uid": self.uid,
             "data_root": self.data_root,
             "run_root": self.run_root,
+            "agent_root": self.agent_root,
             "netns": self.name,
             "host_link": self.host_link,
             "gateway": self.gateway,
@@ -248,6 +258,12 @@ class SlotLayout:
         for container in (*placed.get("init_containers", []), *placed.get("sidecars", [])):
             for mount in container["mounts"]:
                 mount["source"] = self.relocate(mount["source"])
+            # What a sidecar writes for the session with group permission (OpenBao's
+            # agent renders secrets 0640) is for this slot's group, never a VM group:
+            # gid 1000 is the guest's login account.
+            user, _, group = container.get("user", "").partition(":")
+            if group:
+                container["user"] = f"{user}:{self.uid}"
         tunnel = f"127.0.0.1:{platform_port}"
         environment = {
             key: value.replace(tunnel, f"{self.gateway}:{platform_port}")

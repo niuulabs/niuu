@@ -147,8 +147,9 @@ class VmRuntime(ABC):
         """Whether one machine can serve several sessions at once.
 
         The contract is a per-slot user, network namespace, cgroup and runtime state keyed
-        by (allocation, slot). No runtime declares it yet, so a pool with
-        ``slots_per_machine > 1`` is refused at startup and on an admin change.
+        by (allocation, slot), and credentials each slot receives for itself only, with
+        the allocation's own identity out of the slots' reach. A runtime that does not
+        declare it serves one session per machine.
         """
         return False
 

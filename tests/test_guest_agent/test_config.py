@@ -185,6 +185,10 @@ def test_unknown_top_level_field_is_named(config_dict: dict) -> None:
             lambda d: d.update(allocation_id="not-a-uuid"),
             "allocation_id: not a UUID",
         ),
+        ("slot", lambda d: d.update(slot="1"), "slot: expected an integer"),
+        ("slot", lambda d: d.update(slot=True), "slot: expected an integer"),
+        ("slot", lambda d: d.update(slot=-1), "slot: must be 0 or greater"),
+        ("slot", lambda d: d.pop("slot"), "slot: missing field"),
         (
             "metadata_url",
             lambda d: d.update(metadata_url="http://forge.test"),

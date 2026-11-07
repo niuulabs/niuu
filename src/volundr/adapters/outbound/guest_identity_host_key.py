@@ -68,6 +68,12 @@ class HostKeyGuestIdentity(GuestIdentity):
         self._watermarks = watermarks
         self._clock_skew_ms = clock_skew_seconds * 1000
 
+    @property
+    def serves_slots(self) -> bool:
+        # The host key lives in the machine bootstrap; nothing is registered or
+        # retired per session.
+        return True
+
     def agent_auth(self, allocation_id: UUID) -> dict:
         return {"kind": "host_key", "key_path": HOST_KEY_PATH}
 

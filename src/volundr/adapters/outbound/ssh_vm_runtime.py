@@ -489,6 +489,19 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         delivery = self._credential_delivery
         return delivery is not None and delivery.delivers_forge_session_token
 
+    @property
+    def supports_slots(self) -> bool:
+        """Separated slots are configured, and every slot can receive its own credentials.
+
+        ``slot_isolation`` gives each slot its own user, directories, network and PID
+        namespaces and cgroup (``vm_slot_supervisor``). A credential delivery that only
+        the whole allocation can receive would still hand every slot one identity.
+        """
+        if self._slot_isolation is None:
+            return False
+        delivery = self._credential_delivery
+        return delivery is None or delivery.serves_slots
+
     #: Whether the guest runs the pod's init containers and sidecars next to Skuld.
     _runs_pod_containers = True
     #: Whether ``slot_isolation`` applies: runtimes with their own sandbox refuse it.

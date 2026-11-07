@@ -470,9 +470,12 @@ root; it is not a systemd service. For slot `n` the supervisor creates:
 
 - user and group `niuu-slot-<n>` with uid and gid `uid_base + n`. Its
   directories `/var/lib/niuu/slots/<n>` (home, workspace, launch file, session
-  secrets, the Forge session credential, the guest agent's configuration) and
-  `/run/niuu/slots/<n>` (emptyDir and token volumes) are mode 0700 and owned by
-  that user;
+  secrets, the Forge session credential) and `/run/niuu/slots/<n>` (emptyDir and
+  token volumes) are mode 0700 and owned by that user. The guest agent's
+  configuration, which names the slot it fetches credentials for, is in
+  `/etc/niuu/slots/<n>`, owned by root, so the slot cannot point the agent at
+  another slot. Sidecars that set a group (OpenBao's agent renders secrets 0640)
+  run with the slot's group, never a VM group;
 - a holder container (`niuu-slot-<n>-holder`, the Skuld image running `sleep` as
   the slot's uid). Its network namespace is attached as `niuu-slot-<n>`, and every
   container of the slot shares its network and PID namespaces. So two sessions
@@ -522,11 +525,21 @@ remains (for example a process still running as the slot's user), and the stop
 is retried. A retry keeps the archive already taken.
 
 Without `slot_isolation` a VM runs one session, as before, and a lease for any
-slot but 0 is refused. `MetadataCredentialDelivery` vouches for the whole
-allocation, so with it only slot 0 can receive credentials and a later slot is
-refused. `SshPushCredentialDelivery` serves every slot. OpenShell runtimes refuse
-`slot_isolation`: their sandbox is the boundary. The pool's `slots_per_machine`
-stays 1 until the runtime declares slot support.
+slot but 0 is refused. With it, `SshContainerVmRuntime` declares slot support
+(`supports_slots`) when its credential delivery serves slots:
+
+- `SshPushCredentialDelivery` serves every slot: it writes each slot's own files.
+- `MetadataCredentialDelivery` serves slots when its guest identity belongs to the
+  machine: `ProviderAttestedGuestIdentity` (Harvester) and `HostKeyGuestIdentity`.
+  Each slot runs its own guest agent in the slot's namespaces; its configuration
+  names the slot (`"slot": n`), and Forge answers only for the session bound to
+  that slot. The identity's token or key is mounted into that agent only (root,
+  read-only), never into Skuld or the slot's home, so a slot's user cannot present
+  it. `SpiffeGuestIdentity` registers and deletes a SPIRE entry per allocation, so
+  one slot's stop would retire the others' identity: it serves one slot.
+
+OpenShell runtimes refuse `slot_isolation`: their sandbox is the boundary, and
+they serve one session per machine.
 
 ## VM session credentials
 
@@ -800,7 +813,8 @@ admission lock applies policy across concurrent controllers, not just one proces
 A machine has `slots_per_machine` slots (**Sessions per machine**, default 1), and
 each slot holds one session. One slot is the behaviour described above: a machine
 serves one session. More than one slot per machine needs a runtime that keeps the
-slots apart (`VmRuntime.supports_slots`); no shipped runtime does yet, so Forge
+slots apart (`VmRuntime.supports_slots`; see "Separated session slots"). A VM Forge
+runs one runtime, so every configured runtime must declare it; otherwise Forge
 refuses a policy above one slot at startup and in the admin form, naming the
 runtime and the remedy. The slot count is fixed when a machine is created, so
 changing it applies to machines booted afterwards.

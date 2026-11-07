@@ -88,9 +88,23 @@ async def test_posts_the_allocation_to_the_metadata_path(config_dict: dict) -> N
     (request,) = seen
     assert request.method == "POST"
     assert str(request.url) == CREDENTIALS_URL
-    assert json.loads(request.content) == {"allocation_id": ALLOCATION_ID}
+    assert json.loads(request.content) == {"allocation_id": ALLOCATION_ID, "slot": 0}
     assert request.headers["Authorization"] == "Bearer svid"
     assert request.headers["Content-Type"] == "application/json"
+    await agent.close()
+
+
+async def test_asks_for_its_own_slot(config_dict: dict) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=credentials_body())
+
+    agent = make_agent(parse_config({**config_dict, "slot": 3}), handler)
+    await agent.fetch()
+
+    assert json.loads(seen[0].content) == {"allocation_id": ALLOCATION_ID, "slot": 3}
     await agent.close()
 
 

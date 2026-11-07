@@ -254,9 +254,11 @@ Limits of this exception, enforced together:
   launch held. An allocation's identity vouches for every slot of the machine, so
   a process that holds it can ask for any slot: more than one slot per machine
   needs a runtime that keeps that identity out of the slots' reach (own user,
-  network namespace and credential files per slot). Until a runtime declares
-  that (`VmRuntime.supports_slots`), Forge refuses a pool with more than one slot
-  per machine.
+  network namespace and credential files per slot; the identity mounted into the
+  slot's guest agent only). A runtime declares that with
+  `VmRuntime.supports_slots`; `SshContainerVmRuntime` does only with
+  `slot_isolation` and a credential delivery that serves slots. Forge refuses
+  more than one slot per machine unless every configured runtime declares it.
 - **Exactly one route.** Do not extend either identity to another route without
   adding it to the same enforcement points this one touches: the router, the
   Volundr chart's Envoy `jwt_authn` bypass and Cedar `ext_authz` skip
