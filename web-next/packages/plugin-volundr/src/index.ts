@@ -5,7 +5,12 @@ import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ForgePage } from './ui/ForgePage';
 import { VolundrPage } from './ui/VolundrPage';
 import { NewSessionPage } from './ui/NewSessionPage';
-import { VolundrSessionsRoute, VolundrSessionRoute, VolundrArchivedRoute } from './ui/routes';
+import {
+  VolundrSessionsRoute,
+  VolundrSessionRoute,
+  VolundrArchivedRoute,
+  VolundrHostsRoute,
+} from './ui/routes';
 import { LaunchCatalogPage } from './ui/LaunchCatalogPage';
 import { HistoryPage } from './ui/HistoryPage';
 import { NotificationsPage } from './ui/notifications/NotificationsPage';
@@ -80,6 +85,11 @@ export const volundrPlugin = definePlugin({
       getParentRoute: () => rootRoute,
       path: '/volundr/catalog',
       component: LaunchCatalogPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/volundr/hosts',
+      component: VolundrHostsRoute,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -295,5 +305,22 @@ export type {
 } from './models/volundr.model';
 
 export { UserStorageSettings } from './ui/UserStorageSettings';
+
+// Compute hosts (bare-metal machines registered as a Forge's compute)
+export { ComputeHostsPanel } from './ui/computeHosts/ComputeHostsPanel';
+export { ComputeHostsPage } from './ui/computeHosts/ComputeHostsPage';
+export { ForgeHostsLink, computeHostsHref } from './ui/computeHosts/ForgeHostsLink';
+export { createMockComputeHosts, seedComputeHosts } from './adapters/computeHosts.mock';
+export type {
+  ComputeHost,
+  ComputeHostChanges,
+  ComputeHostsOverview,
+  ComputeSummary,
+  HostState,
+  NewPairingCode,
+  PairingCode,
+  PairingCodeRequest,
+  RemoveHostResult,
+} from './domain/computeHosts';
 
 export { ForgeSessionSettings } from './ui/ForgeSessionSettings';

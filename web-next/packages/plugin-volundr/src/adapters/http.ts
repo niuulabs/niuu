@@ -76,6 +76,17 @@ import type {
 import { normalizeSecretRequest, type SecretRequestPayload } from './secretRequestWire';
 import { SessionForkError, SessionReadStateConflictError } from '../domain/session';
 import type { SessionRuntimeOffer } from '../domain/sessionRuntimes';
+import {
+  invalidPayload,
+  pairingCodeBody,
+  toComputeHostResponse,
+  toComputeHostsOverview,
+  toNewPairingCode,
+  toRemoveResult,
+  type ComputeHostPayload,
+  type ComputeHostsPayload,
+  type NewPairingCodePayload,
+} from './computeHostsWire';
 
 /** Minimal HTTP client — structurally compatible with ApiClient from @niuulabs/query. */
 export interface HttpClient {
@@ -1388,6 +1399,99 @@ export function buildVolundrFileSystemHttpAdapter(options: {
   };
 }
 
+/** Every compute route names the Forge it is for: the Guild facade proxies by `?instance_id=`. */
+function computeHostsPath(instanceId: string, suffix = ''): string {
+  return `/compute/hosts${suffix}?instance_id=${encodeURIComponent(instanceId)}`;
+}
+
+/** A Forge without `compute.hosts` answers 404 on the list: that is "no Hosts view", not a failure. */
+function isNotFound(error: unknown): boolean {
+  return error instanceof ApiClientError && error.status === 404;
+}
+
+type ComputeHostMethods = Pick<
+  IVolundrService,
+  | 'getComputeHosts'
+  | 'getComputeHostTagSets'
+  | 'createPairingCode'
+  | 'revokePairingCode'
+  | 'updateComputeHost'
+  | 'drainComputeHost'
+  | 'resumeComputeHost'
+  | 'checkComputeHost'
+  | 'removeComputeHost'
+>;
+
+function computeHostMethods(client: HttpClient): ComputeHostMethods {
+  const hostPath = (instanceId: string, hostId: string, action = '') =>
+    computeHostsPath(instanceId, `/${encodeURIComponent(hostId)}${action}`);
+  return {
+    getComputeHosts: async (instanceId) => {
+      try {
+        return toComputeHostsOverview(
+          await client.get<ComputeHostsPayload>(computeHostsPath(instanceId)),
+          instanceId,
+        );
+      } catch (error) {
+        if (isNotFound(error)) return null;
+        throw error;
+      }
+    },
+    getComputeHostTagSets: async (instanceId) => {
+      let payload: { tag_sets?: string[][] };
+      try {
+        payload = await client.get<{ tag_sets?: string[][] }>(
+          computeHostsPath(instanceId, '/tag-sets'),
+        );
+      } catch (error) {
+        if (isNotFound(error)) return null;
+        throw error;
+      }
+      if (!Array.isArray(payload?.tag_sets)) throw invalidPayload('host tag sets', instanceId);
+      return payload.tag_sets;
+    },
+    createPairingCode: async (instanceId, request) =>
+      toNewPairingCode(
+        await client.post<NewPairingCodePayload>(
+          computeHostsPath(instanceId, '/pairing-codes'),
+          pairingCodeBody(request),
+        ),
+      ),
+    revokePairingCode: async (instanceId, codeId) => {
+      await client.delete<void>(
+        computeHostsPath(instanceId, `/pairing-codes/${encodeURIComponent(codeId)}`),
+      );
+    },
+    updateComputeHost: async (instanceId, hostId, changes) =>
+      toComputeHostResponse(
+        await client.patch<ComputeHostPayload>(hostPath(instanceId, hostId), changes),
+        instanceId,
+      ),
+    drainComputeHost: async (instanceId, hostId, remove) =>
+      toComputeHostResponse(
+        await client.post<ComputeHostPayload>(hostPath(instanceId, hostId, '/drain'), { remove }),
+        instanceId,
+      ),
+    resumeComputeHost: async (instanceId, hostId) =>
+      toComputeHostResponse(
+        await client.post<ComputeHostPayload>(hostPath(instanceId, hostId, '/resume')),
+        instanceId,
+      ),
+    checkComputeHost: async (instanceId, hostId) =>
+      toComputeHostResponse(
+        await client.post<ComputeHostPayload>(hostPath(instanceId, hostId, '/check')),
+        instanceId,
+      ),
+    removeComputeHost: async (instanceId, hostId) =>
+      toRemoveResult(
+        await client.delete<{ removed: boolean; host_cleanup_command?: string | null }>(
+          hostPath(instanceId, hostId),
+        ),
+        instanceId,
+      ),
+  };
+}
+
 export function buildVolundrHttpAdapter(
   client: HttpClient,
   openStream: EventStreamOpener = openEventStream,
@@ -1961,6 +2065,7 @@ export function buildVolundrHttpAdapter(
         readiness: offer.readiness,
       }));
     },
+    ...computeHostMethods(forgeClient),
     getSessionDefinitions: async () => {
       const payload = await catalogClient.get<SessionDefinitionPayload[]>('/session-definitions');
       return payload.map(normalizeSessionDefinition);

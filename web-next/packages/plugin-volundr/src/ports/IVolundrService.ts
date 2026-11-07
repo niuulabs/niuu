@@ -9,6 +9,14 @@ import type { SecretFulfillment, SecretRequest } from '@niuulabs/domain';
 import type { LivePreviewConfig } from '../domain/livePreview';
 import type { SessionRuntimeOffer } from '../domain/sessionRuntimes';
 import type {
+  ComputeHost,
+  ComputeHostChanges,
+  ComputeHostsOverview,
+  NewPairingCode,
+  PairingCodeRequest,
+  RemoveHostResult,
+} from '../domain/computeHosts';
+import type {
   VolundrFeatures,
   VolundrSession,
   VolundrStats,
@@ -161,6 +169,43 @@ export interface IVolundrService {
    * host offers no choice. Each Forge host offers its own, so ask the one that will run it.
    */
   getSessionRuntimes(instanceId?: string): Promise<SessionRuntimeOffer[]>;
+
+  // Compute hosts: machines registered as compute for a Forge. Admin only (`volundr:admin`).
+  /**
+   * The Forge's registered hosts, its pool summary, connectors, runtimes and open pairing
+   * codes. Null when the Forge has no compute hosts configured (it answers 404): that
+   * Forge has no Hosts view. Any other failure rejects.
+   */
+  getComputeHosts(instanceId: string): Promise<ComputeHostsOverview | null>;
+  /**
+   * Distinct tag sets of the hosts that can take a session now (healthy, active, slots
+   * set), for targeting. Null for a Forge without compute hosts.
+   */
+  getComputeHostTagSets(instanceId: string): Promise<string[][] | null>;
+  /** Mints a single-use pairing code and the one-line command that joins a host with it. */
+  createPairingCode(instanceId: string, request: PairingCodeRequest): Promise<NewPairingCode>;
+  /** Revokes a code that has not been used. */
+  revokePairingCode(instanceId: string, codeId: string): Promise<void>;
+  /**
+   * Changes a host's tags, slot count or name. Rejects with the platform's own reason when
+   * the slot count needs the host out of service or is over what the host can hold.
+   */
+  updateComputeHost(
+    instanceId: string,
+    hostId: string,
+    changes: ComputeHostChanges,
+  ): Promise<ComputeHost>;
+  /**
+   * Takes no new sessions; running ones are never stopped. With `remove`, Forge removes
+   * the host once it is empty.
+   */
+  drainComputeHost(instanceId: string, hostId: string, remove: boolean): Promise<ComputeHost>;
+  /** Returns an out-of-service host to service after a clean audit. */
+  resumeComputeHost(instanceId: string, hostId: string): Promise<ComputeHost>;
+  /** Runs the probe and the audit now. */
+  checkComputeHost(instanceId: string, hostId: string): Promise<ComputeHost>;
+  /** Removes an empty host; rejects while sessions still run on it (drain and remove). */
+  removeComputeHost(instanceId: string, hostId: string): Promise<RemoveHostResult>;
 
   // Session definitions
   getSessionDefinitions(): Promise<SessionDefinition[]>;

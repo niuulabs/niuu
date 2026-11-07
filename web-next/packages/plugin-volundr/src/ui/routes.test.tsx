@@ -3,7 +3,12 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
-import { VolundrSessionRoute, VolundrArchivedRoute, VolundrSessionsRoute } from './routes';
+import {
+  VolundrSessionRoute,
+  VolundrArchivedRoute,
+  VolundrSessionsRoute,
+  VolundrHostsRoute,
+} from './routes';
 import {
   createMockVolundrService,
   createMockSessionStore,
@@ -155,6 +160,24 @@ describe('VolundrSessionRoute', () => {
 
     await screen.findByTestId('live-session-detail-page');
     expect(screen.queryByRole('button', { name: 'Back to Work' })).not.toBeInTheDocument();
+  });
+});
+
+describe('VolundrHostsRoute', () => {
+  it('shows the hosts of the Forge named in the search', async () => {
+    routeState.search = { instance_id: 'mock-volundr-gpu' };
+    wrap(<VolundrHostsRoute />);
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Mock Volundr GPU Hosts' }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the default Forge when the search names none', async () => {
+    routeState.search = { instance_id: '  ' };
+    wrap(<VolundrHostsRoute />);
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Mock Volundr Hosts' }),
+    ).toBeInTheDocument();
   });
 });
 

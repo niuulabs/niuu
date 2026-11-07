@@ -511,6 +511,43 @@ describe('buildServices live base selection', () => {
     );
   });
 
+  it('sends compute host reads and changes to the Forge that owns the hosts', async () => {
+    const forge = {
+      getComputeHosts: vi.fn(async () => null),
+      getComputeHostTagSets: vi.fn(async () => [['gpu']]),
+      createPairingCode: vi.fn(async () => ({ id: 'c-1' })),
+      revokePairingCode: vi.fn(async () => undefined),
+      updateComputeHost: vi.fn(async () => ({ id: 'h-1' })),
+      drainComputeHost: vi.fn(async () => ({ id: 'h-1' })),
+      resumeComputeHost: vi.fn(async () => ({ id: 'h-1' })),
+      checkComputeHost: vi.fn(async () => ({ id: 'h-1' })),
+      removeComputeHost: vi.fn(async () => ({ removed: true, hostCleanupCommand: null })),
+    };
+    volundrMocks.createMockVolundrService.mockImplementationOnce(() => forge as never);
+    const volundr = buildServices({ demoMode: true, services: {} } as any).volundr as any;
+    const request = { execution: 'host@1', connector: 'direct-ssh', tags: [], slots: null };
+
+    await volundr.getComputeHosts('ymir');
+    await volundr.getComputeHostTagSets('ymir');
+    await volundr.createPairingCode('ymir', request);
+    await volundr.revokePairingCode('ymir', 'c-1');
+    await volundr.updateComputeHost('ymir', 'h-1', { tags: ['gpu'] });
+    await volundr.drainComputeHost('ymir', 'h-1', true);
+    await volundr.resumeComputeHost('ymir', 'h-1');
+    await volundr.checkComputeHost('ymir', 'h-1');
+    await volundr.removeComputeHost('ymir', 'h-1');
+
+    expect(forge.getComputeHosts).toHaveBeenCalledWith('ymir');
+    expect(forge.getComputeHostTagSets).toHaveBeenCalledWith('ymir');
+    expect(forge.createPairingCode).toHaveBeenCalledWith('ymir', request);
+    expect(forge.revokePairingCode).toHaveBeenCalledWith('ymir', 'c-1');
+    expect(forge.updateComputeHost).toHaveBeenCalledWith('ymir', 'h-1', { tags: ['gpu'] });
+    expect(forge.drainComputeHost).toHaveBeenCalledWith('ymir', 'h-1', true);
+    expect(forge.resumeComputeHost).toHaveBeenCalledWith('ymir', 'h-1');
+    expect(forge.checkComputeHost).toHaveBeenCalledWith('ymir', 'h-1');
+    expect(forge.removeComputeHost).toHaveBeenCalledWith('ymir', 'h-1');
+  });
+
   it('serves the observatory agent directory from the mock in demo mode', () => {
     const services = buildServices({ demoMode: true, services: {} } as any);
 

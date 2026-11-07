@@ -31,6 +31,7 @@ import type {
 } from '../models/volundr.model';
 import type { Cluster } from '../domain/cluster';
 import { SessionReadStateConflictError, type Session } from '../domain/session';
+import { createMockComputeHosts } from './computeHosts.mock';
 
 // ---------------------------------------------------------------------------
 // Seed data
@@ -1331,6 +1332,8 @@ export function createMockVolundrService(): IVolundrService {
     }),
 
     getSessionRuntimes: async () => [],
+
+    ...createMockComputeHosts(),
 
     getSessionDefinitions: async () => [...SEED_SESSION_DEFINITIONS],
 
