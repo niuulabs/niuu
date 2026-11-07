@@ -258,6 +258,12 @@ class SlotLayout:
         for container in (*placed.get("init_containers", []), *placed.get("sidecars", [])):
             for mount in container["mounts"]:
                 mount["source"] = self.relocate(mount["source"])
+            # What a sidecar writes for the session with group permission (OpenBao's
+            # agent renders secrets 0640) is for this slot's group, never a VM group:
+            # gid 1000 is the guest's login account.
+            user, _, group = container.get("user", "").partition(":")
+            if group:
+                container["user"] = f"{user}:{self.uid}"
         tunnel = f"127.0.0.1:{platform_port}"
         environment = {
             key: value.replace(tunnel, f"{self.gateway}:{platform_port}")

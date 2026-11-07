@@ -114,6 +114,25 @@ def test_session_guest_paths_move_into_the_slot(path, placed):
     assert _layout(3).relocate(path) == placed
 
 
+def test_a_sidecars_group_becomes_the_slots_so_the_session_can_read_what_it_writes():
+    layout = _layout(2)
+    payload = {
+        "environment": {},
+        "init_containers": [{"name": "openbao", "user": "100:1000", "mounts": []}],
+        "sidecars": [
+            {"name": "agent", "user": "0", "mounts": []},
+            {"name": "plain", "mounts": []},
+        ],
+    }
+
+    placed = layout.launch(payload, platform_port=18080)
+
+    # OpenBao renders 0640 for its group; gid 1000 is the VM's login account.
+    assert placed["init_containers"][0]["user"] == "100:61002"
+    assert [c.get("user") for c in placed["sidecars"]] == ["0", None]
+    assert payload["init_containers"][0]["user"] == "100:1000"
+
+
 def test_launch_moves_guest_sources_but_not_container_paths():
     layout = _layout(1)
     payload = {
