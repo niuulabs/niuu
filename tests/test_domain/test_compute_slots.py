@@ -15,8 +15,11 @@ from volundr.domain.compute import (
     ComputeProvisioningLimitError,
     ComputeSlot,
     ComputeStandbyTargetMetError,
+    HostSelector,
     LeaseState,
     Machine,
+    MachineProfile,
+    MachineProvider,
     MachineState,
     SlotLease,
     SlotState,
@@ -25,6 +28,7 @@ from volundr.domain.compute import (
     next_free_slot,
     session_limit,
     usable_slots,
+    validate_tag,
 )
 
 NOW = datetime(2030, 1, 1, tzinfo=UTC)
@@ -386,3 +390,126 @@ def test_busy_outranks_failed_outranks_starting_across_slots():
     assert display_state(lease, [starting, failed, busy]) is LeaseState.BUSY
     assert display_state(lease, [starting, failed]) is LeaseState.FAILED
     assert display_state(lease, [starting]) is LeaseState.READY
+
+
+# -- registered hosts: selectors, accepting and the fixed-inventory defaults ------------------
+
+
+def running(**update) -> Machine:
+    return Machine(allocation_id=uuid4(), resource_id="host", state=MachineState.RUNNING, **update)
+
+
+def test_an_empty_selector_accepts_every_machine_with_or_without_tags():
+    selector = HostSelector()
+
+    assert selector.accepts(())
+    assert selector.accepts(("gpu",))
+
+
+def test_an_all_selector_needs_every_tag_and_an_any_selector_needs_one():
+    both = HostSelector(tags=("gpu", "rack-1"))
+    either = HostSelector(tags=("gpu", "rack-1"), match="any")
+
+    assert both.accepts(("rack-1", "gpu", "extra"))
+    assert not both.accepts(("gpu",))
+    assert either.accepts(("rack-1",))
+    assert not either.accepts(("cpu",))
+    assert not either.accepts(())
+
+
+def test_selector_tags_are_sorted_and_deduplicated():
+    assert HostSelector(tags=("b", "a", "b")).tags == ("a", "b")
+
+
+def test_a_selector_is_frozen_and_refuses_unknown_keys_and_modes():
+    selector = HostSelector(tags=("a",))
+
+    with pytest.raises(ValidationError):
+        selector.tags = ("b",)
+    with pytest.raises(ValidationError):
+        HostSelector.model_validate({"tags": ["a"], "other": 1})
+    with pytest.raises(ValidationError):
+        HostSelector.model_validate({"match": "none"})
+
+
+@pytest.mark.parametrize("tag", ["", " ", "a b", "a,b", " a", "a ", "a\tb", "a\nb"])
+def test_a_tag_is_one_word_without_whitespace_or_commas(tag):
+    with pytest.raises(ValueError, match="non-empty with no whitespace or commas"):
+        validate_tag(tag)
+    with pytest.raises(ValidationError):
+        HostSelector(tags=(tag,))
+
+
+def test_a_valid_tag_is_returned_unchanged():
+    assert validate_tag("gpu-a100") == "gpu-a100"
+
+
+def test_a_machine_that_stops_accepting_offers_no_slot_while_sessions_keep_running():
+    lease = machine(slots=2, machine=running(accepting=False))
+    held = [binding(lease, state=SlotState.BUSY)]
+
+    assert usable_slots(lease, [], policy(slots_per_machine=2), NOW) == 0
+    assert usable_slots(lease, held, policy(slots_per_machine=2), NOW) == 0
+    assert display_state(lease, held) is LeaseState.BUSY
+
+
+def test_a_machine_that_accepts_still_offers_its_slots():
+    lease = machine(slots=2, machine=running(accepting=True))
+
+    assert usable_slots(lease, [], policy(slots_per_machine=2), NOW) == 2
+
+
+def test_a_machine_with_no_snapshot_yet_is_assumed_to_accept():
+    lease = machine(slots=2, state=LeaseState.PROVISIONING, machine=None)
+
+    assert usable_slots(lease, [], policy(slots_per_machine=2), NOW) == 2
+
+
+def test_a_machine_record_defaults_describe_a_disposable_vm():
+    created = running()
+
+    assert (created.slots, created.tags, created.accepting) == (None, (), True)
+    assert (created.host_public_key, created.ssh_port, created.ssh_proxy_command) == (
+        None,
+        None,
+        (),
+    )
+
+
+@pytest.mark.parametrize("update", [{"slots": 0}, {"ssh_port": 0}, {"ssh_port": 65536}])
+def test_a_machine_refuses_impossible_slots_and_ports(update):
+    with pytest.raises(ValidationError):
+        running(**update)
+
+
+class _MinimalProvider(MachineProvider):
+    async def profiles(self):
+        return (MachineProfile(name="small", revision="1"),)
+
+    async def create(self, request):
+        raise AssertionError
+
+    async def get(self, allocation_id):
+        return None
+
+    async def list(self):
+        return []
+
+    async def delete(self, allocation_id):
+        return True
+
+    async def close(self):
+        return None
+
+
+def test_a_provider_is_not_a_fixed_inventory_unless_it_says_so():
+    assert _MinimalProvider().fixed_inventory is False
+
+
+async def test_claimable_is_refused_by_a_provider_that_is_not_a_fixed_inventory():
+    with pytest.raises(NotImplementedError, match="_MinimalProvider is not a fixed inventory"):
+        await _MinimalProvider().claimable("small", HostSelector())
+
+
+async def test_a_provider_without_tags_reports_no_tag_sets():
+    assert await _MinimalProvider().tag_sets() == ()

@@ -9,12 +9,14 @@ import pytest
 from volundr.domain.compute import (
     ComputeCapacityError,
     ComputePoolPolicy,
+    HostSelector,
     LeaseState,
     Machine,
     MachineBootstrap,
     MachineProviderError,
     MachineState,
     SlotState,
+    usable_slots,
 )
 from volundr.domain.services.compute_leases import ComputeLeaseService
 
@@ -681,3 +683,238 @@ async def test_a_standby_target_already_met_is_not_a_shortfall(setup):
     await pool.maintain()
 
     assert (await pool.snapshot())["capacity_shortfall"] is None
+
+
+# -- pools on registered hosts: a fixed inventory -------------------------------------------
+
+
+def _fixed_inventory_provider(hosts):
+    from tests.test_adapters.test_vm_pod_manager import ReadyProvider
+
+    class FixedInventoryProvider(ReadyProvider):
+        """Claims from ``hosts`` registered machines, none of which can be made on demand."""
+
+        def __init__(self):
+            super().__init__()
+            self.hosts = hosts
+            self.claimable_calls = []
+
+        @property
+        def fixed_inventory(self):
+            return True
+
+        async def claimable(self, profile, selector):
+            self.claimable_calls.append((profile, selector))
+            return max(self.hosts - len(self.machines), 0)
+
+    return FixedInventoryProvider()
+
+
+def _fixed_pool(hosts, **policy):
+    from tests.compute_fakes import pool_setup
+
+    pool, leases, repo, provider, runtime, store = pool_setup(
+        max_machines=8, provider=_fixed_inventory_provider(hosts)
+    )
+    runtime.requires_root_daemon = False
+    runtime.supports_slots = True
+    pool.defaults = pool.defaults.model_copy(update=policy)
+    return pool, leases, repo, provider, runtime
+
+
+def _plain_pool(**policy):
+    from tests.compute_fakes import pool_setup
+
+    pool, leases, repo, provider, runtime, store = pool_setup(max_machines=8)
+    runtime.supports_slots = True
+    pool.defaults = pool.defaults.model_copy(update=policy)
+    return pool, leases, repo, provider, runtime
+
+
+async def test_a_registered_host_pool_refuses_a_runtime_that_needs_a_root_daemon():
+    pool, _, repo, _, runtime = _fixed_pool(1)
+    runtime.requires_root_daemon = True
+
+    with pytest.raises(ValueError, match="runs on registered hosts") as refused:
+        await pool.policy()
+
+    # The refusal names the pool, the runtime and the way out.
+    assert "pool" in str(refused.value) and "AsyncMock" in str(refused.value)
+    assert "needs a root daemon" in str(refused.value)
+    assert "rootless Podman" in str(refused.value)
+    assert repo.policies == {}
+
+
+async def test_an_admin_policy_on_registered_hosts_is_refused_for_a_root_daemon_runtime():
+    pool, _, repo, _, runtime = _fixed_pool(1)
+    stored = await pool.policy()
+    runtime.requires_root_daemon = True
+
+    with pytest.raises(ValueError, match="needs a root daemon"):
+        await pool.validate_policy(stored)
+    with pytest.raises(ValueError, match="needs a root daemon"):
+        await pool.configure(stored.model_copy(update={"warm_min": 2}))
+
+    assert repo.policies["pool"] == stored
+
+
+async def test_an_execution_runtime_that_needs_a_root_daemon_is_refused_too():
+    pool, _, _, _, runtime = _fixed_pool(1)
+    other = AsyncMock()
+    other.requires_root_daemon = True
+    pool._execution_runtimes = {"plan": other}
+
+    with pytest.raises(ValueError, match="needs a root daemon"):
+        await pool.policy()
+
+    other.requires_root_daemon = False
+    assert (await pool.policy()).profile == "small"
+
+
+async def test_a_pool_of_disposable_machines_may_use_a_root_daemon_runtime():
+    pool, _, _, _, runtime = _plain_pool()
+    runtime.requires_root_daemon = True
+
+    assert (await pool.policy()).profile == "small"
+    await pool.validate_policy(await pool.policy())
+
+
+async def test_registered_hosts_with_a_rootless_runtime_are_accepted():
+    pool, _, _, _, _ = _fixed_pool(1)
+
+    assert (await pool.policy()).profile == "small"
+    await pool.validate_policy(await pool.policy())
+
+
+async def test_a_fixed_inventory_is_claimed_up_to_what_it_can_serve():
+    pool, _, repo, provider, _ = _fixed_pool(1, warm_min=3)
+
+    await pool.maintain()
+
+    assert len(provider.created) == 1
+    assert provider.claimable_calls[0] == ("small", HostSelector())
+    assert (await pool.snapshot())["capacity_shortfall"] == (
+        "0 of 3 free warm slots: 1 registered host(s) can take sessions; register or resume a host"
+    )
+
+
+async def test_enough_registered_hosts_claim_the_whole_warm_minimum_without_a_shortfall(
+    monkeypatch,
+):
+    from niuu.observability import get_observability
+
+    pool, _, _, provider, _ = _fixed_pool(5, warm_min=2)
+    count = MagicMock()
+    monkeypatch.setattr(get_observability(), "count", count, raising=False)
+
+    await pool.maintain()
+
+    assert len(provider.created) == 2
+    assert (await pool.snapshot())["capacity_shortfall"] is None
+    assert not [
+        c for c in count.call_args_list if c.args[0] == "volundr.compute.warm.capacity_hits"
+    ]
+
+
+async def test_a_pool_with_no_registered_host_claims_nothing_counts_each_tick_and_logs_once(
+    monkeypatch, caplog
+):
+    import logging
+
+    from niuu.observability import get_observability
+
+    pool, _, repo, provider, _ = _fixed_pool(0, warm_min=1)
+    count = MagicMock()
+    monkeypatch.setattr(get_observability(), "count", count, raising=False)
+
+    with caplog.at_level(logging.ERROR, logger="volundr.domain.services.compute_pool"):
+        await pool.maintain()
+        await pool.maintain()
+        await pool.maintain()
+
+    assert provider.created == []
+    assert repo.leases == {}
+    hits = [c for c in count.call_args_list if c.args[0] == "volundr.compute.warm.capacity_hits"]
+    assert len(hits) == 3
+    assert hits[0].kwargs["attributes"] == {"pool": "pool"}
+    # Logged at error when the shortfall starts, not again while its text is the same.
+    messages = [
+        r for r in caplog.records if "registered host(s) can take sessions" in r.getMessage()
+    ]
+    assert len(messages) == 1
+    assert messages[0].levelno == logging.ERROR
+    assert "0 of 1 free warm slots: 0 registered host(s)" in messages[0].getMessage()
+
+
+async def test_the_shortfall_is_logged_again_when_its_text_changes_and_clears_when_met(
+    caplog,
+):
+    import logging
+
+    pool, _, _, provider, _ = _fixed_pool(1, warm_min=3)
+
+    with caplog.at_level(logging.ERROR, logger="volundr.domain.services.compute_pool"):
+        await pool.maintain()
+        await pool.maintain()
+        await pool.maintain()
+
+    shortfalls = [
+        r.getMessage() for r in caplog.records if "registered host(s) can take" in r.getMessage()
+    ]
+    assert len(shortfalls) == 2
+    assert "0 of 3 free warm slots: 1 registered" in shortfalls[0]
+    assert "1 of 3 free warm slots: 0 registered" in shortfalls[1]
+
+    provider.hosts = 5
+    await pool.maintain()
+    await pool.maintain()
+    await pool.maintain()
+    assert (await pool.snapshot())["capacity_shortfall"] is None
+    assert len(provider.created) == 3
+
+
+async def test_a_pool_of_disposable_machines_never_asks_a_provider_what_is_claimable():
+    pool, _, _, provider, _ = _plain_pool(warm_min=2)
+    provider.claimable = AsyncMock(side_effect=AssertionError("not a fixed inventory"))
+
+    await pool.maintain()
+
+    provider.claimable.assert_not_awaited()
+    assert len(provider.created) == 2
+
+
+async def test_a_host_in_service_has_its_machine_snapshot_refreshed_each_tick():
+    pool, leases, repo, provider, _ = _fixed_pool(2, warm_min=0)
+    claim = await leases.acquire(session_id=uuid4(), owner_id="o", tenant_id="t", profile="small")
+    provider.machines[claim.id] = provider.machines[claim.id].model_copy(
+        update={"accepting": False}
+    )
+
+    await pool.maintain()
+
+    assert repo.leases[claim.id].machine.accepting is False
+    assert repo.leases[claim.id].state == LeaseState.READY
+    assert usable_slots(repo.leases[claim.id], [], await pool.policy(), datetime.now(UTC)) == 0
+
+
+async def test_refresh_is_asked_only_for_machines_with_live_sessions_on_a_fixed_inventory():
+    pool, leases, repo, provider, _ = _fixed_pool(3, warm_min=0)
+    busy = await leases.acquire(session_id=uuid4(), owner_id="o", tenant_id="t", profile="small")
+    empty = await leases.acquire_standby(profile="small")
+    pool.leases.refresh_machine = AsyncMock(side_effect=leases.refresh_machine)
+
+    await pool.maintain()
+
+    refreshed = [call.args[0] for call in pool.leases.refresh_machine.await_args_list]
+    assert refreshed == [busy.id]
+    assert empty.id not in refreshed
+
+
+async def test_a_pool_of_disposable_machines_does_not_refresh_machine_snapshots():
+    pool, leases, _, _, _ = _plain_pool(warm_min=0)
+    await leases.acquire(session_id=uuid4(), owner_id="o", tenant_id="t", profile="small")
+    pool.leases.refresh_machine = AsyncMock(side_effect=AssertionError("not a fixed inventory"))
+
+    await pool.maintain()
+
+    pool.leases.refresh_machine.assert_not_awaited()

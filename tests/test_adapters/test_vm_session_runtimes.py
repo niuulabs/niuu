@@ -1,6 +1,7 @@
 """A VM Forge offers the runtimes its catalog lists for launch, with warm readiness."""
 
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -18,7 +19,7 @@ from volundr.adapters.outbound.file_execution_catalog import FileExecutionCatalo
 from volundr.adapters.outbound.ssh_openshell_vm_runtime import SshOpenShellVmRuntime
 from volundr.adapters.outbound.ssh_vm_runtime import SshContainerVmRuntime
 from volundr.adapters.outbound.vm_pod_manager import VmPodManager
-from volundr.domain.compute import ComputePoolPolicy, MachineBootstrap
+from volundr.domain.compute import ComputePoolPolicy, HostSelector, MachineBootstrap
 from volundr.domain.execution_catalog import ExecutionCatalogError, ExecutionSelectionError
 from volundr.domain.models import PodSpecAdditions, Session, SessionSpec
 from volundr.domain.services.compute_leases import ComputeLeaseService
@@ -29,6 +30,7 @@ from volundr.domain.session_runtimes import (
     SessionGrant,
     SessionRuntimeKind,
     requested_grants,
+    requested_host_selector,
 )
 from volundr.domain.vm_runtime import VmRuntime
 
@@ -328,3 +330,129 @@ def test_the_openshell_gateway_runtime_runs_sessions_in_openshell():
     from volundr.adapters.outbound.openshell_vm_runtime import OpenShellVmRuntime
 
     assert OpenShellVmRuntime.session_runtime.fget(None) is SessionRuntimeKind.OPENSHELL
+
+
+# -- host selectors: tags the session's machine must carry --------------------------------------
+
+
+class TaggedProvider(ReadyProvider):
+    """A fixed inventory whose machines carry the given tag sets."""
+
+    def __init__(self, tag_sets):
+        super().__init__()
+        self._tag_sets = tag_sets
+
+    async def tag_sets(self):
+        return self._tag_sets
+
+
+def _tagged_manager(tmp_path: Path, tag_sets):
+    resolver = _catalog(tmp_path, None)
+    manager, _, _, _, plans = _manager(
+        resolver, {"vm": KindRuntime("vm", None), "vm-b": KindRuntime("vm-b", None)}
+    )
+    manager.configure_pool(SimpleNamespace(provider=TaggedProvider(tag_sets)))
+    return manager, plans
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "gpu",
+        ["gpu"],
+        {"tags": "gpu"},
+        {"tags": ["has space"]},
+        {"tags": ["a,b"]},
+        {"tags": ["gpu"], "match": "most"},
+        {"tags": ["gpu"], "extra": 1},
+    ],
+)
+async def test_a_malformed_host_selector_is_a_selection_error(tmp_path: Path, selector):
+    manager, plans = _tagged_manager(tmp_path, (("gpu",),))
+
+    with pytest.raises(ExecutionSelectionError, match="host_selector"):
+        await manager.resolve_execution(_session(manager, plans["vm"], host_selector=selector))
+
+
+async def test_a_selector_no_machine_satisfies_is_refused_at_create_naming_the_tags(
+    tmp_path: Path,
+):
+    manager, plans = _tagged_manager(tmp_path, (("cpu", "rack-1"), ("rack-2",), ()))
+    session = _session(manager, plans["vm"], host_selector={"tags": ["gpu", "arm"], "match": "all"})
+
+    with pytest.raises(ExecutionSelectionError) as refused:
+        await manager.resolve_execution(session)
+
+    message = str(refused.value)
+    assert "['arm', 'gpu']" in message
+    assert "match: all" in message
+    assert "compute pool pool" in message
+    assert "cpu, rack-1; rack-2; (no tags)" in message
+
+
+async def test_a_selector_against_a_pool_with_no_machines_says_none_are_offered(tmp_path: Path):
+    manager, plans = _tagged_manager(tmp_path, ())
+    session = _session(manager, plans["vm"], host_selector={"tags": ["a"]})
+
+    with pytest.raises(ExecutionSelectionError, match="the pool's machines carry: none"):
+        await manager.resolve_execution(session)
+
+
+async def test_a_selector_without_a_pool_is_refused(tmp_path: Path):
+    resolver = _catalog(tmp_path, None)
+    manager, _, _, _, plans = _manager(
+        resolver, {"vm": KindRuntime("vm", None), "vm-b": KindRuntime("vm-b", None)}
+    )
+    session = _session(manager, plans["vm"], host_selector={"tags": ["a"]})
+
+    with pytest.raises(ExecutionSelectionError, match="carries the tags"):
+        await manager.resolve_execution(session)
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        {"tags": ["gpu"]},
+        {"tags": ["gpu", "missing"], "match": "any"},
+    ],
+)
+async def test_a_selector_some_machine_satisfies_is_accepted(tmp_path: Path, selector):
+    manager, plans = _tagged_manager(tmp_path, (("cpu",), ("gpu", "rack-1")))
+
+    plan = await manager.resolve_execution(_session(manager, plans["vm"], host_selector=selector))
+
+    assert plan.execution.id == "vm"
+
+
+@pytest.mark.parametrize("selector", [None, {}, {"tags": []}, {"match": "any"}])
+async def test_an_absent_or_empty_selector_never_asks_which_tags_exist(tmp_path: Path, selector):
+    manager, plans = _tagged_manager(tmp_path, ())
+    config = {} if selector is None else {"host_selector": selector}
+
+    plan = await manager.resolve_execution(_session(manager, plans["vm"], **config))
+
+    assert plan.execution.id == "vm"
+
+
+def test_requested_host_selector_reads_absent_as_the_empty_selector():
+    assert requested_host_selector({}) == HostSelector()
+    assert requested_host_selector({"host_selector": None}) == HostSelector()
+
+
+def test_requested_host_selector_reads_tags_and_match():
+    selector = requested_host_selector({"host_selector": {"tags": ["b", "a"], "match": "any"}})
+
+    assert selector == HostSelector(tags=("a", "b"), match="any")
+
+
+@pytest.mark.parametrize("raw", ["gpu", ["gpu"], 3, True])
+def test_a_host_selector_that_is_not_an_object_is_refused(raw):
+    with pytest.raises(ValueError, match='host_selector must be {"tags"'):
+        requested_host_selector({"host_selector": raw})
+
+
+def test_an_invalid_host_selector_names_what_is_wrong():
+    with pytest.raises(ValueError, match="host_selector is invalid: .*whitespace or commas"):
+        requested_host_selector({"host_selector": {"tags": ["a b"]}})
+    with pytest.raises(ValueError, match="host_selector is invalid"):
+        requested_host_selector({"host_selector": {"match": "none"}})
