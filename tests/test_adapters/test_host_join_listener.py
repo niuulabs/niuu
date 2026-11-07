@@ -79,10 +79,20 @@ def _listener(tls: JoinTls, *, port: int = 0) -> HostJoinListener:
     )
 
 
-def _peer_pin(port: int) -> str:
-    context = ssl.create_default_context()
+def _trusting(tls: JoinTls) -> ssl.SSLContext:
+    """A client context that verifies the listener's own self-signed certificate.
+
+    The certificate names no host: hosts trust it by its pin (``curl --pinnedpubkey``),
+    so the chain is verified and the hostname is not.
+    """
+    context = ssl.create_default_context(cafile=str(tls.cert_file))
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
+    return context
+
+
+def _peer_pin(port: int, tls: JoinTls) -> str:
+    context = _trusting(tls)
     with socket.create_connection(("127.0.0.1", port)) as raw:
         with context.wrap_socket(raw) as wrapped:
             der = wrapped.getpeercert(binary_form=True)
@@ -199,9 +209,9 @@ class TestListener:
         await listener.start()
         try:
             assert listener.port != 0
-            assert await asyncio.to_thread(_peer_pin, listener.port) == shared_tls.pin
+            assert await asyncio.to_thread(_peer_pin, listener.port, shared_tls) == shared_tls.pin
             async with httpx.AsyncClient(
-                base_url=f"https://127.0.0.1:{listener.port}", verify=False
+                base_url=f"https://127.0.0.1:{listener.port}", verify=_trusting(shared_tls)
             ) as client:
                 assert (await client.get(JOIN_SH)).status_code == 401
                 joined = await client.post(

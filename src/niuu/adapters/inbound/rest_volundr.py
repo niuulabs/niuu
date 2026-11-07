@@ -1144,6 +1144,11 @@ async def _read_host_tag_sets(
     return _host_tag_sets_from(response)
 
 
+def _safe_log_value(value: str) -> str:
+    """Keep request-supplied selectors from forging additional log records."""
+    return value.replace("\r", "").replace("\n", "")
+
+
 async def _instances_serving_tags(
     instances: list[RegisteredInstance],
     request: Request,
@@ -1295,8 +1300,8 @@ async def _resolve_target_instance(
                 "Host tags of %d Volundr instance(s) could not be read for selector %s "
                 "(match=%s) and they were not considered: %s",
                 len(unreadable),
-                sorted(tags),
-                match,
+                _safe_log_value(str(sorted(tags))),
+                _safe_log_value(match),
                 unreadable,
             )
         if not instances:
