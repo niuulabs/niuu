@@ -191,6 +191,11 @@ Supported built-in bindings are
 `volundr.adapters.outbound.ssh_host_preparation.SshHostPreparation`, and the VM
 runtime classes already documented below. Runtime image kwargs must use an immutable
 image digest, such as `registry/repository@sha256:<digest>`, rather than a mutable tag.
+An image the deployment bumps in place (each platform release) can come from the
+environment through `secret_kwargs_env`, which the plan digest does not cover: edited
+in the YAML, it would change a revision under the sessions pinned to it, which then
+can no longer be recovered or stopped. A running session keeps the image it started
+with, as with `compute.runtime`.
 
 The loader rejects duplicate YAML keys, duplicate `id`/`revision` pairs, missing
 references, path escapes, missing or non-regular artifacts, and digest mismatches.
@@ -229,20 +234,60 @@ and daemon, `tar`, and Git when Git session sources are allowed. The guest must 
 to pull the digest-pinned Skuld image and have enough local disk for that image,
 workspace, home and archive staging. For `SshOpenShellVmRuntime`, the recipe must also
 prepare OpenShell and its gateway, Podman 5 or newer with a live rootless user socket,
-a systemd user manager with lingering and delegated CPU cgroup control, and SSH
-`GatewayPorts clientspecified`. The catalog path marks the host as recipe-prepared, so
-the container runtime does not bootstrap host dependencies and the OpenShell runtime
-verifies its prepared software instead of running its legacy installer. Build and
-validate a pinned recipe against the exact guest image before admitting sessions.
+and a systemd user manager with lingering and delegated CPU cgroup control. The
+catalog path marks the host as recipe-prepared, so the container runtime does not
+bootstrap host dependencies and the OpenShell runtime verifies its prepared software
+instead of running its legacy installer. Build and validate a pinned recipe against
+the exact guest image before admitting sessions.
 
-The OpenShell release is pinned: `openshell_version` (default `v0.1.6-pre.5`)
-selects the release, and `openshell_install_sha256` the SHA-256 of that release's
-`install.sh`, which the runtime verifies before running it. A guest without that
-release gets it installed; a recipe-prepared host running another release is
-refused, naming the version to set. The runtime writes a version 2 Podman gateway
-configuration with `allow_driver_config = true` and
-`[openshell.drivers.podman.resource_admission] enabled = false`, because the
-session's workspace and home are host bind mounts in the sandbox driver config.
+The OpenShell release is pinned: `openshell_version` (default `v0.1.6`) selects the
+release, and `openshell_install_sha256` the SHA-256 of that release's `install.sh`,
+which the runtime verifies before running it. Pin a tagged release: `install.sh`
+fetches prerelease packages only through an authenticated GitHub CLI, which a guest
+does not have. A guest without that release gets it installed; a recipe-prepared host
+running another release is refused, naming the version to set. The runtime's own
+installer writes a version 2 Podman gateway configuration with
+`allow_driver_config = true`, `enable_bind_mounts = true`,
+`userns = "keep-id:uid=<sandbox_uid>,gid=<sandbox_gid>"` and
+`[openshell.drivers.podman.resource_admission] enabled = false`, generates the
+gateway's certificates for `host.containers.internal`, and registers the CLI with
+`openshell gateway add https://127.0.0.1:17670 --local --name openshell`. A prepared
+host must do the same; the runtime refuses one whose gateway lacks any of these
+settings, or whose CLI cannot list sandboxes (`openshell status` succeeds even with
+no gateway registered).
+
+`keep-id` maps the access principal to the sandbox user (`sandbox_uid`/`sandbox_gid`,
+998 in `ghcr.io/niuulabs/openshell`, the image to run). The session's workspace and
+home are then owned by that principal on the host, and secrets its group may read
+(OpenBao renders them `0640` for group 1000) are readable in the sandbox. Podman
+copies an image's layers for that mapping the first time it runs it (about a minute
+for the OpenShell image) and the sandbox create gives up before then, so `prepare`
+and `warm` pull the image and run it once under the same mapping.
+
+On Ubuntu 24.04 the distribution's Podman is 4.9. A static Podman 5 (for example
+`mgoltzsche/podman-static`, pinned by digest) works, with `uidmap` and
+`dbus-user-session` installed and an AppArmor profile granting `userns,` to
+`/usr/local/bin/podman` and `/usr/local/bin/crun`: noble denies unprivileged user
+namespaces to binaries without one (`kernel.apparmor_restrict_unprivileged_userns`),
+and rootless Podman then fails with `failed to reexec: Permission denied`.
+
+Only Skuld runs in the sandbox. The session's pod contract runs as for
+`SshContainerVmRuntime`: its init containers and sidecars (the guest credential agent,
+OpenBao's agent) run in the guest's Docker from `host_image`, the digest-pinned Skuld
+image, and the sandbox bind-mounts the directories they keep fresh at the targets the
+launch names, adding those to the policy's `filesystem_policy` where it does not
+already cover them. Use `contributor_backend: vm` for this contract and set
+`native_credential_providers: false`: its credentials arrive as rendered files, while
+`true` (the default) turns `openshell.credentialMappings` into OpenShell providers for
+the `openshell` contributor contract. A `policy` is required; a sandbox without one
+never leaves Provisioning. The sandbox reaches the guest's loopback, where the Forge
+tunnel listens, as `host.openshell.internal` (the driver pins it to the supervisor's
+loopback), so set `sandbox_platform_url: http://host.openshell.internal:<guest port>`
+and allow that endpoint in the policy. `host.containers.internal` is the guest's LAN
+address in Podman's `/etc/hosts` and does not reach the tunnel. Policy binaries are
+matched by resolved path: in the OpenShell image Python is
+`/sandbox/.uv/python/**` and Claude Code
+`/opt/skuld-tools/node_modules/@anthropic-ai/**`.
 
 OpenShell shutdown requests sandbox deletion once, then polls the complete sandbox
 inventory until absence is confirmed. Runtime adapter kwargs control this wait:

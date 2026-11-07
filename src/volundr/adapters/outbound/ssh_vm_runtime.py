@@ -116,6 +116,9 @@ for c in p.get('sidecars',[]):
         continue
     run('docker','run','--detach','--init','--restart','unless-stopped','--name',sidecar,
         *container(c),env=c['environment'])
+if p.get('containers_only'):
+    # Another runtime starts the broker itself, next to these containers.
+    sys.exit(0)
 if owned(name):
     # A new launch replaced the Forge session credential the running broker read.
     run('docker','restart' if p.get('relaunch') else 'start',name)
@@ -534,7 +537,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                     "This VM session needs delivered credentials; configure "
                     "compute.credential_delivery"
                 )
-            added = self._credential_delivery.session_containers(plan, image=self._image)
+            added = self._credential_delivery.session_containers(plan, image=self._delivery_image())
             # Delivery containers run first: the others read what they deliver.
             launch["init_containers"] = [*added.init_containers, *launch["init_containers"]]
             launch["sidecars"] = [*added.sidecars, *launch["sidecars"]]
@@ -710,6 +713,10 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             "service_account": service_account or "",
             **containers,
         }
+
+    def _delivery_image(self) -> str:
+        """The image the guest's credential delivery containers run."""
+        return self._image
 
     def _in_image(self, target: str) -> PurePosixPath:
         """Where a mount target lands inside the image, through its directory symlinks."""

@@ -274,6 +274,8 @@ async def test_real_file_catalog_composes_both_ssh_runtimes(tmp_path, adapter, b
                 "kwargs": {
                     "skuld_image": "test-only-image@sha256:" + "a" * 64,
                     "data_dir": str(tmp_path / "runtime"),
+                    # An OpenShell sandbox never leaves Provisioning without a policy.
+                    **({"policy": "version: 1\n"} if backend == "openshell" else {}),
                 },
             },
             "contributor_backend": backend,
