@@ -978,6 +978,18 @@ function buildSplitVolundrService(
   return {
     ...catalog,
     getFeatures: (instanceId) => forge.getFeatures(instanceId),
+    getComputeHosts: (instanceId) => forge.getComputeHosts(instanceId),
+    getComputeHostTagSets: (instanceId) => forge.getComputeHostTagSets(instanceId),
+    createPairingCode: (instanceId, request) => forge.createPairingCode(instanceId, request),
+    revokePairingCode: (instanceId, codeId) => forge.revokePairingCode(instanceId, codeId),
+    updateComputeHost: (instanceId, hostId, changes) =>
+      forge.updateComputeHost(instanceId, hostId, changes),
+    drainComputeHost: (instanceId, hostId, remove) =>
+      forge.drainComputeHost(instanceId, hostId, remove),
+    resumeComputeHost: (instanceId, hostId) => forge.resumeComputeHost(instanceId, hostId),
+    reprepareComputeHost: (instanceId, hostId) => forge.reprepareComputeHost(instanceId, hostId),
+    checkComputeHost: (instanceId, hostId) => forge.checkComputeHost(instanceId, hostId),
+    removeComputeHost: (instanceId, hostId) => forge.removeComputeHost(instanceId, hostId),
     getSessions: (options) => forge.getSessions(options),
     getSession: (id, options) => forge.getSession(id, options),
     getSessionChanges: forge.getSessionChanges?.bind(forge),

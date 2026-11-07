@@ -76,6 +76,11 @@ TOPOLOGY_PUSH_SCOPE = "observatory:topology:push"
 #: ``niuu.domain.services.guild_join`` and ``.claude/rules/architecture.md``.
 NODE_JOIN_SCOPE = "node_join"
 
+#: Scope carried by a minted Forge host pairing code: one registered host joins one
+#: Forge's compute pool with it (``volundr.domain.services.compute_hosts``). Only Forge
+#: mints it in process; the exchange never grants it (:data:`ISSUER_ONLY_SCOPES`).
+COMPUTE_HOST_JOIN_SCOPE = "compute_host_join"
+
 #: Forge session credential scopes. ``notify``, ``read`` and ``secret`` are granted to
 #: every session; ``message`` and ``lifecycle`` only through an operator grant.
 FORGE_NOTIFY_SCOPE = "forge:notify"
@@ -119,6 +124,7 @@ VALKYRIE_BUILD_SCOPES: frozenset[str] = frozenset(
         "ting:workflow:coordinate",
         TOPOLOGY_PUSH_SCOPE,
         NODE_JOIN_SCOPE,
+        COMPUTE_HOST_JOIN_SCOPE,
         FORGE_PUSH_CALL_SCOPE,
         FORGE_SESSION_PREVIEW_SCOPE,
     }
@@ -127,7 +133,9 @@ VALKYRIE_BUILD_SCOPES: frozenset[str] = frozenset(
 #: ``valkyrie_build`` scopes only an in-process issuer may put on a credential.
 #: The workload-identity exchange drops them like an unknown scope: a workload
 #: proof never earns the right to drive another session's preview.
-ISSUER_ONLY_SCOPES: frozenset[str] = frozenset({FORGE_SESSION_PREVIEW_SCOPE})
+ISSUER_ONLY_SCOPES: frozenset[str] = frozenset(
+    {FORGE_SESSION_PREVIEW_SCOPE, COMPUTE_HOST_JOIN_SCOPE}
+)
 
 #: What the workload-identity exchange may grant a ``valkyrie_build`` credential.
 EXCHANGE_GRANTABLE_SCOPES: frozenset[str] = VALKYRIE_BUILD_SCOPES - ISSUER_ONLY_SCOPES
@@ -428,6 +436,8 @@ def credential_allows_route(token: str, method: str, path: str) -> bool:
         ("PUT", r"/api/v1/niuu/observatory/fragments/[^/?%]+", "observatory:topology:push"),
         ("DELETE", r"/api/v1/niuu/observatory/fragments/[^/?%]+", "observatory:topology:push"),
         ("POST", r"/api/v1/niuu/guild/join", NODE_JOIN_SCOPE),
+        ("GET", r"/api/v1/forge/compute/hosts/join\.sh", COMPUTE_HOST_JOIN_SCOPE),
+        ("POST", r"/api/v1/forge/compute/hosts/join", COMPUTE_HOST_JOIN_SCOPE),
         ("POST", r"/api/v1/forge/push/call", FORGE_PUSH_CALL_SCOPE),
     ]
     granted = credential_scopes(claims)

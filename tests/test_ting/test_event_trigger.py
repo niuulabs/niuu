@@ -1644,3 +1644,93 @@ async def test_event_phase_balances_each_run(monkeypatch):
     template = _make_template_phase([_make_template_run(), _make_template_run()])
     await adapter._activate_phase(saga, phase, runs, template)
     assert len(first.spawned) == len(second.spawned) == 1
+
+
+class TestSpawnRunHostSelector:
+    @staticmethod
+    def _entities(target_tags: list[str]):
+        import uuid
+        from dataclasses import replace
+
+        from ting.domain.models import PhaseStatus
+        from ting.domain.templates import TemplateRun
+
+        saga_id = uuid.uuid4()
+        saga = Saga(
+            id=saga_id,
+            tracker_id=str(saga_id),
+            tracker_type="native",
+            slug="test",
+            name="test",
+            repos=["r"],
+            feature_branch="main",
+            base_branch="main",
+            status=SagaStatus.ACTIVE,
+            created_at=_TS,
+            owner_id=_OWNER,
+        )
+        saga = replace(saga, target_tags=target_tags)
+        phase_id = uuid.uuid4()
+        phase = Phase(
+            id=phase_id,
+            saga_id=saga_id,
+            tracker_id=str(phase_id),
+            number=1,
+            name="P1",
+            status=PhaseStatus.ACTIVE,
+        )
+        run_id = uuid.uuid4()
+        run = Run(
+            id=run_id,
+            phase_id=phase_id,
+            tracker_id=str(run_id),
+            name="r1",
+            description="",
+            acceptance_criteria=[],
+            declared_files=[],
+            estimate_hours=1.0,
+            status=RunStatus.PENDING,
+            session_id=None,
+            branch=None,
+            chronicle_summary=None,
+            pr_url=None,
+            pr_id=None,
+            retry_count=0,
+            created_at=_TS,
+            updated_at=_TS,
+        )
+        tpl_run = TemplateRun(
+            name="r1",
+            description="",
+            acceptance_criteria=[],
+            declared_files=[],
+            estimate_hours=1.0,
+            prompt="p",
+            persona="reviewer",
+        )
+        return saga, phase, run, tpl_run
+
+    async def test_the_residual_selector_goes_to_the_forge_with_the_session(self):
+        class TaggedVolundr(StubVolundrPort):
+            @property
+            def tags(self) -> list[str]:
+                return ["valhalla"]
+
+        volundr = TaggedVolundr()
+        adapter = _make_adapter(volundr_factory=StubVolundrFactory(volundr))
+        saga, phase, run, tpl_run = self._entities(["valhalla", "gpu"])
+
+        await adapter._spawn_run(volundr, saga, phase, run, tpl_run)
+
+        assert volundr.spawned[0].workload_config == {
+            "host_selector": {"tags": ["gpu"], "match": "all"}
+        }
+
+    async def test_no_target_tags_adds_no_selector(self):
+        volundr = StubVolundrPort()
+        adapter = _make_adapter(volundr_factory=StubVolundrFactory(volundr))
+        saga, phase, run, tpl_run = self._entities([])
+
+        await adapter._spawn_run(volundr, saga, phase, run, tpl_run)
+
+        assert volundr.spawned[0].workload_config == {}

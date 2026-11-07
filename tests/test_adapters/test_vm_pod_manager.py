@@ -19,6 +19,7 @@ from volundr.domain.compute import (
     ComputePoolPolicy,
     ComputeProvisioningLimitError,
     ComputeSlot,
+    HostSelector,
     LeaseState,
     MachineBootstrap,
     MachineProviderError,
@@ -1996,3 +1997,91 @@ async def test_start_takes_a_free_slot_of_a_warm_machine_without_booting_another
     # Six slots (three machines of two), two taken.
     capacity = await manager.capacity()
     assert (capacity.limit, capacity.active) == (6, 2)
+
+
+# --- host selectors: tags a session machine must carry ---
+
+
+def _tagged_session(session, **selector):
+    return session.model_copy(update={"workload_config": {"host_selector": selector}})
+
+
+async def _retag(repository, lease_id, tags):
+    current = repository.leases[lease_id]
+    repository.leases[lease_id] = current.model_copy(
+        update={"machine": current.machine.model_copy(update={"tags": tags})}
+    )
+
+
+async def test_a_warm_machine_whose_tags_satisfy_the_selector_is_claimed(setup):
+    pool, manager, repository, session = _warm_pool(setup)
+    await pool.maintain()
+    await pool.maintain()
+    spare = next(iter(repository.leases.values()))
+    await _retag(repository, spare.id, ("gpu", "rack-1"))
+
+    claimed = await manager._claim_warm(_tagged_session(session, tags=["gpu"]), SPEC)
+
+    assert claimed is not None and claimed.id == spare.id
+
+
+@pytest.mark.parametrize(
+    "selector,tags",
+    [
+        ({"tags": ["gpu"]}, ()),
+        ({"tags": ["gpu"]}, ("cpu",)),
+        ({"tags": ["gpu", "rack-1"]}, ("gpu",)),
+        ({"tags": ["gpu", "rack-1"], "match": "any"}, ("cpu",)),
+    ],
+)
+async def test_a_warm_machine_whose_tags_do_not_satisfy_the_selector_is_skipped(
+    setup, selector, tags
+):
+    pool, manager, repository, session = _warm_pool(setup)
+    await pool.maintain()
+    await pool.maintain()
+    spare = next(iter(repository.leases.values()))
+    await _retag(repository, spare.id, tags)
+
+    assert await manager._claim_warm(_tagged_session(session, **selector), SPEC) is None
+    assert not repository.bindings
+
+
+async def test_a_session_without_a_selector_claims_a_tagged_warm_machine(setup):
+    pool, manager, repository, session = _warm_pool(setup)
+    await pool.maintain()
+    await pool.maintain()
+    spare = next(iter(repository.leases.values()))
+    await _retag(repository, spare.id, ("gpu",))
+
+    claimed = await manager._claim_warm(session, SPEC)
+
+    assert claimed is not None and claimed.id == spare.id
+
+
+async def test_a_cold_start_hands_the_selector_to_the_machine_it_reserves(setup):
+    manager, _, repository, provider, _, _, session = setup
+    requests = []
+    create = provider.create
+
+    async def recording(request):
+        requests.append(request)
+        return await create(request)
+
+    provider.create = recording
+    tagged = _tagged_session(session, tags=["rack-1", "gpu"], match="any")
+
+    await manager.start(tagged, SPEC)
+
+    expected = HostSelector(tags=("gpu", "rack-1"), match="any")
+    _, binding = _ledger(repository)
+    assert binding.host_selector == expected
+    assert requests and all(request.selector == expected for request in requests)
+
+
+async def test_a_cold_start_without_a_selector_reserves_with_the_empty_one(setup):
+    manager, _, repository, _, _, _, session = setup
+
+    await manager.start(session, SPEC)
+
+    assert _ledger(repository)[1].host_selector == HostSelector()

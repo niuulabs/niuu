@@ -2137,6 +2137,11 @@ if TYPE_CHECKING:
 class SessionExecutionResolver(Protocol):
     """Resolve and verify an operator-approved execution choice before contribution."""
 
+    def runs_on_compute(self, session: Session) -> bool:
+        """Whether ``session`` runs in the compute pool, so its stop and delete must be
+        confirmed. False only for a session a placement keeps off the pool."""
+        ...
+
     async def has_legacy_allocation(self, session: Session) -> bool: ...
 
     async def resolve_execution(self, session: Session) -> ResolvedExecutionPlan | None: ...

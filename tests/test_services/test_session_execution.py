@@ -36,6 +36,9 @@ class Resolver:
             )
         )
 
+    def runs_on_compute(self, session):
+        return True
+
     async def has_legacy_allocation(self, session):
         return False
 
@@ -335,3 +338,125 @@ async def test_durable_compute_stop_does_not_cleanup_or_mark_stopped_when_unconf
     retained = await repository.get(session.id)
     assert retained.status == SessionStatus.FAILED
     assert contributor.contexts == []
+
+
+class _PlacedPool(MockPodManager):
+    """The pool child of a placement: resolves executions like a VmPodManager."""
+
+    def __init__(self, resolver: Resolver):
+        super().__init__()
+        self._resolver = resolver
+        self.configure_compute = Mock()
+
+    async def has_legacy_allocation(self, session):
+        return False
+
+    async def resolve_execution(self, session):
+        return await self._resolver.resolve_execution(session)
+
+    async def execution_for(self, session):
+        return await self._resolver.execution_for(session)
+
+    def execution_reference(self, plan):
+        return self._resolver.execution_reference(plan)
+
+
+def _placed_service(repository):
+    from volundr.adapters.outbound.placement_pod_manager import PlacementPodManager
+
+    resolver = Resolver()
+    local, pool = MockPodManager(), _PlacedPool(resolver)
+    local.stop = AsyncMock(return_value=False)
+    pool.stop = AsyncMock(return_value=False)
+    placement = PlacementPodManager(local=local, pool=pool)
+    service = SessionService(
+        repository, placement, runtime_backend="process", execution_resolver=placement
+    )
+    return service, local, pool, resolver
+
+
+async def test_a_local_session_beside_a_pool_keeps_local_stop_and_delete_semantics():
+    repository = InMemorySessionRepository()
+    service, local, pool, _ = _placed_service(repository)
+    session = await service.create_session(name="test", model="test")
+    await repository.update(session.with_status(SessionStatus.RUNNING))
+
+    await service.stop_session(session.id)
+    assert (await repository.get(session.id)).status == SessionStatus.STOPPED
+    assert await service.delete_session(session.id)
+
+    assert await repository.get(session.id) is None
+    assert local.stop.await_count == 2
+    pool.stop.assert_not_awaited()
+
+
+@pytest.mark.parametrize("operation", ["stop", "delete"])
+async def test_a_pool_session_beside_local_must_have_its_release_confirmed(operation):
+    repository = InMemorySessionRepository()
+    service, local, pool, resolver = _placed_service(repository)
+    session = await service.create_session(name="test", model="test")
+    session = session.model_copy(
+        update={
+            "workload_config": {"_compute_execution": resolver.reference},
+            "status": SessionStatus.RUNNING,
+        }
+    )
+    await repository.update(session)
+
+    with pytest.raises(RuntimeError, match="not confirmed"):
+        if operation == "stop":
+            await service.stop_session(session.id)
+        else:
+            await service.delete_session(session.id)
+
+    assert await repository.get(session.id) is not None
+    local.stop.assert_not_awaited()
+
+
+async def test_a_launch_that_asks_for_nothing_is_not_pinned_beside_a_pool():
+    repository = InMemorySessionRepository()
+    service, local, pool, resolver = _placed_service(repository)
+    session = await service.create_session(name="test", model="test")
+
+    await start_without_polling(service, session)
+
+    assert resolver.selected == []
+    assert "_compute_execution" not in (await repository.get(session.id)).workload_config
+    assert len(local.start_calls) == 1 and pool.start_calls == []
+
+
+async def test_a_launch_that_asks_for_a_host_is_pinned_and_started_in_the_pool():
+    repository = InMemorySessionRepository()
+    service, local, pool, resolver = _placed_service(repository)
+    session = await service.create_session(name="test", model="test")
+
+    await start_without_polling(
+        service, session, workload_config={"host_selector": {"tags": ["gpu"], "match": "all"}}
+    )
+
+    assert (await repository.get(session.id)).workload_config["_compute_execution"] == (
+        resolver.reference
+    )
+    assert len(pool.start_calls) == 1 and local.start_calls == []
+
+
+async def test_the_failed_sweep_beside_a_pool_releases_only_pool_sessions():
+    repository = InMemorySessionRepository()
+    service, local, pool, resolver = _placed_service(repository)
+    pool.stop = AsyncMock(return_value=True)
+    local_session = await service.create_session(name="local", model="test")
+    pool_session = await service.create_session(name="pool", model="test")
+    await repository.update(local_session.with_status(SessionStatus.FAILED))
+    await repository.update(
+        pool_session.model_copy(
+            update={
+                "workload_config": {"_compute_execution": resolver.reference},
+                "status": SessionStatus.FAILED,
+            }
+        )
+    )
+
+    assert await service.reconcile_active_sessions() == 1
+
+    local.stop.assert_not_awaited()
+    assert [call.args[0].id for call in pool.stop.await_args_list] == [pool_session.id]

@@ -108,6 +108,7 @@ class TestKnownWorkloadScopes:
                 "ting:workflow:launch",
                 "observatory:topology:push",
                 "node_join",
+                "compute_host_join",
                 "forge:notify",
                 "forge:session:read",
                 "forge:session:secret",
@@ -612,7 +613,9 @@ class TestSessionPreviewScope:
     def test_it_is_issuer_only(self) -> None:
         assert FORGE_SESSION_PREVIEW_SCOPE == "forge:session:preview"
         assert FORGE_SESSION_PREVIEW_SCOPE in VALKYRIE_BUILD_SCOPES
-        assert ISSUER_ONLY_SCOPES == frozenset({FORGE_SESSION_PREVIEW_SCOPE})
+        assert ISSUER_ONLY_SCOPES == frozenset(
+            {FORGE_SESSION_PREVIEW_SCOPE, token_scope.COMPUTE_HOST_JOIN_SCOPE}
+        )
         assert EXCHANGE_GRANTABLE_SCOPES == VALKYRIE_BUILD_SCOPES - ISSUER_ONLY_SCOPES
         assert FORGE_SESSION_PREVIEW_SCOPE not in EXCHANGE_GRANTABLE_SCOPES
 

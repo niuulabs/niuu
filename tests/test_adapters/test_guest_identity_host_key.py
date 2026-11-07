@@ -20,7 +20,7 @@ from volundr.adapters.outbound.guest_identity_host_key import (
     HostKeyGuestIdentity,
 )
 from volundr.adapters.outbound.ssh_guest_access import HOST_KEY_PATH
-from volundr.domain.compute import BootstrapFile, MachineBootstrap
+from volundr.domain.compute import BootstrapFile, Machine, MachineBootstrap, MachineState
 from volundr.domain.guest_credentials import GuestAuthenticationError, GuestRequest
 
 PATH = "/api/v1/internal/compute/metadata/credentials"
@@ -333,6 +333,164 @@ def test_the_clock_skew_must_be_positive_and_finite(skew):
         HostKeyGuestIdentity(
             machine_bootstrap_for=None, watermarks=InMemoryWatermarks(), clock_skew_seconds=skew
         )
+
+
+# -- registered hosts: the key is the one the host registered at pairing ------------------------
+
+
+class RegisteredGuest(Guest):
+    """A guest on a registered host: Forge generated no key; the machine record carries it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        # The bootstrap must never be consulted in this mode.
+        self.bootstraps.clear()
+        self.machines: dict[UUID, Machine] = {
+            self.allocation_id: self.machine(openssh_public(self.key))
+        }
+        self.identity = HostKeyGuestIdentity(
+            machine_bootstrap_for=self._no_bootstrap,
+            watermarks=self.watermarks,
+            clock_skew_seconds=SKEW_SECONDS,
+            key_source="registered",
+            machine_for=self._machine,
+        )
+
+    def machine(self, public: str | None) -> Machine:
+        return Machine(
+            allocation_id=self.allocation_id,
+            resource_id="host-1",
+            state=MachineState.RUNNING,
+            host_public_key=public,
+        )
+
+    async def _no_bootstrap(self, allocation_id: UUID) -> MachineBootstrap | None:
+        raise AssertionError("a registered host's key is not read from a bootstrap")
+
+    async def _machine(self, allocation_id: UUID) -> Machine | None:
+        return self.machines.get(allocation_id)
+
+
+async def test_a_registered_hosts_signature_is_checked_against_its_registered_key():
+    guest = RegisteredGuest()
+
+    assert await guest.identity.authenticate(guest.request()) == guest.allocation_id
+
+
+async def test_a_signature_by_another_key_is_rejected_for_a_registered_host():
+    guest = RegisteredGuest()
+
+    with pytest.raises(GuestAuthenticationError):
+        await guest.identity.authenticate(guest.request(key=Ed25519PrivateKey.generate()))
+
+
+async def test_a_registered_host_key_with_surrounding_whitespace_still_verifies():
+    guest = RegisteredGuest()
+    guest.machines[guest.allocation_id] = guest.machine(f"  {openssh_public(guest.key)}\n")
+
+    assert await guest.identity.authenticate(guest.request()) == guest.allocation_id
+
+
+async def test_a_registered_replay_is_rejected():
+    guest = RegisteredGuest()
+    timestamp = now_ms()
+    request = guest.request(timestamp_ms=timestamp)
+
+    assert await guest.identity.authenticate(request)
+    with pytest.raises(GuestAuthenticationError):
+        await guest.identity.authenticate(request)
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        "absent",
+        None,
+        "",
+        "not an ssh key",
+        "ssh-ed25519 AAAA",
+        openssh_public(generate_private_key(public_exponent=65537, key_size=2048)),
+    ],
+    ids=["no-machine", "no-key", "empty-key", "not-ssh", "truncated-ed25519", "rsa"],
+)
+async def test_every_unusable_registered_key_is_the_identical_authentication_error(stored):
+    guest = RegisteredGuest()
+    if stored == "absent":
+        guest.machines.clear()
+    else:
+        guest.machines[guest.allocation_id] = guest.machine(stored)
+    with pytest.raises(GuestAuthenticationError) as bad_signature:
+        other = RegisteredGuest()
+        await other.identity.authenticate(other.request(key=Ed25519PrivateKey.generate()))
+
+    with pytest.raises(GuestAuthenticationError) as refused:
+        await guest.identity.authenticate(guest.request())
+
+    assert type(refused.value) is type(bad_signature.value)
+    assert refused.value.args == bad_signature.value.args == ()
+
+
+async def test_a_registered_host_without_a_key_is_logged_with_the_remedy(caplog):
+    import logging
+
+    guest = RegisteredGuest()
+    guest.machines[guest.allocation_id] = guest.machine(None)
+
+    with caplog.at_level(logging.ERROR, logger="volundr.adapters.outbound.guest_identity_host_key"):
+        with pytest.raises(GuestAuthenticationError):
+            await guest.identity.authenticate(guest.request())
+
+    assert "no registered host key" in caplog.text
+    assert "registered-host provider" in caplog.text
+
+
+async def test_a_registered_machine_lookup_failure_propagates():
+    guest = RegisteredGuest()
+
+    async def broken(allocation_id):
+        raise RuntimeError("host repository is down")
+
+    guest.identity = HostKeyGuestIdentity(
+        machine_bootstrap_for=guest._no_bootstrap,
+        watermarks=guest.watermarks,
+        clock_skew_seconds=SKEW_SECONDS,
+        key_source="registered",
+        machine_for=broken,
+    )
+
+    with pytest.raises(RuntimeError, match="host repository"):
+        await guest.identity.authenticate(guest.request())
+
+
+async def test_the_bootstrap_key_source_never_reads_the_machine_record():
+    guest = Guest()
+    guest.identity = HostKeyGuestIdentity(
+        machine_bootstrap_for=guest._bootstrap,
+        watermarks=guest.watermarks,
+        clock_skew_seconds=SKEW_SECONDS,
+        key_source="bootstrap",
+        machine_for=AsyncMock(side_effect=AssertionError("not a registered host")),
+    )
+
+    assert await guest.identity.authenticate(guest.request()) == guest.allocation_id
+
+
+def test_an_unknown_key_source_is_refused():
+    with pytest.raises(ValueError, match="key_source must be 'bootstrap' or 'registered'"):
+        HostKeyGuestIdentity(
+            machine_bootstrap_for=None, watermarks=InMemoryWatermarks(), key_source="tofu"
+        )
+
+
+def test_the_registered_key_source_needs_the_machine_port():
+    with pytest.raises(ValueError, match="key_source 'registered' needs the machine_for port"):
+        HostKeyGuestIdentity(
+            machine_bootstrap_for=None, watermarks=InMemoryWatermarks(), key_source="registered"
+        )
+
+
+def test_the_default_key_source_is_the_bootstrap_and_needs_no_machine_port():
+    HostKeyGuestIdentity(machine_bootstrap_for=None, watermarks=InMemoryWatermarks())
 
 
 def test_the_host_key_identity_serves_every_slot_of_a_machine() -> None:

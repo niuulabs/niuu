@@ -336,6 +336,7 @@ def test_provider_native_auth_requires_no_http_auth_adapter(config, monkeypatch)
     from volundr.domain.compute import MachineProvider
 
     provider = MagicMock(spec=MachineProvider)
+    provider.fixed_inventory = False
     factory = MagicMock(return_value=provider)
     importer = MagicMock(return_value=factory)
     monkeypatch.setattr(cli, "import_class", importer)

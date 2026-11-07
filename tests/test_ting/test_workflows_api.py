@@ -34,7 +34,12 @@ from ting.domain.models import (
 )
 from ting.domain.workflow_document import workflow_document_payload, workflow_document_revision
 from ting.domain.workflow_versioning import next_workflow_version
-from ting.ports.volundr import SpawnRequest, VolundrPort, VolundrSession
+from ting.ports.volundr import (
+    HostTagSetsUnreadableError,
+    SpawnRequest,
+    VolundrPort,
+    VolundrSession,
+)
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
 
@@ -181,11 +186,15 @@ class RecordingVolundrPort(VolundrPort):
         target_id: str = "local",
         chat_endpoint: str = "wss://sessions.example/s/session-123/session",
         tags: list[str] | None = None,
+        tag_sets: list[list[str]] | None = None,
+        tag_sets_unreadable: bool = False,
     ) -> None:
         self._name = name
         self._target_id = target_id
         self._chat_endpoint = chat_endpoint
         self._tags = tags or []
+        self._tag_sets = tag_sets or []
+        self._tag_sets_unreadable = tag_sets_unreadable
         self.requests: list[SpawnRequest] = []
         self.stopped: list[str] = []
 
@@ -200,6 +209,11 @@ class RecordingVolundrPort(VolundrPort):
     @property
     def target_id(self) -> str:
         return self._target_id
+
+    async def host_tag_sets(self, *, auth_token=None, principal=None) -> list[list[str]]:
+        if self._tag_sets_unreadable:
+            raise HostTagSetsUnreadableError(f"{self._name}: HTTP 500")
+        return self._tag_sets
 
     async def spawn_session(
         self,
@@ -1951,6 +1965,111 @@ class TestWorkflowCatalogAPI:
         assert response.status_code == 201, response.text
         assert len(first.requests) == 0
         assert len(second.requests) == 1
+
+    def test_launch_workflow_placement_is_satisfied_through_a_hosts_tags(self) -> None:
+        workflow = _make_research_workflow_with_placement({"tags": ["valhalla", "gpu"]})
+        repo = InMemoryWorkflowRepository([workflow])
+        plain = RecordingVolundrPort(name="plain", target_id="plain", tags=["valhalla"])
+        hosted = RecordingVolundrPort(
+            name="hosted", target_id="hosted", tags=["valhalla"], tag_sets=[["gpu", "site:a"]]
+        )
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([plain, hosted]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "Place on a Forge that has a gpu host."},
+        )
+
+        assert response.status_code == 201, response.text
+        assert len(plain.requests) == 0
+        # What the Forge's own tags do not cover goes to the Forge as the host selector.
+        assert hosted.requests[0].workload_config["host_selector"] == {
+            "tags": ["gpu"],
+            "match": "all",
+        }
+
+    def test_launch_workflow_placement_does_not_union_tag_sets_across_hosts(self) -> None:
+        workflow = _make_research_workflow_with_placement({"tags": ["gpu", "arm64"]})
+        repo = InMemoryWorkflowRepository([workflow])
+        split = RecordingVolundrPort(name="split", target_id="split", tag_sets=[["gpu"], ["arm64"]])
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([split]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "No single host is both gpu and arm64."},
+        )
+
+        assert response.status_code == 422, response.text
+        assert len(split.requests) == 0
+
+    def test_launch_workflow_placement_names_a_target_whose_hosts_cannot_be_read(self) -> None:
+        workflow = _make_research_workflow_with_placement({"tags": ["gpu"]})
+        repo = InMemoryWorkflowRepository([workflow])
+        cpu = RecordingVolundrPort(name="cpu", target_id="cpu", tags=["cpu"])
+        broken = RecordingVolundrPort(name="broken", target_id="broken", tag_sets_unreadable=True)
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([cpu, broken]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "One Forge cannot report its hosts."},
+        )
+
+        assert response.status_code == 502, response.text
+        assert "broken" in response.json()["detail"]
+        assert len(cpu.requests) == 0 and len(broken.requests) == 0
+
+    def test_launch_workflow_pinned_connection_may_satisfy_placement_through_a_host(self) -> None:
+        workflow = _make_research_workflow_with_placement({"tags": ["gpu"]})
+        repo = InMemoryWorkflowRepository([workflow])
+        hosted = RecordingVolundrPort(name="hosted", target_id="hosted", tag_sets=[["gpu"]])
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([hosted]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "Pinned and satisfied by a host.", "connectionId": "hosted"},
+        )
+
+        assert response.status_code == 201, response.text
+        assert hosted.requests[0].workload_config["host_selector"] == {
+            "tags": ["gpu"],
+            "match": "all",
+        }
+
+    def test_launch_workflow_pinned_connection_with_unreadable_hosts_is_not_a_conflict(
+        self,
+    ) -> None:
+        workflow = _make_research_workflow_with_placement({"tags": ["gpu"]})
+        repo = InMemoryWorkflowRepository([workflow])
+        broken = RecordingVolundrPort(name="broken", target_id="broken", tag_sets_unreadable=True)
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([broken]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "Pinned, hosts unreadable.", "connectionId": "broken"},
+        )
+
+        assert response.status_code == 502, response.text
+        assert "broken" in response.json()["detail"]
+
+    def test_launch_workflow_without_a_tag_placement_adds_no_host_selector(self) -> None:
+        workflow = _make_research_workflow()
+        repo = InMemoryWorkflowRepository([workflow])
+        adapter = RecordingVolundrPort()
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "No placement."},
+        )
+
+        assert response.status_code == 201, response.text
+        assert "host_selector" not in adapter.requests[0].workload_config
 
     def test_launch_workflow_placement_instance_pins_the_connection(self) -> None:
         workflow = _make_research_workflow_with_placement({"instance": "spark-01"})

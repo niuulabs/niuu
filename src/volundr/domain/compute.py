@@ -13,6 +13,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
+from niuu.domain.tags import matches_tags
 from volundr.domain.execution_catalog import ResolvedExecutionPlan
 
 
@@ -34,12 +35,47 @@ class MachineBootstrap(BaseModel):
     ssh_authorized_keys: tuple[str, ...] = ()
 
 
+class HostSelector(BaseModel):
+    """Tags a machine must carry, with ``niuu.domain.tags.matches_tags`` semantics.
+
+    The same ``tags`` + ``match`` vocabulary that targets a whole Forge targets one of its
+    machines: ``all`` needs every tag, ``any`` needs one. An empty selector matches every
+    machine.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tags: tuple[str, ...] = ()
+    match: Literal["all", "any"] = "all"
+
+    @field_validator("tags")
+    @classmethod
+    def reject_blank_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for tag in value:
+            validate_tag(tag)
+        return tuple(sorted(set(value)))
+
+    def accepts(self, tags: Iterable[str]) -> bool:
+        return matches_tags(tags, self.tags, self.match)
+
+
+def validate_tag(tag: str) -> str:
+    """A tag is one non-empty word: no whitespace or commas, which would split it."""
+    if not tag or tag != tag.strip() or any(c.isspace() or c == "," for c in tag):
+        raise ValueError(f"Tag {tag!r} must be non-empty with no whitespace or commas")
+    return tag
+
+
 class MachineRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     allocation_id: UUID
     profile: str = Field(min_length=1)
     bootstrap: MachineBootstrap = Field(default_factory=MachineBootstrap, repr=False)
+    selector: HostSelector = Field(
+        default_factory=HostSelector,
+        description="Tags the machine must carry; only a fixed inventory can choose by them",
+    )
 
 
 class MachineState(StrEnum):
@@ -61,6 +97,37 @@ class Machine(BaseModel):
     phase: str | None = Field(
         default=None,
         description="The provider's own words for where the machine is (e.g. 'Starting on hnoss')",
+    )
+    slots: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Sessions this machine serves at once, when the provider sets it per machine (a "
+            "registered host); None means the pool's slots_per_machine"
+        ),
+    )
+    tags: tuple[str, ...] = Field(default=(), description="Tags host selectors match against")
+    accepting: bool = Field(
+        default=True,
+        description=(
+            "False while the provider wants no new sessions placed here (a draining, "
+            "quarantined or disconnected host); running sessions are not affected"
+        ),
+    )
+    host_public_key: str | None = Field(
+        default=None,
+        description=(
+            "The machine's own SSH host key (OpenSSH format), when the provider vouches for "
+            "one it did not generate: a registered host's key from its pairing"
+        ),
+    )
+    ssh_port: int | None = Field(default=None, ge=1, le=65535)
+    ssh_proxy_command: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "argv OpenSSH runs to reach the machine's sshd (ProxyCommand), when a connector "
+            "carries the bytes; empty means connect to addresses[0] directly"
+        ),
     )
 
 
@@ -117,6 +184,24 @@ class MachineProvider(ABC):
 
     @abstractmethod
     async def close(self) -> None: ...
+
+    @property
+    def fixed_inventory(self) -> bool:
+        """Whether ``create`` claims an existing machine instead of making one.
+
+        A fixed inventory never boots on demand: ``claimable`` says how many machines a
+        ``create`` could take now, and the pool reports a shortfall instead of reserving
+        a claim that cannot be served.
+        """
+        return False
+
+    async def claimable(self, profile: str, selector: HostSelector) -> int:
+        """Machines ``create`` could claim now for ``profile`` and ``selector``."""
+        raise NotImplementedError(f"{type(self).__name__} is not a fixed inventory")
+
+    async def tag_sets(self) -> tuple[tuple[str, ...], ...]:
+        """The distinct tag sets of machines that can take sessions; none carry tags here."""
+        return ()
 
 
 class LeaseState(StrEnum):
@@ -199,6 +284,7 @@ class ComputeSlot(BaseModel):
     tenant_id: str = Field(min_length=1)
     owner_id: str = Field(min_length=1)
     execution_plan: ResolvedExecutionPlan | None = None
+    host_selector: HostSelector = Field(default_factory=HostSelector)
     session_bootstrap_ref: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     start_deadline: datetime | None = None
@@ -442,6 +528,8 @@ def usable_slots(
     but still counts as served against the session limit.
     """
     if machine.state not in _OFFERABLE_STATES:
+        return 0
+    if machine.machine is not None and not machine.machine.accepting:
         return 0
     if any(b.stop_requested for b in bindings if b.state in LIVE_SLOT_STATES):
         return 0

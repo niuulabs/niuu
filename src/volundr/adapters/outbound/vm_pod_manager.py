@@ -16,6 +16,7 @@ from volundr.domain.compute import (
     ComputeLeaseRepository,
     ComputeProvisioningLimitError,
     ComputeSlot,
+    HostSelector,
     LeaseState,
     MachineBootstrap,
     MachineProviderError,
@@ -41,6 +42,7 @@ from volundr.domain.session_runtimes import (
     RuntimeReadiness,
     SessionRuntimeOffer,
     requested_grants,
+    requested_host_selector,
 )
 from volundr.domain.session_startup import SessionStartup, StartupStage, StartupStageState
 from volundr.domain.vm_runtime import (
@@ -203,8 +205,10 @@ class VmPodManager(PodManager):
     async def resolve_execution(self, session: Session) -> ResolvedExecutionPlan | None:
         try:
             grants = requested_grants(session.workload_config)
+            selector = requested_host_selector(session.workload_config)
         except ValueError as exc:
             raise ExecutionSelectionError(str(exc)) from exc
+        await self._require_satisfiable(selector)
         plan = await self._resolve_selected_execution(session)
         if not grants:
             return plan
@@ -216,6 +220,25 @@ class VmPodManager(PodManager):
                 "choose a runtime that offers them or drop the grants"
             )
         return plan
+
+    async def _require_satisfiable(self, selector: HostSelector) -> None:
+        """Refuse a host selector no machine of this pool can satisfy, at create, not at start.
+
+        Placement only ever puts a session on a machine whose tags satisfy its selector, so a
+        selector that nothing matches would leave the session waiting for capacity that is
+        not coming.
+        """
+        if not selector.tags:
+            return
+        provider = self._pool_service.provider if self._pool_service is not None else None
+        tag_sets = await provider.tag_sets() if provider is not None else ()
+        if any(selector.accepts(tags) for tags in tag_sets):
+            return
+        offered = "; ".join(", ".join(tags) or "(no tags)" for tags in tag_sets) or "none"
+        raise ExecutionSelectionError(
+            f"No machine of compute pool {self._pool_id} carries the tags {list(selector.tags)} "
+            f"(match: {selector.match}); the pool's machines carry: {offered}"
+        )
 
     async def _resolve_selected_execution(self, session: Session) -> ResolvedExecutionPlan | None:
         resolver = self._require_execution_resolver()
@@ -254,6 +277,10 @@ class VmPodManager(PodManager):
         if existing is not None:
             await self._validate_lease_plan(existing, selected)
         return selected
+
+    def runs_on_compute(self, session: Session) -> bool:
+        """Every session of this pod manager runs in its compute pool."""
+        return True
 
     async def has_legacy_allocation(self, session: Session) -> bool:
         _, repository, _ = self._configured()
@@ -695,6 +722,7 @@ class VmPodManager(PodManager):
                     timeout_seconds=timeout_seconds,
                     # Without a pool service there is no policy: machines are single-slot.
                     slots=self._pool_service.new_machine_slots(policy, plan) if policy else 1,
+                    host_selector=requested_host_selector(session.workload_config),
                 )
                 if plan is not None:
                     bootstrap = await service.bootstrap_for(lease)
@@ -908,6 +936,7 @@ class VmPodManager(PodManager):
             plan.provider_profile if plan is not None else await self._requested_profile(session)
         )
         runtime = self._execution_runtimes[plan.plan_digest] if plan is not None else legacy_runtime
+        selector = requested_host_selector(session.workload_config)
         bindings = await repository.machine_slots(self._pool_id)
 
         def occupied(machine: ComputeLease) -> int:
@@ -923,6 +952,8 @@ class VmPodManager(PodManager):
         )
         for candidate in candidates:
             if candidate.state != LeaseState.IDLE or candidate.profile != profile:
+                continue
+            if not selector.accepts(candidate.machine.tags if candidate.machine else ()):
                 continue
             if plan is None and candidate.execution_plan is not None:
                 continue

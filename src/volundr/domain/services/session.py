@@ -1100,10 +1100,8 @@ class SessionService:
                 **await self._execution_context(session),
             )
 
-        durable_compute = self._runtime_backend == "vm" or self._execution_resolver is not None
-
         destroyed = await self._pod_manager.destroy(session)
-        if durable_compute and not destroyed:
+        if self._runs_on_compute(session) and not destroyed:
             raise RuntimeError("Compute infrastructure deletion was not confirmed")
 
         # Run contributor cleanup in reverse order
@@ -1252,6 +1250,15 @@ class SessionService:
         if capacity is None or capacity.available > 0:
             return
         raise SessionCapacityError(capacity)
+
+    def _runs_on_compute(self, session: Session) -> bool:
+        """Whether ``session`` runs on durable compute, whose stop and delete must be
+        confirmed. On a Forge that also runs local sessions, only its pool sessions do."""
+        if self._runtime_backend == "vm":
+            return True
+        if self._execution_resolver is None:
+            return False
+        return self._execution_resolver.runs_on_compute(session)
 
     async def _resolve_execution_config(
         self, session: Session, workload_config: dict, launch_spec: str | None
@@ -2142,7 +2149,7 @@ class SessionService:
                 )
             stopped = await self._pod_manager.stop(session)
             if not stopped:
-                if self._runtime_backend == "vm" or self._execution_resolver is not None:
+                if self._runs_on_compute(session):
                     raise RuntimeError("Compute infrastructure stop was not confirmed")
                 logger.warning(
                     "Pod manager could not find/cancel pods for session %s "
@@ -2405,6 +2412,8 @@ class SessionService:
             if self._spawn_in_flight(session):
                 continue
             if session.status == SessionStatus.FAILED and self._runtime_backend != "kubernetes":
+                if not self._runs_on_compute(session):
+                    continue
                 # Swept only to release compute a failed cleanup left bound. Never
                 # ask for its status: a VM runtime reports a still-bound lease as
                 # provisioning and restarts it, which would resurrect the session.

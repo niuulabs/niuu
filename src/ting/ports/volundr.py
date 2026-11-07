@@ -26,6 +26,14 @@ from ravn.domain.persona_document import PortablePersonaDefinition
 from ting.domain.models import PRStatus
 
 
+class HostTagSetsUnreadableError(Exception):
+    """A Forge's host tag sets could not be read; the message says why.
+
+    Raised, never turned into "no hosts": a Forge that cannot answer may well have the
+    host a selector needs, so placement must name it rather than rule it out.
+    """
+
+
 @dataclass(frozen=True)
 class ForgeProjectRef:
     """A Forge project, and the host's own id for links to sessions on that host."""
@@ -521,6 +529,20 @@ class VolundrPort(ABC):
     ) -> None:
         """Stop a running Volundr session."""
         raise NotImplementedError
+
+    async def host_tag_sets(
+        self,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[list[str]]:
+        """The distinct tag sets of the hosts this Forge can place a session on now.
+
+        An adapter whose Forge has no registered hosts has no host tags: it answers
+        ``[]``. A Forge that has hosts but cannot report them raises
+        ``HostTagSetsUnreadableError``.
+        """
+        return []
 
     @abstractmethod
     async def list_integration_ids(

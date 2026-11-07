@@ -29,7 +29,7 @@ from cryptography.hazmat.primitives.serialization import load_ssh_public_key
 
 from niuu.adapters.node_signature import signing_message
 from volundr.adapters.outbound.ssh_guest_access import HOST_KEY_PATH
-from volundr.domain.compute import MachineBootstrap
+from volundr.domain.compute import Machine, MachineBootstrap
 from volundr.domain.guest_credentials import GuestAuthenticationError, GuestIdentity, GuestRequest
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,7 @@ class GuestRequestWatermarks(Protocol):
 
 
 MachineBootstrapFor = Callable[[UUID], Awaitable[MachineBootstrap | None]]
+MachineFor = Callable[[UUID], Awaitable[Machine | None]]
 
 
 class HostKeyGuestIdentity(GuestIdentity):
@@ -61,10 +62,18 @@ class HostKeyGuestIdentity(GuestIdentity):
         machine_bootstrap_for: MachineBootstrapFor,
         watermarks: GuestRequestWatermarks,
         clock_skew_seconds: float = 30.0,
+        key_source: str = "bootstrap",
+        machine_for: MachineFor | None = None,
     ) -> None:
         if not math.isfinite(clock_skew_seconds) or clock_skew_seconds <= 0:
             raise ValueError("clock_skew_seconds must be a positive, finite number")
+        if key_source not in {"bootstrap", "registered"}:
+            raise ValueError("key_source must be 'bootstrap' or 'registered'")
+        if key_source == "registered" and machine_for is None:
+            raise ValueError("key_source 'registered' needs the machine_for port")
         self._machine_bootstrap_for = machine_bootstrap_for
+        self._machine_for = machine_for
+        self._key_source = key_source
         self._watermarks = watermarks
         self._clock_skew_ms = clock_skew_seconds * 1000
 
@@ -84,10 +93,7 @@ class HostKeyGuestIdentity(GuestIdentity):
         headers = {name.lower(): value for name, value in request.headers.items()}
         allocation_id, timestamp_ms, signature = self._parse(headers)
 
-        machine = await self._machine_bootstrap_for(allocation_id)
-        if machine is None:
-            raise GuestAuthenticationError
-        public_key = self._public_key(allocation_id, machine)
+        public_key = await self._stored_key(allocation_id)
         message = signing_message(request.method, request.path, timestamp_ms, request.body)
         try:
             public_key.verify(signature, message)
@@ -117,8 +123,28 @@ class HostKeyGuestIdentity(GuestIdentity):
             raise GuestAuthenticationError
         return allocation_id, timestamp_ms, signature
 
-    @staticmethod
-    def _public_key(allocation_id: UUID, machine: MachineBootstrap) -> Ed25519PublicKey:
+    async def _stored_key(self, allocation_id: UUID) -> Ed25519PublicKey:
+        """The allocation's public key: from the bootstrap Forge generated, or, for a
+        registered host, the key the host registered at pairing (configured, never tried)."""
+        if self._key_source == "registered":
+            machine = await self._machine_for(allocation_id)
+            if machine is None:
+                raise GuestAuthenticationError
+            if not machine.host_public_key:
+                logger.error(
+                    "Allocation %s is on a machine with no registered host key; its guest "
+                    "cannot authenticate (is the provider a registered-host provider?)",
+                    allocation_id,
+                )
+                raise GuestAuthenticationError
+            return self._parse_key(allocation_id, machine.host_public_key, "registered host key")
+        bootstrap = await self._machine_bootstrap_for(allocation_id)
+        if bootstrap is None:
+            raise GuestAuthenticationError
+        return self._public_key(allocation_id, bootstrap)
+
+    @classmethod
+    def _public_key(cls, allocation_id: UUID, machine: MachineBootstrap) -> Ed25519PublicKey:
         path = HOST_KEY_PATH + ".pub"
         content = next((item.content for item in machine.files if item.path == path), None)
         if content is None:
@@ -129,6 +155,10 @@ class HostKeyGuestIdentity(GuestIdentity):
                 path,
             )
             raise GuestAuthenticationError
+        return cls._parse_key(allocation_id, content, path)
+
+    @staticmethod
+    def _parse_key(allocation_id: UUID, content: str, path: str) -> Ed25519PublicKey:
         try:
             key = load_ssh_public_key(content.strip().encode())
         except (ValueError, binascii.Error, UnsupportedAlgorithm):

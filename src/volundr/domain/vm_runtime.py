@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
@@ -11,9 +12,20 @@ from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.compute import ComputeLease, MachineBootstrap, SlotLease
+from volundr.domain.compute_hosts import LINUX_ONLY, HostPlatform
 from volundr.domain.guest_credentials import GuestCredentialDelivery
 from volundr.domain.models import Session, SessionSpec
 from volundr.domain.session_runtimes import SessionGrant, SessionRuntimeKind
+
+
+@dataclass(frozen=True)
+class SlotLimits:
+    """What one separated slot may use, and where its uids start; None is "no limit"."""
+
+    uid_base: int
+    cpu: float | None
+    memory_mib: int | None
+    pids: int | None
 
 
 class VmRuntimeUnavailableError(RuntimeError):
@@ -156,6 +168,29 @@ class VmRuntime(ABC):
     @property
     def supports_reuse(self) -> bool:
         return False
+
+    @property
+    def slot_limits(self) -> SlotLimits | None:
+        """The per-slot limits sessions run under, when the runtime separates slots."""
+        return None
+
+    @property
+    def requires_root_daemon(self) -> bool:
+        """Whether sessions run under a root daemon on the machine (root Docker, say).
+
+        Such a daemon is root-equivalent for anything that reaches it, so a pool of
+        registered hosts refuses the runtime: a host is not disposable like a VM.
+        """
+        return False
+
+    @property
+    def host_platforms(self) -> frozenset[HostPlatform]:
+        """The registered-host platforms this runtime runs sessions on.
+
+        Linux only until a runtime has a macOS path: a Mac is refused at join for any
+        execution whose runtime does not name ``darwin`` here.
+        """
+        return LINUX_ONLY
 
     @property
     def session_runtime(self) -> SessionRuntimeKind | None:

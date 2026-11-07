@@ -34,7 +34,7 @@ from volundr.domain.guest_access import GuestCommandResult
 from volundr.domain.guest_credentials import GuestCredentialDelivery, GuestIdentity
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
 from volundr.domain.service_account_tokens import ServiceAccountTokenPort
-from volundr.domain.vm_runtime import VmRuntimeStageError
+from volundr.domain.vm_runtime import SlotLimits, VmRuntimeStageError
 
 ISOLATION = {"cpu": 1.0, "memory_mib": 1024, "pids": 256}
 
@@ -663,6 +663,27 @@ def test_prepare_program_restores_into_the_slot_root(tmp_path):
     assert restored.returncode == 0, restored.stderr
     assert (root / "home" / "kept").read_bytes() == b"kept"
     assert (root / ".allocation").read_text() == "alloc-slot-1"
+
+
+def test_the_container_runtime_runs_under_the_guests_root_docker(tmp_path):
+    assert _runtime(tmp_path).requires_root_daemon is True
+    assert _runtime(tmp_path, slot_isolation=ISOLATION).requires_root_daemon is True
+
+
+def test_without_slot_isolation_the_runtime_reports_no_slot_limits(tmp_path):
+    assert _runtime(tmp_path).slot_limits is None
+
+
+def test_slot_limits_carry_the_isolation_settings(tmp_path):
+    runtime = _runtime(tmp_path, slot_isolation={**ISOLATION, "uid_base": 62000})
+
+    assert runtime.slot_limits == SlotLimits(uid_base=62000, cpu=1.0, memory_mib=1024, pids=256)
+
+
+def test_slot_limits_keep_a_limit_the_operator_left_unset_as_none(tmp_path):
+    runtime = _runtime(tmp_path, slot_isolation={"cpu": None, "memory_mib": 512, "pids": None})
+
+    assert runtime.slot_limits == SlotLimits(uid_base=61000, cpu=None, memory_mib=512, pids=None)
 
 
 class _MachineIdentity(GuestIdentity):

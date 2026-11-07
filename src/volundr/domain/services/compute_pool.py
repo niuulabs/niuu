@@ -20,6 +20,7 @@ from volundr.domain.compute import (
     ComputePoolFullError,
     ComputePoolPolicy,
     ComputeSlot,
+    HostSelector,
     LeaseState,
     MachineBootstrap,
     MachineProvider,
@@ -101,6 +102,22 @@ class ComputePoolService:
         }
         return list(unique.values())
 
+    def _require_rootless_runtimes(self) -> None:
+        """A registered host is never handed a runtime that needs a root daemon.
+
+        Slots on a host get no sudo and no root Docker: a root daemon reachable by a session
+        reads every other slot and the host itself, and a host is not disposable.
+        """
+        if not self.provider.fixed_inventory:
+            return
+        for runtime in self._configured_runtimes():
+            if runtime.requires_root_daemon:
+                raise ValueError(
+                    f"Compute pool {self.pool_id} runs on registered hosts, but runtime "
+                    f"{type(runtime).__name__} needs a root daemon on the machine; use a "
+                    "runtime without one (host mode with rootless Podman) for this pool"
+                )
+
     def new_machine_slots(
         self, policy: ComputePoolPolicy, plan: ResolvedExecutionPlan | None = None
     ) -> int:
@@ -140,6 +157,7 @@ class ComputePoolService:
     async def policy(self) -> ComputePoolPolicy:
         # Check the defaults before the repository stores them: a policy no runtime can honour
         # must never become the durable policy.
+        self._require_rootless_runtimes()
         self._require_slot_support(self.defaults)
         policy = await self.repository.policy(self.pool_id, self.defaults)
         if policy.reuse_policy == "reuse" and not self.runtime.supports_reuse:
@@ -154,6 +172,7 @@ class ComputePoolService:
             raise ValueError("Select a machine profile configured by the provider adapter")
         if policy.reuse_policy == "reuse" and not self.runtime.supports_reuse:
             raise ValueError("Configured runtime does not support in-place VM reuse")
+        self._require_rootless_runtimes()
         self._require_slot_support(policy)
         if self._execution_resolver is not None:
             plan = self._execution_resolver.resolve()
@@ -312,6 +331,8 @@ class ComputePoolService:
         if not failures and not policy.paused and not policy.drain and free < policy.warm_min:
             # Each new machine brings ``slots_per_machine`` free slots.
             wanted = -(-(policy.warm_min - free) // policy.slots_per_machine)
+            if self.provider.fixed_inventory:
+                wanted = await self._claimable_hosts(policy, free, wanted)
             for booted in range(wanted):
                 try:
                     machine_bootstrap = self.bootstrap
@@ -396,6 +417,27 @@ class ComputePoolService:
         self.last_reconciled = datetime.now(UTC)
         self.last_error = None
 
+    async def _claimable_hosts(self, policy: ComputePoolPolicy, free: int, wanted: int) -> int:
+        """How many of ``wanted`` claims a fixed inventory can serve; loud when short.
+
+        Nothing boots on a fixed inventory: a claim no registered host can serve would only
+        sit in provisioning, so the pool claims what exists and reports the rest.
+        """
+        claimable = await self.provider.claimable(policy.profile, HostSelector())
+        if claimable >= wanted:
+            return wanted
+        get_observability().count(
+            "volundr.compute.warm.capacity_hits", attributes={"pool": self.pool_id}
+        )
+        shortfall = (
+            f"{free} of {policy.warm_min} free warm slots: {claimable} registered host(s) can "
+            "take sessions; register or resume a host"
+        )
+        if self.capacity_shortfall != shortfall:
+            logger.error("Compute pool %s holds %s", self.pool_id, shortfall)
+        self.capacity_shortfall = shortfall
+        return claimable
+
     async def _maintain_lease(
         self,
         lease: ComputeLease,
@@ -410,6 +452,10 @@ class ComputePoolService:
         for binding in live:
             if binding.stop_requested and binding.state != SlotState.DRAINING:
                 await self._finish_requested_stop(lease, binding)
+        if live and self.provider.fixed_inventory:
+            # A host in service can stop accepting (drained, quarantined, disconnected); keep
+            # the snapshot placement reads current. A VM's provider state does not change so.
+            await self.leases.refresh_machine(lease.id)
         if live or lease.state in {LeaseState.RELEASED, LeaseState.QUARANTINED}:
             return
         if not await self.leases.compatible(lease):

@@ -18,7 +18,12 @@ spec:
       {{- include "volundr.selectorLabels" . | nindent 6 }}
   {{- with .Values.strategy }}
   strategy:
+    {{- if eq (.type | default "") "Recreate" }}
+    # The default values carry rollingUpdate, which a Recreate strategy may not.
+    type: Recreate
+    {{- else }}
     {{- toYaml . | nindent 4 }}
+    {{- end }}
   {{- end }}
   template:
     metadata:
@@ -342,6 +347,10 @@ spec:
               mountPath: {{ .Values.previewCache.mountPath | default "/volundr/preview-cache" }}
             - name: scratch
               mountPath: /tmp
+            {{- if .Values.hostConnect.enabled }}
+            - name: host-connect
+              mountPath: {{ .Values.hostConnect.runtimeDir }}
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -419,6 +428,65 @@ spec:
               port: {{ .Values.envoy.port }}
             initialDelaySeconds: 5
             periodSeconds: 15
+        {{- end }}
+        {{- if .Values.hostConnect.enabled }}
+        # The host connect endpoint (ReverseSshConnector): stock sshd, sharing Forge's
+        # loopback, where registered hosts behind NAT forward their own sshd.
+        - name: host-connect
+          image: {{ include "volundr.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "/etc/niuu-connect/entrypoint.sh"]
+          env:
+            - name: FORGE_UID
+              value: {{ .Values.securityContext.runAsUser | quote }}
+          # sshd starts as root to separate each connection into the unprivileged
+          # connect user; it needs no other privilege.
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - CHOWN
+                - DAC_OVERRIDE
+                - FOWNER
+                - SETGID
+                - SETUID
+                - SYS_CHROOT
+          ports:
+            - name: host-connect
+              containerPort: {{ .Values.hostConnect.port }}
+              protocol: TCP
+          # sshd listening, read from /proc rather than by connecting to it.
+          readinessProbe:
+            exec:
+              command: ["grep", "-q", " 00000000:{{ printf "%04X" (int .Values.hostConnect.port) }} 00000000:0000 0A", "/proc/net/tcp"]
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["grep", "-q", " 00000000:{{ printf "%04X" (int .Values.hostConnect.port) }} 00000000:0000 0A", "/proc/net/tcp"]
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          {{- with .Values.hostConnect.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: host-connect
+              mountPath: {{ .Values.hostConnect.runtimeDir }}
+            - name: host-connect-config
+              mountPath: /etc/niuu-connect
+              readOnly: true
+            - name: host-connect-key
+              mountPath: /etc/niuu-connect-key
+              readOnly: true
+            - name: host-connect-private
+              mountPath: /run/niuu-connect-private
+            - name: host-connect-sshd
+              mountPath: /run/sshd
         {{- end }}
         {{- with .Values.sidecars }}
         {{- toYaml . | nindent 8 }}
@@ -538,6 +606,29 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        {{- if .Values.hostConnect.enabled }}
+        # Only Forge and the endpoint mount this: the key socket, the connection records
+        # and the revoke pipe.
+        - name: host-connect
+          emptyDir:
+            medium: Memory
+        - name: host-connect-private
+          emptyDir:
+            medium: Memory
+        - name: host-connect-sshd
+          emptyDir:
+            medium: Memory
+        - name: host-connect-config
+          configMap:
+            name: {{ include "volundr.fullname" . }}-host-connect
+        - name: host-connect-key
+          secret:
+            secretName: {{ .Values.hostConnect.hostKeySecret.name }}
+            defaultMode: 0400
+            items:
+              - key: {{ .Values.hostConnect.hostKeySecret.key }}
+                path: ssh_host_ed25519_key
+        {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

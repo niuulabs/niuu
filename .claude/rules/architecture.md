@@ -86,6 +86,72 @@ route — scoped tokens are only as narrow as the enforcement coverage.
 `tests/test_niuu/test_token_scope.py` fails if the two drift apart in either
 direction.
 
+### Registered-host pairing codes (`compute_host_join`)
+
+A bare-metal host joins a Forge's compute pool with a pairing code minted by
+that Forge (`volundr.domain.services.compute_hosts.ComputeHostService.mint`),
+through the scoped-workload-token mechanism above: `token_use:
+"valkyrie_build"`, `scopes: ["compute_host_join"]`, an empty roles claim, and
+single use — the code's hash, expiry and consumption live in
+`compute_host_pairing_codes`, and everything the host will be (pool,
+execution, connector, tags, slots) is fixed there by the admin, never taken
+from the joining host. `compute_host_join` is issuer-only (`ISSUER_ONLY_SCOPES`):
+the exchange never grants it. Its two routes, `GET …/compute/hosts/join.sh` and
+`POST …/compute/hosts/join`, carry `require_scope("compute_host_join")`, and
+the service also verifies the code's signature and looks up its hash, so a
+mini-mode Forge without Envoy admits nothing else. At the edge
+(`credential_allows_route`) the code is admitted on exactly those two routes.
+It is signed by the workload-identity issuer when that has a configured key,
+otherwise by Forge's own key file (`compute.hosts.pairing_signing_key_file`)
+— and the key file only with the allow-all identity adapter of local mini
+mode, where nothing but Forge checks the bearer. Any other combination is
+fatal at startup (`_create_host_pairing_signer`). A joined host calls no
+other route: Forge reaches it over SSH and reads its health itself, so the
+node-signing exception below is not extended to hosts.
+
+### Exception: the host connect endpoint (`ReverseSshConnector`)
+
+A registered host behind NAT keeps one outbound SSH connection to an OpenSSH
+sidecar of the Forge pod (the volundr chart's `hostConnect`) and forwards a port
+on the pod's loopback to its own sshd. That endpoint is an authenticated entry
+point that is not HTTP: SSH public-key authentication of a *machine* by the
+Ed25519 key it registered with its `compute_host_join` pairing code. It is
+sanctioned for the same reason as node signing: there is no OIDC principal for a
+machine, and the key never leaves the host.
+
+Limits of this exception, enforced together, not individually:
+
+- **Only keys of registered, not-removed hosts whose connector is the reverse
+  SSH connector are admitted, looked up live on every connection.** sshd has no
+  authorized_keys file (`AuthorizedKeysFile none`); its `AuthorizedKeysCommand`
+  asks Forge, on a Unix socket in a volume only Forge and the sidecar mount
+  (`volundr.adapters.inbound.host_connect_keys`), never an HTTP route.
+  `ComputeHostService.endpoint_key` answers only for a host of this pool whose
+  connector admits it, and only for the connect user (`AllowUsers`). Removing a
+  host takes effect at once (the connector stops answering before the row goes),
+  and revoke also ends a live connection: the key command records sshd's
+  per-connection monitor process, and the sidecar's reaper kills it when Forge
+  writes the host's id to its pipe. A revoke that cannot end it is an error,
+  never "done".
+- **Each key may only listen on its own assigned loopback port and nothing
+  else**: `restrict,port-forwarding,permitlisten="127.0.0.1:<port>",command="/usr/sbin/nologin"`,
+  with `AllowTcpForwarding remote` and `PermitOpen none` in the endpoint's
+  `sshd_config` so no key can open a connection anywhere (authorized_keys has no
+  `permitopen="none"`; OpenSSH drops a line that carries it). No shell, PTY,
+  agent, X11 or stream-local forwarding. The port is unique on the Forge
+  (`idx_compute_hosts_tunnel_port`), from the connector's `port_range`; a full
+  range refuses the join.
+- **The endpoint listens in the Forge pod's network namespace only for this**,
+  in one pod (`replicaCount: 1`, `Recreate`, no autoscaling; the chart refuses
+  anything else), with its own pinned Ed25519 host key from a Secret.
+- **What crosses it is an SSH session from Forge to the host's sshd, pinned to
+  the same registered key**, so the endpoint never carries trust of its own:
+  anything else answering on a port fails the pin.
+- **Exactly one way in.** Do not extend this endpoint to another account,
+  another kind of forwarding or an HTTP route without adding it to the same
+  enforcement points: the connector's `endpoint_key_options`, the service's
+  `endpoint_key`, and the chart's `sshd_config`.
+
 ### Exception: session-bound Forge credentials (`forge_session`)
 
 Forge mints a second kind of scoped workload token itself, each time it
@@ -220,6 +286,17 @@ and Forge never tries another.
     allocation that exists from one that does not.
   - The signature covers method, path, timestamp and body hash; omitting any
     would let a captured signature be replayed against another route or body.
+  - **A registered host** (`RegisteredHostMachineProvider`, configured with
+    `key_source: registered` on the identity) is the one case where Forge did
+    not generate the key: it is the host's own sshd Ed25519 key, and Forge
+    stores only its public half, on the `compute_hosts` row, received with a
+    single-use `compute_host_join` pairing code (below). Forge never holds
+    that private key. The key belongs to the host, not to one allocation, so
+    the limits still bind to the allocation: the body names the allocation
+    (a mismatch is the identical 401, so a captured request of an earlier
+    allocation of the same host cannot be replayed under a later one), the
+    watermark is per allocation, and only the allocation currently holding the
+    host gets an answer. Removing the host revokes it.
 - **Provider attestation** (`volundr.adapters.outbound.guest_identity_provider`,
   the Harvester default). The provider puts a token into the guest and vouches
   for it: on Harvester, the VM's virt-launcher pod ServiceAccount token shared

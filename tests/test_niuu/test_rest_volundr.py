@@ -966,6 +966,8 @@ def test_create_session_targets_instance_by_tags() -> None:
             _instance("gpu", base_url="http://gpu", tags=["gpu", "us-west"]),
         ]
     )
+    # The cpu Forge falls short on its own tags, so the facade asks it for host tags.
+    respx.get("http://cpu/api/v1/forge/compute/hosts/tag-sets").mock(return_value=Response(404))
     route = respx.post("http://gpu/api/v1/forge/sessions").mock(
         return_value=Response(200, json={"id": "s9", "name": "Created"})
     )
@@ -982,8 +984,10 @@ def test_create_session_targets_instance_by_tags() -> None:
     assert route.calls.last.request.read() == b'{"workspace":"repo-a"}'
 
 
+@respx.mock
 def test_create_session_fails_loud_when_no_instance_matches_tags() -> None:
     client = _client([_instance("cpu", base_url="http://cpu", is_default=True, tags=["us-west"])])
+    respx.get("http://cpu/api/v1/forge/compute/hosts/tag-sets").mock(return_value=Response(404))
 
     response = client.post(
         "/api/v1/forge/sessions",
@@ -2888,3 +2892,420 @@ def test_forge_health_is_forwarded_with_presented_file_usage() -> None:
     assert response.status_code == 200
     assert response.json()["presented_files"] == health["presented_files"]
     assert response.json()["instance_id"] == "alpha"
+
+
+# -- Host tag sets: a tag selector reaches through a Forge to its hosts ----------------
+
+TAG_SETS = "/api/v1/forge/compute/hosts/tag-sets"
+
+
+def _tag_sets(*sets: list[str]) -> Response:
+    return Response(200, json={"tag_sets": list(sets)})
+
+
+def _sent(route: Any) -> dict[str, Any]:
+    return json.loads(route.calls.last.request.read())
+
+
+@respx.mock
+def test_session_lands_on_a_forge_whose_host_has_the_missing_tag() -> None:
+    client = _client(
+        [
+            _instance("plain", base_url="http://plain", is_default=True, tags=["valhalla"]),
+            _instance("hosts", base_url="http://hosts", tags=["valhalla"]),
+        ]
+    )
+    respx.get(f"http://plain{TAG_SETS}").mock(return_value=Response(404))
+    respx.get(f"http://hosts{TAG_SETS}").mock(return_value=_tag_sets(["gpu", "site:hnoss"]))
+    route = respx.post("http://hosts/api/v1/forge/sessions").mock(
+        return_value=Response(201, json={"id": "s1"})
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions",
+        headers=_headers(),
+        json={"target_tags": ["valhalla", "gpu"], "workspace": "repo-a"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["instance_id"] == "hosts"
+    # Instance hints are stripped; what the instance tags do not cover goes on as the selector.
+    assert _sent(route) == {
+        "workspace": "repo-a",
+        "workload_config": {"host_selector": {"tags": ["gpu"], "match": "all"}},
+    }
+
+
+@respx.mock
+def test_tag_sets_of_different_hosts_are_never_combined() -> None:
+    client = _client([_instance("hosts", base_url="http://hosts", is_default=True, tags=[])])
+    respx.get(f"http://hosts{TAG_SETS}").mock(return_value=_tag_sets(["gpu"], ["arm64"]))
+
+    response = client.post(
+        "/api/v1/forge/sessions",
+        headers=_headers(),
+        json={"target_tags": ["gpu", "arm64"]},
+    )
+
+    assert response.status_code == 503
+    assert "gpu" in response.json()["detail"]
+
+
+@respx.mock
+def test_one_host_with_every_tag_is_enough() -> None:
+    client = _client([_instance("hosts", base_url="http://hosts", is_default=True, tags=[])])
+    respx.get(f"http://hosts{TAG_SETS}").mock(
+        return_value=_tag_sets(["gpu"], ["arm64"], ["arm64", "gpu"])
+    )
+    route = respx.post("http://hosts/api/v1/forge/sessions").mock(
+        return_value=Response(201, json={"id": "s1"})
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions",
+        headers=_headers(),
+        json={"target_tags": ["gpu", "arm64"]},
+    )
+
+    assert response.status_code == 201
+    assert _sent(route)["workload_config"] == {
+        "host_selector": {"tags": ["arm64", "gpu"], "match": "all"}
+    }
+
+
+@respx.mock
+def test_any_selector_forwards_the_whole_set_unless_the_instance_already_matches() -> None:
+    client = _client(
+        [
+            _instance("hosts", base_url="http://hosts", is_default=True, tags=["x"]),
+            _instance("tagged", base_url="http://tagged", tags=["gpu"]),
+        ]
+    )
+    respx.get(f"http://hosts{TAG_SETS}").mock(return_value=_tag_sets(["arm64"]))
+    respx.get(f"http://tagged{TAG_SETS}").mock(return_value=Response(404))
+    hosts_route = respx.post("http://hosts/api/v1/forge/sessions").mock(
+        return_value=Response(201, json={"id": "s1"})
+    )
+    tagged_route = respx.post("http://tagged/api/v1/forge/sessions").mock(
+        return_value=Response(201, json={"id": "s2"})
+    )
+
+    via_host = client.post(
+        "/api/v1/forge/sessions",
+        headers=_headers(),
+        json={"target_tags": ["arm64", "tpu"], "target_match": "any"},
+    )
+    via_instance = client.post(
+        "/api/v1/forge/sessions",
+        headers=_headers(),
+        json={"target_tags": ["gpu", "arm64"], "target_match": "any", "instance_id": "tagged"},
+    )
+
+    assert via_host.status_code == 201
+    assert _sent(hosts_route)["workload_config"] == {
+        "host_selector": {"tags": ["arm64", "tpu"], "match": "any"}
+    }
+    assert via_instance.status_code == 201
+    # The instance tags already match "any": nothing is left for a host, so nothing is added.
+    assert "workload_config" not in _sent(tagged_route)
+
+
+@respx.mock
+def test_no_residual_adds_no_host_selector() -> None:
+    client = _client([_instance("gpu", base_url="http://gpu", is_default=True, tags=["gpu"])])
+    route = respx.post("http://gpu/api/v1/forge/sessions").mock(
+        return_value=Response(201, json={"id": "s1"})
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions",
+        headers=_headers(),
+        json={"target_tags": ["gpu"], "workload_config": {"mimir": {}}},
+    )
+
+    assert response.status_code == 201
+    # An instance that matches on its own tags is not asked for its hosts.
+    assert _sent(route) == {"workload_config": {"mimir": {}}}
+
+
+@respx.mock
+def test_a_callers_host_selector_is_left_alone_without_target_tags() -> None:
+    client = _client([_instance("default", base_url="http://default", is_default=True)])
+    route = respx.post("http://default/api/v1/forge/sessions").mock(
+        return_value=Response(201, json={"id": "s1"})
+    )
+    selector = {"tags": ["gpu"], "match": "all"}
+
+    response = client.post(
+        "/api/v1/forge/sessions",
+        headers=_headers(),
+        json={"workload_config": {"host_selector": selector, "other": 1}},
+    )
+
+    assert response.status_code == 201
+    assert _sent(route)["workload_config"] == {"host_selector": selector, "other": 1}
+
+
+@respx.mock
+@pytest.mark.parametrize("workload_config", [{"host_selector": {"tags": ["gpu"]}}, "not-an-object"])
+def test_target_tags_with_a_callers_host_selector_is_422(workload_config: Any) -> None:
+    client = _client([_instance("gpu", base_url="http://gpu", is_default=True, tags=["gpu"])])
+    route = respx.post("http://gpu/api/v1/forge/sessions").mock(
+        return_value=Response(201, json={"id": "s1"})
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions",
+        headers=_headers(),
+        json={"target_tags": ["gpu"], "workload_config": workload_config},
+    )
+
+    assert response.status_code == 422
+    assert not route.called
+
+
+def test_unknown_target_match_is_422_not_read_as_all() -> None:
+    client = _client([_instance("gpu", base_url="http://gpu", is_default=True, tags=["gpu"])])
+
+    response = client.post(
+        "/api/v1/forge/sessions",
+        headers=_headers(),
+        json={"target_tags": ["gpu"], "target_match": "some"},
+    )
+
+    assert response.status_code == 422
+    assert "some" in response.json()["detail"]
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        Response(500, json={"detail": "boom"}),
+        Response(200, content=b"not json"),
+        Response(200, json={"tag_sets": "gpu"}),
+        Response(200, json={"tag_sets": [["gpu", 1]]}),
+        httpx.ConnectError("refused"),
+    ],
+)
+def test_an_unreadable_forge_is_named_never_read_as_no_match(outcome: Any) -> None:
+    client = _client(
+        [
+            _instance("broken", base_url="http://broken", is_default=True, tags=["valhalla"]),
+            _instance("plain", base_url="http://plain", tags=["valhalla"]),
+        ]
+    )
+    broken_read = respx.get(f"http://broken{TAG_SETS}")
+    if isinstance(outcome, Exception):
+        broken_read.mock(side_effect=outcome)
+    else:
+        broken_read.mock(return_value=outcome)
+    respx.get(f"http://plain{TAG_SETS}").mock(return_value=Response(404))
+    launch = respx.post("http://broken/api/v1/forge/sessions").mock(
+        return_value=Response(201, json={"id": "s1"})
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions",
+        headers=_headers(),
+        json={"target_tags": ["valhalla", "gpu"]},
+    )
+
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert "Instance broken" in detail
+    assert "Instance plain" not in detail
+    assert not launch.called
+
+
+@respx.mock
+def test_an_unreadable_forge_does_not_hide_a_match_elsewhere(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = _client(
+        [
+            _instance("broken", base_url="http://broken", is_default=True, tags=[]),
+            _instance("gpu", base_url="http://gpu", tags=["gpu"]),
+        ]
+    )
+    respx.get(f"http://broken{TAG_SETS}").mock(return_value=Response(503))
+    route = respx.post("http://gpu/api/v1/forge/sessions").mock(
+        return_value=Response(201, json={"id": "s1"})
+    )
+
+    with caplog.at_level("ERROR"):
+        response = client.post(
+            "/api/v1/forge/sessions", headers=_headers(), json={"target_tags": ["gpu"]}
+        )
+
+    assert response.status_code == 201
+    assert route.called
+    # The skipped Forge is reported, not dropped silently.
+    assert any("Instance broken" in record.getMessage() for record in caplog.records)
+
+
+@respx.mock
+def test_routes_that_place_no_session_match_on_instance_tags_only() -> None:
+    client = _client(
+        [
+            _instance("cpu", base_url="http://cpu", is_default=True, tags=[]),
+            _instance("gpu", base_url="http://gpu", tags=["gpu"]),
+        ]
+    )
+    # No tag-sets route is mocked: asking either Forge for its hosts would fail the test.
+    route = respx.get("http://gpu/api/v1/credentials/mcp-servers").mock(
+        return_value=Response(200, json=[])
+    )
+
+    response = client.get("/api/v1/forge/mcp-servers?target_tags=gpu", headers=_headers())
+
+    assert response.status_code == 200
+    assert route.called
+
+
+def test_a_tag_selector_that_only_a_host_could_serve_is_no_match_off_the_session_path() -> None:
+    client = _client([_instance("hosts", base_url="http://hosts", is_default=True, tags=[])])
+
+    response = client.get("/api/v1/forge/mcp-servers?target_tags=gpu", headers=_headers())
+
+    assert response.status_code == 503
+
+
+# -- Compute host admin routes proxy to one Forge ---------------------------------------
+
+HOST_ID = "11111111-1111-1111-1111-111111111111"
+CODE_ID = "22222222-2222-2222-2222-222222222222"
+
+
+@respx.mock
+def test_compute_hosts_list_is_proxied_verbatim_to_the_chosen_instance() -> None:
+    client = _client(
+        [
+            _instance("default", base_url="http://default", is_default=True),
+            _instance("hosts", base_url="http://hosts"),
+        ]
+    )
+    listing = {"pool_id": "valhalla-hosts", "hosts": [], "summary": {"hosts": 0}}
+    route = respx.get("http://hosts/api/v1/forge/compute/hosts").mock(
+        return_value=Response(200, json=listing)
+    )
+
+    response = client.get("/api/v1/forge/compute/hosts?instance_id=hosts", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json() == listing
+    assert route.calls.last.request.headers["authorization"] == "Bearer test-token"
+    # The facade's own selector is not forwarded to the Forge.
+    assert "instance_id" not in str(route.calls.last.request.url)
+
+
+@respx.mock
+def test_compute_hosts_pairing_code_create_passes_body_and_created_status() -> None:
+    client = _client([_instance("hosts", base_url="http://hosts", is_default=True)])
+    created = {"id": CODE_ID, "code": "jwt", "command": "curl ... | sudo sh"}
+    route = respx.post("http://hosts/api/v1/forge/compute/hosts/pairing-codes").mock(
+        return_value=Response(201, json=created)
+    )
+    body = {"execution": "host@2026-11-07", "connector": "direct-ssh", "tags": ["a"], "slots": None}
+
+    response = client.post(
+        "/api/v1/forge/compute/hosts/pairing-codes", headers=_headers(), json=body
+    )
+
+    assert response.status_code == 201
+    assert response.json() == created
+    assert _sent(route) == body
+    assert route.calls.last.request.headers["content-type"].startswith("application/json")
+
+
+@respx.mock
+def test_compute_hosts_pairing_code_revoke_passes_204() -> None:
+    client = _client([_instance("hosts", base_url="http://hosts", is_default=True)])
+    route = respx.delete(f"http://hosts/api/v1/forge/compute/hosts/pairing-codes/{CODE_ID}").mock(
+        return_value=Response(204)
+    )
+
+    response = client.delete(
+        f"/api/v1/forge/compute/hosts/pairing-codes/{CODE_ID}", headers=_headers()
+    )
+
+    assert response.status_code == 204
+    assert route.called
+
+
+@respx.mock
+def test_compute_host_patch_and_delete_pass_through() -> None:
+    client = _client([_instance("hosts", base_url="http://hosts", is_default=True)])
+    patch = respx.patch(f"http://hosts/api/v1/forge/compute/hosts/{HOST_ID}").mock(
+        return_value=Response(200, json={"id": HOST_ID, "tags": ["a"]})
+    )
+    delete = respx.delete(f"http://hosts/api/v1/forge/compute/hosts/{HOST_ID}").mock(
+        return_value=Response(200, json={"removed": True, "host_cleanup_command": None})
+    )
+
+    edited = client.patch(
+        f"/api/v1/forge/compute/hosts/{HOST_ID}", headers=_headers(), json={"tags": ["a"]}
+    )
+    removed = client.delete(f"/api/v1/forge/compute/hosts/{HOST_ID}", headers=_headers())
+
+    assert edited.json() == {"id": HOST_ID, "tags": ["a"]}
+    assert _sent(patch) == {"tags": ["a"]}
+    assert removed.json() == {"removed": True, "host_cleanup_command": None}
+    assert delete.called
+
+
+@respx.mock
+@pytest.mark.parametrize("action", ["drain", "resume", "check", "reprepare"])
+def test_compute_host_actions_pass_through(action: str) -> None:
+    client = _client([_instance("hosts", base_url="http://hosts", is_default=True)])
+    route = respx.post(f"http://hosts/api/v1/forge/compute/hosts/{HOST_ID}/{action}").mock(
+        return_value=Response(200, json={"id": HOST_ID, "state": "draining"})
+    )
+    body = {"remove": True} if action == "drain" else None
+
+    response = client.post(
+        f"/api/v1/forge/compute/hosts/{HOST_ID}/{action}", headers=_headers(), json=body
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"id": HOST_ID, "state": "draining"}
+    assert route.called
+    if body:
+        assert _sent(route) == body
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("status_code", "detail"),
+    [(409, "sessions still run"), (422, "slots over capacity: 11 > 10"), (404, "Not Found")],
+)
+def test_compute_host_client_errors_pass_through_with_their_body(
+    status_code: int, detail: str
+) -> None:
+    client = _client([_instance("hosts", base_url="http://hosts", is_default=True)])
+    respx.delete(f"http://hosts/api/v1/forge/compute/hosts/{HOST_ID}").mock(
+        return_value=Response(status_code, json={"detail": detail})
+    )
+
+    response = client.delete(f"/api/v1/forge/compute/hosts/{HOST_ID}", headers=_headers())
+
+    assert response.status_code == status_code
+    assert response.json() == {"detail": detail}
+
+
+def test_compute_host_actions_refuse_an_unknown_action_and_a_bad_id() -> None:
+    client = _client([_instance("hosts", base_url="http://hosts", is_default=True)])
+
+    unknown = client.post(f"/api/v1/forge/compute/hosts/{HOST_ID}/explode", headers=_headers())
+    bad_id = client.post("/api/v1/forge/compute/hosts/not-a-uuid/drain", headers=_headers())
+
+    assert unknown.status_code == 422
+    assert bad_id.status_code == 422
+
+
+def test_compute_hosts_reject_an_invisible_instance() -> None:
+    client = _client([_instance("private", base_url="http://private", tenant_id="other")])
+
+    response = client.get("/api/v1/forge/compute/hosts?instance_id=private", headers=_headers())
+
+    assert response.status_code == 404
