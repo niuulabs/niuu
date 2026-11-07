@@ -696,8 +696,10 @@ def test_the_inspector_reaches_a_host_through_its_executions_access_and_uid_base
     assert hosts.inspector._access_for(plain) is accesses["vm-b"]
     assert hosts.inspector._uid_base_for(isolated) == 62000
     assert hosts.inspector._uid_base_for(plain) is None
+    assert hosts.inspector._runtime_for(isolated) is execution.runtimes[plans["vm"].plan_digest]
     retired = SimpleNamespace(name="hrimfaxi", execution="vm@retired", platform=linux)
-    for lookup in (hosts.inspector._access_for, hosts.inspector._uid_base_for):
+    lookups = (hosts.inspector._access_for, hosts.inspector._uid_base_for)
+    for lookup in (*lookups, hosts.inspector._runtime_for):
         with pytest.raises(RuntimeError, match="runs execution vm@retired, which this Forge"):
             lookup(retired)
     assert hosts.inspector._floor == 2048

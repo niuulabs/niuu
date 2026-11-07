@@ -185,8 +185,12 @@ def build_registered_hosts(
         limits = offered(runtimes, host).for_platform(host.platform).slot_limits
         return limits.uid_base if limits is not None else None
 
+    def runtime_for(host):
+        return offered(runtimes, host)
+
     inspector = SshHostInspector(
         access_for=access_for,
+        runtime_for=runtime_for,
         uid_base_for=uid_base_for,
         connectors=connectors,
         min_free_disk_mib=hosts.min_free_disk_mib,

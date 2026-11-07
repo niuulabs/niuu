@@ -268,7 +268,10 @@ class Inspector(HostInspector):
         self.findings = tuple(findings)
         self.error = error
         self.leave_error: Exception | None = None
+        self.prune_error: Exception | None = None
         self.audits: list[tuple[UUID, tuple[int, ...], bool]] = []
+        self.pruned: list[UUID] = []
+        self.order: list[str] = []
         self.left: list[UUID] = []
 
     async def facts(self, host):
@@ -280,7 +283,16 @@ class Inspector(HostInspector):
         if self.error is not None:
             raise self.error
         self.audits.append((host.id, tuple(live_slots), clean))
+        self.order.append("audit")
         return self.findings
+
+    async def prune(self, host):
+        if self.error is not None:
+            raise self.error
+        if self.prune_error is not None:
+            raise self.prune_error
+        self.pruned.append(host.id)
+        self.order.append("prune")
 
     def machine(self, host, allocation_id=None):
         return Machine(

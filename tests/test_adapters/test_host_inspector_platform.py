@@ -12,6 +12,7 @@ from volundr.domain.compute import HostPlatform
 def _inspector() -> SshHostInspector:
     return SshHostInspector(
         access_for=lambda host: None,
+        runtime_for=lambda host: None,
         uid_base_for=lambda host: 61000,
         connectors={"direct-ssh": Connector()},
         min_free_disk_mib=2048,

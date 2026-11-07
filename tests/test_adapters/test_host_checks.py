@@ -44,6 +44,7 @@ class Access:
 def _inspector(access, *, uid_base=61000):
     return SshHostInspector(
         access_for=lambda host: access,
+        runtime_for=lambda host: None,
         uid_base_for=lambda host: uid_base,
         connectors={"direct-ssh": Connector()},
         min_free_disk_mib=2048,
@@ -148,6 +149,7 @@ class TestInspector:
         with pytest.raises(ValueError):
             SshHostInspector(
                 access_for=lambda h: None,
+                runtime_for=lambda h: None,
                 uid_base_for=lambda h: None,
                 connectors={},
                 min_free_disk_mib=-1,
@@ -468,6 +470,7 @@ class TestDisconnectedHosts:
     def _inspector(self, access):
         return SshHostInspector(
             access_for=lambda host: access,
+            runtime_for=lambda host: None,
             uid_base_for=lambda host: 61000,
             connectors={"direct-ssh": DisconnectedConnector()},
             min_free_disk_mib=2048,
@@ -485,3 +488,47 @@ class TestDisconnectedHosts:
         with pytest.raises(HostDisconnectedError):
             await self._inspector(access).leave(make_host())
         assert access.calls == []
+
+    async def test_a_prune_says_the_tunnel_is_down_without_dialing(self):
+        runtime = Runtime()
+        inspector = self._inspector(Access())
+        inspector._runtime_for = lambda host: runtime
+        with pytest.raises(HostDisconnectedError):
+            await inspector.prune(make_host())
+        assert runtime.pruned == []
+
+
+class Runtime:
+    """A host runtime per platform that records what it was asked to prune."""
+
+    def __init__(self):
+        self.pruned = []
+        self.platforms = []
+
+    def for_platform(self, platform):
+        self.platforms.append(platform)
+        return self
+
+    async def prune_host(self, lease, bootstrap):
+        self.pruned.append((lease, bootstrap))
+
+
+async def test_a_prune_runs_the_runtime_of_the_hosts_execution_and_platform():
+    runtime = Runtime()
+    host = make_host(facts={"platform": "darwin"})
+    inspector = SshHostInspector(
+        access_for=lambda h: Access(),
+        runtime_for=lambda h: runtime if h is host else None,
+        uid_base_for=lambda h: 61000,
+        connectors={"direct-ssh": Connector()},
+        min_free_disk_mib=2048,
+        command_timeout_seconds=30,
+    )
+
+    await inspector.prune(host)
+
+    assert runtime.platforms == [HostPlatform.DARWIN]
+    ((lease, bootstrap),) = runtime.pruned
+    # The host outside any allocation, dialled as its checks are.
+    assert lease.id == host.id and lease.machine == inspector.machine(host)
+    assert bootstrap.files == ()

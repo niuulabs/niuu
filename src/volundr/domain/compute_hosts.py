@@ -400,6 +400,12 @@ class HostInspector(ABC):
         is only allowed with no live slots."""
 
     @abstractmethod
+    async def prune(self, host: RegisteredHost) -> None:
+        """Remove what the host's runtime keeps on it that no session uses (its image cache).
+
+        Safe beside live and starting sessions; raises when the prune cannot run."""
+
+    @abstractmethod
     def machine(self, host: RegisteredHost, allocation_id: UUID | None = None) -> Machine:
         """The machine record guest access dials for this host."""
 

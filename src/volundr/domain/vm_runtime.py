@@ -11,7 +11,7 @@ from uuid import UUID
 from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.session_proxy import SessionProxyTarget
-from volundr.domain.compute import ComputeLease, MachineBootstrap, SlotLease
+from volundr.domain.compute import AllocationRef, ComputeLease, MachineBootstrap, SlotLease
 from volundr.domain.compute_hosts import LINUX_ONLY, HostPlatform
 from volundr.domain.guest_credentials import GuestCredentialDelivery
 from volundr.domain.models import Session, SessionSpec
@@ -228,6 +228,15 @@ class VmRuntime(ABC):
     def session_grants(self) -> tuple[SessionGrant, ...]:
         """Extra access this runtime can give one session, enforced in placement."""
         return ()
+
+    async def prune_host(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:
+        """Remove what this runtime keeps on a registered host that no session uses.
+
+        Every check of a host runs it, with or without sessions there, so a host that is
+        quarantined for its free space and runs nothing is still pruned. A runtime that
+        keeps nothing on a host between sessions has nothing to remove.
+        """
+        return None
 
     async def recycle(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         """Remove stopped session resources after durable archival; idempotent."""

@@ -497,6 +497,31 @@ class TestChecks:
         assert checked.last_checked_at is not None
         assert inspector.audits == [(host.id, (), False)]
 
+    async def test_every_check_prunes_the_hosts_image_cache_before_the_audit(self):
+        # With or without sessions: a host quarantined for its free space runs none, and
+        # the audit's disk floor must see what the prune freed.
+        host = make_host(health=HostHealth.QUARANTINED)
+        service, _, _, inspector = _service(host)
+        checked = await service.check(host)
+        assert inspector.pruned == [host.id]
+        assert inspector.order == ["prune", "audit"]
+        assert checked.health is HostHealth.HEALTHY
+
+    async def test_a_prune_that_cannot_run_quarantines_the_host_naming_why(self):
+        host = make_host()
+        inspector = Inspector(findings=["only 900 MiB free on /, below the floor of 20480 MiB"])
+        inspector.prune_error = RuntimeError("PermissionError: /proc/77/mountinfo")
+        service, *_ = _service(host, inspector=inspector)
+        checked = await service.check(host)
+        assert checked.health is HostHealth.QUARANTINED
+        assert checked.findings == (
+            "Forge could not prune the host's image cache: "
+            "RuntimeError: PermissionError: /proc/77/mountinfo",
+            "only 900 MiB free on /, below the floor of 20480 MiB",
+        )
+        # The audit still ran: the host's other findings are recorded with it.
+        assert inspector.order == ["audit"]
+
     async def test_live_slots_are_audited_around(self):
         allocation = uuid4()
         host = make_host(allocation_id=allocation)

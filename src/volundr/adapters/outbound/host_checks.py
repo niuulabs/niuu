@@ -34,6 +34,7 @@ from volundr.domain.compute_hosts import (
     RegisteredHost,
 )
 from volundr.domain.guest_access import GuestAccess
+from volundr.domain.vm_runtime import VmRuntime
 
 #: Installed by join.sh; removes Forge's key, the sshd drop-in, the host key and the host's
 #: Forge configuration.
@@ -331,6 +332,7 @@ class SshHostInspector(HostInspector):
         self,
         *,
         access_for: Callable[[RegisteredHost], GuestAccess],
+        runtime_for: Callable[[RegisteredHost], VmRuntime],
         uid_base_for: Callable[[RegisteredHost], int | None],
         connectors: Mapping[str, HostConnector],
         min_free_disk_mib: int,
@@ -341,6 +343,7 @@ class SshHostInspector(HostInspector):
                 "min_free_disk_mib must not be negative and command_timeout_seconds positive"
             )
         self._access_for = access_for
+        self._runtime_for = runtime_for
         self._uid_base_for = uid_base_for
         self._connectors = connectors
         self._floor = min_free_disk_mib
@@ -366,6 +369,12 @@ class SshHostInspector(HostInspector):
             "clean" if clean else "check",
         )
         return (await self._run(host, PROGRAMS[host.platform][1], args)).findings
+
+    async def prune(self, host: RegisteredHost) -> None:
+        """The runtime of the host's execution and platform prunes what it keeps there."""
+        await self._connectors[host.connector].require_connection(host)
+        runtime = self._runtime_for(host).for_platform(host.platform)
+        await runtime.prune_host(self._ref(host), MachineBootstrap())
 
     def machine(self, host: RegisteredHost, allocation_id: UUID | None = None) -> Machine:
         """The machine record guest access dials: the connector decides how to reach it."""

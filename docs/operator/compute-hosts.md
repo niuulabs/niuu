@@ -456,8 +456,9 @@ never given to a slot.
 **The image cache.** Each image is unpacked once per manifest digest into
 `/var/lib/niuu/host-images/<digest>` and shared by every slot that runs from it; a
 session image is about 3.7 GB, so each Niuu release adds one. Forge removes the ones
-nothing uses when a session starts (before it fetches, so the new release has room) and
-after a session stops. Several slots start and stop at once, so a root stays while:
+nothing uses when a session starts (before it fetches, so the new release has room),
+after a session stops, and on every check of the host (below: **Checks and the audit**),
+sessions or not. Several slots start and stop at once, so a root stays while:
 
 - a slot claims it: the unpack records the digest for its slot in
   `/var/lib/niuu/host-images/.claims/niuu-slot-<n>.json` before it looks at the root,
@@ -475,10 +476,11 @@ starts meanwhile unpacks it again rather than running from a root being deleted.
 Leftovers of an unpack or prune that was killed (`.fetch-`, `.session-`, `.trash-`) go
 on the next prune. Entries Forge did not make are never removed; Forge logs them at
 error. A prune that cannot run (an unreadable mount table, a claim it cannot parse)
-fails the session's start or stop with the reason; a cache nobody prunes would fill the
-host until it is quarantined below `min_free_disk_mib`. A host that is already
-quarantined for its free space and runs no session frees nothing on its own: remove the
-roots it no longer needs by hand (`ls /var/lib/niuu/host-images`; keep the release's).
+fails the session's start or stop with the reason, and at a check it is a finding that
+quarantines the host; a cache nobody prunes would fill the host until it is quarantined
+below `min_free_disk_mib`. Because every check prunes before the audit measures free
+space, a host quarantined for space it only lost to old images is ready again after its
+next check (`check_interval_seconds`, or **Check now**).
 
 ## Slots and reuse
 
@@ -498,6 +500,10 @@ Forge runs two POSIX `sh` programs on the host as root (`sudo -n sh -s`). Only a
 host whose last check was clean is claimed:
 
 - **facts**: CPUs, memory, free disk, kernel, architecture, cgroup v2, GPUs and OS.
+- **prune** (Linux hosts, at the periodic check): the image cache loses the roots no
+  slot claims or mounts, keeping the release's session image (above: **The image
+  cache**). It runs before the audit, so the disk floor counts what it freed; a prune
+  that cannot run is a finding.
 - **audit**: for every slot that runs no session, no `niuu-slot-*` user, process,
   file under `/tmp`, `/var/tmp`, `/dev/shm`, `/run/user` or the slot directories,
   network namespace, link, slice, IPC object, crontab or linger may remain. It also

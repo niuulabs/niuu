@@ -681,6 +681,30 @@ async def test_a_session_cancelled_before_its_storage_was_prepared_keeps_the_pre
     runtime._guest_access.close_tunnel.assert_awaited_once()
 
 
+async def test_a_hosts_check_prunes_its_image_cache_keeping_the_release_image(host):
+    runtime, bootstrap, lease = host
+
+    await runtime.prune_host(lease, bootstrap)
+
+    assert [_program(call) for call in _calls(runtime)] == [
+        runtime._python(programs.PRUNE, "/var/lib/niuu/host-images", json.dumps([IMAGE]), "/proc")
+    ]
+
+
+async def test_a_runtime_that_keeps_nothing_on_a_host_has_nothing_to_prune(tmp_path):
+    runtime = ssh_vm_runtime.SshContainerVmRuntime(
+        host_key=generate_host_access_key(),
+        data_dir=str(tmp_path / "data"),
+        skuld_image=IMAGE,
+        command_timeout_seconds=0.05,
+    )
+    runtime._guest_access.execute = AsyncMock()
+
+    await runtime.prune_host(None, MachineBootstrap())
+
+    runtime._guest_access.execute.assert_not_awaited()
+
+
 async def test_warm_prepares_the_machine_and_unpacks_the_session_image_without_a_daemon(host):
     runtime, bootstrap, lease = host
 

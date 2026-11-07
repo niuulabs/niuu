@@ -694,6 +694,10 @@ class SshHostVmRuntime(HostModeRuntime):
             data=json.dumps({**payload, "environment": environment, "host": host}).encode(),
         )
 
+    async def prune_host(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:
+        """The host's check: what no slot claims or mounts goes, the release's image stays."""
+        await self._prune_images(lease, bootstrap, [self._image])
+
     async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
         await super().stop(lease, bootstrap)
         # The slot is gone, and its claims with it: what only it ran from goes too. The

@@ -683,9 +683,17 @@ class ComputeHostService:
             return await self._record(host, host.facts, (str(exc),), HostHealth.QUARANTINED, now)
         try:
             facts = await self._inspector.facts(host)
+            # Before the audit, whose disk floor then sees what the prune freed. Reached
+            # already (facts were read): a prune that fails is a finding, not unreachable.
+            try:
+                await self._inspector.prune(host)
+                pruned: tuple[str, ...] = ()
+            except (RuntimeError, OSError) as exc:
+                pruned = (f"Forge could not prune the host's image cache: {_reason(exc)}",)
             findings = await self._inspector.audit(
                 host, live_slots=[binding.slot for binding in live], clean=False
             )
+            findings = (*pruned, *findings)
             observed = facts.get("platform")
             if observed != platform.value:
                 findings = (
