@@ -1,10 +1,10 @@
 /**
- * "Runs as" — the runtimes a launch on a host may choose between.
+ * "Runs as" — what a host runs every session as.
  *
- * A VM Forge lists them (`GET /api/v1/forge/session-runtimes`); a host that lists none
- * offers no choice and runs its sessions the way that Forge always runs them. The
- * choice goes to the session as `workload_config.execution_profile`, and grants, only
- * when the chosen runtime offers them, as `workload_config.runtime_grants`.
+ * A Forge host runs exactly one runtime, set on the server, and never mixes runtimes in
+ * a pool, so a launch never chooses one. `GET /api/v1/forge/session-runtimes` names it
+ * (an empty list when the host declares none, which launches as it always has). The
+ * launch only asks for extra access the runtime offers, as `workload_config.runtime_grants`.
  */
 
 export type SessionRuntimeKind = 'container' | 'openshell' | 'host';
@@ -13,24 +13,18 @@ export type SessionGrant = 'sudo' | 'docker';
 export interface RuntimeReadiness {
   /** `warm`: a prepared machine is free. `boot`: one boots first. `full`: no capacity. */
   state: 'warm' | 'boot' | 'full';
-  /** Free prepared machines that can take this runtime now. */
+  /** Free slots on prepared machines that can take a session now. */
   warm: number;
   /** Where capacity is raised when the pool is full. */
   remedy: string | null;
 }
 
 export interface SessionRuntimeOffer {
+  /** What every session on this host runs as. */
   runtime: SessionRuntimeKind;
-  /** The exact execution (`id@revision`) this choice selects. */
-  executionProfile: string;
-  isDefault: boolean;
+  /** Extra access this runtime can give a session. */
   grants: SessionGrant[];
   readiness: RuntimeReadiness;
-}
-
-export interface RunsAsSelection {
-  executionProfile: string;
-  grants: SessionGrant[];
 }
 
 export const RUNTIME_LABELS: Record<SessionRuntimeKind, { name: string; summary: string }> = {
@@ -44,40 +38,21 @@ export const GRANT_LABELS: Record<SessionGrant, string> = {
   docker: 'Docker',
 };
 
-/** The offer a selection names, else the host's default, else its first. */
-export function selectedOffer(
-  offers: readonly SessionRuntimeOffer[],
-  selection: RunsAsSelection | null,
-): SessionRuntimeOffer | undefined {
-  return (
-    offers.find((offer) => offer.executionProfile === selection?.executionProfile) ??
-    offers.find((offer) => offer.isDefault) ??
-    offers[0]
-  );
-}
-
-/** Grants the selection keeps: only those its runtime offers. */
-export function selectedGrants(
+/** Grants the person picked that the host's runtime still offers. */
+export function offeredGrants(
   offer: SessionRuntimeOffer | undefined,
-  selection: RunsAsSelection | null,
+  picked: readonly SessionGrant[],
 ): SessionGrant[] {
-  if (!offer || selection?.executionProfile !== offer.executionProfile) return [];
-  return selection.grants.filter((grant) => offer.grants.includes(grant));
+  if (!offer) return [];
+  return offer.grants.filter((grant) => picked.includes(grant));
 }
 
-/** The workload_config entries the choice adds; none when the host offers no choice. */
-export function runsAsWorkloadConfig(
-  offer: SessionRuntimeOffer | undefined,
-  grants: readonly SessionGrant[],
-): Record<string, unknown> {
-  if (!offer) return {};
-  return {
-    execution_profile: offer.executionProfile,
-    ...(grants.length ? { runtime_grants: [...grants] } : {}),
-  };
+/** The workload_config entries a launch adds: only the grants asked for. */
+export function runsAsWorkloadConfig(grants: readonly SessionGrant[]): Record<string, unknown> {
+  return grants.length ? { runtime_grants: [...grants] } : {};
 }
 
-/** One line on how soon a session with this choice starts. */
+/** One line on how soon a session starts. */
 export function readinessLine(readiness: RuntimeReadiness): string {
   switch (readiness.state) {
     case 'warm':

@@ -903,17 +903,12 @@ jobs:
       - name: Dependency review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v4
         with:
-          # GHSA-v2v4-37r5-5v8g, GHSA-rxp7-6hxx-x8q5: the pinned bootstrap npm
-          # (11.21.1) bundles ip-address 10.7.2 through its internal socks chain,
-          # which no lockfile or override reaches. The images replace that copy
-          # with the locked 10.7.4 at build time (containers/node/npm-bootstrap/
-          # replace-nested.sh, which fails the build if the swap goes stale).
           # GHSA-rrmf-rvhw-rf47: low-severity torch.jit.script memory corruption with
           # NO patched release (<= 2.12.0 covers every published torch); torch arrives
           # via the optional mimir embeddings extra and jit.script is never invoked on
           # untrusted input (inference only). Remove once upstream ships a fix.
           # Keep dependency review strict elsewhere while allowing these upstream-only cases.
-          allow-ghsas: GHSA-v2v4-37r5-5v8g, GHSA-rxp7-6hxx-x8q5, GHSA-rrmf-rvhw-rf47
+          allow-ghsas: GHSA-rrmf-rvhw-rf47
 
   # ---------------------------------------------------------------------------
   # CI gate — the one check a ruleset on dev requires. Runs even when an

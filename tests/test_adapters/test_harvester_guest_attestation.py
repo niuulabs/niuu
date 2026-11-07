@@ -318,3 +318,8 @@ async def test_the_identity_needs_a_provider_configured_to_attest(api) -> None:
 def test_the_identity_needs_a_provider_that_can_attest() -> None:
     with pytest.raises(ValueError, match="does not. Use HostKeyGuestIdentity"):
         ProviderAttestedGuestIdentity(machine_provider=object())
+
+
+def test_the_provider_identity_serves_every_slot_of_a_machine(provider) -> None:
+    # Harvester keeps the token for the VM's lifetime; no slot's stop retires it.
+    assert ProviderAttestedGuestIdentity(machine_provider=provider).serves_slots

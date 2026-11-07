@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
 import pytest
@@ -33,7 +34,7 @@ def test_schema_offers_the_reads_with_shaping_arguments(tool: VolundrGitTool) ->
 def test_description_steers_the_model_off_anonymous_provider_calls(tool: VolundrGitTool) -> None:
     description = tool.description
 
-    assert "api.github.com" in description
+    assert re.search(r"\bapi\.github\.com\b", description)
     assert "rate limited" in description
     for action in ("get_commit", "compare", "ref_checks"):
         assert action in description

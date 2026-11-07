@@ -40,6 +40,12 @@ class ProviderAttestedGuestIdentity(GuestIdentity):
             )
         self._provider = machine_provider
 
+    @property
+    def serves_slots(self) -> bool:
+        # The provider issues and refreshes the token for the machine's lifetime;
+        # nothing is registered or retired per session.
+        return True
+
     def agent_auth(self, allocation_id: UUID) -> dict:
         return {"kind": "bearer_file", "token_path": self._provider.guest_token_path}
 

@@ -5,16 +5,68 @@
     {
       "commit": "b234a2b67539f787e191d2ef19a7cbdce32874e7",
       "sha256": "606aa1bd8124cb0d777744dfe1a89d1ba983638115372cc508f4ed4a154f3abf"
+    },
+    {
+      "commit": "2eb2af805c156ca52b316bb4ced5e0ab3971d0ae",
+      "sha256": "c0048d69b6acdd97bece5030f80a230f3e3157a0f3976789d5fab0674f5e5511"
+    },
+    {
+      "commit": "9f52b443c002cccfb54bda0706a9276b6b4a109d",
+      "sha256": "62e99aa3d79c55847bb9c600a66c4e922390dfc1eeba41ee0fe2be3e14b2ea09"
+    },
+    {
+      "commit": "131a3a66c5f400b588f9fd2732a5ed4e89623ee3",
+      "sha256": "7e0bed0e0ac09307f2f7a9d8aaddeb4ded8f4023af3e770d0df52f979ff9752f",
+      "adapted": {
+        "patch": "131a3a66c5f400b588f9fd2732a5ed4e89623ee3-python.patch",
+        "sha256": "65c6add8550dc1f7013d62909938b34dda8319fa834a6191ff252a1950d20521",
+        "adapted_files": [
+          "Lib/socket.py"
+        ],
+        "dropped_files": [
+          "Modules/socketmodule.c"
+        ]
+      }
     }
+  ],
+  "tests": [
+    [
+      "-j",
+      "2",
+      "test_poplib",
+      "test_httplib"
+    ],
+    [
+      "test_socket",
+      "-m",
+      "test_getaddrinfo_null_bytes"
+    ]
   ],
   "files": {
     "poplib.py": {
       "original": "527e714523264093910a0a0b1a55c6583f952835c89061537fc40ad98c347056",
       "patched": "a6ffff188814b56d95b043c31d9e0dfee51ac6d6e92afe74ab070cb6136b076f"
+    },
+    "http/client.py": {
+      "original": "426efb3157421094db809b674002f15d53f6916a4b4049293a3c431552310790",
+      "patched": "c3623ce4f78c2e82e13dccf6e5be369732f7da373207be8241b42229fa2d24ab"
+    },
+    "socket.py": {
+      "original": "4a8747dc77383df192b22bb95f4620cadafeffe6b621c61b1f3b8c386393643c",
+      "patched": "ff838c21126fc08cdecca6c09f164a47918c935b338a3626d9d1ad4421f17bec"
     }
   },
   "cves": [
-    "CVE-2025-15367"
+    "CVE-2025-15367",
+    "CVE-2026-103995"
+  ],
+  "mitigations": [
+    {
+      "cve": "CVE-2026-116566",
+      "file": "socket.py",
+      "justification": "inline_mitigations_already_exist",
+      "impact_statement": "socket.getaddrinfo() rejects null bytes in host and port with the ValueError messages of the upstream fix (gh-160898), so every standard-library caller (asyncio, socket.create_connection, urllib, http.client) is protected. The compiled _socket module is not rebuilt: a direct call to the private _socket.getaddrinfo() still truncates at a null byte. The Niuu source tree makes no such call; installed third-party packages were not audited for one."
+    }
   ],
   "upstream_fixes": [
     {

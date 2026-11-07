@@ -42,7 +42,7 @@ _OPEN_SHELL_CLAUDE_HOME = f"{_OPEN_SHELL_HOME}/.claude"
 #: that release's install.sh (raw.githubusercontent.com/NVIDIA/OpenShell/<tag>).
 #: A tagged release: install.sh fetches prerelease packages only through an
 #: authenticated GitHub CLI, which a guest does not have.
-DEFAULT_OPENSHELL_VERSION = "v0.1.6"
+DEFAULT_OPENSHELL_VERSION = "v0.1.7"
 DEFAULT_OPENSHELL_INSTALL_SHA256 = (
     "04c1a437d4a4fc11930d75a336fc4f52bf0c95251e8469c306e407e203769ae7"
 )

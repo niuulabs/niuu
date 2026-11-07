@@ -1,5 +1,5 @@
 diff --git a/bun.lock b/bun.lock
-index 7d2add6..1d2cd5d 100644
+index 7d2add68..fb01382c 100644
 --- a/bun.lock
 +++ b/bun.lock
 @@ -15,7 +15,7 @@
@@ -20,12 +20,14 @@ index 7d2add6..1d2cd5d 100644
        },
        "devDependencies": {
          "@playwright/test": "1.63.0",
-@@ -54,13 +54,13 @@
+@@ -53,16 +53,16 @@
+   ],
    "overrides": {
      "@ai-sdk/provider-utils": "4.0.33",
-     "@hono/node-server": "^2.0.5",
+-    "@hono/node-server": "^2.0.5",
 -    "body-parser": "^2.3.0",
 -    "fast-uri": "3.1.8",
++    "@hono/node-server": "2.1.3",
 +    "body-parser": "^2.4.0",
 +    "fast-uri": "3.1.9",
      "fast-xml-builder": "^1.1.7",
@@ -36,9 +38,19 @@ index 7d2add6..1d2cd5d 100644
 +    "hono": "4.13.13",
 +    "ip-address": "10.7.4",
      "js-yaml": "^3.15.2",
-     "qs": "6.16.0",
+-    "qs": "6.16.0",
++    "qs": "6.16.1",
    },
-@@ -171,7 +171,7 @@
+   "packages": {
+     "@ai-sdk/anthropic": ["@ai-sdk/anthropic@3.0.74", "", { "dependencies": { "@ai-sdk/provider": "3.0.10", "@ai-sdk/provider-utils": "4.0.26" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-Xew9rfz9WWhDSyF8rNhjT/XWOWelNfJrMlmG0Ahw210hStisRpQZ1s+7VeI9JTJOZ5y5tXqBi5kfPwYnCfyRTA=="],
+@@ -165,13 +165,13 @@
+ 
+     "@electric-sql/pglite": ["@electric-sql/pglite@0.4.3", "", {}, "sha512-ichuWTgtd4mOM1G4SpyGJa5trT03lWbMypDV0fUXUCXg5hiHqVAz/bZyV68NqmkLB7WcYmj1RMJVSp8HV/v/ZQ=="],
+ 
+-    "@hono/node-server": ["@hono/node-server@2.1.0", "", { "peerDependencies": { "hono": "^4" } }, "sha512-XovyyCCnBzW+zKu+z/zq8hwNs4KOR5rEMAOxo2f40Q5xoOI37IMm6MIg2COOUtUApo0i6850MTBKH2u4QLGIqg=="],
++    "@hono/node-server": ["@hono/node-server@2.1.3", "", { "peerDependencies": { "hono": "^4" } }, "sha512-TA//nWMqPhbfdfneACk6t5a9eqbS9lABEPyKn0/xZTah3H3U2XaVg85rJFl0/Fyit0I552YDHgXGVSf3GwqbUw=="],
+ 
+     "@jsquash/avif": ["@jsquash/avif@2.1.1", "", { "dependencies": { "wasm-feature-detect": "^1.2.11" } }, "sha512-LMRxd0fMgfCLtobDh0/sFYJMMiRJTNYSEEWvRDKXlAeZ08t3gI5V+1thIT0XjXJ+SVG7Zug9B0XPyx0Ti5VRNA=="],
  
      "@jsquash/png": ["@jsquash/png@3.1.1", "", {}, "sha512-C10pc+0H6j0h8fENOfnGOvkXCmvpSQTDGlfGd0sHphZhPSGTyLjIrHba0FaZZdsKqA/wlmhYicUHb92vfZphaw=="],
  
@@ -83,7 +95,7 @@ index 7d2add6..1d2cd5d 100644
  
      "ipaddr.js": ["ipaddr.js@1.9.1", "", {}, "sha512-0KI/607xoxSToH7GjN1FfSbLoU0+btTicjsQSWQlh/hZykN8KpmMf7uYwPW3R+akZ6R/w18ZlXSHBYXiYUPO3g=="],
  
-@@ -519,7 +519,7 @@
+@@ -519,11 +519,11 @@
  
      "playwright-core": ["playwright-core@1.63.0", "", { "bin": { "playwright-core": "cli.js" } }, "sha512-rYCsBF/M5HjUch52bbtVONEFjv6Xu8sm8h72dNlR5bzIE1fvC/bxgspzkjSfU+MweEMmPM8KJebG6nnyxo5mCg=="],
  
@@ -91,6 +103,11 @@ index 7d2add6..1d2cd5d 100644
 +    "proxy-addr": ["proxy-addr@2.0.8", "", { "dependencies": { "forwarded": "0.2.0", "ipaddr.js": "1.9.1" } }, "sha512-5nnx0yGyVUcY6t9RnWcARWtwT9F1D8O9rt08htPvnd49W1IgZtmLkhu9WfMzQj1cFxjHIO6connUNVW5k7AVyQ=="],
  
      "pure-rand": ["pure-rand@8.4.0", "", {}, "sha512-IoM8YF/jY0hiugFo/wOWqfmarlE6J0wc6fDK1PhftMk7MGhVZl88sZimmqBBFomLOCSmcCCpsfj7wXASCpvK9A=="],
+ 
+-    "qs": ["qs@6.16.0", "", { "dependencies": { "es-define-property": "^1.0.1", "side-channel": "^1.1.1" } }, "sha512-h6fhOIaRrID2CbEY2fqs+7t+UXZo+MLAnU5gRIq85uFtdiUPCdsApMlHhXogKVM4HM2DVbIjGNTTYH2OcmP1vA=="],
++    "qs": ["qs@6.16.1", "", { "dependencies": { "es-define-property": "^1.0.1", "side-channel": "^1.1.1" } }, "sha512-5Px6J7rfHBAGUhNQ3es4YzcOdBBw0SDcVtThJml4RdnKw4tKs2epA0kPZ+K8X+WiHktT93RHVcQ/3ym5aTCgtg=="],
+ 
+     "range-parser": ["range-parser@1.2.1", "", {}, "sha512-Hrgsx+orqoygnmhFbKaHE6c296J+HTAQXoxEF6gNupROmmGJRoyzfG3ccAveqCBrwr/2yxQ5BVd/GTl5agOwSg=="],
  
 @@ -595,7 +595,7 @@
  
@@ -128,7 +145,7 @@ index 7d2add6..1d2cd5d 100644
  
      "openai/@types/node/undici-types": ["undici-types@5.26.5", "", {}, "sha512-JlCMO+ehdEIKqlFxk6IfVoAUVmgz7cU7zD/h9XZ0qzeosSHmUJVOzSQvvYSYWXkFXC+IfLKSIffhv0sVZup6pA=="],
 diff --git a/package.json b/package.json
-index 5fd6100..3dde723 100644
+index 5fd61008..e6557c0e 100644
 --- a/package.json
 +++ b/package.json
 @@ -153,7 +153,7 @@
@@ -149,12 +166,14 @@ index 5fd6100..3dde723 100644
    },
    "devDependencies": {
      "@playwright/test": "1.63.0",
-@@ -195,13 +195,13 @@
+@@ -194,15 +194,15 @@
+   "version": "0.60.11.0",
    "overrides": {
      "@ai-sdk/provider-utils": "4.0.33",
-     "@hono/node-server": "^2.0.5",
+-    "@hono/node-server": "^2.0.5",
 -    "fast-uri": "3.1.8",
 -    "body-parser": "^2.3.0",
++    "@hono/node-server": "2.1.3",
 +    "fast-uri": "3.1.9",
 +    "body-parser": "^2.4.0",
      "fast-xml-builder": "^1.1.7",
@@ -162,8 +181,10 @@ index 5fd6100..3dde723 100644
      "form-data": "^4.0.6",
 -    "hono": "^4.13.5",
 -    "ip-address": "^10.5.1",
+-    "qs": "6.16.0",
 +    "hono": "4.13.13",
 +    "ip-address": "10.7.4",
-     "qs": "6.16.0",
++    "qs": "6.16.1",
      "js-yaml": "^3.15.2"
    }
+ }

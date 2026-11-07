@@ -587,11 +587,9 @@ class RuntimeReadinessResponse(BaseModel):
 
 
 class SessionRuntimeResponse(BaseModel):
-    runtime: str = Field(description="'container', 'openshell' or 'host'")
-    execution_profile: str = Field(
-        description="Send as workload_config.execution_profile to launch with this runtime"
+    runtime: str = Field(
+        description="What every session on this host runs as: 'container', 'openshell' or 'host'"
     )
-    default: bool = Field(description="Sessions that choose nothing run this one")
     grants: list[str] = Field(
         description="Extra access ('sudo', 'docker') this runtime can give a session; send "
         "the chosen ones as workload_config.runtime_grants"
@@ -602,8 +600,6 @@ class SessionRuntimeResponse(BaseModel):
     def from_offer(cls, offer: SessionRuntimeOffer) -> "SessionRuntimeResponse":
         return cls(
             runtime=offer.runtime.value,
-            execution_profile=offer.execution_profile,
-            default=offer.default,
             grants=[grant.value for grant in offer.grants],
             readiness=RuntimeReadinessResponse(
                 state=offer.readiness.state.value,
@@ -615,7 +611,7 @@ class SessionRuntimeResponse(BaseModel):
 
 class SessionRuntimesResponse(BaseModel):
     runtimes: list[SessionRuntimeResponse] = Field(
-        description="Runtimes a launch may choose between; empty when the host offers no choice"
+        description="The one runtime this host runs sessions as; empty when it does not declare one"
     )
 
 
@@ -2289,7 +2285,7 @@ def create_router(
 
     @router.get("/session-runtimes", tags=["Sessions"], response_model=SessionRuntimesResponse)
     async def get_session_runtimes() -> SessionRuntimesResponse:
-        """What a launch on this host may run as, with current warm readiness."""
+        """What this host runs every session as, with current warm readiness."""
         offers = await session_service.session_runtimes()
         return SessionRuntimesResponse(
             runtimes=[SessionRuntimeResponse.from_offer(offer) for offer in offers]

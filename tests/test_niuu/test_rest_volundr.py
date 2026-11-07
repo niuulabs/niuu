@@ -2378,8 +2378,6 @@ def test_session_runtimes_come_from_the_requested_instance() -> None:
         "runtimes": [
             {
                 "runtime": "container",
-                "execution_profile": "vm-container@1",
-                "default": True,
                 "grants": [],
                 "readiness": {"state": "warm", "warm": 1, "remedy": None},
             }

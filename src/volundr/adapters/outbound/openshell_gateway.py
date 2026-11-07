@@ -3521,12 +3521,11 @@ class OpenShellGatewayPodManager(
             and runtime.desired_state is ResidentDesiredState.RUNNING
         ):
             return self._going_sandbox_observation(runtime, profile, sandbox.name)
-        if (
-            sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPED
-            and runtime.desired_state is ResidentDesiredState.RUNNING
-        ):
-            # Forge never stops a resident's sandbox, so this one stopped under
-            # it (a node drain leaves it suspended). Later passes see it ready
+        if _sandbox_stopped(sandbox) and runtime.desired_state is ResidentDesiredState.RUNNING:
+            # Forge never stops or suspends a resident's sandbox, so this one
+            # stopped under it (a node drain stops it; `openshell sandbox
+            # suspend` freezes it). Starting discards a suspended sandbox's
+            # memory state and keeps its storage. Later passes see it ready
             # and start its processes.
             sandbox = await self._start_stopped_resident_sandbox(runtime, sandbox)
         if (
@@ -4012,8 +4011,9 @@ class OpenShellGatewayPodManager(
             self._client.get_sandbox,
             self._resident_sandbox_name(runtime),
         )
-        if sandbox is not None and sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPED:
-            # A restart also brings back a sandbox that stopped under the resident.
+        if sandbox is not None and _sandbox_stopped(sandbox):
+            # A restart also brings back a sandbox that stopped (or was
+            # suspended) under the resident.
             await self._start_resident_sandbox(sandbox.name)
             sandbox = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
         runtime_id = str(runtime.id)
@@ -6864,10 +6864,25 @@ def _last_line(output: str) -> str | None:
     return lines[-1] if lines else None
 
 
+def _sandbox_stopped(sandbox: OpenShellSandbox) -> bool:
+    """Whether the sandbox runs no workload: stopped, or suspended (OpenShell v0.1.7+).
+
+    A suspended sandbox keeps its frozen memory for ResumeSandbox; StartSandbox
+    discards that state and boots it again on its retained storage.
+    """
+    return sandbox.phase in (
+        openshell_pb2.SANDBOX_PHASE_STOPPED,
+        openshell_pb2.SANDBOX_PHASE_SUSPENDED,
+    )
+
+
 def _status_from_sandbox(sandbox: OpenShellSandbox) -> SessionStatus:
-    if sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPED:
+    if _sandbox_stopped(sandbox):
         return SessionStatus.STOPPED
-    if sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPING:
+    if sandbox.phase in (
+        openshell_pb2.SANDBOX_PHASE_STOPPING,
+        openshell_pb2.SANDBOX_PHASE_SUSPENDING,
+    ):
         return SessionStatus.STOPPING
     if sandbox.phase == openshell_pb2.SANDBOX_PHASE_READY or sandbox.ready:
         return SessionStatus.RUNNING

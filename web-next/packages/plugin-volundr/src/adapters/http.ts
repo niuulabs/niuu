@@ -488,8 +488,6 @@ type InstanceTargetPayload = {
 
 type SessionRuntimePayload = {
   runtime: SessionRuntimeOffer['runtime'];
-  execution_profile: string;
-  default: boolean;
   grants: SessionRuntimeOffer['grants'];
   readiness: SessionRuntimeOffer['readiness'];
 };
@@ -2064,10 +2062,14 @@ export function buildVolundrHttpAdapter(
       if (!Array.isArray(payload?.runtimes)) {
         throw new Error(`Invalid session runtimes from ${instanceId ?? 'the default host'}`);
       }
+      if (payload.runtimes.length > 1) {
+        throw new Error(
+          `${instanceId ?? 'The default host'} offered ${payload.runtimes.length} session ` +
+            'runtimes; a host runs exactly one',
+        );
+      }
       return payload.runtimes.map((offer) => ({
         runtime: offer.runtime,
-        executionProfile: offer.execution_profile,
-        isDefault: offer.default,
         grants: offer.grants,
         readiness: offer.readiness,
       }));
