@@ -666,6 +666,64 @@ def test_get_session_rebases_target_relative_chat_endpoint() -> None:
     assert response.json()["chat_endpoint"] == ("wss://niuu.noatun.asgard.niuu.world/s/s2/session")
 
 
+_STARTUP = {
+    "started_at": "2026-11-06T12:00:00Z",
+    "handed_off_at": "2026-11-06T12:00:01Z",
+    "stages": [
+        {
+            "key": "schedule",
+            "label": "Scheduling",
+            "state": "done",
+            "detail": "On node hnoss",
+            "started_at": "2026-11-06T12:00:00Z",
+            "finished_at": "2026-11-06T12:00:02Z",
+        },
+        {
+            "key": "containers",
+            "label": "Starting containers",
+            "state": "active",
+            "detail": "Pulling image skuld:1",
+            "started_at": "2026-11-06T12:00:02Z",
+            "finished_at": None,
+        },
+    ],
+    "progress_error": None,
+}
+
+
+@respx.mock
+def test_a_remote_forges_launch_stages_reach_the_session_listing_and_read_unchanged() -> None:
+    client = _client([_instance("noatun", base_url="http://noatun")])
+    session = {"id": "s7", "name": "Starting", "status": "starting", "startup": _STARTUP}
+    respx.get("http://noatun/api/v1/forge/sessions").mock(
+        return_value=Response(200, json=[session])
+    )
+    respx.get("http://noatun/api/v1/forge/sessions/s7").mock(
+        return_value=Response(200, json=session)
+    )
+
+    listed = client.get("/api/v1/forge/sessions", headers=_headers())
+    read = client.get("/api/v1/forge/sessions/s7", headers=_headers())
+
+    assert listed.status_code == read.status_code == 200
+    assert listed.json()[0]["startup"] == _STARTUP
+    assert read.json()["startup"] == _STARTUP
+    assert read.json()["instance_id"] == "noatun"
+
+
+@respx.mock
+def test_a_session_without_a_recorded_launch_stays_null_through_the_facade() -> None:
+    client = _client([_instance("noatun", base_url="http://noatun")])
+    respx.get("http://noatun/api/v1/forge/sessions/s8").mock(
+        return_value=Response(200, json={"id": "s8", "status": "running", "startup": None})
+    )
+
+    read = client.get("/api/v1/forge/sessions/s8", headers=_headers())
+
+    assert read.status_code == 200
+    assert read.json()["startup"] is None
+
+
 @respx.mock
 def test_list_sessions_ignores_errors_and_sorts_last_active_descending() -> None:
     client = _client(

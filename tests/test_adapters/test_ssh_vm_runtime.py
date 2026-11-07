@@ -194,6 +194,82 @@ async def test_start_restores_archive_then_uses_persisted_launch_payload(setup):
     assert "stdin" not in runtime._guest_access.execute.await_args_list[1].kwargs
 
 
+async def _started_steps(setup, *, archive: bool, credentials: bool):
+    runtime, session, spec, bootstrap, lease = setup
+    runtime._ssh(lease, bootstrap)
+    if archive:
+        file = runtime._data / str(session.id) / "session.tar"
+        file.parent.mkdir(mode=0o700, parents=True)
+        file.write_bytes(b"explicit-test-archive")
+    if credentials:
+        files = tuple(
+            f.model_copy(
+                update={"content": json.dumps({**json.loads(f.content), "forge_session": True})}
+            )
+            if f.path == module._LAUNCH
+            else f
+            for f in bootstrap.files
+        )
+        bootstrap = bootstrap.model_copy(update={"files": files})
+        runtime.configure_credential_delivery(AsyncMock())
+    steps = []
+    runtime.report_startup_to(lambda sid, key, label: steps.append((sid, key, label)))
+    runtime._guest_access.ensure = AsyncMock()
+    runtime._guest_access.execute = AsyncMock(return_value=GuestCommandResult(0))
+    runtime.target = AsyncMock()
+    await runtime.prepare(lease, bootstrap)
+    await runtime.start(lease, bootstrap)
+    return steps, session.id
+
+
+async def test_start_names_each_step_with_the_leases_session(setup):
+    steps, session_id = await _started_steps(setup, archive=False, credentials=False)
+
+    assert steps == [
+        (session_id, "guest_files", "Delivering session files"),
+        (session_id, "guest_tunnel", "Opening the tunnel to Forge"),
+        (session_id, "guest_skuld", "Pulling and starting Skuld"),
+    ]
+
+
+async def test_start_names_the_restore_step_only_when_an_archive_exists(setup):
+    steps, session_id = await _started_steps(setup, archive=True, credentials=False)
+
+    assert [key for _, key, _ in steps] == [
+        "guest_files",
+        "guest_restore",
+        "guest_tunnel",
+        "guest_skuld",
+    ]
+    assert steps[1] == (session_id, "guest_restore", "Restoring the workspace")
+
+
+async def test_start_names_the_credentials_step_only_with_a_credential_plan(setup):
+    steps, session_id = await _started_steps(setup, archive=True, credentials=True)
+
+    assert [key for _, key, _ in steps] == [
+        "guest_files",
+        "guest_restore",
+        "guest_tunnel",
+        "guest_credentials",
+        "guest_skuld",
+    ]
+    assert steps[3] == (session_id, "guest_credentials", "Delivering credentials")
+
+
+async def test_start_without_a_reporter_names_no_steps(setup):
+    runtime, session, spec, bootstrap, lease = setup
+    runtime._ssh(lease, bootstrap)
+    runtime._guest_access.ensure = AsyncMock()
+    runtime._guest_access.execute = AsyncMock(return_value=GuestCommandResult(0))
+    runtime.target = AsyncMock()
+
+    await runtime.start(lease, bootstrap)
+
+    assert runtime._report_startup is None
+    assert runtime._guest_access.execute.await_count == 3
+
+
 async def test_explicit_ssh_bootstrap_uses_tofu_once_then_strict_pin(setup, tmp_path):
     runtime, session, spec, provider_bootstrap, lease = setup
     post_connect = SshContainerVmRuntime(

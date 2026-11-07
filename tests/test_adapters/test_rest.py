@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -43,6 +44,7 @@ from volundr.domain.models import GitProviderType, GitSource, RepoInfo, Session,
 from volundr.domain.ports import SessionCapacity
 from volundr.domain.services import RepoService, SessionService, StatsService
 from volundr.domain.services.session import SessionAccessDeniedError
+from volundr.domain.session_startup import SessionStartup, StartupStage, StartupStageState
 
 _SIGNING_KEY = "test-only-signing-key-32-bytes-long!"
 
@@ -205,6 +207,60 @@ class TestSessionResponse:
         assert response.tokens_used == 1000
         assert response.pod_name == "volundr-abc123"
         assert session.created_at.isoformat() in response.created_at
+
+    def test_from_session_carries_the_launch_stages(self):
+        """The stages of the latest launch ride on the session, as JSON."""
+        started = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
+        startup = SessionStartup(
+            started_at=started,
+            handed_off_at=started,
+            stages=(
+                StartupStage(
+                    key="schedule",
+                    label="Scheduling",
+                    state=StartupStageState.DONE,
+                    detail="On node hnoss",
+                    started_at=started,
+                    finished_at=started,
+                ),
+                StartupStage(
+                    key="containers",
+                    label="Starting containers",
+                    state=StartupStageState.PENDING,
+                ),
+            ),
+        )
+        session = Session(
+            id=uuid4(),
+            name="Test",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.STARTING,
+            startup=startup,
+        )
+
+        response = SessionResponse.from_session(session)
+
+        assert response.startup == startup
+        body = response.model_dump(mode="json")["startup"]
+        assert body["handed_off_at"] == "2026-11-06T12:00:00Z"
+        assert [(s["key"], s["state"], s["detail"]) for s in body["stages"]] == [
+            ("schedule", "done", "On node hnoss"),
+            ("containers", "pending", None),
+        ]
+
+    def test_from_session_without_a_recorded_launch_has_null_startup(self):
+        session = Session(
+            id=uuid4(),
+            name="Test",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+
+        response = SessionResponse.from_session(session)
+
+        assert response.startup is None
+        assert response.model_dump(mode="json")["startup"] is None
 
     def test_from_session_normalizes_loopback_chat_endpoint(self):
         """Loopback chat endpoints should prefer localhost for browser clients."""

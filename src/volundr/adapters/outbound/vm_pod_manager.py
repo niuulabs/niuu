@@ -692,17 +692,21 @@ class VmPodManager(PodManager):
         if machine is not None and machine.state == MachineState.RUNNING and machine.addresses:
             progress = self._progress.get(session_id)
             boot = next((s for s in progress.stages if s.key == "boot"), None) if progress else None
-            if boot is not None and boot.state is StartupStageState.PENDING:
+            if boot is None:
+                # Skipped on an earlier pass (a warm or retained VM), or no launch is
+                # being recorded: a retry of the guest must not bring a boot stage back.
+                return
+            if boot.state is StartupStageState.PENDING:
                 # A warm or retained VM was already up: this start never booted it.
                 self._skip_stage(session_id, "boot")
-            else:
-                self._set_stage(
-                    session_id,
-                    "boot",
-                    "Booting the VM",
-                    StartupStageState.DONE,
-                    f"{machine.phase or 'Running'} at {', '.join(machine.addresses)}",
-                )
+                return
+            self._set_stage(
+                session_id,
+                "boot",
+                "Booting the VM",
+                StartupStageState.DONE,
+                f"{machine.phase or 'Running'} at {', '.join(machine.addresses)}",
+            )
             return
         if machine is None:
             detail = "Creating the VM"

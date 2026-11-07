@@ -23,7 +23,12 @@ from volundr.domain.compute import (
 )
 from volundr.domain.models import PodSpecAdditions, Session, SessionSpec, SessionStatus
 from volundr.domain.services.compute_leases import ComputeLeaseService
-from volundr.domain.vm_runtime import VmRuntimeStageError, VmRuntimeUnavailableError
+from volundr.domain.session_startup import StartupStageState
+from volundr.domain.vm_runtime import (
+    VmRuntime,
+    VmRuntimeStageError,
+    VmRuntimeUnavailableError,
+)
 
 
 class Repository(LeaseRepository):
@@ -740,3 +745,388 @@ async def test_broker_target_names_an_unreachable_guest(setup):
 
     with pytest.raises(ValueError, match="VM broker is unreachable: tunnel refused"):
         await manager.broker_target(session)
+
+
+# --- Launch stages -----------------------------------------------------------------
+
+
+class StagedRuntime(VmRuntime):
+    """A guest runtime that does not name the steps of its own start."""
+
+    def __init__(self):
+        self.prepare_errors: list[Exception] = []
+        self.prepare_calls = 0
+        self.on_prepare = None
+        self.is_ready = True
+
+    def machine_bootstrap(self, defaults):
+        return defaults
+
+    def session_bootstrap(self, session, spec, machine):
+        return MachineBootstrap(commands=(("true",),))
+
+    def bootstrap(self, session, spec, defaults):
+        return defaults
+
+    async def warm(self, lease, bootstrap):
+        return None
+
+    async def prepare(self, lease, bootstrap):
+        self.prepare_calls += 1
+        if self.on_prepare is not None:
+            await self.on_prepare(self.prepare_calls)
+        if self.prepare_errors:
+            raise self.prepare_errors.pop(0)
+
+    async def start(self, lease, bootstrap):
+        return None
+
+    async def target(self, lease, bootstrap):
+        return SessionProxyTarget("http://127.0.0.1:9000", "127.0.0.1", 9000)
+
+    async def ready(self, lease, bootstrap):
+        return self.is_ready
+
+    async def stop(self, lease, bootstrap):
+        return None
+
+    async def close(self):
+        return None
+
+
+class ReportingRuntime(StagedRuntime):
+    """A guest runtime that names each step of its start (StartupReportingVmRuntime)."""
+
+    def __init__(self):
+        super().__init__()
+        self.reported_to = []
+
+    def report_startup_to(self, report):
+        self.reported_to.append(report)
+
+    async def start(self, lease, bootstrap):
+        for key, label in (
+            ("guest_files", "Delivering session files"),
+            ("guest_tunnel", "Opening the tunnel to Forge"),
+            ("guest_skuld", "Pulling and starting Skuld"),
+        ):
+            self.reported_to[-1](lease.session_id, key, label)
+
+
+class BootingProvider(Provider):
+    """A provider whose machine reports its phase while it boots."""
+
+    def __init__(self, provisioning_reads: int = 2):
+        super().__init__()
+        self.provisioning_reads = provisioning_reads
+        self.provisioning_phase = "Starting on hnoss"
+        self.provisioning_detail = None
+        self.on_create = None
+
+    async def create(self, request):
+        machine = await super().create(request)
+        if self.on_create is not None:
+            await self.on_create(len(self.created))
+        if len(self.created) <= self.provisioning_reads:
+            machine = machine.model_copy(
+                update={
+                    "phase": self.provisioning_phase,
+                    "status_detail": self.provisioning_detail,
+                }
+            )
+        else:
+            machine = machine.model_copy(
+                update={
+                    "state": MachineState.RUNNING,
+                    "addresses": ("192.0.2.10",),
+                    "phase": "Running on hnoss",
+                }
+            )
+        self.machines[request.allocation_id] = machine
+        return machine
+
+
+def staged_manager(runtime, provider=None, **kwargs):
+    repository, provider, store = Repository(), provider or ReadyProvider(), MemoryCredentialStore()
+    service = ComputeLeaseService(
+        repository,
+        provider,
+        pool_id="pool",
+        max_machines=1,
+        bootstrap=MachineBootstrap(),
+        bootstrap_store=store,
+    )
+    manager = VmPodManager(
+        profile="small", pool_id="pool", max_machines=1, poll_interval_seconds=0.001, **kwargs
+    )
+    manager.configure_compute(
+        service, repository, runtime, MachineBootstrap(), pool_id="pool", max_machines=1
+    )
+    session = Session(id=uuid4(), name="VM session", owner_id="owner", tenant_id="tenant")
+    return manager, service, repository, provider, session
+
+
+def staged_spec():
+    return SessionSpec(values={}, pod_spec=PodSpecAdditions())
+
+
+async def stages_of(manager, session):
+    return {stage.key: stage for stage in await manager.startup_stages(session)}
+
+
+def test_vm_pod_manager_reports_startup_stages():
+    assert VmPodManager(profile="small", pool_id="pool", max_machines=1).reports_startup_stages
+
+
+async def test_a_session_that_never_started_has_no_stages():
+    manager, _, _, _, session = staged_manager(StagedRuntime())
+
+    assert await manager.startup_stages(session) == ()
+
+
+async def test_cold_start_walks_allocate_boot_guest_and_broker_in_order():
+    runtime = StagedRuntime()
+    manager, _, _, provider, session = staged_manager(runtime, BootingProvider())
+
+    await manager.start(session, staged_spec())
+
+    stages = await manager.startup_stages(session)
+    assert [s.key for s in stages] == ["allocate", "boot", "guest", "guest_start", "broker"]
+    by_key = {s.key: s for s in stages}
+    assert by_key["allocate"].state is StartupStageState.DONE
+    assert by_key["allocate"].detail == "A new VM, profile small"
+    assert by_key["boot"].state is StartupStageState.DONE
+    assert by_key["boot"].detail == "Running on hnoss at 192.0.2.10"
+    assert by_key["guest"].state is StartupStageState.DONE
+    assert by_key["guest"].detail == "The guest answered"
+    assert by_key["guest_start"].label == "Starting the runtime"
+    assert by_key["guest_start"].state is StartupStageState.DONE
+    # The runtime started, but the broker has not answered yet.
+    assert by_key["broker"].state is StartupStageState.ACTIVE
+    assert by_key["broker"].finished_at is None
+    assert len(provider.created) > 2
+
+
+async def test_boot_is_active_with_the_machines_own_phase_until_it_runs():
+    provider = BootingProvider(provisioning_reads=3)
+    manager, _, _, _, session = staged_manager(StagedRuntime(), provider)
+    seen = []
+
+    async def watch(read):
+        if read == 3:
+            seen.append(await stages_of(manager, session))
+
+    provider.on_create = watch
+
+    await manager.start(session, staged_spec())
+
+    while_booting = seen[0]
+    assert while_booting["allocate"].state is StartupStageState.DONE
+    assert while_booting["boot"].state is StartupStageState.ACTIVE
+    assert while_booting["boot"].detail == "Starting on hnoss"
+    assert while_booting["guest"].state is StartupStageState.PENDING
+    assert while_booting["broker"].state is StartupStageState.PENDING
+    boot = (await stages_of(manager, session))["boot"]
+    assert boot.state is StartupStageState.DONE
+    assert boot.started_at == while_booting["boot"].started_at
+    assert boot.finished_at >= boot.started_at
+
+
+@pytest.mark.parametrize(
+    ("phase", "status_detail", "expected"),
+    [
+        (None, "No CPU hosts available", "No CPU hosts available"),
+        (None, None, "VM is provisioning"),
+    ],
+)
+async def test_boot_without_a_phase_shows_the_status_detail_then_the_state(
+    phase, status_detail, expected
+):
+    provider = BootingProvider(provisioning_reads=3)
+    provider.provisioning_phase, provider.provisioning_detail = phase, status_detail
+    manager, _, _, _, session = staged_manager(StagedRuntime(), provider)
+    seen = []
+
+    async def watch(read):
+        if read == 3:
+            seen.append((await stages_of(manager, session))["boot"].detail)
+
+    provider.on_create = watch
+
+    await manager.start(session, staged_spec())
+
+    assert seen == [expected]
+
+
+async def test_broker_is_done_once_status_sees_the_runtime_ready():
+    runtime = StagedRuntime()
+    manager, _, _, _, session = staged_manager(runtime)
+    await manager.start(session, staged_spec())
+    runtime.is_ready = False
+
+    assert await manager.status(session) == SessionStatus.PROVISIONING
+    assert (await stages_of(manager, session))["broker"].state is StartupStageState.ACTIVE
+
+    runtime.is_ready = True
+    assert await manager.status(session) == SessionStatus.RUNNING
+
+    broker = (await stages_of(manager, session))["broker"]
+    assert broker.state is StartupStageState.DONE
+    assert broker.finished_at is not None
+
+
+async def test_a_runtime_that_names_its_steps_replaces_the_generic_start_stage():
+    runtime = ReportingRuntime()
+    manager, _, _, _, session = staged_manager(runtime)
+
+    await manager.start(session, staged_spec())
+
+    stages = await manager.startup_stages(session)
+    assert [s.key for s in stages] == [
+        "allocate",
+        "guest",
+        "guest_files",
+        "guest_tunnel",
+        "guest_skuld",
+        "broker",
+    ]
+    assert {s.key: s.label for s in stages}["guest_tunnel"] == "Opening the tunnel to Forge"
+    steps = [s for s in stages if s.key.startswith("guest_")]
+    assert [s.state for s in steps] == [StartupStageState.DONE] * 3
+    assert stages[-1].state is StartupStageState.ACTIVE
+
+
+async def test_a_reporting_runtime_is_handed_the_managers_reporter_on_every_start():
+    runtime = ReportingRuntime()
+    manager, _, _, _, session = staged_manager(runtime)
+
+    await manager.start(session, staged_spec())
+    await manager.start(session, staged_spec())
+
+    assert runtime.reported_to == [manager._runtime_step, manager._runtime_step]
+
+
+async def test_boot_is_skipped_for_a_vm_that_was_already_running():
+    runtime = StagedRuntime()
+    manager, _, _, _, session = staged_manager(runtime)
+
+    await manager.start(session, staged_spec())
+
+    # ReadyProvider hands over a running machine at once: this start never booted it.
+    assert "boot" not in await stages_of(manager, session)
+
+
+async def test_a_warm_claim_says_so_and_drops_the_pending_boot_stage():
+    from volundr.domain.compute import ComputePoolPolicy
+    from volundr.domain.services.compute_pool import ComputePoolService
+
+    runtime = StagedRuntime()
+    manager, service, repository, provider, session = staged_manager(runtime)
+    pool = ComputePoolService(
+        repository,
+        service,
+        provider,
+        runtime,
+        pool_id="pool",
+        defaults=ComputePoolPolicy(profile="small", max_machines=1, warm_min=1),
+        bootstrap=MachineBootstrap(),
+    )
+    manager.configure_pool(pool)
+    await pool.maintain()
+    await pool.maintain()
+    spare = next(iter(repository.leases.values()))
+    assert spare.state == LeaseState.IDLE
+
+    await manager.start(session, staged_spec())
+
+    stages = await manager.startup_stages(session)
+    assert [s.key for s in stages] == ["allocate", "guest", "guest_start", "broker"]
+    assert stages[0].detail == "A warm VM from the pool"
+    assert stages[0].state is StartupStageState.DONE
+
+
+async def test_the_provisioning_slot_wait_is_the_allocate_detail():
+    runtime = StagedRuntime()
+    manager, service, _, _, session = staged_manager(runtime)
+    acquire = service.acquire
+    refusals = 0
+    during: list = []
+
+    async def busy_pool(**claim):
+        nonlocal refusals
+        if refusals < 3:
+            refusals += 1
+            raise ComputeProvisioningLimitError("Compute pool provisioning limit reached")
+        during.append((await stages_of(manager, session))["allocate"])
+        return await acquire(**claim)
+
+    service.acquire = busy_pool
+
+    await manager.start(session, staged_spec())
+
+    waiting = during[0]
+    assert waiting.state is StartupStageState.ACTIVE
+    assert waiting.detail == (
+        "Waiting for a provisioning slot: compute pool pool is already provisioning "
+        "as many VMs as its policy allows"
+    )
+    allocate = (await stages_of(manager, session))["allocate"]
+    assert allocate.state is StartupStageState.DONE
+    assert allocate.detail == "A new VM, profile small"
+    # The wait began when the first slot was refused, not when the VM was finally claimed.
+    assert allocate.started_at == waiting.started_at
+
+
+async def test_an_unavailable_guest_puts_its_reason_on_the_guest_stage():
+    runtime = StagedRuntime()
+    manager, _, _, _, session = staged_manager(runtime)
+    reason = "ssh: connect to host 192.0.2.10 port 22: Connection refused"
+    runtime.prepare_errors = [VmRuntimeUnavailableError(reason)]
+    seen: list = []
+
+    async def watch(call):
+        if call == 2:
+            seen.append((await stages_of(manager, session))["guest"])
+
+    runtime.on_prepare = watch
+
+    await manager.start(session, staged_spec())
+
+    assert runtime.prepare_calls == 2
+    assert seen[0].state is StartupStageState.ACTIVE
+    assert seen[0].detail == reason
+    guest = (await stages_of(manager, session))["guest"]
+    assert guest.state is StartupStageState.DONE
+    assert guest.detail == "The guest answered"
+    assert guest.started_at == seen[0].started_at
+    # Retrying the guest on a VM that was already up never brings a boot stage back.
+    assert [s.key for s in await manager.startup_stages(session)] == [
+        "allocate",
+        "guest",
+        "guest_start",
+        "broker",
+    ]
+
+
+async def test_stop_forgets_the_stages():
+    runtime = StagedRuntime()
+    manager, _, _, _, session = staged_manager(runtime)
+    await manager.start(session, staged_spec())
+    assert await manager.startup_stages(session) != ()
+
+    assert await manager.stop(session)
+
+    assert await manager.startup_stages(session) == ()
+
+
+async def test_a_new_start_begins_a_new_launch():
+    runtime = StagedRuntime()
+    manager, _, _, _, session = staged_manager(runtime)
+    await manager.start(session, staged_spec())
+    first = await stages_of(manager, session)
+
+    await manager.start(session, staged_spec())
+
+    second = await stages_of(manager, session)
+    assert second["allocate"].detail == "This session's own VM"
+    assert first["allocate"].detail == "A new VM, profile small"

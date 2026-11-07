@@ -134,6 +134,27 @@ def test_rejects_non_runtime_instance():
         ProfiledVmRuntime(default=RecordingRuntime(name="docker"), profiles={"bad": object()})
 
 
+class ReportingRecordingRuntime(RecordingRuntime):
+    def report_startup_to(self, report):
+        self.calls.append(("report_startup_to", report))
+
+
+def test_forwards_the_startup_reporter_to_every_runtime_that_reports():
+    direct = ReportingRecordingRuntime(name="docker")
+    openshell = ReportingRecordingRuntime(name="openshell")
+    silent = RecordingRuntime(name="plain")
+    runtime = ProfiledVmRuntime(default=direct, profiles={"openshell": openshell, "plain": silent})
+
+    def report(session_id, key, label):
+        return None
+
+    runtime.report_startup_to(report)
+
+    assert direct.calls == [("report_startup_to", report)]
+    assert openshell.calls == [("report_startup_to", report)]
+    assert silent.calls == []
+
+
 def test_forwards_credential_store_to_profile_runtimes():
     runtime = ProfiledVmRuntime(
         default=RecordingRuntime(name="docker"),

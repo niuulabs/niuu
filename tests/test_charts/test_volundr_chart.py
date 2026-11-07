@@ -1916,6 +1916,33 @@ class TestPodManagerRoomRoleSource:
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestProvisioningStartupPoll:
+    """provisioning.startup_poll_seconds — how often a starting session's launch
+    stages are read from its runtime backend."""
+
+    def test_defaults_to_the_values_file_and_is_declared_there(self):
+        values = yaml.safe_load((CHART_DIR / "values.yaml").read_text())
+        provisioning = _rendered_configmap()["provisioning"]
+
+        assert values["provisioning"]["startupPollSeconds"] == 2.0
+        assert provisioning["startup_poll_seconds"] == 2.0
+        assert provisioning["timeout_seconds"] == 300.0
+        assert provisioning["initial_delay_seconds"] == 5.0
+
+    def test_renders_a_custom_interval(self):
+        config = _rendered_configmap("--set", "provisioning.startupPollSeconds=0.5")
+
+        assert config["provisioning"]["startup_poll_seconds"] == 0.5
+
+    def test_config_parses_as_settings(self):
+        from volundr.config import ProvisioningConfig
+
+        config = _rendered_configmap("--set", "provisioning.startupPollSeconds=7")
+
+        assert ProvisioningConfig(**config["provisioning"]).startup_poll_seconds == 7
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
 def test_forge_envoy_authorization_route_for_room_role_endpoint_is_valid():
     """Without this route, Forge's own ext_authz sidecar denies the scoped
     workload token before it ever reaches the FastAPI-level scope check —

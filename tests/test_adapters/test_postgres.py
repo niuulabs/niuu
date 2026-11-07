@@ -13,6 +13,7 @@ from volundr.domain.models import (
     SessionActivityState,
     SessionStatus,
 )
+from volundr.domain.session_startup import SessionStartup, StartupStage, StartupStageState
 
 
 @pytest.fixture
@@ -734,3 +735,99 @@ class TestPostgresSessionRepositoryForgeMcpGrants:
     async def test_missing_session_is_none(self, repository: PostgresSessionRepository, mock_pool):
         mock_pool.fetchrow.return_value = None
         assert await repository.update_forge_mcp_grants(uuid4(), [], datetime.now(UTC)) is None
+
+
+def _startup() -> SessionStartup:
+    started = datetime(2026, 11, 6, 12, tzinfo=UTC)
+    return SessionStartup(
+        started_at=started,
+        handed_off_at=started,
+        stages=(
+            StartupStage(
+                key="schedule",
+                label="Scheduling",
+                state=StartupStageState.DONE,
+                detail="On node hnoss",
+                started_at=started,
+                finished_at=started,
+            ),
+            StartupStage(
+                key="containers", label="Starting containers", state=StartupStageState.PENDING
+            ),
+        ),
+        progress_error="events forbidden",
+    )
+
+
+class TestSessionStartupPersistence:
+    """The launch stages live in sessions.startup, written only by the recorder."""
+
+    async def test_update_startup_writes_only_the_startup_column(
+        self, repository, mock_pool, sample_session, sample_row
+    ):
+        startup = _startup()
+        mock_pool.fetchrow.return_value = {**sample_row, "startup": startup.model_dump_json()}
+
+        stored = await repository.update_startup(sample_session.id, startup)
+
+        sql, session_id, payload = mock_pool.fetchrow.call_args.args
+        assert "UPDATE sessions SET startup = $2::jsonb WHERE id = $1 RETURNING *" in sql
+        assert session_id == sample_session.id
+        assert SessionStartup.model_validate_json(payload) == startup
+        assert stored.startup == startup
+
+    async def test_update_startup_of_a_vanished_session_is_none(self, repository, mock_pool):
+        mock_pool.fetchrow.return_value = None
+
+        assert await repository.update_startup(uuid4(), _startup()) is None
+
+    @pytest.mark.parametrize("as_text", [True, False])
+    async def test_rows_round_trip_the_stages_as_text_or_decoded_json(
+        self, repository, sample_row, as_text
+    ):
+        startup = _startup()
+        raw = startup.model_dump_json() if as_text else startup.model_dump(mode="json")
+
+        session = repository._row_to_session({**sample_row, "startup": raw})
+
+        assert session.startup == startup
+        assert session.startup.stages[1].state is StartupStageState.PENDING
+        assert session.startup.stages[0].finished_at == datetime(2026, 11, 6, 12, tzinfo=UTC)
+
+    @pytest.mark.parametrize("raw", [None, {}, "{}"])
+    def test_rows_without_a_recorded_launch_have_no_startup(self, repository, sample_row, raw):
+        assert repository._row_to_session({**sample_row, "startup": raw}).startup is None
+
+    def test_rows_before_the_migration_have_no_startup(self, repository, sample_row):
+        assert "startup" not in sample_row
+        assert repository._row_to_session(sample_row).startup is None
+
+    def test_a_recorded_launch_that_does_not_validate_is_an_error(self, repository, sample_row):
+        broken = {"started_at": "2026-11-06T12:00:00Z", "stages": [{"key": "x", "label": "X"}]}
+        broken["stages"][0]["state"] = "active"  # active without a start time
+
+        with pytest.raises(ValueError, match="without a start time"):
+            repository._row_to_session({**sample_row, "startup": broken})
+
+    async def test_update_never_writes_startup_and_returns_the_stored_one(
+        self, repository, mock_pool, sample_session
+    ):
+        startup = _startup()
+        mock_pool.fetchrow.return_value.update(startup=startup.model_dump_json())
+        stale = sample_session.model_copy(update={"startup": None})
+
+        actual = await repository.update(stale)
+
+        sql = mock_pool.fetchrow.call_args.args[0]
+        assert "startup" not in sql[: sql.index("RETURNING")]
+        assert "session_usage, startup" in sql[sql.index("RETURNING") :]
+        assert actual.startup == startup
+
+    async def test_update_of_a_session_with_no_stored_launch_returns_none_startup(
+        self, repository, mock_pool, sample_session
+    ):
+        stale = sample_session.model_copy(update={"startup": _startup()})
+
+        actual = await repository.update(stale)
+
+        assert actual.startup is None

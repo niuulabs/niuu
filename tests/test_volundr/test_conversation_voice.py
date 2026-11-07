@@ -25,6 +25,7 @@ from tests.test_volundr.test_conversation_tail import (
 from volundr.adapters.inbound.conversation_voice import voice_messages, voice_page
 from volundr.domain.models import Session, SessionStatus
 from volundr.domain.projects import SessionCoordination
+from volundr.domain.session_startup import SessionStartup, StartupStage, StartupStageState
 
 _SESSIONS = "/api/v1/forge/sessions"
 
@@ -259,6 +260,7 @@ async def test_summary_fields() -> None:
         "name",
         "status",
         "activity_state",
+        "startup",
         "short_description",
         "project",
         "last_activity_at",
@@ -273,6 +275,43 @@ async def test_summary_fields() -> None:
     assert coordinator["short_description"] == "doing 0"
     assert len(resp.content) * 3 < len(full)
     assert client.get(_SESSIONS, params={"fields": "everything"}).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_summary_rows_carry_the_launch_stages_as_json() -> None:
+    repository = InMemorySessionRepository()
+    made = await _sessions(repository, 3)
+    started = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
+    startup = SessionStartup(
+        started_at=started,
+        stages=(
+            StartupStage(
+                key="schedule",
+                label="Scheduling",
+                state=StartupStageState.DONE,
+                detail="On node hnoss",
+                started_at=started,
+                finished_at=started + timedelta(seconds=2),
+            ),
+            StartupStage(
+                key="containers", label="Starting containers", state=StartupStageState.PENDING
+            ),
+        ),
+    )
+    await repository.update_startup(made[1].id, startup)
+    client = _client(_CountingEventLog([]), repository)
+
+    rows = {r["id"]: r for r in client.get(_SESSIONS, params={"fields": "summary"}).json()}
+
+    assert rows[str(made[0].id)]["startup"] is None
+    launched = rows[str(made[1].id)]["startup"]
+    assert launched["started_at"] == "2026-11-06T12:00:00Z"
+    assert [(s["key"], s["state"]) for s in launched["stages"]] == [
+        ("schedule", "done"),
+        ("containers", "pending"),
+    ]
+    assert launched["stages"][0]["detail"] == "On node hnoss"
+    assert launched["stages"][0]["finished_at"] == "2026-11-06T12:00:02Z"
 
 
 @pytest.mark.asyncio
