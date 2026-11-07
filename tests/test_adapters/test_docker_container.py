@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -158,7 +159,8 @@ def test_entrypoint_explicit_command_does_not_prepare_broker_filesystem(tmp_path
     result = subprocess.run(
         ["/bin/bash", str(entrypoint), "/usr/bin/true"],
         env={
-            "PATH": "/usr/bin:/bin",
+            # The image's Python (with skuld) is on PATH, as in the container.
+            "PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin",
             "HOME": str(tmp_path / "read-only-home"),
             "SESSION_ID": "credential-login",
             "WORKSPACE_DIR": str(inaccessible_workspace),

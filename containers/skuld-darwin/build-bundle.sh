@@ -58,15 +58,16 @@ export UV_NO_CONFIG=1 UV_PYTHON_DOWNLOADS=manual UV_CACHE_DIR="$WORK/uv-cache"
 # Python: uv checks the download against the hashes this uv release pins.
 UV_PYTHON_INSTALL_DIR="$WORK/pythons" "$UV" python install --no-bin "$PYTHON_VERSION"
 installed=$(UV_PYTHON_INSTALL_DIR="$WORK/pythons" "$UV" python find --managed-python "$PYTHON_VERSION")
+# The stdlib security backports every Linux image's Python carries (containers/
+# python-security): built from checksum-pinned upstream inputs, installed only over the
+# exact upstream modules, then verified with their exploit regressions. Where uv installed
+# it, before the move: the verify reads the shared library at the install's own LIBDIR.
+"$installed" "$ROOT/containers/python-security/build.py" "$WORK/patched-stdlib"
+"$installed" "$ROOT/containers/python-security/install.py" "$WORK/patched-stdlib"
+"$installed" "$ROOT/containers/python-security/verify.py" skuld-darwin > "$WORK/python-security.json"
 mv "$(dirname "$(dirname "$installed")")" "$B/python"
 PYTHON="$B/python/bin/python3"
 "$PYTHON" -c 'import ssl, sqlite3, sys; assert sys.version_info >= (3, 12)'
-# The stdlib security backports every Linux image's Python carries (containers/
-# python-security): built from checksum-pinned upstream inputs, installed only over the
-# exact upstream modules, then verified with their exploit regressions.
-"$PYTHON" "$ROOT/containers/python-security/build.py" "$WORK/patched-stdlib"
-"$PYTHON" "$ROOT/containers/python-security/install.py" "$WORK/patched-stdlib"
-"$PYTHON" "$ROOT/containers/python-security/verify.py" skuld-darwin > "$WORK/python-security.json"
 
 # niuu and its locked dependencies, as the Skuld image installs them (plus otel).
 "$UV" build --wheel --out-dir "$WORK/dist" "$ROOT" >/dev/null
