@@ -29,7 +29,7 @@ from pydantic import JsonValue
 from niuu.domain.models import Principal
 from niuu.domain.services.token_scope import COMPUTE_HOST_JOIN_SCOPE, VALKYRIE_BUILD_TOKEN_USE
 from niuu.observability import get_observability
-from niuu.ports.workload_identity import WorkloadTokenIssuer
+from niuu.ports.workload_identity import WorkloadTokenIssuer, WorkloadTokenVerificationError
 from volundr.domain.compute import LIVE_SLOT_STATES, ComputeLeaseRepository, ComputeSlot
 from volundr.domain.compute_hosts import (
     HostConflictError,
@@ -298,6 +298,13 @@ class ComputeHostService:
             raise ComputeHostStateError("The pairing code is already used, revoked or expired")
 
     async def usable_code(self, raw_code: str) -> HostPairingCode:
+        # Verified here too, not only at the edge: a mini-mode Forge has no Envoy to do it.
+        try:
+            self._issuer.verify_token(raw_code)
+        except WorkloadTokenVerificationError as exc:
+            raise PairingCodeRejectedError(
+                "Pairing code is invalid, expired, revoked or used"
+            ) from exc
         pairing = await self._repository.pairing_code(code_hash(raw_code))
         if pairing is None or pairing.pool_id != self._pool_id:
             raise PairingCodeRejectedError("Pairing code is invalid, expired, revoked or used")

@@ -81,7 +81,7 @@ def _http(exc: ComputeHostError | LookupError) -> HTTPException:
         return HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
     if isinstance(exc, ComputeHostStateError):
         return HTTPException(status.HTTP_409_CONFLICT, str(exc))
-    return HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+    return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc))
 
 
 def create_compute_hosts_router(service: ComputeHostService, pool: ComputePoolService) -> APIRouter:
