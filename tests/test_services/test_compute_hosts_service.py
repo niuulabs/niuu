@@ -170,11 +170,6 @@ class TestMint:
         with pytest.raises(ComputeHostAccessError):
             await service.mint(USER, execution="host@1", connector="direct-ssh", tags=[], slots=1)
 
-    async def test_refuses_without_workload_identity(self):
-        service, *_ = _service(issuer=Issuer(enabled=False))
-        with pytest.raises(ComputeHostError, match="workload identity is disabled"):
-            await service.mint(ADMIN, execution="host@1", connector="direct-ssh", tags=[], slots=1)
-
     @pytest.mark.parametrize(
         ("kwargs", "message"),
         [

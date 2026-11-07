@@ -38,6 +38,18 @@ class ComputeHostsConfig(BaseModel):
         description="Accept an http:// join_url; pairing codes then cross the network in clear",
     )
     connectors: list[HostConnectorConfig] = Field(min_length=1)
+    pairing_signing_key_file: str = Field(
+        default="~/.niuu/forge-host-pairing-key.pem",
+        min_length=1,
+        description=(
+            "Private RSA key that signs host pairing codes when workload identity has no "
+            "configured key and the identity adapter is allow-all (local mini mode); "
+            "generated once with mode 0600 and never overwritten"
+        ),
+    )
+    pairing_signing_key_bits: int = Field(
+        default=2048, ge=2048, description="Size of a generated pairing signing key"
+    )
     pairing_code_ttl_seconds: float = Field(
         default=600,
         gt=0,

@@ -57,7 +57,16 @@ Startup fails if any of these hold:
   and the OpenShell runtimes run under root Docker, so registered hosts use the host
   runtime, which uses rootless Podman per slot.
 
-Pairing codes are workload JWTs, so `workload_identity.enabled: true` is required.
+Pairing codes are short-lived scoped JWTs. Which key signs them:
+
+- **Workload identity with a configured key** (`signing_key_pem` or
+  `signing_key_env`). Clusters use this, because Envoy validates the code.
+- **Forge's own key file** (`compute.hosts.pairing_signing_key_file`, generated
+  once with mode 0600). Local mini mode uses this, with the allow-all identity
+  adapter. Nothing else is needed: one machine running `niuu platform up` can add
+  hosts without any identity setup.
+
+Any other combination fails at startup and names the fix.
 
 ## Add a host
 
@@ -158,12 +167,12 @@ is retried. Capacity is never freed on a host nobody checked.
 | `compute.hosts.command_timeout_seconds` | 120 | One facts read or audit on a host | The check fails: the host is unreachable, with the reason |
 | `compute.hosts.reserved_cpu` / `reserved_memory_mib` | required | What slot sizing leaves for the host itself | Too many slots is refused (422) or quarantines the host, with the arithmetic |
 | `compute.hosts.min_free_disk_mib` | required | Free space on `/` | Quarantined until space is freed |
+| `compute.hosts.pairing_signing_key_file` | `~/.niuu/forge-host-pairing-key.pem` | Used only without a workload-identity key, with the allow-all identity adapter | Unreadable or unwritable: startup fails, naming the knob |
 
 ## Not built yet
 
 - The reverse SSH connector for hosts behind NAT (design: "Connection"). Today a
   host must be reachable from Forge.
-- `warm_targets` per tag selector. `warm_min` counts free slots across the pool.
 - **Re-prepare.** After a recipe change, drain the host and resume it; the next claim
   runs the new recipe.
 - macOS hosts.
