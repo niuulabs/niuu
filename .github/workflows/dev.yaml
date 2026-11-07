@@ -9,6 +9,9 @@
 #    and attaches signed GitHub build provenance to the dev-<sha> manifest list
 # 4. Determines next version from conventional commits and creates a v*-dev.N prerelease tag
 # 5. Packages Helm charts with the dev version
+# 6. In parallel with 1, builds the macOS session bundle (when its inputs
+#    changed), and once 1 passes tags it dev-<sha> and :dev and attests it; 4
+#    waits for it, since a chart's host execution pins skuld-darwin:<its tag>
 #
 # Steps 3-5 publish, so they are gated on step 1: a failed or cancelled test
 # job means no dev-<sha> or :dev manifest, no v*-dev.N tag and no charts. The
@@ -440,6 +443,193 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   # ---------------------------------------------------------------------------
+  # macOS session bundle — what the Skuld image is to a Linux session, for a Mac
+  # host (containers/skuld-darwin, fetched by the darwin host runtime). Built on
+  # a macOS runner in parallel with the tests, and only when its inputs changed:
+  # their git tree hash names it (tree-<hash>), like the per-platform
+  # <sha>-<arch> images an untested build pushes. `darwin-bundle-publish` tags
+  # it dev-<sha> and :dev and attests its digest once every test passed, and
+  # `tag` waits for that: a chart's host execution pins skuld-darwin:<its tag>.
+  # ---------------------------------------------------------------------------
+  darwin-bundle:
+    name: macOS session bundle
+    needs: resolve
+    if: ${{ !cancelled() }}
+    runs-on: macos-15
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tree: ${{ steps.tree.outputs.tree }}
+    env:
+      BUNDLE: ghcr.io/${{ github.repository_owner }}/skuld-darwin
+      MEDIA_TYPE: application/vnd.niuu.skuld-darwin.bundle.v1.tar+gzip
+      ARTIFACT_TYPE: application/vnd.niuu.skuld-darwin.v1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Hash the bundle's inputs
+        id: tree
+        run: |
+          set -euo pipefail
+          tree=$(for path in src pyproject.toml uv.lock README.md migrations vendor \
+              containers/skuld/npm-tools containers/skuld-darwin containers/python-security; do
+            printf '%s %s\n' "$path" "$(git rev-parse "HEAD:$path")"
+          done | shasum -a 256 | cut -c1-40)
+          echo "tree=${tree}" >> "$GITHUB_OUTPUT"
+
+      - uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
+
+      - name: Look up a bundle of these inputs
+        id: lookup
+        env:
+          TREE: ${{ steps.tree.outputs.tree }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${TOKEN}" | oras login ghcr.io --username "${ACTOR}" --password-stdin
+          if oras resolve "${BUNDLE}:tree-${TREE}" >/dev/null 2>&1; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the bundle
+        if: steps.lookup.outputs.build == 'true'
+        run: containers/skuld-darwin/build-bundle.sh "${RUNNER_TEMP}/skuld-darwin.tar.gz"
+
+      - name: Push the bundle (untested, tree-<hash> only)
+        if: steps.lookup.outputs.build == 'true'
+        env:
+          TREE: ${{ steps.tree.outputs.tree }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}"
+          oras push "${BUNDLE}:tree-${TREE}" \
+            --artifact-type "${ARTIFACT_TYPE}" \
+            --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --annotation "org.opencontainers.image.revision=${SHA}" \
+            --annotation "org.opencontainers.image.description=Niuu macOS session bundle (darwin-arm64)" \
+            "skuld-darwin.tar.gz:${MEDIA_TYPE}"
+
+  # Syft and Grype over the unpacked bundle, as `scan` does for the images; like
+  # it, this does not gate publishing.
+  darwin-bundle-scan:
+    name: Scan the macOS session bundle
+    needs: darwin-bundle
+    if: ${{ !cancelled() && needs.darwin-bundle.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
+
+      - name: Install Syft and Grype
+        run: bash containers/python-security/install-scanners.sh
+
+      - name: Scan the bundle
+        env:
+          REF: ghcr.io/${{ github.repository_owner }}/skuld-darwin:tree-${{ needs.darwin-bundle.outputs.tree }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/pulled" "${RUNNER_TEMP}/bundle"
+          oras pull "${REF}" --output "${RUNNER_TEMP}/pulled"
+          tar -xzf "${RUNNER_TEMP}"/pulled/*.tar.gz -C "${RUNNER_TEMP}/bundle"
+          syft scan "dir:${RUNNER_TEMP}/bundle" -o "syft-json=sbom-skuld-darwin.syft.json"
+          grype "sbom:sbom-skuld-darwin.syft.json" -o "json=grype-skuld-darwin-raw.json"
+          grype "sbom:sbom-skuld-darwin.syft.json" --only-fixed --fail-on critical \
+            -o "json=grype-skuld-darwin-filtered.json" -o "sarif=grype-skuld-darwin.sarif"
+
+      - name: Preserve scan evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: security-evidence-skuld-darwin
+          path: |
+            grype-skuld-darwin-*.json
+            sbom-skuld-darwin.syft.json
+          retention-days: 30
+
+      - name: Upload Grype results
+        if: always() && hashFiles('grype-skuld-darwin.sarif') != ''
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: grype-skuld-darwin.sarif
+          category: grype-skuld-darwin
+
+  # Tag the tested bundle dev-<sha> and :dev, and attest its digest from this
+  # workflow (one of the signing workflows the platform pins).
+  darwin-bundle-publish:
+    name: Publish the macOS session bundle
+    needs:
+      - darwin-bundle
+      - python
+      - python-integration-test-volundr
+      - python-integration-test-ting
+      - web-next
+      - helm-lint
+    if: ${{ !failure() && !cancelled() && needs.darwin-bundle.result == 'success' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: dev-publish-darwin-bundle
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      BUNDLE: ghcr.io/${{ github.repository_owner }}/skuld-darwin
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+
+      - uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
+
+      - name: Tag dev-<sha> and dev
+        id: digest
+        env:
+          TREE: ${{ needs.darwin-bundle.outputs.tree }}
+          SHA: ${{ github.sha }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${TOKEN}" | oras login ghcr.io --username "${ACTOR}" --password-stdin
+          digest=$(oras resolve "${BUNDLE}:tree-${TREE}")
+          if ! [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error title=darwin bundle::${BUNDLE}:tree-${TREE} resolved to '${digest}'"
+            exit 1
+          fi
+          oras tag "${BUNDLE}@${digest}" "dev-${SHA}" dev
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.BUNDLE }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+  # ---------------------------------------------------------------------------
   # Promote — re-tag the digests `resolve` found, without rebuilding: the
   # index dev-<sha> (checked to resolve to the tested digest) and its two
   # children <sha>-amd64 / <sha>-arm64, then :dev once every image has its
@@ -552,6 +742,7 @@ jobs:
       - publish
       - attest
       - promote
+      - darwin-bundle-publish
     if: ${{ !failure() && !cancelled() && (needs.publish.result == 'success' || needs.promote.result == 'success') }}
     runs-on: ubuntu-latest
     concurrency:

@@ -616,9 +616,11 @@ Its access binding is `SshGuestAccess` with `ssh_user: root`, and its connector'
 than a slot address.
 
 **The session bundle.** Instead of the Skuld image, a Mac runs the bundle
-`ghcr.io/niuulabs/skuld-darwin@sha256:…` (`skuld_bundle`), built on a macOS runner for
-every dev commit (`.github/workflows/darwin-bundle.yaml`, from
-`containers/skuld-darwin/build-bundle.sh`): CPython with niuu, Node and the agent CLIs
+`ghcr.io/niuulabs/skuld-darwin@sha256:…` (`compute.session_images.darwin`, or
+`skuld_bundle` in a catalog of your own), built on a macOS runner by the Dev workflow
+(`.github/workflows/dev.yaml`, from `containers/skuld-darwin/build-bundle.sh`), scanned,
+and tagged `dev-<sha>` with an attested digest only once the tests pass: CPython (with
+the same stdlib security backports as the Linux images' Python) with niuu, Node and the agent CLIs
 (Claude Code, Codex, OpenCode, Grok, pi, Muse) at the versions of the Skuld image,
 OpenBao's agent and uv, every download pinned by SHA-256. Forge fetches it onto the Mac
 with an anonymous registry pull, checks both digests, and unpacks it once per digest

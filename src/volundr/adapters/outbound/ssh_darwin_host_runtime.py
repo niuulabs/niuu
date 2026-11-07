@@ -65,7 +65,7 @@ from volundr.domain.vm_runtime import SessionImages, SlotLimits
 
 #: Where bundles are unpacked on the Mac, one directory per digest.
 BUNDLE_CACHE = "/var/lib/niuu/host-bundles"
-#: The bundle's layer in its OCI artifact (``.github/workflows/darwin-bundle.yaml``).
+#: The bundle's layer in its OCI artifact (the ``darwin-bundle`` jobs of ``.github/workflows/dev.yaml``).
 BUNDLE_MEDIA_TYPE = "application/vnd.niuu.skuld-darwin.bundle.v1.tar+gzip"
 #: Root-owned per slot: what root and Forge's agents write for the session.
 SLOT_RUNTIME_BASE = "/var/run/niuu/slots"
