@@ -310,3 +310,46 @@ async def test_reconciling_after_a_restart_watches_starting_sessions(repository,
     assert set(service._startup._watches) == {first.id, second.id}
     for task in [*service._startup._watches.values(), *service._provisioning_tasks.values()]:
         task.cancel()
+
+
+async def test_the_last_steps_before_running_are_read_before_the_launch_closes(
+    repository, broadcaster
+):
+    """Seen live on Noatun: OpenShell reports running as soon as its sandbox is up,
+    and the steps it ran since the previous read never reached the record."""
+    session = await starting(repository)
+    backend = StagedPodManager()
+    backend.stages = (schedule(StartupStageState.DONE, "sandbox ready"),)
+    startups = recorder(repository, backend, broadcaster, poll=10)
+    await startups.begin(session)
+    await startups.handing_off(session.id)
+    stored = await repository.get(session.id)
+    await repository.update(stored.with_status(SessionStatus.RUNNING))
+
+    startups.watch(session.id)
+
+    async def closed():
+        current = await repository.get(session.id)
+        return current.startup.current is None and len(current.startup.stages) == 2
+
+    await wait_until(closed)
+    current = await repository.get(session.id)
+    assert [s.key for s in current.startup.stages] == ["launch", "schedule"]
+    assert current.startup.stages[1].detail == "sandbox ready"
+
+
+async def test_a_stopped_launch_is_closed_without_reading_the_backend(repository, broadcaster):
+    session = await starting(repository, status=SessionStatus.STOPPED)
+    backend = StagedPodManager()
+    startups = recorder(repository, backend, broadcaster, poll=10)
+    await startups.begin(session)
+    await startups.handing_off(session.id)
+
+    startups.watch(session.id)
+
+    async def closed():
+        current = await repository.get(session.id)
+        return current.startup.current.state is StartupStageState.FAILED
+
+    await wait_until(closed)
+    assert backend.reads == 0

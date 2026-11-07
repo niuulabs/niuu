@@ -94,6 +94,11 @@ class SessionStartupRecorder:
             if session is None or session.startup is None:
                 return
             if session.status not in BOOTING_STATUSES:
+                if session.status in (SessionStatus.RUNNING, SessionStatus.FAILED):
+                    # The steps since the last read happened before the verdict:
+                    # a backend that reports running the moment its sandbox is up
+                    # finishes its last steps between two reads.
+                    await self._observe(session)
                 await self._close(session)
                 return
             await self._observe(session)
