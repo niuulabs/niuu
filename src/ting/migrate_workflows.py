@@ -20,7 +20,7 @@ from ting.domain.services.workflow_migration import (
 )
 from ting.domain.workflow_document import referenced_persona_aliases
 from ting.infrastructure.database import database_pool
-from ting.system_workflows import load_system_workflows
+from ting.system_workflows import RETIRED_SYSTEM_WORKFLOW_IDS, load_system_workflows
 
 
 async def _registry_source_for_workflow(
@@ -56,6 +56,7 @@ async def _skip_reason(target: FilesystemWorkflowRepository, pool: object) -> st
         target,
         legacy_count=legacy_count,
         legacy_max_updated_at=legacy_state["max_updated_at"],
+        retired_bundled_ids=RETIRED_SYSTEM_WORKFLOW_IDS,
     )
     if is_current:
         return "the file catalog is already a verified, current copy of the PostgreSQL catalog"
@@ -106,6 +107,7 @@ async def _migrate(
             target=target,
             persona_source_for_workflow=source_for_workflow,
             bundled_workflows=load_system_workflows(),
+            retired_bundled_ids=RETIRED_SYSTEM_WORKFLOW_IDS,
             apply=apply,
             replace_divergent_bundled=replace_divergent_bundled,
         )
@@ -126,6 +128,7 @@ async def _migrate(
             target=target,
             persona_source_for_workflow=source_for_workflow,
             bundled_workflows=load_system_workflows(),
+            retired_bundled_ids=RETIRED_SYSTEM_WORKFLOW_IDS,
             apply=apply,
             replace_divergent_bundled=replace_divergent_bundled,
         )
