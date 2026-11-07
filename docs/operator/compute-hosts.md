@@ -604,7 +604,7 @@ runtime:
     guest_platform_port: 18080   # the Mac's loopback end of that tunnel
     nix: true                    # the host recipe installs multi-user Nix
     native_images:               # pod images whose commands the bundle carries
-      - quay.io/openbao/openbao@sha256:fdc6da21…   # OpenBao 2.5.3, the agent's bao
+      - quay.io/openbao/openbao@sha256:50469110…   # OpenBao 2.7.2, the bundle's bao
     skuld_bundle: ghcr.io/niuulabs/skuld-darwin@sha256:…   # or compute.session_images.darwin
 ```
 

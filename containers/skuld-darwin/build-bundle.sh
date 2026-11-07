@@ -26,9 +26,11 @@ UV_SHA256=81b811b57e4624df7ed3aac148e0359100d9962f3d9dce00aec533dc2e086731
 PYTHON_VERSION=3.14.10
 NODE_VERSION=24.22.2
 NODE_SHA256=aa9549349e47dffaa42dcf95d6e06ade8c4bdafc980979883b88767670df385a
-# The OpenBao release of the guest agent image the Forges pin (OpenBao 2.5.3).
-BAO_VERSION=2.5.3
-BAO_SHA256=1bb5fdc60226bfc142f70590342fee642ccdea602986c4ff7bd92fed84f259b9
+# The OpenBao agent the session's secrets render through. A host's native_images
+# must name the guest agent image of this same release (quay.io/openbao/openbao:2.7.2,
+# sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f).
+BAO_VERSION=2.7.2
+BAO_SHA256=2b4fc131910f4b075b2e1c9a9de67c461489491a8f03fbdc73387294d67d9547
 # Muse as in containers/skuld/install-muse.sh, from the same release manifest.
 MUSE_VERSION=1.3.0-R3233.1
 MUSE_SHA256=4395928df3527ced7613f18d74aa7bb1c383290c01ae5bbf792d996fa949452e
@@ -92,7 +94,7 @@ cp "$ROOT/containers/skuld/npm-tools/package.json" "$ROOT/containers/skuld/npm-t
     npm ci --omit=dev --cache "$WORK/npm-cache" --no-audit --no-fund >/dev/null
 )
 
-fetch "https://github.com/openbao/openbao/releases/download/v$BAO_VERSION/bao_${BAO_VERSION}_Darwin_arm64.tar.gz" \
+fetch "https://github.com/openbao/openbao/releases/download/v$BAO_VERSION/openbao_${BAO_VERSION}_darwin_arm64.tar.gz" \
   "$BAO_SHA256" "$WORK/downloads/bao.tar.gz"
 tar -xzf "$WORK/downloads/bao.tar.gz" -C "$WORK/downloads" bao
 install -m 0755 "$WORK/downloads/bao" "$B/bin/bao"
