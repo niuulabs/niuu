@@ -831,7 +831,26 @@ def test_an_image_on_the_distributions_python_is_refused(registry):
     result = registry.run(f"ghcr.io/niuulabs/openshell@{digest}", SESSION)
 
     assert result.returncode != 0 and "relocatable Python" in result.stderr
-    assert only_cache(registry) == []
+    # The image itself is unpacked (a sidecar may run it); no session parts are added.
+    root = registry.cache / digest.split(":")[1]
+    assert only_cache(registry) == [root.name]
+    assert sorted(p.name for p in root.iterdir()) == ["host.json", "rootfs"]
+    assert "venv" not in json.loads((root / "host.json").read_text())
+
+
+def test_a_session_image_a_sidecar_unpacked_first_gets_its_session_parts(registry):
+    """The guest agent runs the session image too, and its pods start first."""
+    digest = registry.image([session_layer()], {"Env": ENV})
+    reference = f"ghcr.io/niuulabs/openshell@{digest}"
+
+    assert "venv" not in loaded(registry.run(reference))
+    description = loaded(registry.run(reference, SESSION))
+
+    assert description["venv"] == "/opt/niuu"
+    root = registry.cache / digest.split(":")[1]
+    assert sorted(p.name for p in root.iterdir()) == ["agents", "host.json", "rootfs", "tools"]
+    assert json.loads((root / "host.json").read_text())["venv"] == "/opt/niuu"
+    assert only_cache(registry) == [root.name]
 
 
 def test_a_venv_whose_python_is_outside_its_python_root_is_refused(registry):

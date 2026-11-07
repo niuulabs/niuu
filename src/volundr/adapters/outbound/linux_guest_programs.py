@@ -127,151 +127,168 @@ if document.get('mediaType') in INDEX or 'manifests' in document:
         raise RuntimeError(reference + ' has no linux/' + arch + ' image')
     document, digest = manifest(found[0]['digest'], found[0]['digest'])
 root = cache / digest.split(':', 1)[1]
-if (root / 'host.json').exists():
-    shutil.rmtree(str(work), ignore_errors=True)
-    print((root / 'host.json').read_text())
-    sys.exit(0)
-def within(path):
-    base = os.path.realpath(str(rootfs))
-    resolved = os.path.realpath(str(path))
-    return resolved == base or resolved.startswith(base + os.sep)
-def safe(path):
-    # An entry is removed by its own name, never followed: only its directory must lie in
-    # the root (a link may point anywhere; it is unlinked, not its target).
-    if not within(path.parent):
-        raise RuntimeError('Image layer entry outside the root: ' + str(path))
-    return path
-def remove(path):
-    if path.is_symlink() or path.is_file():
-        path.unlink()
-    elif path.is_dir():
-        shutil.rmtree(str(path))
-try:
-    config = json.loads(blob(document['config']['digest']).read_text()).get('config') or {}
-    rootfs = work / 'rootfs'
-    rootfs.mkdir()
-    for layer in document['layers']:
-        media = layer.get('mediaType', '')
-        if 'zstd' in media:
-            raise RuntimeError(reference + ' has zstd layers, which this host cannot unpack; '
-                'publish the image with gzip layers')
-        archive = blob(layer['digest'])
-        with tarfile.open(str(archive), 'r:*') as layer_tar:
-            for member in layer_tar:
-                parts = pathlib.PurePosixPath(member.name.lstrip('/')).parts
-                if not parts or parts[0] in ('dev', 'proc', 'sys'):
-                    continue
-                base = parts[-1]
-                parent = rootfs.joinpath(*parts[:-1])
-                if base == '.wh..wh..opq':
-                    if parent.is_dir() and not parent.is_symlink():
-                        for entry in list(parent.iterdir()):
-                            remove(safe(entry))
-                    continue
-                if base.startswith('.wh.'):
-                    target = parent / base[len('.wh.'):]
-                    if os.path.lexists(str(target)):
-                        remove(safe(target))
-                    continue
-                if member.isdev() or member.isfifo():
-                    continue
-                # A hard link names a member of the archive. tarfile joins the name to the
-                # root, and an absolute one replaces it: it would link a file of this host.
-                if member.islnk() and not within(rootfs / member.linkname):
-                    raise RuntimeError('Image layer hard link outside the root: ' + member.name)
-                target = rootfs.joinpath(*parts)
-                if os.path.lexists(str(target)) and not (member.isdir() and target.is_dir()
-                        and not target.is_symlink()):
-                    remove(safe(target))
-                layer_tar.extract(member, str(rootfs), filter='tar')
-        os.unlink(str(archive))
-    description = {
-        'digest': digest,
-        'reference': reference,
-        'env': config.get('Env') or [],
-        'user': config.get('User') or '',
-        'workdir': config.get('WorkingDir') or '',
-        'entrypoint': config.get('Entrypoint') or [],
-        'cmd': config.get('Cmd') or [],
-    }
-    if session:
-        env = dict(item.split('=', 1) for item in description['env'])
-        venv, python_root = env.get('VIRTUAL_ENV'), env.get('UV_PYTHON_INSTALL_DIR')
-        if not venv or not python_root:
-            raise RuntimeError('The session image declares no VIRTUAL_ENV and '
-                'UV_PYTHON_INSTALL_DIR; host mode needs an image on a relocatable Python, '
-                'such as ghcr.io/niuulabs/openshell')
-        def resolve(path):
-            # A path inside the image, following its links as the image itself would.
-            parts, done, seen = [p for p in pathlib.PurePosixPath(path).parts if p != '/'], [], 0
-            while parts:
-                part = parts.pop(0)
-                if part == '..':
-                    done = done[:-1]
-                    continue
-                candidate = rootfs.joinpath(*done, part)
-                if candidate.is_symlink():
-                    seen += 1
-                    if seen > 64:
-                        raise RuntimeError('Symbolic link loop in the session image at ' + path)
-                    target = pathlib.PurePosixPath(os.readlink(str(candidate)))
-                    if target.is_absolute():
-                        done = []
-                    parts = [p for p in target.parts if p != '/'] + parts
-                    continue
-                done.append(part)
-            return '/' + '/'.join(done)
-        python = resolve(venv + '/bin/python')
-        if not python.startswith(python_root.rstrip('/') + '/') or not (
-                rootfs / python[1:]).is_file():
-            raise RuntimeError('The session image venv ' + venv + ' does not run on its own '
-                'Python under ' + python_root + '; host mode needs a relocatable Python')
-        search = env.get('PATH', '/usr/local/bin:/usr/bin:/bin').split(':')
-        def found(command):
-            for directory in search:
-                # lexists: an absolute link names a path in the image, not on the host.
-                if os.path.lexists(str(rootfs / directory.lstrip('/') / command)):
-                    target = resolve(directory + '/' + command)
-                    if (rootfs / target[1:]).is_file():
-                        return target
-            return None
-        def wrapper(directory, command_name):
-            target = found(command_name)
-            if target is None:
-                return
-            command = [session['view'] + '/rootfs' + target]
-            with (rootfs / target[1:]).open('rb') as program:
-                line = program.readline(256)
-            if line.startswith(b'#!/usr/bin/env '):
-                # The image's own interpreter, not whichever one the host has on PATH.
-                interpreter = found(line.split()[1].decode())
-                if interpreter is None:
-                    raise RuntimeError('The session image has no interpreter for ' + command_name)
-                command.insert(0, session['view'] + '/rootfs' + interpreter)
-            path = work / directory / command_name
-            path.write_text('#!/bin/sh\nexec ' + shlex.join(command) + ' "$@"\n')
-            path.chmod(0o755)
-        for directory, names in (('agents', session['agents']), ('tools', session['tools'])):
-            (work / directory).mkdir()
-            for command_name in names:
-                wrapper(directory, command_name)
-        description.update({'venv': venv, 'python_root': python_root})
-    for leftover in work.iterdir():
-        if leftover.name not in ('rootfs', 'agents', 'tools'):
-            remove(leftover)
-    (work / 'host.json').write_text(json.dumps(description))
-    work.chmod(0o755)
+def add_session_extras(description):
+    # What a session needs of its image (its relocatable Python, wrappers for the commands it
+    # runs from it), added to the image's cached root once, whoever unpacked it first.
+    rootfs = root / 'rootfs'
+    extras = pathlib.Path(tempfile.mkdtemp(dir=str(cache), prefix='.session-'))
+    atexit.register(shutil.rmtree, str(extras), True)
+    env = dict(item.split('=', 1) for item in description['env'])
+    venv, python_root = env.get('VIRTUAL_ENV'), env.get('UV_PYTHON_INSTALL_DIR')
+    if not venv or not python_root:
+        raise RuntimeError('The session image declares no VIRTUAL_ENV and '
+            'UV_PYTHON_INSTALL_DIR; host mode needs an image on a relocatable Python, '
+            'such as ghcr.io/niuulabs/openshell')
+    def resolve(path):
+        # A path inside the image, following its links as the image itself would.
+        parts, done, seen = [p for p in pathlib.PurePosixPath(path).parts if p != '/'], [], 0
+        while parts:
+            part = parts.pop(0)
+            if part == '..':
+                done = done[:-1]
+                continue
+            candidate = rootfs.joinpath(*done, part)
+            if candidate.is_symlink():
+                seen += 1
+                if seen > 64:
+                    raise RuntimeError('Symbolic link loop in the session image at ' + path)
+                target = pathlib.PurePosixPath(os.readlink(str(candidate)))
+                if target.is_absolute():
+                    done = []
+                parts = [p for p in target.parts if p != '/'] + parts
+                continue
+            done.append(part)
+        return '/' + '/'.join(done)
+    python = resolve(venv + '/bin/python')
+    if not python.startswith(python_root.rstrip('/') + '/') or not (
+            rootfs / python[1:]).is_file():
+        raise RuntimeError('The session image venv ' + venv + ' does not run on its own '
+            'Python under ' + python_root + '; host mode needs a relocatable Python')
+    search = env.get('PATH', '/usr/local/bin:/usr/bin:/bin').split(':')
+    def found(command):
+        for directory in search:
+            # lexists: an absolute link names a path in the image, not on the host.
+            if os.path.lexists(str(rootfs / directory.lstrip('/') / command)):
+                target = resolve(directory + '/' + command)
+                if (rootfs / target[1:]).is_file():
+                    return target
+        return None
+    def wrapper(directory, command_name):
+        target = found(command_name)
+        if target is None:
+            return
+        command = [session['view'] + '/rootfs' + target]
+        with (rootfs / target[1:]).open('rb') as program:
+            line = program.readline(256)
+        if line.startswith(b'#!/usr/bin/env '):
+            # The image's own interpreter, not whichever one the host has on PATH.
+            interpreter = found(line.split()[1].decode())
+            if interpreter is None:
+                raise RuntimeError('The session image has no interpreter for ' + command_name)
+            command.insert(0, session['view'] + '/rootfs' + interpreter)
+        path = extras / directory / command_name
+        path.write_text('#!/bin/sh\nexec ' + shlex.join(command) + ' "$@"\n')
+        path.chmod(0o755)
+    for directory, names in (('agents', session['agents']), ('tools', session['tools'])):
+        (extras / directory).mkdir()
+        for command_name in names:
+            wrapper(directory, command_name)
+    description.update({'venv': venv, 'python_root': python_root})
+    for directory in ('agents', 'tools'):
+        (extras / directory).chmod(0o755)
+        try:
+            os.rename(str(extras / directory), str(root / directory))
+        except OSError:
+            # A concurrent run added them first.
+            if not (root / directory).is_dir():
+                raise
+    temporary = root / '.host.json.tmp'
+    temporary.write_text(json.dumps(description))
+    os.replace(str(temporary), str(root / 'host.json'))
+    return description
+if not (root / 'host.json').exists():
+    def within(path):
+        base = os.path.realpath(str(rootfs))
+        resolved = os.path.realpath(str(path))
+        return resolved == base or resolved.startswith(base + os.sep)
+    def safe(path):
+        # An entry is removed by its own name, never followed: only its directory must lie in
+        # the root (a link may point anywhere; it is unlinked, not its target).
+        if not within(path.parent):
+            raise RuntimeError('Image layer entry outside the root: ' + str(path))
+        return path
+    def remove(path):
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(str(path))
     try:
-        os.rename(str(work), str(root))
-    except OSError:
-        # A concurrent unpack of the same digest finished first.
-        if not (root / 'host.json').exists():
-            raise
-except BaseException:
-    shutil.rmtree(str(work), ignore_errors=True)
-    raise
+        config = json.loads(blob(document['config']['digest']).read_text()).get('config') or {}
+        rootfs = work / 'rootfs'
+        rootfs.mkdir()
+        for layer in document['layers']:
+            media = layer.get('mediaType', '')
+            if 'zstd' in media:
+                raise RuntimeError(reference + ' has zstd layers, which this host cannot unpack; '
+                    'publish the image with gzip layers')
+            archive = blob(layer['digest'])
+            with tarfile.open(str(archive), 'r:*') as layer_tar:
+                for member in layer_tar:
+                    parts = pathlib.PurePosixPath(member.name.lstrip('/')).parts
+                    if not parts or parts[0] in ('dev', 'proc', 'sys'):
+                        continue
+                    base = parts[-1]
+                    parent = rootfs.joinpath(*parts[:-1])
+                    if base == '.wh..wh..opq':
+                        if parent.is_dir() and not parent.is_symlink():
+                            for entry in list(parent.iterdir()):
+                                remove(safe(entry))
+                        continue
+                    if base.startswith('.wh.'):
+                        target = parent / base[len('.wh.'):]
+                        if os.path.lexists(str(target)):
+                            remove(safe(target))
+                        continue
+                    if member.isdev() or member.isfifo():
+                        continue
+                    # A hard link names a member of the archive. tarfile joins the name to the
+                    # root, and an absolute one replaces it: it would link a file of this host.
+                    if member.islnk() and not within(rootfs / member.linkname):
+                        raise RuntimeError('Image layer hard link outside the root: ' + member.name)
+                    target = rootfs.joinpath(*parts)
+                    if os.path.lexists(str(target)) and not (member.isdir() and target.is_dir()
+                            and not target.is_symlink()):
+                        remove(safe(target))
+                    layer_tar.extract(member, str(rootfs), filter='tar')
+            os.unlink(str(archive))
+        description = {
+            'digest': digest,
+            'reference': reference,
+            'env': config.get('Env') or [],
+            'user': config.get('User') or '',
+            'workdir': config.get('WorkingDir') or '',
+            'entrypoint': config.get('Entrypoint') or [],
+            'cmd': config.get('Cmd') or [],
+        }
+        for leftover in work.iterdir():
+            if leftover.name != 'rootfs':
+                remove(leftover)
+        (work / 'host.json').write_text(json.dumps(description))
+        work.chmod(0o755)
+        try:
+            os.rename(str(work), str(root))
+        except OSError:
+            # A concurrent unpack of the same digest finished first.
+            if not (root / 'host.json').exists():
+                raise
+    except BaseException:
+        shutil.rmtree(str(work), ignore_errors=True)
+        raise
 shutil.rmtree(str(work), ignore_errors=True)
-print((root / 'host.json').read_text())
+description = json.loads((root / 'host.json').read_text())
+if session and 'venv' not in description:
+    description = add_session_extras(description)
+print(json.dumps(description))
 """
 
 #: Run one pod container from its unpacked root. argv: the container's spec (a root-only
