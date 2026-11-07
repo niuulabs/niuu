@@ -182,7 +182,7 @@ class Provider(MachineProvider):
         return True
 
 
-def pool_setup(max_machines: int = 2):
+def pool_setup(max_machines: int = 2, provider=None):
     from unittest.mock import AsyncMock
 
     from niuu.adapters.memory_credential_store import MemoryCredentialStore
@@ -191,7 +191,7 @@ def pool_setup(max_machines: int = 2):
     from volundr.domain.services.compute_leases import ComputeLeaseService
     from volundr.domain.services.compute_pool import ComputePoolService
 
-    repo, provider, runtime = Repository(), ReadyProvider(), AsyncMock()
+    repo, provider, runtime = Repository(), provider or ReadyProvider(), AsyncMock()
     runtime.machine_bootstrap = lambda defaults: defaults
     store = MemoryCredentialStore()
     leases = ComputeLeaseService(
