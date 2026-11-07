@@ -200,8 +200,16 @@ export interface IVolundrService {
    * the host once it is empty.
    */
   drainComputeHost(instanceId: string, hostId: string, remove: boolean): Promise<ComputeHost>;
-  /** Returns an out-of-service host to service after a clean audit. */
+  /**
+   * Returns an out-of-service host to service after a clean audit; on a draining host it
+   * cancels the drain.
+   */
   resumeComputeHost(instanceId: string, hostId: string): Promise<ComputeHost>;
+  /**
+   * Has the next claim run the current recipe again on an empty host, then checks it;
+   * rejects while sessions run there (drain it first).
+   */
+  reprepareComputeHost(instanceId: string, hostId: string): Promise<ComputeHost>;
   /** Runs the probe and the audit now. */
   checkComputeHost(instanceId: string, hostId: string): Promise<ComputeHost>;
   /** Removes an empty host; rejects while sessions still run on it (drain and remove). */

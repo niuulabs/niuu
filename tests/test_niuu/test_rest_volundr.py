@@ -3257,7 +3257,7 @@ def test_compute_host_patch_and_delete_pass_through() -> None:
 
 
 @respx.mock
-@pytest.mark.parametrize("action", ["drain", "resume", "check"])
+@pytest.mark.parametrize("action", ["drain", "resume", "check", "reprepare"])
 def test_compute_host_actions_pass_through(action: str) -> None:
     client = _client([_instance("hosts", base_url="http://hosts", is_default=True)])
     route = respx.post(f"http://hosts/api/v1/forge/compute/hosts/{HOST_ID}/{action}").mock(

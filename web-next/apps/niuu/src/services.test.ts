@@ -520,6 +520,7 @@ describe('buildServices live base selection', () => {
       updateComputeHost: vi.fn(async () => ({ id: 'h-1' })),
       drainComputeHost: vi.fn(async () => ({ id: 'h-1' })),
       resumeComputeHost: vi.fn(async () => ({ id: 'h-1' })),
+      reprepareComputeHost: vi.fn(async () => ({ id: 'h-1' })),
       checkComputeHost: vi.fn(async () => ({ id: 'h-1' })),
       removeComputeHost: vi.fn(async () => ({ removed: true, hostCleanupCommand: null })),
     };
@@ -534,6 +535,7 @@ describe('buildServices live base selection', () => {
     await volundr.updateComputeHost('ymir', 'h-1', { tags: ['gpu'] });
     await volundr.drainComputeHost('ymir', 'h-1', true);
     await volundr.resumeComputeHost('ymir', 'h-1');
+    await volundr.reprepareComputeHost('ymir', 'h-1');
     await volundr.checkComputeHost('ymir', 'h-1');
     await volundr.removeComputeHost('ymir', 'h-1');
 
@@ -544,6 +546,7 @@ describe('buildServices live base selection', () => {
     expect(forge.updateComputeHost).toHaveBeenCalledWith('ymir', 'h-1', { tags: ['gpu'] });
     expect(forge.drainComputeHost).toHaveBeenCalledWith('ymir', 'h-1', true);
     expect(forge.resumeComputeHost).toHaveBeenCalledWith('ymir', 'h-1');
+    expect(forge.reprepareComputeHost).toHaveBeenCalledWith('ymir', 'h-1');
     expect(forge.checkComputeHost).toHaveBeenCalledWith('ymir', 'h-1');
     expect(forge.removeComputeHost).toHaveBeenCalledWith('ymir', 'h-1');
   });

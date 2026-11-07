@@ -743,8 +743,18 @@ On branch `docs/bm-compute-hosts`. Operator guide: [docs/operator/compute-hosts.
   public host is a startup error, never a silent plaintext or unreachable URL. A key
   or port the listener cannot use is fatal at startup.
 - `warm_targets` per selector were dropped (decision 6).
-- Not built yet: the reverse SSH connector, the Re-prepare action (a recipe change
-  today needs drain, then resume), macOS hosts.
+- **Re-prepare** (`POST …/hosts/{id}/reprepare`, also through the Guild facade) does
+  not run the recipe itself. The preparation record is the allocation that holds the
+  host: it pins the plan, carries the result and keys the checkpoint on the host. So
+  Re-prepare disposes of the idle allocation through `ComputePoolService.dispose`, the
+  same path that retires an idle allocation whose plan changed, and then checks the
+  host. The next claim pins the current plan and runs the recipe from a fresh
+  checkpoint. It refuses with 409 while sessions run, naming drain.
+- **Cancel drain** is `resume` on a draining host. **Download and read first** shows
+  the script's SHA-256, the file, and the commands to fetch, verify, read and run it.
+  The mint response carries the script and digest, rendered exactly as `join.sh`
+  serves it for that code, so no extra route was needed.
+- Not built yet: the reverse SSH connector, macOS hosts.
 
 ## Decisions (settled 2026-11-07)
 

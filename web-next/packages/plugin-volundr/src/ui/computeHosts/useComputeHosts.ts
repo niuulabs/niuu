@@ -63,6 +63,10 @@ export function useComputeHostActions(instanceId: string) {
       mutationFn: (hostId: string) => volundr.resumeComputeHost(instanceId, hostId),
       onSuccess: refresh,
     }),
+    reprepare: useMutation({
+      mutationFn: (hostId: string) => volundr.reprepareComputeHost(instanceId, hostId),
+      onSuccess: refresh,
+    }),
     check: useMutation({
       mutationFn: (hostId: string) => volundr.checkComputeHost(instanceId, hostId),
       onSuccess: refresh,

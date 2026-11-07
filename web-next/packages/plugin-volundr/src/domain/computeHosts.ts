@@ -157,6 +157,17 @@ export interface PairingCodeRequest {
   slots: number | null;
 }
 
+/**
+ * The join script as a file, for an operator who reads it before running it: the same bytes
+ * `join.sh` serves for the code, its SHA-256, and the commands that fetch, verify and run it.
+ */
+export interface JoinScript {
+  filename: string;
+  sha256: string;
+  content: string;
+  commands: string[];
+}
+
 /** A freshly minted code: the only time the code and its commands are returned. */
 export interface NewPairingCode extends PairingCode {
   code: string;
@@ -167,6 +178,7 @@ export interface NewPairingCode extends PairingCode {
   joinUrl: string;
   /** The pinned certificate key (`sha256//…`) the command checks; null without a pin. */
   pin: string | null;
+  script: JoinScript;
 }
 
 export interface ComputeHostChanges {
@@ -451,11 +463,13 @@ export function needsCapacity(host: Pick<ComputeHost, 'health' | 'slots'>): bool
 // Row actions
 // ---------------------------------------------------------------------------
 
-export type HostAction = 'open' | 'check' | 'drain' | 'drain_remove' | 'resume' | 'remove';
+export type HostAction =
+  'open' | 'check' | 'drain' | 'drain_remove' | 'cancel_drain' | 'resume' | 'reprepare' | 'remove';
 
 /**
- * What an operator may do to a host in its state. Remove is only offered on an empty host;
- * a host with sessions leaves through drain and remove, which never stops them.
+ * What an operator may do to a host in its state. Remove and Re-prepare are only offered on
+ * an empty host; a host with sessions leaves through drain and remove, which never stops
+ * them, and is re-prepared once a drain has emptied it.
  */
 export function hostActions(
   host: Pick<ComputeHost, 'state' | 'health' | 'slots' | 'sessions' | 'removeWhenEmpty'>,
@@ -463,18 +477,20 @@ export function hostActions(
   const leave: HostAction[] =
     host.sessions.length === 0 ? ['drain', 'remove'] : ['drain', 'drain_remove'];
   const follow: HostAction[] = needsCapacity(host) || host.state === 'pending' ? ['open'] : [];
+  const reprepare: HostAction[] = host.sessions.length === 0 ? ['reprepare'] : [];
   switch (host.state) {
     case 'pending':
       return [...follow, 'remove'];
     case 'ready':
-      return [...follow, 'check', ...leave];
+      return [...follow, 'check', ...reprepare, ...leave];
     case 'in_service':
-      return ['check', 'drain', 'drain_remove'];
+      return ['check', ...reprepare, 'drain', 'drain_remove'];
     case 'draining':
-      return host.removeWhenEmpty ? ['check'] : ['check', 'drain_remove'];
+      return host.removeWhenEmpty ? ['check'] : ['check', 'cancel_drain', 'drain_remove'];
     case 'out_of_service':
-      return ['check', 'resume', 'remove'];
+      return ['check', ...reprepare, 'resume', 'remove'];
     case 'quarantined':
+      return ['check', ...reprepare, ...leave];
     case 'unreachable':
       return ['check', ...leave];
     case 'removing':

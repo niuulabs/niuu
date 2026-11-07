@@ -1418,6 +1418,7 @@ type ComputeHostMethods = Pick<
   | 'updateComputeHost'
   | 'drainComputeHost'
   | 'resumeComputeHost'
+  | 'reprepareComputeHost'
   | 'checkComputeHost'
   | 'removeComputeHost'
 >;
@@ -1456,6 +1457,7 @@ function computeHostMethods(client: HttpClient): ComputeHostMethods {
           computeHostsPath(instanceId, '/pairing-codes'),
           pairingCodeBody(request),
         ),
+        instanceId,
       ),
     revokePairingCode: async (instanceId, codeId) => {
       await client.delete<void>(
@@ -1475,6 +1477,11 @@ function computeHostMethods(client: HttpClient): ComputeHostMethods {
     resumeComputeHost: async (instanceId, hostId) =>
       toComputeHostResponse(
         await client.post<ComputeHostPayload>(hostPath(instanceId, hostId, '/resume')),
+        instanceId,
+      ),
+    reprepareComputeHost: async (instanceId, hostId) =>
+      toComputeHostResponse(
+        await client.post<ComputeHostPayload>(hostPath(instanceId, hostId, '/reprepare')),
         instanceId,
       ),
     checkComputeHost: async (instanceId, hostId) =>

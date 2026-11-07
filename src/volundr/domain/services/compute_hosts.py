@@ -30,7 +30,12 @@ from niuu.domain.models import Principal
 from niuu.domain.services.token_scope import COMPUTE_HOST_JOIN_SCOPE, VALKYRIE_BUILD_TOKEN_USE
 from niuu.observability import get_observability
 from niuu.ports.workload_identity import WorkloadTokenIssuer, WorkloadTokenVerificationError
-from volundr.domain.compute import LIVE_SLOT_STATES, ComputeLeaseRepository, ComputeSlot
+from volundr.domain.compute import (
+    LIVE_SLOT_STATES,
+    ComputeLeaseBusyError,
+    ComputeLeaseRepository,
+    ComputeSlot,
+)
 from volundr.domain.compute_hosts import (
     HostConflictError,
     HostConnector,
@@ -42,6 +47,7 @@ from volundr.domain.compute_hosts import (
     RegisteredHostRepository,
     normalize_tags,
 )
+from volundr.domain.services.compute_pool import ComputePoolService
 from volundr.domain.session_runtimes import SessionRuntimeKind
 from volundr.domain.vm_runtime import SlotLimits
 
@@ -51,6 +57,8 @@ logger = logging.getLogger(__name__)
 _HOST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")
 #: The comment that marks Forge's key in a host's authorized_keys, so removal finds it.
 FORGE_KEY_COMMENT = "niuu-forge"
+#: The file the "download and read first" commands save the join script to.
+JOIN_SCRIPT_FILENAME = "niuu-join.sh"
 
 
 class ComputeHostError(Exception):
@@ -101,6 +109,7 @@ class MintedHostCode:
     command: str
     #: None when the join is pinned: wget cannot check a pin.
     command_wget: str | None
+    command_download: str
 
 
 @dataclass(frozen=True)
@@ -172,6 +181,7 @@ class ComputeHostService:
         pool_id: str,
         repository: RegisteredHostRepository,
         compute_repository: ComputeLeaseRepository,
+        compute_pool: ComputePoolService,
         connectors: Mapping[str, HostConnector],
         inspector: HostInspector,
         executions: Mapping[str, HostExecution],
@@ -189,6 +199,7 @@ class ComputeHostService:
         self._pool_id = pool_id
         self._repository = repository
         self._compute = compute_repository
+        self._pool = compute_pool
         self._connectors = connectors
         self._inspector = inspector
         self._executions = dict(executions)
@@ -294,12 +305,17 @@ class ComputeHostService:
                 pairing=pairing,
                 command=f"curl -fsSL -k --pinnedpubkey {pin} -H {header} {url} | sudo sh",
                 command_wget=None,
+                command_download=(
+                    f"curl -fsSL -k --pinnedpubkey {pin} -o {JOIN_SCRIPT_FILENAME} "
+                    f"-H {header} {url}"
+                ),
             )
         return MintedHostCode(
             code=issued.token,
             pairing=pairing,
             command=f"curl -fsSL -H {header} {url} | sudo sh",
             command_wget=f"wget -qO- --header={header} {url} | sudo sh",
+            command_download=f"curl -fsSL -o {JOIN_SCRIPT_FILENAME} -H {header} {url}",
         )
 
     async def pairing_codes(self) -> list[HostPairingCode]:
@@ -483,6 +499,43 @@ class ComputeHostService:
         updated = host.model_copy(update={"service": HostService.ACTIVE})
         await self._repository.save(updated)
         return await self.check(updated)
+
+    async def reprepare(self, principal: Principal, host_id: UUID) -> RegisteredHost:
+        """Run the current recipe again when the pool next claims this empty host.
+
+        A host's preparation record is the allocation that holds it: the allocation pins
+        the execution plan, carries the preparation result, and keys the checkpoint on the
+        host. Disposing of that allocation through the pool invalidates all three, as the
+        pool already does for an idle host whose plan changed. The next claim pins the
+        current plan and ``ensure``s every recipe stage from a fresh checkpoint. The host
+        is then checked, so a finding shows now rather than at the claim.
+        """
+        self._require_admin(principal)
+        host = await self.get(host_id)
+        if host.service is HostService.REMOVING:
+            raise ComputeHostStateError("This host is being removed")
+        if await self.live_sessions(host):
+            raise ComputeHostStateError(
+                "Sessions run on this host; drain it, and re-prepare once it is empty"
+            )
+        if host.allocation_id is not None:
+            try:
+                await self._pool.dispose(host.allocation_id)
+            except (ValueError, ComputeLeaseBusyError) as exc:
+                # A session was placed on the host since the check above.
+                raise ComputeHostStateError(
+                    "A session was placed on this host meanwhile; drain it, and re-prepare "
+                    "once it is empty"
+                ) from exc
+            except (RuntimeError, OSError) as exc:
+                # The allocation stays draining; the pool retries ending it, loudly.
+                raise ComputeHostStateError(
+                    f"Forge could not end the host's current preparation: {_reason(exc)}. "
+                    "The pool retries; Check now shows what the host reports"
+                ) from exc
+            host = await self.get(host_id)
+        logger.info("Host %s in compute pool %s will be re-prepared", host.name, self._pool_id)
+        return await self.check(host)
 
     async def remove(self, principal: Principal, host_id: UUID) -> bool:
         """Remove a host no session runs on. True when Forge also removed its key from the

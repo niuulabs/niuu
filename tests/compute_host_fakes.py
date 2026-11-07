@@ -310,3 +310,24 @@ class SlotLedger:
 
     async def slots(self, allocation_id):
         return list(self.bindings.get(allocation_id, []))
+
+
+class HostPool:
+    """Only the ``dispose`` the host service needs of the compute pool.
+
+    Disposing of an idle allocation ends its hold, as the registered-host provider's clean
+    does; ``error`` makes it fail as the pool would.
+    """
+
+    def __init__(self, repository=None):
+        self.repository = repository
+        self.disposed: list = []
+        self.error: Exception | None = None
+
+    async def dispose(self, allocation_id):
+        self.disposed.append(allocation_id)
+        if self.error is not None:
+            raise self.error
+        held = await self.repository.held_by(allocation_id)
+        if held is not None:
+            await self.repository.release(allocation_id, held)

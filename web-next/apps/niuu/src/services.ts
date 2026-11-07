@@ -987,6 +987,7 @@ function buildSplitVolundrService(
     drainComputeHost: (instanceId, hostId, remove) =>
       forge.drainComputeHost(instanceId, hostId, remove),
     resumeComputeHost: (instanceId, hostId) => forge.resumeComputeHost(instanceId, hostId),
+    reprepareComputeHost: (instanceId, hostId) => forge.reprepareComputeHost(instanceId, hostId),
     checkComputeHost: (instanceId, hostId) => forge.checkComputeHost(instanceId, hostId),
     removeComputeHost: (instanceId, hostId) => forge.removeComputeHost(instanceId, hostId),
     getSessions: (options) => forge.getSessions(options),

@@ -96,8 +96,13 @@ export function ComputeHostsPanel({ instanceId }: { instanceId: string }) {
       void holding(host.id, () => actions.check.mutateAsync(host.id));
       return;
     }
-    if (action === 'resume') {
+    if (action === 'resume' || action === 'cancel_drain') {
+      // Forge's resume returns a draining host to service, and an out-of-service one too.
       void holding(host.id, () => actions.resume.mutateAsync(host.id));
+      return;
+    }
+    if (action === 'reprepare') {
+      void holding(host.id, () => actions.reprepare.mutateAsync(host.id));
       return;
     }
     setRemoval({ host, mode: action });
