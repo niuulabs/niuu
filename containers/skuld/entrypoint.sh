@@ -12,31 +12,11 @@ echo "Workspace: ${WORKSPACE_DIR:-/volundr/sessions/${SESSION_ID}/workspace}"
 export SESSION_ID="${SESSION_ID:-unknown}"
 export WORKSPACE_DIR="${WORKSPACE_DIR:-/volundr/sessions/${SESSION_ID}/workspace}"
 
-# Source secrets from manifest (no-op if manifest doesn't exist)
-MANIFEST="/run/secrets/manifest.json"
-SECRET_DIR="/run/secrets/user"
-if [ -f "$MANIFEST" ] && [ -d "$SECRET_DIR" ]; then
-    echo "Sourcing secrets from manifest"
-    eval "$(python3 -c "
-import json, os, sys
-manifest = json.load(open('$MANIFEST'))
-for env_var, spec in manifest.get('env', {}).items():
-    fpath = os.path.join('$SECRET_DIR', spec['file'])
-    if not os.path.exists(fpath):
-        continue
-    data = json.load(open(fpath))
-    val = data.get(spec.get('key', ''), '')
-    # Shell-escape single quotes
-    safe = val.replace(\"'\", \"'\\\\''\" )
-    print(f\"export {env_var}='{safe}'\")
-for target, spec in manifest.get('files', {}).items():
-    src = os.path.join('$SECRET_DIR', spec['file'])
-    if os.path.exists(src):
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        if not os.path.exists(target):
-            os.symlink(src, target)
-")"
-fi
+# The delivered secrets become environment and files (skuld.session_secrets, the one
+# program every session runtime boots with). Assigned first: a failure inside eval's
+# command substitution would not stop the script under set -e.
+exports=$(python -m skuld.session_secrets)
+eval "$exports"
 
 # Source env vars rendered by the configured secret injector (no-op if file doesn't exist)
 if [ -f /run/secrets/env.sh ]; then

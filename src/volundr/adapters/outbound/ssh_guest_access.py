@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from niuu.adapters.workload_identity.key_file import load_or_create_ssh_keypair
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.compute import AllocationRef, BootstrapFile, MachineBootstrap
+from volundr.domain.execution_catalog import TrustMode
 from volundr.domain.guest_access import GuestAccess, GuestCommandResult
 from volundr.domain.vm_runtime import VmRuntimeStageError, VmRuntimeUnavailableError
 
@@ -98,6 +99,16 @@ os.chmod(temporary,0o600)
 os.replace(temporary,marker)
 state_path.unlink(missing_ok=True)
 """
+
+
+#: How each trust mode gets the machine's host key to Forge (``bootstrap_delivery``).
+_TRUST_DELIVERY = {
+    TrustMode.PROVIDER_IDENTITY: "provider",
+    TrustMode.TOFU: "ssh",
+    # The machine generated its own key and the provider vouches for its public half
+    # (``Machine.host_public_key``): a registered host's key from its pairing.
+    TrustMode.REGISTERED_HOST_KEY: "registered",
+}
 
 
 class SshGuestAccess(GuestAccess):
@@ -185,19 +196,13 @@ class SshGuestAccess(GuestAccess):
             )
         if kwargs:
             raise ValueError("SSH trust configuration contains unsupported parameters")
-        deliveries = {
-            "provider_identity": "provider",
-            "tofu": "ssh",
-            # The machine generated its own key and the provider vouches for its public half
-            # (``Machine.host_public_key``): a registered host's key from its pairing.
-            "registered_host_key": "registered",
-        }
-        if mode == "ssh_ca":
-            raise ValueError("SSH CA trust is not implemented by SshGuestAccess")
         try:
-            delivery = deliveries[mode]
-        except KeyError as exc:
+            trust = TrustMode(mode)
+        except ValueError as exc:
             raise ValueError(f"Unsupported SSH trust mode {mode!r}") from exc
+        if trust is TrustMode.SSH_CA:
+            raise ValueError("SSH CA trust is not implemented by SshGuestAccess")
+        delivery = _TRUST_DELIVERY[trust]
         if delivery != self._bootstrap_delivery:
             raise ValueError(
                 f"SSH trust mode {mode!r} conflicts with bootstrap_delivery "
@@ -616,10 +621,16 @@ class SshGuestAccess(GuestAccess):
         return "niuu-" + str(lease.id)
 
     @staticmethod
-    def python_command(program: str, *args: str, principal: str = "root") -> str:
+    def python_command(
+        program: str,
+        *args: str,
+        principal: str = "root",
+        interpreter: tuple[str, ...] = ("python3",),
+    ) -> str:
+        """``program`` as one shell command; ``interpreter`` is the Python argv to run it."""
         encoded = base64.b64encode(program.encode()).decode()
         code = f"import base64;exec(base64.b64decode({encoded!r}))"
-        command = ["python3", "-c", code, *args]
+        command = [*interpreter, "-c", code, *args]
         if principal == "root":
             command[:0] = ["sudo", "-n"]
         return shlex.join(command)
