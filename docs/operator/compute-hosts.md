@@ -47,15 +47,27 @@ Its settings are the deployment's own: pool and provider binding, the provider
 profile, `data_dir` (Forge's durable directory for pins, its key and archives),
 `platform_port` (where Skuld calls back through its SSH tunnel), which `platforms`
 may join, the per-slot limits (`slot_cpu` 2, `slot_memory_mib` 8192, `slot_pids`
-16384; `null` for none), and optionally `default_service_account`,
-`preview_router_auth` and `native_images`.
+16384; `null` for none), and optionally `default_service_account` and
+`preview_router_auth`.
 
 **Session images** are not catalog content. Forge hands the host runtimes the
 release's own (`compute.session_images.linux`, the OpenShell image, whose Python is
 relocatable, and `.darwin`, the macOS session bundle) and pins each tag to its digest
-when it starts. A release bump therefore moves them without changing the plan running
-sessions are pinned to. A tag the registry does not have, or a registry Forge cannot
-reach, stops startup with the reference and the reason. Images must be public.
+when it starts. `compute.session_images.native` lists the digest-pinned pod images a
+Mac runs natively from the bundle's commands (the chart's default is
+`secretInjection`'s OpenBao agent image). A release or image bump therefore moves them
+without changing the plan running sessions are pinned to. A tag the registry does not
+have, or a registry Forge cannot reach, stops startup with the reference and the reason.
+Images must be public.
+
+**A new Forge release** can still change the execution itself (a recipe script, a
+setting), which gives it a new revision. Every host follows it: on its next maintenance
+pass Forge moves a host whose revision is no longer offered onto the one revision of the
+same execution it now offers, logs `Host … now runs …` and counts
+`volundr.compute.host.execution_followed`. The host's allocation still pins the old
+plan, so the pool re-prepares it with the new one once it is idle. A host whose
+execution is offered under no revision, or several, is quarantined with the finding
+"its execution … is no longer offered"; remove it and join it again.
 
 ### On a cluster: `computeHosts`
 
@@ -489,6 +501,7 @@ is retried. Capacity is never freed on a host nobody checked.
 | `compute.hosts.join_listener.cert_file` / `key_file` | `~/.niuu/forge-host-join-{cert,key}.pem` | The listener's certificate and the key the pin comes from | Unreadable, readable by others or not matching: startup fails |
 | `compute.hosts.join_listener.key_bits` | 2048 | Size of a generated key | — |
 | `compute.session_images.linux` / `.darwin` | chart: the release's tag; mini: `…:dev` | What host runtimes without an image of their own run; a tag is pinned at startup | A tag the registry lacks or a registry Forge cannot reach: startup fails, naming the reference |
+| `compute.session_images.native` (chart `computeHosts.nativeImages`) | chart: `secretInjection`'s agent image | Pod images a Mac runs natively from the bundle | Not digest-pinned: startup fails; a pod image not listed: the session is refused at create |
 | `compute.session_images.resolve_timeout_seconds` | 30 | One registry request while pinning a tag at startup | Startup fails with the reference |
 | built-in catalog `slot_cpu` / `slot_memory_mib` / `slot_pids` | 2 / 8192 / 16384 | What one Linux slot may use (`null`: no limit); slot counts are suggested from them | The slot's cgroup holds the session to them; a hit is counted on `volundr.compute.slot.limit_hits` |
 | `hosts.join_host` (CLI) | `server.external_host`, else the default route's address | Where other machines reach this one to join | Loopback, or no default route: `niuu platform up` stops, naming the knob |
@@ -603,9 +616,17 @@ runtime:
     platform_port: 8443          # Forge's callbacks, through the SSH reverse tunnel
     guest_platform_port: 18080   # the Mac's loopback end of that tunnel
     nix: true                    # the host recipe installs multi-user Nix
-    native_images:               # pod images whose commands the bundle carries
-      - quay.io/openbao/openbao@sha256:fdc6da21…   # OpenBao 2.5.3, the agent's bao
     skuld_bundle: ghcr.io/niuulabs/skuld-darwin@sha256:…   # or compute.session_images.darwin
+```
+
+The pod images it runs natively from the bundle's commands are session images, outside
+the catalog:
+
+```yaml
+compute:
+  session_images:
+    native:
+      - quay.io/openbao/openbao@sha256:…   # OpenBao's agent; the bundle carries bao
 ```
 
 Its access binding is `SshGuestAccess` with `ssh_user: root`, and its connector's
@@ -633,7 +654,7 @@ bundle is about 1 GB.
 2. It restores the workspace archive, if there is one, and opens the SSH tunnel.
 3. The pod's init containers run once as root, natively, and its sidecars (the guest
    credential agent, OpenBao's agent) become launchd jobs `world.niuu.slot.0.<name>`.
-   A pod container whose image is neither the bundle nor in `native_images` is refused
+   A pod container whose image is neither the bundle nor in `compute.session_images.native` is refused
    when the session is created.
 4. The session is the launchd job `world.niuu.slot.0` in the system domain. It opens
    Skuld's log as root (`/var/log/niuu/host-sessions/0/`), becomes the slot user and

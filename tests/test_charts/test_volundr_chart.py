@@ -2734,14 +2734,17 @@ class TestComputeHosts:
         assert config["compute"]["session_images"] == {
             "linux": "registry.example/skuld:1",
             "darwin": "",
+            "native": [],
         }
 
     def test_native_images_default_to_the_secret_injection_agent(self):
+        # Session images, outside the catalog: bumping the agent keeps the hosts' revision.
         agent = "quay.io/openbao/openbao@sha256:" + "1" * 64
         config = self._config(
             *self.ON, "--set", f"secretInjection.kwargs.guest_agent_image={agent}"
         )
-        assert config["compute"]["execution_catalog"]["kwargs"]["native_images"] == [agent]
+        assert config["compute"]["session_images"]["native"] == [agent]
+        assert "native_images" not in config["compute"]["execution_catalog"]["kwargs"]
 
     @pytest.mark.parametrize(
         ("extra", "message"),

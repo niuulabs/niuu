@@ -204,6 +204,13 @@ class SessionImagesConfig(BaseModel):
             "resolved to its digest at startup"
         ),
     )
+    native: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Digest-pinned pod images a Mac runs natively from the session bundle's commands "
+            "instead of as containers (OpenBao's agent image, whose bao the bundle carries)"
+        ),
+    )
     resolve_timeout_seconds: float = Field(
         default=30,
         gt=0,

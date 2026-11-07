@@ -16,8 +16,9 @@ code from a handful of deployment settings, so no operator writes or mounts one:
   ``SshDarwinHostRuntime`` for macOS (one session as a fresh user).
 
 The session images are not catalog content: Forge hands each runtime the release's own
-(``compute.session_images``, resolved to digests at startup), so a release bump moves
-them without changing the plan running sessions are pinned to.
+(``compute.session_images``: the Skuld image and bundle, resolved to digests at startup,
+and the images a Mac runs natively), so a release or image bump moves them without
+changing the plan running sessions, and the hosts' execution, are pinned to.
 """
 
 from __future__ import annotations
@@ -74,7 +75,7 @@ class BuiltinHostCatalog(ExecutionCatalogPort):
     - ``platforms``: which host platforms join (``linux``, ``darwin``; both by default).
     - ``slot_cpu`` / ``slot_memory_mib`` / ``slot_pids``: what one Linux slot may use
       (``null`` for no limit); slot counts are suggested from them.
-    - ``default_service_account``, ``preview_router_auth``, ``native_images``,
+    - ``default_service_account``, ``preview_router_auth``,
       ``ssh_user``, ``command_timeout_seconds``, ``guest_platform_port``: as the
       runtimes and the access document them.
     """
@@ -93,7 +94,6 @@ class BuiltinHostCatalog(ExecutionCatalogPort):
         guest_platform_port: int = 18080,
         default_service_account: str | None = None,
         preview_router_auth: dict[str, Any] | None = None,
-        native_images: list[str] | None = None,
         codex_auth_adapter: str = DEFAULT_CODEX_AUTH_ADAPTER,
         slot_cpu: float | None = 2,
         slot_memory_mib: int | None = 8192,
@@ -122,7 +122,6 @@ class BuiltinHostCatalog(ExecutionCatalogPort):
             "guest_platform_port": guest_platform_port,
             "default_service_account": default_service_account,
             "preview_router_auth": preview_router_auth,
-            "native_images": list(native_images or ()),
             "codex_auth_adapter": codex_auth_adapter,
             "slot_isolation": {
                 "uid_base": slot_uid_base,
@@ -267,7 +266,6 @@ class BuiltinHostCatalog(ExecutionCatalogPort):
                     **common,
                     "guest_platform_port": s["guest_platform_port"],
                     "uid_base": s["slot_isolation"]["uid_base"],
-                    "native_images": s["native_images"],
                 },
             }
         return children

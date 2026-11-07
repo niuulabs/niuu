@@ -17,8 +17,8 @@ What the Linux runtimes run as containers runs natively:
 * the pod's init containers run once, as root, before it, and its sidecars (the guest
   credential agent, OpenBao's agent) are launchd jobs of their own, as root, next to it.
   Only containers whose image is the bundle itself (the credential delivery's agent) or
-  listed in ``native_images`` (whose commands the bundle carries, such as OpenBao's) are
-  accepted; anything else is refused when the session is created;
+  is listed in ``compute.session_images.native`` (whose commands the bundle carries, such
+  as OpenBao's) are accepted; anything else is refused when the session is created;
 * Skuld's calls back to Forge use the same SSH reverse tunnel as on a VM.
 
 Without mount namespaces nothing can appear at the paths a container would see, so the
@@ -206,10 +206,10 @@ class SshDarwinHostRuntime(HostModeRuntime):
 
     ``skuld_bundle`` is the digest-pinned bundle (``ghcr.io/niuulabs/skuld-darwin@sha256:…``),
     which replaces the Linux runtimes' ``skuld_image``; Forge hands the built-in host
-    execution the release's (``session_images``). ``native_images`` names pod images whose
-    containers run natively from the bundle's commands instead (OpenBao's agent image,
-    whose ``bao`` the bundle carries). ``uid_base`` is the slot user's uid, free on the Mac
-    (macOS gives its own users 501 and up, Nix's build users 351 and up).
+    execution the release's (``session_images``). ``session_images.native`` names pod
+    images whose containers run natively from the bundle's commands instead (OpenBao's
+    agent image, whose ``bao`` the bundle carries). ``uid_base`` is the slot user's uid,
+    free on the Mac (macOS gives its own users 501 and up, Nix's build users 351 and up).
     """
 
     _audit_program = DARWIN_AUDIT_SH
@@ -219,7 +219,6 @@ class SshDarwinHostRuntime(HostModeRuntime):
         *,
         skuld_bundle: str | None = None,
         session_images: SessionImages | None = None,
-        native_images: list[str] | None = None,
         uid_base: int = 61000,
         **kwargs,
     ):
@@ -246,12 +245,13 @@ class SshDarwinHostRuntime(HostModeRuntime):
             )
         if not 1000 <= uid_base <= 2**31 - 2:
             raise ValueError("uid_base must lie between 1000 and 2147483646")
-        if any(not image or _BUNDLE.fullmatch(image) is None for image in native_images or ()):
-            raise ValueError("native_images must be digest-pinned image references")
+        native = session_images.native if session_images is not None else ()
+        if any(not image or _BUNDLE.fullmatch(image) is None for image in native):
+            raise ValueError("compute.session_images.native must be digest-pinned image references")
         super().__init__(skuld_image=bundle, **kwargs)
         self._bundle_digest = match.group(1)
         self._bundle_root = f"{BUNDLE_CACHE}/{self._bundle_digest}"
-        self._native_images = frozenset(native_images or ())
+        self._native_images = frozenset(native)
         self._uid_base = uid_base
 
     @property
@@ -301,7 +301,7 @@ class SshDarwinHostRuntime(HostModeRuntime):
             if container["image"] not in allowed:
                 raise ValueError(
                     f"Container {container['name']!r} runs image {container['image']}, which "
-                    "a Mac cannot run; list it in compute.runtime.kwargs.native_images if "
+                    "a Mac cannot run; list it in compute.session_images.native if "
                     "the session bundle carries its commands, or run this session on Linux"
                 )
 

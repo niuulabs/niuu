@@ -714,7 +714,7 @@ and layer digests, and unpacks it once per digest. What Linux runs as containers
 natively: init containers once as root, sidecars (the guest credential agent, OpenBao's
 agent) as root launchd jobs `world.niuu.slot.0.<name>`, and the session as
 `world.niuu.slot.0`, which drops to the slot user. Only containers whose image is the
-bundle or is listed in `native_images` are accepted. With no mount namespaces, every
+bundle or is listed in `compute.session_images.native` are accepted. With no mount namespaces, every
 container path a session or agent is given is translated to where its source is on the
 Mac (`/home/skuld` → the slot's home, `/run/secrets` → the rendered secrets, …), in the
 environment, the commands and the guest agent's configuration; secret files in the home
@@ -1075,6 +1075,11 @@ On branch `docs/bm-compute-hosts`. Operator guide: [docs/operator/compute-hosts.
 - **Slot reuse** is declared by the host runtimes: stop tears the slot down and proves
   it gone; recycle checks it again and runs the audit for that slot alone. A slot that
   cannot be proven clean is retired (logged, counted), never reused.
+- **Hosts follow their execution's revision.** The built-in revision follows its content,
+  so a release that changes the execution retires the revision hosts joined with; each
+  host moves to the one successor of the same execution id (logged, counted), and the
+  pool re-prepares it once idle. The images a Mac runs natively are session images
+  (`compute.session_images.native`), so an image bump never changes the revision.
 - **Two commands**: `niuu platform up` serves the hosts pool by default in mini mode
   (pinned join listener at `server.external_host` or the default route's address), and
   the chart's `computeHosts.enabled` + `joinUrl` is a cluster Forge's whole hosts

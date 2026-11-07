@@ -434,7 +434,8 @@ volundr.adapters.outbound.vm_pod_manager.VmPodManager
 {{/*
 The release's own session images for registered hosts: computeHosts.sessionImages, else
 the session image and macOS bundle published with this release's image tag (image.tag,
-without its digest). Forge pins each to its digest at startup.
+without its digest), which Forge pins to digests at startup; and the images a Mac runs
+natively (computeHosts.nativeImages, else secretInjection's OpenBao agent image).
 */}}
 {{- define "volundr.computeHostsSessionImages" -}}
 {{- $c := .Values.computeHosts -}}
@@ -456,7 +457,8 @@ without its digest). Forge pins each to its digest at startup.
 {{- if not $tag -}}{{- fail "computeHosts: set image.tag (the release's image tag) or computeHosts.sessionImages.darwin" -}}{{- end -}}
 {{- $darwin = printf "%s/skuld-darwin:%s" $registry $tag -}}
 {{- end -}}
-{{- dict "linux" $linux "darwin" $darwin | toJson -}}
+{{- $native := $c.nativeImages | default (compact (list ((.Values.secretInjection).kwargs).guest_agent_image)) -}}
+{{- dict "linux" $linux "darwin" $darwin "native" $native | toJson -}}
 {{- end }}
 
 {{/*
@@ -483,7 +485,6 @@ the join and connector settings, and with guestMetadata the guest credential del
   "slot_cpu" $c.slot.cpu
   "slot_memory_mib" $c.slot.memoryMib
   "slot_pids" $c.slot.pids
-  "native_images" ($c.nativeImages | default (compact (list ((.Values.secretInjection).kwargs).guest_agent_image)))
 -}}
 {{- if $c.defaultServiceAccount -}}
 {{- $_ := set $catalog "default_service_account" $c.defaultServiceAccount -}}

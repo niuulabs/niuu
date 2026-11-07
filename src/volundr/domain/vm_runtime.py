@@ -34,11 +34,13 @@ class SessionImages:
 
     Not catalog content: a release bump moves them without changing the plan running
     sessions are pinned to. ``linux`` is the Skuld image a Linux host unpacks (on a
-    relocatable Python); ``darwin`` the macOS session bundle.
+    relocatable Python); ``darwin`` the macOS session bundle; ``native`` the pod images a
+    Mac runs natively from the bundle's commands (OpenBao's agent image).
     """
 
     linux: str | None = None
     darwin: str | None = None
+    native: tuple[str, ...] = ()
 
 
 class VmRuntimeUnavailableError(RuntimeError):

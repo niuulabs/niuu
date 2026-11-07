@@ -81,7 +81,6 @@ def test_runtime_is_a_platform_runtime_with_a_child_per_platform(tmp_path):
             slot_memory_mib=2048,
             slot_pids=None,
             slot_uid_base=70000,
-            native_images=["claude"],
             guest_platform_port=19000,
             default_service_account="session-sa",
             preview_router_auth={"mode": "token"},
@@ -110,7 +109,8 @@ def test_runtime_is_a_platform_runtime_with_a_child_per_platform(tmp_path):
     assert linux["kwargs"]["containers"] == {}
     assert darwin["kwargs"]["guest_platform_port"] == 19000
     assert darwin["kwargs"]["uid_base"] == 70000
-    assert darwin["kwargs"]["native_images"] == ["claude"]
+    # The images a Mac runs natively are session images, not catalog content.
+    assert "native_images" not in darwin["kwargs"]
 
 
 def test_optional_runtime_settings_are_left_out_when_unset(tmp_path):

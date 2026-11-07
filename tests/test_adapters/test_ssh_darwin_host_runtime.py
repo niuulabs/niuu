@@ -51,7 +51,7 @@ def _runtime(tmp_path: Path, **kwargs) -> SshDarwinHostRuntime:
         "host_key": generate_host_access_key(),
         "data_dir": str(tmp_path / "data"),
         "skuld_bundle": BUNDLE,
-        "native_images": [BAO],
+        "session_images": SessionImages(native=(BAO,)),
         "command_timeout_seconds": 0.05,
     }
     return SshDarwinHostRuntime(**{**options, **kwargs})
@@ -176,7 +176,10 @@ def test_a_mac_runtime_runs_sessions_on_darwin_hosts_only(tmp_path):
         ({"skuld_bundle": "ghcr.io/niuulabs/skuld-darwin:dev"}, "digest-pinned"),
         ({"uid_base": 500}, "uid_base"),
         ({"session_start_timeout_seconds": 0}, "session_start_timeout_seconds"),
-        ({"native_images": ["quay.io/openbao/openbao:2.5.3"]}, "native_images"),
+        (
+            {"session_images": SessionImages(native=("quay.io/openbao/openbao:2.5.3",))},
+            "compute.session_images.native",
+        ),
     ],
 )
 def test_configuration_a_mac_cannot_honour_is_refused(tmp_path, kwargs, message):
@@ -358,10 +361,10 @@ def test_live_preview_finds_the_sessions_listeners_with_lsof(tmp_path):
 
 
 def test_a_container_the_mac_cannot_run_is_refused_at_create(tmp_path):
-    runtime = _runtime(tmp_path, native_images=[])
+    runtime = _runtime(tmp_path, session_images=None)
     spec = SessionSpec(values=SPEC.values, pod_spec=OPENBAO_POD)
 
-    with pytest.raises(ValueError, match="native_images"):
+    with pytest.raises(ValueError, match="compute.session_images.native"):
         runtime.bootstrap(_session(), spec, MachineBootstrap())
 
 
