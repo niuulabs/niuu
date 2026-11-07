@@ -1436,7 +1436,7 @@ class TestHostsSwitch:
             mode="mini",
             hosts={
                 "enabled": True,
-                "execution_catalog": str(tmp_path / "catalog"),
+                "data_dir": str(tmp_path / "hosts"),
                 "join_url": "http://192.168.1.10:8080",
                 "allow_plaintext_join": True,
                 **hosts,
@@ -1462,7 +1462,7 @@ class TestHostsSwitch:
         assert compute["reuse_policy"] == "reuse"
         assert compute["provider"]["adapter"].endswith("RegisteredHostMachineProvider")
         assert compute["provider"]["kwargs"]["profiles"] == {"host": {"label": "Registered host"}}
-        assert compute["execution_catalog"]["kwargs"]["root"] == str(tmp_path / "catalog")
+        assert compute["execution_catalog"]["adapter"].endswith("BuiltinHostCatalog")
         hosts = compute["hosts"]
         assert hosts["connectors"] == [
             {
@@ -1517,7 +1517,7 @@ class TestHostsSwitch:
         assert "POD_MANAGER" not in env
         assert env["POD_MANAGER__ADAPTER"].endswith("LocalProcessPodManager")
 
-    def test_an_empty_catalog_is_niuus_built_in_host_execution(self, tmp_path) -> None:
+    def test_runs_niuus_built_in_host_execution(self, tmp_path) -> None:
         settings = CLISettings(
             mode="mini", server={"port": 9191}, hosts={"data_dir": str(tmp_path / "hosts")}
         )
@@ -1537,12 +1537,6 @@ class TestHostsSwitch:
         }
         assert compute["session_images"]["linux"] == "ghcr.io/niuulabs/openshell:dev"
         assert compute["session_images"]["darwin"] == "ghcr.io/niuulabs/skuld-darwin:dev"
-
-    def test_a_catalog_directory_keeps_its_own_images(self, tmp_path) -> None:
-        compute = json.loads(_resolve_local_pod_manager_env(self._settings(tmp_path))["COMPUTE"])
-
-        assert compute["execution_catalog"]["adapter"].endswith("FileExecutionCatalog")
-        assert "session_images" not in compute
 
     def test_joins_at_the_pinned_listener_on_the_default_route_address(self) -> None:
         hosts = json.loads(_resolve_local_pod_manager_env(CLISettings(mode="mini"))["COMPUTE"])[
@@ -1592,7 +1586,7 @@ class TestHostsSwitch:
         with pytest.raises(ValueError, match="both define this Forge's compute pool"):
             CLISettings(
                 mode="mini",
-                hosts={"enabled": True, "execution_catalog": str(tmp_path)},
+                hosts={"enabled": True},
                 compute={
                     "pool_id": "vms",
                     "max_machines": 1,
@@ -1604,7 +1598,7 @@ class TestHostsSwitch:
     @pytest.mark.parametrize("mode", ["docker", "cluster", "openshell"])
     def test_is_for_mini_mode_only(self, tmp_path, mode) -> None:
         with pytest.raises(ValueError, match="hosts.enabled is for mini mode"):
-            CLISettings(mode=mode, hosts={"enabled": True, "execution_catalog": str(tmp_path)})
+            CLISettings(mode=mode, hosts={"enabled": True})
 
     def test_refuses_a_plaintext_join_url_unless_allowed(self, tmp_path) -> None:
         with pytest.raises(ValueError, match="allow_plaintext_join"):

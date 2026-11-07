@@ -555,9 +555,6 @@ VM_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.vm_pod_manager.VmPodManager"
 REGISTERED_HOST_PROVIDER_ADAPTER = (
     "volundr.adapters.outbound.registered_hosts.RegisteredHostMachineProvider"
 )
-FILE_EXECUTION_CATALOG_ADAPTER = (
-    "volundr.adapters.outbound.file_execution_catalog.FileExecutionCatalog"
-)
 DIRECT_SSH_CONNECTOR_ADAPTER = "volundr.adapters.outbound.host_connectors.DirectSshConnector"
 #: compute.hosts.join_listener.port's default (HostJoinListenerConfig).
 _JOIN_LISTENER_PORT = 8443
@@ -622,16 +619,9 @@ class HostsConfig(BaseModel):
             "beyond it waits as ready and unclaimed; raise it to use more hosts."
         ),
     )
-    execution_catalog: str = Field(
-        default="",
-        description=(
-            "Directory of an execution catalog the hosts run (catalog.yaml). Empty: Niuu's "
-            "built-in host execution."
-        ),
-    )
     session_images: HostSessionImagesConfig = Field(
         default_factory=HostSessionImagesConfig,
-        description="What the built-in host execution runs on joined machines.",
+        description="What Niuu's built-in host execution runs on joined machines.",
     )
     data_dir: str = Field(
         default="~/.niuu/hosts",
@@ -716,24 +706,16 @@ class HostsConfig(BaseModel):
             # The pinned listener, at the address other machines reach: no CA is needed.
             hosts["join_listener"] = {}
             hosts["join_url"] = f"https://{join_host}:{_JOIN_LISTENER_PORT}"
-        if self.execution_catalog.strip():
-            catalog = {
-                "adapter": FILE_EXECUTION_CATALOG_ADAPTER,
-                "kwargs": {"root": str(Path(self.execution_catalog).expanduser())},
-            }
-            images = None
-        else:
-            catalog = {
-                "adapter": BUILTIN_HOST_CATALOG_ADAPTER,
-                "kwargs": {
-                    "pool_id": self.pool_id,
-                    "provider_binding": self.pool_id,
-                    "profile": self.profile,
-                    "data_dir": str(Path(self.data_dir).expanduser()),
-                    "platform_port": platform_port,
-                },
-            }
-            images = self.session_images.model_dump()
+        catalog = {
+            "adapter": BUILTIN_HOST_CATALOG_ADAPTER,
+            "kwargs": {
+                "pool_id": self.pool_id,
+                "provider_binding": self.pool_id,
+                "profile": self.profile,
+                "data_dir": str(Path(self.data_dir).expanduser()),
+                "platform_port": platform_port,
+            },
+        }
         return ComputeConfig.model_validate(
             {
                 "pool_id": self.pool_id,
@@ -745,7 +727,7 @@ class HostsConfig(BaseModel):
                     "kwargs": {"profiles": {self.profile: {"label": "Registered host"}}},
                 },
                 "execution_catalog": catalog,
-                **({"session_images": images} if images is not None else {}),
+                "session_images": self.session_images.model_dump(),
                 "hosts": hosts,
             }
         )

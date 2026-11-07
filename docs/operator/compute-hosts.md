@@ -167,8 +167,7 @@ archives) in `hosts.data_dir` (`~/.niuu/hosts`). Each of these is a `hosts.*` ke
   `hosts.join_url` replaces the listener.
 - **What hosts run:** the built-in host execution, with `hosts.session_images`
   (`ghcr.io/niuulabs/openshell:dev` and `ghcr.io/niuulabs/skuld-darwin:dev` by default,
-  pinned when Forge starts, so starting needs the registry). `hosts.execution_catalog`
-  names a catalog directory to run instead.
+  pinned when Forge starts, so starting needs the registry).
 - **Off:** `hosts.enabled: false`. With `compute:` set, or in another mode, the pool is
   off unless `hosts.enabled: true`, which the CLI then refuses.
 
@@ -178,8 +177,6 @@ other session runs on this machine. The session keeps that placement for life,
 through the execution pin. A host session that cannot be placed waits or fails, and
 never runs locally. The reverse also holds.
 
-A catalog of your own (`hosts.execution_catalog`) needs an execution whose machine
-names profile `host` and whose runtime runs no root daemon.
 
 ## Where hosts join
 

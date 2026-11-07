@@ -410,17 +410,6 @@ class TestHostsConfig:
             "ghcr.io/niuulabs/skuld-darwin:1.2.3",
         )
 
-    def test_a_catalog_directory_replaces_the_built_in_execution_and_its_images(
-        self, tmp_path
-    ) -> None:
-        compute = HostsConfig(execution_catalog=str(tmp_path / "catalog")).compute(
-            platform_port=8080
-        )
-
-        assert compute.execution_catalog.adapter.endswith("FileExecutionCatalog")
-        assert compute.execution_catalog.kwargs == {"root": str(tmp_path / "catalog")}
-        assert compute.session_images is None
-
     def test_the_pinned_join_listener_is_named_by_the_host_others_reach_us_at(self) -> None:
         hosts = HostsConfig().compute(platform_port=8080, join_host="forge.lan").hosts
 
