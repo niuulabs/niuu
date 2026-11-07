@@ -462,9 +462,88 @@ Startup fails if the connector is configured without the endpoint (`runtime_dir`
 missing), and the chart refuses `hostConnect` with more than one replica, autoscaling,
 a rolling update or no host key Secret.
 
+## Macs as hosts
+
+A Mac (Apple silicon; proven on macOS 26) joins with the same line as a Linux host and
+always runs **one session at a time**: macOS has no network namespaces or cgroups, so
+the only boundary is a user. Design: "macOS hosts" in
+[bm-compute-hosts.md](../design/bm-compute-hosts.md).
+
+**Before joining**, on the Mac: turn on Remote Login (System Settings → General →
+Sharing), install the Command Line Tools (`xcode-select --install`; the join and Forge
+use Apple's `python3` and `git`), and make sure Forge's login is allowed by Remote
+Login. The darwin execution logs in as `root` with its key, which macOS's default
+`PermitRootLogin prohibit-password` allows.
+
+**The execution.** Its runtime is `SshDarwinHostRuntime`, the only runtime that names
+`darwin`:
+
+```yaml
+runtime:
+  binding_id: macos
+  adapter: volundr.adapters.outbound.ssh_darwin_host_runtime.SshDarwinHostRuntime
+  kwargs:
+    platform_port: 8443          # Forge's callbacks, through the SSH reverse tunnel
+    guest_platform_port: 18080   # the Mac's loopback end of that tunnel
+    nix: true                    # the host recipe installs multi-user Nix
+    native_images:               # pod images whose commands the bundle carries
+      - quay.io/openbao/openbao@sha256:fdc6da21…   # OpenBao 2.5.3, the agent's bao
+  secret_kwargs_env: {skuld_bundle: FORGE_MACOS_SKULD_BUNDLE}
+```
+
+Its access binding is `SshGuestAccess` with `ssh_user: root`, and its connector's
+`permit_listen` must include `127.0.0.1:18080` and `permit_open` `127.0.0.1:8081`
+(Skuld's port on the Mac), because a Mac session listens on the Mac's loopback rather
+than a slot address.
+
+**The session bundle.** Instead of the Skuld image, a Mac runs the bundle
+`ghcr.io/niuulabs/skuld-darwin@sha256:…` (`skuld_bundle`), built on a macOS runner for
+every dev commit (`.github/workflows/darwin-bundle.yaml`, from
+`containers/skuld-darwin/build-bundle.sh`): CPython with niuu, Node and the agent CLIs
+(Claude Code, Codex, OpenCode, Grok, pi, Muse) at the versions of the Skuld image,
+OpenBao's agent and uv, every download pinned by SHA-256. Forge fetches it onto the Mac
+with an anonymous registry pull, checks both digests, and unpacks it once per digest
+under `/var/lib/niuu/host-bundles`; it removes older ones when no session runs. The
+bundle is about 1 GB.
+
+**A session**, step by step:
+
+1. Forge creates the user and group `niuu-slot-0` (uid `uid_base`, default 61000,
+   hidden, no password, no admin or Remote Login groups), its storage in
+   `/var/lib/niuu/slots/0` and root's directory for it in `/var/run/niuu/slots/0`.
+2. It restores the workspace archive, if there is one, and opens the SSH tunnel.
+3. The pod's init containers run once as root, natively, and its sidecars (the guest
+   credential agent, OpenBao's agent) become launchd jobs `world.niuu.slot.0.<name>`.
+   A pod container whose image is neither the bundle nor in `native_images` is refused
+   when the session is created.
+4. The session is the launchd job `world.niuu.slot.0` in the system domain. It opens
+   Skuld's log as root (`/var/log/niuu/host-sessions/0/`), becomes the slot user and
+   runs Skuld from the bundle.
+
+On stop Forge boots out the jobs, archives the workspace, kills whatever the user still
+runs, removes its launchd domains, IPC objects, crontab, Nix profile, temporary files
+(including `/private/var/folders`) and directories, deletes the user and group, and then
+runs the darwin audit for the slot: anything left fails the stop, naming it, and the
+Mac is not offered again until it is clean.
+
+**Paths.** A Mac has no mount namespaces, so the container paths a session and its
+agents are given (`/workspace`, `/home/skuld`, `/run/secrets`, an agent's home) are
+translated to where their sources are on the Mac, in the environment, commands and the
+guest agent's configuration. Secret files the session expects in its home become links
+there; a session mount under `/var/run` (a workload token) becomes a link of root's at
+that path, removed at stop.
+
+**Limits.** There is no CPU or memory limit: a session has the whole Mac. A session can
+read its own credential files (its ServiceAccount tokens and the guest agent's
+configuration) through its group, which Linux hides behind a mount. Live preview finds
+the session's listeners with `lsof`.
+
+| Knob | Default | Bounds | On a hit |
+|---|---|---|---|
+| `uid_base` (runtime) | 61000 | The slot user's uid; must be free on the Mac | The slot is refused, naming the user that has it |
+| `session_start_timeout_seconds` (runtime) | 30 | How long launchd may take to start the session's job | The start fails, naming the log on the Mac |
+| `stop_timeout_seconds` (runtime) | 30 | Skuld's time to flush after SIGTERM, and each later wait at stop | The stop fails naming the job or the processes left; it is retried |
+
 ## Not built yet
 
-- macOS hosts.
-- **Sessions on a Mac.** A Mac runs the same join line and is checked and audited
-  (design: "macOS hosts"), always with one slot, but no runtime runs on macOS yet,
-  so the join refuses it: "… does not run sessions on macOS hosts".
+- Macs with Intel processors: the session bundle is built for arm64 only.

@@ -691,14 +691,28 @@ join enforces one slot:
 (`VmRuntime.host_platforms`, Linux only unless it says more), and so does a
 connector (`HostConnector.platforms`). A Mac is refused at join for an execution
 or a connector that does not name `darwin`. Direct SSH names both: its setup is
-one line in `authorized_keys`. **No runtime names `darwin` yet**, so today
-every Mac is refused at join with "… does not run sessions on macOS hosts".
-The host runtime cannot run on a Mac as built: it unpacks Skuld from a Linux
-container image, and keeps the credential agents and sidecars in the machine's
-Docker, which a host without a root daemon does not have. A darwin path needs a
-darwin build of Skuld and the guest agents pinned like the image, and those as
-launchd jobs of the slot user. Until then the join, the facts and the audit are
-ready, and no session can be placed on a Mac.
+one line in `authorized_keys`. The darwin runtime, `SshDarwinHostRuntime`, names only
+`darwin`; the Linux runtimes cannot run on a Mac (they unpack Skuld from a Linux image and
+keep the credential agents in the machine's Docker).
+
+**Runtime.** `SshDarwinHostRuntime` takes everything the Linux runtimes take from the
+Skuld image from a **session bundle** instead: a relocatable CPython with niuu, Node and
+the agent CLIs from the image's npm lockfile, OpenBao's agent, Muse and uv, built on a
+macOS runner (`containers/skuld-darwin/build-bundle.sh`) and published as an OCI artifact,
+`ghcr.io/niuulabs/skuld-darwin`, for every dev commit. The runtime pins it by digest
+(`skuld_bundle`), fetches it onto the Mac with an anonymous pull that checks the manifest
+and layer digests, and unpacks it once per digest. What Linux runs as containers runs
+natively: init containers once as root, sidecars (the guest credential agent, OpenBao's
+agent) as root launchd jobs `world.niuu.slot.0.<name>`, and the session as
+`world.niuu.slot.0`, which drops to the slot user. Only containers whose image is the
+bundle or is listed in `native_images` are accepted. With no mount namespaces, every
+container path a session or agent is given is translated to where its source is on the
+Mac (`/home/skuld` → the slot's home, `/run/secrets` → the rendered secrets, …), in the
+environment, the commands and the guest agent's configuration; secret files in the home
+become links. Stop ends the jobs, archives the workspace, removes everything the user
+owned and the user itself, and runs this audit for the slot, failing on any finding.
+Skuld's callbacks use the SSH reverse tunnel on the Mac's loopback. Operator guide:
+"Macs as hosts" in `docs/operator/compute-hosts.md`.
 
 **Audit.** The darwin audit runs as root over SSH like the Linux one, with the
 same arguments, and reports when the slot is not live:
@@ -971,8 +985,8 @@ configured.
     behind NAT (Forge restart and host network drop both recover).
 
 Later, separately: the agent connector (option 3), multi-pool Forge (decision 2),
-the forced-command host agent (decision 1, option B), and a darwin path of the
-host runtime (see macOS hosts).
+and the forced-command host agent (decision 1, option B). The darwin runtime is built
+(see macOS hosts).
 
 ## What is built (2026-11-07)
 
@@ -1035,8 +1049,8 @@ On branch `docs/bm-compute-hosts`. Operator guide: [docs/operator/compute-hosts.
   the script's SHA-256, the file, and the commands to fetch, verify, read and run it.
   The mint response carries the script and digest, rendered exactly as `join.sh`
   serves it for that code, so no extra route was needed.
-- The macOS join, facts, audit and one-slot rule are built; every Mac is refused at
-  join until a runtime names `darwin`.
+- The macOS join, facts, audit and one-slot rule are built, and so is the darwin runtime
+  (`SshDarwinHostRuntime`) with its session bundle; see macOS hosts.
 
 ## Decisions (settled 2026-11-07)
 
