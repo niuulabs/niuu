@@ -11,6 +11,13 @@ from volundr.adapters.outbound.contributors.storage import StorageContributor
 from volundr.domain.models import LaunchSpec, SessionStatus
 from volundr.domain.ports import SessionContext, SessionContribution
 from volundr.domain.services.session import SessionService
+from volundr.domain.session_runtimes import (
+    ReadinessState,
+    RuntimeReadiness,
+    SessionGrant,
+    SessionRuntimeKind,
+    SessionRuntimeOffer,
+)
 
 
 class Resolver:
@@ -168,9 +175,35 @@ async def test_runtime_grants_without_catalog_fail_before_start():
     repository, manager = InMemorySessionRepository(), MockPodManager()
     service = SessionService(repository, manager)
     session = await service.create_session(name="test", model="test")
-    with pytest.raises(ValueError, match="this host offers none"):
+    with pytest.raises(ValueError, match=r"does not offer runtime_grants \['sudo'\]"):
         await service.start_session(session.id, workload_config={"runtime_grants": ["sudo"]})
     assert not manager.start_calls
+
+
+async def test_runtime_grants_the_hosts_runtime_offers_start_without_a_catalog():
+    repository, manager = InMemorySessionRepository(), MockPodManager()
+    manager.session_runtimes = AsyncMock(
+        return_value=(
+            SessionRuntimeOffer(
+                runtime=SessionRuntimeKind.HOST,
+                grants=(SessionGrant.SUDO,),
+                readiness=RuntimeReadiness(state=ReadinessState.WARM, warm=1),
+            ),
+        )
+    )
+    service = SessionService(repository, manager)
+    session = await service.create_session(name="test", model="test")
+
+    with pytest.raises(ValueError, match=r"\['docker'\]"):
+        await service.start_session(
+            session.id, workload_config={"runtime_grants": ["sudo", "docker"]}
+        )
+    with pytest.raises(ValueError, match="list of grant names"):
+        await service.start_session(session.id, workload_config={"runtime_grants": "sudo"})
+    assert not manager.start_calls
+
+    await start_without_polling(service, session, workload_config={"runtime_grants": ["sudo"]})
+    assert len(manager.start_calls) == 1
 
 
 async def test_session_runtimes_come_from_the_pod_manager():

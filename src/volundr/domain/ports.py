@@ -588,10 +588,10 @@ class PodManager(ABC):
         return await self.capacity()
 
     async def session_runtimes(self) -> tuple[SessionRuntimeOffer, ...]:
-        """The runtimes a launch on this host may choose between.
+        """What this host runs every session as: at most one offer.
 
-        Empty means the host offers no choice: its sessions run the way this
-        pod manager always runs them.
+        A host runs exactly one runtime, so sessions never choose; empty means
+        this pod manager does not declare what its sessions run in.
         """
         return ()
 
