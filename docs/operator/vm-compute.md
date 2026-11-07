@@ -809,12 +809,11 @@ admission lock applies policy across concurrent controllers, not just one proces
 
 A machine has `slots_per_machine` slots (**Sessions per machine**, default 1), and
 each slot holds one session. One slot is the behaviour described above: a machine
-serves one session. More than one slot per machine needs a default execution
-whose runtime keeps the slots apart (`VmRuntime.supports_slots`; see "Separated
-session slots"). Otherwise Forge refuses a policy above one slot at startup and in
-the admin form, naming the runtime and the remedy. A session whose execution's
-runtime does not support slots (OpenShell) gets a machine of one slot to itself,
-whatever the policy says; the admin status shows each machine's slots. The slot count is fixed when a machine is created, so
+serves one session. More than one slot per machine needs a runtime that keeps the
+slots apart (`VmRuntime.supports_slots`; see "Separated session slots"). A VM Forge
+runs one runtime, so every configured runtime must declare it; otherwise Forge
+refuses a policy above one slot at startup and in the admin form, naming the
+runtime and the remedy. The slot count is fixed when a machine is created, so
 changing it applies to machines booted afterwards.
 
 **Placement.** A new session takes a free slot of a ready machine whose profile and

@@ -1,7 +1,6 @@
 """Provider-neutral pool lifecycle using explicit test doubles for the ports."""
 
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -439,35 +438,20 @@ async def test_an_admin_change_to_more_slots_is_refused_and_not_stored(setup):
     assert repo.policies["pool"] == stored
 
 
-async def test_only_the_default_runtime_must_support_slots(setup):
+async def test_every_configured_execution_runtime_must_support_slots(setup):
     pool, _, repo, _, runtime, _ = setup
     runtime.supports_slots = True
     other = AsyncMock()
     other.supports_slots = False
-    pool._execution_runtimes = {"default": runtime, "other": other}
+    pool._execution_runtimes = {"plan": other}
     stored = await pool.policy()
 
+    with pytest.raises(ValueError, match="slots_per_machine=2"):
+        await pool.configure(stored.model_copy(update={"slots_per_machine": 2}))
+
+    other.supports_slots = True
     await pool.configure(stored.model_copy(update={"slots_per_machine": 2}))
     assert repo.policies["pool"].slots_per_machine == 2
-
-    # The default runtime serves the warm slots, so it alone decides.
-    runtime.supports_slots = False
-    with pytest.raises(ValueError, match="default runtime") as refused:
-        await pool.configure(stored.model_copy(update={"slots_per_machine": 3}))
-    assert "slots_per_machine=3" in str(refused.value)
-
-
-def test_a_runtime_without_slots_gets_machines_to_itself(setup):
-    pool, _, _, _, runtime, _ = setup
-    runtime.supports_slots = True
-    other = AsyncMock()
-    other.supports_slots = False
-    pool._execution_runtimes = {"default": runtime, "other": other}
-    policy = ComputePoolPolicy(profile="small", max_machines=2, slots_per_machine=2)
-
-    assert pool.new_machine_slots(policy) == 2
-    assert pool.new_machine_slots(policy, SimpleNamespace(plan_digest="default")) == 2
-    assert pool.new_machine_slots(policy, SimpleNamespace(plan_digest="other")) == 1
 
 
 async def test_one_slot_needs_no_slot_support(setup):

@@ -258,8 +258,7 @@ Limits of this exception, enforced together:
   slot's guest agent only). A runtime declares that with
   `VmRuntime.supports_slots`; `SshContainerVmRuntime` does only with
   `slot_isolation` and a credential delivery that serves slots. Forge refuses
-  more than one slot per machine when the default execution's runtime does not,
-  and gives every other runtime without it machines of one slot.
+  more than one slot per machine unless every configured runtime declares it.
 - **Exactly one route.** Do not extend either identity to another route without
   adding it to the same enforcement points this one touches: the router, the
   Volundr chart's Envoy `jwt_authn` bypass and Cedar `ext_authz` skip

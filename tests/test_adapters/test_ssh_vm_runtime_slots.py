@@ -23,12 +23,15 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from volundr.adapters.outbound import ssh_vm_runtime as module
 from volundr.adapters.outbound import vm_slot_supervisor
-from volundr.adapters.outbound.guest_credential_delivery import SshPushCredentialDelivery
+from volundr.adapters.outbound.guest_credential_delivery import (
+    MetadataCredentialDelivery,
+    SshPushCredentialDelivery,
+)
 from volundr.adapters.outbound.ssh_openshell_vm_runtime import SshOpenShellVmRuntime
 from volundr.adapters.outbound.ssh_vm_runtime import SshContainerVmRuntime
 from volundr.domain.compute import Machine, MachineBootstrap, MachineState
 from volundr.domain.guest_access import GuestCommandResult
-from volundr.domain.guest_credentials import GuestCredentialDelivery
+from volundr.domain.guest_credentials import GuestCredentialDelivery, GuestIdentity
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
 from volundr.domain.service_account_tokens import ServiceAccountTokenPort
 from volundr.domain.vm_runtime import VmRuntimeStageError
@@ -660,3 +663,65 @@ def test_prepare_program_restores_into_the_slot_root(tmp_path):
     assert restored.returncode == 0, restored.stderr
     assert (root / "home" / "kept").read_bytes() == b"kept"
     assert (root / ".allocation").read_text() == "alloc-slot-1"
+
+
+class _MachineIdentity(GuestIdentity):
+    """An identity of the whole machine, as Harvester attestation is."""
+
+    serves_slots = True
+
+    def agent_auth(self, allocation_id):
+        return {"kind": "bearer_file", "token_path": "/etc/niuu/guest-identity/token"}
+
+    def agent_mounts(self):
+        return ({"source": "/etc/niuu/guest-identity", "target": "/etc/niuu/guest-identity"},)
+
+    async def authenticate(self, request):
+        raise AssertionError("not used")
+
+
+async def test_the_guest_agent_reads_its_slot_from_root_owned_configuration(tmp_path):
+    runtime = _runtime(tmp_path, slot_isolation=ISOLATION)
+    runtime.configure_credential_delivery(
+        MetadataCredentialDelivery(
+            metadata_url="https://forge.example", guest_identity=_MachineIdentity()
+        )
+    )
+    assert runtime.supports_slots
+    session = Session(name="test", owner_id="owner", tenant_id="tenant", source=GitSource())
+    spec = SessionSpec(values={"session": {}}, pod_spec=PodSpecAdditions())
+    spec.forge_session = SimpleNamespace(token="t", grants=())
+    bootstrap = runtime.bootstrap(session, spec, MachineBootstrap())
+    machine = Machine(
+        allocation_id=uuid4(), resource_id="vm", state=MachineState.RUNNING, addresses=("x",)
+    )
+    lease = SlotView(machine.allocation_id, session.id, 1, machine)
+    runtime._guest_access.execute = AsyncMock(return_value=GuestCommandResult(0, b"{}"))
+    runtime._guest_access.open_tunnel = AsyncMock()
+
+    await runtime.start(lease, bootstrap)
+
+    payloads = [json.loads(data) for data in _payloads(runtime) if data]
+    supervisor = payloads[0]
+    [config] = [
+        item
+        for payload in payloads
+        if isinstance(payload, list)
+        for item in payload
+        if isinstance(item, dict) and item.get("name") == "config.json"
+    ]
+    # The slot's own directories belong to its user; the agent's configuration never does.
+    assert config["directory"] == f"{supervisor['agent_root']}/guest-agent"
+    assert supervisor["agent_root"] == "/etc/niuu/slots/1"
+    for slot_owned in (supervisor["data_root"], supervisor["run_root"]):
+        assert not config["directory"].startswith(slot_owned)
+    assert json.loads(config["content"])["slot"] == 1
+    launch = payloads[-1]
+    agent = launch["init_containers"][0]
+    assert agent["user"] == "0"
+    assert {"source": config["directory"], "target": "/etc/niuu/guest-agent", "readonly": True} in (
+        agent["mounts"]
+    )
+    skuld_sources = [m["source"] for m in (*launch["secret_mounts"], *launch["volume_mounts"])]
+    assert not any(source.startswith("/etc/niuu/slots") for source in skuld_sources)
+    assert not any(source.startswith("/etc/niuu/guest-identity") for source in skuld_sources)

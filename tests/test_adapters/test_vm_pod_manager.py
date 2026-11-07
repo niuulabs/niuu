@@ -3,7 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -1226,17 +1226,11 @@ async def test_capacity_honours_a_paused_pool(setup):
     assert (capacity.limit, capacity.active) == (0, 0)
 
 
-def _policy_pool(policy: ComputePoolPolicy) -> AsyncMock:
-    """A pool service answering ``policy``, whose new machines get its slots."""
-    pool = AsyncMock()
-    pool.policy.return_value = policy
-    pool.new_machine_slots = MagicMock(return_value=policy.slots_per_machine)
-    return pool
-
-
 async def test_capacity_multiplies_machines_by_the_policy_slots(setup):
     manager, _, repository, _, _, _, session = setup
-    manager.configure_pool(_policy_pool(ComputePoolPolicy(profile="small", max_machines=3)))
+    pool = AsyncMock()
+    pool.policy.return_value = ComputePoolPolicy(profile="small", max_machines=3)
+    manager.configure_pool(pool)
     await manager.start(session, SPEC)
 
     capacity = await manager.capacity()
@@ -1247,9 +1241,11 @@ async def test_capacity_multiplies_machines_by_the_policy_slots(setup):
 
 async def test_a_machine_with_more_slots_than_the_policy_counts_its_own(setup):
     manager, _, repository, _, _, _, session = setup
-    manager.configure_pool(
-        _policy_pool(ComputePoolPolicy(profile="small", max_machines=2, slots_per_machine=2))
+    pool = AsyncMock()
+    pool.policy.return_value = ComputePoolPolicy(
+        profile="small", max_machines=2, slots_per_machine=2
     )
+    manager.configure_pool(pool)
     await manager.start(session, SPEC)
     await _edit(repository, machine={"slots": 4})
 
@@ -1259,22 +1255,17 @@ async def test_a_machine_with_more_slots_than_the_policy_counts_its_own(setup):
     assert (capacity.limit, capacity.active) == (6, 4)
 
 
-@pytest.mark.parametrize("slots", [2, 1])
-async def test_a_session_cold_start_reserves_the_slots_its_runtime_gets(setup, slots):
+async def test_a_session_cold_start_reserves_the_policys_slots_per_machine(setup):
     manager, _, repository, _, _, _, session = setup
     pool = AsyncMock()
-    policy = ComputePoolPolicy(
+    pool.policy.return_value = ComputePoolPolicy(
         profile="small", max_machines=1, slots_per_machine=2, provisioning_timeout_seconds=5
     )
-    pool.policy.return_value = policy
-    # 1: the session's runtime cannot keep slots apart, so its machine is its own.
-    pool.new_machine_slots = MagicMock(return_value=slots)
     manager.configure_pool(pool)
 
     await manager.start(session, SPEC)
 
-    assert next(iter(repository.leases.values())).slots == slots
-    pool.new_machine_slots.assert_called_once_with(policy, None)
+    assert next(iter(repository.leases.values())).slots == 2
 
 
 async def test_a_staged_runtime_failure_is_not_retried_by_a_second_start(setup):

@@ -82,6 +82,7 @@ class SlotSupervisor:
         self.uid = int(spec["uid"])
         self.data_root = self._slot_directory(spec["data_root"])
         self.run_root = self._slot_directory(spec["run_root"])
+        self.agent_root = self._slot_directory(spec["agent_root"])
         self.netns = str(spec["netns"])
         self.link = str(spec["host_link"])
         self.gateway = str(spec["gateway"])
@@ -211,6 +212,12 @@ class SlotSupervisor:
                 raise SlotError(f"Slot directory {path} is a symbolic link")
             os.chown(path, self.uid, self.uid)
             path.chmod(0o700)
+        # The slot's root agents read their configuration here; the slot cannot write it.
+        self.agent_root.mkdir(mode=0o755, parents=True, exist_ok=True)
+        if self.agent_root.is_symlink():
+            raise SlotError(f"Slot directory {self.agent_root} is a symbolic link")
+        os.chown(self.agent_root, 0, 0)
+        self.agent_root.chmod(0o755)
 
     def _ensure_image_identity(self) -> None:
         """Give the image's session account the slot's id inside the slot's containers.
@@ -520,7 +527,7 @@ class SlotSupervisor:
         self._run(["systemctl", "stop", self.slice])
         if (_SYSTEMD_CONTROL / f"{self.slice}.d").exists():
             self._run(["systemctl", "revert", self.slice])
-        for root in (self.data_root, self.run_root):
+        for root in (self.data_root, self.run_root, self.agent_root):
             if root.is_symlink():
                 raise SlotError(f"Slot directory {root} is a symbolic link")
             if root.exists():
@@ -547,7 +554,7 @@ class SlotSupervisor:
             left.append(f"user {self.name}")
         if self._account_exists(grp.getgrnam):
             left.append(f"group {self.name}")
-        for root in (self.data_root, self.run_root):
+        for root in (self.data_root, self.run_root, self.agent_root):
             if root.exists() or root.is_symlink():
                 left.append(f"directory {root}")
         left += [f"container {container}" for container in self.containers()]
