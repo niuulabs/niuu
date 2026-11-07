@@ -162,7 +162,6 @@ _STATIC_ROUTE_PREFIXES: dict[str, tuple[str, ...]] = {
     "skuld-proxy": (
         "/s/{session_id}/session",
         "/s/{ravn_id}/sessions/{session_id}/session",
-        "/s/{session_id}/ws/ravn/{peer_id}",
         "/s/{session_id}/api/{path:path}",
         "/s/{session_id}/health",
     ),

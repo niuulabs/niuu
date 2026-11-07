@@ -58,7 +58,6 @@ def test_broker_preserves_lifecycle_methods_through_focused_mixins() -> None:
         "_safe_browser_send_json",
         "handle_websocket",
         "handle_cli_websocket",
-        "handle_ravn_websocket",
     }
     for name in transport_methods | websocket_methods:
         assert callable(getattr(Broker, name))

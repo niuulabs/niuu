@@ -12,7 +12,7 @@ from __future__ import annotations
 import base64
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import WebSocket, WebSocketDisconnect
@@ -195,36 +195,12 @@ class TestHandlerRejection:
         assert broker._user_jwt == "existing-jwt"
 
     @pytest.mark.asyncio
-    async def test_ravn_websocket_rejected_before_register(self):
-        broker = _broker(owner_id="alice")
-        broker._room_bridge = MagicMock(register=AsyncMock(), unregister=AsyncMock())
-        ws = _fake_ws(headers={"x-auth-user-id": "mallory"})
-        await broker.handle_ravn_websocket(ws, peer_id="steward")
-        ws.close.assert_awaited_once()
-        assert ws.close.await_args.kwargs.get("code") == 1008
-        broker._room_bridge.register.assert_not_awaited()
-
-    @pytest.mark.asyncio
     async def test_cli_websocket_rejected(self):
         broker = _broker(owner_id="alice")
         ws = _fake_ws(headers={"x-auth-user-id": "mallory"})
         await broker.handle_cli_websocket(ws, session_id="test-session")
         ws.close.assert_awaited_once()
         assert ws.close.await_args.kwargs.get("code") == 1008
-
-    @pytest.mark.asyncio
-    async def test_ravn_websocket_loopback_peer_allowed(self):
-        # In-pod flock daemons carry no user token; loopback keeps them working.
-        broker = _broker(owner_id="alice", allow_loopback=True)
-        register = AsyncMock()
-        unregister = AsyncMock()
-        broker._room_bridge = MagicMock(register=register, unregister=unregister)
-        ws = _fake_ws(host="127.0.0.1")
-        ws.receive_text = AsyncMock(side_effect=WebSocketDisconnect(code=1000))
-        await broker.handle_ravn_websocket(ws, peer_id="flock-coder")
-        ws.accept.assert_awaited_once()
-        register.assert_awaited()
-        unregister.assert_awaited_once()
 
 
 async def test_mini_mode_without_auth_accepts_unauthenticated_browser():
@@ -246,11 +222,10 @@ async def test_missing_tenant_denies_even_verified_owner():
     )
 
 
-@pytest.mark.parametrize("endpoint", ["handle_cli_websocket", "handle_ravn_websocket"])
-async def test_proxied_loopback_cannot_claim_in_pod_trust(endpoint):
+async def test_proxied_loopback_cannot_claim_in_pod_trust():
     broker = _broker(owner_id="alice", allow_loopback=True)
     ws = _fake_ws(host="127.0.0.1", headers={"x-forwarded-for": "203.0.113.7"})
-    assert not await broker._authorize_websocket(ws, endpoint=endpoint)
+    assert not await broker._authorize_websocket(ws, endpoint="handle_cli_websocket")
 
 
 @pytest.mark.parametrize("role", ["volundr:viewer", "unknown", ""])
