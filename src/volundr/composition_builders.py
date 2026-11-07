@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 
 from niuu.adapters.workload_identity.key_file import (
@@ -16,6 +17,11 @@ from niuu.domain.services.workload_identity import WorkloadIdentityService
 from niuu.ports.credentials import CredentialRefreshLockPort
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class, resolve_secret_kwargs
+from volundr.adapters.inbound.host_join_listener import (
+    HostJoinListenerError,
+    JoinTls,
+    load_or_create_join_tls,
+)
 from volundr.adapters.outbound.contributors.workflow_execution_credentials import (
     WorkflowExecutionCredentialContributor,
 )
@@ -167,6 +173,37 @@ def _create_host_pairing_signer(
         ),
         signing_key_pem=pem,
     )
+
+
+@dataclass(frozen=True)
+class HostJoinEndpoint:
+    """Where hosts join: the URL, and the pinned listener's TLS when Forge serves it."""
+
+    url: str
+    tls: JoinTls | None
+
+
+def _create_host_join_endpoint(settings: Settings) -> HostJoinEndpoint:
+    """The join URL and, for Forge's own join listener, its key, certificate and pin.
+
+    Without ``join_url`` the URL is the listener at ``server_public_host``; an address no
+    other machine can reach is a startup error, never a plaintext or loopback join.
+    """
+    hosts = settings.compute.hosts if settings.compute is not None else None
+    if hosts is None:
+        raise HostJoinListenerError("compute.hosts is not configured")
+    try:
+        url = hosts.join_base_url(settings.server_public_host)
+    except ValueError as exc:
+        raise HostJoinListenerError(str(exc)) from exc
+    listener = hosts.join_listener
+    if listener is None:
+        logger.info("Hosts join through Forge's API at %s", url)
+        return HostJoinEndpoint(url=url, tls=None)
+    tls = load_or_create_join_tls(
+        cert_file=listener.cert_file, key_file=listener.key_file, key_bits=listener.key_bits
+    )
+    return HostJoinEndpoint(url=url, tls=tls)
 
 
 def _create_forge_session_projection(

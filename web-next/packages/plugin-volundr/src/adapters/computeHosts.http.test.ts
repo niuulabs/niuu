@@ -194,6 +194,8 @@ describe('compute hosts over HTTP', () => {
       code: 'jwt',
       command: 'curl … | sudo sh',
       command_wget: 'wget … | sudo sh',
+      join_url: 'https://forge.example',
+      pin: null,
       script: {
         filename: 'niuu-join.sh',
         sha256: 'ab12',
@@ -218,6 +220,8 @@ describe('compute hosts over HTTP', () => {
       code: 'jwt',
       command: 'curl … | sudo sh',
       commandWget: 'wget … | sudo sh',
+      joinUrl: 'https://forge.example',
+      pin: null,
       expiresAt: '2026-11-06T12:10:00Z',
       script: {
         filename: 'niuu-join.sh',
@@ -235,6 +239,8 @@ describe('compute hosts over HTTP', () => {
       code: 'jwt',
       command: 'curl … | sudo sh',
       command_wget: 'wget … | sudo sh',
+      join_url: 'https://forge.example',
+      pin: null,
     });
     await expect(
       buildVolundrHttpAdapter(client).createPairingCode('forge', {
@@ -244,6 +250,35 @@ describe('compute hosts over HTTP', () => {
         slots: null,
       }),
     ).rejects.toThrow('Invalid pairing code from forge');
+  });
+
+  it('carries the pin of a pinned join, with no wget line', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      ...listPayload.pairing_codes[0],
+      code: 'jwt',
+      command: "curl -fsSL -k --pinnedpubkey 'sha256//abc=' … | sudo sh",
+      command_wget: null,
+      join_url: 'https://192.168.1.20:8443',
+      pin: 'sha256//abc=',
+      script: {
+        filename: 'niuu-join.sh',
+        sha256: 'ab12',
+        content: '#!/bin/sh\n',
+        commands: ["curl -fsSL -k --pinnedpubkey 'sha256//abc=' -o niuu-join.sh …"],
+      },
+    });
+    const created = await buildVolundrHttpAdapter(client).createPairingCode('forge', {
+      execution: 'host@2026-11-07',
+      connector: 'direct-ssh',
+      tags: [],
+      slots: null,
+    });
+    expect(created).toMatchObject({
+      commandWget: null,
+      joinUrl: 'https://192.168.1.20:8443',
+      pin: 'sha256//abc=',
+    });
   });
 
   it('lets a refused pairing code reject with the platform reason', async () => {

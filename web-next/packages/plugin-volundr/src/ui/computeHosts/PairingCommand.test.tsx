@@ -17,6 +17,8 @@ const code: NewPairingCode = {
   code: CODE,
   command: `curl -fsSL -H 'Authorization: Bearer ${CODE}' https://forge/join.sh | sudo sh`,
   commandWget: `wget -qO- --header='Authorization: Bearer ${CODE}' https://forge/join.sh | sudo sh`,
+  joinUrl: 'https://forge',
+  pin: null,
   script: {
     filename: 'niuu-join.sh',
     sha256: 'c0ffee'.padEnd(64, '0'),
@@ -137,6 +139,29 @@ describe('PairingCommand', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Use curl' }));
     expect(screen.getByLabelText('Join command')).toHaveTextContent('curl -fsSL');
     Reflect.deleteProperty(navigator, 'clipboard');
+  });
+
+  it('offers only curl for a pinned join and shows what it pins', () => {
+    renderCommand({
+      code: {
+        ...code,
+        command: `curl -fsSL -k --pinnedpubkey sha256//abc= -H 'Authorization: Bearer ${CODE}' https://192.168.1.20:8443/join.sh | sudo sh`,
+        commandWget: null,
+        joinUrl: 'https://192.168.1.20:8443',
+        pin: 'sha256//abc=',
+      },
+    });
+    expect(screen.queryByRole('button', { name: 'Use wget' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Join command')).toHaveTextContent('--pinnedpubkey sha256//abc=');
+    const pinned = screen.getByText(/pinned to this Forge's certificate/);
+    expect(pinned).toHaveTextContent('https://192.168.1.20:8443');
+    expect(pinned).toHaveTextContent('sha256//abc=');
+    expect(pinned).toHaveTextContent('wget cannot check a pin');
+  });
+
+  it('says nothing about a pin when the join is not pinned', () => {
+    renderCommand();
+    expect(screen.queryByText(/pinned to this Forge's certificate/)).not.toBeInTheDocument();
   });
 
   it('waits for a host to run it', () => {

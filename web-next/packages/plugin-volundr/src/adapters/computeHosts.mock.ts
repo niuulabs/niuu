@@ -396,6 +396,8 @@ export function createMockComputeHosts(
             `sudo sh ${MOCK_SCRIPT_FILENAME}`,
           ],
         },
+        joinUrl: 'https://forge.example',
+        pin: null,
       };
     },
     revokePairingCode: async (_instanceId, codeId) => {

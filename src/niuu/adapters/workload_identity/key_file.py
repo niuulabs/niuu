@@ -45,59 +45,75 @@ def load_or_create_rsa_key_pem(path: str | Path, *, key_size: int) -> str:
 
 
 def _create(key_path: Path, *, key_size: int) -> None:
+    key = rsa.generate_private_key(public_exponent=RSA_PUBLIC_EXPONENT, key_size=key_size)
+    write_private_file_once(
+        key_path,
+        key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()),
+        what="signing key",
+    )
+
+
+def write_private_file_once(path: Path, data: bytes, *, what: str) -> None:
+    """Create ``path`` (0600, directory 0700) atomically; an existing file is kept as is."""
     try:
-        key_path.parent.mkdir(mode=_PRIVATE_DIR_MODE, parents=True, exist_ok=True)
+        path.parent.mkdir(mode=_PRIVATE_DIR_MODE, parents=True, exist_ok=True)
     except OSError as exc:
         raise SigningKeyFileError(
-            f"cannot create the directory for the signing key {key_path}: {exc}; "
-            "create it or point the signing key setting at a writable location"
+            f"cannot create the directory for the {what} {path}: {exc}; "
+            f"create it or point the {what} setting at a writable location"
         ) from exc
-    key = rsa.generate_private_key(public_exponent=RSA_PUBLIC_EXPONENT, key_size=key_size)
-    pem = key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
     try:
-        fd, temp_name = tempfile.mkstemp(prefix=".signing-key-", dir=key_path.parent)
+        fd, temp_name = tempfile.mkstemp(prefix=".niuu-private-", dir=path.parent)
     except OSError as exc:
-        raise SigningKeyFileError(f"cannot write the signing key {key_path}: {exc}") from exc
+        raise SigningKeyFileError(f"cannot write the {what} {path}: {exc}") from exc
     temp_path = Path(temp_name)
     try:
         os.fchmod(fd, _PRIVATE_FILE_MODE)
         with os.fdopen(fd, "wb") as handle:
-            handle.write(pem)
+            handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
         try:
-            os.link(temp_path, key_path)
+            os.link(temp_path, path)
         except FileExistsError:
             pass  # another process created it first; use theirs
     except OSError as exc:
-        raise SigningKeyFileError(f"cannot write the signing key {key_path}: {exc}") from exc
+        raise SigningKeyFileError(f"cannot write the {what} {path}: {exc}") from exc
     finally:
         temp_path.unlink(missing_ok=True)
 
 
-def _read(key_path: Path) -> str:
+def read_private_file(path: Path, *, what: str) -> bytes:
+    """Read a file only its owner (the user running this process) can read."""
     try:
-        info = key_path.stat()
+        info = path.stat()
     except OSError as exc:
-        raise SigningKeyFileError(f"cannot read the signing key {key_path}: {exc}") from exc
+        raise SigningKeyFileError(f"cannot read the {what} {path}: {exc}") from exc
     if not stat.S_ISREG(info.st_mode):
-        raise SigningKeyFileError(f"the signing key {key_path} is not a regular file")
+        raise SigningKeyFileError(f"the {what} {path} is not a regular file")
     if info.st_uid != os.getuid():
         raise SigningKeyFileError(
-            f"the signing key {key_path} is owned by another user; it must belong to the "
-            "user running Forge"
+            f"the {what} {path} is owned by another user; it must belong to the user running Forge"
         )
     if info.st_mode & _GROUP_OR_OTHER_BITS:
         raise SigningKeyFileError(
-            f"the signing key {key_path} is readable by other users; run "
-            f"`chmod 600 {key_path}` (or delete it to have a new key generated)"
+            f"the {what} {path} is readable by other users; run "
+            f"`chmod 600 {path}` (or delete it to have a new one generated)"
         )
     try:
-        pem = key_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
+        return path.read_bytes()
+    except OSError as exc:
+        raise SigningKeyFileError(f"cannot read the {what} {path}: {exc}") from exc
+
+
+def _read(key_path: Path) -> str:
+    data = read_private_file(key_path, what="signing key")
+    try:
+        pem = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
         raise SigningKeyFileError(f"cannot read the signing key {key_path}: {exc}") from exc
     try:
-        key = load_pem_private_key(pem.encode("utf-8"), password=None)
+        key = load_pem_private_key(data, password=None)
     except (ValueError, TypeError) as exc:
         raise SigningKeyFileError(
             f"the signing key {key_path} is not a valid PEM private key; delete it to have a "

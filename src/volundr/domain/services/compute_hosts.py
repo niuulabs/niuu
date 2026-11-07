@@ -107,7 +107,8 @@ class MintedHostCode:
     code: str
     pairing: HostPairingCode
     command: str
-    command_wget: str
+    #: None when the join is pinned: wget cannot check a pin.
+    command_wget: str | None
     command_download: str
 
 
@@ -186,6 +187,7 @@ class ComputeHostService:
         executions: Mapping[str, HostExecution],
         token_issuer: WorkloadTokenIssuer,
         join_url: str,
+        join_pin: str | None,
         pairing_code_ttl_seconds: float,
         check_interval_seconds: float,
         pending_check_interval_seconds: float,
@@ -203,6 +205,7 @@ class ComputeHostService:
         self._executions = dict(executions)
         self._issuer = token_issuer
         self._join_url = join_url.rstrip("/")
+        self._join_pin = join_pin
         self._ttl = pairing_code_ttl_seconds
         self._check_interval = check_interval_seconds
         self._pending_interval = pending_check_interval_seconds
@@ -225,6 +228,11 @@ class ComputeHostService:
     @property
     def join_base_url(self) -> str:
         return self._join_url
+
+    @property
+    def join_pin(self) -> str | None:
+        """The ``curl --pinnedpubkey`` pin of Forge's join listener, when it serves the join."""
+        return self._join_pin
 
     def join_script_url(self) -> str:
         return f"{self._join_url}/api/v1/forge/compute/hosts/join.sh"
@@ -286,16 +294,26 @@ class ComputeHostService:
             expires_at=expires_at,
         )
         await self._repository.create_pairing_code(pairing)
-        header = f"Authorization: Bearer {issued.token}"
+        header = shlex.quote(f"Authorization: Bearer {issued.token}")
         url = shlex.quote(self.join_script_url())
+        download = f"-o {JOIN_SCRIPT_FILENAME} -H {header} {url}"
+        if self._join_pin is not None:
+            # The listener's certificate is self-signed: -k skips the CA, the pin is the
+            # trust, and curl refuses any other key before it sends the code.
+            curl = f"curl -fsSL -k --pinnedpubkey {shlex.quote(self._join_pin)}"
+            return MintedHostCode(
+                code=issued.token,
+                pairing=pairing,
+                command=f"{curl} -H {header} {url} | sudo sh",
+                command_wget=None,
+                command_download=f"{curl} {download}",
+            )
         return MintedHostCode(
             code=issued.token,
             pairing=pairing,
-            command=f"curl -fsSL -H {shlex.quote(header)} {url} | sudo sh",
-            command_wget=f"wget -qO- --header={shlex.quote(header)} {url} | sudo sh",
-            command_download=(
-                f"curl -fsSL -o {JOIN_SCRIPT_FILENAME} -H {shlex.quote(header)} {url}"
-            ),
+            command=f"curl -fsSL -H {header} {url} | sudo sh",
+            command_wget=f"wget -qO- --header={header} {url} | sudo sh",
+            command_download=f"curl -fsSL {download}",
         )
 
     async def pairing_codes(self) -> list[HostPairingCode]:

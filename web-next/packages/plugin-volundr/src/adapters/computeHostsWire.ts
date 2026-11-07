@@ -85,7 +85,11 @@ export interface PairingCodePayload {
 export interface NewPairingCodePayload extends PairingCodePayload {
   code: string;
   command: string;
-  command_wget: string;
+  /** Null when the join is pinned: wget cannot check a pin. */
+  command_wget: string | null;
+  join_url: string;
+  /** The join listener's `curl --pinnedpubkey` pin; null when Forge's API serves the join. */
+  pin: string | null;
   script: {
     filename: string;
     sha256: string;
@@ -203,6 +207,8 @@ export function toNewPairingCode(
     code: code.code,
     command: code.command,
     commandWget: code.command_wget,
+    joinUrl: code.join_url,
+    pin: code.pin,
     script: {
       filename: script.filename,
       sha256: script.sha256,

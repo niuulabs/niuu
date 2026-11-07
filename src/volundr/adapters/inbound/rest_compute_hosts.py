@@ -87,7 +87,64 @@ def _http(exc: ComputeHostError | LookupError) -> HTTPException:
     return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc))
 
 
+def create_host_join_router(service: ComputeHostService) -> APIRouter:
+    """The two routes a joining host calls: on Forge's API, or alone on the join listener."""
+    router = APIRouter(prefix=PREFIX, tags=["Compute hosts"])
+
+    @router.get(
+        "/join.sh",
+        response_class=Response,
+        dependencies=[Depends(require_scope(COMPUTE_HOST_JOIN_SCOPE))],
+    )
+    async def join_script(request: Request) -> Response:
+        code = _bearer(request)
+        try:
+            await service.usable_code(code)
+        except ComputeHostError as exc:
+            raise _http(exc) from exc
+        script = render_join_script(
+            forge_url=service.join_base_url, code=code, pin=service.join_pin
+        )
+        return Response(
+            content=script,
+            media_type="text/x-shellscript",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @router.post(
+        "/join",
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(require_scope(COMPUTE_HOST_JOIN_SCOPE))],
+    )
+    async def join(body: JoinRequest, request: Request) -> dict[str, Any]:
+        try:
+            joined = await service.join(
+                _bearer(request),
+                name=body.name,
+                public_key=body.public_key,
+                address=body.address,
+                facts=body.facts,
+            )
+        except ComputeHostError as exc:
+            raise _http(exc) from exc
+        return {
+            "host_id": str(joined.host.id),
+            "name": joined.host.name,
+            "pool_id": joined.host.pool_id,
+            "ssh_user": joined.ssh_user,
+            "forge_public_key": joined.forge_public_key,
+            "authorized_key_options": joined.authorized_key_options,
+            "setup": {
+                "files": [dict(item) for item in joined.setup_files],
+                "commands": [list(command) for command in joined.setup_commands],
+            },
+        }
+
+    return router
+
+
 def create_compute_hosts_router(service: ComputeHostService, pool: ComputePoolService) -> APIRouter:
+    """Admin management; the host-facing routes are ``create_host_join_router``."""
     router = APIRouter(prefix=PREFIX, tags=["Compute hosts"])
     admin = Depends(require_role("volundr:admin"))
 
@@ -217,13 +274,17 @@ def create_compute_hosts_router(service: ComputeHostService, pool: ComputePoolSe
         except ComputeHostError as exc:
             raise _http(exc) from exc
         # The same bytes join.sh serves for this code, so the digest checks either download.
-        script = render_join_script(forge_url=service.join_base_url, code=minted.code)
+        script = render_join_script(
+            forge_url=service.join_base_url, code=minted.code, pin=service.join_pin
+        )
         digest = hashlib.sha256(script.encode()).hexdigest()
         return {
             **pairing_view(minted.pairing),
             "code": minted.code,
             "command": minted.command,
             "command_wget": minted.command_wget,
+            "join_url": service.join_base_url,
+            "pin": service.join_pin,
             "script": {
                 "filename": JOIN_SCRIPT_FILENAME,
                 "sha256": digest,
@@ -244,53 +305,6 @@ def create_compute_hosts_router(service: ComputeHostService, pool: ComputePoolSe
         except ComputeHostError as exc:
             raise _http(exc) from exc
         return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-    @router.get(
-        "/join.sh",
-        response_class=Response,
-        dependencies=[Depends(require_scope(COMPUTE_HOST_JOIN_SCOPE))],
-    )
-    async def join_script(request: Request) -> Response:
-        code = _bearer(request)
-        try:
-            await service.usable_code(code)
-        except ComputeHostError as exc:
-            raise _http(exc) from exc
-        script = render_join_script(forge_url=service.join_base_url, code=code)
-        return Response(
-            content=script,
-            media_type="text/x-shellscript",
-            headers={"Cache-Control": "no-store"},
-        )
-
-    @router.post(
-        "/join",
-        status_code=status.HTTP_201_CREATED,
-        dependencies=[Depends(require_scope(COMPUTE_HOST_JOIN_SCOPE))],
-    )
-    async def join(body: JoinRequest, request: Request) -> dict[str, Any]:
-        try:
-            joined = await service.join(
-                _bearer(request),
-                name=body.name,
-                public_key=body.public_key,
-                address=body.address,
-                facts=body.facts,
-            )
-        except ComputeHostError as exc:
-            raise _http(exc) from exc
-        return {
-            "host_id": str(joined.host.id),
-            "name": joined.host.name,
-            "pool_id": joined.host.pool_id,
-            "ssh_user": joined.ssh_user,
-            "forge_public_key": joined.forge_public_key,
-            "authorized_key_options": joined.authorized_key_options,
-            "setup": {
-                "files": [dict(item) for item in joined.setup_files],
-                "commands": [list(command) for command in joined.setup_commands],
-            },
-        }
 
     @router.patch("/{host_id}")
     async def update(

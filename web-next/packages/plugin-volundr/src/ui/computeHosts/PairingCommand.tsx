@@ -65,7 +65,7 @@ export function PairingCommand({
   const expired = remaining === 0;
   const command = readFirst
     ? code.script.commands.join('\n')
-    : useWget
+    : useWget && code.commandWget !== null
       ? code.commandWget
       : code.command;
 
@@ -86,6 +86,14 @@ export function PairingCommand({
       >
         {truncateCode(command, code.code, VISIBLE_CODE_CHARS)}
       </pre>
+      {code.pin !== null ? (
+        <p className="niuu:text-xs niuu:text-text-muted">
+          The join is pinned to this Forge&apos;s certificate at{' '}
+          <code className="niuu:font-mono">{code.joinUrl}</code> (
+          <code className="niuu:break-all niuu:font-mono">{code.pin}</code>), so it needs curl: wget
+          cannot check a pin.
+        </p>
+      ) : null}
       {readFirst ? (
         <div className="niuu:space-y-2 niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3">
           <p className="niuu:text-sm niuu:text-text-secondary">
@@ -122,7 +130,7 @@ export function PairingCommand({
           </span>
         )}
         <span className="niuu:flex niuu:items-center niuu:gap-1">
-          {readFirst ? null : (
+          {readFirst || code.commandWget === null ? null : (
             <button type="button" className={GHOST} onClick={() => setUseWget((value) => !value)}>
               {useWget ? 'Use curl' : 'Use wget'}
             </button>

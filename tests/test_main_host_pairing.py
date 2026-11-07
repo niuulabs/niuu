@@ -14,9 +14,12 @@ from niuu.domain.services.token_scope import (
 )
 from niuu.domain.services.workload_identity import WorkloadIdentityService
 from niuu.service_runtime import create_workload_identity_service
+from volundr.adapters.inbound.host_join_listener import HostJoinListenerError
 from volundr.composition_builders import (
     HOST_PAIRING_ISSUER,
+    HostJoinEndpoint,
     HostPairingSignerUnavailableError,
+    _create_host_join_endpoint,
     _create_host_pairing_signer,
 )
 from volundr.config import Settings
@@ -129,3 +132,49 @@ def test_the_edge_admits_a_pairing_code_only_on_the_two_host_routes(
     )
 
     assert credential_allows_route(_code(signer), method, path) is allowed
+
+
+# -- where hosts join -----------------------------------------------------------------------------
+
+
+def _join_settings(tmp_path, *, join: dict, public_host: str = "192.168.1.20") -> Settings:
+    settings = _settings(tmp_path, server_public_host=public_host)
+    hosts = settings.compute.hosts.model_dump()
+    hosts.update(join)
+    return Settings(
+        compute={**settings.compute.model_dump(), "hosts": hosts},
+        server_public_host=public_host,
+    )
+
+
+def test_an_explicit_join_url_joins_through_forges_api_without_a_pin(tmp_path):
+    endpoint = _create_host_join_endpoint(_settings(tmp_path))
+
+    assert endpoint == HostJoinEndpoint(url="https://forge.example.test", tls=None)
+
+
+def test_a_local_forge_joins_at_its_public_host_through_the_pinned_listener(tmp_path):
+    listener = {
+        "cert_file": str(tmp_path / "join" / "cert.pem"),
+        "key_file": str(tmp_path / "join" / "key.pem"),
+    }
+    settings = _join_settings(tmp_path, join={"join_url": "", "join_listener": listener})
+
+    endpoint = _create_host_join_endpoint(settings)
+
+    assert endpoint.url == "https://192.168.1.20:8443"
+    assert endpoint.tls is not None
+    assert endpoint.tls.pin.startswith("sha256//")
+    assert _create_host_join_endpoint(settings).tls.pin == endpoint.tls.pin
+
+
+def test_a_loopback_public_host_is_a_startup_error_with_the_remedy(tmp_path):
+    settings = _join_settings(tmp_path, join={"join_url": ""}, public_host="127.0.0.1")
+
+    with pytest.raises(HostJoinListenerError, match="other machines cannot reach it"):
+        _create_host_join_endpoint(settings)
+
+
+def test_a_join_endpoint_needs_compute_hosts(tmp_path):
+    with pytest.raises(HostJoinListenerError, match="compute.hosts is not configured"):
+        _create_host_join_endpoint(_settings(tmp_path, hosts=False))

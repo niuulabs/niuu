@@ -173,6 +173,7 @@ from volundr.composition_builders import (  # noqa: F401
     _create_forge_session_projection,
     _create_forge_session_tokens,
     _create_gateway_adapter,
+    _create_host_join_endpoint,
     _create_host_pairing_signer,
     _create_http_auth_adapter,
     _create_pod_manager,
@@ -1074,6 +1075,7 @@ def create_app(
             compute_pool_task = None
             compute_host_service = None
             compute_hosts_task = None
+            host_join_listener = None
             execution_components = None
             guest_metadata_service = None
             if settings.compute is not None:
@@ -1284,6 +1286,7 @@ def create_app(
                     from volundr.domain.services.compute_hosts import ComputeHostService
 
                     hosts_config = compute.hosts
+                    join_endpoint = _create_host_join_endpoint(settings)
                     compute_host_service = ComputeHostService(
                         pool_id=compute.pool_id,
                         repository=host_components.repository,
@@ -1295,7 +1298,8 @@ def create_app(
                         token_issuer=_create_host_pairing_signer(
                             settings, workload_identity_service
                         ),
-                        join_url=hosts_config.join_url,
+                        join_url=join_endpoint.url,
+                        join_pin=join_endpoint.tls.pin if join_endpoint.tls else None,
                         pairing_code_ttl_seconds=hosts_config.pairing_code_ttl_seconds,
                         check_interval_seconds=hosts_config.check_interval_seconds,
                         pending_check_interval_seconds=(
@@ -1304,6 +1308,18 @@ def create_app(
                         reserved_cpu=hosts_config.reserved_cpu,
                         reserved_memory_mib=hosts_config.reserved_memory_mib,
                     )
+                    if join_endpoint.tls is not None and hosts_config.join_listener is not None:
+                        from volundr.adapters.inbound.host_join_listener import (
+                            HostJoinListener,
+                            create_host_join_app,
+                        )
+
+                        host_join_listener = HostJoinListener(
+                            create_host_join_app(compute_host_service),
+                            bind_host=hosts_config.join_listener.bind_host,
+                            port=hosts_config.join_listener.port,
+                            tls=join_endpoint.tls,
+                        )
             codex_credential_broker = _create_codex_credential_broker(
                 settings,
                 credential_store=credential_store,
@@ -2003,9 +2019,13 @@ def create_app(
             if compute_host_service is not None:
                 from volundr.adapters.inbound.rest_compute_hosts import (
                     create_compute_hosts_router,
+                    create_host_join_router,
                 )
 
                 app.include_router(create_compute_hosts_router(compute_host_service, compute_pool))
+                # With Forge's join listener, the host-facing routes are served only there.
+                if host_join_listener is None:
+                    app.include_router(create_host_join_router(compute_host_service))
 
             app.include_router(catalog.router)
 
@@ -2450,6 +2470,8 @@ def create_app(
 
             if compute_pool is not None:
                 compute_pool_task = asyncio.create_task(compute_pool.run())
+            if host_join_listener is not None:
+                await host_join_listener.start()
             if compute_host_service is not None:
                 compute_hosts_task = asyncio.create_task(compute_host_service.run())
             try:
@@ -2468,6 +2490,8 @@ def create_app(
                 if compute_hosts_task is not None:
                     compute_hosts_task.cancel()
                     await asyncio.gather(compute_hosts_task, return_exceptions=True)
+                if host_join_listener is not None:
+                    await host_join_listener.stop()
                 if bifrost_catalog_task is not None:
                     bifrost_catalog_task.cancel()
                     await asyncio.gather(bifrost_catalog_task, return_exceptions=True)
