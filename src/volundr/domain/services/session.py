@@ -82,7 +82,7 @@ from volundr.domain.services.forge_session_launch import (
 from volundr.domain.services.session_startup import SessionStartupRecorder
 from volundr.domain.session_changes import SessionChanges
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
-from volundr.domain.session_runtimes import RUNTIME_GRANTS_KEY, SessionRuntimeOffer
+from volundr.domain.session_runtimes import SessionRuntimeOffer, requested_grants
 from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjectionPort
 
 if TYPE_CHECKING:
@@ -1100,10 +1100,8 @@ class SessionService:
                 **await self._execution_context(session),
             )
 
-        durable_compute = self._runtime_backend == "vm" or self._execution_resolver is not None
-
         destroyed = await self._pod_manager.destroy(session)
-        if durable_compute and not destroyed:
+        if self._runs_on_compute(session) and not destroyed:
             raise RuntimeError("Compute infrastructure deletion was not confirmed")
 
         # Run contributor cleanup in reverse order
@@ -1220,8 +1218,24 @@ class SessionService:
             )
 
     async def session_runtimes(self) -> tuple[SessionRuntimeOffer, ...]:
-        """The runtimes a launch on this host may choose between; empty for no choice."""
+        """What this host runs every session as: one offer, or none when it declares none."""
         return await self._pod_manager.session_runtimes()
+
+    async def _require_host_grants(self, workload_config: dict) -> None:
+        """Refuse runtime_grants the host's one runtime does not offer."""
+        try:
+            grants = requested_grants(workload_config)
+        except ValueError as exc:
+            raise ExecutionSelectionError(str(exc)) from exc
+        if not grants:
+            return
+        offered = {grant for offer in await self.session_runtimes() for grant in offer.grants}
+        refused = sorted(grant.value for grant in grants - offered)
+        if refused:
+            raise ExecutionSelectionError(
+                f"This host's runtime does not offer runtime_grants {refused}; "
+                "drop the grants or launch on a host whose runtime offers them"
+            )
 
     async def ensure_capacity(self, session: Session | None = None) -> None:
         """Raise SessionCapacityError when the runtime has no free slot.
@@ -1236,6 +1250,15 @@ class SessionService:
         if capacity is None or capacity.available > 0:
             return
         raise SessionCapacityError(capacity)
+
+    def _runs_on_compute(self, session: Session) -> bool:
+        """Whether ``session`` runs on durable compute, whose stop and delete must be
+        confirmed. On a Forge that also runs local sessions, only its pool sessions do."""
+        if self._runtime_backend == "vm":
+            return True
+        if self._execution_resolver is None:
+            return False
+        return self._execution_resolver.runs_on_compute(session)
 
     async def _resolve_execution_config(
         self, session: Session, workload_config: dict, launch_spec: str | None
@@ -1341,10 +1364,8 @@ class SessionService:
             raise ExecutionSelectionError(
                 "Compute execution selection requires a configured catalog"
             )
-        elif (workload_config or {}).get(RUNTIME_GRANTS_KEY):
-            raise ExecutionSelectionError(
-                "runtime_grants need a host whose runtime offers them; this host offers none"
-            )
+        else:
+            await self._require_host_grants(workload_config or {})
         if workload_type == "ravn_flock" and not initial_prompt:
             initial_prompt = str((workload_config or {}).get("initiative_context") or "")
 
@@ -2128,7 +2149,7 @@ class SessionService:
                 )
             stopped = await self._pod_manager.stop(session)
             if not stopped:
-                if self._runtime_backend == "vm" or self._execution_resolver is not None:
+                if self._runs_on_compute(session):
                     raise RuntimeError("Compute infrastructure stop was not confirmed")
                 logger.warning(
                     "Pod manager could not find/cancel pods for session %s "
@@ -2391,6 +2412,8 @@ class SessionService:
             if self._spawn_in_flight(session):
                 continue
             if session.status == SessionStatus.FAILED and self._runtime_backend != "kubernetes":
+                if not self._runs_on_compute(session):
+                    continue
                 # Swept only to release compute a failed cleanup left bound. Never
                 # ask for its status: a VM runtime reports a still-bound lease as
                 # provisioning and restarts it, which would resurrect the session.

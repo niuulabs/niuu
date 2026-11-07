@@ -1,24 +1,36 @@
 #!/bin/sh
-# Usage: replace-nested.sh <install-dir> <nested-node_modules> <package>...
+# Usage: replace-nested.sh <install-dir> <nested-node_modules> [+]<package>...
 #
 # Some packages pin their dependencies where a lockfile and `overrides`
-# cannot reach them: npm bundles its own, and pi-coding-agent ships an
+# cannot reach them: npm bundles its own, and pi-coding-agent used to ship an
 # npm-shrinkwrap.json. Each <package> must be locked as a direct dependency
 # of <install-dir>; this copies that locked release over the pinned copy
 # under <nested-node_modules>. Fails the build if the pinned copy is gone
 # (drop the replacement) or the copy did not take.
+#
+# A replacement can need a dependency the bundled release never had (minimatch
+# 11 needs @isaacs/nonrecursive-glob-match). Prefix that package with `+`: it
+# is copied in, and the build fails if the bundle already contains it (drop
+# the `+`, or the addition).
 set -eu
 install_dir=$1
 nested=$2
 shift 2
 cd "$install_dir"
-for name in "$@"; do
-  if [ ! -d "$nested/$name" ]; then
-    echo "$nested no longer contains $name; remove its replacement" >&2
+for arg in "$@"; do
+  name=${arg#+}
+  if [ "$name" = "$arg" ]; then
+    if [ ! -d "$nested/$name" ]; then
+      echo "$nested no longer contains $name; remove its replacement" >&2
+      exit 1
+    fi
+  elif [ -e "$nested/$name" ]; then
+    echo "$nested already contains $name; remove its addition" >&2
     exit 1
   fi
   want=$(node -p "require('./node_modules/$name/package.json').version")
   rm -rf "${nested:?}/$name"
+  mkdir -p "$(dirname "$nested/$name")"
   cp -R "node_modules/$name" "$nested/$name"
   got=$(node -p "require('./$nested/$name/package.json').version")
   if [ "$got" != "$want" ]; then

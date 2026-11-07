@@ -56,9 +56,9 @@ def shared_tls(tmp_path_factory) -> JoinTls:
 def _service(pin: str) -> ComputeHostService:
     return ComputeHostService(
         pool_id=POOL,
-        repository=HostRepository(),
+        repository=(repository := HostRepository()),
         compute_repository=SlotLedger(),
-        compute_pool=HostPool(),
+        compute_pool=HostPool(repository),
         connectors={"direct-ssh": Connector()},
         inspector=Inspector(),
         executions={"host@1": make_execution()},

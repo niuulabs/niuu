@@ -11,6 +11,8 @@ import pytest
 from tests.compute_host_fakes import Connector, make_host
 from volundr.adapters.outbound.host_checks import (
     AUDIT_SH,
+    DARWIN_AUDIT_SH,
+    DARWIN_FACTS_SH,
     FACTS_SH,
     LEAVE_PATH,
     SshHostInspector,
@@ -19,7 +21,12 @@ from volundr.adapters.outbound.host_checks import (
 )
 from volundr.adapters.outbound.host_connectors import DirectSshConnector
 from volundr.domain.compute import MachineState
-from volundr.domain.compute_hosts import HostHealth, HostService
+from volundr.domain.compute_hosts import (
+    HostDisconnectedError,
+    HostHealth,
+    HostPlatform,
+    HostService,
+)
 from volundr.domain.guest_access import GuestCommandResult
 
 
@@ -101,6 +108,21 @@ class TestInspector:
         await _inspector(access, uid_base=None).audit(make_host(), live_slots=(), clean=False)
         assert access.calls[0][1] == "sudo -n sh -s -- 0 0 '' 2048 check"
 
+    async def test_a_mac_gets_the_macos_programs(self):
+        access = Access(b"fact platform darwin\nfact cpus 10\n")
+        host = make_host(slots=1, facts={"platform": "darwin"})
+        inspector = _inspector(access)
+        assert await inspector.facts(host) == {"platform": "darwin", "cpus": 10}
+        await inspector.audit(host, live_slots=(), clean=False)
+        assert [kwargs["data"] for _, _, kwargs in access.calls] == [
+            DARWIN_FACTS_SH.encode(),
+            DARWIN_AUDIT_SH.encode(),
+        ]
+        assert access.calls[1][1] == "sudo -n sh -s -- 61000 1 '' 2048 check"
+
+    def test_the_linux_facts_name_the_platform(self):
+        assert "fact platform $(uname -s" in FACTS_SH
+
     async def test_leave_runs_the_hosts_own_script(self):
         access = Access()
         await _inspector(access).leave(make_host())
@@ -133,7 +155,7 @@ class TestInspector:
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX sh")
-@pytest.mark.parametrize("program", [FACTS_SH, AUDIT_SH])
+@pytest.mark.parametrize("program", [FACTS_SH, AUDIT_SH, DARWIN_FACTS_SH, DARWIN_AUDIT_SH])
 def test_programs_are_valid_posix_sh(program):
     subprocess.run(["sh", "-n"], input=program.encode(), check=True)
 
@@ -187,3 +209,159 @@ class TestDirectSsh:
         assert pending.connected is False
         await connector.revoke(host)
         await connector.close()
+
+
+def _shims(directory, programs):
+    """Executables that stand in for a Mac's tools, so the macOS audit runs anywhere."""
+    directory.mkdir(exist_ok=True)
+    for name, body in programs.items():
+        path = directory / name
+        path.write_text("#!/bin/sh\n" + body + "\n")
+        path.chmod(0o755)
+    return directory
+
+
+_TAB = "\t"
+_LEFTOVERS = {
+    "uname": "echo Darwin",
+    "dscl": 'case "$3" in /Users) printf "root\\nniuu-slot-0\\n" ;; '
+    '/Groups) printf "admin\\nniuu-slot-0\\n" ;; esac',
+    "ps": 'printf "    0     1 /sbin/launchd\\n61000  4242 /opt/agent/bin/my tool\\n"',
+    "launchctl": 'case "$2" in\n'
+    "  system/world.niuu.slot.0) exit 0 ;;\n"
+    f'  user/61000) printf "user/61000 = {{\\n{_TAB}services = {{\\n'
+    f"{_TAB}{_TAB}   0  - {_TAB}com.apple.trustd.agent\\n"
+    f"{_TAB}{_TAB}   0  - {_TAB}com.example.left.behind\\n"
+    f'{_TAB}}}\\n}}\\n" ;;\n'
+    "  *) exit 113 ;;\nesac",
+    "ipcs": 'printf "T ID KEY MODE OWNER GROUP CREATOR CGROUP\\n'
+    'm 65536 0x0 --rw------- 61000 61000 61000 61000\\n"',
+    "dseditgroup": '[ "$5" = admin ] && [ "$4" = niuu-slot-0 ]',
+    # The temp directories are a Mac's own; where they exist, nothing in them is owned.
+    "find": "true",
+    "df": 'printf "Filesystem 1M-blocks Used Available Capacity Mounted on\\n'
+    '/dev/disk3s1s1 948584 16294 257684 6%% /\\n"',
+}
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX sh")
+class TestMacAudit:
+    def _run(self, tmp_path, programs, *args):
+        shims = _shims(tmp_path / "bin", programs)
+        result = subprocess.run(
+            ["sh", "-s", "--", *args],
+            input=DARWIN_AUDIT_SH.encode(),
+            capture_output=True,
+            env={"PATH": f"{shims}:/usr/bin:/bin"},
+            check=True,
+        )
+        return parse_check_output(result.stdout.decode()).findings
+
+    def test_everything_a_finished_session_left_is_a_finding(self, tmp_path):
+        findings = self._run(tmp_path, _LEFTOVERS, "61000", "1", "", "2048", "check")
+        assert findings == (
+            "user niuu-slot-0 still exists",
+            "group niuu-slot-0 still exists",
+            "process /opt/agent/bin/my tool (pid 4242) still runs as uid 61000",
+            "launchd job world.niuu.slot.0 is still loaded",
+            "launchd job com.example.left.behind is still loaded in user/61000",
+            "IPC objects created by uid 61000 still exist",
+            "niuu-slot-0 is in group admin",
+        )
+
+    def test_a_live_slot_is_left_alone_but_its_groups_are_not(self, tmp_path):
+        findings = self._run(tmp_path, _LEFTOVERS, "61000", "1", "0", "2048", "check")
+        assert findings == ("niuu-slot-0 is in group admin",)
+
+    def test_a_clean_mac(self, tmp_path):
+        clean = {
+            **_LEFTOVERS,
+            "dscl": 'printf "root\\n"',
+            "ps": 'printf "    0     1 /sbin/launchd\\n"',
+            "launchctl": "exit 113",
+            "ipcs": "true",
+            "dseditgroup": "exit 67",
+        }
+        assert self._run(tmp_path, clean, "61000", "1", "", "2048", "check") == ()
+        assert self._run(tmp_path, clean, "61000", "1", "", "999999", "check") == (
+            "only 257684 MiB free on /, below the floor of 999999 MiB",
+        )
+
+    def test_more_than_one_slot_is_a_finding(self, tmp_path):
+        clean = {**_LEFTOVERS, "dscl": "true", "ps": "true", "launchctl": "exit 1", "ipcs": "true"}
+        clean["dseditgroup"] = "exit 67"
+        assert self._run(tmp_path, clean, "61000", "2", "", "2048", "check") == (
+            "macOS hosts run one slot, but this one is set to 2",
+        )
+
+    def test_a_host_that_is_not_a_mac(self, tmp_path):
+        findings = self._run(tmp_path, {"uname": "echo Linux"}, "61000", "1", "", "2048", "check")
+        assert findings == (
+            "this host is not macOS (uname -s says Linux); remove it and join it again",
+        )
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX sh")
+def test_mac_facts_read_sysctl_and_sw_vers(tmp_path):
+    shims = _shims(
+        tmp_path / "bin",
+        {
+            "uname": 'case "$1" in -s) echo Darwin ;; -r) echo 25.5.0 ;; -m) echo arm64 ;; esac',
+            "sysctl": 'case "$2" in hw.ncpu) echo 14 ;; hw.memsize) echo 38654705664 ;; esac',
+            "df": _LEFTOVERS["df"],
+            "sw_vers": 'case "$1" in -productName) echo macOS ;; *) echo 26.5.1 ;; esac',
+        },
+    )
+    result = subprocess.run(
+        ["sh", "-s"],
+        input=DARWIN_FACTS_SH.encode(),
+        capture_output=True,
+        env={"PATH": f"{shims}:/usr/bin:/bin"},
+        check=True,
+    )
+    assert parse_check_output(result.stdout.decode()).facts == {
+        "platform": "darwin",
+        "cpus": 14,
+        "memory_mib": 36864,
+        "disk_free_mib": 257684,
+        "kernel": "25.5.0",
+        "arch": "arm64",
+        "cgroup_v2": False,
+        "gpus": 0,
+        "os": "macOS 26.5.1",
+    }
+
+
+def test_direct_ssh_sets_up_linux_and_macos_alike():
+    assert DirectSshConnector(allowed_sources=[]).platforms == {
+        HostPlatform.LINUX,
+        HostPlatform.DARWIN,
+    }
+
+
+class DisconnectedConnector(Connector):
+    async def require_connection(self, host):
+        raise HostDisconnectedError("the host's tunnel is down")
+
+
+class TestDisconnectedHosts:
+    def _inspector(self, access):
+        return SshHostInspector(
+            access_for=lambda host: access,
+            uid_base_for=lambda host: 61000,
+            connectors={"direct-ssh": DisconnectedConnector()},
+            min_free_disk_mib=2048,
+            command_timeout_seconds=30,
+        )
+
+    async def test_a_check_says_the_tunnel_is_down_without_dialing(self):
+        access = Access()
+        with pytest.raises(HostDisconnectedError, match="tunnel is down"):
+            await self._inspector(access).facts(make_host())
+        assert access.calls == []
+
+    async def test_leave_says_the_tunnel_is_down_without_dialing(self):
+        access = Access()
+        with pytest.raises(HostDisconnectedError):
+            await self._inspector(access).leave(make_host())
+        assert access.calls == []

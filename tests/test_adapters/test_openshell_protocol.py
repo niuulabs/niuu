@@ -29,6 +29,7 @@ CHECKS = (
     "sandbox_policy_endpoints",
     "sandbox_metadata_from_proto",
     "legacy_resume_failure_names_the_remedy",
+    "suspended_sandbox_phases",
 )
 
 
@@ -746,3 +747,21 @@ def check_legacy_resume_failure_names_the_remedy() -> None:
         assert isinstance(exc.__cause__, Refused)
     else:
         raise AssertionError("a refused resume must raise with its remedy")
+
+
+def check_suspended_sandbox_phases() -> None:
+    """v0.1.7's suspend phases read as a sandbox that runs no workload."""
+    from openshell._proto import openshell_pb2 as p
+
+    from volundr.adapters.outbound import openshell_gateway as gateway
+    from volundr.domain.models import SessionStatus
+
+    for phase, expected in (
+        (p.SANDBOX_PHASE_SUSPENDING, SessionStatus.STOPPING),
+        (p.SANDBOX_PHASE_SUSPENDED, SessionStatus.STOPPED),
+    ):
+        raw = _wire(_sandbox())
+        raw.status.phase = phase
+        sandbox = gateway._sandbox_from_proto(_wire(raw))
+        assert gateway._status_from_sandbox(sandbox) is expected
+        assert gateway._sandbox_stopped(sandbox) is (phase == p.SANDBOX_PHASE_SUSPENDED)

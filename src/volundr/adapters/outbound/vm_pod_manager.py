@@ -40,7 +40,6 @@ from volundr.domain.services.execution_catalog import ExecutionPlanResolver
 from volundr.domain.session_runtimes import (
     ReadinessState,
     RuntimeReadiness,
-    SessionRuntimeKind,
     SessionRuntimeOffer,
     requested_grants,
     requested_host_selector,
@@ -78,11 +77,20 @@ class VmPodManager(PodManager):
         poll_interval_seconds: float = 2,
         runtime_wait_log_every: int = 10,
         runtime_wait_surface_after: int = 3,
+        placement_lock_wait_seconds: float = 15,
         **_extra,
     ):
         if not profile or not pool_id or max_machines < 1:
             raise ValueError("VM sessions require a profile, pool_id and positive max_machines")
-        if min(provisioning_timeout_seconds, cleanup_timeout_seconds, poll_interval_seconds) <= 0:
+        if (
+            min(
+                provisioning_timeout_seconds,
+                cleanup_timeout_seconds,
+                poll_interval_seconds,
+                placement_lock_wait_seconds,
+            )
+            <= 0
+        ):
             raise ValueError("VM session timeouts must be positive")
         if min(runtime_wait_log_every, runtime_wait_surface_after) < 1:
             raise ValueError("VM runtime wait reporting counts must be positive")
@@ -91,6 +99,10 @@ class VmPodManager(PodManager):
         self._provisioning_timeout = provisioning_timeout_seconds
         self._cleanup_timeout = cleanup_timeout_seconds
         self._poll = poll_interval_seconds
+        # A machine with a free slot is held for a moment by its other sessions'
+        # status checks (each takes the allocation lock); placement waits this long
+        # for it before trying the next machine or booting one.
+        self._placement_lock_wait = placement_lock_wait_seconds
         # A guest that stays "not ready" (e.g. a runner without the configured Skuld)
         # is logged on the first and every Nth attempt, and its reason becomes the
         # session's visible wait detail after M attempts.
@@ -105,9 +117,8 @@ class VmPodManager(PodManager):
         self._execution_resolver: ExecutionPlanResolver | None = None
         self._execution_runtimes: dict[str, VmRuntime] = {}
         self._execution_preparations: dict[str, HostPreparation] = {}
-        # The executions a launch may choose, in the catalog's order, and the default's ref.
-        self._launch_plans: tuple[ResolvedExecutionPlan, ...] = ()
-        self._default_execution: CatalogRef | None = None
+        # The catalog's default execution: what a Forge with a catalog runs sessions as.
+        self._default_plan: ResolvedExecutionPlan | None = None
         self._defaults = MachineBootstrap()
         self._pool_service = None
         self._owns_runtime = True
@@ -165,7 +176,7 @@ class VmPodManager(PodManager):
         runtimes: Mapping[str, VmRuntime],
         preparations: Mapping[str, HostPreparation],
     ) -> None:
-        plans = resolver.plans()
+        default, plans = resolver.resolve_all()
         required = {plan.plan_digest for plan in plans}
         if set(runtimes) != required or set(preparations) != required:
             raise ValueError("Execution runtime and preparation registries must cover every plan")
@@ -175,28 +186,10 @@ class VmPodManager(PodManager):
             not isinstance(preparation, HostPreparation) for preparation in preparations.values()
         ):
             raise TypeError("Execution preparation registry values must implement HostPreparation")
-        default, launch_plans = resolver.launch_plans()
-        offered: dict[SessionRuntimeKind, ResolvedExecutionPlan] = {}
-        for plan in launch_plans:
-            kind = runtimes[plan.plan_digest].session_runtime
-            if kind is None:
-                raise ValueError(
-                    f"Launch execution {plan.execution} uses "
-                    f"{type(runtimes[plan.plan_digest]).__name__}, which cannot be offered "
-                    "as a launch choice; remove it from catalog.yaml launch_executions"
-                )
-            if kind in offered:
-                raise ValueError(
-                    f"Launch executions {offered[kind].execution} and {plan.execution} both "
-                    f"run sessions as {kind}; offer one execution per runtime in "
-                    "catalog.yaml launch_executions"
-                )
-            offered[kind] = plan
         self._execution_resolver = resolver
         self._execution_runtimes = dict(runtimes)
         self._execution_preparations = dict(preparations)
-        self._launch_plans = launch_plans
-        self._default_execution = default
+        self._default_plan = default
 
     def _configured(self):
         if self._service is None or self._repository is None or self._runtime is None:
@@ -284,6 +277,10 @@ class VmPodManager(PodManager):
         if existing is not None:
             await self._validate_lease_plan(existing, selected)
         return selected
+
+    def runs_on_compute(self, session: Session) -> bool:
+        """Every session of this pod manager runs in its compute pool."""
+        return True
 
     async def has_legacy_allocation(self, session: Session) -> bool:
         _, repository, _ = self._configured()
@@ -483,51 +480,58 @@ class VmPodManager(PodManager):
         )
 
     async def session_runtimes(self) -> tuple[SessionRuntimeOffer, ...]:
-        if not self._launch_plans:
+        """The one runtime this Forge runs sessions as, with how soon one can start.
+
+        That is the default execution's runtime with a catalog and the configured
+        ``compute.runtime`` without one; nothing when that runtime declares no kind.
+        """
+        service, repository, legacy_runtime = self._configured()
+        plan = self._default_plan if self._execution_resolver is not None else None
+        runtime = self._execution_runtimes[plan.plan_digest] if plan is not None else legacy_runtime
+        kind = runtime.session_runtime
+        if kind is None:
             return ()
-        service, repository, _ = self._configured()
         machines = await repository.list(self._pool_id, include_released=False)
         bindings = await repository.machine_slots(self._pool_id)
         # Free slots count as warm exactly where _claim_warm would place a session.
         policy = await self._pool_service.policy() if self._pool_service else None
         now = datetime.now(UTC)
         capacity = await self.capacity()
-        offers = []
-        for plan in self._launch_plans:
-            runtime = self._execution_runtimes[plan.plan_digest]
-            warm = (
-                sum(
-                    usable_slots(machine, bindings.get(machine.id, []), policy, now)
-                    for machine in machines
-                    if machine.state == LeaseState.IDLE
-                    and machine.profile == plan.provider_profile
-                    and machine.execution_plan is not None
-                    and machine.execution_plan.host_compatibility_digest
-                    == plan.host_compatibility_digest
-                    and service.provider_compatible(machine)
-                )
-                if policy is not None
-                else 0
+        if plan is not None:
+            profile = plan.provider_profile
+        else:
+            profile = policy.profile if policy is not None else self._profile
+        warm = (
+            sum(
+                usable_slots(machine, bindings.get(machine.id, []), policy, now)
+                for machine in machines
+                if machine.state == LeaseState.IDLE
+                and machine.profile == profile
+                and self._same_host(machine, plan)
+                and service.provider_compatible(machine)
             )
-            if warm:
-                readiness = RuntimeReadiness(state=ReadinessState.WARM, warm=warm)
-            elif capacity.available > 0:
-                readiness = RuntimeReadiness(state=ReadinessState.BOOT, warm=0)
-            else:
-                readiness = RuntimeReadiness(
-                    state=ReadinessState.FULL, warm=0, remedy=capacity.remedy
-                )
-            offers.append(
-                SessionRuntimeOffer(
-                    # Validated when the execution catalog was configured.
-                    runtime=runtime.session_runtime,  # type: ignore[arg-type]
-                    execution_profile=str(plan.execution),
-                    default=plan.execution == self._default_execution,
-                    grants=runtime.session_grants,
-                    readiness=readiness,
-                )
-            )
-        return tuple(offers)
+            if policy is not None
+            else 0
+        )
+        if warm:
+            readiness = RuntimeReadiness(state=ReadinessState.WARM, warm=warm)
+        elif capacity.available > 0:
+            readiness = RuntimeReadiness(state=ReadinessState.BOOT, warm=0)
+        else:
+            readiness = RuntimeReadiness(state=ReadinessState.FULL, warm=0, remedy=capacity.remedy)
+        return (
+            SessionRuntimeOffer(runtime=kind, grants=runtime.session_grants, readiness=readiness),
+        )
+
+    @staticmethod
+    def _same_host(machine: ComputeLease, plan: ResolvedExecutionPlan | None) -> bool:
+        """Whether ``machine`` was prepared for ``plan``, or for no plan when None."""
+        if plan is None:
+            return machine.execution_plan is None
+        return (
+            machine.execution_plan is not None
+            and machine.execution_plan.host_compatibility_digest == plan.host_compatibility_digest
+        )
 
     @property
     def reports_startup_stages(self) -> bool:
@@ -717,7 +721,7 @@ class VmPodManager(PodManager):
                     execution_plan=plan,
                     timeout_seconds=timeout_seconds,
                     # Without a pool service there is no policy: machines are single-slot.
-                    slots=policy.slots_per_machine if policy else 1,
+                    slots=self._pool_service.new_machine_slots(policy, plan) if policy else 1,
                     host_selector=requested_host_selector(session.workload_config),
                 )
                 if plan is not None:
@@ -964,6 +968,34 @@ class VmPodManager(PodManager):
                 < 1
             ):
                 continue
+            bound = await self._bind_when_free(
+                candidate, session, spec, policy, plan, profile, runtime
+            )
+            if bound is not None:
+                return bound
+        return None
+
+    async def _bind_when_free(
+        self,
+        candidate: ComputeLease,
+        session: Session,
+        spec: SessionSpec,
+        policy,
+        plan: ResolvedExecutionPlan | None,
+        profile: str,
+        runtime: VmRuntime,
+    ) -> SlotLease | None:
+        """Bind the session to a free slot of ``candidate``, waiting while it is busy.
+
+        Every status check of a session already on the machine holds its allocation
+        lock for a moment, so a machine with free slots is often briefly busy. Placement
+        waits up to ``placement_lock_wait_seconds`` for it; past that it moves on, and
+        says so, rather than booting a machine while one has room.
+        """
+        service, repository, _ = self._configured()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._placement_lock_wait
+        while True:
             try:
                 async with repository.operation(candidate.id):
                     lease = await repository.get(candidate.id)
@@ -977,7 +1009,7 @@ class VmPodManager(PodManager):
                         < 1
                         or not await service.compatible(lease)
                     ):
-                        continue
+                        return None
                     machine_bootstrap = await service.machine_bootstrap_for(lease)
                     if isinstance(runtime, ProfileAwareVmRuntime):
                         bootstrap = runtime.session_bootstrap_for(
@@ -1000,8 +1032,22 @@ class VmPodManager(PodManager):
                     )
                     return bound
             except ComputeLeaseBusyError:
-                continue
-        return None
+                if loop.time() >= deadline:
+                    get_observability().count(
+                        "volundr.compute.placement.busy_skips",
+                        attributes={"pool": self._pool_id},
+                    )
+                    logger.warning(
+                        "Machine %s with a free slot stayed busy for %ss while placing session "
+                        "%s; trying the next machine. Raise podManager.kwargs."
+                        "placement_lock_wait_seconds if machines are skipped while sessions "
+                        "on them are active",
+                        candidate.id,
+                        self._placement_lock_wait,
+                        session.id,
+                    )
+                    return None
+                await asyncio.sleep(self._poll)
 
     async def _requested_profile(self, session: Session) -> str:
         """Resolve an operator-approved compute profile for this session.

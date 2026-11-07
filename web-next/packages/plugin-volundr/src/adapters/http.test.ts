@@ -1506,14 +1506,12 @@ describe('buildVolundrHttpAdapter', () => {
     expect(client.get).toHaveBeenCalledWith('/settings/live-preview?instance_id=host%2Fa');
   });
 
-  it('getSessionRuntimes reads what a launch on the host may run as', async () => {
+  it('getSessionRuntimes reads what the host runs every session as', async () => {
     const client = makeClient();
     vi.mocked(client.get).mockResolvedValue({
       runtimes: [
         {
           runtime: 'openshell',
-          execution_profile: 'vm-openshell@1',
-          default: false,
           grants: ['sudo'],
           readiness: { state: 'boot', warm: 0, remedy: null },
         },
@@ -1522,8 +1520,6 @@ describe('buildVolundrHttpAdapter', () => {
     expect(await buildVolundrHttpAdapter(client).getSessionRuntimes('host/a')).toEqual([
       {
         runtime: 'openshell',
-        executionProfile: 'vm-openshell@1',
-        isDefault: false,
         grants: ['sudo'],
         readiness: { state: 'boot', warm: 0, remedy: null },
       },
@@ -1536,6 +1532,22 @@ describe('buildVolundrHttpAdapter', () => {
     vi.mocked(client.get).mockResolvedValue([]);
     await expect(buildVolundrHttpAdapter(client).getSessionRuntimes('vms')).rejects.toThrow(
       'Invalid session runtimes from vms',
+    );
+  });
+
+  it('getSessionRuntimes refuses a host that offers more than one runtime', async () => {
+    const client = makeClient();
+    const offer = {
+      runtime: 'container',
+      grants: [],
+      readiness: { state: 'warm', warm: 1, remedy: null },
+    };
+    vi.mocked(client.get).mockResolvedValue({ runtimes: [offer, { ...offer, runtime: 'host' }] });
+    await expect(buildVolundrHttpAdapter(client).getSessionRuntimes('vms')).rejects.toThrow(
+      'vms offered 2 session runtimes; a host runs exactly one',
+    );
+    await expect(buildVolundrHttpAdapter(client).getSessionRuntimes()).rejects.toThrow(
+      'The default host offered 2 session runtimes',
     );
   });
 

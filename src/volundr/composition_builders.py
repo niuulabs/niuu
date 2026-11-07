@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import typing
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -431,8 +432,56 @@ def with_oauth_device_runner(
 def _create_pod_manager(settings: Settings) -> PodManager:
     """Create the PodManager adapter from dynamic config."""
     pm_cfg = settings.pod_manager
-    cls = import_class(pm_cfg.adapter)
-    kwargs = resolve_secret_kwargs(pm_cfg.kwargs, pm_cfg.secret_kwargs_env)
+    instance = _build_pod_manager(
+        settings,
+        pm_cfg.adapter,
+        resolve_secret_kwargs(pm_cfg.kwargs, pm_cfg.secret_kwargs_env),
+    )
+    logger.info("Pod manager: %s", pm_cfg.adapter.rsplit(".", 1)[-1])
+    return instance
+
+
+def _nested_pod_manager_parameters(cls: type, kwargs: dict[str, Any]) -> set[str]:
+    """The kwargs whose adapter configs are pod managers to build here.
+
+    Only parameters the constructor types as ``PodManager`` (the placement pod
+    manager's ``local`` and ``pool``). Any other adapter-shaped mapping is data the
+    adapter passes on, such as Skuld's ``preview_router_auth``.
+    """
+    if not any(isinstance(value, dict) and "adapter" in value for value in kwargs.values()):
+        return set()
+    try:
+        hints = typing.get_type_hints(cls.__init__)
+    except NameError as exc:
+        raise TypeError(
+            f"Pod manager {cls.__qualname__} has constructor annotations that do not "
+            f"resolve ({exc}); nested pod manager configs need resolvable types"
+        ) from exc
+    return {
+        name
+        for name, value in kwargs.items()
+        if isinstance(value, dict) and "adapter" in value and hints.get(name) is PodManager
+    }
+
+
+def _build_pod_manager(settings: Settings, adapter: str, kwargs: dict[str, Any]) -> PodManager:
+    cls = import_class(adapter)
+    kwargs = dict(kwargs)
+    for name in _nested_pod_manager_parameters(cls, kwargs):
+        nested = kwargs[name]
+        unknown = set(nested) - {"adapter", "kwargs", "secret_kwargs_env"}
+        if unknown:
+            raise ValueError(
+                f"pod_manager.kwargs.{name} takes adapter, kwargs and secret_kwargs_env; "
+                f"move {sorted(unknown)} under kwargs"
+            )
+        kwargs[name] = _build_pod_manager(
+            settings,
+            str(nested["adapter"]),
+            resolve_secret_kwargs(
+                dict(nested.get("kwargs") or {}), dict(nested.get("secret_kwargs_env") or {})
+            ),
+        )
     kwargs.setdefault("server_public_host", settings.server_public_host)
     kwargs.setdefault("server_host", settings.server_host)
     kwargs.setdefault("server_port", settings.server_port)
@@ -442,9 +491,7 @@ def _create_pod_manager(settings: Settings) -> PodManager:
     kwargs.setdefault("client_id", settings.openshell_oidc_client_id)
     if settings.openshell_oidc_client_secret:
         kwargs.setdefault("client_secret", settings.openshell_oidc_client_secret)
-    instance = cls(**kwargs)
-    logger.info("Pod manager: %s", pm_cfg.adapter.rsplit(".", 1)[-1])
-    return instance
+    return cls(**kwargs)
 
 
 _OPENBAO_SECRET_INJECTION_ADAPTER = (

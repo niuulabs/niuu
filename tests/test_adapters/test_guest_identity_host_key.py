@@ -491,3 +491,10 @@ def test_the_registered_key_source_needs_the_machine_port():
 
 def test_the_default_key_source_is_the_bootstrap_and_needs_no_machine_port():
     HostKeyGuestIdentity(machine_bootstrap_for=None, watermarks=InMemoryWatermarks())
+
+
+def test_the_host_key_identity_serves_every_slot_of_a_machine() -> None:
+    # The key belongs to the machine bootstrap; nothing is registered per session.
+    assert HostKeyGuestIdentity(
+        machine_bootstrap_for=AsyncMock(return_value=None), watermarks=AsyncMock()
+    ).serves_slots

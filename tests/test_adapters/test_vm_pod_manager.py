@@ -3,7 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -11,6 +11,7 @@ import pytest
 from niuu.adapters.memory_credential_store import MemoryCredentialStore
 from niuu.ports.session_proxy import SessionProxyTarget
 from tests.compute_fakes import LeaseRepository, Provider
+from volundr.adapters.outbound import vm_pod_manager
 from volundr.adapters.outbound.vm_pod_manager import VmPodManager
 from volundr.domain.compute import (
     ComputeCapacityError,
@@ -720,6 +721,11 @@ async def test_a_lease_expiring_while_the_runtime_is_unprepared_still_names_it(s
     assert message.endswith("Provisioning expired; preserve data and release the allocation")
 
 
+def test_the_placement_wait_must_be_positive():
+    with pytest.raises(ValueError, match="positive"):
+        VmPodManager(profile="small", pool_id="pool", max_machines=1, placement_lock_wait_seconds=0)
+
+
 def test_runtime_wait_reporting_counts_must_be_positive():
     with pytest.raises(ValueError, match="reporting counts"):
         VmPodManager(profile="small", pool_id="pool", max_machines=1, runtime_wait_log_every=0)
@@ -1227,11 +1233,17 @@ async def test_capacity_honours_a_paused_pool(setup):
     assert (capacity.limit, capacity.active) == (0, 0)
 
 
+def _policy_pool(policy: ComputePoolPolicy) -> AsyncMock:
+    """A pool service answering ``policy``, whose new machines get its slots."""
+    pool = AsyncMock()
+    pool.policy.return_value = policy
+    pool.new_machine_slots = MagicMock(return_value=policy.slots_per_machine)
+    return pool
+
+
 async def test_capacity_multiplies_machines_by_the_policy_slots(setup):
     manager, _, repository, _, _, _, session = setup
-    pool = AsyncMock()
-    pool.policy.return_value = ComputePoolPolicy(profile="small", max_machines=3)
-    manager.configure_pool(pool)
+    manager.configure_pool(_policy_pool(ComputePoolPolicy(profile="small", max_machines=3)))
     await manager.start(session, SPEC)
 
     capacity = await manager.capacity()
@@ -1242,11 +1254,9 @@ async def test_capacity_multiplies_machines_by_the_policy_slots(setup):
 
 async def test_a_machine_with_more_slots_than_the_policy_counts_its_own(setup):
     manager, _, repository, _, _, _, session = setup
-    pool = AsyncMock()
-    pool.policy.return_value = ComputePoolPolicy(
-        profile="small", max_machines=2, slots_per_machine=2
+    manager.configure_pool(
+        _policy_pool(ComputePoolPolicy(profile="small", max_machines=2, slots_per_machine=2))
     )
-    manager.configure_pool(pool)
     await manager.start(session, SPEC)
     await _edit(repository, machine={"slots": 4})
 
@@ -1256,17 +1266,22 @@ async def test_a_machine_with_more_slots_than_the_policy_counts_its_own(setup):
     assert (capacity.limit, capacity.active) == (6, 4)
 
 
-async def test_a_session_cold_start_reserves_the_policys_slots_per_machine(setup):
+@pytest.mark.parametrize("slots", [2, 1])
+async def test_a_session_cold_start_reserves_the_slots_its_runtime_gets(setup, slots):
     manager, _, repository, _, _, _, session = setup
     pool = AsyncMock()
-    pool.policy.return_value = ComputePoolPolicy(
+    policy = ComputePoolPolicy(
         profile="small", max_machines=1, slots_per_machine=2, provisioning_timeout_seconds=5
     )
+    pool.policy.return_value = policy
+    # 1: the session's runtime cannot keep slots apart, so its machine is its own.
+    pool.new_machine_slots = MagicMock(return_value=slots)
     manager.configure_pool(pool)
 
     await manager.start(session, SPEC)
 
-    assert next(iter(repository.leases.values())).slots == 2
+    assert next(iter(repository.leases.values())).slots == slots
+    pool.new_machine_slots.assert_called_once_with(policy, None)
 
 
 async def test_a_staged_runtime_failure_is_not_retried_by_a_second_start(setup):
@@ -1692,11 +1707,21 @@ async def test_a_warm_machine_taken_while_choosing_is_not_claimed_twice(setup, t
     assert await manager._claim_warm(session, SPEC) is None
 
 
-async def test_a_busy_warm_machine_is_skipped_for_the_next(setup):
+async def test_a_machine_busy_past_the_placement_wait_is_skipped_and_counted(
+    setup, monkeypatch, caplog
+):
     pool, manager, repository, session = _warm_pool(setup)
     await pool.maintain()
     await pool.maintain()
+    manager._placement_lock_wait = 0.01
     attempts = 0
+    counted = []
+
+    class Observability:
+        def count(self, name, *args, **kwargs):
+            counted.append(name)
+
+    monkeypatch.setattr(vm_pod_manager, "get_observability", Observability)
 
     @asynccontextmanager
     async def contested(lease_id):
@@ -1707,8 +1732,37 @@ async def test_a_busy_warm_machine_is_skipped_for_the_next(setup):
 
     repository.operation = contested
 
-    assert await manager._claim_warm(session, SPEC) is None
-    assert attempts == 1
+    with caplog.at_level("WARNING"):
+        assert await manager._claim_warm(session, SPEC) is None
+    # It waited for the machine before giving up on it, and said so.
+    assert attempts > 1
+    assert counted == ["volundr.compute.placement.busy_skips"]
+    assert "placement_lock_wait_seconds" in caplog.text
+
+
+async def test_placement_waits_for_a_machine_its_neighbours_hold_for_a_moment(setup):
+    pool, manager, repository, session = _warm_pool(setup)
+    await pool.maintain()
+    await pool.maintain()
+    spare = next(iter(repository.leases.values()))
+    original = repository.operation
+    busy_for = 3
+
+    @asynccontextmanager
+    async def briefly_busy(lease_id):
+        # A neighbour session's status check holds the lock for the first attempts.
+        nonlocal busy_for
+        if busy_for:
+            busy_for -= 1
+            raise ComputeLeaseBusyError("a status check")
+        async with original(lease_id):
+            yield
+
+    repository.operation = briefly_busy
+
+    placed = await manager._claim_warm(session, SPEC)
+
+    assert placed is not None and placed.id == spare.id
 
 
 async def test_close_cancels_recoveries_that_are_still_running(setup):

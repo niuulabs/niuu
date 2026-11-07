@@ -21,6 +21,17 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 from volundr.domain.compute import HostSelector, Machine, validate_tag
 
 
+class HostPlatform(StrEnum):
+    """A host's operating system as ``uname -s`` names it, lowercased; fixed at join."""
+
+    LINUX = "linux"
+    DARWIN = "darwin"
+
+
+#: What a host runs on unless its runtime or connector declares more.
+LINUX_ONLY: frozenset[HostPlatform] = frozenset({HostPlatform.LINUX})
+
+
 class HostHealth(StrEnum):
     """What the last check of the host found. Written only by checks."""
 
@@ -81,6 +92,18 @@ class RegisteredHost(BaseModel):
     @classmethod
     def normalize_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return normalize_tags(value)
+
+    @property
+    def platform(self) -> HostPlatform:
+        """The platform the host joined as; the join records it, and checks never change it."""
+        value = self.facts.get("platform")
+        try:
+            return HostPlatform(value)
+        except ValueError:
+            raise ValueError(
+                f"Host {self.name} has no known platform fact ({value!r}); remove it and join "
+                "it again with this Forge's join.sh"
+            ) from None
 
     @property
     def claimable(self) -> bool:
@@ -184,6 +207,17 @@ class RegisteredHostRepository(ABC):
     async def get(self, host_id: UUID) -> RegisteredHost | None: ...
 
     @abstractmethod
+    async def with_public_key(self, public_key: str) -> RegisteredHost | None:
+        """The host registered with this ``ssh-ed25519 <base64>`` key, in any pool."""
+
+    @abstractmethod
+    async def connection_values(self, field: str) -> list[JsonValue]:
+        """One field of the connection data of every host that has it, in any pool.
+
+        For a connector that hands out something unique on the Forge, such as a port.
+        """
+
+    @abstractmethod
     async def held_by(self, allocation_id: UUID) -> RegisteredHost | None: ...
 
     @abstractmethod
@@ -271,12 +305,40 @@ class HostJoinSetup(BaseModel):
         return value
 
 
+class EndpointKey(BaseModel):
+    """The authorized_keys line Forge's connect endpoint admits one host's key with."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    host_id: UUID
+    line: str = Field(min_length=1)
+
+
 class HostConnector(ABC):
     """How Forge reaches a registered host's sshd. Carries bytes; never authenticates SSH.
 
     The provider and the runtimes never see a connector: it only decides the ``SshDial``
     that ends up on the machine record, which ``SshGuestAccess`` dials.
     """
+
+    def attach(self, inventory: RegisteredHostRepository) -> None:
+        """Called once by the composition root with the Forge's host inventory."""
+        return None
+
+    @property
+    def endpoint_socket(self) -> str | None:
+        """The pod-local socket a connect endpoint asks for host keys on, if it has one."""
+        return None
+
+    def endpoint_key_options(self, host: RegisteredHost, user: str) -> str | None:
+        """The authorized_keys options the connect endpoint admits ``host``'s key with when
+        it logs in as ``user``; None admits nothing."""
+        return None
+
+    async def require_connection(self, host: RegisteredHost) -> None:
+        """Raise ``HostDisconnectedError`` when the connector knows the host cannot be
+        reached now. A connector that only learns it by dialing does nothing."""
+        return None
 
     @property
     @abstractmethod
@@ -290,6 +352,11 @@ class HostConnector(ABC):
     @abstractmethod
     def join_setup(self, host: RegisteredHost) -> HostJoinSetup:
         """What join.sh sets up on the host for this connector."""
+
+    @property
+    def platforms(self) -> frozenset[HostPlatform]:
+        """The platforms ``join_setup`` works on; a host on any other is refused at join."""
+        return LINUX_ONLY
 
     @abstractmethod
     async def admit(

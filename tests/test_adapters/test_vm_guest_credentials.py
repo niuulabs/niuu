@@ -7,6 +7,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -96,6 +97,12 @@ class FakeIdentity(GuestIdentity):
 
     async def unregister(self, lease, machine):
         self.unregistered.append(lease.id)
+
+    machine_scoped = False
+
+    @property
+    def serves_slots(self):
+        return self.machine_scoped
 
     async def authenticate(self, request: GuestRequest):
         raise AssertionError("not used")
@@ -527,6 +534,7 @@ async def test_metadata_delivery_registers_identity_and_writes_agent_config(sess
     assert item["directory"] == AGENT_CONFIG_DIRECTORY
     assert config["metadata_url"] == "https://forge.example"
     assert config["allocation_id"] == str(lease.id)
+    assert config["slot"] == 0
     assert config["auth"] == {"kind": "fake", "allocation": str(lease.id)}
     assert config["token_volumes"][0]["tokens"] == [{"path": "token"}]
     assert config["forge_session"] == {"directory": "/etc/niuu/forge-session", "file": "token"}
@@ -540,6 +548,30 @@ async def test_metadata_delivery_registers_identity_and_writes_agent_config(sess
         delivery.session_containers(GuestCredentialPlan(service_account=""), image="i").sidecars
         == ()
     )
+
+
+async def test_metadata_delivery_names_the_slot_its_agent_serves(session):
+    delivery = MetadataCredentialDelivery(
+        metadata_url="https://forge.example/", guest_identity=FakeIdentity()
+    )
+    lease, files = SimpleNamespace(id=uuid4(), session_id=uuid4(), slot=2), FakeFiles()
+    plan = GuestCredentialPlan.from_launch(
+        {"service_account": "", "forge_session": True, "forge_session_directory": "/etc/x"}
+    )
+
+    await delivery.start(lease, MachineBootstrap(), plan, {}, files)
+
+    [[item]] = files.writes
+    assert json.loads(item["content"])["slot"] == 2
+
+
+@pytest.mark.parametrize("machine_scoped", [True, False])
+def test_metadata_delivery_serves_slots_only_with_a_machine_scoped_identity(machine_scoped):
+    identity = FakeIdentity()
+    identity.machine_scoped = machine_scoped
+    delivery = MetadataCredentialDelivery(metadata_url="https://forge", guest_identity=identity)
+
+    assert delivery.serves_slots is machine_scoped
 
 
 def _push_plan(forge=False):

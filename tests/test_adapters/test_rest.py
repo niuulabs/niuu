@@ -2140,12 +2140,14 @@ class TestHelpRequestProxy:
 class TestSessionRuntimes:
     """Tests for GET /api/v1/forge/session-runtimes."""
 
-    def test_a_host_without_a_choice_offers_no_runtimes(self, client: TestClient):
+    def test_a_host_that_declares_no_runtime_offers_none(self, client: TestClient):
         response = client.get("/api/v1/forge/session-runtimes")
         assert response.status_code == 200
         assert response.json() == {"runtimes": []}
 
-    def test_offers_carry_the_execution_grants_and_readiness(self, client: TestClient, pod_manager):
+    def test_the_offer_is_the_hosts_runtime_with_grants_and_readiness(
+        self, client: TestClient, pod_manager
+    ):
         from volundr.domain.session_runtimes import (
             ReadinessState,
             RuntimeReadiness,
@@ -2158,8 +2160,6 @@ class TestSessionRuntimes:
             return_value=(
                 SessionRuntimeOffer(
                     runtime=SessionRuntimeKind.OPENSHELL,
-                    execution_profile="vm-openshell@1",
-                    default=False,
                     grants=(SessionGrant.SUDO,),
                     readiness=RuntimeReadiness(
                         state=ReadinessState.FULL, warm=0, remedy="raise the pool"
@@ -2174,8 +2174,6 @@ class TestSessionRuntimes:
             "runtimes": [
                 {
                     "runtime": "openshell",
-                    "execution_profile": "vm-openshell@1",
-                    "default": False,
                     "grants": ["sudo"],
                     "readiness": {"state": "full", "warm": 0, "remedy": "raise the pool"},
                 }

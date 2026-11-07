@@ -5,6 +5,7 @@ import pytest
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.profiled_vm_runtime import ProfiledVmRuntime
 from volundr.domain.compute import ComputeLease, ComputeSlot, MachineBootstrap, SlotLease
+from volundr.domain.compute_hosts import HostPlatform
 from volundr.domain.models import PodSpecAdditions, Session, SessionSpec
 from volundr.domain.vm_runtime import VmRuntime
 
@@ -216,3 +217,23 @@ def test_a_profiled_runtime_without_profiles_follows_its_default():
     assert not ProfiledVmRuntime(
         default=RecordingRuntime(name="d"), profiles={}
     ).requires_root_daemon
+
+
+class MacRuntime(RecordingRuntime):
+    @property
+    def host_platforms(self):
+        return frozenset(HostPlatform)
+
+
+def test_a_runtime_runs_on_linux_hosts_unless_it_says_more():
+    assert RecordingRuntime(name="host").host_platforms == {HostPlatform.LINUX}
+
+
+def test_a_profiled_runtime_runs_only_where_all_of_its_runtimes_do():
+    mac = ProfiledVmRuntime(default=MacRuntime(name="d"), profiles={"m": MacRuntime(name="m")})
+    mixed = ProfiledVmRuntime(
+        default=MacRuntime(name="d"), profiles={"l": RecordingRuntime(name="l")}
+    )
+
+    assert mac.host_platforms == {HostPlatform.LINUX, HostPlatform.DARWIN}
+    assert mixed.host_platforms == {HostPlatform.LINUX}

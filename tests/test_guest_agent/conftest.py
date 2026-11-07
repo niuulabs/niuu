@@ -39,6 +39,7 @@ def config_dict(tmp_path: Path, host_key: tuple[str, Ed25519PublicKey]) -> dict:
     return {
         "metadata_url": METADATA_URL,
         "allocation_id": ALLOCATION_ID,
+        "slot": 0,
         "auth": {"kind": "host_key", "key_path": host_key[0]},
         "token_volumes": [
             {

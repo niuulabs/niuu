@@ -245,6 +245,7 @@ def create_compute_hosts_router(service: ComputeHostService, pool: ComputePoolSe
                     "runtime": execution.runtime.value if execution.runtime else None,
                     "label": execution.label,
                     "exclusive_only": execution.exclusive_only,
+                    "platforms": sorted(execution.platforms),
                     "allowed": execution.refusal is None,
                     "refusal": execution.refusal,
                 }

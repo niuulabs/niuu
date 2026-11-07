@@ -588,10 +588,10 @@ class PodManager(ABC):
         return await self.capacity()
 
     async def session_runtimes(self) -> tuple[SessionRuntimeOffer, ...]:
-        """The runtimes a launch on this host may choose between.
+        """What this host runs every session as: at most one offer.
 
-        Empty means the host offers no choice: its sessions run the way this
-        pod manager always runs them.
+        A host runs exactly one runtime, so sessions never choose; empty means
+        this pod manager does not declare what its sessions run in.
         """
         return ()
 
@@ -2136,6 +2136,11 @@ if TYPE_CHECKING:
 
 class SessionExecutionResolver(Protocol):
     """Resolve and verify an operator-approved execution choice before contribution."""
+
+    def runs_on_compute(self, session: Session) -> bool:
+        """Whether ``session`` runs in the compute pool, so its stop and delete must be
+        confirmed. False only for a session a placement keeps off the pool."""
+        ...
 
     async def has_legacy_allocation(self, session: Session) -> bool: ...
 

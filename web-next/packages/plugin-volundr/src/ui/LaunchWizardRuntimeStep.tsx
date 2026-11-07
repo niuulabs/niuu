@@ -42,7 +42,7 @@ import {
 import { AdvancedRuntimeSection } from './LaunchWizardAdvancedRuntime';
 import { EngineSelect } from './EngineSelect';
 import { availableEngines, providerModels, withEngineProvider } from './launchEngines';
-import { RunsAsChoice, RunsAsReadiness } from './RunsAsChoice';
+import { RunsAs, RunsAsReadiness } from './RunsAs';
 import type { useRunsAs } from './hooks/useRunsAs';
 import './LaunchWizard.css';
 
@@ -85,7 +85,7 @@ export function RuntimeStep({
   providerError?: Error | null;
   onApplyPreset: (launchSpecRef: string) => void;
   onSavePreset: (name: string) => Promise<void>;
-  /** What the chosen host offers to run the session as; absent offers no choice. */
+  /** What the chosen host runs every session as; absent says nothing. */
   runsAs?: ReturnType<typeof useRunsAs>;
 }) {
   const engines = useMemo(
@@ -367,11 +367,9 @@ export function RuntimeStep({
           ) : null}
           {runsAs?.offer ? (
             <div className="niuu:flex niuu:flex-col niuu:gap-2">
-              <RunsAsChoice
-                offers={runsAs.offers}
+              <RunsAs
                 offer={runsAs.offer}
                 grants={runsAs.grants}
-                onSelect={runsAs.select}
                 onGrantsChange={runsAs.setGrants}
               />
               <RunsAsReadiness offer={runsAs.offer} />

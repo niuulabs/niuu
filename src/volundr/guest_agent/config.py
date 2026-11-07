@@ -21,6 +21,7 @@ from volundr.guest_agent.errors import ConfigError
 _TOP_LEVEL = (
     "metadata_url",
     "allocation_id",
+    "slot",
     "auth",
     "token_volumes",
     "forge_session",
@@ -84,6 +85,8 @@ class Listen:
 class AgentConfig:
     metadata_url: str
     allocation_id: str
+    #: The VM slot whose session this agent serves; Forge answers for that slot only.
+    slot: int
     auth: HostKeyAuth | BearerFileAuth | SpiffeAuth
     token_volumes: tuple[TokenVolume, ...]
     forge_session: ForgeSessionTarget | None
@@ -124,6 +127,7 @@ def parse_config(raw: object) -> AgentConfig:
     return AgentConfig(
         metadata_url=metadata_url,
         allocation_id=allocation_id,
+        slot=_slot(top["slot"]),
         auth=auth,
         token_volumes=token_volumes,
         forge_session=forge_session,
@@ -212,6 +216,14 @@ def _allocation_id(value: object) -> str:
         return str(uuid.UUID(text))
     except ValueError as exc:
         raise ConfigError(f"allocation_id: not a UUID: {text!r}") from exc
+
+
+def _slot(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(f"slot: expected an integer, got {type(value).__name__}")
+    if value < 0:
+        raise ConfigError(f"slot: must be 0 or greater, got {value}")
+    return value
 
 
 def _auth(raw: object) -> HostKeyAuth | BearerFileAuth | SpiffeAuth:

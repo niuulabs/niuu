@@ -349,83 +349,68 @@ describe('launch policy helpers', () => {
 });
 
 describe('QuickLaunch runs as', () => {
-  const offers = [
-    {
-      runtime: 'container' as const,
-      executionProfile: 'vm-container@1',
-      isDefault: true,
-      grants: [],
-      readiness: { state: 'warm' as const, warm: 1, remedy: null },
-    },
-    {
-      runtime: 'openshell' as const,
-      executionProfile: 'vm-openshell@1',
-      isDefault: false,
-      grants: [],
-      readiness: { state: 'boot' as const, warm: 0, remedy: null },
-    },
-    {
-      runtime: 'host' as const,
-      executionProfile: 'vm-host@1',
-      isDefault: false,
-      grants: ['sudo' as const, 'docker' as const],
-      readiness: { state: 'boot' as const, warm: 0, remedy: null },
-    },
-  ];
-  const vmHost = (instanceId?: string) => (instanceId === 'spark' ? offers : []);
+  const container = {
+    runtime: 'container' as const,
+    grants: [],
+    readiness: { state: 'warm' as const, warm: 1, remedy: null },
+  };
+  const onTheVm = {
+    runtime: 'host' as const,
+    grants: ['sudo' as const, 'docker' as const],
+    readiness: { state: 'boot' as const, warm: 0, remedy: null },
+  };
+  const spark = (offer: typeof container | typeof onTheVm) => async (instanceId?: string) =>
+    instanceId === 'spark' ? [offer] : [];
 
-  it('offers no choice on a host that runs sessions one way', async () => {
-    setup({ getSessionRuntimes: async (id?: string) => vmHost(id) });
+  it('shows nothing on a host that declares no runtime', async () => {
+    const { startSession } = setup({ getSessionRuntimes: spark(container) });
     await ready();
-    expect(screen.queryByRole('group', { name: 'Runs as' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('runs-as')).not.toBeInTheDocument();
     expect(screen.queryByTestId('runs-as-readiness')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Launch Claude' }));
+    await waitFor(() => expect(startSession).toHaveBeenCalledOnce());
+    expect(startSession.mock.calls[0]?.[0]).toMatchObject({
+      workloadConfig: { reasoningEffort: 'xhigh' },
+    });
   });
 
-  it('launches with the runtime chosen on a VM host and says how soon it starts', async () => {
-    const { startSession } = setup({ getSessionRuntimes: async (id?: string) => vmHost(id) });
+  it('names what the host runs as, read-only, and launches without choosing it', async () => {
+    const { startSession } = setup({ getSessionRuntimes: spark(container) });
     await ready();
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'spark' } });
-    await screen.findByRole('group', { name: 'Runs as' });
-    expect(screen.getByRole('button', { name: /Container/ })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    await screen.findByTestId('runs-as');
+    expect(screen.getByTestId('runs-as')).toHaveTextContent('Runs as: Container');
     expect(screen.getByTestId('runs-as-readiness')).toHaveTextContent(
       'Free slot ready, starts in seconds',
     );
-    fireEvent.click(screen.getByRole('button', { name: /OpenShell.*Policy sandbox/ }));
-    expect(screen.getByTestId('runs-as-readiness')).toHaveTextContent(/a VM boots first/);
+    expect(screen.queryByRole('button', { name: /Container/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
     await ready();
     fireEvent.click(screen.getByRole('button', { name: 'Launch Claude' }));
-    await waitFor(() =>
-      expect(startSession).toHaveBeenCalledWith(
-        expect.objectContaining({
-          instanceId: 'spark',
-          workloadConfig: { reasoningEffort: 'xhigh', execution_profile: 'vm-openshell@1' },
-        }),
-      ),
-    );
+    await waitFor(() => expect(startSession).toHaveBeenCalledOnce());
+    const request = startSession.mock.calls[0]?.[0];
+    expect(request).toMatchObject({
+      instanceId: 'spark',
+      workloadConfig: { reasoningEffort: 'xhigh' },
+    });
+    expect(request?.workloadConfig).not.toHaveProperty('execution_profile');
   });
 
-  it('sends extra access only for a runtime that offers it', async () => {
-    const { startSession } = setup({ getSessionRuntimes: async (id?: string) => vmHost(id) });
+  it('sends the extra access the host runtime offers, and only that', async () => {
+    const { startSession } = setup({ getSessionRuntimes: spark(onTheVm) });
     await ready();
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'spark' } });
-    fireEvent.click(await screen.findByRole('button', { name: /On the VM/ }));
+    await screen.findByTestId('runs-as');
+    expect(screen.getByTestId('runs-as')).toHaveTextContent('Runs as: On the VM');
     expect(screen.getByText('Either one gives this session a VM to itself.')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('checkbox', { name: 'sudo' }));
     fireEvent.click(screen.getByRole('button', { name: 'Launch Claude' }));
-    await waitFor(() =>
-      expect(startSession).toHaveBeenCalledWith(
-        expect.objectContaining({
-          workloadConfig: {
-            reasoningEffort: 'xhigh',
-            execution_profile: 'vm-host@1',
-            runtime_grants: ['sudo'],
-          },
-        }),
-      ),
-    );
+    await waitFor(() => expect(startSession).toHaveBeenCalledOnce());
+    const request = startSession.mock.calls[0]?.[0];
+    expect(request).toMatchObject({
+      workloadConfig: { reasoningEffort: 'xhigh', runtime_grants: ['sudo'] },
+    });
+    expect(request?.workloadConfig).not.toHaveProperty('execution_profile');
   });
 
   it('refuses to launch when the host cannot say how it runs sessions', async () => {

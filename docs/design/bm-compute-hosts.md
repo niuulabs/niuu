@@ -45,9 +45,9 @@ slots, with no Forge installed on the host.
 
 ## Not in scope
 
-- macOS hosts. Nix works on macOS, but there are no network namespaces or
-  cgroups, so the slot boundary does not exist there. A Mac could later be an
-  exclusive one-slot host; it is not part of this design.
+- Several sessions on one Mac. macOS has no network namespaces or cgroups, so
+  there is no boundary between two sessions there. A Mac is an exclusive
+  one-slot host; see [macOS hosts](#macos-hosts).
 - Mixing VMs and hosts in one pool. A pool has one provider (the execution
   catalog's `provider_binding`), and Forge never falls back from one to the
   other (`no-fallbacks.md`). See decision 2.
@@ -408,14 +408,18 @@ changing it is remove and join again.
    - **The endpoint** is an OpenSSH server in a sidecar container of the Forge
      pod. It shares the pod's loopback, so the forwarded port is reachable by Forge
      and by nothing else. A Gateway `TCPRoute` (or a LoadBalancer Service) exposes
-     its port. Forge is one replica (Recreate) already, so there is exactly one
-     endpoint.
+     its port. The endpoint needs one Forge pod with the Recreate strategy, so
+     there is exactly one endpoint; the chart refuses anything else.
    - **It authenticates the host by the key registered at pairing**:
      `AuthorizedKeysCommand` asks Forge, on a socket in the pod, for that key's
      line. Only a registered, not-removed `reverse-ssh` host gets one:
-     `restrict,port-forwarding,permitlisten="127.0.0.1:<that host's port>",permitopen="none",command="/usr/sbin/nologin"`.
+     `restrict,port-forwarding,permitlisten="127.0.0.1:<that host's port>",command="/usr/sbin/nologin"`.
      A host can only listen on its own port. It cannot open a port to reach
-     anything in the Forge pod (`permitopen="none"`) and gets no shell.
+     anything in the Forge pod and gets no shell. (authorized_keys has no
+     `permitopen="none"`: OpenSSH 10.2 drops a line with it as "bad key options:
+     invalid permission port", which would lock every host out. Local forwarding
+     is refused in the endpoint's `sshd_config` instead: `AllowTcpForwarding
+     remote` and `PermitOpen none`, for every key.)
      Another host's key cannot bind that port, and if something else ever
      answered on it, Forge's host-key pin would refuse it.
    - **Dial** is `127.0.0.1:<port>`. The port is assigned at `admit` from
@@ -541,6 +545,89 @@ daemon in a slot** run on registered hosts:
   declare `requires_root_daemon` and are refused on hosts as well. A rootless OpenShell
   mode would make it possible on one-slot hosts (its sandbox is the boundary).
 
+## macOS hosts
+
+A Mac joins like a Linux host, and always as an **exclusive one-slot host**: one
+session at a time.
+
+**Slot boundary.** On macOS the boundary is a user, and nothing else. A darwin
+runtime runs the session as a dedicated macOS user, `niuu-slot-0` (uid
+`uid_base`, its own group), created when the session starts and deleted when it
+stops, so the next session gets a fresh one. The session is a launchd job,
+`world.niuu.slot.0` in the system domain, not a systemd unit. The audit below
+is what proves the user and everything it owned are gone before the Mac is
+reused. Nix is the multi-user install for darwin (its
+own APFS volume and `org.nixos.nix-daemon`), with only root in `trusted-users`.
+There is no network namespace, cgroup or per-slot nft: a session shares the
+Mac's network and has no CPU or memory limit, so a Mac has no `slot_limits`, and
+one session per Mac is what keeps sessions apart.
+
+**Join.** The same `curl … | sudo sh` line. The script detects `Darwin` and runs
+its own steps: root, no earlier registration, the tools (`launchctl`, `dscl`,
+`dseditgroup`, `route`, `ipconfig`, `sysctl`, `sw_vers`, `curl`, `ssh-keygen`,
+`sshd`), a `python3` that really runs (`/usr/bin/python3` is a stub until the
+Command Line Tools are installed), and Remote Login on
+(`launchctl print system/com.openssh.sshd`). There is no systemd or cgroup v2
+check. The host key is sshd's own `/etc/ssh/ssh_host_ed25519_key`, as on Linux.
+After Forge answers, the script also refuses when Remote Login is limited to
+some users and the Forge's login is not one of them (`com.apple.access_ssh`).
+Facts come from `sysctl` (`hw.ncpu`, `hw.memsize`), `df -Pm /` and `sw_vers`;
+`gpus` is 0, because Apple's GPU is not offered to sessions. The leave script
+finds the login's home with `dscl` instead of `getent`.
+
+**Platform.** The join sends `platform` (`uname -s`, lowercased). Forge refuses a
+missing or unknown one, and records it. It never changes afterwards: the
+platform picks the facts and audit programs, and a host that later reports
+another platform is quarantined until it is removed and joins again.
+
+**Pairing.** A code does not know the OS of the host that will use it, so the
+join enforces one slot:
+
+- a code with slots left open registers a Mac with `slots: 1`;
+- a code with `slots: 1` registers it as minted;
+- a code for more slots is refused before anything is stored or admitted:
+  "macOS hosts run one session at a time … This code was minted for 4 slots:
+  mint one for this Mac with slots 1, or with slots left open";
+- changing a Mac's slots to anything but 1 is refused, and an audit that finds a
+  Mac set to more than one slot quarantines it.
+
+**Runtimes.** A runtime declares the platforms it runs on
+(`VmRuntime.host_platforms`, Linux only unless it says more), and so does a
+connector (`HostConnector.platforms`). A Mac is refused at join for an execution
+or a connector that does not name `darwin`. Direct SSH names both: its setup is
+one line in `authorized_keys`. **No runtime names `darwin` yet**, so today
+every Mac is refused at join with "… does not run sessions on macOS hosts".
+The host runtime cannot run on a Mac as built: it unpacks Skuld from a Linux
+container image, and keeps the credential agents and sidecars in the machine's
+Docker, which a host without a root daemon does not have. A darwin path needs a
+darwin build of Skuld and the guest agents pinned like the image, and those as
+launchd jobs of the slot user. Until then the join, the facts and the audit are
+ready, and no session can be placed on a Mac.
+
+**Audit.** The darwin audit runs as root over SSH like the Linux one, with the
+same arguments, and reports when the slot is not live:
+
+- a `niuu-slot-*` user or group that is not live;
+- a process of the slot's uid (`ps`);
+- files of the slot's uid under `/private/tmp`, `/private/var/tmp`,
+  `/private/var/folders` (per-user temp and caches outlive the user),
+  `/Users/Shared`, `/var/lib/niuu/slots` and `/var/run/niuu/slots`;
+- `/var/lib/niuu/slots/0` or `/var/run/niuu/slots/0` still there;
+- the session's launchd job still loaded or its plist still in
+  `/Library/LaunchDaemons`, and any job other than Apple's in the uid's `user/`
+  or `gui/` launchd domain (launchd keeps a user's domain after its last process);
+- SysV IPC objects of the uid, a crontab, or a Nix profile or GC root for the
+  slot user (the next session has the same name);
+
+and, live slot or not:
+
+- a slot user in `admin`, `wheel`, `_developer`, `com.apple.access_ssh` or
+  `com.apple.access_screensharing` (`dseditgroup` follows nested groups);
+- a sudoers file naming a slot user;
+- Nix `trusted-users` beyond root;
+- free disk below the floor;
+- more than one slot configured.
+
 ## Security
 
 ### Against `.claude/rules/architecture.md`
@@ -568,9 +655,10 @@ daemon in a slot** run on registered hosts:
      so removing a host takes effect at once, and revoke also kills a live
      connection;
    - each key may only listen on its own assigned loopback port
-     (`permitlisten`), may open nothing (`permitopen="none"`), gets no shell, PTY,
-     agent or X11 forwarding (`restrict`), and the endpoint listens in the Forge
-     pod's network namespace only for this;
+     (`permitlisten`), may open nothing (the endpoint's `AllowTcpForwarding
+     remote` and `PermitOpen none`), gets no shell, PTY, agent or X11 forwarding
+     (`restrict`), and the endpoint listens in the Forge pod's network namespace
+     only for this;
    - what crosses it is an SSH session from Forge to the host's sshd, pinned to
      the same registered key, so the endpoint never carries trust of its own.
 4. **VM guest metadata exception, host-key identity: amended.** Today the key is
@@ -642,7 +730,7 @@ settles it: a narrowed root SSH login now, a forced-command agent later. In both
 
 ## Operator and UI flow
 
-The mockup shows four screens:
+The mockup shows these screens:
 
 1. **Hosts**: a pool summary (hosts by state, free slots, free slots per tag set,
    warm targets), a selector filter, and one row per host. Each row shows the
@@ -656,6 +744,91 @@ The mockup shows four screens:
    ready*.
 4. **Set capacity**: measured facts, the suggested slot count with its arithmetic,
    and *Put in service*.
+5. **Drain and remove**.
+6. **Mini: where it runs**: the launch form's *Runs on* choice, *This machine*
+   (the default) or *A host* with tags, and the 422 when no host carries the tags.
+7. **Mini: Hosts**: the same Hosts page on a `niuu platform up` machine, with the
+   machine's own sessions shown next to the hosts.
+
+## Hosts next to local sessions (mini mode)
+
+Someone with one machine running `niuu platform up` should add their other machines
+as easily as a cluster operator does. Jozef decided that **hosts add to the main
+machine**: it keeps running its own sessions, and joined hosts are extra capacity.
+A Forge has exactly one `PodManager`, so this needs the one Forge to place a session
+either on the main machine or in the hosts pool.
+
+### What exists, and why it does not fit
+
+- **Two Forges routed by Guild tags** (decision 2). It works on a cluster, but in
+  mini mode it means a second Forge process and the Hosts page on a second Forge
+  instance. That is the opposite of "as easy as".
+- **`ProfiledVmRuntime`** picks a `VmRuntime` per machine profile inside one
+  `VmPodManager`. Every choice is a VM runtime on a pool machine. A local process
+  session is not one.
+- **Registering the main machine as a host** would make local sessions host-mode
+  sessions: Linux only, root and the slot runtime on the user's own desktop. That
+  replaces local sessions instead of adding to them.
+
+### Design: a placement pod manager with two roles
+
+`volundr.adapters.outbound.placement_pod_manager.PlacementPodManager` is a dynamic
+adapter that holds two pod managers: `local` (the Forge's own sessions, for example
+`LocalProcessPodManager`) and `pool` (the compute pool's `VmPodManager`). The
+composition root builds both from their `adapter` + `kwargs`, the same way it builds
+nested VM runtimes. It does not use N named children with a routing table. Exactly
+two roles exist, and the rule between them is fixed.
+
+- **The placement record already exists.** A session the pool runs carries
+  `workload_config._compute_execution`, the execution pin that the session service
+  writes once, before anything runs. Restarts, stop, status, proxy, recovery and
+  delete follow that pin, so placement is sticky with no new column or field.
+- **A session goes to the pool only when it asks for it.** It names a
+  `host_selector`, an `execution_profile` or `compute_profile`, or
+  `runtime_grants`. A session that names none of these runs locally. The Guild sets
+  `host_selector` only when a selector is left over after the Forge's own tags, so
+  plain tag routing to the Forge keeps sessions local.
+- **No fallback, in either direction.** A pool session that cannot be placed fails
+  or waits, as on any pool, and never runs locally. A local session never goes to a
+  host when the main machine is full.
+- **Hooks.** Every `set_*` hook goes to each child that has it. The placement
+  manager has a hook only when a child does, so `hasattr` composition is unchanged.
+  `configure_compute`, `configure_execution`, `configure_pool` and `profile` go to
+  the pool child. `close` closes both.
+- **Whole-Forge answers.** `runtime_backend`, `capacity()` and `session_runtimes()`
+  come from the local child, the default placement. Forge mints a session
+  credential only when both children deliver it privately. The pool's "Runs as"
+  offers are not listed: today's launch form picks the first offer when there is no
+  default, which would send every launch to a host. The launch choice ships with the
+  UI in the mockup (screen 6). Until then, a launch reaches hosts through the API,
+  with `host_selector` or `execution_profile`.
+- **Durable compute is per session.** The session service treats a stop or delete
+  that the backend does not confirm as an error only for pool sessions
+  (`runs_on_compute`). A local session keeps local semantics.
+
+### `niuu platform up`
+
+One switch in `~/.niuu/config.yaml` renders the whole pool next to local sessions:
+
+```yaml
+hosts:
+  enabled: true
+  execution_catalog: ~/.niuu/hosts/execution-catalog   # until the default ships
+  join_url: http://192.168.1.10:8080                    # until it is derived
+  allow_plaintext_join: true
+```
+
+The CLI wraps the configured pod manager as `local` in the placement manager, and
+renders `compute:` with the registered-host provider, a `direct-ssh` connector, a
+reserve (`reserved_cpu: 2`, `reserved_memory_mib: 4096`, `min_free_disk_mib:
+20480`), and the pairing key file under `~/.niuu`. With `compute:` set as well, it
+fails, because both would define the pool.
+
+**Dependency:** the default host execution needs the rootless host-mode runtime
+(`SshHostVmRuntime`, niuulabs/niuu#1267). Until that runtime is on this branch,
+`hosts.execution_catalog` is required and names the operator's catalog. The join URL
+comes from `server_public_host` once the pinned-TLS join listener lands. Until then,
+`hosts.join_url` is passed through as it is.
 
 ## PR plan
 
@@ -702,7 +875,8 @@ configured.
     behind NAT (Forge restart and host network drop both recover).
 
 Later, separately: the agent connector (option 3), multi-pool Forge (decision 2),
-the forced-command host agent (decision 1, option B), and macOS one-slot hosts.
+the forced-command host agent (decision 1, option B), and a darwin path of the
+host runtime (see macOS hosts).
 
 ## What is built (2026-11-07)
 
@@ -743,6 +917,17 @@ On branch `docs/bm-compute-hosts`. Operator guide: [docs/operator/compute-hosts.
   public host is a startup error, never a silent plaintext or unreachable URL. A key
   or port the listener cannot use is fatal at startup.
 - `warm_targets` per selector were dropped (decision 6).
+- The reverse SSH connector (`ReverseSshConnector`) and the chart's `hostConnect`
+  endpoint sidecar. Forge reads whether a tunnel is up from `/proc/net/tcp` of the
+  shared network namespace, so probing never touches the host. Revoke stops
+  answering for the key at once; to end a live connection, the endpoint's key
+  command records sshd's per-connection monitor process (its parent), and a reaper
+  in the sidecar kills it when Forge writes the host's id to a pipe. Proven against
+  a real OpenSSH 10.2 sshd: the key line admits only the host's own loopback port
+  (another port and a wildcard bind are refused, `-L` is refused, no command runs),
+  the rendered `niuu-host-connect.service` command tunnels with the endpoint key
+  pinned, and SIGTERM to the recorded monitor ends the tunnel. Not proven yet: a
+  host behind NAT on a cluster, through a Forge restart and a network drop.
 - **Re-prepare** (`POST …/hosts/{id}/reprepare`, also through the Guild facade) does
   not run the recipe itself. The preparation record is the allocation that holds the
   host: it pins the plan, carries the result and keys the checkpoint on the host. So
@@ -754,7 +939,8 @@ On branch `docs/bm-compute-hosts`. Operator guide: [docs/operator/compute-hosts.
   the script's SHA-256, the file, and the commands to fetch, verify, read and run it.
   The mint response carries the script and digest, rendered exactly as `join.sh`
   serves it for that code, so no extra route was needed.
-- Not built yet: the reverse SSH connector, macOS hosts.
+- The macOS join, facts, audit and one-slot rule are built; every Mac is refused at
+  join until a runtime names `darwin`.
 
 ## Decisions (settled 2026-11-07)
 
@@ -765,7 +951,9 @@ Jozef accepted the recommendations:
    The forced-command host agent (`niuu-host-agent`, fixed verbs, no shell) is the
    hardening step once the first host works.
 2. **Which Forge:** a separate light "Valhalla Hosts" Forge (one pod) next to
-   "Valhalla VMs". A multi-pool Forge comes later, after hosts work.
+   "Valhalla VMs". A multi-pool Forge comes later, after hosts work. A mini-mode
+   Forge places sessions on its own machine or on hosts with a placement pod
+   manager (see "Hosts next to local sessions").
 3. **Hosts are Forge inventory, not Guild nodes.** Guild sees each Forge's host tag
    sets, never individual hosts.
 4. **Slot egress to the LAN** is denied for RFC 1918 by default, with

@@ -1,0 +1,57 @@
+{{- if .Values.hostConnect.enabled }}
+{{- $hc := .Values.hostConnect }}
+{{- $type := ternary "ClusterIP" ($hc.service.type | default "LoadBalancer") $hc.tcpRoute.enabled }}
+# Where registered hosts behind NAT dial the connect endpoint; a TCPRoute fronts it
+# with a Gateway instead of a LoadBalancer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "volundr.fullname" . }}-host-connect
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+  {{- with $hc.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $type }}
+  {{- if eq $type "LoadBalancer" }}
+  {{- with $hc.service.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- with $hc.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $hc.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ . }}
+  {{- end }}
+  {{- end }}
+  selector:
+    {{- include "volundr.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: host-connect
+      port: {{ $hc.service.port }}
+      targetPort: host-connect
+      protocol: TCP
+{{- if $hc.tcpRoute.enabled }}
+---
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TCPRoute
+metadata:
+  name: {{ include "volundr.fullname" . }}-host-connect
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+  {{- with $hc.tcpRoute.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- toYaml $hc.tcpRoute.parentRefs | nindent 4 }}
+  rules:
+    - backendRefs:
+        - name: {{ include "volundr.fullname" . }}-host-connect
+          port: {{ $hc.service.port }}
+{{- end }}
+{{- end }}

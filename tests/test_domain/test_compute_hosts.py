@@ -11,6 +11,7 @@ from volundr.domain.compute_hosts import (
     HostDisplayState,
     HostHealth,
     HostJoinSetup,
+    HostPlatform,
     HostService,
     normalize_tags,
 )
@@ -76,3 +77,11 @@ def test_join_setup_files_must_be_plain_absolute_paths():
     ):
         with pytest.raises(ValueError):
             HostJoinSetup(kind="k", authorized_key_options="restrict", files=(item,))
+
+
+def test_a_hosts_platform_is_the_one_it_joined_as():
+    assert make_host().platform is HostPlatform.LINUX
+    assert make_host(facts={"platform": "darwin"}).platform is HostPlatform.DARWIN
+    for facts in ({}, {"platform": "windows"}):
+        with pytest.raises(ValueError, match="join it again"):
+            make_host(name="old", facts=facts).platform

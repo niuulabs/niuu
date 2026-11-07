@@ -99,7 +99,7 @@ defaults in the image or supported session configuration.
 | Runtime class and priority class | Kubernetes driver pod fields |
 
 Ravn flocks run as peer workload containers, which the Niuu OpenShell fork
-re-implements on OpenShell v0.1.6's sandbox runtime
+re-implements on OpenShell's sandbox runtime (v0.1.6 and later)
 (`driver_config.kubernetes.containers.workloads`). Each persona is one peer:
 a regular container in the sandbox's workload Pod, from its own image, sharing
 the Pod's localhost, the Forge workspace/home PVC mounts, and an `emptyDir` at
@@ -246,10 +246,10 @@ Niuu's own `dev` workflow builds the application/runtime images.
 
 ### SDK and protocol
 
-The adapter uses the fork's SDK at commit `03d0f94d4` (OpenShell
-v0.1.6-pre.5 plus the peer-workload driver), pinned by wheel hash in
-`pyproject.toml` and `uv.lock` and published in the fork's `niuu-sdk-03d0f94d4`
-release. Against this protocol the adapter:
+The adapter uses the fork's SDK at commit `e9825820d` (OpenShell v0.1.7 plus
+the peer-workload driver, branch `niuu/peer-workloads-v0.1.7`), pinned by wheel
+hash in `pyproject.toml` and `uv.lock` and published in the fork's
+`niuu-sdk-e9825820d` release. Against this protocol the adapter:
 
 - addresses sandboxes by canonical name in every exec, log and forward call, and
   selects the `default` workspace for all workspace-scoped calls;
@@ -259,10 +259,32 @@ release. Against this protocol the adapter:
   `tls: passthrough` are rejected with a remedy: omit `tls` to keep automatic
   TLS termination, or set `tls: skip` deliberately;
 - treats `DeletionOutcome` ACCEPTED as "deletion pending" and keeps polling, and
-  refuses an unspecified outcome.
+  refuses an unspecified outcome;
+- reports a `SUSPENDING` sandbox as stopping and a `SUSPENDED` one as stopped
+  (v0.1.7 phases). Forge never suspends a sandbox itself; a resident whose
+  sandbox was suspended under it is started again like a stopped one, which
+  discards the frozen memory state and keeps its storage.
 
 `tests/test_adapters/test_openshell_protocol.py` builds every request the adapter
 sends with the installed SDK.
+
+### Upgrading a gateway to v0.1.7
+
+Pin the gateway, sandbox runtime, supervisor and chart to the fork's
+`niuu/peer-workloads-v0.1.7` commit together. The public gateway API only gains
+fields and RPCs (suspend/resume, `SandboxUpdates`, service routes), so the
+adapter needs no request changes. Gateway configuration to review:
+
+- OCSF is 1.8.0 only. `ocsf_schema_version`, the gateway `schema_version`
+  fields, Helm `server.ocsfLog.schemaVersion` and
+  `OPENSHELL_OTLP_OCSF_SCHEMA_VERSION` are ignored and log a warning; remove
+  them, and update anything that parses 1.1 or 1.3 OCSF records.
+- Move a private CA bundle from `[openshell.drivers.podman].additional_ca_bundle`
+  to `[openshell.supervisor.network].additional_ca_bundle`, which now applies to
+  every driver. Niuu's VM installer sets neither.
+- `[openshell.gateway.supervisor_pool]` is refused when the selected driver does
+  not use shared supervision, and a pool recovery timeout shorter than member
+  failure detection is refused. Run `config preflight` before restarting.
 
 ### Upgrading a gateway to v0.1.6
 
