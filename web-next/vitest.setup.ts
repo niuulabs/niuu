@@ -25,6 +25,21 @@ if (typeof localStorage === 'undefined' || typeof localStorage.clear !== 'functi
   });
 }
 
+// jsdom's Blob has no stream(). Shiki 4.6 inflates its inlined Oniguruma WASM
+// through `new Blob(...).stream()`, so without this every highlighted code
+// block in a test fails to load its grammar engine. Browsers implement it.
+if (typeof Blob.prototype.stream !== 'function') {
+  Blob.prototype.stream = function stream(this: Blob) {
+    const bytes = this.arrayBuffer();
+    return new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(new Uint8Array(await bytes));
+        controller.close();
+      },
+    });
+  } as Blob['stream'];
+}
+
 // TanStack Router calls window.scrollTo during scroll-restoration inside tests.
 // jsdom doesn't implement it; stub it out to keep test output clean.
 Object.defineProperty(window, 'scrollTo', { value: () => {}, writable: true });
