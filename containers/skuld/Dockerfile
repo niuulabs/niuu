@@ -1,4 +1,4 @@
-FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944 AS builder
+FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c AS builder
 
 ARG TARGETARCH
 
@@ -89,7 +89,7 @@ RUN cd "$(go mod download -json gitlab.com/gitlab-org/cli@v${GLAB_VERSION} | sed
 # ---------------------------------------------------------------------------
 # Runtime — Node.js stays (needed for claude-code/codex CLI at runtime)
 # ---------------------------------------------------------------------------
-FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
+FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
 
 
 LABEL org.opencontainers.image.title="skuld"
