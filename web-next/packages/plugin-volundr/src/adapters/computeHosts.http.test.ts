@@ -194,6 +194,8 @@ describe('compute hosts over HTTP', () => {
       code: 'jwt',
       command: 'curl … | sudo sh',
       command_wget: 'wget … | sudo sh',
+      join_url: 'https://forge.example',
+      pin: null,
     });
     const created = await buildVolundrHttpAdapter(client).createPairingCode('forge', {
       execution: 'host@2026-11-07',
@@ -212,7 +214,32 @@ describe('compute hosts over HTTP', () => {
       code: 'jwt',
       command: 'curl … | sudo sh',
       commandWget: 'wget … | sudo sh',
+      joinUrl: 'https://forge.example',
+      pin: null,
       expiresAt: '2026-11-06T12:10:00Z',
+    });
+  });
+
+  it('carries the pin of a pinned join, with no wget line', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      ...listPayload.pairing_codes[0],
+      code: 'jwt',
+      command: "curl -fsSL -k --pinnedpubkey 'sha256//abc=' … | sudo sh",
+      command_wget: null,
+      join_url: 'https://192.168.1.20:8443',
+      pin: 'sha256//abc=',
+    });
+    const created = await buildVolundrHttpAdapter(client).createPairingCode('forge', {
+      execution: 'host@2026-11-07',
+      connector: 'direct-ssh',
+      tags: [],
+      slots: null,
+    });
+    expect(created).toMatchObject({
+      commandWget: null,
+      joinUrl: 'https://192.168.1.20:8443',
+      pin: 'sha256//abc=',
     });
   });
 

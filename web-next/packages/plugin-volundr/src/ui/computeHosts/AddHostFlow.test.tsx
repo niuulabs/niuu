@@ -31,6 +31,8 @@ function newCode(overrides: Partial<NewPairingCode> = {}): NewPairingCode {
     code: 'jwt-code-0123456789-abcdefghij',
     command: "curl -H 'Authorization: Bearer jwt-code-0123456789-abcdefghij' x | sudo sh",
     commandWget: "wget --header='Authorization: Bearer jwt-code-0123456789-abcdefghij' x | sudo sh",
+    joinUrl: 'https://forge.example',
+    pin: null,
     ...overrides,
   };
 }

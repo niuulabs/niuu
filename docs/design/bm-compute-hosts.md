@@ -259,8 +259,9 @@ installs nothing itself: everything else (Nix, rootless Podman, `uidmap`,
   scoped workload JWT that `niuu guild pair` mints (below), so the line is long.
   The UI shows it truncated with a Copy button.
 - **TLS is required.** As for `niuu join`, a plaintext Forge URL is refused unless
-  the admin minted the code with plaintext allowed. For a Forge with a private CA,
-  the UI adds `--cacert` with the CA's path.
+  the admin minted the code with plaintext allowed. A Forge with no CA (local mode)
+  serves the join on its own listener with a self-signed certificate, and the
+  command pins its key (`curl -k --pinnedpubkey sha256//…`); see "What is built".
 - The UI also offers **"Download and read first"**: the same script as a file with
   its SHA-256, for an operator who will not pipe to `sh`.
 
@@ -727,6 +728,20 @@ On branch `docs/bm-compute-hosts`. Operator guide: [docs/operator/compute-hosts.
   cannot verify would be refused before it reached Forge.
 - The edge (`credential_allows_route`) admits a `compute_host_join` code on exactly
   `GET …/hosts/join.sh` and `POST …/hosts/join`.
+- **Pinned TLS join for a Forge with no CA.** Plain http on the LAN was rejected: a
+  hijacked join gives someone root on the host. With `compute.hosts.join_listener`
+  (the default when `join_url` is unset), Forge serves only those two routes on a TLS
+  listener of its own (`volundr.adapters.inbound.host_join_listener`, started and
+  stopped in Forge's lifespan), and the API no longer serves them. Its RSA key and
+  self-signed certificate are generated once (0600), never overwritten, and reused,
+  so the pin is stable; a certificate without expiry (RFC 5280's 99991231235959Z),
+  since `curl -k` checks only the pin. The mint command is
+  `curl -fsSL -k --pinnedpubkey sha256//<SPKI SHA-256> …`, `join.sh` posts with the
+  same pin, there is no wget line (wget cannot pin), and the mint response carries
+  `join_url` and `pin` for the Add host screen. The URL is `join_url` when set,
+  else `https://<server_public_host>:<port>`; a loopback, unspecified or IPv6
+  public host is a startup error, never a silent plaintext or unreachable URL. A key
+  or port the listener cannot use is fatal at startup.
 - `warm_targets` per selector were dropped (decision 6).
 - Not built yet: the reverse SSH connector, the Re-prepare action (a recipe change
   today needs drain, then resume), macOS hosts.

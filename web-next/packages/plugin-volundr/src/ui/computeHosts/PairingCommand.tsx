@@ -49,7 +49,7 @@ export function PairingCommand({
   const [useWget, setUseWget] = useState(false);
   const remaining = secondsUntil(code.expiresAt, now);
   const expired = remaining === 0;
-  const command = useWget ? code.commandWget : code.command;
+  const command = useWget && code.commandWget !== null ? code.commandWget : code.command;
 
   return (
     <div className="niuu:space-y-3">
@@ -68,6 +68,14 @@ export function PairingCommand({
       >
         {truncateCode(command, code.code, VISIBLE_CODE_CHARS)}
       </pre>
+      {code.pin !== null ? (
+        <p className="niuu:text-xs niuu:text-text-muted">
+          The join is pinned to this Forge&apos;s certificate at{' '}
+          <code className="niuu:font-mono">{code.joinUrl}</code> (
+          <code className="niuu:break-all niuu:font-mono">{code.pin}</code>), so it needs curl: wget
+          cannot check a pin.
+        </p>
+      ) : null}
       <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:justify-between niuu:gap-2">
         {expired ? (
           <span role="status" className="niuu:text-xs niuu:text-critical-fg">
@@ -79,9 +87,11 @@ export function PairingCommand({
           </span>
         )}
         <span className="niuu:flex niuu:items-center niuu:gap-1">
-          <button type="button" className={GHOST} onClick={() => setUseWget((value) => !value)}>
-            {useWget ? 'Use curl' : 'Use wget'}
-          </button>
+          {code.commandWget !== null ? (
+            <button type="button" className={GHOST} onClick={() => setUseWget((value) => !value)}>
+              {useWget ? 'Use curl' : 'Use wget'}
+            </button>
+          ) : null}
           <CopyButton text={command} primary />
         </span>
       </div>
